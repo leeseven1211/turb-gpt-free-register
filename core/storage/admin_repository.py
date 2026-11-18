@@ -325,6 +325,38 @@ def _account_where(archived, plan, q, date_from, date_to, filters):
     return [sql], params
 
 
+def _account_page_sql(
+    accounts: str,
+    selected: str,
+    clause: str,
+    request: PageRequest,
+    *,
+    total: int,
+    plan: str,
+    q: str,
+    date_from: str,
+    date_to: str,
+) -> str:
+    # 仅大集合的无业务筛选深页使用窄 ID；过滤首页等场景保留原查询计划。
+    # total 复用本次精确统计，归档范围由原 clause 保留，不增加查询或缓存。
+    narrow_page = (
+        total >= 100000
+        and request.offset > 0
+        and request.offset * 10 >= total
+        and not any((plan, q, date_from, date_to))
+        and not any(_text(value) for value in request.filters.values())
+    )
+    if narrow_page:
+        # MATERIALIZED 保证宽 JSON/历史注册信息只在 LIMIT 后投影。
+        return (
+            f"WITH account_page_ids AS MATERIALIZED (SELECT a.id FROM {accounts} a{clause}"
+            " ORDER BY a.id DESC LIMIT %s OFFSET %s) "
+            f"SELECT {selected} FROM {accounts} a"
+            " JOIN account_page_ids AS page_ids ON page_ids.id = a.id ORDER BY a.id DESC"
+        )
+    return f"SELECT {selected} FROM {accounts} a{clause} ORDER BY a.id DESC LIMIT %s OFFSET %s"
+
+
 def account_query_facets(spec: dict) -> dict:
     """批量创建页按需读取窄列选项，共用列表的自排除列语义。"""
     from core.accounts.query import normalize_query
@@ -365,6 +397,59 @@ def account_query_count(spec: dict) -> int:
         return int(value or 0)
 
 
+def _account_list_grouped_facets_eligible(
+    *, archived: str, plan: str, q: str, date_from: str, date_to: str,
+    filters: dict[str, str],
+) -> bool:
+    """Use the measured shape only for canonical unfiltered list scopes."""
+    return (
+        archived in {"0", "all"}
+        and not any((plan, q, date_from, date_to))
+        and not any(filters.values())
+    )
+
+
+def _account_list_grouped_facets_sql(
+    accounts: str, base_clause: str, base_params: list[Any],
+) -> tuple[str, list[Any]]:
+    """Aggregate unchanged unfiltered facet projections without VALUES fanout."""
+    expressions = _account_facet_expressions()
+    dimensions = tuple(expressions)
+    columns = ", ".join(
+        f"{expression} AS {key}" for key, expression in expressions.items()
+    )
+    gated = ", ".join(
+        f"CASE WHEN TRUE THEN NULLIF(m.{dimension}, '') END AS __a2_dim_{index}"
+        for index, dimension in enumerate(dimensions)
+    )
+    facet_cases = " ".join(
+        f"WHEN GROUPING(__a2_dim_{index}) = 0 THEN '{dimension}'::text"
+        for index, dimension in enumerate(dimensions)
+    )
+    value_cases = " ".join(
+        f"WHEN GROUPING(__a2_dim_{index}) = 0 THEN __a2_dim_{index}"
+        for index in range(len(dimensions))
+    )
+    grouping_sets = ", ".join(
+        f"(__a2_dim_{index})" for index in range(len(dimensions))
+    )
+    sql = f"""WITH base AS MATERIALIZED (
+        SELECT {columns} FROM {accounts} a{base_clause}
+    ), __a2_matches AS NOT MATERIALIZED (
+        SELECT b.* FROM base b
+    ), __a2_gated AS NOT MATERIALIZED (
+        SELECT {gated} FROM __a2_matches m
+    ), __a2_grouped AS (
+        SELECT CASE {facet_cases} END AS facet,
+               CASE {value_cases} END AS value,
+               COUNT(*) AS count
+          FROM __a2_gated
+         GROUP BY GROUPING SETS ({grouping_sets})
+    )
+    SELECT facet, value, count FROM __a2_grouped WHERE value IS NOT NULL"""
+    return sql, list(base_params)
+
+
 def list_accounts(
     request: PageRequest,
     *,
@@ -384,30 +469,38 @@ def list_accounts(
         {key: request.filters.get(key, "") for key in ("id", "email")},
     )
     base_clause = f" WHERE {' AND '.join(base_where)}" if base_where else ""
-    expressions = _account_facet_expressions()
-    facet_columns = ", ".join(f"{expression} AS {key}" for key, expression in expressions.items())
-    facet_values = ", ".join(f"('{key}', b.{key})" for key in expressions)
-    facet_where = ["NULLIF(f.value, '') IS NOT NULL"]
-    for key, predicate, values in _account_facet_predicates(
-        plan, request.filters, {key: f"b.{key}" for key in expressions},
+    if _account_list_grouped_facets_eligible(
+        archived=archived, plan=plan, q=q, date_from=date_from, date_to=date_to,
+        filters=request.filters,
     ):
-        facet_where.append(f"(f.facet = %s OR ({predicate}))")
-        facet_params.extend((key, *values))
-    # 旧写法用 9 段 UNION ALL 重复扫描账号表，生产数据里的 extra_json 较大时，
-    # facets 一项就要约 200 ms。这里先物化一次轻量投影，再展开各个维度聚合；
-    # 复杂 JSON/正则表达式只计算一遍。每列统计保留其他列条件，仅忽略自身筛选；
-    # 搜索、日期、ID、邮箱与归档范围始终生效，且不受当前页限制。
-    facet_sql = f"""
-        WITH base AS MATERIALIZED (
-            SELECT {facet_columns}
-              FROM {accounts} a{base_clause}
+        facet_sql, facet_params = _account_list_grouped_facets_sql(
+            accounts, base_clause, facet_params,
         )
-        SELECT f.facet, f.value, COUNT(*) AS count
-          FROM base b
-          CROSS JOIN LATERAL (VALUES {facet_values}) AS f(facet, value)
-         WHERE {' AND '.join(facet_where)}
-         GROUP BY f.facet, f.value
-    """
+    else:
+        expressions = _account_facet_expressions()
+        facet_columns = ", ".join(f"{expression} AS {key}" for key, expression in expressions.items())
+        facet_values = ", ".join(f"('{key}', b.{key})" for key in expressions)
+        facet_where = ["NULLIF(f.value, '') IS NOT NULL"]
+        for key, predicate, values in _account_facet_predicates(
+            plan, request.filters, {key: f"b.{key}" for key in expressions},
+        ):
+            facet_where.append(f"(f.facet = %s OR ({predicate}))")
+            facet_params.extend((key, *values))
+        # 旧写法用 9 段 UNION ALL 重复扫描账号表，生产数据里的 extra_json 较大时，
+        # facets 一项就要约 200 ms。这里先物化一次轻量投影，再展开各个维度聚合；
+        # 复杂 JSON/正则表达式只计算一遍。每列统计保留其他列条件，仅忽略自身筛选；
+        # 搜索、日期、ID、邮箱与归档范围始终生效，且不受当前页限制。
+        facet_sql = f"""
+            WITH base AS MATERIALIZED (
+                SELECT {facet_columns}
+                  FROM {accounts} a{base_clause}
+            )
+            SELECT f.facet, f.value, COUNT(*) AS count
+              FROM base b
+              CROSS JOIN LATERAL (VALUES {facet_values}) AS f(facet, value)
+             WHERE {' AND '.join(facet_where)}
+             GROUP BY f.facet, f.value
+        """
     # chatgpt_session 是恢复用的敏感完整响应，不进入管理列表查询。
     promoted = [
         "id",
@@ -424,14 +517,17 @@ def list_accounts(
     with _connect() as conn, conn.cursor() as cur:
         cur.execute(f"SELECT COUNT(*) AS total, MAX(a.updated_at) AS latest FROM {accounts} a{clause}", params)
         aggregate = cur.fetchone()
+        total = int(aggregate["total"] or 0)
         cur.execute(
-            f"SELECT {selected}, ({safe_data}) AS data FROM {accounts} a{clause} ORDER BY a.id DESC LIMIT %s OFFSET %s",
+            _account_page_sql(
+                accounts, f"{selected}, ({safe_data}) AS data", clause, request,
+                total=total, plan=plan, q=q, date_from=date_from, date_to=date_to,
+            ),
             (*params, request.limit, request.offset),
         )
         rows = [db.decorate_account(record_store.merge_row(record_store.ACCOUNTS, row)) for row in cur.fetchall()]
         cur.execute(facet_sql, facet_params)
         facets = _facet_dict(cur.fetchall())
-    total = int(aggregate["total"] or 0)
     return {
         "ok": True,
         "items": rows,
@@ -487,8 +583,12 @@ def list_account_statuses(
     with _connect() as conn, conn.cursor() as cur:
         cur.execute(f"SELECT COUNT(*) AS total, MAX(a.updated_at) AS latest FROM {accounts} a{clause}", params)
         aggregate = cur.fetchone()
+        total = int(aggregate["total"] or 0)
         cur.execute(
-            f"SELECT {selected} FROM {accounts} a{clause} ORDER BY a.id DESC LIMIT %s OFFSET %s",
+            _account_page_sql(
+                accounts, selected, clause, request,
+                total=total, plan=plan, q=q, date_from=date_from, date_to=date_to,
+            ),
             (*params, request.limit, request.offset),
         )
         raw_rows = cur.fetchall()
@@ -566,7 +666,6 @@ def list_account_statuses(
             for key in ("plan_check_error", "extract_link_error", "extract_link_message", "codex_error"):
                 item[key] = row.get(key)
         items.append(item)
-    total = int(aggregate["total"] or 0)
     return {
         "ok": True,
         "items": items,
@@ -1135,6 +1234,28 @@ def _codex_item(row: dict) -> dict:
     }
 
 
+def _decode_codex_statistics(rows: list[dict]) -> tuple[dict, dict]:
+    """保留各原始分组，只接受完整的全局统计结果。"""
+    groups = {3: ("plan", "plan_value"), 5: ("status", "status_value"),
+              6: ("oauth_status", "oauth_value")}
+    facet_rows = []
+    summary = None
+    for row in rows:
+        mask = row["grouping_mask"]
+        if mask == 7:
+            if summary is not None:
+                raise RuntimeError("Codex 全局统计返回了重复总计")
+            summary = {"total": row["active_total"], "exported": row["active_exported"]}
+        elif mask in groups:
+            facet, column = groups[mask]
+            facet_rows.append({"facet": facet, "value": row[column], "count": row["count"]})
+        else:
+            raise RuntimeError("Codex 全局统计返回了未知分组")
+    if summary is None:
+        raise RuntimeError("Codex 全局统计缺少总计")
+    return _facet_dict(facet_rows), summary
+
+
 def list_codex(request: PageRequest) -> dict:
     table = _q(record_store.CODEX_CREDENTIALS)
     accounts_table = _q(record_store.ACCOUNTS)
@@ -1198,20 +1319,21 @@ def list_codex(request: PageRequest) -> dict:
         rows = [_codex_item(row) for row in cur.fetchall()]
         cur.execute(
             f"""
-            SELECT 'plan' AS facet, LOWER(COALESCE(c.plan, '')) AS value, COUNT(*) AS count FROM {from_clause} GROUP BY 2
-            UNION ALL
-            SELECT 'status', CASE WHEN c.archived THEN 'archived' WHEN {_CODEX_EXPORTED_SQL} THEN 'exported' ELSE 'unexported' END, COUNT(*) FROM {from_clause} GROUP BY 2
-            UNION ALL
-            SELECT 'oauth_status', LOWER(COALESCE(c.oauth_status, 'unknown')), COUNT(*) FROM {from_clause} GROUP BY 2
+            WITH joined AS (
+                SELECT LOWER(COALESCE(c.plan, '')) AS plan_value,
+                    CASE WHEN c.archived THEN 'archived' WHEN {_CODEX_EXPORTED_SQL}
+                         THEN 'exported' ELSE 'unexported' END AS status_value,
+                    LOWER(COALESCE(c.oauth_status, 'unknown')) AS oauth_value, c.archived
+                FROM {from_clause}
+            )
+            SELECT GROUPING(plan_value, status_value, oauth_value) AS grouping_mask,
+                plan_value, status_value, oauth_value, COUNT(*) AS count,
+                COUNT(*) FILTER (WHERE archived IS FALSE) AS active_total,
+                COUNT(*) FILTER (WHERE archived IS FALSE AND status_value = 'exported') AS active_exported
+            FROM joined GROUP BY GROUPING SETS ((plan_value), (status_value), (oauth_value), ())
             """
         )
-        facets = _facet_dict(cur.fetchall())
-        cur.execute(
-            f"SELECT COUNT(*) FILTER (WHERE c.archived IS FALSE) AS total, "
-            f"COUNT(*) FILTER (WHERE c.archived IS FALSE AND {_CODEX_EXPORTED_SQL}) AS exported "
-            f"FROM {from_clause}"
-        )
-        summary_row = cur.fetchone()
+        facets, summary_row = _decode_codex_statistics(cur.fetchall())
     total = int(aggregate["total"] or 0)
     summary_total = int(summary_row["total"] or 0)
     summary_exported = int(summary_row["exported"] or 0)

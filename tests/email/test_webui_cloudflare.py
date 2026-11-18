@@ -21,7 +21,7 @@ class CloudflareWebUiTests(PostgresTestCase):
             response = self.client.post("/api/jobs", json={"count": 1, "workers": 1, "email_source": "cloudflare"})
 
         self.assertEqual(response.status_code, 400)
-        self.assertIn("Cloudflare API 地址", response.get_json()["error"])
+        self.assertIn("新注册只使用本地邮箱列表", response.get_json()["error"])
         submit_registration.assert_not_called()
 
     @patch("webui.app.svc.submit_registration")
@@ -37,7 +37,7 @@ class CloudflareWebUiTests(PostgresTestCase):
             response = self.client.post("/api/jobs", json={"count": 1, "workers": 1, "email_source": "cloudflare"})
 
         self.assertEqual(response.status_code, 400)
-        self.assertIn("Cloudflare API Key", response.get_json()["error"])
+        self.assertIn("新注册只使用本地邮箱列表", response.get_json()["error"])
         submit_registration.assert_not_called()
 
     @patch("webui.app.db.outlook_pool_summary")
@@ -53,10 +53,10 @@ class CloudflareWebUiTests(PostgresTestCase):
         ):
             response = self.client.post("/api/jobs", json={"count": 1, "workers": 1, "email_source": "cloudflare"})
 
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.get_json()["warning"], "")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("新注册只使用本地邮箱列表", response.get_json()["error"])
         outlook_pool_summary.assert_not_called()
-        submit_registration.assert_called_once_with(count=1, email_source="cloudflare", workers=1)
+        submit_registration.assert_not_called()
 
 
 if __name__ == "__main__":

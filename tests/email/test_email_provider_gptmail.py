@@ -1,9 +1,11 @@
 # -*- coding: utf-8 -*-
 import unittest
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import call, patch
 
 from config import email as email_config
 from core.email import provider as email_provider
+from core.email.inventory import LocalEmailInventoryError
 
 
 class GPTMailProviderTests(unittest.TestCase):
@@ -17,11 +19,17 @@ class GPTMailProviderTests(unittest.TestCase):
         )
 
     @patch("core.email.gptmail.client.pick_account")
-    def test_acquire_email_uses_gptmail_client(self, pick_account):
-        pick_account.return_value.email = "fresh@gptmail.test"
+    def test_auto_gptmail_selection_falls_back_to_local_inventory(self, remote_pick):
+        address = "imported@outlook.test"
+        with patch.object(email_provider, "parse_email_sources", return_value=["gptmail"]), patch(
+            "core.email.outlook.client.pick_account", return_value=SimpleNamespace(email=address)
+        ) as local_pick, patch.object(email_provider, "_pick_from_source", wraps=email_provider._pick_from_source) as pick:
+            self.assertEqual(email_provider.acquire_email(), address)
 
-        with patch("core.email.provider.parse_email_sources", return_value=["gptmail"]):
-            self.assertEqual(email_provider.acquire_email(), "fresh@gptmail.test")
+        pick.assert_called_once_with("outlook", batch_id=None, job_id=None)
+        local_pick.assert_called_once_with(batch_id=None, job_id=None, owner_kind=None, owner_id=None, acquisition_id=None)
+        remote_pick.assert_not_called()
+        self.assertEqual(email_provider._EMAIL_SOURCE_HINTS, {address: "outlook"})
 
     @patch("core.email.gptmail.client.get_account_context", return_value=object())
     def test_resolve_email_source_recognizes_cached_gptmail_address(self, get_context):
@@ -94,12 +102,21 @@ class GPTMailProviderTests(unittest.TestCase):
         resolve_source.assert_called_once_with("unknown@example.test", fallback=False)
         release_email.assert_not_called()
 
-    @patch("core.email.gptmail.client.pick_account")
-    def test_acquire_email_remembers_explicit_source(self, pick_account):
-        pick_account.return_value.email = "fresh@gptmail.test"
+    def test_explicit_retired_source_rejects_without_fallback_or_new_hint(self):
+        for source in ("gptmail", "mailnest", "cloudmail"):
+            with self.subTest(source=source), patch(
+                f"core.email.{source}.client.pick_account"
+            ) as remote_pick, patch("core.email.inventory.claim") as local_claim, patch.object(
+                email_provider, "parse_email_sources"
+            ) as auto_sources, patch.object(email_provider, "_pick_from_source", wraps=email_provider._pick_from_source) as pick:
+                with self.assertRaisesRegex(RuntimeError, f"所选邮箱来源 {source} 领取失败: local_inventory_source_required"):
+                    email_provider.acquire_email(source)
 
-        self.assertEqual(email_provider.acquire_email("gptmail"), "fresh@gptmail.test")
-        self.assertEqual(email_provider.resolve_email_source("fresh@gptmail.test", fallback=False), "gptmail")
+                pick.assert_called_once_with(source, batch_id=None, job_id=None)
+                remote_pick.assert_not_called()
+                local_claim.assert_not_called()
+                auto_sources.assert_not_called()
+                self.assertEqual(email_provider._EMAIL_SOURCE_HINTS, {})
 
     @patch("core.email.gptmail.client.get_account_context", return_value=None)
     def test_restore_retry_context_rejects_lost_gptmail_lease(self, get_context):
@@ -146,11 +163,20 @@ class GPTMailProviderTests(unittest.TestCase):
         fetch_latest_otp.assert_called_once_with("held@example.test", after_ts=123.0)
 
     @patch("core.email.mailnest.client.pick_account")
-    def test_acquire_email_uses_mailnest_client(self, pick_account):
-        pick_account.return_value.email = "fresh@mailnest.test"
+    def test_auto_mailnest_selection_keeps_configured_local_source(self, remote_pick):
+        address = "imported@generic.test"
+        with patch.object(email_provider, "parse_email_sources", return_value=["mailnest", "generic_api"]), patch(
+            "core.email.generic_api.client.pick_account", return_value=SimpleNamespace(email=address)
+        ) as local_pick, patch("core.email.outlook.client.pick_account") as unconfigured_pick, patch.object(
+            email_provider, "_pick_from_source", wraps=email_provider._pick_from_source
+        ) as pick:
+            self.assertEqual(email_provider.acquire_email(), address)
 
-        with patch("core.email.provider.parse_email_sources", return_value=["mailnest"]):
-            self.assertEqual(email_provider.acquire_email(), "fresh@mailnest.test")
+        pick.assert_called_once_with("generic_api", batch_id=None, job_id=None)
+        local_pick.assert_called_once_with(batch_id=None, job_id=None, owner_kind=None, owner_id=None, acquisition_id=None)
+        remote_pick.assert_not_called()
+        unconfigured_pick.assert_not_called()
+        self.assertEqual(email_provider._EMAIL_SOURCE_HINTS, {address: "generic_api"})
 
     @patch("core.email.mailnest.client.fetch_latest_otp", return_value="112233")
     @patch("core.email.provider.resolve_email_source", return_value="mailnest")
@@ -160,11 +186,22 @@ class GPTMailProviderTests(unittest.TestCase):
         fetch_latest_otp.assert_called_once_with("fresh@mailnest.test", after_ts=123.0)
 
     @patch("core.email.cloudmail.client.pick_account")
-    def test_acquire_email_uses_cloudmail_client(self, pick_account):
-        pick_account.return_value.email = "fresh@cloudmail.test"
+    def test_auto_cloudmail_selection_continues_to_next_local_inventory(self, remote_pick):
+        address = "imported@generic.test"
+        with patch.object(email_provider, "parse_email_sources", return_value=["cloudmail"]), patch(
+            "core.email.outlook.client.pick_account", side_effect=LocalEmailInventoryError("local_email_inventory_empty", "fixture empty")
+        ) as first_pick, patch(
+            "core.email.generic_api.client.pick_account", return_value=SimpleNamespace(email=address)
+        ) as second_pick, patch.object(email_provider, "_pick_from_source", wraps=email_provider._pick_from_source) as pick:
+            self.assertEqual(email_provider.acquire_email(), address)
 
-        with patch("core.email.provider.parse_email_sources", return_value=["cloudmail"]):
-            self.assertEqual(email_provider.acquire_email(), "fresh@cloudmail.test")
+        self.assertEqual(pick.call_args_list, [call("outlook", batch_id=None, job_id=None),
+                                              call("generic_api", batch_id=None, job_id=None)])
+        expected = dict(batch_id=None, job_id=None, owner_kind=None, owner_id=None, acquisition_id=None)
+        first_pick.assert_called_once_with(**expected)
+        second_pick.assert_called_once_with(**expected)
+        remote_pick.assert_not_called()
+        self.assertEqual(email_provider._EMAIL_SOURCE_HINTS, {address: "generic_api"})
 
     @patch("core.email.cloudmail.client.fetch_latest_otp", return_value="445566")
     @patch("core.email.provider.resolve_email_source", return_value="cloudmail")

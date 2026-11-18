@@ -43,6 +43,9 @@ _GRIZZLY_CANCEL_INITIAL_DELAY = 305
 _GRIZZLY_CANCEL_EARLY_BACKOFF = (60, 120, 300, 600)
 _GRIZZLY_CANCEL_ERROR_BACKOFF = (30, 60, 120, 300, 600)
 _CANCEL_QUEUE_PATH = Path(__file__).resolve().parents[2] / "logs" / "run" / "sms_cancel_queue.json"
+_CANCEL_QUEUE_INITIALIZED = False
+_CANCEL_QUEUE_ERROR: str | None = None
+_CANCEL_EXITING = False
 
 # 记录每个 activation_id 的取号时间与服务端 activationTime；返回值仍保持二元组，
 # 避免影响现有调用方。持久化取消队列只保存 activation_id/时间，不含 API key/手机号。
@@ -52,6 +55,7 @@ _OPERATION_RESOURCE_IDS: dict[str, int] = {}
 _CANCEL_QUEUE_LOCK = threading.RLock()
 _CANCEL_WORKER_LOCK = threading.Lock()
 _CANCEL_WAKE_EVENT = threading.Event()
+_CANCEL_STOP = threading.Event()
 _CANCEL_WORKER: threading.Thread | None = None
 _GRIZZLY_COUNTRY_LOCK = threading.Lock()
 _GRIZZLY_COUNTRY_CURSOR = 0
@@ -921,7 +925,6 @@ def acquire_number(
         # 取号后立刻登记兜底取消，而不是等业务异常才登记。这样 WebUI 在等待短信时
         # 被重启/杀掉，订单仍会由新进程恢复并在可取消时间到达后回收。
         _enqueue_grizzly_cancel(activation_id, safety_delay=15)
-        start_cancel_worker()
         _track_operation_resource(activation_id, "grizzly")
         return activation_id, phone
     finally:
@@ -1100,21 +1103,44 @@ def complete(activation_id: str, http: CurlSession | None = None) -> None:
         logger.warning(f"[SMS] 标记完成失败（不影响结果）：{exc}")
 
 
+def configure_cancel_queue_path(path: str | Path) -> None:
+    """Bootstrap-only absolute queue location, stable across release folders."""
+    global _CANCEL_QUEUE_PATH
+    candidate = Path(path)
+    if not candidate.is_absolute():
+        raise ValueError("sms_cancel_queue_path_must_be_absolute")
+    candidate = candidate.resolve(strict=False)
+    with _CANCEL_QUEUE_LOCK:
+        current = _CANCEL_QUEUE_PATH.resolve(strict=False)
+        if candidate == current:
+            return
+        if _CANCEL_QUEUE_INITIALIZED:
+            raise RuntimeError("sms_cancel_queue_already_initialized")
+        _CANCEL_QUEUE_PATH = candidate
+
+
 def _load_cancel_queue_locked() -> list[dict]:
+    global _CANCEL_QUEUE_INITIALIZED, _CANCEL_QUEUE_ERROR
+    _CANCEL_QUEUE_INITIALIZED = True
+    _CANCEL_QUEUE_ERROR = None
     try:
         raw = json.loads(_CANCEL_QUEUE_PATH.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return []
     except Exception as exc:
-        logger.warning("[SMS] 读取取消队列失败：%s", exc)
+        _CANCEL_QUEUE_ERROR = "sms_cancel_queue_unavailable"
+        logger.warning("[SMS] 读取取消队列失败：%s", type(exc).__name__)
         return []
     items = raw.get("items") if isinstance(raw, dict) else raw
     if not isinstance(items, list):
+        _CANCEL_QUEUE_ERROR = "sms_cancel_queue_invalid"
         return []
     return [dict(item) for item in items if isinstance(item, dict) and str(item.get("activation_id") or "").strip()]
 
 
 def _save_cancel_queue_locked(items: list[dict]) -> None:
+    global _CANCEL_QUEUE_INITIALIZED
+    _CANCEL_QUEUE_INITIALIZED = True
     _CANCEL_QUEUE_PATH.parent.mkdir(parents=True, exist_ok=True)
     tmp = _CANCEL_QUEUE_PATH.with_suffix(".tmp")
     payload = {"version": 1, "items": items, "updated_at": time.time()}
@@ -1141,13 +1167,15 @@ def _remove_grizzly_cancel(activation_id: str) -> bool:
 
 
 def _enqueue_grizzly_cancel(activation_id: str, *, safety_delay: int = 0) -> dict:
+    from core.runtime.execution_access import require_execution_component
+    require_execution_component()
     activation_id = str(activation_id or "").strip()
     now = time.time()
     meta = dict(_ACTIVATION_META.get(activation_id) or {})
     acquired_at = float(meta.get("acquired_at") or _ACQUIRED_AT.get(activation_id) or now)
     cancel_at = float(meta.get("cancel_at") or (acquired_at + _GRIZZLY_CANCEL_INITIAL_DELAY))
     next_attempt_at = cancel_at + max(0, int(safety_delay or 0))
-    with _CANCEL_QUEUE_LOCK:
+    with _CANCEL_WORKER_LOCK, _CANCEL_QUEUE_LOCK:
         items = _load_cancel_queue_locked()
         existing = next((item for item in items if str(item.get("activation_id")) == activation_id), None)
         if existing is None:
@@ -1174,6 +1202,7 @@ def _enqueue_grizzly_cancel(activation_id: str, *, safety_delay: int = 0) -> dic
         result.get("activation_time") or "-",
         datetime.fromtimestamp(float(result["next_attempt_at"])).isoformat(timespec="seconds"),
     )
+    start_cancel_worker()
     return result
 
 
@@ -1282,46 +1311,78 @@ def _update_cancel_job_after_attempt(activation_id: str, outcome: str, raw: str)
 
 
 def _cancel_worker_loop() -> None:
-    global _CANCEL_WORKER
+    global _CANCEL_EXITING
     try:
-        while True:
-            with _CANCEL_QUEUE_LOCK:
-                items = _load_cancel_queue_locked()
-                job = min(items, key=lambda item: float(item.get("next_attempt_at") or 0)) if items else None
-            if job is None:
-                return
-            wait = max(0.0, float(job.get("next_attempt_at") or 0) - time.time())
-            if wait > 0:
-                _CANCEL_WAKE_EVENT.wait(timeout=min(wait, 60.0))
-                _CANCEL_WAKE_EVENT.clear()
+        while not _CANCEL_STOP.is_set():
+            from core.runtime.execution_access import execution_support_allowed
+            if not execution_support_allowed():
+                _CANCEL_STOP.wait(0.25)
                 continue
-            activation_id = str(job.get("activation_id") or "")
-            outcome, raw = _cancel_grizzly_once(activation_id)
-            _update_cancel_job_after_attempt(activation_id, outcome, raw)
+            try:
+                with _CANCEL_WORKER_LOCK, _CANCEL_QUEUE_LOCK:
+                    items = _load_cancel_queue_locked()
+                    job = min(items, key=lambda item: float(item.get("next_attempt_at") or 0)) if items else None
+                    if job is None:
+                        # No more work occurs after this mark. Enqueue/start
+                        # can join this short tail before creating a successor.
+                        _CANCEL_EXITING = True
+                        return
+                wait = max(0.0, float(job.get("next_attempt_at") or 0) - time.time())
+                if wait > 0:
+                    _CANCEL_WAKE_EVENT.wait(timeout=min(wait, 60.0))
+                    _CANCEL_WAKE_EVENT.clear()
+                    continue
+                if _CANCEL_STOP.is_set() or not execution_support_allowed():
+                    continue
+                activation_id = str(job.get("activation_id") or "")
+                outcome, raw = _cancel_grizzly_once(activation_id)
+                _update_cancel_job_after_attempt(activation_id, outcome, raw)
+            except Exception as exc:
+                logger.warning("[SMS] 取消队列处理暂不可用：%s", type(exc).__name__)
+                _CANCEL_STOP.wait(3.0)
     finally:
-        restart_needed = False
+        # Keep the reference until another thread confirms exit. Never clear
+        # it or self-restart while this thread is still in its finalizer.
         with _CANCEL_WORKER_LOCK:
-            _CANCEL_WORKER = None
-            with _CANCEL_QUEUE_LOCK:
-                restart_needed = bool(_load_cancel_queue_locked())
-        # 关闭与新任务入队恰好并发时，重新拉起 worker，避免任务留在队列无人处理。
-        if restart_needed:
-            start_cancel_worker()
+            _CANCEL_EXITING = True
 
 
 def start_cancel_worker() -> None:
-    """恢复并启动 Grizzly 持久化取消队列；没有任务时立即退出。"""
-    global _CANCEL_WORKER
-    with _CANCEL_WORKER_LOCK:
-        if _CANCEL_WORKER is not None and _CANCEL_WORKER.is_alive():
-            _CANCEL_WAKE_EVENT.set()
+    """Start on demand; a completed empty queue remains a healthy idle state."""
+    from core.runtime.execution_access import component_start_allowed
+    if not component_start_allowed():
+        return
+    global _CANCEL_WORKER, _CANCEL_EXITING, _CANCEL_QUEUE_INITIALIZED
+    while True:
+        retiring = None
+        with _CANCEL_WORKER_LOCK:
+            if _CANCEL_WORKER is not None and _CANCEL_WORKER.is_alive():
+                _CANCEL_WAKE_EVENT.set()
+                if not _CANCEL_EXITING:
+                    return
+                retiring = _CANCEL_WORKER
+            else:
+                with _CANCEL_QUEUE_LOCK:
+                    _CANCEL_QUEUE_INITIALIZED = True
+                _CANCEL_STOP.clear()
+                _CANCEL_EXITING = False
+                _CANCEL_WORKER = threading.Thread(
+                    target=_cancel_worker_loop, name="sms-cancel-worker", daemon=True,
+                )
+                try:
+                    _CANCEL_WORKER.start()
+                except Exception:
+                    if not _CANCEL_WORKER.is_alive():
+                        _CANCEL_WORKER = None
+                    raise
+                return
+        if retiring is threading.current_thread():
             return
-        _CANCEL_WORKER = threading.Thread(
-            target=_cancel_worker_loop,
-            name="sms-cancel-worker",
-            daemon=True,
-        )
-        _CANCEL_WORKER.start()
+        # EXITING is published only after all queue/network work is complete;
+        # join outside the lifecycle lock allows its finalizer to finish.
+        retiring.join()
+        if not component_start_allowed():
+            return
 
 
 def _cancel_job_exists(activation_id: str) -> bool:
@@ -1332,7 +1393,6 @@ def _cancel_job_exists(activation_id: str) -> bool:
 def _do_cancel_sync(activation_id: str) -> None:
     """同步等待持久化 worker 确认订单终止；本线程不重复发送 API 请求。"""
     _enqueue_grizzly_cancel(activation_id)
-    start_cancel_worker()
     while _cancel_job_exists(activation_id):
         with _CANCEL_QUEUE_LOCK:
             job = next(
@@ -1382,6 +1442,46 @@ def cancel(activation_id: str, http: CurlSession | None = None, background: bool
         _release_operation_resource(activation_id, "cancelled")
         return
     _enqueue_grizzly_cancel(activation_id)
-    start_cancel_worker()
     _release_operation_resource(activation_id, "cancel_pending")
     logger.debug("[SMS] 取消任务已进入持久化队列：activation_id=%s", activation_id)
+
+
+def stop_cancel_worker(timeout: float = 3.0) -> bool:
+    from core.runtime.periodic import StopBudget, join_stopped
+    global _CANCEL_WORKER
+    budget = StopBudget(timeout)
+    _CANCEL_STOP.set()
+    _CANCEL_WAKE_EVENT.set()
+    if not _CANCEL_WORKER_LOCK.acquire(timeout=budget.remaining()):
+        return False
+    try:
+        thread = _CANCEL_WORKER
+    finally:
+        _CANCEL_WORKER_LOCK.release()
+    if not join_stopped(thread, budget):
+        return False
+    if not _CANCEL_WORKER_LOCK.acquire(timeout=budget.remaining()):
+        return False
+    try:
+        if _CANCEL_WORKER is thread:
+            _CANCEL_WORKER = None
+        return not bool(_CANCEL_WORKER and _CANCEL_WORKER.is_alive())
+    finally:
+        _CANCEL_WORKER_LOCK.release()
+
+
+def cancel_worker_status() -> dict:
+    with _CANCEL_WORKER_LOCK:
+        thread = _CANCEL_WORKER
+        alive = bool(thread and thread.is_alive())
+        stopping = alive and _CANCEL_STOP.is_set()
+    with _CANCEL_QUEUE_LOCK:
+        pending = bool(_load_cancel_queue_locked())
+        error = _CANCEL_QUEUE_ERROR
+    state = ("stopping" if stopping else "error" if error else
+             "running" if alive and pending else "pending" if pending else "idle")
+    return {"started": thread is not None, "alive": alive,
+            "running": state == "running", "idle": state == "idle",
+            "stopping": stopping, "state": state,
+            "healthy": not error and (alive or not pending),
+            "pending": pending, "error_code": error}

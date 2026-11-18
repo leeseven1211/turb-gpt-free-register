@@ -21,8 +21,9 @@ class Sub2ApiAutomationIntegrationTests(unittest.TestCase):
         self.assertEqual("deferred_to_original_targets", result["sub2_sync"])
 
     def test_monitor_refresh_submission_persists_deferred_sync(self):
-        row = {"filename": "test.json", "email": "refresh@example.test", "oauth_refreshable": True}
-        with patch.object(token_refresh_service.db, "list_codex_accounts", return_value=[row]), patch.object(
+        filename = "codex-refresh.json"
+        row = {"filename": filename, "email": "refresh@example.test", "oauth_refreshable": True}
+        with patch.object(token_refresh_service.db, "get_codex_account", return_value=row) as get_credential, patch.object(
             token_refresh_service.db, "get_account_by_email", return_value={"id": 12}
         ), patch.object(token_refresh_service, "decorate_row", return_value=row), patch.object(
             token_refresh_service.operation_runtime_store, "active_run_for_account", return_value=None
@@ -31,9 +32,11 @@ class Sub2ApiAutomationIntegrationTests(unittest.TestCase):
         ), patch.object(token_refresh_service, "_update_account_state"), patch.object(
             token_refresh_service, "_durable_submit", return_value={"accepted": True, "run_id": 8}
         ) as submit:
-            result = token_refresh_service.enqueue_refresh("test.json", trigger="sub2api_monitor")
+            result = token_refresh_service.enqueue_refresh(filename, trigger="sub2api_monitor")
+        get_credential.assert_called_once_with(filename)
         self.assertTrue(result["accepted"])
         self.assertTrue(submit.call_args.kwargs["data"]["sub2api_sync_deferred"])
+        self.assertEqual(filename, submit.call_args.kwargs["data"]["credential_filename"])
 
     def test_monitor_oauth_records_fixed_targets_without_account_completion(self):
         account = {"id": 12, "email": "monitor@example.test"}
@@ -47,17 +50,19 @@ class Sub2ApiAutomationIntegrationTests(unittest.TestCase):
                          submit.call_args.kwargs["sub2api_targets"])
 
     def test_refresh_sync_uses_upload_reset_and_enable(self):
-        row = {"filename": "test.json", "email": "refresh@example.test", "sub2_uploaded_count": 1}
-        with patch.object(token_refresh_service.db, "list_codex_accounts", return_value=[row]), patch.object(
+        filename = "codex-refresh.json"
+        row = {"filename": filename, "email": "refresh@example.test", "sub2_uploaded_count": 1}
+        with patch.object(token_refresh_service.db, "get_codex_account", return_value=row) as get_credential, patch.object(
             token_refresh_service.db, "get_account_by_email", return_value={}
         ), patch.object(token_refresh_service.db, "read_codex_credential", return_value=(
-            '{"email":"refresh@example.test","access_token":"synthetic-token"}', "test.json"
+            '{"email":"refresh@example.test","access_token":"synthetic-token"}', filename
         )), patch.object(token_refresh_service.db, "mark_codex_sub2_uploaded"), patch.object(
             client, "upload_and_enable_configured_codex_oauth_credential",
             return_value={"uploaded": True, "enabled": True, "sub2api_account_id": 41},
         ) as sync:
-            result = token_refresh_service._sync_sub2_if_needed("test.json")
-        sync.assert_called_once()
+            result = token_refresh_service._sync_sub2_if_needed(filename)
+        get_credential.assert_called_once_with(filename)
+        sync.assert_called_once_with({"email": "refresh@example.test", "access_token": "synthetic-token"})
         self.assertEqual("success", result["status"])
         self.assertTrue(result["enabled"])
 

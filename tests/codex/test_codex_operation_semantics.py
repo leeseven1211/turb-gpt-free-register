@@ -11,11 +11,13 @@ from core.codex import oauth as codex_oauth
 from core.codex import operation_service as codex_operation_service
 from core import account_task_store
 from core.storage import records as record_store
+from core.storage.operations import store as operation
 from core.operations import run_log as task_run_log
 from core.codex.operation_service import classify_codex_operation_result
 from core.operations.runtime import CancellationToken, OperationCancelled
 from core.operations.errors import classify_task_error
 from tests.support_pg import PostgresTestCase
+from tests.support_settlement import install_native_settlement_fixture
 
 
 class CodexCredentialSemanticsTests(unittest.TestCase):
@@ -196,8 +198,8 @@ class CodexCredentialSemanticsTests(unittest.TestCase):
 
 class CodexFailureDiagnosticsPersistenceTests(PostgresTestCase):
     def setUp(self):
-        stack = ExitStack()
-        self.addCleanup(stack.close)
+        self.stack = stack = ExitStack()
+        self.addCleanup(self._close_test_resources)
         log_root = Path(stack.enter_context(tempfile.TemporaryDirectory()))
         stack.enter_context(patch.object(task_run_log, "_LOG_ROOT", log_root))
         stack.enter_context(patch.object(task_run_log, "_TASK_LOG_ROOT", log_root / "tasks"))
@@ -205,6 +207,19 @@ class CodexFailureDiagnosticsPersistenceTests(PostgresTestCase):
         stack.enter_context(patch.object(account_task_store, "_SCHEMA", self.schema))
         stack.enter_context(patch.object(account_task_store, "_READY_KEY", ""))
         account_task_store.init()
+        # TRUNCATE removes the capability marker but retains startup readiness.
+        operation.reset_ready()
+        operation.init()
+        install_native_settlement_fixture(self)
+
+    def tearDown(self):
+        self._close_test_resources()
+
+    def _close_test_resources(self):
+        fixture = getattr(self, "settlement_fixture", None)
+        if fixture is not None:
+            fixture.close()
+        self.stack.close()
 
     def _execute_oauth_result(self, result, *, snapshot=None):
         account_id = record_store.insert_row(record_store.ACCOUNTS, {

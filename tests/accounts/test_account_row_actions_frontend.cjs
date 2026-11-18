@@ -3,6 +3,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
+const {installLegacyActionsFixture}=require('./actions_fixture.cjs');
+const {createReadFixture,row,list,presentation}=require('./read_owner_fixture.cjs');
 
 const source = require('../frontend_script_sources.cjs').readAccountScripts();
 function render(name, row) {
@@ -18,6 +20,7 @@ function render(name, row) {
 function loadFunctions(names, dependencies = {}) {
   const context = {accountTaskAdmissionReasons: () => [], accountTaskAdmissionWaitMarkup: () => '', ...dependencies};
   vm.createContext(context);
+  require('../frontend_script_sources.cjs').installAccountActionHelpers(context);
   for (const name of names) {
     const match = new RegExp(`(?:async )?function ${name}\\(`).exec(source);
     assert.ok(match, `缺少 ${name}`);
@@ -47,147 +50,7 @@ test('运行配置并发在尚未加载配置页时保留超过50的正整数', 
   }
 });
 
-test('任务结果使用工作台提链状态，缺少旧摘要字段仍显示成功', () => {
-  const context = loadFunctions(['accountTaskResultText']);
-  const task = {task_type: 'extract_link', status: 'success', result_summary: {
-    extraction_status: 'succeeded', payment_status: 'not_started', mode: 'extract_only',
-  }};
-  assert.equal(context.accountTaskResultText(task), '提链成功');
-  assert.equal(context.accountTaskResultText(task, true), '提链成功');
-  assert.equal(context.accountTaskResultText({...task, result_summary: {
-    ...task.result_summary, ok: false, message: '提炼失败',
-  }}), '提链成功');
-});
-
-test('已出链后支付失败或待确认保留提链成功事实，包括带错误信息的任务', () => {
-  const context = loadFunctions(['accountTaskResultText'], {
-    accountTaskErrorDisplayText: () => '支付接口异常',
-  });
-  for (const [payment, status, expected] of [
-    ['failed', 'failed', '提链成功 · 支付失败'],
-    ['unknown', 'attention_required', '提链成功 · 支付响应缺失'],
-    ['pending', 'partial_success', '提链成功 · 支付处理中'],
-    ['succeeded', 'success', '提链成功 · 支付成功'],
-  ]) {
-    assert.equal(context.accountTaskResultText({
-      task_type: 'extract_link', status, error_message: '支付接口异常',
-      result_summary: {extraction_status: 'succeeded', payment_status: payment, mode: 'auto_payment'},
-    }), expected);
-  }
-  assert.equal(context.accountTaskResultText({
-    task_type: 'extract_link', status: 'success',
-    result_summary: {extraction_status: 'succeeded', payment_status: 'pending', mode: 'manual_payment'},
-  }), '提链成功 · 等待手动支付');
-});
-
-test('空摘要和未确认状态不会误报提链失败，明确失败优先于旧成功字段', () => {
-  const context = loadFunctions(['accountTaskResultText']);
-  for (const [status, expected] of [
-    ['queued', '等待执行'], ['running', '执行中'], ['cancelled', '任务已取消'],
-    ['stopped', '任务已中断'], ['interrupted', '任务已中断'],
-    ['request_unknown', '提链失败 · 平台响应记录缺失'], ['attention_required', '提链失败 · 平台响应记录缺失'],
-    ['partial_success', '提链失败 · 平台响应记录缺失'], ['unknown', '提链失败 · 平台响应记录缺失'],
-    ['success', '提链结果未记录'], ['', '提链结果未记录'], ['failed', '提链失败'],
-  ]) {
-    assert.equal(context.accountTaskResultText({task_type: 'extract_link', status}), expected);
-  }
-  assert.equal(context.accountTaskResultText({
-    task_type: 'extract_link', status: 'failed',
-    result_summary: {extraction_status: 'failed', ok: true, has_link: true, message: '提链成功'},
-  }), '提链失败');
-  assert.equal(context.accountTaskResultText({
-    task_type: 'extract_link', status: 'success',
-    result_summary: {extraction_status: 'unknown', ok: false},
-  }), '提链失败 · 平台响应记录缺失');
-});
-
-test('旧提链摘要继续识别成功、失败和已有消息', () => {
-  const context = loadFunctions(['accountTaskResultText']);
-  for (const [result_summary, expected] of [
-    [{ok: true, has_link: true, link_type: 'upi'}, '提链成功 · UPI'],
-    [{ok: true, has_link: false}, '提炼完成'],
-    [{ok: false}, '提炼失败'],
-    [{ok: false, message: '平台拒绝请求'}, '平台拒绝请求'],
-  ]) {
-    assert.equal(context.accountTaskResultText({task_type: 'extract_link', status: 'success', result_summary}), expected);
-  }
-});
-
-test('任务列表支付异常仍显示提链成功并保留错误徽标和详细提示，其他错误不变', () => {
-  const body = {innerHTML: ''};
-  const context = loadFunctions(['accountTaskResultText', 'renderAccountTasks'], {
-    $: selector => selector === '#accountTasksBody' ? body : null,
-    ACCOUNT_TASKS: [], ACCOUNT_TASK_SELECTED: new Set(), ACCOUNT_TASKS_TOTAL: 1,
-    document: {querySelector: () => null},
-    accountTaskIsActive: () => false, accountTaskCanRetry: () => false,
-    accountTaskCanTerminate: () => false, accountTaskCanStop: () => false,
-    accountTaskErrorDisplayText: (_info, error) => error,
-    accountTaskErrorDisplayTitle: (_info, error) => error,
-    taskErrorBadge: () => '<span class="error-badge">PAYMENT</span>',
-    esc: value => String(value ?? '').replace(/[&<>"']/g, char => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[char])),
-    short: (value, length) => String(value || '').slice(0, length),
-    facetLabel: (_group, value) => value || '', normalizeAccountTaskStage: value => value,
-    pillV2: () => '', formatTaskDuration: () => '-', formatDateTime: () => '-',
-    updateAccountTaskSelectionUi() {}, autoSizeResizableTableColumns() {}, _renderPager() {},
-  });
-  for (const [task_type, result_summary, expected] of [
-    ['extract_link', {extraction_status: 'succeeded', payment_status: 'failed'}, '提链成功 · 支付失败'],
-    ['extract_link', {extraction_status: 'succeeded', payment_status: 'unknown'}, '提链成功 · 支付响应缺失'],
-    ['extract_link', {extraction_status: 'failed'}, '支付&lt;失败&gt;'],
-    ['live_check', {}, '支付&lt;失败&gt;'],
-  ]) {
-    context.ACCOUNT_TASKS = [{id: 1, task_type, status: 'failed', error_message: '支付<失败>', result_summary}];
-    context.renderAccountTasks();
-    const cell = body.innerHTML.match(/<td class="task-error"[^>]*>.*?<\/td>/s)?.[0] || '';
-    assert.match(cell, /title="支付&lt;失败&gt;"/);
-    assert.match(cell, /class="error-badge">PAYMENT<\/span>/);
-    assert.ok(cell.includes(`<span class="task-error-cell-text">${expected}</span>`));
-    if (task_type === 'extract_link' && result_summary.extraction_status === 'succeeded') {
-      assert.match(cell, /<span class="task-error-cell-text">原因：支付&lt;失败&gt;<\/span>/);
-    }
-  }
-  context.ACCOUNT_TASKS = [{id: 258741, task_type:'extract_link', status:'attention_required',
-    error_message:'原单查询 HTTP 404', failure_stage:'access_token', failure_stage_label:'校验 Token',
-    error_info:{stage:'extraction'}, result_summary:{}}];
-  context.renderAccountTasks();
-  assert.match(body.innerHTML, /失败于 extraction/);
-  assert.doesNotMatch(body.innerHTML, /失败于 校验 Token/);
-
-  context.ACCOUNT_TASKS = [{id: 265413, task_type:'token_refresh', status:'deactivated',
-    error_message:'账号已停用', failure_stage:'login_password', failure_stage_label:'账号密码',
-    error_info:{stage:'login_password'}, result_summary:{auth_diagnostics:{operation:'mfa_verify'}}}];
-  context.renderAccountTasks();
-  assert.match(body.innerHTML, /失败于 mfa_challenge/);
-  assert.doesNotMatch(body.innerHTML, /失败于 账号密码/);
-
-  context.ACCOUNT_TASKS[0].result_summary.auth_diagnostics.operation = 'password_verify';
-  context.renderAccountTasks();
-  assert.match(body.innerHTML, /失败于 账号密码/);
-
-  context.ACCOUNT_TASKS[0].failure_stage = 'email_otp';
-  context.ACCOUNT_TASKS[0].failure_stage_label = '邮箱验证';
-  context.ACCOUNT_TASKS[0].error_info.stage = 'email_otp';
-  context.ACCOUNT_TASKS[0].result_summary.auth_diagnostics = {
-    operation: 'password_email_fallback', cause_operation: 'mfa_verify',
-  };
-  context.renderAccountTasks();
-  assert.match(body.innerHTML, /失败于 mfa_challenge/);
-  assert.doesNotMatch(body.innerHTML, /失败于 邮箱验证/);
-
-  context.ACCOUNT_TASKS[0].result_summary.auth_diagnostics.cause_operation = 'email_otp';
-  context.renderAccountTasks();
-  assert.match(body.innerHTML, /失败于 邮箱验证/);
-});
-
-test('任务错误摘要保留具体原因且不重复相同内容', () => {
-  const context = loadFunctions(['accountTaskErrorDisplayText', 'accountTaskErrorDisplayTitle'], {
-    taskErrorDisplayText: info => info?.summary || '',
-    taskErrorDisplayTitle: info => info?.summary || '',
-  });
-  assert.equal(context.accountTaskErrorDisplayText({code:'external', summary:'登录失败', cause_summary:'密码验证返回 HTTP 401'}), '登录失败 · 密码验证返回 HTTP 401');
-  assert.equal(context.accountTaskErrorDisplayText({code:'external', summary:'密码验证返回 HTTP 401', cause_summary:'密码验证返回 HTTP 401'}), '密码验证返回 HTTP 401');
-  assert.match(context.accountTaskErrorDisplayTitle({code:'external', summary:'登录失败', cause_summary:'密码验证返回 HTTP 401'}), /密码验证返回 HTTP 401/);
-});
+// 任务结果与错误展示语义在 frontend 的直接模块和组件测试中验证。
 
 function operationContext(name, response) {
   const calls = {requests: [], toasts: [], logs: [], accounts: 0, summary: 0};
@@ -207,6 +70,7 @@ function operationContext(name, response) {
     updateAccountSelectionUi: () => {},
     $: () => null,
   });
+  installLegacyActionsFixture(context);
   return {context, calls};
 }
 
@@ -224,16 +88,11 @@ test('仅已停用账号的更多菜单提供已解封恢复入口，并保留�
   assert.match(active, /刷新AT/);
 });
 
-test('恢复入口通过账号列表事件委托传递账号和按钮', async () => {
-  const button = {dataset: {accountRestore: '306'}};
-  const calls = [];
-  const context = loadFunctions(['onAccountsBodyClick'], {
-    restoreDeactivatedAccount: async (...args) => calls.push(args),
-  });
-  await context.onAccountsBodyClick({target: {closest: selector => selector === '[data-account-restore]' ? button : null}});
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0][0], 306);
-  assert.equal(calls[0][1], button);
+test('恢复入口通过账号列表事件委托传递账号和按钮', async t => {
+  const h=createReadFixture(t,{mounted:true,handlers:{list:async()=>list([row(306)])},render:{...presentation,menu:()=>'<button data-account-restore="306">已解封，恢复账号</button>'}});await h.ready;
+  await h.wrapper.get('button[aria-label="更多账号操作"]').trigger('click');await h.settle();
+  const button=h.body.get('[data-account-restore="306"]');await button.trigger('click');await h.settle();
+  assert.equal(h.calls.length,1);assert.equal(h.calls[0][0],'account-restore');assert.deepEqual([...h.calls[0][1].accountIds],['306']);assert.equal(Object.isFrozen(h.calls[0][1]),true);assert.equal(h.calls[0][2],button.element);
 });
 
 test('确认解封后只解除本地停用标记，等待期间防止重复提交并刷新账号和摘要', async () => {
@@ -246,9 +105,12 @@ test('确认解封后只解除本地停用标记，等待期间防止重复提�
     showToast: message => calls.toasts.push(message),
     loadAccounts: async () => { calls.accounts += 1; },
     loadSummary: async () => { calls.summary += 1; },
+    updateAccountSelectionUi() {},
   });
+  installLegacyActionsFixture(context);
   const button = {disabled: false, textContent: '已解封，恢复账号', isConnected: true};
   const pending = context.restoreDeactivatedAccount(306, button);
+  await Promise.resolve();
   assert.equal(button.disabled, true);
   assert.match(button.textContent, /恢复中/);
   await context.restoreDeactivatedAccount(306, button);
@@ -260,7 +122,7 @@ test('确认解封后只解除本地停用标记，等待期间防止重复提�
   assert.equal(calls.requests[0].url, '/api/accounts/306/restore');
   assert.equal(calls.requests[0].options.method, 'POST');
   assert.deepEqual(JSON.parse(calls.requests[0].options.body), {reason: '已收到 OpenAI 恢复访问通知'});
-  resolveRequest({ok: true, message: '已解除本地停用标记，请刷新 AT 重新验证'});
+  resolveRequest({ok: true, id: 306, message: '已解除本地停用标记，请刷新 AT 重新验证'});
   await pending;
   assert.deepEqual(calls.toasts, ['已解除本地停用标记，请刷新 AT 重新验证']);
   assert.equal(calls.accounts, 1);
@@ -279,7 +141,9 @@ test('取消恢复确认时不请求接口，活跃操作错误直接反馈并�
       showToast: message => calls.toasts.push(message),
       loadAccounts: () => assert.fail('失败或取消时不应刷新账号'),
       loadSummary: () => assert.fail('失败或取消时不应刷新摘要'),
+      updateAccountSelectionUi() {},
     });
+    installLegacyActionsFixture(context);
     const button = {disabled: false, textContent: '已解封，恢复账号', isConnected: true};
     await context.restoreDeactivatedAccount(306, button);
     assert.equal(calls.requests, accepted ? 1 : 0);

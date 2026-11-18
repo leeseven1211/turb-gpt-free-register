@@ -10,6 +10,7 @@ from core import account_task_store
 from core.storage import records as record_store
 from core.storage.extract_link import batches as extract_link_batches, jobs as extract_link_jobs
 from core.storage.operations import store as operation
+from core.storage.operations import projection as operation_projection
 from core.operations.progress import build_progress_snapshot
 from tests.support_pg import PostgresTestCase
 
@@ -341,14 +342,14 @@ class ExtractPaymentReconcileStorageTests(PostgresTestCase):
     def test_item_failure_rolls_back_all_changes_and_continues_other_items(self):
         first = self.task(self.account())
         second = self.task(self.account())
-        refresh = operation._refresh_batches
+        refresh = operation_projection._refresh_batches
         calls = []
         def fail_first(cur, batch_ids):
             calls.append(batch_ids)
             if len(calls) == 1:
                 raise RuntimeError("fixture-private-error")
             return refresh(cur, batch_ids)
-        with patch.object(operation, "_refresh_batches", side_effect=fail_first):
+        with patch.object(operation_projection, "_refresh_batches", side_effect=fail_first):
             result = extract_link_jobs.reconcile_completed_payments()
         self.assertEqual({"confirmed": 1, "skipped": 0, "failed": 1}, result)
         self.assertEqual("attention_required", operation.get_run(first["run"]["id"])["status"])

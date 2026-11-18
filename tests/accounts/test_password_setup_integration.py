@@ -19,6 +19,7 @@ from core.operations import task_gateway
 from core.storage import records
 from core.storage.operations import store as operation_store
 from tests.support_pg import PostgresTestCase
+from tests.support_settlement import install_native_settlement_fixture
 from webui import runtime
 
 
@@ -440,6 +441,11 @@ class PasswordSetupIntegrationTests(unittest.TestCase):
 
 
 class PasswordSetupDurableIntegrationTests(PostgresTestCase):
+    def setUp(self):
+        operation_store.reset_ready()
+        operation_store.init()
+        self.settlement_fixture = install_native_settlement_fixture(self)
+
     def finish_partial(
         self,
         *,
@@ -566,6 +572,7 @@ class PasswordSetupDurableIntegrationTests(PostgresTestCase):
                 dispatch=False,
             )
             result = task_gateway._execute_operation_handler("password_setup", int(queued["run_id"]))
+            self.settlement_fixture.wait_for_run_released(int(queued["run_id"]))
         self.assertEqual("success", result["status"], result)
         self.assertEqual("protocol", observed[0]["password_driver_override"])
         self.assertEqual(queued["run_id"], observed[0]["execution_fence"]["run_id"])
@@ -625,6 +632,7 @@ class PasswordSetupDurableIntegrationTests(PostgresTestCase):
                 dispatch=False,
             )
             result = task_gateway._execute_operation_handler("account_setup_retry", int(queued["run_id"]))
+            self.settlement_fixture.wait_for_run_released(int(queued["run_id"]))
         self.assertEqual("partial_success", result["database_status"], result)
         persisted = operation_store.get_run(int(queued["run_id"]))
         self.assertTrue(persisted["result_summary"]["password_setup"]["ok"])

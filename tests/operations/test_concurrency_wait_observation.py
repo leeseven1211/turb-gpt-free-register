@@ -11,6 +11,7 @@ from core.operations import concurrency, task_gateway
 from core.storage import postgres, records, runtime_config
 from core.storage.operations import legacy_task_store, permits, store
 from tests.support_pg import PostgresTestCase
+from tests.support_settlement import install_native_settlement_fixture
 
 
 class ConcurrencyWaitObservationTests(PostgresTestCase):
@@ -26,8 +27,20 @@ class ConcurrencyWaitObservationTests(PostgresTestCase):
         legacy_task_store.init()
         store.reset_ready()
         store.init()
+        self.settlement_fixture = install_native_settlement_fixture(self)
         self.contexts = []
-        self.addCleanup(lambda: [concurrency.release_execution(context) for context in self.contexts])
+
+    def tearDown(self):
+        self._release_contexts()
+
+    def _release_contexts(self, contexts=None):
+        for context in self.contexts if contexts is None else contexts:
+            if context.settlement_ticket:
+                if not context.released:
+                    task_gateway.rollback_admission(context, reason="test_observation_complete")
+                self.settlement_fixture.wait_for_run_released(int(context.claimed_run["id"]))
+            else:
+                concurrency.release_execution(context)
 
     def policy(self, **updates):
         from config.concurrency import policy_values
@@ -105,14 +118,19 @@ class ConcurrencyWaitObservationTests(PostgresTestCase):
 
     def test_many_waiters_share_fixed_sql_budget_and_unchanged_observation_does_not_write(self):
         import psycopg
+        import threading
 
         self.policy(GLOBAL_TASK_WORKERS=1)
         self.admit(self.queued("live_check"))
         waiting = [self.queued("plan_check") for _ in range(64)]
         original = psycopg.Cursor.execute
         queries = []
+        observer_thread = threading.get_ident()
         def capture(cursor, query, params=None, **kwargs):
-            queries.append(str(query))
+            # The real settlement carrier keeps running during observation.
+            # This budget belongs to this observation call, not its scanner.
+            if threading.get_ident() == observer_thread:
+                queries.append(str(query))
             return original(cursor, query, params, **kwargs)
         with patch.object(psycopg.Cursor, "execute", capture), patch.object(concurrency, "_policy", wraps=concurrency._policy) as policy:
             first = task_gateway.observe_operation_runs(waiting)
@@ -189,7 +207,7 @@ class ConcurrencyWaitObservationTests(PostgresTestCase):
         self.dispatch_full(("plan_check",))
         self.assertEqual(["type_capacity"], self.request(waiting["id"])["blocked_by"])
         self.assertEqual(1, concurrency.get_concurrency_status()["global"]["occupied"])
-        concurrency.release_execution(active)
+        self._release_contexts([active])
         # 即使下个观察周期尚未开始，API 不可继续展示已经消退的类型满额。
         self.assertEqual([], store.get_run(waiting["id"])["admission_wait_reasons"])
         status = concurrency.get_concurrency_status()

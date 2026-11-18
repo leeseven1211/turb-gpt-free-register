@@ -55,7 +55,7 @@ CLI / Web routes
 
 代码首先按业务归入 `core/registration/`、`core/accounts/`、`core/email/`、`core/codex/`、`core/extract_link/` 等目录，再按具体驱动或提供方建立子目录。域内公共编排、状态和契约放在该业务根部，跨业务认证、浏览器、网络和任务能力分别归入 `auth/`、`browser/`、`network/`、`operations/`；不新增无职责边界的 `common/`、`utils/` 或 `misc/`。
 
-`registration/roxy/` 和 `registration/protocol/` 当前以完整 `__init__.py` 保留原模块身份，不能在目录整理时顺带拆分全局绑定。接码及代理混合模块也暂时保持整块实现，后续抽取需独立验证。`tools/` 按 `diagnostics/`、`benchmarks/`、`maintenance/`、`migrations/` 归类，旧工具脚本只保留原命令兼容入口；测试按被保护业务归组，共用隔离与读取帮助文件留在 `tests/` 根部。
+现行注册实现位于 `registration/roxy/` 和 `registration/protocol_oss_2/`，保持各自生命周期与全局绑定，不在目录整理时顺带改写执行逻辑。接码及代理混合模块也暂时保持整块实现，后续抽取需独立验证。`tools/` 按 `diagnostics/`、`benchmarks/`、`maintenance/`、`migrations/` 归类，旧工具脚本只保留原命令兼容入口；测试按被保护业务归组，共用隔离与读取帮助文件留在 `tests/` 根部。
 
 浏览器能力模块是注册、Codex 和查活之间的调用边界；新增调用方不得直接导入驱动私有函数。
 存储和任务服务只依赖领域入口，旧 façade 仅用于兼容期。
@@ -141,12 +141,15 @@ CLI / Web routes
 
 ## 9. 前端规范
 
-- HTML 负责语义结构，CSS 和 JavaScript 放入 `webui/static/`。
+- 已迁移页面的 Vue、TypeScript 和局部样式放入 `frontend/src/`；未迁移页面的 HTML 保持语义结构，CSS 和 JavaScript 继续放入 `webui/static/`。
 - 网络请求统一经过一个 API 包装层。
 - 用户可见文本必须转义；敏感值不写入 DOM data 属性或 localStorage。
 - 同一列表只允许一个在途轮询请求，手动刷新应排队或取消旧请求。
 - 页面模块负责自己的加载、渲染、事件和销毁逻辑。
-- 第一轮拆分不引入构建系统；使用普通静态脚本维持现有部署方式。
+- 任务中心使用 Vue 3 / TypeScript / Vite 独立构建，API 类型由 OpenAPI 生成；产物随源码发布，生产启动不依赖 Node。具体命令见[前端说明](../../frontend/README.md)。
+- 已迁移模块通过显式桥接 API 与旧页面交互，不保留隐藏筛选 DOM、共享分页状态或重复轮询；可复用组件不依赖其他领域页面。
+- 新建或改造列表遵循[列表统一交互规范](list-ui.md)，复用列头筛选、两行单元格、10 字结果摘要和带跳页的分页组件；完整错误保留在展开详情，短语由统一错误目录生成。
+- 重构时同步审查原有 UI、操作路径和步骤设计，主动提出具体问题、使用影响、建议及行为范围；新建议须先与用户讨论并获认可，才能纳入计划，不自行排期或实施。见[交互与操作流程审查](convergence.md#重构同步审查交互与操作流程)。不合理的旧设计不作为新组件的默认要求，业务执行规则的变化单独说明。
 
 静态资源按页面和业务边界组织：
 
@@ -171,7 +174,7 @@ webui/static/
 主页面保留普通 `<script>` 的加载顺序：
 `shared/common -> pages/dashboard/page -> pages/registration/page -> pages/accounts/page -> pages/operations/page -> pages/accounts/email-change -> pages/accounts/inspection -> pages/email/page -> pages/email/butler-import -> pages/codex/page -> pages/config/page -> pages/extract_link/page -> pages/proxy/traffic -> bootstrap`。
 以上路径均相对于 `webui/static/js/`，扩展名为 `.js`；登录页单独加载 `pages/login/page.js`。
-账号功能块依赖 `pages/accounts/page.js` 的共享状态和页面工具，并在 `bootstrap.js` 初始化前声明全局处理函数；具体加载位置以 `webui/templates/index.html` 为准。保留顶层全局函数、全局状态和 HTML 内联事件接口；新代码不得依赖未声明的加载顺序，也不得把业务代码重新塞回模板。后续迁移事件委托或 ES module 时，必须先增加浏览器验收并评估全局 API 兼容范围。
+未迁移账号功能块仍依赖 `pages/accounts/page.js` 的共享状态和页面工具，并在 `bootstrap.js` 初始化前声明处理函数；具体加载位置以 `webui/templates/index.html` 为准。`pages/operations/page.js` 仅提供 `TaskCenter` 桥接与必要的旧函数别名，按需加载 ES module 构建。不得向桥接添加业务状态。每迁移一个页面都核对跨页面入口并完成浏览器验收，随后停止旧实现增长，迁移顺序见[架构收敛](convergence.md)。
 
 ## 10. 测试规范
 

@@ -209,23 +209,57 @@ def public_reason_target_ids(cur, batch_id: int, reason_codes) -> list[int]:
     return matched
 
 
-def preserve_partial_counts(cur, row: dict, *, round_id=None) -> dict:
-    """旧汇总只存回执状态时，从同次 Run 找回明确的部分成功数量。"""
-    if not int((row.get("counts") or {}).get("attention_required", 0)):
-        return row
-    batch_id = row.get("batch_id") or row.get("id")
-    scope = "tr.round_id=%s" if round_id else "tr.batch_id=%s AND tr.round_id=COALESCE(root.latest_requested_round_id,c.initial_round_id)"
-    cur.execute(f"""SELECT count(*) AS n FROM {table('operation_batch_target_rounds')} tr
+def partial_counts_sql(scope: str, *, by_round: bool = False) -> str:
+    """在调用方限定的批次或轮次集合内，按原目标所属 Run 聚合修正数量。"""
+    identity = "tr.round_id" if by_round else "tr.batch_id"
+    current = "" if by_round else "AND tr.round_id=COALESCE(root.latest_requested_round_id,c.initial_round_id)"
+    # 历史轮不读父表字段；tr 的两个 NOT NULL/RESTRICT 外键已保证父行存在。
+    # 当前批次仍需父表指针，才能选中各目标最近请求的轮次。
+    parents = "" if by_round else f"""
       JOIN {table('operation_selection_targets')} root ON root.id=tr.canonical_target_id
-      JOIN {table('operation_batch_controls')} c ON c.batch_id=tr.batch_id
-      WHERE {scope} AND tr.outcome='attention_required'
-      AND ({source_summary_sql()})->>'requested_status'='partial_success'""", (round_id or batch_id,))
-    partial = int(cur.fetchone()["n"])
+      JOIN {table('operation_batch_controls')} c ON c.batch_id=tr.batch_id"""
+    # 固定候选后再读 Run，防止优化器把证据子查询提前到范围筛选之前。
+    return f"""WITH partial_candidates AS MATERIALIZED (
+      SELECT tr.id,{identity} AS scope_id FROM {table('operation_batch_target_rounds')} tr {parents}
+      WHERE ({scope}) {current} AND tr.outcome='attention_required')
+      SELECT tr.scope_id,count(*) AS n FROM partial_candidates tr
+      WHERE ({source_summary_sql()})->>'requested_status'='partial_success'
+      GROUP BY tr.scope_id"""
+
+
+def _apply_partial_counts(row: dict, partial: int) -> dict:
+    """只复制需修正的计数，避免共享输入被二次扣减。"""
     if partial:
         row = dict(row, counts=dict(row["counts"]))
         row["counts"]["attention_required"] -= partial
         row["counts"]["partial_success"] = row["counts"].get("partial_success", 0) + partial
     return row
+
+
+def preserve_partial_counts_many(cur, rows: list[dict], *, by_round: bool = False) -> list[dict]:
+    """列表中的历史计数最多执行一次集合查询，现代计数无需查 Run。"""
+    identities = [row["id"] if by_round else row.get("batch_id") or row.get("id") for row in rows]
+    wanted = list({identity for identity, row in zip(identities, rows)
+                   if int((row.get("counts") or {}).get("attention_required", 0))})
+    if not wanted:
+        return rows
+    identity = "tr.round_id" if by_round else "tr.batch_id"
+    # 单值等式让 generic plan 保留单范围估计；多值仍用数组，避免展开 IN 抬高 JIT 成本。
+    scope = f"{identity}=%s::bigint" if len(wanted) == 1 else f"{identity}=ANY(%s::bigint[])"
+    params = (wanted[0],) if len(wanted) == 1 else (wanted,)
+    cur.execute(partial_counts_sql(scope, by_round=by_round), params)
+    partials = {row["scope_id"]: int(row["n"]) for row in cur.fetchall()}
+    return [_apply_partial_counts(row, partials.get(identity, 0)) for identity, row in zip(identities, rows)]
+
+
+def preserve_partial_counts(cur, row: dict, *, round_id=None) -> dict:
+    """兼容单行读取：旧汇总从同次 Run 找回明确的部分成功数量。"""
+    if not int((row.get("counts") or {}).get("attention_required", 0)):
+        return row
+    if round_id:
+        scoped = preserve_partial_counts_many(cur, [dict(row, id=round_id)], by_round=True)[0]
+        return dict(row, counts=scoped["counts"]) if scoped["counts"] is not row.get("counts") else row
+    return preserve_partial_counts_many(cur, [row])[0]
 
 
 def public_target_result(value: dict, *, summary=None, message=None, error_code=None) -> dict:

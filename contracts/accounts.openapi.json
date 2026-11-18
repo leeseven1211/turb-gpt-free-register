@@ -1,0 +1,3121 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Turb 账号列表只读 API",
+    "version": "1.0.0",
+    "description": "Slice 1 保留旧查询语义与公开字段。类型生成不等于对旧可选 JSON 的运行时裁剪。"
+  },
+  "paths": {
+    "/api/accounts": {
+      "get": {
+        "operationId": "listAccounts",
+        "description": "显式 paged/page/page_size 返回分页对象，否则保留旧数组。服务端最多 500 条，id DESC。",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "paged",
+            "description": "既有查询参数。",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "description": "既有查询参数。",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page_size",
+            "description": "既有查询参数。",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "description": "既有查询参数。",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "archived",
+            "description": "既有查询参数。",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "q",
+            "description": "高级搜索原文；语法错误使用顶层 code=account_search_invalid。",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "date_from",
+            "description": "既有查询参数。",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "date_to",
+            "description": "既有查询参数。",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "id",
+            "description": "文本子串，不转换成 JavaScript Number。",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "email",
+            "description": "既有查询参数。",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "plan",
+            "description": "逗号多值，保留未知值，由服务端规范化。",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "source",
+            "description": "逗号多值，保留未知值，由服务端规范化。",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "registration_driver",
+            "description": "逗号多值，保留未知值，由服务端规范化。",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "token",
+            "description": "逗号多值，保留未知值，由服务端规范化。",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "password",
+            "description": "逗号多值，保留未知值，由服务端规范化。",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "promotion",
+            "description": "逗号多值，保留未知值，由服务端规范化。",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "totp",
+            "description": "逗号多值，保留未知值，由服务端规范化。",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "risk",
+            "description": "逗号多值，保留未知值，由服务端规范化。",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "codex",
+            "description": "逗号多值，保留未知值，由服务端规范化。",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "account_status",
+            "description": "逗号多值，保留未知值，由服务端规范化。",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "email_status",
+            "description": "逗号多值，保留未知值，由服务端规范化。",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "trial",
+            "description": "旧 promotion 别名，promotion 非空优先。",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/AccountsListResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/LegacyAccountsResponse"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "查询错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/AccountSearchError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ApiError"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "登录失效；可能为非 JSON 登录页。"
+          },
+          "500": {
+            "description": "读取失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "普通业务/网络服务端错误；保留原 HTTP 状态与错误消息。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/accounts/plan-check-status": {
+      "get": {
+        "operationId": "accountStatuses",
+        "description": "本契约描述 compact=1；查询与列表相同，queue 不用于客户端重算并发。",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "paged",
+            "description": "既有查询参数。",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "description": "既有查询参数。",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page_size",
+            "description": "既有查询参数。",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "description": "既有查询参数。",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "archived",
+            "description": "既有查询参数。",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "q",
+            "description": "高级搜索原文；语法错误使用顶层 code=account_search_invalid。",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "date_from",
+            "description": "既有查询参数。",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "date_to",
+            "description": "既有查询参数。",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "id",
+            "description": "文本子串，不转换成 JavaScript Number。",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "email",
+            "description": "既有查询参数。",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "plan",
+            "description": "逗号多值，保留未知值，由服务端规范化。",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "source",
+            "description": "逗号多值，保留未知值，由服务端规范化。",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "registration_driver",
+            "description": "逗号多值，保留未知值，由服务端规范化。",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "token",
+            "description": "逗号多值，保留未知值，由服务端规范化。",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "password",
+            "description": "逗号多值，保留未知值，由服务端规范化。",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "promotion",
+            "description": "逗号多值，保留未知值，由服务端规范化。",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "totp",
+            "description": "逗号多值，保留未知值，由服务端规范化。",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "risk",
+            "description": "逗号多值，保留未知值，由服务端规范化。",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "codex",
+            "description": "逗号多值，保留未知值，由服务端规范化。",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "account_status",
+            "description": "逗号多值，保留未知值，由服务端规范化。",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "email_status",
+            "description": "逗号多值，保留未知值，由服务端规范化。",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "trial",
+            "description": "旧 promotion 别名，promotion 非空优先。",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "compact",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountStatusesResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "查询错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/AccountSearchError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ApiError"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "登录失效；可能为非 JSON 登录页。"
+          },
+          "500": {
+            "description": "读取失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "普通业务/网络服务端错误；保留原 HTTP 状态与错误消息。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/accounts/{account_id}/plan-details": {
+      "get": {
+        "operationId": "accountPlanDetails",
+        "description": "只按用户展开读取公开明细；响应不携带 revision，客户端以 owner 当前版本拒绝陈旧读取。",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "account_id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountPlanDetailsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "查询错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/AccountSearchError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ApiError"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "登录失效；可能为非 JSON 登录页。"
+          },
+          "500": {
+            "description": "读取失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "账号不存在"
+          },
+          "default": {
+            "description": "普通业务/网络服务端错误；保留原 HTTP 状态与错误消息。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "PublicScalar": {
+        "type": [
+          "string",
+          "number",
+          "boolean",
+          "null"
+        ]
+      },
+      "AccountQueryFilters": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "source": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "registration_driver": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "token": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "password": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "promotion": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "totp": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "risk": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "codex": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "account_status": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "email_status": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "email",
+          "source",
+          "registration_driver",
+          "token",
+          "password",
+          "promotion",
+          "totp",
+          "risk",
+          "codex",
+          "account_status",
+          "email_status"
+        ]
+      },
+      "AccountQuerySpec": {
+        "type": "object",
+        "properties": {
+          "schema_version": {
+            "type": "integer",
+            "const": 1
+          },
+          "entity": {
+            "type": "string",
+            "const": "account"
+          },
+          "archived": {
+            "type": "string"
+          },
+          "q": {
+            "type": "string"
+          },
+          "date_from": {
+            "type": "string"
+          },
+          "date_to": {
+            "type": "string"
+          },
+          "plan": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "filters": {
+            "$ref": "#/components/schemas/AccountQueryFilters"
+          },
+          "order": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "field": {
+                  "type": "string",
+                  "const": "id"
+                },
+                "direction": {
+                  "type": "string",
+                  "const": "desc"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "field",
+                "direction"
+              ]
+            },
+            "minItems": 1,
+            "maxItems": 1
+          },
+          "limit": {
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "schema_version",
+          "entity",
+          "archived",
+          "q",
+          "date_from",
+          "date_to",
+          "plan",
+          "filters",
+          "order",
+          "limit"
+        ],
+        "description": "由既有 window.AccountQuery 规范化。ID/email 保持文本，枚举只按现 JS 去重排序；limit 属于批次名单，不自动进入列表 URL。"
+      },
+      "RegistrationRetry": {
+        "type": "object",
+        "properties": {
+          "available": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "active": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "source_job_id": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "action": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "available",
+          "active",
+          "source_job_id",
+          "action",
+          "label",
+          "reason"
+        ]
+      },
+      "FingerprintSummary": {
+        "type": "object",
+        "properties": {
+          "source": {
+            "type": "string"
+          },
+          "profile_ref": {
+            "type": "string"
+          },
+          "browser": {
+            "type": "string"
+          },
+          "screen": {
+            "type": "string"
+          },
+          "hardware": {
+            "type": "string"
+          },
+          "language": {
+            "type": "string"
+          },
+          "timezone": {
+            "type": "string"
+          },
+          "geo_country": {
+            "type": "string"
+          },
+          "proxy_mode": {
+            "type": "string"
+          },
+          "observed_at": {
+            "type": "string"
+          },
+          "device_pixel_ratio": {
+            "type": "number"
+          }
+        },
+        "additionalProperties": false
+      },
+      "CheckoutDetails": {
+        "type": "object",
+        "properties": {
+          "checkout_status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "checkout_checked_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "checkout_error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "session_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "checkout_currency": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "checkout_amount_source": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "checkout_source": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "checkout_country": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "checkout_http_status": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "checkout_amount_due_minor": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "checkout_currency_exponent": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "payment_method_types": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "AccountPromotion": {
+        "type": "object",
+        "properties": {
+          "plan": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "eligible": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "campaign_id": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "title": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "summary": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "discount_percentage": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "duration_num_periods": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "duration_period": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "promotion_type": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "promotion_type_label": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "country": {
+            "type": "string"
+          },
+          "stale": {
+            "type": "boolean"
+          },
+          "index": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "checkout_status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "checkout_checked_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "checkout_error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "session_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "checkout_currency": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "checkout_amount_source": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "checkout_source": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "checkout_country": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "checkout_http_status": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "checkout_amount_due_minor": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "checkout_currency_exponent": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "payment_method_types": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "CampaignShape": {
+        "type": "object",
+        "properties": {
+          "plan": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "metadata_type": {
+            "type": "string"
+          },
+          "discount_type": {
+            "type": "string"
+          },
+          "duration_type": {
+            "type": "string"
+          },
+          "index": {
+            "type": "integer"
+          },
+          "length": {
+            "type": "integer"
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "metadata_fields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "discount_fields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "duration_fields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "PromotionQuerySnapshot": {
+        "type": "object",
+        "properties": {
+          "version": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "source": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "container_type": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "truncated": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "campaign_keys": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "campaigns": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AccountPromotion"
+            }
+          },
+          "campaign_shapes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CampaignShape"
+            }
+          }
+        },
+        "additionalProperties": false,
+        "description": "公开活动证据；不包含上游原始对象。普通列表不对已有可选结构做运行时删字段。"
+      },
+      "QuotaWindow": {
+        "type": "object",
+        "properties": {
+          "slot": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "label": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "used_percent": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "remaining_percent": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "reset_at": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "window_seconds": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "window_minutes": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "reset_after_seconds": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "allowed": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "limit_reached": {
+            "$ref": "#/components/schemas/PublicScalar"
+          }
+        },
+        "additionalProperties": false
+      },
+      "SafeCountryResult": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "http_status": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "checked_at": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "current_plan_type": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "subscription_plan": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "has_active_subscription": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "expires_at": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "renews_at": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "cancels_at": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "billing_period": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "billing_currency": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "is_delinquent": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "token_expired": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "token_expires_at": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "discount_type": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "discount_amount": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "discount_duration_num_periods": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "discount_expires_at": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "discount_cancellation_policy": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "discount_promo_campaign_id": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "last_purchase_origin_platform": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "last_will_renew": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "proxy_provider": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "proxy_region": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "network_route": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "quota_status": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "quota_checked_at": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "quota_http_status": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "quota_error": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "quota_type": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "plus_promo_eligible": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "plus_promo_kind": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "plus_discount_eligible": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "plus_promo_campaign_id": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "plus_promo_title": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "plus_promo_summary": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "plus_promo_discount_percentage": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "plus_promo_duration_num_periods": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "plus_promo_duration_period": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "plus_promo_promotion_type": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "plus_promo_promotion_type_label": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "plus_trial_eligible": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "plus_trial_campaign_id": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "plus_trial_title": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "plus_trial_summary": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "plus_trial_discount_percentage": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "plus_trial_duration_num_periods": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "plus_trial_duration_period": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "plus_trial_promotion_type_label": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "account_promotions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AccountPromotion"
+            },
+            "maxItems": 32
+          },
+          "promotion_query_snapshot": {
+            "$ref": "#/components/schemas/PromotionQuerySnapshot"
+          },
+          "quota_windows": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/QuotaWindow"
+            },
+            "maxItems": 16
+          }
+        },
+        "additionalProperties": false
+      },
+      "CountryResult": {
+        "type": "object",
+        "properties": {
+          "country": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "checked_at": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "http_status": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "error": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "last_success_at": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "token_expired": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "token_expires_at": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SafeCountryResult"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "country",
+          "result"
+        ]
+      },
+      "AccountRow": {
+        "type": "object",
+        "properties": {
+          "account_promotions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AccountPromotion"
+            }
+          },
+          "account_status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "account_status_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "account_status_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "archived": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "billing_currency": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "billing_period": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "codex_active_run_id": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "codex_credential_state": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "codex_error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "codex_execution_status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "codex_last_run_status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "codex_status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "current_plan_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "deactivation_mail_checked_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "deactivation_mail_confidence": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "deactivation_mail_detected": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "deactivation_mail_error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "deactivation_mail_received_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "deactivation_mail_scan_status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "deactivation_mail_scan_trigger": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "deactivation_mail_sender": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "deactivation_mail_subject": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "discount_amount": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "discount_expires_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "discount_promo_campaign_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "discount_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "email_invalid": {
+            "type": "boolean"
+          },
+          "email_invalid_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "email_invalid_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "email_invalid_source": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "email_source": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "expires_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "extract_link_copy_paste": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "extract_link_error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "extract_link_expires_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "extract_link_failed_types": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "extract_link_image_url_png": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "extract_link_image_url_svg": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "extract_link_last_failed_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "extract_link_last_failed_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "extract_link_long_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "extract_link_message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "extract_link_ok": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "extract_link_status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "extract_link_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "fingerprint_summary": {
+            "$ref": "#/components/schemas/FingerprintSummary"
+          },
+          "has_access_token": {
+            "type": "boolean"
+          },
+          "has_account_password": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "last_auth_fallback_used": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "last_auth_method": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_password_auth_status": {
+            "type": "string",
+            "enum": [
+              "verified",
+              "accepted",
+              "rejected",
+              "unknown",
+              "skipped"
+            ]
+          },
+          "live_check_error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "live_check_http_status": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "live_check_status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "live_checked_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plan_check_countries": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "plan_check_country_results": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CountryResult"
+            }
+          },
+          "plan_check_error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plan_check_ok": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "plan_check_partial": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "plan_check_queued_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plan_check_started_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plan_check_status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plan_check_trigger": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plan_expires_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plan_last_success_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plan_promotion_country": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plan_renews_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plan_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plus_discount_eligible": {
+            "type": "boolean"
+          },
+          "plus_promo_campaign_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plus_promo_discount_percentage": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "plus_promo_duration_num_periods": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "plus_promo_duration_period": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plus_promo_eligible": {
+            "type": "boolean"
+          },
+          "plus_promo_kind": {
+            "type": "string"
+          },
+          "plus_promo_promotion_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plus_promo_promotion_type_label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plus_promo_summary": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plus_promo_title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plus_trial_campaign_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plus_trial_discount_percentage": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "plus_trial_duration_num_periods": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "plus_trial_duration_period": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plus_trial_eligible": {
+            "type": "boolean"
+          },
+          "plus_trial_promotion_type_label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plus_trial_title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "promotion_query_snapshot": {
+            "$ref": "#/components/schemas/PromotionQuerySnapshot"
+          },
+          "quota_checked_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "quota_error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "quota_http_status": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "quota_last_success_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "quota_status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "quota_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "quota_windows": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/QuotaWindow"
+            }
+          },
+          "registration_driver": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "registration_proxy_provider": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "registration_proxy_region": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "registration_retry": {
+            "$ref": "#/components/schemas/RegistrationRetry"
+          },
+          "renews_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "token_expired": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "token_expires_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "totp_enabled": {
+            "type": "boolean"
+          },
+          "updated_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "user_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "email",
+          "has_access_token",
+          "has_account_password",
+          "totp_enabled",
+          "email_invalid",
+          "email_invalid_reason",
+          "email_invalid_at",
+          "email_invalid_source",
+          "plus_promo_kind",
+          "plus_promo_eligible",
+          "plus_trial_eligible",
+          "plus_discount_eligible"
+        ],
+        "description": "普通公开列表。可选字段保留省略/null/false/0；状态字符串允许未来值。无凭据、原始 JSON 或 secret。"
+      },
+      "AccountFacet": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "string"
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "value",
+          "count"
+        ]
+      },
+      "AccountFacets": {
+        "type": "object",
+        "properties": {
+          "source": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AccountFacet"
+            }
+          },
+          "registration_driver": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AccountFacet"
+            }
+          },
+          "token": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AccountFacet"
+            }
+          },
+          "password": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AccountFacet"
+            }
+          },
+          "plan": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AccountFacet"
+            }
+          },
+          "promotion": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AccountFacet"
+            }
+          },
+          "totp": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AccountFacet"
+            }
+          },
+          "risk": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AccountFacet"
+            }
+          },
+          "codex": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AccountFacet"
+            }
+          },
+          "account_status": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AccountFacet"
+            }
+          },
+          "email_status": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AccountFacet"
+            }
+          }
+        },
+        "additionalProperties": false,
+        "description": "联动分面：只排除自身列过滤，保留 q/archive/date/id/email 等范围。无 label。"
+      },
+      "AccountSearchTerm": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          },
+          "display_value": {
+            "type": "string"
+          },
+          "query_without": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "field",
+          "label",
+          "value",
+          "display_value",
+          "query_without"
+        ]
+      },
+      "AccountsListResponse": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": true
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AccountRow"
+            }
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "page_size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500
+          },
+          "revision": {
+            "type": "string"
+          },
+          "compact": {
+            "type": "boolean",
+            "const": true
+          },
+          "facets": {
+            "$ref": "#/components/schemas/AccountFacets"
+          },
+          "search_terms": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AccountSearchTerm"
+            }
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "ok",
+          "items",
+          "total",
+          "page",
+          "page_size",
+          "offset",
+          "limit",
+          "revision",
+          "compact",
+          "facets",
+          "search_terms"
+        ]
+      },
+      "LegacyAccountsResponse": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/AccountRow"
+        }
+      },
+      "PlanSummaryPromotion": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "country": {
+            "type": "string"
+          },
+          "stale": {
+            "type": "boolean"
+          },
+          "discount_percentage": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "duration_num_periods": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "duration_period": {
+            "$ref": "#/components/schemas/PublicScalar"
+          }
+        },
+        "additionalProperties": false
+      },
+      "PlanSummaryCountry": {
+        "type": "object",
+        "properties": {
+          "country": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "checked_at": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "last_success_at": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "http_status": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "error": {
+            "$ref": "#/components/schemas/PublicScalar"
+          },
+          "promotions": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/PlanSummaryPromotion"
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "result": {
+            "type": "object",
+            "properties": {
+              "plus_promo_eligible": {
+                "$ref": "#/components/schemas/PublicScalar"
+              },
+              "plus_promo_kind": {
+                "$ref": "#/components/schemas/PublicScalar"
+              },
+              "plus_discount_eligible": {
+                "$ref": "#/components/schemas/PublicScalar"
+              },
+              "plus_promo_campaign_id": {
+                "$ref": "#/components/schemas/PublicScalar"
+              },
+              "plus_promo_title": {
+                "$ref": "#/components/schemas/PublicScalar"
+              },
+              "plus_promo_summary": {
+                "$ref": "#/components/schemas/PublicScalar"
+              },
+              "plus_promo_discount_percentage": {
+                "$ref": "#/components/schemas/PublicScalar"
+              },
+              "plus_promo_duration_num_periods": {
+                "$ref": "#/components/schemas/PublicScalar"
+              },
+              "plus_promo_duration_period": {
+                "$ref": "#/components/schemas/PublicScalar"
+              },
+              "plus_promo_promotion_type": {
+                "$ref": "#/components/schemas/PublicScalar"
+              },
+              "plus_promo_promotion_type_label": {
+                "$ref": "#/components/schemas/PublicScalar"
+              },
+              "plus_trial_eligible": {
+                "$ref": "#/components/schemas/PublicScalar"
+              },
+              "plus_trial_campaign_id": {
+                "$ref": "#/components/schemas/PublicScalar"
+              },
+              "plus_trial_title": {
+                "$ref": "#/components/schemas/PublicScalar"
+              },
+              "plus_trial_summary": {
+                "$ref": "#/components/schemas/PublicScalar"
+              },
+              "plus_trial_discount_percentage": {
+                "$ref": "#/components/schemas/PublicScalar"
+              },
+              "plus_trial_duration_num_periods": {
+                "$ref": "#/components/schemas/PublicScalar"
+              },
+              "plus_trial_duration_period": {
+                "$ref": "#/components/schemas/PublicScalar"
+              },
+              "plus_trial_promotion_type_label": {
+                "$ref": "#/components/schemas/PublicScalar"
+              },
+              "plan_type": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "current_plan_type": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      },
+      "PlanSummary": {
+        "type": "object",
+        "properties": {
+          "promotions": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/PlanSummaryPromotion"
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "countries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PlanSummaryCountry"
+            }
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "promotions",
+          "countries"
+        ]
+      },
+      "AccountStatusRow": {
+        "type": "object",
+        "properties": {
+          "account_status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "account_status_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "account_status_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "archived": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "billing_currency": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "billing_period": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "codex_active_run_id": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "codex_credential_state": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "codex_error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "codex_execution_status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "codex_last_run_status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "codex_status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "current_plan_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "discount_amount": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "discount_expires_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "discount_promo_campaign_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "discount_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "email_invalid": {
+            "type": "boolean"
+          },
+          "email_invalid_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "email_invalid_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "email_invalid_source": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "expires_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "extract_link_copy_paste": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "extract_link_error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "extract_link_expires_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "extract_link_failed_types": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "extract_link_image_url_png": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "extract_link_image_url_svg": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "extract_link_last_failed_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "extract_link_last_failed_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "extract_link_long_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "extract_link_message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "extract_link_ok": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "extract_link_status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "extract_link_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "has_access_token": {
+            "type": "boolean"
+          },
+          "has_account_password": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "last_auth_method": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_password_auth_status": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "verified",
+                  "accepted",
+                  "rejected",
+                  "unknown",
+                  "skipped"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "live_checked_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plan_check_completed_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plan_check_countries": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "plan_check_error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plan_check_network_route": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plan_check_ok": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "plan_check_partial": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "plan_check_proxy_fallback_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plan_check_proxy_used": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plan_check_queued_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plan_check_started_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plan_check_status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plan_check_trigger": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plan_checked_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plan_expires_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plan_last_success_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plan_promotion_country": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plan_renews_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plan_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plus_discount_eligible": {
+            "type": "boolean"
+          },
+          "plus_promo_campaign_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plus_promo_discount_percentage": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "plus_promo_duration_num_periods": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "plus_promo_duration_period": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plus_promo_eligible": {
+            "type": "boolean"
+          },
+          "plus_promo_kind": {
+            "type": "string"
+          },
+          "plus_promo_promotion_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plus_promo_promotion_type_label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plus_promo_summary": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plus_promo_title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plus_trial_campaign_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plus_trial_discount_percentage": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "plus_trial_duration_num_periods": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "plus_trial_duration_period": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plus_trial_eligible": {
+            "type": "boolean"
+          },
+          "plus_trial_promotion_type_label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plus_trial_title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "quota_checked_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "quota_error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "quota_http_status": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "quota_last_success_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "quota_status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "quota_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "quota_windows": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/QuotaWindow"
+            }
+          },
+          "renews_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "updated_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plan_details_revision": {
+            "type": "string"
+          },
+          "plan_summary": {
+            "$ref": "#/components/schemas/PlanSummary"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "has_access_token",
+          "has_account_password",
+          "last_password_auth_status",
+          "email_invalid",
+          "email_invalid_reason",
+          "email_invalid_at",
+          "email_invalid_source",
+          "plan_promotion_country",
+          "plan_details_revision",
+          "plan_summary"
+        ],
+        "description": "compact=1 轮询投影。status_fields 缺失字段表示权威清空；完整明细独立按需读取。"
+      },
+      "AccountQueueSettings": {
+        "type": "object",
+        "properties": {
+          "workers": {
+            "type": "integer"
+          },
+          "registration_workers": {
+            "type": "integer"
+          },
+          "queue_limit": {
+            "type": "integer"
+          },
+          "min_interval": {
+            "type": "number"
+          },
+          "jitter": {
+            "type": "number"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "workers",
+          "registration_workers",
+          "queue_limit",
+          "min_interval",
+          "jitter"
+        ]
+      },
+      "AccountStatusesResponse": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": true
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AccountStatusRow"
+            }
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "page_size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500
+          },
+          "revision": {
+            "type": "string"
+          },
+          "queue": {
+            "$ref": "#/components/schemas/AccountQueueSettings"
+          },
+          "status_fields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "ok",
+          "items",
+          "total",
+          "page",
+          "page_size",
+          "offset",
+          "limit",
+          "revision",
+          "queue",
+          "status_fields"
+        ]
+      },
+      "AccountPlanDetails": {
+        "type": "object",
+        "properties": {
+          "account_promotions": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/AccountPromotion"
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "promotion_query_snapshot": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PromotionQuerySnapshot"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "plan_check_country_results": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CountryResult"
+            }
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "account_promotions",
+          "promotion_query_snapshot",
+          "plan_check_country_results"
+        ]
+      },
+      "AccountPlanDetailsResponse": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": true
+          },
+          "item": {
+            "$ref": "#/components/schemas/AccountPlanDetails"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "ok",
+          "item"
+        ]
+      },
+      "AccountSearchError": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": false
+          },
+          "code": {
+            "type": "string",
+            "const": "account_search_invalid"
+          },
+          "error": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "ok",
+          "code",
+          "error"
+        ]
+      },
+      "ApiError": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": false
+          },
+          "error": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "code": {
+                    "type": "string"
+                  },
+                  "message": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": false
+              }
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          },
+          "error_code": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  }
+}

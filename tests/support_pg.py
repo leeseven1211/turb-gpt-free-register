@@ -64,8 +64,14 @@ def truncate_schema(name: str) -> None:
     """
     if not name.startswith("test_"):
         raise ValueError(f"拒绝清空非测试 schema: {name!r}")
+    # Match record_store.init() before taking any relation locks. A background
+    # initializer may otherwise hold an earlier table while TRUNCATE holds a
+    # later table, creating an AccessExclusiveLock cycle during test isolation.
+    from core.storage.records import advisory_xact_lock
+
     with postgres_store.connect() as conn, conn.cursor() as cur:
-        cur.execute("SELECT tablename FROM pg_tables WHERE schemaname = %s", (name,))
+        advisory_xact_lock(conn, f"record-store-schema:{name}")
+        cur.execute("SELECT tablename FROM pg_tables WHERE schemaname = %s ORDER BY tablename", (name,))
         tables = [row[0] for row in cur.fetchall()]
         if not tables:
             return
@@ -122,6 +128,9 @@ class PostgresTestCase(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls) -> None:
+        native_guard = getattr(cls, "_native_settlement_before_schema_use", None)
+        if native_guard is not None:
+            native_guard()
         try:
             if cls.schema:
                 drop_schema(cls.schema)
@@ -138,6 +147,9 @@ class PostgresTestCase(unittest.TestCase):
             super().tearDownClass()
 
     def run(self, result=None):
+        native_guard = getattr(type(self), "_native_settlement_before_schema_use", None)
+        if native_guard is not None:
+            native_guard()
         # 用 run() 而不是 setUp()：子类几乎都自带 setUp，不能指望每个都记得调
         # super().setUp()。集合读缓存有 1 秒 TTL，同类内相邻用例会互相看到脏数据。
         if self.schema:
@@ -147,10 +159,21 @@ class PostgresTestCase(unittest.TestCase):
         from core import db
         from core.storage import records as record_store
         record_store.reset_ready()
-        with tempfile.TemporaryDirectory() as td, ExitStack() as stack:
-            root = pathlib.Path(td)
+        dependency_directory = tempfile.TemporaryDirectory()
+        stack = ExitStack()
+        stack.callback(dependency_directory.cleanup)
+        try:
+            root = pathlib.Path(dependency_directory.name)
             for name in self._REDIRECTED_PATHS:
                 if hasattr(db, name):
                     stack.enter_context(
                         patch.object(db, name, root / f"{name.strip('_').lower()}.json"))
             return super().run(result)
+        finally:
+            # Only explicitly installed native fixtures supply this hook.
+            # Their failure must retain the original export paths/directory
+            # before this surrounding scope can restore or delete anything.
+            native_exit = getattr(self, "_native_settlement_after_run", None)
+            if native_exit is not None:
+                native_exit(stack, dependency_directory)
+            stack.close()

@@ -15,3 +15,6 @@ cryptography==48.0.1
 cloakbrowser[geoip]==0.5.7
 playwright==1.62.0
 python-dotenv==1.2.3
+
+# Audited single-process HTTP lifecycle adapter; pure Python, no extra dependencies.
+waitress==3.0.2

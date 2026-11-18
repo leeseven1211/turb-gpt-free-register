@@ -111,7 +111,7 @@ class ExtractLinkProviderFlowTests(unittest.TestCase):
             )
 
         list_rows.assert_called_once_with(provider_id="lumen_flow", mode="extract_only", query="fixture",
-                                          status="running", page=1, page_size=20)
+                                          status="running", page=1, page_size=20, public_status=False)
         self.assertEqual(6, result["counts"]["all"])
         self.assertEqual(5, result["counts"]["processing"])
         self.assertEqual(3, result["counts"]["running"])

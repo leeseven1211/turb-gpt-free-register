@@ -72,6 +72,10 @@ def load_env(*, override: bool = False) -> Path:
     """先加载 bootstrap，再延迟读取数据库；激活后不加载文件运行值。"""
     global _LOADED
     from config import runtime
+    if runtime.has_pinned_values():
+        # Observer reload must preserve the process's startup identity and key.
+        runtime.load_values(force=True)
+        return _ENV_PATH
     # 测试 launcher 会显式设置此标志，必须在 python-dotenv 导入和内置
     # parser 分支之前短路，确保任何依赖版本下都不会读入工作区 .env。
     if dotenv_loading_disabled():

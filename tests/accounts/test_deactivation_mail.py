@@ -1,6 +1,9 @@
 # -*- coding: utf-8 -*-
 import tempfile
 import unittest
+import json
+import subprocess
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 from core import account_task_store as legacy_account_task_store
@@ -129,10 +132,58 @@ class DeactivationMailTests(PostgresTestCase):
             html += "\n" + response.get_data(as_text=True)
         finally:
             response.close()
-        self.assertIn('class="col-risk-mail column-filter-header"', html)
-        self.assertIn('data-column-filter="accountRiskFilterV2"', html)
+        self.assertIn('id="accounts-list-root"', html)
+        # The column and its filter now render in the real Vue table, not Jinja.
+        rendered = subprocess.run(["node", "--input-type=commonjs", "-e", r"""
+const fs = require('node:fs'), vm = require('node:vm');
+const h = require('./tests/frontend_vue_loader.cjs').createVueHarness();
+for (const key of ['NodeFilter', 'HTMLInputElement']) globalThis[key] = h.document.defaultView[key];
+const scope = {window: {}, URLSearchParams};
+vm.runInNewContext(fs.readFileSync('webui/static/js/shared/account-query.js', 'utf8'), scope);
+const Table = h.load('src/features/accounts/AccountsTable.vue').default;
+const Toolbar = h.load('src/features/accounts/AccountsToolbar.vue').default;
+const toolbarCalls = [];
+const toolbar = h.mount(Toolbar, {props: {
+  state: {selectedCount: 0, archived: false}, capabilities: {},
+  getContext: () => ({accountIds: ['7'], expectedEmails: {'7': 'seven@example.test'}, querySnapshot: scope.window.AccountQuery.normalize(), archived: '0', rowHints: []}),
+  invoke: (action, context, trigger) => toolbarCalls.push({action, ids: context.accountIds, trigger: trigger.id}),
+  runtime: {storage: h.document.defaultView.localStorage, requestFrame: callback => requestAnimationFrame(callback), cancelFrame: handle => cancelAnimationFrame(handle), addStorageListener: () => () => {}},
+}});
+const table = h.mount(Table, {props: {
+  items: [], selected: new Set(), query: scope.window.AccountQuery.normalize(),
+  facets: {risk: [{value: 'detected', count: 1}]}, presentation: {facetLabel: (_, value) => value},
+  loading: false, error: '', invalidSearch: false, stale: false, visible: true,
+  pageSelected: false, pageIndeterminate: false, openFilter: null,
+}});
+(async () => {
+  try {
+    const header = table.get('thead th.col-risk-mail');
+    await header.get('button.tc-column-filter-trigger').trigger('click');
+    const opened = table.emitted('update:openFilter');
+    await table.setProps({openFilter: 'risk'});
+    const option = h.document.querySelector('.list-filter-popover input[value="detected"]');
+    option.checked = true; option.dispatchEvent(new Event('change', {bubbles: true}));
+    await h.nextTick();
+    const scan = h.document.getElementById('btnCheckSelectedDeactivationMailV2');
+    const scanButton = {tag: scan.tagName, label: scan.textContent, disabledWithoutSelection: scan.disabled};
+    scan.click();
+    await toolbar.setProps({state: {selectedCount: 1, archived: false}});
+    scanButton.enabledWithSelection = !scan.disabled;
+    scan.click(); await h.nextTick();
+    console.log(JSON.stringify({label: header.text(), opened, changed: table.emitted('filter'), scanButton, toolbarCalls}));
+  } finally { await table.setProps({openFilter: null}); await new Promise(resolve => setTimeout(resolve, 0)); h.close(); }
+})().catch(error => {console.error(error); process.exitCode = 1;});
+"""], cwd=Path(__file__).resolve().parents[2], capture_output=True, text=True, check=False)
+        self.assertEqual(0, rendered.returncode, rendered.stderr or rendered.stdout)
+        column = json.loads(rendered.stdout)
+        self.assertIn("封号邮件", column["label"])
+        self.assertEqual([["risk"]], column["opened"])
+        self.assertEqual([["risk", ["detected"]]], column["changed"])
         self.assertIn("data-deactivation-mail-check", html)
-        self.assertIn("btnCheckSelectedDeactivationMailV2", html)
+        self.assertEqual({"tag": "BUTTON", "label": "查封号邮件", "disabledWithoutSelection": True,
+                          "enabledWithSelection": True}, column["scanButton"])
+        self.assertEqual([{"action": "checkSelectedDeactivationMail", "ids": ["7"],
+                           "trigger": "btnCheckSelectedDeactivationMailV2"}], column["toolbarCalls"])
         self.assertIn("'icloud_hide'", html)
 
     def test_icloud_hide_is_supported_by_mail_scanner(self):

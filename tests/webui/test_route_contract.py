@@ -34,6 +34,31 @@ class FlaskRouteContractTests(PostgresTestCase):
         "/api/extract-link/payments/xxsyun/balance\tPOST\tapi_xxsyun_payment_balance",  # e03c999
         "/api/extract-workbench/batches/<int:batch_id>/cancel\tPOST\tcancel_extract_workbench_batch",  # f5672de
         "/api/extract-workbench/tasks/<int:task_id>/payment-query-credential\tPOST\trestore_extract_workbench_payment_query_credential",  # 1119f6a
+        # 已提交的并发、邮箱同步、C2A、批量平台与提链统计入口。逐项对照
+        # 4e38812 → HEAD 路由声明，34 条新增中此前仅登记 12 条；无删除或改名。
+        # 保留原 163 条与 SHA256 基线，不能用当前结果重新生成摘要掩盖变更。
+        "/api/config/concurrency-preview\tGET\tapi_concurrency_preview",
+        "/api/operations/concurrency\tGET\tapi_concurrency_status",
+        "/api/email-service-sync\tGET\tapi_email_service_sync",
+        "/api/email-service-sync/retry\tPOST\tapi_email_service_sync_retry",
+        "/api/accounts/<int:acc_id>/c2a/sync\tPOST\tapi_account_c2a_sync",
+        "/api/accounts/c2a/sync-bulk\tPOST\tapi_accounts_c2a_sync_bulk",
+        "/api/bulk/catalog\tGET\tbulk.catalog",
+        "/api/bulk/query-facets\tGET\tbulk.query_facets",
+        "/api/bulk/selections\tPOST\tbulk.create_selection",
+        "/api/bulk/selections/<int:selection_id>\tGET\tbulk.get_selection",
+        "/api/bulk/selections/<int:selection_id>/targets\tGET\tbulk.get_selection",
+        "/api/bulk/batches\tGET\tbulk.list_batches",
+        "/api/bulk/batches\tPOST\tbulk.create_batch",
+        "/api/bulk/batches/<int:batch_id>\tGET\tbulk.get_batch",
+        "/api/bulk/batches/<int:batch_id>/control\tPOST\tbulk.control",
+        "/api/bulk/batches/<int:batch_id>/report\tGET\tbulk.get_task_report",
+        "/api/bulk/batches/<int:batch_id>/rounds\tGET\tbulk.rounds",
+        "/api/bulk/batches/<int:batch_id>/rounds\tPOST\tbulk.create_round",
+        "/api/bulk/batches/<int:batch_id>/targets\tGET\tbulk.targets",
+        "/api/extract-workbench/analytics\tGET\textract_workbench_analytics",
+        "/api/extract-workbench/export\tGET\texport_extract_workbench",
+        "/api/extract-workbench/summary\tGET\textract_workbench_summary",
     }
     # Explicit additive maintenance/integration routes; the previous 163-route
     # baseline remains independently verified after removing only these rows.

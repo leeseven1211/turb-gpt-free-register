@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import socket
 import subprocess
@@ -10,6 +11,7 @@ import threading
 import uuid
 from contextlib import contextmanager, nullcontext
 from collections.abc import Callable, Mapping
+from types import MappingProxyType, SimpleNamespace
 from typing import Any
 
 from psycopg.rows import dict_row
@@ -19,8 +21,51 @@ from core.storage import postgres
 _READY: set[str] = set()
 _READY_LOCK = threading.RLock()
 _OWNER_CACHE: dict[int, dict[str, Any]] = {}
+_OWNER_CACHE_PID = os.getpid()
 _HOST_ID = f"{socket.gethostname()}:{uuid.getnode():012x}"
 _LOCAL_EXITS: set[tuple[str, str]] = set()
+
+
+def _settlement_domain():
+    """Capture the admission database/schema identity once, before callback."""
+    from core.operations.settlement_contracts import SettlementDomain
+
+    from core.storage.operations.common import current_settlement_domain
+
+    bound = current_settlement_domain()
+    if bound is not None:
+        return bound
+    url = str(postgres.database_url() or "")
+    operation_schema = str(os.getenv("OPERATION_TASK_DB_SCHEMA") or postgres.schema_name()).strip() or "public"
+    permit_schema = str(postgres.schema_name())
+    return SettlementDomain(
+        database_url=url,
+        operation_schema=operation_schema,
+        permit_schema=permit_schema,
+        domain_id=_domain_id(url, operation_schema, permit_schema),
+    )
+
+
+def _domain_id(url: str, operation_schema: str, permit_schema: str) -> str:
+    identity = json.dumps([url, operation_schema, permit_schema], separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()
+
+
+def _freeze_ticket(value):
+    if isinstance(value, Mapping):
+        return MappingProxyType({key: _freeze_ticket(item) for key, item in value.items()})
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_ticket(item) for item in value)
+    return value
+
+
+def _participates_settlement(execution_key: str, task_type: str, metadata: Mapping[str, Any]) -> bool:
+    """Only native operation runs and explicitly opted-in retry executions participate."""
+    if bool(metadata.get("settlement_opt_in")):
+        return True
+    if str(execution_key).startswith("operation_run:"):
+        return True
+    return str(task_type) == "codex_retry" and str(execution_key).startswith("operation_")
 
 
 def mark_execution_exited(permit_id: str, execution_id: str) -> None:
@@ -31,13 +76,13 @@ def clear_execution_exit(permit_id: str, execution_id: str) -> None:
     _LOCAL_EXITS.discard((str(permit_id), str(execution_id)))
 
 
-def admission_lock(conn) -> None:
+def admission_lock(conn, *, schema: str | None = None) -> None:
     """统一锁序的第一把锁；调用方不得先持业务行锁或配置写锁。"""
     if conn.autocommit:
         raise RuntimeError("并发准入必须使用数据库事务")
     with conn.cursor() as cur:
         cur.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
-                    (f"operation-execution-admission:{postgres.schema_name()}",))
+                    (f"operation-execution-admission:{schema or postgres.schema_name()}",))
 
 
 def ensure_tables() -> None:
@@ -95,8 +140,27 @@ def _process_start(pid: int) -> str | None:
         return None
 
 
-def current_owner() -> dict[str, Any]:
+def _owner_cache_pid() -> int:
+    """继承的 owner 不能证明 fork 子进程身份，即使后代复用祖先 PID。"""
+    global _OWNER_CACHE_PID
     pid = os.getpid()
+    if _OWNER_CACHE_PID != pid:
+        _OWNER_CACHE.clear()
+        _OWNER_CACHE_PID = pid
+    return pid
+
+
+def _owner_process_start(pid: int) -> str | None:
+    """仅复用本进程已观测的启动身份；其它进程与未知身份每次实查。"""
+    if pid == _owner_cache_pid():
+        start = (_OWNER_CACHE.get(pid) or {}).get("process_start")
+        if start:
+            return start
+    return _process_start(pid)
+
+
+def current_owner() -> dict[str, Any]:
+    pid = _owner_cache_pid()
     if pid not in _OWNER_CACHE:
         _OWNER_CACHE[pid] = {"host_id": _HOST_ID, "pid": pid,
                              "process_start": _process_start(pid), "instance_id": uuid.uuid4().hex}
@@ -116,7 +180,7 @@ def owner_liveness(owner: Mapping[str, Any]) -> str:
         return "exited"
     except (PermissionError, OSError, ValueError):
         return "unverified"
-    start = _process_start(pid)
+    start = _owner_process_start(pid)
     recorded = owner.get("process_start")
     if start and recorded and start != recorded:
         return "exited"
@@ -251,26 +315,34 @@ def try_admit(*, execution_key: str, task_type: str, execution_id: str, run_id: 
               policy: Callable[[Any], tuple[list[dict], int, list[str]]],
               claim: Callable[[Any, str], Mapping | None]) -> dict[str, Any]:
     """多维检查、持久公平游标、业务认领和许可在同一连接提交。"""
+    metadata = dict(metadata)
+    metadata.pop("settlement_ticket", None)  # Reserved repository-owned identity.
+    participates = _participates_settlement(execution_key, task_type, metadata)
+    domain = _settlement_domain() if participates else None
     ensure_tables()
-    with postgres.connect(row_factory=dict_row) as conn, conn.cursor(row_factory=dict_row) as cur:
-        admission_lock(conn)
-        cur.execute(f"INSERT INTO {postgres.qualified('operation_execution_dispatch_cursor')} (id) VALUES (1) ON CONFLICT DO NOTHING")
+    target_schema = domain.permit_schema if domain else postgres.schema_name()
+    def table(name):
+        return f"{postgres.quote_identifier(target_schema)}.{postgres.quote_identifier(name)}"
+    connection = postgres.connect(domain.database_url, row_factory=dict_row) if domain else postgres.connect(row_factory=dict_row)
+    with connection as conn, conn.cursor(row_factory=dict_row) as cur:
+        admission_lock(conn, schema=target_schema)
+        cur.execute(f"INSERT INTO {table('operation_execution_dispatch_cursor')} (id) VALUES (1) ON CONFLICT DO NOTHING")
         scopes, revision, policy_blocks = policy(conn)
         _record_request(cur,execution_key=execution_key,task_type=task_type,batch_key=batch_key,
                         scopes=scopes,metadata=metadata)
         counts = occupied(cur)
         reasons = list(policy_blocks) + _capacity_reasons(scopes, counts)
-        cur.execute(f"SELECT 1 FROM {postgres.qualified('operation_execution_permits')} WHERE execution_key=%s AND released_at IS NULL", (execution_key,))
+        cur.execute(f"SELECT 1 FROM {table('operation_execution_permits')} WHERE execution_key=%s AND released_at IS NULL", (execution_key,))
         if cur.fetchone():
             reasons.append("execution_active")
-        cur.execute(f"SELECT task_type, batches, lanes FROM {postgres.qualified('operation_execution_dispatch_cursor')} WHERE id=1")
-        cursor = cur.fetchone()
         if not reasons:
+            cur.execute(f"SELECT task_type, batches, lanes FROM {table('operation_execution_dispatch_cursor')} WHERE id=1")
+            cursor = cur.fetchone()
             # 失去调度器的候选仅退出公平竞争，绝不据此回收活动许可。
             cur.execute(f"""SELECT execution_key,task_type,batch_key,scopes,dispatch_lane,blocked_by
-                FROM {postgres.qualified('operation_execution_requests')} request
+                FROM {table('operation_execution_requests')} request
                 WHERE seen_at > now() - interval '5 seconds' AND observed_only IS FALSE AND NOT EXISTS (
-                    SELECT 1 FROM {postgres.qualified('operation_execution_permits')} active
+                    SELECT 1 FROM {table('operation_execution_permits')} active
                     WHERE active.execution_key=request.execution_key AND active.released_at IS NULL)
                 ORDER BY created_at,execution_key""")
             ready = [row for row in cur.fetchall() if not _capacity_reasons(row["scopes"], counts)
@@ -293,7 +365,7 @@ def try_admit(*, execution_key: str, task_type: str, execution_id: str, run_id: 
                     if str(metadata.get("dispatch_lane") or "new") != next_lane:
                         reasons.append("fairness_turn")
         if reasons:
-            cur.execute(f"UPDATE {postgres.qualified('operation_execution_requests')} SET blocked_by=%s::jsonb WHERE execution_key=%s", (json.dumps(list(dict.fromkeys(reasons))), execution_key))
+            cur.execute(f"UPDATE {table('operation_execution_requests')} SET blocked_by=%s::jsonb WHERE execution_key=%s", (json.dumps(list(dict.fromkeys(reasons))), execution_key))
             return {"blocked_by": list(dict.fromkeys(reasons))}
         try:
             with conn.transaction():
@@ -301,28 +373,108 @@ def try_admit(*, execution_key: str, task_type: str, execution_id: str, run_id: 
                 if claimed is None:
                     raise _ClaimRejected()
         except ClaimUnavailable as exc:
-            cur.execute(f"UPDATE {postgres.qualified('operation_execution_requests')} SET blocked_by=%s::jsonb WHERE execution_key=%s", (json.dumps([exc.code]), execution_key))
+            cur.execute(f"UPDATE {table('operation_execution_requests')} SET blocked_by=%s::jsonb WHERE execution_key=%s", (json.dumps([exc.code]), execution_key))
             return {"blocked_by": [exc.code]}
         except _ClaimRejected:
-            cur.execute(f"DELETE FROM {postgres.qualified('operation_execution_requests')} WHERE execution_key=%s", (execution_key,))
+            cur.execute(f"DELETE FROM {table('operation_execution_requests')} WHERE execution_key=%s", (execution_key,))
             return {"blocked_by": ["not_claimable"]}
         permit_id = uuid.uuid4().hex
-        cur.execute(f"""INSERT INTO {postgres.qualified('operation_execution_permits')}
+        settlement_ticket = None
+        settlement_domain = domain
+        if participates:
+            claimed_data = dict(claimed)
+            if not claimed_data.get("run_uuid") or not claimed_data.get("task_id"):
+                raise ValueError("participating execution requires original Run and Task identity")
+            task_uuid = claimed_data.get("task_uuid")
+            if not task_uuid:
+                task_table = f"{postgres.quote_identifier(domain.operation_schema)}.{postgres.quote_identifier('operation_tasks')}"
+                cur.execute(f"SELECT task_uuid FROM {task_table} WHERE id=%s", (claimed_data["task_id"],))
+                task_row = cur.fetchone()
+                task_uuid = task_row["task_uuid"] if task_row else None
+            if not task_uuid:
+                raise ValueError("participating execution requires original Task UUID")
+            # Ticket is created inside the same claim+permit transaction and
+            # contains only immutable technical identity, never credentials.
+            ticket_id = uuid.uuid4().hex
+            settlement_ticket = {
+                "version": 1,
+                "ticket_id": ticket_id,
+                "domain_id": settlement_domain.domain_id,
+                "operation_schema": settlement_domain.operation_schema,
+                "permit_schema": settlement_domain.permit_schema,
+                "task_id": claimed_data.get("task_id"),
+                "task_uuid": task_uuid,
+                "run_id": claimed_data.get("id", run_id),
+                "run_uuid": claimed_data.get("run_uuid"),
+                "execution_id": execution_id,
+                "permit_id": permit_id,
+                "execution_key": str(execution_key),
+                "owner": dict(owner),
+            }
+            metadata = {**dict(metadata), "settlement_ticket": settlement_ticket}
+        cur.execute(f"""INSERT INTO {table('operation_execution_permits')}
             (permit_id,execution_key,execution_id,run_id,task_type,owner,policy_revision,metadata)
             VALUES (%s,%s,%s,%s,%s,%s::jsonb,%s,%s::jsonb)""",
                     (permit_id, execution_key, execution_id, run_id, task_type, json.dumps(dict(owner)), revision, json.dumps(dict(metadata))))
         for scope in scopes:
-            cur.execute(f"INSERT INTO {postgres.qualified('operation_execution_permit_scopes')} (permit_id,scope_kind,scope_key,units,limit_snapshot) VALUES (%s,%s,%s,%s,%s)", (permit_id, scope["kind"], scope["key"], int(scope.get("units", 1)), int(scope["limit"])))
-        cur.execute(f"""UPDATE {postgres.qualified('operation_execution_dispatch_cursor')}
+            cur.execute(f"INSERT INTO {table('operation_execution_permit_scopes')} (permit_id,scope_kind,scope_key,units,limit_snapshot) VALUES (%s,%s,%s,%s,%s)", (permit_id, scope["kind"], scope["key"], int(scope.get("units", 1)), int(scope["limit"])))
+        cur.execute(f"""UPDATE {table('operation_execution_dispatch_cursor')}
             SET task_type=%s,batches=batches || %s::jsonb,lanes=lanes || %s::jsonb WHERE id=1""",
                     (task_type, json.dumps({task_type: batch_key}),
                      json.dumps({f"{task_type}:{batch_key}": str(metadata.get("dispatch_lane") or "new")})))
-        cur.execute(f"DELETE FROM {postgres.qualified('operation_execution_requests')} WHERE execution_key=%s", (execution_key,))
-        return {"permit_id": permit_id, "execution_id": execution_id, "policy_revision": revision, "claimed_run": dict(claimed), "blocked_by": []}
+        cur.execute(f"DELETE FROM {table('operation_execution_requests')} WHERE execution_key=%s", (execution_key,))
+        return {"permit_id": permit_id, "execution_id": execution_id, "policy_revision": revision,
+                "claimed_run": dict(claimed), "blocked_by": [],
+                "settlement_ticket": _freeze_ticket(settlement_ticket) if settlement_ticket else None,
+                "settlement_domain": settlement_domain}
 
 
 def _permit_table(schema: str | None = None) -> str:
     return f"{postgres.quote_identifier(schema or postgres.schema_name())}.{postgres.quote_identifier('operation_execution_permits')}"
+
+
+def _ticket(row: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    metadata = row.get("metadata") or {}
+    value = metadata.get("settlement_ticket") if isinstance(metadata, Mapping) else None
+    return value if isinstance(value, Mapping) else None
+
+
+def _ticket_liveness(row: Mapping[str, Any]) -> str:
+    ticket = _ticket(row)
+    if not ticket:
+        return owner_liveness(row["owner"])
+    # The callback thread is allowed to exit while the process's managed
+    # carrier retains responsibility. Do not change legacy owner semantics.
+    process_owner = dict(ticket.get("owner") or row["owner"])
+    process_owner.pop("thread_id", None)
+    return owner_liveness(process_owner)
+
+
+def _cleanup_blocks_permit(row: Mapping[str, Any], *, conn, database_url: str, schema: str) -> bool:
+    from core.operations.settlement_contracts import SettlementDomain
+    from core.storage.operations.settlements import cleanup_blocks_permit
+
+    ticket = _ticket(row)
+    if not ticket:
+        return False
+    if ticket.get("version") != 1 or ticket.get("permit_schema") != schema:
+        return True
+    if _domain_id(database_url, str(ticket["operation_schema"]), schema) != ticket.get("domain_id"):
+        return True
+    domain = SettlementDomain(
+        database_url=database_url, operation_schema=str(ticket["operation_schema"]),
+        permit_schema=schema, domain_id=str(ticket["domain_id"]),
+    )
+    return cleanup_blocks_permit(row["permit_id"], row["execution_id"], domain=domain, conn=conn)
+
+
+def _local_settlement_releasable(row: Mapping[str, Any]) -> bool:
+    from core.operations import settlement
+
+    ticket = _ticket(row)
+    identity = SimpleNamespace(permit_id=row["permit_id"], execution_id=row["execution_id"],
+                               settlement_domain=SimpleNamespace(domain_id=ticket.get("domain_id")))
+    return settlement.responsibility(identity) is not None and settlement.release_eligible(identity)
 
 
 def heartbeat(permit_id: str, execution_id: str, *, state: str | None = None, thread_id: int | None = None,
@@ -337,14 +489,35 @@ def heartbeat(permit_id: str, execution_id: str, *, state: str | None = None, th
 
 
 def release(permit_id: str, execution_id: str, *, reason: str = "worker_exit",
-            schema: str | None = None, database_url: str | None = None) -> bool:
-    with postgres.connect(database_url) as conn, conn.cursor() as cur:
+            schema: str | None = None, database_url: str | None = None,
+            settlement_verified: bool = False, deadline: float | None = None) -> bool:
+    target_url = database_url if database_url is not None else postgres.database_url()
+    target_schema = schema or postgres.schema_name()
+    checkout_options = {"deadline": deadline} if deadline is not None else {}
+    with postgres.connect(target_url, **checkout_options) as conn, conn.cursor(row_factory=dict_row) as cur:
         cur.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
-                    (f"operation-execution-admission:{schema or postgres.schema_name()}",))
-        cur.execute("SELECT to_regclass(%s)", (_permit_table(schema),))
-        if cur.fetchone()[0] is None:
+                    (f"operation-execution-admission:{target_schema}",))
+        cur.execute("SELECT to_regclass(%s) AS relation", (_permit_table(target_schema),))
+        relation = cur.fetchone()
+        if (relation.get("relation") if isinstance(relation, Mapping) else relation[0]) is None:
             return False
-        cur.execute(f"""UPDATE {_permit_table(schema)}
+        cur.execute(f"""SELECT permit_id,execution_id,owner,metadata,released_at
+            FROM {_permit_table(target_schema)} WHERE permit_id=%s AND execution_id=%s""",
+                    (permit_id, execution_id))
+        row = cur.fetchone()
+        if row is None:
+            return False
+        from core.operations.concurrency import local_renewal_pending
+        if local_renewal_pending(permit_id, execution_id, schema=target_schema, database_url=target_url):
+            return False
+        if _ticket(row):
+            if row.get("released_at") is not None:
+                return True  # Exact same permit ACK after successful commit.
+            if not settlement_verified and _ticket_liveness(row) != "exited" and not _local_settlement_releasable(row):
+                return False
+            if _cleanup_blocks_permit(row, conn=conn, database_url=target_url, schema=target_schema):
+                return False
+        cur.execute(f"""UPDATE {_permit_table(target_schema)}
             SET released_at=now(), release_reason=%s, state='released'
             WHERE permit_id=%s AND execution_id=%s AND released_at IS NULL""", (reason, permit_id, execution_id))
         return cur.rowcount > 0
@@ -384,14 +557,23 @@ def validate(permit_id: str, execution_id: str, *, schema: str | None = None, da
 def recover_execution_permits() -> dict[str, int]:
     ensure_tables()
     with postgres.connect() as conn, conn.cursor(row_factory=dict_row) as cur:
-        cur.execute(f"SELECT permit_id, execution_id, owner FROM {postgres.qualified('operation_execution_permits')} WHERE released_at IS NULL")
+        cur.execute(f"SELECT permit_id, execution_id, owner, metadata FROM {postgres.qualified('operation_execution_permits')} WHERE released_at IS NULL")
         rows = list(cur.fetchall())
     result = {"released": 0, "alive": 0, "unverified": 0}
     for row in rows:
-        state = "exited" if (row["permit_id"], row["execution_id"]) in _LOCAL_EXITS else owner_liveness(row["owner"])
+        from core.operations.concurrency import local_renewal_pending
+        participating = _ticket(row) is not None
+        state = ("alive" if local_renewal_pending(row["permit_id"], row["execution_id"]) else
+                 _ticket_liveness(row) if participating else
+                 "exited" if (row["permit_id"], row["execution_id"]) in _LOCAL_EXITS else owner_liveness(row["owner"]))
         if state == "exited":
-            result["released"] += int(release(row["permit_id"], row["execution_id"], reason="owner_exit_confirmed"))
-        else:
+            released = release(row["permit_id"], row["execution_id"], reason="owner_exit_confirmed")
+            result["released"] += int(released)
+            if participating and not released:
+                state = "unverified"
+            else:
+                continue
+        if state != "exited":
             result[state] += 1
             with postgres.connect() as conn, conn.cursor() as cur:
                 cur.execute(f"UPDATE {postgres.qualified('operation_execution_permits')} SET verification_state=%s WHERE permit_id=%s AND execution_id=%s AND released_at IS NULL", (state, row["permit_id"], row["execution_id"]))

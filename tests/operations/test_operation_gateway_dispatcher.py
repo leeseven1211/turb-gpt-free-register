@@ -3,10 +3,38 @@ from __future__ import annotations
 import unittest
 import os
 import threading
+import tempfile
+import time
+from contextlib import ExitStack
+from functools import partial
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 from cryptography.fernet import Fernet
 from tests.support_pg import PostgresTestCase
+from tests.support_settlement import install_native_settlement_fixture
+
+
+class _UnstartedDispatchFuture:
+    """The scheduler fake never invokes its callback, so completion is cancellation."""
+
+    def __init__(self, callbacks=None):
+        self.callbacks = callbacks
+        self._cancelled = False
+
+    def cancelled(self):
+        return self._cancelled
+
+    def add_done_callback(self, callback):
+        def cancel(_unused=None):
+            if not self._cancelled:
+                self._cancelled = True
+                callback(self)
+
+        if self.callbacks is None:
+            cancel()
+        else:
+            self.callbacks.append(cancel)
 
 
 class OperationGatewayDispatcherTests(PostgresTestCase):
@@ -14,35 +42,105 @@ class OperationGatewayDispatcherTests(PostgresTestCase):
         super().setUp()
         from config.concurrency import policy_values
         from core.operations import task_gateway, concurrency
+        from core import account_task_store
+        from core.operations import run_log
         from core.storage import runtime_config
+        from core.storage.operations import store
 
-        key = patch.dict(os.environ, {"TURB_CONFIG_ENCRYPTION_KEY": Fernet.generate_key().decode()})
-        key.start()
-        self.addCleanup(key.stop)
+        self.resources = ExitStack()
+        self.contexts = []
+        self.addCleanup(self._close_test_resources)
+        self.resources.enter_context(patch.dict(os.environ, {
+            "TURB_CONFIG_ENCRYPTION_KEY": Fernet.generate_key().decode(),
+            "OPERATION_TASK_DB_SCHEMA": self.schema,
+        }))
+        log_root = Path(self.resources.enter_context(tempfile.TemporaryDirectory()))
+        self.resources.enter_context(patch.object(run_log, "_LOG_ROOT", log_root))
+        self.resources.enter_context(patch.object(run_log, "_TASK_LOG_ROOT", log_root / "tasks"))
+        self.resources.enter_context(patch.object(account_task_store, "_SCHEMA", self.schema))
+        self.resources.enter_context(patch.object(account_task_store, "_READY_KEY", ""))
+        account_task_store.init()
+        store.reset_ready()
+        store.init()
         values = policy_values({})
         values.update(GLOBAL_TASK_WORKERS=10, EXTRACT_LINK_WORKERS=10, MAINTENANCE_CHECK_WORKERS=10,
                       EXTRACT_LINK_LEGACY_CONCURRENCY=10, EXTRACT_LINK_HUANGUANG_CONCURRENCY=10)
         runtime_config.write_values({key: str(value) for key, value in values.items()}, activate=True, source="test")
         for name in ("maintenance_test", "maintenance_capacity_test", "maintenance_capacity_reject_test", "maintenance_deferred_test"):
             concurrency.register_admission_alias(name, "maintenance_check")
-        self.contexts = []
         original = task_gateway.admit_operation_run
 
         def admit(run, capacity_handler=None):
             implementation = task_gateway._operation()
             if isinstance(implementation, SimpleNamespace):
-                implementation.claim_run = lambda *_args, **_kwargs: dict(run)
-                if not hasattr(implementation, "requeue_claimed_run"):
-                    implementation.requeue_claimed_run = lambda *_args, **_kwargs: dict(run)
+                run.update(self._native_candidate(run))
+                implementation.claim_run = store.claim_run
             result = original(run, capacity_handler)
             if result.context:
                 self.contexts.append(result.context)
+                claimed = result.context.claimed_run
+                ticket = result.context.settlement_ticket
+                task = store.get_task(int(claimed["task_id"]))
+                self.assertEqual(int(run["id"]), int(claimed["id"]))
+                self.assertEqual(claimed["run_uuid"], ticket["run_uuid"])
+                self.assertEqual(int(claimed["task_id"]), int(ticket["task_id"]))
+                self.assertEqual(task["task_uuid"], ticket["task_uuid"])
             return result
 
-        admission = patch.object(task_gateway, "admit_operation_run", side_effect=admit)
-        admission.start()
-        self.addCleanup(admission.stop)
-        self.addCleanup(lambda: [concurrency.release_execution(context) for context in self.contexts])
+        self.resources.enter_context(patch.object(task_gateway, "admit_operation_run", side_effect=admit))
+        original_rollback = task_gateway.rollback_admission
+
+        def rollback(execution, **kwargs):
+            original_rollback(execution, **kwargs)
+            self._wait_for_release(execution)
+
+        self.resources.enter_context(patch.object(task_gateway, "rollback_admission", side_effect=rollback))
+        install_native_settlement_fixture(self)
+
+    def _native_candidate(self, projection):
+        from core.storage.operations import store
+
+        run_id = int(projection["id"])
+        existing = store.get_run(run_id)
+        if existing is not None:
+            self.assertEqual(projection["task_type"], existing["task_type"])
+            return existing
+        # These IDs are the original scheduler assertions' public inputs. Only
+        # this fresh test schema's sequence is positioned; repository creation
+        # still generates the actual Task UUID, Run UUID and ownership links.
+        self.assertTrue(self.schema.startswith("test_"))
+        with store._connect() as conn, conn.cursor() as cur:
+            cur.execute("SELECT setval(pg_get_serial_sequence(%s, 'id'), %s, false)",
+                        (store._table("operation_runs"), run_id))
+            task = store.create_runtime_task(
+                task_type=projection["task_type"], account_id=None, email="",
+                source_system=projection.get("source_system") or "native_operations",
+                source_id=f"dispatcher-fixture:{run_id}",
+                data=dict(projection.get("data") or {}), conn=conn,
+            )
+        self.assertEqual(run_id, int(task["run"]["id"]))
+        return store.get_run(run_id)
+
+    def _wait_for_release(self, execution):
+        deadline = time.monotonic() + 10
+        while not execution.released and time.monotonic() < deadline:
+            time.sleep(.01)
+        self.assertTrue(execution.released, "original unstarted settlement did not release")
+
+    def _close_test_resources(self):
+        from core.operations import settlement, task_gateway
+
+        for execution in self.contexts:
+            if execution.released:
+                continue
+            item = settlement.responsibility(execution)
+            if item is not None and item.intent is None and not item._callback_started:
+                task_gateway.rollback_admission(execution, reason="unstarted_test_fixture_cleanup")
+            self._wait_for_release(execution)
+        fixture = getattr(self, "settlement_fixture", None)
+        if fixture is not None:
+            fixture.close()
+        self.resources.close()
 
     def tearDown(self):
         from core.operations import task_gateway
@@ -52,15 +150,14 @@ class OperationGatewayDispatcherTests(PostgresTestCase):
         task_gateway.set_dependency_ready_handler(None)
         task_gateway.unregister_dispatch_handler("maintenance_test")
         task_gateway.release_dispatch(7001)
+        self._close_test_resources()
 
     def test_registered_dispatch_is_task_type_based_and_does_not_duplicate_legacy_rows(self):
         from core.operations import task_gateway
 
         submitted: list[int] = []
 
-        class Future:
-            def add_done_callback(self, callback):
-                callback(self)
+        Future = _UnstartedDispatchFuture
 
         class Executor:
             def available_slots(self):
@@ -100,9 +197,7 @@ class OperationGatewayDispatcherTests(PostgresTestCase):
             {"id": 7103, "task_type": "maintenance_capacity_test", "source_system": "native_operations", "data": {"provider_id": "huanguang"}},
         ]
 
-        class Future:
-            def add_done_callback(self, callback):
-                callbacks.append(callback)
+        Future = partial(_UnstartedDispatchFuture, callbacks)
 
         class Executor:
             def available_slots(self):
@@ -151,9 +246,7 @@ class OperationGatewayDispatcherTests(PostgresTestCase):
             {"id": 7202, "task_type": "maintenance_capacity_reject_test", "source_system": "native_operations", "data": {"provider_id": "lumen_flow"}},
         ]
 
-        class Future:
-            def add_done_callback(self, callback):
-                callback(self)
+        Future = _UnstartedDispatchFuture
 
         class Executor:
             def available_slots(self):
@@ -238,9 +331,7 @@ class OperationGatewayDispatcherTests(PostgresTestCase):
             {"id": 7302, "task_type": "extract_link", "source_system": "native_operations", "data": {"provider_id": "huanguang", "extract_poll_continuation": True}},
         ]
 
-        class Future:
-            def add_done_callback(self, callback):
-                callbacks.append(callback)
+        Future = partial(_UnstartedDispatchFuture, callbacks)
 
         class Executor:
             def available_slots(self):
@@ -307,6 +398,12 @@ class OperationGatewayDispatcherTests(PostgresTestCase):
                 result = task_gateway._execute_operation_handler("maintenance_deferred_test", 7350)
         finally:
             task_gateway.unregister_operation_handler("maintenance_deferred_test")
+        from core.storage.operations import store
+        queued.update(store.get_run(7350))
+        with store._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"SELECT count(*) AS n FROM {store._table('operation_settlement_receipts')} "
+                        "WHERE run_id=%s AND transition_kind='terminal'", (7350,))
+            self.assertEqual(0, cur.fetchone()["n"])
         self.assertEqual("deferred", result["status"])
         self.assertEqual("queued", queued["status"])
         self.assertTrue(queued["data"]["extract_poll_continuation"])
@@ -321,9 +418,7 @@ class OperationGatewayDispatcherTests(PostgresTestCase):
             for number in range(7400, 7500)
         ]
 
-        class Future:
-            def add_done_callback(self, callback):
-                callbacks.append(callback)
+        Future = partial(_UnstartedDispatchFuture, callbacks)
 
         class Executor:
             def available_slots(self):
@@ -391,9 +486,7 @@ class OperationGatewayDispatcherTests(PostgresTestCase):
             {"id": 9302, "task_type": "extract_link", "source_system": "native_operations", "data": {"provider_id": "legacy", "extract_poll_continuation": True}},
         ]
 
-        class Future:
-            def add_done_callback(self, callback):
-                callbacks.append(callback)
+        Future = partial(_UnstartedDispatchFuture, callbacks)
 
         class Executor:
             def available_slots(self):

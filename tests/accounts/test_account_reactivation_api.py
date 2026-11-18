@@ -64,7 +64,7 @@ class AccountReactivationApiTests(TestCase):
         }
         with (
             patch("webui.routes.accounts._feature_unavailable", return_value=None),
-            patch("webui.routes.accounts.db.list_codex_accounts", return_value=[row]),
+            patch("core.integrations.sub2api.manual_upload.credential_store.get_codex_account", return_value=row) as credential,
             patch("webui.routes.accounts.db.get_account_by_email", return_value={"account_status": "active"}),
             patch("webui.routes.accounts.db.read_codex_credential") as read,
         ):
@@ -75,4 +75,6 @@ class AccountReactivationApiTests(TestCase):
         self.assertEqual(0, result["uploaded_count"])
         self.assertEqual(1, result["failed_count"])
         self.assertIn("重新授权", result["failed"][0]["error"])
+        self.assertEqual("sub2api_credential_reauthorization_required", result["failed"][0]["error_code"])
+        credential.assert_called_once_with(filename)
         read.assert_not_called()

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 import logging
+import time
 from contextlib import contextmanager
 from contextvars import ContextVar
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -99,6 +100,8 @@ class AccountOperationExecutor:
         self._budget_limit: int | None = None
         self._accepted = 0
         self._active = 0
+        self._runtime_closed = False
+        self._closing_pools: list[ThreadPoolExecutor] = []
 
     def _refresh_budget_locked(self, requested: int | None = None) -> int:
         # 配置读取可能访问 PostgreSQL，必须由调用方在 condition 锁外完成。
@@ -133,8 +136,12 @@ class AccountOperationExecutor:
                 self._condition.notify_all()
 
     def _current_executor(self) -> ThreadPoolExecutor:
+        from core.runtime.execution_access import require_execution_component
+        require_execution_component()
         requested = self.workers()
         with self._condition:
+            if self._runtime_closed:
+                raise RuntimeError("runtime_executor_closed")
             self._refresh_budget_locked(requested)
             if self._executor is None or requested != self._workers:
                 old = self._executor
@@ -159,6 +166,9 @@ class AccountOperationExecutor:
         *args: Any,
         **kwargs: Any,
     ) -> Future:
+        from core.runtime.execution_access import execution_allowed
+        if not execution_allowed():
+            raise RuntimeError("runtime_not_ready")
         executor = self._current_executor()
         with self._condition:
             self._accepted += 1
@@ -195,6 +205,9 @@ class AccountOperationExecutor:
         its durable ready/queued state instead of growing an unbounded
         executor backlog or waiting while holding an account lease.
         """
+        from core.runtime.execution_access import execution_allowed
+        if not execution_allowed():
+            return None
         executor = self._current_executor()
         with self._condition:
             limit = self._refresh_budget_locked()
@@ -241,6 +254,15 @@ class AccountOperationExecutor:
                 "current_pool_workers": self._workers,
             }
 
+    def runtime_status(self) -> dict[str, int | None]:
+        """Local lifecycle facts; never reads policy or creates a thread pool."""
+        with self._condition:
+            return {
+                "accepted": self._accepted, "active": self._active,
+                "generation": self._generation, "retired_pools": len(self._retired),
+                "current_pool_workers": self._workers,
+            }
+
     def shutdown(self, wait: bool = True) -> None:
         with self._condition:
             executors: list[ThreadPoolExecutor] = []
@@ -253,6 +275,39 @@ class AccountOperationExecutor:
             self._condition.notify_all()
         for executor in executors:
             executor.shutdown(wait=wait, cancel_futures=False)
+
+    def close_runtime(self, timeout: float = 3.0) -> bool:
+        """Close an idle managed carrier and prove its threads have exited."""
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        if not self._condition.acquire(timeout=max(0.0, deadline - time.monotonic())):
+            return False
+        try:
+            if self._accepted or self._active:
+                return False
+            self._runtime_closed = True
+            pools = [*self._retired]
+            if self._executor is not None:
+                pools.append(self._executor)
+            self._closing_pools.extend(pool for pool in pools if pool not in self._closing_pools)
+            self._retired.clear()
+            self._executor = None
+            self._workers = None
+            retained = tuple(self._closing_pools)
+        finally:
+            self._condition.release()
+        for pool in retained:
+            pool.shutdown(wait=False, cancel_futures=False)
+        for pool in retained:
+            for thread in tuple(pool._threads):
+                if thread is threading.current_thread():
+                    return False
+                thread.join(max(0.0, deadline - time.monotonic()))
+        with self._condition:
+            self._closing_pools[:] = [
+                pool for pool in self._closing_pools
+                if any(thread.is_alive() for thread in pool._threads)
+            ]
+            return not self._closing_pools
 
 
 executor = AccountOperationExecutor()

@@ -1,41 +1,64 @@
-// 账号列表、筛选、详情和原账号操作：依赖 common.js 的页面状态与工具函数。
-let accountsLoading = false;
-let accountsReloadQueued = false;
-let accountsRenderedQuery = '';
-let planStatusLoading = false;
-let planStatusRevision = '';
-let accountSessionDownloadLoading = false;
+// Explicit action data stays separate from DOM triggers and the legacy globals.
+function accountActionOwner() {
+  const owner = window.AccountsPage;
+  return owner && owner.isReady?.() ? owner : null;
+}
+function freezeAccountActionValue(value) {
+  if (value && typeof value === 'object') {
+    Object.values(value).forEach(freezeAccountActionValue);
+    Object.freeze(value);
+  }
+  return value;
+}
+function captureAccountActionContext(context = null, ids = null) {
+  const supplied = context && Array.isArray(context.accountIds) ? context : null;
+  const owner = accountActionOwner();
+  const source = supplied || (owner ? owner.getActionContext(ids ? {ids: ids.map(String)} : undefined) : null);
+  if (!source) return null;
+  const allowed = new Set(source.accountIds.map(String));
+  const accountIds = ids ? [...new Set(ids.map(String))].filter(id => allowed.has(id)) : source.accountIds.map(String);
+  const wanted = new Set(accountIds);
+  // Explicitly whitelist public data; never copy the trigger or a Vue proxy.
+  return freezeAccountActionValue(JSON.parse(JSON.stringify({
+    accountIds, expectedEmails: Object.fromEntries(Object.entries(source.expectedEmails || {}).filter(([id]) => wanted.has(id))),
+    querySnapshot: source.querySnapshot, archived: source.archived,
+    rowHints: (source.rowHints || []).filter(row => wanted.has(String(row.id))),
+  })));
+}
+function accountActionIds(context, ids = null) {
+  return context ? context.accountIds.map(Number) : Array.from(ids || []).map(Number);
+}
+function accountActionRow(id, context) {
+  return context?.rowHints.find(row => String(row.id) === String(id));
+}
+function accountActionRefresh(context = null) {
+  const owner = accountActionOwner();
+  return owner ? owner.refresh() : context ? Promise.resolve() : loadAccounts();
+}
+function accountActionPollStatuses(context = null) {
+  const owner = accountActionOwner();
+  return owner ? owner.pollStatuses() : context ? Promise.resolve() : pollAccountPlanStatuses();
+}
+function accountActionSelectionUi(context = null) {
+  if (!context || accountActionOwner()) updateAccountSelectionUi();
+}
+function accountActionRemoveAcknowledged(ids, context = null) {
+  const requested = context ? new Set(context.accountIds) : null;
+  const acknowledged = [...new Set(ids.map(String))].filter(id => !requested || requested.has(id));
+  const owner = accountActionOwner();
+  if (owner) owner.removeAcknowledgedSelection(acknowledged);
+}
+function accountActionClearSelection(context = null) {
+  const owner = accountActionOwner();
+  if (owner) owner.clearSelection();
+}
+
+// Account list/query/selection state belongs to the Vue page.
 let ACCOUNT_BATCH_WORKERS = 3;
-const ACCOUNT_SELECTED_EMAILS = new Map();
-const ACCOUNT_REGISTRATION_RETRY_PENDING = new Set();
 function accountIsDeactivated(account) {
   return ['account_status', 'codex_status', 'codex_credential_state'].some(
     key => String(account?.[key] || '').toLowerCase() === 'deactivated',
   );
-}
-let accountAdvancedSearchQuery = '';
-let accountSearchTerms = [];
-let accountSearchErrorQuery = null;
-function renderAccountSearchTerms(terms) {
-  accountSearchTerms = terms;
-  const summary = $('#accountSearchSummaryV2');
-  if (!summary) return;
-  summary.hidden = !terms.length;
-  summary.innerHTML = terms.length ? `
-    <span class="column-filter-summary-label">高级搜索 · 同时满足</span>
-    ${terms.map((term, index) => `<button type="button" class="column-filter-chip" data-account-search-term="${index}" aria-label="移除${attrEsc(term.label)}：${attrEsc(term.display_value)}"><span>${esc(term.label)}：${esc(term.display_value)}</span><span class="column-filter-chip-close" aria-hidden="true">×</span></button>`).join('')}` : '';
-}
-function showAccountSearchError(message = '') {
-  const error = $('#accountAdvancedSearchErrorV2');
-  if (error) {
-    error.textContent = message;
-    error.hidden = !message;
-  }
-  $('#accountAdvancedSearchV2')?.setAttribute('aria-invalid', message ? 'true' : 'false');
-}
-function getAccountsQuery() {
-  const el = document.getElementById('qAccountsV2');
-  return (el ? el.value : '').trim();
 }
 function getAccountOperationWorkers() {
   const configured = CONFIG.find(item => item.key === 'ACCOUNT_BATCH_WORKERS');
@@ -61,14 +84,7 @@ function accountAtRefreshUiSettings(fields = CONFIG) {
   const debugDescription = debugEnabled ? 'Roxy 刷新调试已开启：实际使用 Roxy 时将显示浏览器并全程抓包；失败保留窗口，可从任务日志查看现场并下载 HAR。' : '';
   return {driver, debugEnabled, label, description, debugDescription, title: description + (debugEnabled ? ' Roxy 调试已开启，失败保留窗口。' : '')};
 }
-async function loadAccountAtRefreshUiSettings() {
-  try {
-    const fields = await apiCached('/api/config', {}, 30000);
-    return accountAtRefreshUiSettings(fields);
-  } catch (error) {
-    return accountAtRefreshUiSettings();
-  }
-}
+
 async function loadRuntimeUiSettings() {
   try {
     const settings = await apiCached('/api/ui-settings', {}, 30000);
@@ -76,183 +92,15 @@ async function loadRuntimeUiSettings() {
   } catch(e) {}
 }
 function accountListQueryParams() {
-  const archived = SHOW_ARCHIVED_ACCOUNTS ? 'only' : '0';
-  const plan = columnFilterValue(document.getElementById('accountPlanFilterV2')) || (SHOW_PLUS_ACCOUNTS_ONLY ? 'plus' : '');
-  const email = getAccountsQuery();
-  const q = accountAdvancedSearchQuery;
-  const dateFrom = document.getElementById('dateFromAccountsV2')?.value || '';
-  const dateTo = document.getElementById('dateToAccountsV2')?.value || '';
-  const p = PAGERS.accounts;
-  const params = new URLSearchParams({paged:'1', page:String(p.page), page_size:String(p.size), archived, plan, email, q, date_from:dateFrom, date_to:dateTo});
-  AccountQuery.fields.forEach(({key, controlId}) => params.set(key, columnFilterValue(document.getElementById(controlId))));
-  return AccountQuery.toLegacy(AccountQuery.fromLegacy(params), {paged:'1', page:String(p.page), page_size:String(p.size)});
-}
-function showAccountsLoadingState(query) {
-  if (query === accountsRenderedQuery) return;
-  const body = $('#accountsBodyV2');
-  if (body) body.innerHTML = renderTableStateRow(16, '正在加载筛选结果…', '', 'loading');
+  const owner = accountActionOwner();
+  if (!owner) throw new Error('账号列表正在加载，请稍后重试');
+  return window.AccountQuery.toLegacy(owner.getAccountSelectionSnapshot().query);
 }
 async function loadAccounts() {
-  const params = accountListQueryParams();
-  const query = params.toString();
-  showAccountsLoadingState(query);
-  if (accountsLoading) {
-    accountsReloadQueued = true;
-    return;
-  }
-  accountsLoading = true;
-  accountsReloadQueued = false;
-  setListBusy('accountsPanelV2', true);
-  try {
-    const p = PAGERS.accounts;
-    const res = await api(`/api/accounts?${params.toString()}`);
-    if (params.toString() !== accountListQueryParams().toString()) {
-      accountsReloadQueued = true;
-      return;
-    }
-    accountSearchErrorQuery = null;
-    showAccountSearchError();
-    renderAccountSearchTerms(res.search_terms || []);
-    const facets = res.facets || {};
-    const syncAccountFacet = (id, items, options = {}) => syncFacetSelect(id, items, {...options, preserveSelected: true});
-    syncAccountFacet('accountSourceFilterV2', facets.source, {group:'source'});
-    syncAccountFacet('accountRegistrationDriverFilterV2', facets.registration_driver, {
-      group:'registration_driver', values:['roxy','roxy_oss','protocol','protocol_oss','protocol_oss_2','cloakbrowser','unknown'],
-    });
-    syncAccountFacet('accountTokenFilterV2', facets.token, {
-      group:'account_token',
-      values:['has','expired','invalid_401','invalid_403','invalid_other','none'],
-    });
-    syncAccountFacet('accountPasswordFilterV2', facets.password, {group:'password'});
-    syncAccountFacet('accountPlanFilterV2', facets.plan, {group:'plan'});
-    syncAccountFacet('accountTrialFilterV2', facets.promotion, {group:'promotion'});
-    syncAccountFacet('accountTotpFilterV2', facets.totp, {group:'totp'});
-    syncAccountFacet('accountRiskFilterV2', facets.risk, {group:'risk'});
-    syncAccountFacet('accountCodexFilterV2', facets.codex, {group:'codex'});
-    syncAccountFacet('accountStatusFilterV2', facets.account_status, {group:'account_status', values:['active','deactivated']});
-    if (params.toString() !== accountListQueryParams().toString()) {
-      accountsReloadQueued = true;
-      return;
-    }
-    ACCOUNTS = res.items || [];
-    ACCOUNTS_TOTAL = Number(res.total || ACCOUNTS.length || 0);
-    const totalPages = Math.max(1, Math.ceil(ACCOUNTS_TOTAL / p.size));
-    if (p.page > totalPages) {
-      p.page = totalPages;
-      accountsReloadQueued = true;
-      return;
-    }
-    accountsRenderedQuery = params.toString();
-    renderAccounts();
-    markViewReady(`accounts:${SHOW_ARCHIVED_ACCOUNTS ? 'archived' : 'active'}`);
-  } catch(e) {
-    if (params.toString() !== accountListQueryParams().toString()) {
-      accountsReloadQueued = true;
-      return;
-    }
-    if (e.code === 'account_search_invalid') {
-      accountSearchErrorQuery = accountAdvancedSearchQuery;
-      showAccountSearchError(e.message);
-      renderAccountSearchTerms([]);
-      ACCOUNTS = [];
-      ACCOUNTS_TOTAL = 0;
-      renderAccounts();
-      return;
-    }
-    if (!ACCOUNTS.length) $('#accountsBodyV2').innerHTML = renderTableStateRow(16, '账号加载失败', '请检查服务状态后刷新列表。', 'error');
-    else if (query !== accountsRenderedQuery) $('#accountsBodyV2').innerHTML = renderTableStateRow(16, '筛选结果加载失败', '请检查服务状态后刷新列表。', 'error');
-    showToast('加载账号失败: ' + e.message);
-  }
-  finally {
-    accountsLoading = false;
-    setListBusy('accountsPanelV2', false);
-    if (accountsReloadQueued) {
-      accountsReloadQueued = false;
-      void loadAccounts();
-    }
-  }
-}
-function applyAccountStatusSnapshot(account, item, statusFields = []) {
-  const revision = account.plan_details_revision;
-  // 缺失字段也是权威清空，避免 Object.assign 遗留上轮状态。
-  statusFields.forEach(key => { delete account[key]; });
-  Object.assign(account, item);
-  if (item.plan_summary && revision !== item.plan_details_revision) {
-    const promotions = rows => Array.isArray(rows) ? rows.map(item => ({...item, plan: 'plus'})) : null;
-    account.account_promotions = promotions(item.plan_summary.promotions);
-    account.plan_check_country_results = item.plan_summary.countries.map(country => {
-      const {promotions: items, ...state} = country;
-      return {...state, ...(Array.isArray(items) ? {result: {account_promotions: promotions(items)}} : {})};
-    });
-    delete account.promotion_query_snapshot;
-    account._planDetailsPending = true;
-  }
-}
-function loadAccountPlanDetails(account) {
-  if (!account?._planDetailsPending) return Promise.resolve(account);
-  if (account._planDetailsRequest) return account._planDetailsRequest;
-  const revision = account.plan_details_revision;
-  const request = api(`/api/accounts/${encodeURIComponent(account.id)}/plan-details`).then(result => {
-    if (account.plan_details_revision === revision) {
-      Object.assign(account, result.item || {});
-      account._planDetailsPending = false;
-      return account;
-    }
-    // 等待期间有新摘要时，让当前打开动作继续等待最新明细。
-    if (account._planDetailsRequest === request) delete account._planDetailsRequest;
-    return loadAccountPlanDetails(account);
-  }).finally(() => { if (account._planDetailsRequest === request) delete account._planDetailsRequest; });
-  account._planDetailsRequest = request;
-  return request;
+  return window.AccountsPage?.refresh();
 }
 async function pollAccountPlanStatuses() {
-  if (planStatusLoading || accountsLoading || accountSearchErrorQuery === accountAdvancedSearchQuery) return;
-  planStatusLoading = true;
-  try {
-    const params = accountListQueryParams().toString();
-    const snapshot = await api(`/api/accounts/plan-check-status?${params}&compact=1`);
-    if (accountsLoading || params !== accountListQueryParams().toString()) return;
-    const items = snapshot.items || [];
-    const accountById = new Map(ACCOUNTS.map(r => [Number(r.id), r]));
-    const hasUnknown = items.some(item => !accountById.has(Number(item.id)));
-    if (hasUnknown || items.length !== ACCOUNTS.length || Number(snapshot.total || 0) !== ACCOUNTS_TOTAL) {
-      planStatusRevision = snapshot.revision || '';
-      await loadAccounts();
-      return;
-    }
-    if ((snapshot.revision || '') !== planStatusRevision) {
-      let needsFullReload = false;
-      items.forEach(item => {
-        const account = accountById.get(Number(item.id));
-        const wasChecking = ['queued', 'running'].includes(account?.plan_check_status);
-        const isChecking = ['queued', 'running'].includes(item.plan_check_status);
-        const wasExtracting = ['queued', 'running'].includes(account?.extract_link_status);
-        const isExtracting = ['queued', 'running'].includes(item.extract_link_status);
-        if (wasChecking && !isChecking) needsFullReload = true;
-        if (wasExtracting && !isExtracting) needsFullReload = true;
-        applyAccountStatusSnapshot(account, item, snapshot.status_fields || []);
-      });
-      planStatusRevision = snapshot.revision || '';
-      if (needsFullReload) await loadAccounts();
-      else renderAccounts();
-    }
-  } catch(e) {}
-  finally { planStatusLoading = false; }
-}
-function _codexCell(r) {
-  const s = r.codex_status || '';
-  const exec = r.codex_execution_status || '';
-  const err = r.codex_error || '';
-  const titleAttr = err ? ` title="${esc(err)}"` : '';
-  if (['queued','running','cancelling'].includes(exec)) return `<span class="pill status-running">${exec === 'queued' ? '排队中' : exec === 'cancelling' ? '停止中' : '补跑中'}</span>`;
-  if (s === 'success') return `<span class="pill status-success">成功</span>`;
-  if (s === 'retrying') return `<span class="pill status-running">补跑中</span>`;
-  if (s === 'stopped') return `<span class="pill status-used"${titleAttr}>已停止</span>`;
-  if (s === 'failed') return `<span class="pill status-failed"${titleAttr}>失败</span>`;
-  if (s === 'pending_confirmation' || r.codex_credential_state === 'pending_confirmation') return `<span class="pill status-used"${titleAttr}>凭据核验缺失</span>`;
-  if (s === 'skipped') return `<span class="pill status-used">已跳过</span>`;
-  if (s === 'deactivated') return `<span class="pill status-failed" title="账号已被 OpenAI 删除/停用/封禁，无法授权">已废号</span>`;
-  return `<span class="muted">-</span>`;
+  return window.AccountsPage?.pollStatuses();
 }
 function _codexCellV2(r) {
   if (accountIsDeactivated(r)) return '<span class="acc-v2-codex is-fail" title="账号已确认停用/封禁">封号</span>';
@@ -331,6 +179,8 @@ let _accountsTooltipNode = null;
 let _accountsTooltipTarget = null;
 let _accountsTooltipDescription = null;
 let _accountsTooltipHideTimer = null;
+let _accountsTooltipSession = null;
+let _accountsTooltipOpenGeneration = 0;
 
 function rememberTaskTooltipView() {
   return {
@@ -353,6 +203,10 @@ function _accountsTooltipSelector() {
 
 function _hideAccountsTooltip() {
   clearTimeout(_accountsTooltipHideTimer);
+  const session = _accountsTooltipSession;
+  _accountsTooltipSession = null;
+  ++_accountsTooltipOpenGeneration;
+  session?.lease?.release();
   if (_accountsTooltipNode) { _accountsTooltipNode.classList.remove('show'); _accountsTooltipNode.hidden = true; }
   if (_accountsTooltipTarget) {
     if (_accountsTooltipDescription == null) _accountsTooltipTarget.removeAttribute('aria-describedby');
@@ -360,6 +214,58 @@ function _hideAccountsTooltip() {
   }
   _accountsTooltipTarget = null;
   _accountsTooltipDescription = null;
+}
+
+function closeAccountsVueTooltip() {
+  const target = _accountsTooltipTarget;
+  const focused = _accountsTooltipNode?.contains(document.activeElement);
+  _hideAccountsTooltip();
+  if (focused && target?.isConnected) target.focus?.({preventScroll:true});
+}
+
+function syncAccountsVueTooltip() {
+  // A Vue v-html replacement need not emit mouseleave for its old target.
+  if (_accountsTooltipTarget && !_accountsTooltipTarget.isConnected) _hideAccountsTooltip();
+}
+
+function _accountsTooltipIsCurrent(session) {
+  syncAccountsVueTooltip();
+  return Boolean(session && _accountsTooltipSession === session && session.openGeneration === _accountsTooltipOpenGeneration
+    && _accountsTooltipTarget === session.target && session.target.isConnected);
+}
+
+function _loadAccountsTooltipDetails(target) {
+  const cell = target.closest('.col-trial');
+  if (!cell) return;
+  const accountId = target.closest('tr')?.querySelector?.('[data-account-id]')?.dataset?.accountId;
+  if (!accountId) return;
+  const facade = window.AccountsPage;
+  const owner = facade?.isReady?.() ? facade : null;
+  if (!owner) return;
+  const row = owner.getRowSnapshot(String(accountId));
+  if (!row) return;
+  const session = {target, id: String(accountId), account: _copyAccountConsumerSnapshot(row),
+    lease: null, message: target.dataset.accountsTooltip, openGeneration: ++_accountsTooltipOpenGeneration};
+  _accountsTooltipSession = session;
+  const index = [...cell.querySelectorAll('[data-accounts-tooltip]')].indexOf(target);
+  void (async () => {
+    try {
+      session.lease = owner.openPlanDetailsConsumer(session.id);
+      const result = await session.lease.loadPlanDetails(session.id, session.lease.openGeneration);
+      if (!_accountsTooltipIsCurrent(session)) return;
+      Object.assign(session.account, _accountConsumerDetails(result, session.id));
+      if (!_accountsTooltipIsCurrent(session)) return;
+      const holder = document.createElement('div');
+      holder.innerHTML = _promotionCell(session.account);
+      const fresh = holder.querySelectorAll('[data-accounts-tooltip]')[index];
+      if (!fresh) return;
+      session.message = fresh.dataset.accountsTooltip;
+      // Keep the Vue-owned row and its DOM dataset unchanged.
+      _showAccountsTooltip(target);
+    } catch (_) {
+      // The summary remains useful when the optional expanded detail fails.
+    }
+  })();
 }
 
 function _scheduleAccountsTooltipHide() {
@@ -371,23 +277,12 @@ function _scheduleAccountsTooltipHide() {
 }
 
 function _showAccountsTooltip(target) {
-  const accountId = target?.closest?.('tr')?.querySelector?.('[data-account-id]')?.dataset?.accountId;
-  const account = ACCOUNTS.find(item => Number(item.id) === Number(accountId));
-  if (target?.closest?.('.col-trial') && account?._planDetailsPending && !target._planDetailsLoading) {
-    target._planDetailsLoading = true;
-    const index = [...target.closest('.col-trial').querySelectorAll('[data-accounts-tooltip]')].indexOf(target);
-    void loadAccountPlanDetails(account).then(() => {
-      if (!target.isConnected || account._planDetailsPending) return;
-      const holder = document.createElement('div');
-      holder.innerHTML = _promotionCell(account);
-      const fresh = holder.querySelectorAll('[data-accounts-tooltip]')[index];
-      if (fresh) target.dataset.accountsTooltip = fresh.dataset.accountsTooltip;
-      if (_accountsTooltipTarget === target) _showAccountsTooltip(target);
-    }).catch(() => {}).finally(() => { target._planDetailsLoading = false; });
-  }
-  const message = target?.dataset?.accountsTooltip || '';
+  const sameTarget = _accountsTooltipTarget === target;
+  const message = sameTarget && _accountsTooltipSession?.target === target
+    ? _accountsTooltipSession.message : target?.dataset?.accountsTooltip || '';
   if (!message || !target.isConnected || !target.getClientRects().length) return;
-  _hideAccountsTooltip();
+  clearTimeout(_accountsTooltipHideTimer);
+  if (!sameTarget) _hideAccountsTooltip();
   if (!_accountsTooltipNode) {
     _accountsTooltipNode = document.createElement('div');
     _accountsTooltipNode.className = 'accounts-hover-tooltip';
@@ -400,7 +295,7 @@ function _showAccountsTooltip(target) {
   }
 
   _accountsTooltipTarget = target;
-  _accountsTooltipDescription = target.getAttribute('aria-describedby');
+  if (!sameTarget) _accountsTooltipDescription = target.getAttribute('aria-describedby');
   target.setAttribute('aria-describedby', [_accountsTooltipDescription, _accountsTooltipNode.id].filter(Boolean).join(' '));
   _accountsTooltipNode.classList.toggle('is-task-step', Boolean(target.closest('#accountTaskStageProgress, #batchProgressListV2, [data-account-task-result-tooltip]')));
   _accountsTooltipNode.classList.toggle('is-promotion', Boolean(target.closest('.col-trial')));
@@ -422,6 +317,7 @@ function _showAccountsTooltip(target) {
   }
   _accountsTooltipNode.style.left = `${left}px`;
   _accountsTooltipNode.style.top = `${Math.max(padding, Math.min(top, window.innerHeight - tipRect.height - padding))}px`;
+  if (!sameTarget) _loadAccountsTooltipDetails(target);
 }
 
 function bindAccountsHoverTooltips() {
@@ -1355,108 +1251,35 @@ function _accountDetailMarkup(r) {
     </div>
   </div>`;
 }
-async function refreshAccountRoxyProfile(account) {
-  if (!account || !account.id) return;
-  $('#accountDetailBody').innerHTML = _accountDetailMarkup(account);
-  try {
-    const result = await api(`/api/accounts/${encodeURIComponent(account.id)}/roxy-profile`);
-    account.roxy_profile_id = String(result.profile_id || '').trim();
-    account.roxy_profile_name = String(result.window_name || '').trim();
-  } catch (_) {
-    account.roxy_profile_id = '';
-    account.roxy_profile_name = '';
-  } finally {
-    if (Number($('#accountDetailDrawer')?.dataset.accountId || 0) === Number(account.id)) {
-      $('#accountDetailBody').innerHTML = _accountDetailMarkup(account);
-    }
+function _copyAccountConsumerSnapshot(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function _accountConsumerDetails(result, id) {
+  if (!result || String(result.accountId) !== String(id) || !result.item || typeof result.item !== 'object'
+      || Array.isArray(result.item) || (result.item.id != null && String(result.item.id) !== String(id))) {
+    throw new Error('账号详情响应不匹配');
   }
+  return _copyAccountConsumerSnapshot(result.item);
 }
-function openAccountDetail(id) {
-  const account = ACCOUNTS.find(item => Number(item.id) === Number(id));
-  if (!account) { showToast('账号详情暂不可用，请先刷新列表'); return; }
-  $('#accountDetailDrawer').dataset.accountId = String(account.id);
-  account.roxy_profile_id = '';
-  account.roxy_profile_name = '';
-  $('#accountDetailTitle').textContent = account.email || `账号 #${account.id}`;
-  $('#accountDetailSubtitle').textContent = `账号 #${account.id} · ${facetLabel('source', account.email_source) || '未知来源'}`;
-  $('#accountDetailBody').innerHTML = _accountDetailMarkup(account);
-  $('#accountDetailDrawer').classList.remove('hidden');
-  $('#accountDetailBackdrop').classList.remove('hidden');
-  $('#accountDetailBackdrop').setAttribute('aria-hidden', 'false');
-  updateModalScrollLock();
-  $('#btnCloseAccountDetail')?.focus({preventScroll:true});
-  void loadAccountPlanDetails(account).then(() => {
-    if (Number($('#accountDetailDrawer')?.dataset.accountId || 0) === Number(account.id)) return refreshAccountRoxyProfile(account);
-  }).catch(() => {
-    if (Number($('#accountDetailDrawer')?.dataset.accountId || 0) === Number(account.id)) {
-      showToast('优惠详情加载失败，请重新打开详情重试');
-    }
-  });
-}
-function closeAccountDetail() {
-  $('#accountDetailDrawer')?.classList.add('hidden');
-  $('#accountDetailBackdrop')?.classList.add('hidden');
-  $('#accountDetailBackdrop')?.setAttribute('aria-hidden', 'true');
-  $('#accountDetailDrawer')?.removeAttribute('data-account-id');
-  updateModalScrollLock();
-}
-$('#btnCloseAccountDetail')?.addEventListener('click', closeAccountDetail);
-$('#accountDetailBackdrop')?.addEventListener('click', closeAccountDetail);
-function closeAccountsV2MoreMenus(except = null) {
-  document.querySelectorAll('.accounts-table-v2 .acc-v2-more.open').forEach(el => {
-    if (except && el === except) return;
-    el.classList.remove('open');
-  });
-}
-function positionAccountsV2MoreMenu(wrap) {
-  const btn = wrap.querySelector('.acc-v2-more-btn');
-  const menu = wrap.querySelector('.acc-v2-more-menu');
-  if (!btn || !menu) return;
-  const rect = btn.getBoundingClientRect();
-  const margin = 8;
-  const gap = 4;
-  // 每次打开重新测量自然高度；长菜单在按钮上下更宽裕的一侧滚动。
-  menu.style.maxHeight = '';
-  menu.style.boxSizing = 'border-box';
-  menu.style.overflowY = 'auto';
-  menu.style.overscrollBehavior = 'contain';
-  const menuW = Math.max(menu.offsetWidth || 148, 148);
-  const naturalHeight = menu.offsetHeight || 0;
-  const spaceBelow = Math.max(0, window.innerHeight - margin - rect.bottom - gap);
-  const spaceAbove = Math.max(0, rect.top - gap - margin);
-  const openAbove = naturalHeight > spaceBelow && spaceAbove > spaceBelow;
-  const availableHeight = openAbove ? spaceAbove : spaceBelow;
-  const menuH = Math.min(naturalHeight, availableHeight);
-  menu.style.maxHeight = `${availableHeight}px`;
-  let left = rect.right - menuW;
-  left = Math.max(margin, Math.min(left, window.innerWidth - menuW - margin));
-  const top = Math.max(margin, openAbove ? rect.top - menuH - gap : rect.bottom + gap);
-  menu.style.left = `${left}px`;
-  menu.style.top = `${top}px`;
-}
-function onAccountsMoreMenuScroll(event) {
-  if (event.target?.closest?.('.accounts-table-v2 .acc-v2-more-menu')) return;
-  closeAccountsV2MoreMenus();
-}
-function getOpenAccountsV2MoreId() {
-  const open = document.querySelector('.accounts-table-v2 .acc-v2-more.open');
-  return open?.dataset.accountMoreId || '';
-}
-function restoreAccountsV2MoreMenu(accountId) {
-  if (!accountId) return;
-  const wrap = Array.from(document.querySelectorAll('.accounts-table-v2 .acc-v2-more'))
-    .find(item => String(item.dataset.accountMoreId || '') === String(accountId));
-  if (!wrap) return;
-  const button = wrap.querySelector('.acc-v2-more-btn');
-  wrap.classList.add('open');
-  button?.setAttribute('aria-expanded', 'true');
-  positionAccountsV2MoreMenu(wrap);
-}
-document.addEventListener('keydown', event => {
-  if (event.key === 'Escape' && $('#emailChangeModal')?.classList.contains('hidden') && !$('#accountDetailDrawer')?.classList.contains('hidden')) {
-    closeAccountDetail();
+
+// The Vue page is the sole drawer owner; legacy callers only pass identity.
+function openAccountDetail(id, context = null) {
+  if (!window.AccountsPage?.isReady?.()) {
+    context?.lease?.release?.();
+    showToast('账号列表正在加载，请稍后重试');
+    return;
   }
-});
+  context?.lease?.release?.();
+  window.AccountsPage.openDetail(String(id), context?.trigger || document.activeElement);
+}
+function closeAccountDetail(restoreFocus = true) {
+  window.AccountsPage?.closeDetail(restoreFocus !== false);
+}
+// Shared modal code keeps this compatibility entry; Vue owns menu state.
+function closeAccountsV2MoreMenus() {
+  return window.AccountsPage?.closeMoreMenus?.();
+}
 function accountRegistrationDriverLabel(value) {
   return ({
     roxy: 'roxy',
@@ -1479,248 +1302,20 @@ function _htmlText(html) {
   return (div.textContent || '').replace(/\s+/g, ' ').trim();
 }
 
-function _accountRowTone(tr) {
-  const cell = tr.querySelector('.col-account-status');
-  const html = cell ? cell.innerHTML : '';
-  if (/status-(failed|error|invalid|rejected)/.test(html)) return 'bad';
-  if (/status-(warning|pending|unknown|used)/.test(html)) return 'warn';
-  return 'ok';
-}
-
-// 手机端双行列表：主行邮箱 + 状态点，次行元信息在渲染时拼好。
-function decorateAccountMobileRows(body) {
-  if (!body) return;
-  body.querySelectorAll('tr').forEach(tr => {
-    const emailCell = tr.querySelector('.col-email');
-    if (!emailCell) return;
-    const link = emailCell.querySelector('.acc-v2-email-link');
-    if (link && !link.querySelector('.acc-mobile-dot')) {
-      const dot = document.createElement('span');
-      dot.className = `acc-mobile-dot is-${_accountRowTone(tr)}`;
-      dot.setAttribute('aria-hidden', 'true');
-      link.insertBefore(dot, link.firstChild);
-    }
-    if (tr.dataset.mobileTapBound === '1') return;
-    tr.dataset.mobileTapBound = '1';
-    tr.addEventListener('click', ev => {
-      if (ev.target.closest('button, a, input, label, .acc-v2-more-menu')) return;
-      tr.querySelector('.acc-v2-email-link')?.click();
-    });
-  });
-}
-
-function renderAccounts() {
-  const openMoreId = getOpenAccountsV2MoreId();
-  const total = ACCOUNTS_TOTAL;
-  const rows = ACCOUNTS;
-  const rowHtmlV2 = (r) => {
-    const extractLink = _extractLinkCell(r);
-    const codexSummary = r.codex_error || (['queued', 'running', 'cancelling'].includes(r.codex_execution_status) ? '授权处理中' : '');
-    const mobileMeta = [
-      r.email_source,
-      _htmlText(_planCell(r)),
-      r.totp_enabled ? '2FA 已验证' : '2FA 未验证',
-      (() => { const codex = _htmlText(_codexCellV2(r)); return codex && codex !== '-' ? `Codex ${codex}` : ''; })(),
-    ].filter(value => value && value !== '-').join(' · ');
-    return `
-    <tr>
-      <td class="col-check"><input type="checkbox" class="account-row-check" data-account-id="${esc(r.id)}" ${ACCOUNT_SELECTED.has(Number(r.id)) ? 'checked' : ''}></td>
-      <td class="col-id">#${esc(r.id)}</td>
-      <td class="col-email" title="${esc([r.email || '-', r.user_name || ''].filter(Boolean).join(' · '))}">
-        <button type="button" class="acc-v2-email-link account-cell-line" data-account-detail-id="${esc(r.id)}" title="查看账号详情">
-          <span class="acc-v2-email">${esc(r.email)}${r.archived ? ' <span class="pill status-used" title="该账号已归档">归档</span>' : ''}</span>
-        </button>
-        <div class="acc-v2-sub account-cell-line account-cell-line--sub account-email-meta"><span class="account-email-name">${esc(r.user_name || '-')}</span>${_accountEmailInvalidBadge(r)}</div>
-        <div class="acc-mobile-meta">${esc(mobileMeta)}</div>
-      </td>
-      <td class="col-source">${esc(r.email_source || '-')}</td>
-      <td class="col-registration-driver" title="${esc(accountRegistrationDriverLabel(r.registration_driver))}">${esc(accountRegistrationDriverLabel(r.registration_driver))}</td>
-      <td class="col-token" data-label="Token">${_tokenCellV2(r)}</td>
-      <td class="col-account-status" data-label="账号状态">${_accountStatusCellV2(r)}</td>
-      <td class="col-small col-password" data-label="账号密码">${_passwordCellV2(r)}</td>
-      <td class="col-plan" data-label="套餐"><div class="account-cell-lines"><div class="account-cell-line">${_planCell(r)}</div>${extractLink ? `<div class="account-cell-line account-cell-line--sub">${extractLink}</div>` : ''}</div></td>
-      <td class="col-quota">${_quotaCell(r)}</td>
-      <td class="col-trial" data-label="套餐优惠">${_promotionCell(r)}</td>
-      <td class="col-small col-2fa" data-label="2FA">${_totpCellV2(r)}</td>
-      <td class="col-risk-mail">${_deactivationMailCell(r)}</td>
-      <td class="col-status" data-label="Codex"><div class="account-cell-lines"><div class="account-cell-line">${_codexCellV2(r)}</div>${codexSummary ? `<div class="account-cell-line account-cell-line--sub" title="${esc(codexSummary)}">${esc(short(codexSummary, 34))}</div>` : ''}</div></td>
-      <td class="col-time">${_accountTimesCellV2(r)}</td>
-      <td class="col-actions">
-        <div class="account-cell-lines acc-v2-actions">
-          <button type="button" class="acc-v2-detail" data-account-detail-id="${esc(r.id)}">详情</button>
-          <div class="acc-v2-more" data-account-more-id="${esc(r.id)}">
-            <button type="button" class="acc-v2-more-btn" data-acc-more-toggle aria-haspopup="true" aria-expanded="false">更多</button>
-            <div class="acc-v2-more-menu" role="menu">${_accountsV2MoreMenu(r)}</div>
-          </div>
-        </div>
-      </td>
-    </tr>`;
+function createAccountVuePresentation() {
+  return {
+    cells: {token: _tokenCellV2, account_status: _accountStatusCellV2, password: _passwordCellV2,
+      quota: _quotaCell, promotion: _promotionCell, totp: _totpCellV2, risk: _deactivationMailCell,
+      time: _accountTimesCellV2},
+    plan: _planCell, extractLink: _extractLinkCell, codex: _codexCellV2, menu: _accountsV2MoreMenu,
+    emailInvalidBadge: _accountEmailInvalidBadge, registrationDriverLabel: accountRegistrationDriverLabel,
+    facetLabel, escape: esc, short, htmlText: _htmlText,
   };
-
-  const bodyV2 = $('#accountsBodyV2');
-  if (bodyV2) {
-    bodyV2.innerHTML = rows.map(rowHtmlV2).join('') || (accountSearchErrorQuery === accountAdvancedSearchQuery
-      ? renderTableStateRow(16, '搜索条件有误', '请按输入框旁的提示修改，或清空高级搜索。', 'error')
-      : renderTableStateRow(16, '暂无匹配账号', '可移除部分搜索条件，或切换活跃与归档账号视图。'));
-    decorateAccountMobileRows(bodyV2);
-    if (openMoreId) requestAnimationFrame(() => restoreAccountsV2MoreMenu(openMoreId));
-  }
-  const summary = $('#accountsPageSummary');
-  if (summary) summary.textContent = `${total || 0} 个账号 · 当前页 ${rows.length} 条`;
-  updateAccountSelectionUi(rows);
-  _renderPager('accounts', total);
 }
 
-function updateAccountRowDensity() {
-  const wrap = document.querySelector('#accountsPanelV2 > .accounts-table-v2-wrap');
-  const table = wrap?.querySelector('table');
-  if (!table || wrap.clientHeight <= 0) return;
-  const minimum = window.matchMedia('(max-width: 860px)').matches ? 60 : 50;
-  const available = wrap.clientHeight - (table.tHead?.getBoundingClientRect().height || 0) - 2;
-  const height = Math.max(minimum, Math.min(56, Math.floor(available / 10)));
-  table.style.setProperty('--account-row-height', `${height}px`);
-}
-
-(function bindAccountRowDensity() {
-  const wrap = document.querySelector('#accountsPanelV2 > .accounts-table-v2-wrap');
-  if (wrap && typeof ResizeObserver !== 'undefined') {
-    new ResizeObserver(updateAccountRowDensity).observe(wrap);
-  }
-  window.addEventListener('resize', updateAccountRowDensity);
-})();
-
-// ---------- 常用账号操作 ----------
-const ACCOUNT_ACTION_USAGE_KEY = 'turb_account_action_usage_v1';
-const ACCOUNT_QUICK_ACTION_DEFAULTS = [
-  'btnCheckSelectedLiveV2', 'btnCheckSelectedPlansV2', 'btnRefreshSelectedTokenV2',
-  'btnExtractSelectedLinksV2', 'btnAddTwofaSelectedAccountsV2',
-];
-const ACCOUNT_QUICK_ACTIONS = {entries: new Map(), usage: {}, signature: '', pending: false};
-
-function accountActionUsageCounts(actionIds) {
-  let saved = ACCOUNT_QUICK_ACTIONS.usage;
-  try {
-    const raw = localStorage.getItem(ACCOUNT_ACTION_USAGE_KEY);
-    if (raw !== null) saved = JSON.parse(raw);
-  } catch (_) {}
-  const counts = {};
-  for (const id of actionIds) {
-    const count = saved && typeof saved === 'object' && !Array.isArray(saved) ? saved[id] : 0;
-    counts[id] = Number.isSafeInteger(count) && count > 0 ? count : 0;
-  }
-  return counts;
-}
-
-function rankAccountQuickActions(actionIds, counts) {
-  const order = [...ACCOUNT_QUICK_ACTION_DEFAULTS, ...actionIds.filter(id => !ACCOUNT_QUICK_ACTION_DEFAULTS.includes(id))];
-  return [...actionIds].sort((a, b) => (counts[b] || 0) - (counts[a] || 0) || order.indexOf(a) - order.indexOf(b)).slice(0, 5);
-}
-
-function refreshAccountQuickActions() {
-  const {entries} = ACCOUNT_QUICK_ACTIONS;
-  const quick = $('#accountsQuickActionsV2');
-  if (!quick || !entries.size) return;
-  const toolbar = $('#accountsToolbarV2');
-  const more = $('#accountsMoreActionsV2');
-  // 操作中保持按钮位置稳定，待菜单、弹窗和工具栏焦点退出后再排序。
-  if (more?.open || document.querySelector('dialog[open]') || toolbar?.contains(document.activeElement)) {
-    ACCOUNT_QUICK_ACTIONS.pending = true;
-    return;
-  }
-  const ids = Array.from(entries.keys());
-  const counts = accountActionUsageCounts(ids);
-  const ranked = rankAccountQuickActions(ids, counts);
-  const signature = ranked.join(',');
-  ACCOUNT_QUICK_ACTIONS.usage = counts;
-  ACCOUNT_QUICK_ACTIONS.pending = false;
-  if (signature === ACCOUNT_QUICK_ACTIONS.signature) return;
-  for (const {button, home} of entries.values()) home.parentNode.insertBefore(button, home.nextSibling);
-  for (const id of ranked) quick.appendChild(entries.get(id).button);
-  ACCOUNT_QUICK_ACTIONS.signature = signature;
-}
-
-function scheduleAccountQuickActionsRefresh() {
-  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(refreshAccountQuickActions);
-  else refreshAccountQuickActions();
-}
-
-function recordAccountActionUse(button) {
-  if (!button || !ACCOUNT_QUICK_ACTIONS.entries.has(button.id) || button.disabled
-      || button.classList.contains('feature-unavailable') || button.getAttribute('aria-disabled') === 'true') return;
-  const ids = Array.from(ACCOUNT_QUICK_ACTIONS.entries.keys());
-  const counts = accountActionUsageCounts(ids);
-  counts[button.id] = Math.min(Number.MAX_SAFE_INTEGER, counts[button.id] + 1);
-  ACCOUNT_QUICK_ACTIONS.usage = counts;
-  try { localStorage.setItem(ACCOUNT_ACTION_USAGE_KEY, JSON.stringify(counts)); } catch (_) {}
-  ACCOUNT_QUICK_ACTIONS.pending = true;
-  scheduleAccountQuickActionsRefresh();
-}
-
-function initAccountQuickActions() {
-  const toolbar = $('#accountsToolbarV2');
-  const more = $('#accountsMoreActionsV2');
-  const quick = $('#accountsQuickActionsV2');
-  if (!toolbar || !more || !quick || ACCOUNT_QUICK_ACTIONS.entries.size) return;
-  const buttons = Array.from(more.querySelectorAll('.toolbar-overflow-menu button[id]'));
-  if (!buttons.length) return;
-  for (const button of buttons) {
-    const home = document.createComment(`账号操作位置：${button.id}`);
-    button.parentNode.insertBefore(home, button);
-    ACCOUNT_QUICK_ACTIONS.entries.set(button.id, {button, home});
-  }
-  toolbar.addEventListener('click', event => recordAccountActionUse(event.target.closest('button[id]')), true);
-  toolbar.addEventListener('focusout', scheduleAccountQuickActionsRefresh);
-  more.addEventListener('toggle', scheduleAccountQuickActionsRefresh);
-  document.addEventListener('close', scheduleAccountQuickActionsRefresh, true);
-  window.addEventListener('storage', event => {
-    if (event.key === ACCOUNT_ACTION_USAGE_KEY) scheduleAccountQuickActionsRefresh();
-  });
-  refreshAccountQuickActions();
-}
-
-function updateAccountSelectionUi(pageRows = null) {
-  for (const id of ACCOUNT_SELECTED_EMAILS.keys()) {
-    if (!ACCOUNT_SELECTED.has(id)) ACCOUNT_SELECTED_EMAILS.delete(id);
-  }
-  const none = ACCOUNT_SELECTED.size === 0;
-  const hintV2 = $('#accountsSelectedHintV2');
-  const toolbarV2 = $('#accountsToolbarV2');
-  toolbarV2?.classList.toggle('has-selection', !none);
-  if (hintV2) hintV2.textContent = none ? '选择账号后批量操作' : `已选 ${ACCOUNT_SELECTED.size} 个账号`;
-
-  const archiveLabel = SHOW_ARCHIVED_ACCOUNTS ? '恢复选中' : '归档选中';
-  const archiveTitle = SHOW_ARCHIVED_ACCOUNTS ? '把选中的归档账号恢复到默认账号列表' : '归档选中的账号；默认账号列表将不再查询/显示这些账号';
-  const v2Ids = [
-    'btnCheckSelectedLiveV2', 'btnRefreshSelectedTokenV2', 'btnCheckSelectedPlansV2', 'btnEmailChangeSelectedV2', 'btnCheckSelectedDeactivationMailV2', 'btnExtractSelectedLinksV2',
-    'btnSetupSelectedAccountsV2', 'btnAddPasswordSelectedAccountsV2', 'btnAddTwofaSelectedAccountsV2', 'btnChangePasswordSelectedAccountsV2', 'btnChangeTwofaSelectedAccountsV2', 'btnCompleteSelectedAccountsV2', 'btnRetrySelectedRegistrationV2', 'btnUploadSelectedCodexSub2V2', 'btnReimportSelectedC2aV2', 'btnRetrySelectedCodexV2', 'btnDownloadSelectedCpaV2', 'btnStopSelectedCodexV2',
-    'btnCopySelectedTokensV2', 'btnCopySelectedLinesV2', 'btnCopySelectedEmailsV2',
-    'btnCopySelectedExtractLinksV2',
-    'btnCopySelectedPasswordsV2', 'btnCopySelectedTotpsV2',
-    'btnDownloadSelectedTxtV2', 'btnDownloadSelectedSessionsV2', 'btnArchiveSelectedAccountsV2', 'btnDeleteSelectedAccountsV2',
-    'btnMarkSelectedEmailInvalidV2', 'btnClearSelectedEmailInvalidV2',
-  ];
-  v2Ids.forEach(id => {
-    const el = document.getElementById(id);
-    if (!el) return;
-    el.disabled = none || (id === 'btnDownloadSelectedSessionsV2' && accountSessionDownloadLoading)
-      || (id === 'btnRetrySelectedRegistrationV2' && Array.from(ACCOUNT_SELECTED).some(accountId => ACCOUNT_REGISTRATION_RETRY_PENDING.has(Number(accountId))));
-    if (id === 'btnArchiveSelectedAccountsV2') {
-      el.textContent = archiveLabel;
-      el.title = archiveTitle;
-    }
-  });
-
-  if (!pageRows) pageRows = ACCOUNTS;
-  const pageIds = pageRows.map(r => Number(r.id));
-  const checkedCount = pageIds.filter(id => ACCOUNT_SELECTED.has(id)).length;
-  const cbAll = document.getElementById('accountsSelectAllV2');
-  if (cbAll) {
-    cbAll.checked = pageIds.length > 0 && checkedCount === pageIds.length;
-    cbAll.indeterminate = checkedCount > 0 && checkedCount < pageIds.length;
-    cbAll.disabled = pageIds.length === 0;
-  }
-  if (ACCOUNT_QUICK_ACTIONS.pending) refreshAccountQuickActions();
-}
+// Toolbar selection, pending and quick-action order are owned by the Vue shell.
+function refreshAccountQuickActions() { return window.AccountsPage?.refreshQuickActions(); }
+function updateAccountSelectionUi() { return window.AccountsPage?.syncToolbarPending?.(); }
 
 // ---------- 查活日志面板 ----------
 let liveLogEmail = null, liveLogTimer = null;
@@ -1753,1108 +1348,160 @@ async function pollLiveLog() {
 $('#btnCloseLiveLog').addEventListener('click', closeLiveLogModal);
 
 // 账号操作按钮（事件委托）
-async function onAccountsBodyClick(e) {
-  const detailBtn = e.target.closest('[data-account-detail-id]');
-  if (detailBtn) {
-    e.preventDefault();
-    openAccountDetail(Number(detailBtn.dataset.accountDetailId));
-    return;
-  }
-  const moreToggle = e.target.closest('[data-acc-more-toggle]');
-  if (moreToggle) {
-    e.preventDefault();
-    e.stopPropagation();
-    const wrap = moreToggle.closest('.acc-v2-more');
-    if (!wrap) return;
-    const willOpen = !wrap.classList.contains('open');
-    closeAccountsV2MoreMenus();
-    if (willOpen) {
-      wrap.classList.add('open');
-      moreToggle.setAttribute('aria-expanded', 'true');
-      positionAccountsV2MoreMenu(wrap);
-    }
-    return;
-  }
-  if (e.target.closest('.acc-v2-more-menu')) {
-    // 点菜单项后收起，再继续走下面的动作处理
-    closeAccountsV2MoreMenus();
-  }
-
-  const registrationRetryBtn = e.target.closest('[data-account-registration-retry]');
-  if (registrationRetryBtn) {
-    await retryAccountRegistration([Number(registrationRetryBtn.dataset.accountRegistrationRetry)], registrationRetryBtn);
-    return;
-  }
-  const registrationTaskBtn = e.target.closest('[data-account-registration-task]');
-  if (registrationTaskBtn) {
-    openAccountRegistrationRetryTasks([{
-      account_id: Number(registrationTaskBtn.dataset.accountId),
-      job_id: Number(registrationTaskBtn.dataset.accountRegistrationTask),
-    }]);
-    return;
-  }
-
-  const emailChangeBtn = e.target.closest('[data-account-email-change]');
-  if (emailChangeBtn) {
-    openEmailChangeModal(Number(emailChangeBtn.dataset.accountEmailChange), emailChangeBtn);
-    return;
-  }
-
-  const totpCopyBtn = e.target.closest('[data-account-totp-copy]');
-  if (totpCopyBtn) {
-    const id = Number(totpCopyBtn.dataset.accountTotpCopy);
-    totpCopyBtn.disabled = true;
-    totpCopyBtn.textContent = '查询中…';
-    try {
-      const result = await api(`/api/accounts/${encodeURIComponent(id)}/totp-code`);
-      if (!result.code) throw new Error('验证码为空');
-      const copied = await copyText(result.code, false);
-      showToast(copied ? `验证码已复制，剩余 ${result.remaining_seconds || 0} 秒` : '验证码已查询，但复制失败');
-    } catch(err) {
-      showToast('复制验证码失败: ' + err.message);
-    } finally {
-      totpCopyBtn.disabled = false;
-      totpCopyBtn.textContent = '复制';
-    }
-    return;
-  }
-
-  const copySecretBtn = e.target.closest('[data-account-copy-secret]');
-  if (copySecretBtn) {
-    const id = Number(copySecretBtn.dataset.accountId);
-    const field = copySecretBtn.dataset.accountCopySecret;
-    copySecretBtn.disabled = true;
-    try {
-      const value = await fetchOneAccountSecret(id, field);
-      if (!value) { showToast('可复制内容为空'); return; }
-      copyText(value);
-      showToast(field === 'access_token' ? 'Token 已复制' : (field === 'account_password' ? '账号密码已复制' : (field === 'totp_secret' ? 'TOTP 密钥已复制' : (field === 'chatgpt_session' ? 'ChatGPT session 已复制' : '账号整行已复制'))));
-    } catch(err) {
-      showToast('复制失败: ' + err.message);
-    } finally {
-      copySecretBtn.disabled = false;
-    }
-    return;
-  }
-
-  const accountSetupBtn = e.target.closest('[data-account-setup]');
-  if (accountSetupBtn) {
-    const id = Number(accountSetupBtn.dataset.accountSetup);
-    const row = ACCOUNTS.find(item => Number(item.id) === id);
-    const email = row?.email || `账号 #${id}`;
-    if (!confirm(`补齐账号配置？\n\n${email}\n\n只执行账号密码、套餐查询和 Authenticator 2FA，不执行 Codex 授权。`)) return;
-    accountSetupBtn.disabled = true;
-    try {
-      const result = await api(`/api/accounts/${encodeURIComponent(id)}/setup`, {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: '{}',
-      });
-      showToast(result.message || '已开始补齐账号配置');
-      loadAccounts();
-      const search = $('#accountTaskTargetFilterV2');
-      const typeFilter = $('#accountTaskTypeFilterV2');
-      if (search) search.value = email;
-      if (typeFilter) typeFilter.value = 'account_setup_retry';
-      PAGERS.accountTasks.page = 1;
-      activateTab('tasks');
-    } catch(err) {
-      showToast('补齐账号配置失败: ' + err.message);
-      accountSetupBtn.disabled = false;
-    }
-    return;
-  }
-
-  const accountActionBtn = e.target.closest('[data-account-action]');
-  if (accountActionBtn) {
-    const id = Number(accountActionBtn.dataset.accountId);
-    const action = String(accountActionBtn.dataset.accountAction || '').trim().toLowerCase();
-    const row = ACCOUNTS.find(item => Number(item.id) === id);
-    const email = row?.email || `账号 #${id}`;
-    const labels = {password: '补密码', twofa: '补 2FA', password_change: '修改密码', twofa_change: '修改 2FA', complete: '补全账号'};
-    if (!labels[action]) return;
-    if (!confirm(`${labels[action]}？\n\n${email}`)) return;
-    accountActionBtn.disabled = true;
-    try {
-      const result = await api(`/api/accounts/${encodeURIComponent(id)}/action`, {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({action}),
-      });
-      showToast(result.message || `${labels[action]}已入队`);
-      loadAccounts();
-      const search = $('#accountTaskTargetFilterV2');
-      const typeFilter = $('#accountTaskTypeFilterV2');
-      if (search) search.value = email;
-      if (typeFilter) typeFilter.value = result.registration_resume
-        ? 'registration_resume'
-        : ({password: 'password_setup', twofa: 'twofa_setup', password_change: 'password_change', twofa_change: 'twofa_change', complete: 'account_completion'})[action];
-      PAGERS.accountTasks.page = 1;
-      activateTab('tasks');
-    } catch(err) {
-      showToast(`${labels[action]}失败: ` + err.message);
-      accountActionBtn.disabled = false;
-    }
-    return;
-  }
-
-  const planBtn = e.target.closest('[data-plan-check]');
-  if (planBtn) {
-    await checkOnePlan(Number(planBtn.dataset.planCheck), planBtn);
-    return;
-  }
-
-  const riskMailBtn = e.target.closest('[data-deactivation-mail-check]');
-  if (riskMailBtn) {
-    await checkOneDeactivationMail(Number(riskMailBtn.dataset.deactivationMailCheck), riskMailBtn);
-    return;
-  }
-
-  const liveBtn = e.target.closest('[data-account-live-check]');
-  if (liveBtn) {
-    await checkSelectedLive([Number(liveBtn.dataset.accountLiveCheck)], liveBtn);
-    return;
-  }
-
-  const taskHistoryBtn = e.target.closest('[data-account-task-history]');
-  if (taskHistoryBtn) {
-    const search = $('#accountTaskTargetFilterV2');
-    if (search) search.value = String(taskHistoryBtn.dataset.accountTaskHistory || '');
-    PAGERS.accountTasks.page = 1;
-    activateTab('tasks');
-    return;
-  }
-
-  const delBtn = e.target.closest('[data-account-delete]');
-  if (delBtn) {
-    await deleteAccount(Number(delBtn.dataset.accountDelete), delBtn.dataset.email, delBtn);
-    return;
-  }
-
-  const archiveBtn = e.target.closest('[data-account-archive]');
-  if (archiveBtn) {
-    await archiveOneAccount(Number(archiveBtn.dataset.accountArchive), archiveBtn.dataset.archived === '1', archiveBtn);
-    return;
-  }
-
-  const restoreBtn = e.target.closest('[data-account-restore]');
-  if (restoreBtn) {
-    await restoreDeactivatedAccount(Number(restoreBtn.dataset.accountRestore), restoreBtn);
-    return;
-  }
-
-  const emailInvalidBtn = e.target.closest('[data-account-email-invalid]');
-  if (emailInvalidBtn) {
-    await setAccountsEmailInvalid([Number(emailInvalidBtn.dataset.accountEmailInvalid)], emailInvalidBtn.dataset.invalid === '1', emailInvalidBtn);
-    return;
-  }
-
-  const extractBtn = e.target.closest('[data-extract-link]');
-  if (extractBtn) {
-    await extractOneLink(Number(extractBtn.dataset.extractLink), extractBtn);
-    return;
-  }
-
-  const qrBtn = e.target.closest('[data-qr-url]');
-  if (qrBtn) {
-    const url = qrBtn.dataset.qrUrl || '';
-    if (!url) { showToast('二维码地址为空'); return; }
-    openQrModal(url);
-    return;
-  }
-
-  const stopCodexBtn = e.target.closest('[data-codex-stop]');
-  if (stopCodexBtn) {
-    const email = stopCodexBtn.dataset.codexStop;
-    if (!confirm(`确定停止该账号的 Codex 补跑吗？\n\n${email}\n\n会发送停止信号并将状态标记为“已停止”。`)) return;
-    stopCodexBtn.disabled = true;
-    try {
-      const r = await api('/api/codex/stop', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({email}) });
-      showToast(r.message || '已发送停止信号');
-      loadAccounts();
-    } catch(err) {
-      showToast('停止失败: ' + err.message);
-      stopCodexBtn.disabled = false;
-    }
-    return;
-  }
-
-  const resetBtn = e.target.closest('[data-codex-reset-retrying]');
-  if (resetBtn) {
-    const email = resetBtn.dataset.codexResetRetrying;
-    if (!confirm(`确定重置该账号的 Codex「补跑中」状态吗？\n\n${email}\n\n重置后状态会变为“失败”，可再次点击“补跑 Codex”。`)) return;
-    resetBtn.disabled = true;
-    try {
-      const r = await api('/api/codex/reset-retrying', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({email, status:'failed'}) });
-      showToast(r.message || '已重置补跑状态');
-      loadAccounts();
-    } catch(err) {
-      showToast('重置失败: ' + err.message);
-      resetBtn.disabled = false;
-    }
-    return;
-  }
-
-  const btn = e.target.closest('[data-codex-retry]');
-  if (!btn) return;
-  const email = btn.dataset.codexRetry;
-  if (!confirm(`重新跑 Codex 授权？\n\n${email}\n\n按实际验证要求使用邮箱 OTP（自动收）。手机接码仅在开关开启且遇到手机验证时使用；关闭后遇到手机验证会报错退出。\n\n补跑会在后台进行，完成后状态自动更新。`)) return;
-  btn.disabled = true;
-  try {
-    const r = await api('/api/codex/retry', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({email}) });
-    showToast(r.message || '已开始补跑');
-    loadAccounts();
-    const search = $('#accountTaskTargetFilterV2');
-    const typeFilter = $('#accountTaskTypeFilterV2');
-    if (search) search.value = email;
-    if (typeFilter) typeFilter.value = 'codex_retry';
-    PAGERS.accountTasks.page = 1;
-    activateTab('tasks');
-  } catch(err) {
-    showToast('触发补跑失败: ' + err.message);
-    btn.disabled = false;
-  }
+async function copyOneAccountTotp(id, btn, context = null) {
+  context = captureAccountActionContext(context, [id]);
+  if (!window.AccountsPage?.isReady?.()) { showToast('账号列表正在加载，请稍后重试'); return; }
+  return window.AccountsPage.invokeAction('account-totp-copy', context, btn);
 }
-function onAccountsBodyChange(e) {
-  const cb = e.target.closest('.account-row-check');
-  if (!cb) return;
-  const id = Number(cb.dataset.accountId);
-  if (cb.checked) {
-    ACCOUNT_SELECTED.add(id);
-    const account = ACCOUNTS.find(item => Number(item.id) === id);
-    if (account?.email) ACCOUNT_SELECTED_EMAILS.set(id, account.email);
-  } else {
-    ACCOUNT_SELECTED.delete(id);
-    ACCOUNT_SELECTED_EMAILS.delete(id);
-  }
-  updateAccountSelectionUi();
+
+async function copyOneAccountSecret(id, field, btn, context = null) {
+  context = captureAccountActionContext(context, [id]);
+  if (!window.AccountsPage?.isReady?.()) { showToast('账号列表正在加载，请稍后重试'); return; }
+  return window.AccountsPage.invokeAction(`account-copy-secret:${field}`, context, btn);
 }
-function syncAccountsSelectAll(checked) {
-  const pageRows = ACCOUNTS;
-  if (checked) pageRows.forEach(r => { ACCOUNT_SELECTED.add(Number(r.id)); ACCOUNT_SELECTED_EMAILS.set(Number(r.id), r.email); });
-  else pageRows.forEach(r => { ACCOUNT_SELECTED.delete(Number(r.id)); ACCOUNT_SELECTED_EMAILS.delete(Number(r.id)); });
-  renderAccounts();
+
+async function setupOneAccount(id, btn, context = null) {
+  context = captureAccountActionContext(context, [id]);
+  if (!context || !window.AccountsPage?.isReady()) { showToast('账号列表正在加载，请稍后重试'); return; }
+  return window.AccountsPage.invokeAction('account-setup', context, btn);
 }
-(function bindAccountsV2Events() {
-  const bodyV2 = $('#accountsBodyV2');
-  if (bodyV2) {
-    bodyV2.addEventListener('click', onAccountsBodyClick);
-    bodyV2.addEventListener('change', onAccountsBodyChange);
-  }
-  const selectAllV2 = $('#accountsSelectAllV2');
-  if (selectAllV2) selectAllV2.addEventListener('change', (e) => syncAccountsSelectAll(e.target.checked));
-  document.addEventListener('click', (e) => {
-    if (e.target.closest('.acc-v2-more')) return;
-    closeAccountsV2MoreMenus();
-  });
-  window.addEventListener('scroll', onAccountsMoreMenuScroll, true);
-  window.addEventListener('resize', () => closeAccountsV2MoreMenus());
-})();
-function setAccountsFilterToggle(el, on) {
-  if (!el) return;
-  el.classList.toggle('is-active', !!on);
-  el.setAttribute('aria-pressed', on ? 'true' : 'false');
+
+async function runOneAccountAction(id, action, btn, context = null) {
+  context = captureAccountActionContext(context, [id]);
+  if (!context || !window.AccountsPage?.isReady()) { showToast('账号列表正在加载，请稍后重试'); return; }
+  return window.AccountsPage.invokeAction('account-action:' + action, context, btn);
 }
+
+async function stopOneAccountCodex(email, btn, context = null) {
+  context = captureAccountActionContext(context);
+  if (!context || !window.AccountsPage?.isReady()) { showToast('账号列表正在加载，请稍后重试'); return; }
+  return window.AccountsPage.invokeAction('codex-stop', context, btn);
+}
+
+async function resetOneAccountCodex(email, btn, context = null) {
+  context = captureAccountActionContext(context);
+  if (!context || !window.AccountsPage?.isReady()) { showToast('账号列表正在加载，请稍后重试'); return; }
+  return window.AccountsPage.invokeAction('codex-reset-retrying', context, btn);
+}
+
+async function retryOneAccountCodex(email, btn, context = null) {
+  context = captureAccountActionContext(context);
+  if (!context || !window.AccountsPage?.isReady()) { showToast('账号列表正在加载，请稍后重试'); return; }
+  return window.AccountsPage.invokeAction('codex-retry', context, btn);
+}
+
+// Navigation retains its archived preference and delegates the active query.
 async function applyAccountsArchivedFilter(on) {
   SHOW_ARCHIVED_ACCOUNTS = !!on;
-  setAccountsFilterToggle($('#showArchivedAccountsV2'), SHOW_ARCHIVED_ACCOUNTS);
-  ACCOUNT_SELECTED.clear();
-  PAGERS.accounts.page = 1;
-  await loadAccounts();
-  await pollAccountPlanStatuses();
-}
-async function applyAccountsPlusFilter(on) {
-  SHOW_PLUS_ACCOUNTS_ONLY = !!on;
-  setAccountsFilterToggle($('#showPlusAccountsOnlyV2'), SHOW_PLUS_ACCOUNTS_ONLY);
-  ACCOUNT_SELECTED.clear();
-  PAGERS.accounts.page = 1;
-  await loadAccounts();
-  await pollAccountPlanStatuses();
-}
-async function refreshAccountsList(btn) {
-  if (!btn) return;
-  const old = btn.textContent;
-  btn.disabled = true;
-  btn.textContent = '刷新中…';
-  try {
-    planStatusRevision = '';
-    await loadAccounts();
-    await pollAccountPlanStatuses();
-    loadSummary();
-    showToast('账号列表已刷新');
-  } catch(e) {
-    showToast('刷新账号失败: ' + e.message);
-  } finally {
-    btn.textContent = old;
-    btn.disabled = false;
-  }
-}
-(function bindAccountsFilterV2() {
-  let timer = null;
-  let composing = false;
-  const search = $('#accountAdvancedSearchV2');
-  const clearSearch = $('#btnClearAccountSearchV2');
-  const syncSearch = () => { if (clearSearch) clearSearch.hidden = !search?.value; };
-  const apply = () => {
-    clearTimeout(timer);
-    accountAdvancedSearchQuery = search?.value.trim() || '';
-    accountSearchErrorQuery = null;
-    showAccountSearchError();
-    renderAccountSearchTerms([]);
-    ACCOUNT_SELECTED.clear();
-    updateAccountSelectionUi();
-    PAGERS.accounts.page = 1;
-    loadAccounts();
-  };
-  const reload = () => { clearTimeout(timer); timer = setTimeout(apply, 250); };
-  search?.addEventListener('compositionstart', () => { composing = true; clearTimeout(timer); });
-  search?.addEventListener('compositionend', () => { composing = false; syncSearch(); reload(); });
-  search?.addEventListener('input', event => {
-    syncSearch();
-    if (!composing && !event.isComposing) reload();
-  });
-  const resetSearch = () => {
-    if (!search) return;
-    search.value = '';
-    composing = false;
-    syncSearch();
-    apply();
-    search.focus();
-  };
-  search?.addEventListener('keydown', event => {
-    if (composing || event.isComposing || event.keyCode === 229) return;
-    if (event.key === 'Enter') { event.preventDefault(); apply(); }
-    if (event.key === 'Escape') { event.preventDefault(); resetSearch(); }
-  });
-  clearSearch?.addEventListener('click', resetSearch);
-  $('#accountSearchSummaryV2')?.addEventListener('click', event => {
-    const button = event.target.closest('[data-account-search-term]');
-    const term = button && accountSearchTerms[Number(button.dataset.accountSearchTerm)];
-    if (!term || !search || composing) return;
-    search.value = term.query_without;
-    syncSearch();
-    apply();
-    search.focus();
-  });
-  syncSearch();
-  ['accountIdFilterV2','qAccountsV2'].forEach(id => {
-    document.getElementById(id)?.addEventListener('input', reload);
-  });
-  ['accountSourceFilterV2','accountRegistrationDriverFilterV2','accountTokenFilterV2','accountStatusFilterV2','accountEmailStatusFilterV2','accountPasswordFilterV2','accountPlanFilterV2','accountTrialFilterV2','accountTotpFilterV2','accountRiskFilterV2','accountCodexFilterV2','dateFromAccountsV2','dateToAccountsV2'].forEach(id => {
-    document.getElementById(id)?.addEventListener('change', reload);
-  });
-
-  const archivedV2 = $('#showArchivedAccountsV2');
-  if (archivedV2) archivedV2.addEventListener('click', () => {
-    applyAccountsArchivedFilter(!SHOW_ARCHIVED_ACCOUNTS);
-  });
-  const refreshV2 = $('#btnRefreshAccountsV2');
-  if (refreshV2) refreshV2.addEventListener('click', () => refreshAccountsList(refreshV2));
-  $('#btnResetAccountFiltersV2')?.addEventListener('click', () => {
-    ['accountAdvancedSearchV2','accountIdFilterV2','qAccountsV2','accountSourceFilterV2','accountRegistrationDriverFilterV2','accountTokenFilterV2','accountStatusFilterV2','accountEmailStatusFilterV2','accountPasswordFilterV2','accountPlanFilterV2','accountTrialFilterV2','accountTotpFilterV2','accountRiskFilterV2','accountCodexFilterV2','dateFromAccountsV2','dateToAccountsV2'].forEach(id => {
-      setColumnFilterValue(document.getElementById(id), '');
-    });
-    syncSearch(); refreshColumnFilterStates(); apply();
-  });
-})();
-
-
-async function fetchAccountSecrets(ids, field) {
-  const r = await api('/api/accounts/secret-bulk', {
-    method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({account_ids: ids, field}),
-  });
-  return (r.values || []).map(x => x.value).filter(Boolean);
+  window.AccountsPage?.setArchived(SHOW_ARCHIVED_ACCOUNTS);
 }
 
-async function fetchOneAccountSecret(id, field) {
-  const r = await api(`/api/accounts/${encodeURIComponent(id)}/secret?field=${encodeURIComponent(field)}`);
-  return r.value || '';
+async function copySelectedAccountLines(context = null) {
+  context = captureAccountActionContext(context);
+  if (!window.AccountsPage?.isReady?.()) { showToast('账号列表正在加载，请稍后重试'); return; }
+  return window.AccountsPage.invokeAction('copySelectedAccountLines', context);
 }
 
-async function copySelectedAccountLines() {
-  const ids = Array.from(ACCOUNT_SELECTED).map(Number);
-  if (!ids.length) { showToast('请先选择账号'); return; }
-  try {
-    const lines = await fetchAccountSecrets(ids, 'copy_line');
-    if (!lines.length) { showToast('选中账号没有可复制整行'); return; }
-    copyText(lines.join('\n'));
-    showToast(`已复制 ${lines.length} 行`);
-  } catch(err) { showToast('复制失败: ' + err.message); }
+async function copySelectedAccountExtractLinks(context = null) {
+  context = captureAccountActionContext(context);
+  if (!window.AccountsPage?.isReady?.()) { showToast('账号列表正在加载，请稍后重试'); return; }
+  return window.AccountsPage.invokeAction('copySelectedAccountExtractLinks', context);
 }
 
-async function copySelectedAccountExtractLinks() {
-  const ids = Array.from(ACCOUNT_SELECTED).map(Number);
-  if (!ids.length) { showToast('请先选择账号'); return; }
-  try {
-    const links = await fetchAccountSecrets(ids, 'extract_link');
-    if (!links.length) { showToast('选中账号没有成功提炼地址'); return; }
-    const copied = await copyText(links.join('\n'), false);
-    showToast(copied ? `已复制 ${links.length} 个提炼地址` : '复制提炼地址失败');
-  } catch(err) { showToast('复制提炼地址失败: ' + err.message); }
+async function copySelectedAccountPasswords(context = null) {
+  context = captureAccountActionContext(context);
+  if (!window.AccountsPage?.isReady?.()) { showToast('账号列表正在加载，请稍后重试'); return; }
+  return window.AccountsPage.invokeAction('copySelectedAccountPasswords', context);
 }
 
-async function copySelectedAccountPasswords() {
-  const ids = Array.from(ACCOUNT_SELECTED).map(Number);
-  if (!ids.length) { showToast('请先选择账号'); return; }
-  try {
-    const lines = await fetchAccountSecrets(ids, 'account_password_line');
-    if (!lines.length) { showToast('选中账号均未在本地保存密码'); return; }
-    copyText(lines.join('\n'));
-    showToast(`已复制 ${lines.length} 个账号密码；本地未保存密码的账号已跳过`);
-  } catch(err) { showToast('复制密码失败: ' + err.message); }
+async function copySelectedAccountTotpSecrets(context = null) {
+  context = captureAccountActionContext(context);
+  if (!window.AccountsPage?.isReady?.()) { showToast('账号列表正在加载，请稍后重试'); return; }
+  return window.AccountsPage.invokeAction('copySelectedAccountTotpSecrets', context);
 }
 
-async function copySelectedAccountTotpSecrets() {
-  const ids = Array.from(ACCOUNT_SELECTED).map(Number);
-  if (!ids.length) { showToast('请先选择账号'); return; }
-  try {
-    const lines = await fetchAccountSecrets(ids, 'totp_secret');
-    if (!lines.length) { showToast('选中账号没有已设置的 2FA 密钥'); return; }
-    copyText(lines.join('\n'));
-    showToast(`已复制 ${lines.length} 个 2FA 密钥；未设置 2FA 的账号已跳过`);
-  } catch(err) { showToast('复制 2FA 失败: ' + err.message); }
+async function copySelectedAccountEmails(context = null) {
+  context = captureAccountActionContext(context);
+  if (!window.AccountsPage?.isReady?.()) { showToast('账号列表正在加载，请稍后重试'); return; }
+  return window.AccountsPage.invokeAction('copySelectedAccountEmails', context);
 }
 
-function bindDateFilterPanel({ btnId, panelId, fromId, toId, onApply }) {
-  const btn = document.getElementById(btnId);
-  const panel = document.getElementById(panelId);
-  if (!btn || !panel) return;
-  const wrap = panel.closest('.acc-v2-date-select');
-  const now = new Date();
-  let viewY = now.getFullYear();
-  let viewM = now.getMonth();
-  let start = document.getElementById(fromId)?.value || '';
-  let end = document.getElementById(toId)?.value || '';
-  let openSnapshot = { start, end };
-  let dirty = false;
-  if (start) { const d = new Date(start); viewY = d.getFullYear(); viewM = d.getMonth(); }
-  const fmt = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-  const setHidden = () => {
-    const f = document.getElementById(fromId); if (f) f.value = start;
-    const t = document.getElementById(toId); if (t) t.value = end;
-  };
-  const syncBtnText = () => {
-    btn.textContent = (start || end) ? `📅 ${start || '…'} ~ ${end || '…'}` : '📅 日期筛选';
-  };
-  const close = () => {
-    if (wrap) wrap.classList.remove('open');
-    else panel.classList.remove('open');
-    // 只选了开始/结束其中一端就关闭 → 还原到打开前的完整状态，避免留下残缺筛选
-    if (dirty && !(start && end)) {
-      start = openSnapshot.start;
-      end = openSnapshot.end;
-      setHidden();
-      syncBtnText();
-    }
-    dirty = false;
-  };
-
-  const render = () => {
-    const y = viewY, m = viewM;
-    const firstDay = new Date(y, m, 1);
-    const dim = new Date(y, m + 1, 0).getDate();
-    const lead = firstDay.getDay();
-    const cells = [];
-    for (let i = lead - 1; i >= 0; i--) cells.push({ d: new Date(y, m, -i), other: true });
-    for (let day = 1; day <= dim; day++) cells.push({ d: new Date(y, m, day), other: false });
-    let tail = 1;
-    while (cells.length % 7 !== 0) cells.push({ d: new Date(y, m + 1, tail++), other: true });
-    panel.innerHTML = `
-      <div class="cal">
-        <div class="cal-head">
-          <button type="button" class="cal-nav" data-cal-nav="-1" title="上个月">‹</button>
-          <span class="cal-title">${y}年${m + 1}月</span>
-          <button type="button" class="cal-nav" data-cal-nav="1" title="下个月">›</button>
-        </div>
-        <div class="cal-week">${['日', '一', '二', '三', '四', '五', '六'].map(w => `<span>${w}</span>`).join('')}</div>
-        <div class="cal-grid">
-          ${cells.map(({ d, other }) => {
-            const ds = fmt(d);
-            const cls = ['cal-cell'];
-            if (other) cls.push('other');
-            if (start && end && ds > start && ds < end) cls.push('in-range');
-            if (ds === start || ds === end) cls.push(ds === start && ds === end ? 'start end' : (ds === start ? 'start' : 'end'));
-            return `<button type="button" class="${cls.join(' ')}" data-date="${ds}" data-other="${other ? 1 : 0}">${d.getDate()}</button>`;
-          }).join('')}
-        </div>
-        <div class="cal-foot">
-          <div class="cal-foot-btns">
-            <button type="button" class="jobs-tb-btn" data-quick-date="today">今天</button>
-            <button type="button" class="jobs-tb-btn" data-quick-date="yesterday">昨天</button>
-            <button type="button" class="jobs-tb-btn" data-quick-date="3d">近3天</button>
-            <button type="button" class="jobs-tb-btn" data-quick-date="7d">近7天</button>
-          </div>
-          <div class="cal-foot-tip">双击某个日期，只看当天</div>
-        </div>
-      </div>`;
-    panel.querySelectorAll('[data-cal-nav]').forEach(b => b.addEventListener('click', (e) => {
-      e.stopPropagation();
-      viewM += Number(b.dataset.calNav);
-      if (viewM < 0) { viewM = 11; viewY--; }
-      if (viewM > 11) { viewM = 0; viewY++; }
-      render();
-    }));
-    panel.querySelectorAll('[data-date]').forEach(b => b.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const ds = b.dataset.date;
-      if (b.dataset.other === '1') {
-        const d = new Date(ds);
-        viewY = d.getFullYear(); viewM = d.getMonth();
-      }
-      dirty = true;
-      if (!start || (start && end)) { start = ds; end = ''; }
-      else { end = ds; if (end < start) [start, end] = [end, start]; }
-      setHidden();
-      syncBtnText();
-      if (start && end) { close(); if (onApply) onApply(); }
-      else render();
-    }));
-    panel.querySelectorAll('[data-date]').forEach(b => b.addEventListener('dblclick', (e) => {
-      e.stopPropagation();
-      start = b.dataset.date;
-      end = start;
-      dirty = false;
-      setHidden();
-      syncBtnText();
-      close();
-      if (onApply) onApply();
-    }));
-    panel.querySelectorAll('[data-quick-date]').forEach(b => b.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const en = new Date();
-      const st = new Date();
-      const k = b.dataset.quickDate;
-      if (k === 'yesterday') { st.setDate(st.getDate() - 1); en.setDate(en.getDate() - 1); }
-      else if (k === '3d') st.setDate(st.getDate() - 2);
-      else if (k === '7d') st.setDate(st.getDate() - 6);
-      start = fmt(st); end = fmt(en);
-      dirty = false;
-      setHidden(); syncBtnText(); close(); if (onApply) onApply();
-    }));
-  };
-
-  btn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    const willOpen = wrap ? !wrap.classList.contains('open') : !panel.classList.contains('open');
-    close();
-    if (willOpen) {
-      openSnapshot = { start, end };
-      dirty = false;
-      if (wrap) wrap.classList.add('open');
-      render();
-    }
-  });
-  document.addEventListener('click', (e) => {
-    if (e.target.closest(`#${btnId}, #${panelId}`)) return;
-    close();
-  });
-  syncBtnText();
+async function downloadSelectedAccountTxt(context = null) {
+  context = captureAccountActionContext(context);
+  if (!window.AccountsPage?.isReady?.()) { showToast('账号列表正在加载，请稍后重试'); return; }
+  return window.AccountsPage.invokeAction('downloadSelectedAccountTxt', context);
 }
 
-async function copySelectedAccountEmails() {
-  const ids = Array.from(ACCOUNT_SELECTED).map(Number);
-  if (!ids.length) { showToast('请先选择账号'); return; }
-  try {
-    const emails = await fetchAccountSecrets(ids, 'email');
-    if (!emails.length) { showToast('选中账号没有可复制的邮箱'); return; }
-    const copied = await copyText(emails.join('\n'), false);
-    showToast(copied ? `已复制 ${emails.length} 个邮箱` : '复制邮箱失败');
-  } catch(err) { showToast('复制邮箱失败: ' + err.message); }
+async function downloadSelectedAccountSessions(context = null) {
+  context = captureAccountActionContext(context);
+  if (!window.AccountsPage?.isReady?.()) { showToast('账号列表正在加载，请稍后重试'); return; }
+  return window.AccountsPage.invokeAction('downloadSelectedAccountSessions', context);
 }
 
-async function downloadSelectedAccountTxt() {
-  const ids = Array.from(ACCOUNT_SELECTED).map(Number);
-  if (!ids.length) { showToast('请先选择账号'); return; }
-  let lines = [];
-  try {
-    lines = await fetchAccountSecrets(ids, 'copy_line');
-  } catch(err) { showToast('生成 TXT 失败: ' + err.message); return; }
-  if (!lines.length) { showToast('选中账号没有可下载整行'); return; }
-  const now = new Date();
-  const pad = n => String(n).padStart(2, '0');
-  const filename = `accounts-selected-${now.getFullYear()}${pad(now.getMonth()+1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}.txt`;
-  const blob = new Blob(['\ufeff' + lines.join('\n') + '\n'], {type: 'text/plain;charset=utf-8'});
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 800);
-  showToast(`已下载 ${lines.length} 个账号 TXT`);
+async function downloadSelectedCpa(context = null) {
+  context = captureAccountActionContext(context);
+  if (!window.AccountsPage?.isReady?.()) { showToast('账号列表正在加载，请稍后重试'); return; }
+  return window.AccountsPage.invokeAction('downloadSelectedCpa', context);
 }
 
-async function downloadSelectedAccountSessions() {
-  if (accountSessionDownloadLoading) return;
-  const ids = Array.from(ACCOUNT_SELECTED).map(Number);
-  if (!ids.length) { showToast('请先选择账号'); return; }
-  const btn = $('#btnDownloadSelectedSessionsV2');
-  const old = btn?.textContent || '下载 Session';
-  accountSessionDownloadLoading = true;
-  if (btn) { btn.disabled = true; btn.textContent = '打包中…'; }
-  try {
-    const r = await api('/api/accounts/download-session-bulk', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({account_ids: ids, prepare: true}),
-    });
-    if (!r.download_url) throw new Error('服务端未返回下载地址');
-    const a = document.createElement('a');
-    a.href = r.download_url;
-    a.download = r.filename || '';
-    a.rel = 'noopener';
-    document.body.appendChild(a);
-    a.click();
-    setTimeout(() => a.remove(), 1000);
-    const addedCount = Number(r.added_count || 0);
-    const skippedCount = Number(r.skipped_count || 0);
-    if (addedCount === 0) {
-      showToast(`没有可下载的 Session，已生成结果清单，跳过 ${skippedCount} 个；开始下载，分类原因见 ZIP 内 manifest.json；Session 缺失或无效的账号请先刷新 AT，读取失败的账号请重试`);
-    } else {
-      showToast(`已打包 ${addedCount} 个账号 Session，跳过 ${skippedCount} 个；开始下载，结果见 ZIP 内 manifest.json`);
-    }
-  } catch (err) {
-    showToast('下载 Session 失败: ' + err.message);
-  } finally {
-    accountSessionDownloadLoading = false;
-    if (btn) btn.textContent = old;
-    updateAccountSelectionUi();
-  }
+async function checkOnePlan(id, btn, context = null) {
+  context = captureAccountActionContext(context, [id]);
+  if (!context || !window.AccountsPage?.isReady()) { showToast('账号列表正在加载，请稍后重试'); return; }
+  return window.AccountsPage.invokeAction('plan-check', context, btn);
 }
 
-async function downloadSelectedCpa() {
-  const ids = Array.from(ACCOUNT_SELECTED);
-  if (ids.length === 0) { showToast('请先选择账号'); return; }
-  const msg = `确定从 CPA 下载选中的 ${ids.length} 个账号的 CPA/Codex JSON 吗？\n\n会按账号邮箱匹配 CPA auth-files，成功的文件会打包成 ZIP，缺失文件会写入 manifest 错误清单。`;
-  if (!confirm(msg)) return;
-  const btn = $('#btnDownloadSelectedCpaV2');
-  const old = btn.textContent;
-  btn.disabled = true;
-  btn.textContent = '下载中…';
-  try {
-    // 先由服务端准备 ZIP，再用同源 GET 顶层下载。
-    // 这样比隐藏 iframe / blob URL 更像普通用户点击下载，Chrome 不容易挂起或标记“不安全下载”。
-    const r = await api('/api/accounts/download-cpa-bulk', {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({account_ids: ids, prepare: true}),
-    });
-    if (!r.download_url) throw new Error('服务端未返回下载地址');
-    const a = document.createElement('a');
-    a.href = r.download_url;
-    a.download = r.filename || '';
-    a.rel = 'noopener';
-    document.body.appendChild(a);
-    a.click();
-    setTimeout(() => a.remove(), 1000);
-    showToast(`已生成 ZIP，开始下载${r.error_count ? `（${r.error_count} 个失败见 manifest）` : ''}`);
-    setTimeout(loadCodex, 1200);
-  } catch(err) {
-    showToast('下载 CPA 失败: ' + err.message);
-  } finally {
-    setTimeout(() => {
-      btn.textContent = old;
-      updateAccountSelectionUi();
-    }, 1200);
-  }
+async function extractOneLink(id, btn, context = null) {
+  context = captureAccountActionContext(context, [id]);
+  if (!context || !window.AccountsPage?.isReady()) { showToast('账号列表正在加载，请稍后重试'); return; }
+  return window.AccountsPage.invokeAction('extract-link', context, btn);
 }
 
-async function checkOnePlan(id, btn) {
-  btn.disabled = true;
-  const old = btn.textContent;
-  btn.textContent = '查询中…';
-  try {
-    const r = await api('/api/accounts/check-plan', {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({account_id: id}),
-    });
-    showToast(r.message || '套餐查询已加入后台队列');
-    await pollAccountPlanStatuses();
-  } catch(err) {
-    showToast(err.message);
-    await pollAccountPlanStatuses();
-    btn.disabled = false;
-    btn.textContent = old;
-  }
+async function extractSelectedLinks(context = null) {
+  context = captureAccountActionContext(context);
+  if (!context || !window.AccountsPage?.isReady()) { showToast('账号列表正在加载，请稍后重试'); return; }
+  return window.AccountsPage.invokeAction('extractSelectedLinks', context, null);
 }
 
-async function extractOneLink(id, btn) {
-  const acc = ACCOUNTS.find(a => Number(a.id) === Number(id));
-  if (!acc) { showToast('账号不存在'); return; }
-  const plan = (acc.current_plan_type || acc.plan_type || '').toString().toLowerCase();
-  if (plan !== 'free' || !_isFreeTrialPromotion(acc)) {
-    showToast('仅支持已确认 Plus 免费试用资格的 free 账号提链；折扣优惠不支持');
-    return;
-  }
-  if (!confirm(`确定为该账号提链吗？\n\n${acc.email || ('#' + id)}\n\n提链类型按配置使用，成功会消耗 1 次 CDK。`)) return;
-  const old = btn.textContent;
-  btn.disabled = true;
-  btn.textContent = '提链中…';
-  try {
-    const queued = await api('/api/accounts/extract-link', {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({account_id: id}),
-    });
-    const fallback = queued.fallback_from && queued.link_type
-      ? `；${String(queued.fallback_from).toUpperCase()} 已失败，改用 ${String(queued.link_type).toUpperCase()}`
-      : '';
-    showToast(`提炼任务已入队${queued.task_id ? ` · 任务 #${queued.task_id}` : ''}${fallback}，可在任务中心查看日志`);
-    loadAccountTasks();
-    await pollAccountPlanStatuses();
-  } catch(err) {
-    showToast('提链失败: ' + err.message);
-    btn.disabled = false;
-    btn.textContent = old;
-  }
+async function uploadSelectedCodexSub2(context = null) {
+  context = captureAccountActionContext(context);
+  if (!context || !window.AccountsPage?.isReady()) { showToast('账号列表正在加载，请稍后重试'); return; }
+  return window.AccountsPage.invokeAction('uploadSelectedCodexSub2', context, null);
 }
 
-async function extractSelectedLinks() {
-  // 提交完整跨页选择，由服务端按最新状态逐个检查资格。
-  const ids = Array.from(ACCOUNT_SELECTED);
-  if (ids.length === 0) { showToast('请先选择账号'); return; }
-  if (!confirm(`确定为选中的 ${ids.length} 个账号批量提链吗？\n\n仅处理已确认的 Plus 免费试用账号，折扣优惠和历史待复查账号会自动跳过。成功会按账号消耗 CDK 次数。`)) return;
-  const btn = $('#btnExtractSelectedLinksV2');
-  const old = btn.textContent;
-  btn.disabled = true;
-  btn.textContent = '提链中…';
-  try {
-    const r = await api('/api/accounts/extract-link-bulk', {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({account_ids: ids}),
-    });
-    const skipped = (r.skipped_count || 0) + (r.busy_count || 0) + (r.failed_count || 0);
-    const fallbackCount = (r.started || []).filter(item => item.fallback_from).length;
-    const fallbackText = fallbackCount ? `，其中 ${fallbackCount} 个已自动跳过失败类型` : '';
-    showToast(skipped ? `已入队 ${r.started_count || 0} 个，跳过/失败 ${skipped} 个${fallbackText}` : `已入队 ${r.started_count || 0} 个${fallbackText}`);
-    loadAccountTasks();
-    await pollAccountPlanStatuses();
-  } catch(err) {
-    showToast('批量提链失败: ' + err.message);
-    updateAccountSelectionUi();
-  } finally {
-    btn.textContent = old;
-  }
+function openC2aReimportConfirm(ids, trigger, context = null) {
+  context = captureAccountActionContext(context, ids);
+  if (!context || !window.AccountsPage?.isReady()) { showToast('账号列表正在加载，请稍后重试'); return; }
+  return window.AccountsPage.openC2a(context, trigger);
+}
+function reimportSelectedC2a(event, context = null) {
+  context = captureAccountActionContext(context);
+  const button = event?.currentTarget || document.getElementById('btnReimportSelectedC2aV2');
+  if (button?.disabled) return;
+  return openC2aReimportConfirm(accountActionIds(context), button, context);
+}
+function closeC2aReimportConfirm(returnValue = 'cancel', options = {}) { return window.AccountsPage?.closeC2a(returnValue, options); }
+function submitC2aReimport() { return window.AccountsPage?.submitC2a(); }
+function showC2aReimportResult(result) { return window.AccountsPage?.showC2aResult(result); }
+function openC2aReimportTasks(items = []) { return window.AccountsPage?.openC2aTasks(items); }
+
+async function checkSelectedPlans(context = null) {
+  context = captureAccountActionContext(context);
+  if (!context || !window.AccountsPage?.isReady()) { showToast('账号列表正在加载，请稍后重试'); return; }
+  return window.AccountsPage.invokeAction('checkSelectedPlans', context, null);
 }
 
-async function uploadSelectedCodexSub2() {
-  const ids = Array.from(ACCOUNT_SELECTED);
-  if (ids.length === 0) { showToast('请先选择账号'); return; }
-  if (!confirm(`确定上传选中的 ${ids.length} 个账号的 Codex OAuth 凭证到 sub2api 吗？\n\n未完成 Codex OAuth 的账号会自动跳过。`)) return;
-  const btn = $('#btnUploadSelectedCodexSub2V2');
-  const old = btn.textContent;
-  btn.disabled = true;
-  btn.textContent = '提交上传…';
-  try {
-    const r = await api('/api/accounts/codex/upload-sub2-bulk', {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({account_ids: ids}),
-    });
-    const skipped = (r.skipped_count || 0) + (r.failed_count || 0);
-    if (r.accepted) {
-      showToast(`手动上传已入队 ${r.queued_count || 0} 个${skipped ? `，跳过/未入队 ${skipped} 个` : ''}，最终结果在任务回执中更新`);
-      trackAcceptedOperationsV2(r.queued || [], '手动上传');
-    } else {
-      showToast(skipped ? `已上传 ${r.uploaded_count || 0} 个，跳过/失败 ${skipped} 个` : `已上传 ${r.uploaded_count || 0} 个`);
-      await pollAccountPlanStatuses();
-    }
-  } catch(err) {
-    showToast('批量上传 sub2 失败: ' + err.message);
-    updateAccountSelectionUi();
-  } finally {
-    btn.textContent = old;
-    btn.disabled = false;
-  }
+
+
+async function checkOneDeactivationMail(id, btn, context = null) {
+  context = captureAccountActionContext(context, [id]);
+  if (!context || !window.AccountsPage?.isReady()) { showToast('账号列表正在加载，请稍后重试'); return; }
+  return window.AccountsPage.invokeAction('deactivation-mail-check', context, btn);
 }
 
-const C2A_REIMPORT_TASK_TYPE = 'c2a_session_reimport';
-const C2A_REIMPORT_DIALOG = {ids: [], trigger: null, submitting: false};
-
-function c2aReimportDialogElements() {
-  return {
-    dialog: $('#c2aReimportConfirmModal'),
-    count: $('#c2aReimportConfirmCountV2'),
-    status: $('#c2aReimportConfirmStatusV2'),
-    close: $('#btnCloseC2aReimportV2'),
-    cancel: $('#btnCancelC2aReimportV2'),
-    confirm: $('#btnConfirmC2aReimportV2'),
-  };
-}
-
-function setC2aReimportDialogSubmitting(submitting) {
-  const {close, cancel, confirm} = c2aReimportDialogElements();
-  if (close) close.disabled = submitting;
-  if (cancel) cancel.disabled = submitting;
-  if (confirm) {
-    confirm.disabled = submitting;
-    confirm.textContent = submitting ? '正在提交…' : '提交并入队';
-  }
-}
-
-function restoreC2aReimportTrigger() {
-  const trigger = C2A_REIMPORT_DIALOG.trigger;
-  C2A_REIMPORT_DIALOG.ids = [];
-  C2A_REIMPORT_DIALOG.trigger = null;
-  C2A_REIMPORT_DIALOG.submitting = false;
-  if (typeof trigger?.focus !== 'function') return;
-  // 等原生对话框完成关闭，再将焦点恢复到可见的触发入口。
-  trigger.focus({preventScroll: true});
-  if (typeof requestAnimationFrame !== 'function') return;
-  requestAnimationFrame(() => {
-    const moreActions = trigger.closest?.('#accountsMoreActionsV2');
-    const fallback = moreActions?.open === false ? moreActions.querySelector('summary') : trigger;
-    if (typeof fallback?.focus === 'function') fallback.focus({preventScroll: true});
-  });
-}
-
-function closeC2aReimportConfirm(returnValue = 'cancel', {force = false} = {}) {
-  const {dialog} = c2aReimportDialogElements();
-  if (!dialog?.open || (C2A_REIMPORT_DIALOG.submitting && !force)) return false;
-  dialog.close(returnValue);
-  // 测试环境的 dialog 桩不会派发 close；真实浏览器中二次调用是幂等的。
-  restoreC2aReimportTrigger();
-  return true;
-}
-
-function openC2aReimportConfirm(ids, trigger) {
-  const {dialog, count, status} = c2aReimportDialogElements();
-  if (!dialog || dialog.open || typeof dialog.showModal !== 'function') {
-    showToast('C2A 同步确认窗口不可用，请刷新页面后重试');
-    return;
-  }
-  C2A_REIMPORT_DIALOG.ids = [...ids];
-  C2A_REIMPORT_DIALOG.trigger = trigger || null;
-  C2A_REIMPORT_DIALOG.submitting = false;
-  if (count) count.textContent = String(ids.length);
-  if (status) {
-    status.hidden = true;
-    status.textContent = '';
-  }
-  setC2aReimportDialogSubmitting(false);
-  dialog.showModal();
-}
-
-function reimportSelectedC2a(event) {
-  const ids = Array.from(ACCOUNT_SELECTED);
-  if (!ids.length) { showToast('请先选择账号'); return; }
-  const btn = $('#btnReimportSelectedC2aV2');
-  if (!btn || btn.disabled) return;
-  openC2aReimportConfirm(ids, event?.currentTarget || btn);
-}
-
-async function submitC2aReimport() {
-  const ids = [...C2A_REIMPORT_DIALOG.ids];
-  const {dialog, status} = c2aReimportDialogElements();
-  if (!dialog?.open || !ids.length || C2A_REIMPORT_DIALOG.submitting) return;
-  const btn = C2A_REIMPORT_DIALOG.trigger || $('#btnReimportSelectedC2aV2');
-  const old = btn?.textContent || '';
-  let submitted = false;
-  C2A_REIMPORT_DIALOG.submitting = true;
-  if (btn) {
-    btn.disabled = true;
-    btn.textContent = '提交导入…';
-  }
-  if (status) {
-    status.hidden = false;
-    status.textContent = '正在创建 C2A 同步任务…';
-  }
-  setC2aReimportDialogSubmitting(true);
-  try {
-    const result = await api('/api/accounts/c2a/sync-bulk', {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({account_ids: ids}),
-    });
-    const skipped = Number(result.skipped_count || 0) + Number(result.failed_count || 0);
-    const queued = Array.isArray(result.queued) ? result.queued : [];
-    const receiptItems = c2aReimportTaskEntries(result).map(entry => entry.item);
-    showC2aReimportResult(result);
-    if (result.accepted) {
-      showToast(`C2A 重新导入已入队 ${result.queued_count || 0} 个${skipped ? `，未入队 ${skipped} 个（已显示具体原因）` : ''}${queued.length ? '，最终结果在任务回执中更新' : ''}`);
-      if (receiptItems.length) trackAcceptedOperationsV2(receiptItems, '重新导入 C2A', {navigate: false});
-    } else {
-      showToast(skipped ? `C2A 已重新导入 ${result.updated_count || 0} 个，跳过/失败 ${skipped} 个` : `C2A 已重新导入 ${result.updated_count || 0} 个`);
-      await loadAccounts();
-    }
-    submitted = true;
-  } catch(err) {
-    showToast('重新导入 C2A 失败: ' + err.message);
-    if (status) {
-      status.hidden = false;
-      status.textContent = `提交失败：${err.message}。请检查后再次提交。`;
-    }
-    updateAccountSelectionUi();
-  } finally {
-    C2A_REIMPORT_DIALOG.submitting = false;
-    setC2aReimportDialogSubmitting(false);
-    if (btn) {
-      btn.textContent = old;
-      btn.disabled = false;
-    }
-    if (submitted) closeC2aReimportConfirm('submitted', {force: true});
-    else updateAccountSelectionUi();
-  }
-}
-
-function c2aReimportSummary(result) {
-  const queued = Number(result.queued_count ?? result.queued?.length ?? 0);
-  const skipped = Number(result.skipped_count ?? result.skipped?.length ?? 0);
-  const failed = Number(result.failed_count ?? result.failed?.length ?? 0);
-  return `C2A 重新导入：已入队 ${queued} 个，未入队 ${skipped + failed} 个`;
-}
-
-function c2aReimportEntries(result) {
-  const queued = Array.isArray(result.queued) ? result.queued : [];
-  const skipped = Array.isArray(result.skipped) ? result.skipped : [];
-  const failed = Array.isArray(result.failed) ? result.failed : [];
-  return [
-    ...queued.map(item => ({item, state: '已入队'})),
-    ...skipped.map(item => ({item, state: '未入队'})),
-    ...failed.map(item => ({item, state: '入队失败'})),
-  ];
-}
-
-function c2aReimportTaskEntries(result) {
-  return c2aReimportEntries(result).filter(entry => Number(entry.item?.task_id) > 0);
-}
-
-function openC2aReimportTasks(items = []) {
-  const single = items.length === 1 ? items[0] : null;
-  // 保留 C2A 任务分类，避免复用注册重跑入口后清空类型筛选。
-  for (const selector of [
-    '#accountTaskIdFilterV2', '#accountTaskStatusFilterV2', '#accountTaskTargetStatusFilterV2',
-    '#accountTaskBatchFilterV2', '#accountTaskRunCountFilterV2', '#accountTaskStageFilterV2',
-    '#accountTaskDateFromV2', '#accountTaskDateToV2', '#accountTaskResultFilterV2',
-  ]) {
-    const field = $(selector);
-    if (field) field.value = '';
-  }
-  const typeFilter = $('#accountTaskTypeFilterV2');
-  if (typeFilter) typeFilter.value = C2A_REIMPORT_TASK_TYPE;
-  const targetFilter = $('#accountTaskTargetFilterV2');
-  if (targetFilter) targetFilter.value = '';
-  PAGERS.accountTasks.page = 1;
-  activateTab('tasks');
-  const taskId = Number(single?.task_id);
-  if (taskId > 0) openAccountTaskLog(taskId, Number(single?.run_id) || null);
-}
-
-function renderC2aReimportResult(result) {
-  const entries = c2aReimportEntries(result);
-  const taskEntries = entries.filter(entry => Number(entry.item?.task_id) > 0);
-  const rows = entries.map((entry, index) => {
-    const item = entry.item || {};
-    const accountId = Number(item.id);
-    const subject = Number.isInteger(accountId) && accountId > 0
-      ? `账号 #${accountId}` : `提交项 #${Number(item.input_index) || index + 1}`;
-    const details = [item.email, item.error_code, item.reason || item.error].filter(Boolean).map(String);
-    const taskIndex = taskEntries.indexOf(entry);
-    const taskId = Number(item.task_id);
-    const taskButton = taskIndex >= 0
-      ? ` <button type="button" class="jobs-tb-btn" data-c2a-reimport-task="${taskIndex}">查看任务 #${esc(taskId)}</button>` : '';
-    return `<li>${esc(subject)} · ${esc(entry.state)}${details.length ? ` · ${esc(details.join(' · '))}` : ''}${taskButton}</li>`;
-  }).join('');
-  const hasUnqueued = entries.some(entry => entry.state !== '已入队');
-  return `<span class="column-filter-summary-label">${esc(c2aReimportSummary(result))}</span>
-    ${taskEntries.length ? '<button type="button" class="jobs-tb-btn" data-c2a-reimport-tasks>打开任务中心</button>' : ''}
-    ${rows ? `<details${hasUnqueued ? ' open' : ''}><summary>查看${hasUnqueued ? '任务与未入队原因' : '任务'}</summary><ul>${rows}</ul></details>` : ''}`;
-}
-
-function showC2aReimportResult(result) {
-  const panel = $('#accountC2aReimportResultV2');
-  if (!panel) return;
-  const taskEntries = c2aReimportTaskEntries(result);
-  panel.hidden = false;
-  panel.innerHTML = renderC2aReimportResult(result);
-  panel.querySelector('[data-c2a-reimport-tasks]')?.addEventListener('click', () => {
-    openC2aReimportTasks(taskEntries.map(entry => entry.item));
-  });
-  panel.querySelectorAll('[data-c2a-reimport-task]').forEach(button => {
-    button.addEventListener('click', () => {
-      const entry = taskEntries[Number(button.dataset.c2aReimportTask)];
-      if (entry) openC2aReimportTasks([entry.item]);
-    });
-  });
-}
-
-async function checkSelectedPlans() {
-  const ids = Array.from(ACCOUNT_SELECTED);
-  if (ids.length === 0) { showToast('请先选择账号'); return; }
-  const btn = $('#btnCheckSelectedPlansV2');
-  if (!btn) return;
-  btn.disabled = true;
-  const old = btn.textContent;
-  btn.textContent = '查询中…';
-  try {
-    const r = await api('/api/accounts/check-plan-bulk', {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({account_ids: ids}),
-    });
-    const failed = r.failed_count || 0;
-    const busy = r.busy_count || 0;
-    const skipped = (r.skipped || []).length;
-    showToast(`已入队 ${r.started_count || 0} 个，查询中跳过 ${busy} 个，入队失败 ${failed} 个${skipped ? `，跳过 ${skipped} 个` : ''}${accountBulkQueueReasons(r)}`);
-    await pollAccountPlanStatuses();
-  } catch(err) {
-    showToast('批量查询失败: ' + err.message);
-    updateAccountSelectionUi();
-  } finally {
-    btn.textContent = old;
-  }
-}
-
-async function _pollDeactivationMailResults(ids, attempts = 30) {
-  const wanted = new Set((ids || []).map(Number));
-  for (let i = 0; i < attempts; i += 1) {
-    await new Promise(resolve => setTimeout(resolve, 1500));
-    await loadAccounts();
-    const visible = ACCOUNTS.filter(a => wanted.has(Number(a.id)));
-    if (visible.length && visible.every(a => !['queued','running'].includes(a.deactivation_mail_scan_status || ''))) return;
-  }
-}
-
-async function checkOneDeactivationMail(id, btn) {
-  const old = btn ? btn.textContent : '';
-  if (btn) { btn.disabled = true; btn.textContent = '扫描中…'; }
-  try {
-    await api(`/api/accounts/${encodeURIComponent(id)}/check-deactivation-mail`, { method:'POST' });
-    showToast('封号邮件扫描已入队；不会刷新 AT');
-    await loadAccounts();
-    await _pollDeactivationMailResults([id]);
-  } catch(err) {
-    showToast('扫描失败: ' + err.message);
-  } finally {
-    if (btn && btn.isConnected) { btn.disabled = false; btn.textContent = old; }
-  }
-}
-
-async function checkSelectedDeactivationMail() {
-  const ids = Array.from(ACCOUNT_SELECTED);
-  if (!ids.length) { showToast('请先选择账号'); return; }
-  const btn = $('#btnCheckSelectedDeactivationMailV2');
-  const old = btn.textContent;
-  btn.disabled = true;
-  btn.textContent = '扫描中…';
-  try {
-    const r = await api('/api/accounts/check-deactivation-mail-bulk', {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({account_ids: ids}),
-    });
-    showToast(`已入队 ${r.started_count || 0} 个，跳过 ${r.skipped_count || 0} 个；不会刷新 AT`);
-    await loadAccounts();
-    if ((r.started_count || 0) > 0) await _pollDeactivationMailResults(ids);
-  } catch(err) {
-    showToast('批量扫描失败: ' + err.message);
-  } finally {
-    btn.textContent = old;
-    updateAccountSelectionUi();
-  }
+async function checkSelectedDeactivationMail(context = null) {
+  context = captureAccountActionContext(context);
+  if (!context || !window.AccountsPage?.isReady()) { showToast('账号列表正在加载，请稍后重试'); return; }
+  return window.AccountsPage.invokeAction('checkSelectedDeactivationMail', context, null);
 }
 
 function accountBulkQueueReasons(result) {
@@ -2866,504 +1513,170 @@ function accountBulkQueueReasons(result) {
   return `；${details.join('；')}${reasons.length > 3 ? `；另有 ${reasons.length - 3} 条原因` : ''}`;
 }
 
-async function checkSelectedLive(idsArg = null, btnArg = null) {
-  const ids = idsArg || Array.from(ACCOUNT_SELECTED);
-  if (ids.length === 0) { showToast('请先选择账号'); return; }
-  const workers = getAccountOperationWorkers();
-  const msg = idsArg ? `确定查活这个账号吗？
-
-只在线验证现有 accessToken，不会发送邮箱验证码，也不会刷新 AT。` : `确定查活选中的 ${ids.length} 个账号吗？
-
-只在线验证现有 accessToken，不会发送邮箱验证码，也不会刷新 AT。
-
-并发线程数：${workers}`;
-  if (!confirm(msg)) return;
-  const btn = btnArg || $('#btnCheckSelectedLiveV2');
-  const old = btn ? btn.textContent : '';
-  if (btn) {
-    btn.disabled = true;
-    btn.textContent = '查活中…';
-  }
-  try {
-    const r = await api('/api/accounts/check-live-bulk', {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({account_ids: ids, driver: configuredLiveCheckDriver()}),
-    });
-    const skipped = (r.skipped || []).length;
-    const configuredDriver = configuredLiveCheckDriver() || '默认';
-    const effectiveDriver = r.live_check_driver || '未知';
-    showToast(`查活已入队 ${r.started_count || 0} 个，忙碌 ${r.busy_count || 0} 个，失败 ${r.failed_count || 0}${skipped ? `，跳过 ${skipped}` : ''}（配置驱动：${configuredDriver}，实际驱动：${effectiveDriver}）${accountBulkQueueReasons(r)}`);
-    const firstStarted = (r.started || [])[0];
-    if (firstStarted?.email) openLiveLog(firstStarted.email);
-    await loadAccounts();
-    loadSummary();
-  } catch(err) {
-    showToast('查活失败: ' + err.message);
-    updateAccountSelectionUi();
-  } finally {
-    if (btn) {
-      btn.textContent = old;
-      btn.disabled = false;
-    }
-  }
+async function checkSelectedLive(idsArg = null, btnArg = null, context = null) {
+  context = captureAccountActionContext(context, idsArg);
+  if (!context || !window.AccountsPage?.isReady()) { showToast('账号列表正在加载，请稍后重试'); return; }
+  return window.AccountsPage.invokeAction('checkSelectedLive', context, btnArg);
 }
 
-async function refreshSelectedToken(idsArg = null, btnArg = null) {
-  const ids = idsArg || Array.from(ACCOUNT_SELECTED);
-  if (ids.length === 0) { showToast('请先选择账号'); return; }
-  const workers = getAccountOperationWorkers();
-  const btn = btnArg || $('#btnRefreshSelectedTokenV2');
-  if (btn?.disabled) return;
-  const old = btn ? btn.textContent : '';
-  if (btn) { btn.disabled = true; btn.textContent = '读取配置…'; }
-  try {
-    const settings = await loadAccountAtRefreshUiSettings();
-    const scope = ids.length === 1 ? '这个账号' : `选中的 ${ids.length} 个账号`;
-    const msg = `确定刷新${scope}的 AT 吗？\n\n${settings.description}${settings.debugDescription ? `\n\n${settings.debugDescription}` : ''}${ids.length > 1 ? `\n\n并发线程数：${workers}` : ''}`;
-    if (!confirm(msg)) return;
-    if (btn) btn.textContent = '刷新中…';
-    const r = await api('/api/accounts/refresh-token-bulk', {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({account_ids: ids}),
-    });
-    const skipped = (r.skipped || []).length;
-    showToast(`刷新AT已入队 ${r.started_count || 0} 个，忙碌 ${r.busy_count || 0} 个，失败 ${r.failed_count || 0}${skipped ? `，跳过 ${skipped}` : ''}${accountBulkQueueReasons(r)}`);
-    const firstStarted = (r.started || [])[0];
-    if (firstStarted?.task_id) openAccountTaskLog(firstStarted.task_id, firstStarted.run_id || null);
-    else if (firstStarted?.email) openLiveLog(firstStarted.email);
-    await loadAccounts();
-    loadSummary();
-  } catch(err) {
-    showToast('刷新AT失败: ' + err.message);
-    updateAccountSelectionUi();
-  } finally {
-    if (btn) { btn.textContent = old; btn.disabled = false; }
-  }
+async function refreshSelectedToken(idsArg = null, btnArg = null, context = null) {
+  context = captureAccountActionContext(context, idsArg);
+  if (!context || !window.AccountsPage?.isReady()) { showToast('账号列表正在加载，请稍后重试'); return; }
+  return window.AccountsPage.invokeAction('refreshSelectedToken', context, btnArg);
 }
 
-async function deleteAccount(id, email, btn) {
-  if (!confirm(`确定删除账号 #${id}？\n\n${email || ''}\n\n会从本地账号列表、注册成功邮箱和 token 文件中移除。`)) return;
-  btn.disabled = true;
-  try {
-    await api(`/api/accounts/${id}/delete`, { method:'POST', headers:{'Content-Type':'application/json'}, body: '{}' });
-    ACCOUNT_SELECTED.delete(Number(id));
-    showToast('账号已删除');
-    loadAccounts(); loadSummary();
-  } catch(err) {
-    showToast('删除失败: ' + err.message);
-    btn.disabled = false;
-  }
+async function deleteAccount(id, email, btn, context = null) {
+  context = captureAccountActionContext(context, [id]);
+  if (!context || !window.AccountsPage?.isReady()) { showToast('账号列表正在加载，请稍后重试'); return; }
+  return window.AccountsPage.invokeAction('account-delete', context, btn);
 }
 
-async function setAccountsEmailInvalid(idsArg = null, invalid = true, btn = null) {
-  if (btn?.disabled) return;
-  const ids = [...new Set((idsArg || Array.from(ACCOUNT_SELECTED)).map(Number))];
-  if (!ids.length) { showToast('请先选择账号'); return; }
-  if (ids.length > 500) { showToast('单次最多操作 500 个账号'); return; }
-  const expectedEmails = {};
-  for (const id of ids) {
-    const email = ACCOUNTS.find(item => Number(item.id) === id)?.email || ACCOUNT_SELECTED_EMAILS.get(id);
-    if (!email) { showToast('部分账号缺少邮箱快照，请重新勾选后操作'); return; }
-    expectedEmails[id] = email;
-  }
-  let reason = '';
-  if (invalid) {
-    const input = prompt(`为 ${ids.length} 个账号标记邮箱失效，请填写原因（最多 300 字）`, '用户确认邮箱失效');
-    if (input === null) return;
-    reason = input.trim() || '用户确认邮箱失效';
-    if (reason.length > 300) { showToast('邮箱失效原因最多 300 字'); return; }
-  } else if (!confirm(`确定解除 ${ids.length} 个账号的邮箱失效标记？\n\n仅清除本地标记，邮箱可用性仍需确认。`)) return;
-  const old = btn?.textContent || '';
-  if (btn) { btn.disabled = true; btn.textContent = '更新中…'; }
-  try {
-    const result = await api('/api/accounts/email-invalid-bulk', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({account_ids: ids, invalid, reason, expected_emails: expectedEmails}),
-    });
-    const skipped = (result.skipped || []).length;
-    showToast(`${invalid ? '已标记邮箱失效' : '已清除本地邮箱失效标记'} ${Number(result.updated_count || 0)} 个${skipped ? `，跳过 ${skipped} 个（邮箱可能已变更）` : ''}`);
-    await loadAccounts();
-  } catch (error) {
-    showToast('更新邮箱失效标记失败: ' + error.message);
-  } finally {
-    if (btn) { btn.disabled = false; btn.textContent = old; }
-    updateAccountSelectionUi();
-  }
+async function setAccountsEmailInvalid(idsArg = null, invalid = true, btn = null, context = null) {
+  context = captureAccountActionContext(context, idsArg);
+  if (!context || !window.AccountsPage?.isReady()) { showToast('账号列表正在加载，请稍后重试'); return; }
+  return window.AccountsPage.invokeAction('setAccountsEmailInvalid:' + (invalid ? '1' : '0'), context, btn);
 }
 
-async function restoreDeactivatedAccount(id, btn) {
-  if (btn?.disabled) return;
-  const account = ACCOUNTS.find(item => Number(item.id) === Number(id));
-  if (!accountIsDeactivated(account)) {
-    showToast('当前账号没有本地停用标记，无需恢复');
-    return;
-  }
-  if (!confirm(`确定恢复账号 #${id}？\n\n已确认 OpenAI 恢复访问权限后，解除本地停用标记；历史封禁记录保留，AT 和 Codex 凭证需要重新验证。`)) return;
-  const old = btn ? btn.textContent : '';
-  if (btn) { btn.disabled = true; btn.textContent = '恢复中…'; }
-  try {
-    const result = await api(`/api/accounts/${encodeURIComponent(id)}/restore`, {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({reason: '已收到 OpenAI 恢复访问通知'}),
-    });
-    showToast(result.message || '已解除本地停用标记，请刷新 AT 重新验证');
-    await loadAccounts();
-    await loadSummary();
-  } catch(err) {
-    showToast('恢复账号失败: ' + err.message);
-  } finally {
-    if (btn) { btn.disabled = false; btn.textContent = old; }
-  }
+async function restoreDeactivatedAccount(id, btn, context = null) {
+  context = captureAccountActionContext(context, [id]);
+  if (!context || !window.AccountsPage?.isReady()) { showToast('账号列表正在加载，请稍后重试'); return; }
+  return window.AccountsPage.invokeAction('account-restore', context, btn);
 }
 
-async function archiveOneAccount(id, archived, btn) {
-  const acc = ACCOUNTS.find(a => Number(a.id) === Number(id));
-  const email = acc?.email || '';
-  const action = archived ? '归档' : '恢复';
-  if (!confirm(`确定${action}账号 #${id}？\n\n${email}\n\n${archived ? '归档后默认账号列表不会查询/显示它，可勾选“查看归档”单独查看。' : '恢复后会回到默认账号列表。'}`)) return;
-  const old = btn.textContent;
-  btn.disabled = true;
-  btn.textContent = `${action}中…`;
-  try {
-    await api(`/api/accounts/${id}/archive`, {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({archived}),
-    });
-    ACCOUNT_SELECTED.delete(Number(id));
-    showToast(archived ? '账号已归档' : '账号已恢复');
-    loadAccounts(); loadSummary();
-  } catch(err) {
-    showToast(`${action}失败: ` + err.message);
-    btn.disabled = false;
-    btn.textContent = old;
-  }
+async function archiveOneAccount(id, archived, btn, context = null) {
+  context = captureAccountActionContext(context, [id]);
+  if (!context || !window.AccountsPage?.isReady()) { showToast('账号列表正在加载，请稍后重试'); return; }
+  return window.AccountsPage.invokeAction('account-archive:' + (archived ? '1' : '0'), context, btn);
 }
 
-async function archiveSelectedAccounts() {
-  const ids = Array.from(ACCOUNT_SELECTED);
-  if (ids.length === 0) { showToast('请先选择账号'); return; }
-  const archived = !SHOW_ARCHIVED_ACCOUNTS;
-  const action = archived ? '归档' : '恢复';
-  if (!confirm(`确定${action}选中的 ${ids.length} 个账号吗？\n\n${archived ? '归档后默认账号列表不会查询/显示这些账号，可勾选“查看归档”单独查看。' : '恢复后这些账号会回到默认账号列表。'}`)) return;
-  const btn = $('#btnArchiveSelectedAccountsV2');
-  const old = btn.textContent;
-  btn.disabled = true;
-  btn.textContent = `${action}中…`;
-  try {
-    const r = await api('/api/accounts/archive-bulk', {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({account_ids: ids, archived}),
-    });
-    (r.updated || []).forEach(item => ACCOUNT_SELECTED.delete(Number(item.id)));
-    const skippedCount = (r.skipped || []).length;
-    showToast(skippedCount ? `已${action} ${r.updated_count || 0} 个，跳过 ${skippedCount} 个` : `已${action} ${r.updated_count || 0} 个`);
-    loadAccounts(); loadSummary();
-  } catch(err) {
-    showToast(`批量${action}失败: ` + err.message);
-    updateAccountSelectionUi();
-  } finally {
-    btn.textContent = old;
-  }
+async function archiveSelectedAccounts(context = null) {
+  context = captureAccountActionContext(context);
+  if (!context || !window.AccountsPage?.isReady()) { showToast('账号列表正在加载，请稍后重试'); return; }
+  return window.AccountsPage.invokeAction('archiveSelectedAccounts', context, null);
 }
 
-async function deleteSelectedAccounts() {
-  const ids = Array.from(ACCOUNT_SELECTED);
-  if (ids.length === 0) { showToast('请先选择账号'); return; }
-  if (!confirm(`确定删除选中的 ${ids.length} 个账号吗？\n\n会从本地账号列表、注册成功邮箱和 token 文件中移除。`)) return;
-  const _delBtn = $('#btnDeleteSelectedAccountsV2'); if (_delBtn) _delBtn.disabled = true;
-  try {
-    const r = await api('/api/accounts/delete-bulk', {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({account_ids: ids}),
-    });
-    (r.deleted || []).forEach(item => ACCOUNT_SELECTED.delete(Number(item.id)));
-    const skippedCount = (r.skipped || []).length;
-    showToast(skippedCount ? `已删除 ${r.deleted_count || 0} 个，跳过 ${skippedCount} 个` : `已删除 ${r.deleted_count || 0} 个`);
-    loadAccounts(); loadSummary();
-  } catch(err) {
-    showToast('批量删除失败: ' + err.message);
-    updateAccountSelectionUi();
-  }
+async function deleteSelectedAccounts(context = null) {
+  context = captureAccountActionContext(context);
+  if (!context || !window.AccountsPage?.isReady()) { showToast('账号列表正在加载，请稍后重试'); return; }
+  return window.AccountsPage.invokeAction('deleteSelectedAccounts', context, null);
 }
 
-async function stopSelectedCodex() {
-  const ids = Array.from(ACCOUNT_SELECTED);
-  if (ids.length === 0) { showToast('请先选择账号'); return; }
-  if (!confirm(`确定停止选中的 ${ids.length} 个账号的 Codex 补跑吗？\n\n会向正在补跑的任务发送停止信号，并将状态标记为“已停止”；未在补跑的账号会自动跳过。`)) return;
-  const btn = $('#btnStopSelectedCodexV2');
-  if (!btn) return;
-  btn.disabled = true;
-  try {
-    const r = await api('/api/codex/stop-bulk', {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({account_ids: ids}),
-    });
-    const skippedCount = (r.skipped || []).length;
-    showToast(skippedCount ? `已停止 ${r.stopped_count || 0} 个，跳过 ${skippedCount} 个` : `已停止 ${r.stopped_count || 0} 个`);
-    loadAccounts();
-  } catch(err) {
-    showToast('停止选中补跑失败: ' + err.message);
-    updateAccountSelectionUi();
-  }
+async function stopSelectedCodex(context = null) {
+  context = captureAccountActionContext(context);
+  if (!context || !window.AccountsPage?.isReady()) { showToast('账号列表正在加载，请稍后重试'); return; }
+  return window.AccountsPage.invokeAction('stopSelectedCodex', context, null);
 }
 
-async function retrySelectedCodex() {
-  const ids = Array.from(ACCOUNT_SELECTED);
-  if (ids.length === 0) { showToast('请先选择账号'); return; }
-  const workers = getAccountOperationWorkers();
-  const msg = `批量补跑选中的 ${ids.length} 个账号 Codex 授权？
-
-并发线程数：${workers}
-
-按实际验证要求使用邮箱 OTP。手机接码仅在开关开启且遇到手机验证时使用；关闭后遇到手机验证会报错退出。
-
-补跑中和已废号账号会自动跳过。`;
-  if (!confirm(msg)) return;
-  const btn = $('#btnRetrySelectedCodexV2');
-  if (!btn) return;
-  btn.disabled = true;
-  try {
-    const r = await api('/api/codex/retry-bulk', {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({account_ids: ids}),
-    });
-    const skippedCount = (r.skipped || []).length;
-    showToast(skippedCount ? `已开始 ${r.started_count || 0} 个，跳过 ${skippedCount} 个` : (r.message || '已开始批量补跑'));
-    loadAccounts();
-    const search = $('#accountTaskTargetFilterV2');
-    const typeFilter = $('#accountTaskTypeFilterV2');
-    if (search) search.value = '';
-    if (typeFilter) typeFilter.value = 'codex_retry';
-    PAGERS.accountTasks.page = 1;
-    activateTab('tasks');
-  } catch(err) {
-    showToast('批量补跑失败: ' + err.message);
-    updateAccountSelectionUi();
-  }
+async function retrySelectedCodex(context = null) {
+  context = captureAccountActionContext(context);
+  if (!context || !window.AccountsPage?.isReady()) { showToast('账号列表正在加载，请稍后重试'); return; }
+  return window.AccountsPage.invokeAction('retrySelectedCodex', context, null);
 }
 
-async function setupSelectedAccounts() {
-  const ids = Array.from(ACCOUNT_SELECTED).map(Number);
-  if (!ids.length) { showToast('请先选择账号'); return; }
-  if (!confirm(`确定补齐选中的 ${ids.length} 个账号配置吗？\n\n只执行：账号密码、套餐查询、Authenticator 2FA。\n不会执行 Codex 授权。`)) return;
-  const btn = $('#btnSetupSelectedAccountsV2');
-  if (!btn) return;
-  btn.disabled = true;
-  try {
-    const r = await api('/api/accounts/setup-bulk', {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({account_ids: ids}),
-    });
-    const skippedCount = (r.skipped || []).length;
-    showToast(skippedCount ? `已开始补齐 ${r.started_count || 0} 个，跳过 ${skippedCount} 个` : `已开始补齐 ${r.started_count || 0} 个账号配置`);
-    loadAccounts();
-    const search = $('#accountTaskTargetFilterV2');
-    const typeFilter = $('#accountTaskTypeFilterV2');
-    if (search) search.value = '';
-    if (typeFilter) typeFilter.value = 'account_setup_retry';
-    PAGERS.accountTasks.page = 1;
-    activateTab('tasks');
-  } catch(err) {
-    showToast('补齐账号配置失败: ' + err.message);
-    updateAccountSelectionUi();
-  }
+async function setupSelectedAccounts(context = null) {
+  context = captureAccountActionContext(context);
+  if (!context || !window.AccountsPage?.isReady()) { showToast('账号列表正在加载，请稍后重试'); return; }
+  return window.AccountsPage.invokeAction('setupSelectedAccounts', context, null);
 }
 
-function openBulkEmailChangeForSelectedAccounts(event) {
-  return openBulkEmailChangeModal(Array.from(ACCOUNT_SELECTED), event?.currentTarget || null);
+function openBulkEmailChangeForSelectedAccounts(event, context = null) {
+  context = captureAccountActionContext(context);
+  return openBulkEmailChangeModal(accountActionIds(context), event?.currentTarget || null, context);
 }
 
-async function runSelectedAccountAction(action, label, taskType) {
-  const ids = Array.from(ACCOUNT_SELECTED).map(Number);
-  if (!ids.length) { showToast('请先选择账号'); return; }
-  if (['password_change', 'twofa_change'].includes(action) && ids.length > 20) {
-    showToast('修改密码或修改 2FA 单次最多操作 20 个账号');
-    return;
-  }
-  if (!confirm(`确定${label}选中的 ${ids.length} 个账号吗？`)) return;
-  try {
-    const r = await api('/api/accounts/action-bulk', {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({account_ids: ids, action}),
-    });
-    const skipped = (r.skipped || []).length;
-    showToast(skipped ? `已开始 ${r.started_count || 0} 个，跳过 ${skipped} 个` : (r.message || `${label}已入队`));
-    loadAccounts();
-    const search = $('#accountTaskTargetFilterV2');
-    const typeFilter = $('#accountTaskTypeFilterV2');
-    if (search) search.value = '';
-    const started = Array.isArray(r.started) ? r.started : [];
-    const allRegistrationResume = started.length > 0 && started.every(item => item.registration_resume);
-    if (typeFilter) typeFilter.value = allRegistrationResume ? 'registration_resume' : taskType;
-    PAGERS.accountTasks.page = 1;
-    activateTab('tasks');
-  } catch(err) {
-    showToast(`${label}失败: ` + err.message);
-    updateAccountSelectionUi();
-  }
+async function runSelectedAccountAction(action, label, taskType, context = null) {
+  context = captureAccountActionContext(context);
+  if (!context || !window.AccountsPage?.isReady()) { showToast('账号列表正在加载，请稍后重试'); return; }
+  return window.AccountsPage.invokeAction(({password:'addPasswordSelectedAccounts',twofa:'addTwofaSelectedAccounts',password_change:'changePasswordSelectedAccounts',twofa_change:'changeTwofaSelectedAccounts',complete:'completeSelectedAccounts'})[action], context, null);
 }
-function addPasswordSelectedAccounts() { return runSelectedAccountAction('password', '补密码', 'password_setup'); }
-function addTwofaSelectedAccounts() { return runSelectedAccountAction('twofa', '补 2FA', 'twofa_setup'); }
-function changePasswordSelectedAccounts() { return runSelectedAccountAction('password_change', '修改密码', 'password_change'); }
-function changeTwofaSelectedAccounts() { return runSelectedAccountAction('twofa_change', '修改 2FA', 'twofa_change'); }
-function completeSelectedAccounts() { return runSelectedAccountAction('complete', '补全账号', 'account_completion'); }
+function addPasswordSelectedAccounts(context = null) { return runSelectedAccountAction('password', '补密码', 'password_setup', context); }
+function addTwofaSelectedAccounts(context = null) { return runSelectedAccountAction('twofa', '补 2FA', 'twofa_setup', context); }
+function changePasswordSelectedAccounts(context = null) { return runSelectedAccountAction('password_change', '修改密码', 'password_change', context); }
+function changeTwofaSelectedAccounts(context = null) { return runSelectedAccountAction('twofa_change', '修改 2FA', 'twofa_change', context); }
+function completeSelectedAccounts(context = null) { return runSelectedAccountAction('complete', '补全账号', 'account_completion', context); }
 
-function accountRegistrationRetrySummary(result) {
-  const started = Number(result.started_count ?? result.started?.length ?? 0);
-  const reused = Number(result.reused_count ?? result.reused?.length ?? 0);
-  const skipped = Number(result.skipped_count ?? result.skipped?.length ?? 0);
-  return `注册重跑：已创建 ${started} 个，进行中 ${reused} 个，跳过 ${skipped} 个`;
+function showAccountRegistrationRetryResult(result, context = null, open = items => openAccountRegistrationRetryTasks(items, context)) {
+  return window.AccountsPage?.showRegistrationResult(result, context, open);
 }
 
-function renderAccountRegistrationRetryResult(result) {
-  const started = Array.isArray(result.started) ? result.started : [];
-  const reused = Array.isArray(result.reused) ? result.reused : [];
-  const skipped = Array.isArray(result.skipped) ? result.skipped : [];
-  const tasks = [...started, ...reused];
-  const taskRows = tasks.map((item, index) => {
-    const taskId = item.task_id || item.operation_task_id;
-    const targetId = taskId || item.job_id;
-    const taskAttributes = taskId ? ` data-registration-retry-task-id="${esc(taskId)}"${item.run_id ? ` data-registration-retry-run-id="${esc(item.run_id)}"` : ''}` : '';
-    return `<li>账号 #${esc(item.account_id)} · ${index < started.length ? '已创建' : '进行中'} <button type="button" class="jobs-tb-btn" data-registration-retry-result="${index}"${taskAttributes}>查看任务${targetId ? ` #${esc(targetId)}` : ''}</button></li>`;
-  }).join('');
-  const skippedRows = skipped.map(item => `<li>账号 #${esc(item.account_id)} · ${esc(item.reason || item.error || '当前不可重跑')}</li>`).join('');
-  return `<span class="column-filter-summary-label">${esc(accountRegistrationRetrySummary(result))}</span>
-    ${tasks.length ? '<button type="button" class="jobs-tb-btn" data-registration-retry-tasks>打开任务中心</button>' : ''}
-    ${taskRows || skippedRows ? `<details><summary>查看${skipped.length ? '任务及跳过原因' : '任务'}</summary><ul>${taskRows}${skippedRows}</ul></details>` : ''}`;
-}
-
-function showAccountRegistrationRetryResult(result) {
-  const panel = $('#accountRegistrationRetryResultV2');
-  if (!panel) return;
-  panel.hidden = false;
-  panel.innerHTML = renderAccountRegistrationRetryResult(result);
-  const tasks = [...(result.started || []), ...(result.reused || [])];
-  panel.querySelector('[data-registration-retry-tasks]')?.addEventListener('click', () => openAccountRegistrationRetryTasks(tasks));
-  panel.querySelectorAll('[data-registration-retry-result]').forEach(button => {
-    button.addEventListener('click', () => {
-      const item = tasks[Number(button.dataset.registrationRetryResult)];
-      if (item) openAccountRegistrationRetryTasks([item]);
-    });
-  });
-}
-
-function openAccountRegistrationRetryTasks(items = []) {
+function openAccountRegistrationRetryTasks(items = [], context = null) {
   const single = items.length === 1 ? items[0] : null;
-  const account = single ? ACCOUNTS.find(row => Number(row.id) === Number(single.account_id)) : null;
-  // 清除历史任务筛选，避免切到任务中心后新执行被旧状态或批次条件隐藏。
-  for (const selector of [
-    '#accountTaskIdFilterV2', '#accountTaskTypeFilterV2', '#accountTaskStatusFilterV2',
-    '#accountTaskTargetStatusFilterV2', '#accountTaskBatchFilterV2', '#accountTaskRunCountFilterV2',
-    '#accountTaskStageFilterV2', '#accountTaskDateFromV2', '#accountTaskDateToV2', '#accountTaskResultFilterV2',
-  ]) {
-    const field = $(selector);
-    if (field) field.value = '';
-  }
-  const search = $('#accountTaskTargetFilterV2');
-  if (search) search.value = single?.email || account?.email || '';
-  PAGERS.accountTasks.page = 1;
-  activateTab('tasks');
+  context = captureAccountActionContext(context, single ? [single.account_id] : null);
+  const account = single && !single.email ? accountActionRow(single.account_id, context) : null;
   const taskId = single?.task_id || single?.operation_task_id;
-  if (taskId) openAccountTaskLog(Number(taskId), single.run_id ? Number(single.run_id) : null);
-  else if (single?.job_id) openLog(Number(single.job_id));
+  window.TaskCenter.open({filters: {target: single?.email || account?.email || ''},
+    taskId: taskId ? Number(taskId) : undefined, runId: single?.run_id ? Number(single.run_id) : null})
+    .then(() => { if (!taskId && single?.job_id) openLog(Number(single.job_id)); });
 }
 
-async function retryAccountRegistration(idsArg = null, btnArg = null) {
-  const ids = [...new Set((idsArg || Array.from(ACCOUNT_SELECTED)).map(Number).filter(id => Number.isInteger(id) && id > 0))];
-  if (!ids.length) { showToast('请先选择账号'); return; }
-  if (ids.some(id => ACCOUNT_REGISTRATION_RETRY_PENDING.has(id))) { showToast('所选账号的注册重跑正在提交，请稍后查看结果'); return; }
-  const btn = btnArg || $('#btnRetrySelectedRegistrationV2');
-  if (btn?.disabled) return;
-  const account = ids.length === 1 ? ACCOUNTS.find(row => Number(row.id) === ids[0]) : null;
-  const label = account?.registration_retry?.label || '重跑原注册任务';
-  const scope = ids.length === 1 ? `账号 #${ids[0]}` : `选中的 ${ids.length} 个账号`;
-  if (!confirm(`确定为${scope}${label}吗？\n\n复用原注册记录，按当前进度重跑或补齐缺失步骤。正在执行、已完成或没有原任务的账号会显示对应结果。`)) return;
-  const old = btn ? btn.textContent : '';
-  ids.forEach(id => ACCOUNT_REGISTRATION_RETRY_PENDING.add(id));
-  if (btn) { btn.disabled = true; btn.textContent = '提交中…'; }
-  let submissionConfirmed = false;
-  try {
-    const result = await api(ids.length === 1 ? `/api/accounts/${ids[0]}/registration-retry` : '/api/accounts/registration-retry-bulk', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(ids.length === 1 ? {} : {account_ids: ids}),
-    });
-    submissionConfirmed = true;
-    showToast(accountRegistrationRetrySummary(result));
-    showAccountRegistrationRetryResult(result);
-    if (ids.length === 1) {
-      const item = (result.started || [])[0] || (result.reused || [])[0];
-      if (item) openAccountRegistrationRetryTasks([item]);
-    }
-    await loadAccounts();
-  } catch (error) {
-    showToast((submissionConfirmed ? '注册重跑请求已处理，页面更新失败: ' : '注册重跑提交失败: ') + error.message);
-  } finally {
-    ids.forEach(id => ACCOUNT_REGISTRATION_RETRY_PENDING.delete(id));
-    if (btn) { btn.textContent = old; btn.disabled = false; }
-    updateAccountSelectionUi();
-  }
+async function retryAccountRegistration(idsArg = null, btnArg = null, context = null) {
+  context = captureAccountActionContext(context, idsArg);
+  if (!context || !window.AccountsPage?.isReady()) { showToast('账号列表正在加载，请稍后重试'); return; }
+  return window.AccountsPage.invokeAction('retryAccountRegistration', context, btnArg);
 }
 
-async function copySelectedAccountTokens() {
-  const ids = Array.from(ACCOUNT_SELECTED).map(Number);
-  if (!ids.length) { showToast('请先选择账号'); return; }
-  try {
-    const lines = await fetchAccountSecrets(ids, 'access_token');
-    if (!lines.length) { showToast('选中账号没有可复制 Token'); return; }
-    copyText(lines.join('\n'));
-    showToast(`已复制 ${lines.length} 个 Token`);
-  } catch(e) { showToast('复制失败: ' + e.message); }
+async function copySelectedAccountTokens(context = null) {
+  context = captureAccountActionContext(context);
+  if (!window.AccountsPage?.isReady?.()) { showToast('账号列表正在加载，请稍后重试'); return; }
+  return window.AccountsPage.invokeAction('copySelectedAccountTokens', context);
 }
-(function bindAccountsToolbarV2() {
-  const bind = (id, fn) => {
-    const el = document.getElementById(id);
-    if (el) el.addEventListener('click', fn);
+
+
+// Vue passes an action descriptor and immutable public data. No fake event,
+// selection injection, or request-time lookup of the legacy account array.
+function invokeAccountAction(action, suppliedContext, trigger = null) {
+  const context = captureAccountActionContext(suppliedContext);
+  if (!context) throw new Error('账号动作上下文不可用，请刷新后重试');
+  if (window.AccountsPage?.isActionSupported?.(action)) return window.AccountsPage.invokeAction(action, context, trigger);
+  const ids = accountActionIds(context);
+  const id = ids[0];
+  const email = context.expectedEmails[String(id)] || '';
+  const separator = action.indexOf(':');
+  const name = separator < 0 ? action : action.slice(0, separator);
+  const value = separator < 0 ? '' : action.slice(separator + 1);
+  if (name === 'bulk-from-account-filters' || name === 'bulk-from-selected-accounts') return BulkTasks.fromAccounts(name === 'bulk-from-selected-accounts', 'plan_check', {ids:[...context.accountIds],query:context.querySnapshot});
+  if (name === 'openAccountInspectionHistory') return window.AccountsPage.openInspectionHistory(trigger);
+  const bulk = {
+    copySelectedAccountTokens, copySelectedAccountLines, copySelectedAccountEmails,
+    copySelectedAccountExtractLinks, copySelectedAccountPasswords, copySelectedAccountTotpSecrets,
+    downloadSelectedAccountTxt, downloadSelectedAccountSessions, downloadSelectedCpa,
+    checkSelectedPlans, extractSelectedLinks, uploadSelectedCodexSub2,
+    checkSelectedDeactivationMail, setupSelectedAccounts, addPasswordSelectedAccounts,
+    addTwofaSelectedAccounts, changePasswordSelectedAccounts, changeTwofaSelectedAccounts,
+    completeSelectedAccounts, stopSelectedCodex, retrySelectedCodex,
+    archiveSelectedAccounts, deleteSelectedAccounts,
   };
-  bind('btnCheckSelectedPlansV2', checkSelectedPlans);
-  bind('btnEmailChangeSelectedV2', openBulkEmailChangeForSelectedAccounts);
-  bind('btnCheckSelectedDeactivationMailV2', checkSelectedDeactivationMail);
-  bind('btnRefreshSelectedTokenV2', () => refreshSelectedToken());
-  bind('btnExtractSelectedLinksV2', extractSelectedLinks);
-  bind('btnSetupSelectedAccountsV2', setupSelectedAccounts);
-  bind('btnAddPasswordSelectedAccountsV2', addPasswordSelectedAccounts);
-  bind('btnAddTwofaSelectedAccountsV2', addTwofaSelectedAccounts);
-  bind('btnChangePasswordSelectedAccountsV2', changePasswordSelectedAccounts);
-  bind('btnChangeTwofaSelectedAccountsV2', changeTwofaSelectedAccounts);
-  bind('btnCompleteSelectedAccountsV2', completeSelectedAccounts);
-  bind('btnRetrySelectedRegistrationV2', event => retryAccountRegistration(null, event.currentTarget));
-  bind('btnUploadSelectedCodexSub2V2', uploadSelectedCodexSub2);
-  bind('btnReimportSelectedC2aV2', reimportSelectedC2a);
-  bind('btnCloseC2aReimportV2', () => closeC2aReimportConfirm());
-  bind('btnCancelC2aReimportV2', () => closeC2aReimportConfirm());
-  bind('btnConfirmC2aReimportV2', submitC2aReimport);
-  const c2aDialog = $('#c2aReimportConfirmModal');
-  c2aDialog?.addEventListener('cancel', event => {
-    if (C2A_REIMPORT_DIALOG.submitting) event.preventDefault();
-  });
-  c2aDialog?.addEventListener('close', restoreC2aReimportTrigger);
-  bind('btnRetrySelectedCodexV2', retrySelectedCodex);
-  bind('btnDownloadSelectedCpaV2', downloadSelectedCpa);
-  bind('btnStopSelectedCodexV2', stopSelectedCodex);
-  bind('btnCopySelectedTokensV2', copySelectedAccountTokens);
-  bind('btnCopySelectedLinesV2', copySelectedAccountLines);
-  bind('btnCopySelectedExtractLinksV2', copySelectedAccountExtractLinks);
-  bind('btnCopySelectedEmailsV2', copySelectedAccountEmails);
-  bind('btnCopySelectedPasswordsV2', copySelectedAccountPasswords);
-  bind('btnCopySelectedTotpsV2', copySelectedAccountTotpSecrets);
-  bind('btnDownloadSelectedTxtV2', downloadSelectedAccountTxt);
-  bind('btnDownloadSelectedSessionsV2', downloadSelectedAccountSessions);
-  bind('btnArchiveSelectedAccountsV2', archiveSelectedAccounts);
-  bind('btnDeleteSelectedAccountsV2', deleteSelectedAccounts);
-  bind('btnMarkSelectedEmailInvalidV2', event => setAccountsEmailInvalid(null, true, event.currentTarget));
-  bind('btnClearSelectedEmailInvalidV2', event => setAccountsEmailInvalid(null, false, event.currentTarget));
-  initAccountQuickActions();
-})();
+  if (bulk[name]) return bulk[name](context);
+  if (name === 'checkSelectedLive') return checkSelectedLive(null, trigger, context);
+  if (name === 'refreshSelectedToken') return refreshSelectedToken(null, trigger, context);
+  if (name === 'retryAccountRegistration') return retryAccountRegistration(null, trigger, context);
+  if (name === 'reimportSelectedC2a') return openC2aReimportConfirm(ids, trigger, context);
+  if (name === 'openBulkEmailChangeForSelectedAccounts') return openBulkEmailChangeModal(ids, trigger, context);
+  if (name === 'setAccountsEmailInvalid') return setAccountsEmailInvalid(null, value !== '0', trigger, context);
+  if (name === 'openAccountInspectionStart') return openAccountInspectionStart(context, trigger);
+  if (name === 'deleteDeactivatedAccounts') return deleteDeactivatedAccounts(context);
+  if (!id) { showToast('请先选择账号'); return; }
+  if (name === 'account-setup') return setupOneAccount(id, trigger, context);
+  if (name === 'account-action') return runOneAccountAction(id, value, trigger, context);
+  if (name === 'account-copy-secret') return copyOneAccountSecret(id, value, trigger, context);
+  if (name === 'account-totp-copy') return copyOneAccountTotp(id, trigger, context);
+  if (name === 'account-registration-retry') return retryAccountRegistration([id], trigger, context);
+  if (name === 'account-registration-task') return openAccountRegistrationRetryTasks([{account_id: id, email, job_id: Number(value)}], context);
+  if (name === 'account-email-change') return openEmailChangeModal(id, trigger, context);
+  if (name === 'account-live-check') return checkSelectedLive([id], trigger, context);
+  if (name === 'account-refresh-token') return refreshSelectedToken([id], trigger, context);
+  if (name === 'plan-check') return checkOnePlan(id, trigger, context);
+  if (name === 'deactivation-mail-check') return checkOneDeactivationMail(id, trigger, context);
+  if (name === 'account-delete') return deleteAccount(id, email, trigger, context);
+  if (name === 'account-archive') return archiveOneAccount(id, value === '1', trigger, context);
+  if (name === 'account-restore') return restoreDeactivatedAccount(id, trigger, context);
+  if (name === 'account-email-invalid') return setAccountsEmailInvalid([id], value === '1', trigger, context);
+  if (name === 'extract-link') return extractOneLink(id, trigger, context);
+  if (name === 'account-task-history') return window.TaskCenter.open({filters: {target: email}});
+  if (name === 'codex-stop') return stopOneAccountCodex(email, trigger, context);
+  if (name === 'codex-reset-retrying') return resetOneAccountCodex(email, trigger, context);
+  if (name === 'codex-retry') return retryOneAccountCodex(email, trigger, context);
+  if (name === 'qr-url') { if (!value) { showToast('二维码地址为空'); return; } return openQrModal(value); }
+  if (name === 'copy-id') return copyText(copyStore.get(value));
+  throw new Error(`未支持的账号动作：${name}`);
+}

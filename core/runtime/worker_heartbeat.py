@@ -1,0 +1,197 @@
+"""Worker heartbeat lifecycle, with injected I/O and no application imports.
+
+Owns only admission reason ``heartbeat``. Generation CAS failure is permanent;
+DB failures recover on a later timely write. No permit/lease cleanup exists here.
+"""
+from __future__ import annotations
+
+import math
+import threading
+import time
+from collections.abc import Callable, Mapping
+
+
+class WorkerHeartbeat:
+    def __init__(self, *, admission, write_heartbeat: Callable, collect_status: Callable,
+                 interval: float = 5.0, freshness_budget: float = 20.0,
+                 clock: Callable = time.monotonic):
+        if (not math.isfinite(interval) or not math.isfinite(freshness_budget)
+                or interval <= 0 or freshness_budget <= interval):
+            raise ValueError('heartbeat_invalid_budget')
+        self._admission = admission
+        self._write = write_heartbeat
+        self._collect = collect_status
+        self._interval = float(interval)
+        self._budget = float(freshness_budget)
+        self._clock = clock
+        self._lock = threading.RLock()
+        self._stop = threading.Event()
+        self._threads: list[threading.Thread] = []
+        self._state = 'new'
+        self._error = None
+        self._fatal = False
+        self._started_at = None
+        self._last_success = None
+        self._inflight = False
+        self._timeout_epoch = 0
+        self._timeout_pending = False
+        self._started_threads = False
+        self._final_write_succeeded = False
+
+    def start(self) -> None:
+        with self._lock:
+            if self._started_threads and not self._stop.is_set():
+                return
+            if self._state != 'new':
+                raise RuntimeError('heartbeat_restart_requires_new_instance')
+            self._admission.block('heartbeat')
+            self._state = 'starting'
+            self._started_at = self._clock()
+            self._threads = [
+                threading.Thread(target=self._watch, name='heartbeat-watchdog', daemon=True),
+                threading.Thread(target=self._run, name='worker-heartbeat', daemon=True),
+            ]
+            try:
+                for thread in self._threads:
+                    thread.start()
+                self._started_threads = True
+            except BaseException:
+                self._stop.set()
+                self._state = 'start_failed'
+                self._error = 'heartbeat_start_failed'
+                self._fatal = True
+                raise
+
+    def _fail(self, code, *, fatal=False):
+        with self._lock:
+            self._admission.block('heartbeat')
+            if self._fatal:
+                return
+            # Error codes can change after timeout (e.g. a write failure).
+            # Invalidate old pulses once until a fresh successful pulse recovers.
+            if code == 'heartbeat_timeout' and not self._timeout_pending:
+                self._timeout_epoch += 1
+                self._timeout_pending = True
+            self._error = code
+            self._fatal = fatal
+            if not self._stop.is_set():
+                self._state = 'fenced' if code == 'heartbeat_fenced' else 'error'
+
+    def _pulse(self, *, final=False):
+        with self._lock:
+            if self._fatal or (self._stop.is_set() and not final):
+                return
+            self._inflight = True
+            timeout_epoch = self._timeout_epoch
+        started = self._clock()
+        stage = 'collect'
+        try:
+            if final:
+                # Component teardown may already make collection unavailable;
+                # shutdown still publishes a minimal truthful nonready status.
+                payload = {'state': 'stopping', 'ready': False}
+            else:
+                payload = self._collect()
+                if not isinstance(payload, Mapping):
+                    raise ValueError('heartbeat_invalid_collector')
+                payload = dict(payload)
+            with self._lock:
+                if self._clock() - started >= self._budget:
+                    self._fail('heartbeat_timeout')
+                    return
+                if self._stop.is_set() and not final:
+                    return
+            if final:
+                payload['state'], payload['ready'] = 'stopping', False
+            stage = 'write'
+            accepted = self._write(payload)
+            if accepted is not True:
+                self._fail('heartbeat_fenced', fatal=True)
+                return
+            with self._lock:
+                if final:
+                    self._final_write_succeeded = True
+                    return
+                if self._stop.is_set() or self._fatal:
+                    return
+                if self._clock() - started >= self._budget:
+                    self._fail('heartbeat_timeout')
+                    return
+                if timeout_epoch != self._timeout_epoch:
+                    return
+                self._timeout_pending = False
+                self._last_success = self._clock()
+                self._state, self._error = 'running', None
+                self._admission.unblock('heartbeat')
+        except Exception:
+            self._fail('heartbeat_collect_failed' if stage == 'collect' else 'heartbeat_write_failed')
+        except BaseException:
+            self._fail('heartbeat_interrupted', fatal=True)
+        finally:
+            with self._lock:
+                self._inflight = False
+
+    def _check_health(self):
+        with self._lock:
+            if self._stop.is_set() or self._started_at is None or self._fatal:
+                return
+            if self._started_threads and any(not thread.is_alive() for thread in self._threads):
+                self._fail('heartbeat_thread_dead', fatal=True)
+                return
+            reference = self._last_success if self._last_success is not None else self._started_at
+            if self._clock() - reference >= self._budget:
+                self._fail('heartbeat_timeout')
+
+    def _run(self):
+        try:
+            while not self._stop.is_set():
+                self._check_health()
+                with self._lock:
+                    if self._fatal:
+                        return
+                self._pulse()
+                self._stop.wait(self._interval)
+            # Nonready publication is best effort. It remains part of this
+            # thread, so a blocked final write is visible to stop's join budget.
+            self._pulse(final=True)
+        except BaseException:
+            self._fail('heartbeat_interrupted', fatal=True)
+        finally:
+            if not self._stop.is_set():
+                self._fail('heartbeat_thread_dead', fatal=True)
+
+    def _watch(self):
+        try:
+            while not self._stop.wait(min(.25, self._interval / 2)):
+                self._check_health()
+        except BaseException:
+            self._fail('heartbeat_interrupted', fatal=True)
+
+    def status(self) -> dict:
+        self._check_health()
+        with self._lock:
+            alive = any(thread.is_alive() for thread in self._threads)
+            age = None if self._last_success is None else max(0., self._clock() - self._last_success)
+            healthy = (self._state == 'running' and not self._stop.is_set() and not self._fatal
+                       and self._error is None and age is not None and age < self._budget
+                       and self._started_threads and all(thread.is_alive() for thread in self._threads))
+            return {'state': self._state, 'healthy': healthy, 'error_code': self._error,
+                    'alive': alive, 'inflight': self._inflight, 'last_success_age': age,
+                    'final_write_succeeded': self._final_write_succeeded}
+
+    def stop(self, timeout: float = 3.0) -> bool:
+        if not math.isfinite(timeout) or timeout < 0:
+            raise ValueError('heartbeat_invalid_stop_budget')
+        deadline = time.monotonic() + timeout
+        with self._lock:
+            self._admission.block('heartbeat')
+            self._stop.set()
+            self._state = 'stopping'
+            threads = tuple(self._threads)
+        for thread in threads:
+            if thread.ident is not None and thread is not threading.current_thread():
+                thread.join(max(0., deadline - time.monotonic()))
+        with self._lock:
+            stopped = not self._inflight and all(not thread.is_alive() for thread in threads)
+            self._state = 'stopped' if stopped else 'stop_incomplete'
+            return stopped

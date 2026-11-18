@@ -73,6 +73,8 @@ def main() -> int:
     if args.proxy:
         logger.warning("--proxy 已弃用；CLI 与 Web 统一使用账号代理策略，避免绕过租约")
     postgres_store.require_ready()
+    from core.runtime.standalone import require_standalone_owner
+    require_standalone_owner()
     queued = codex_operation_service.submit(args.email, trigger="cli")
     if not queued.get("accepted"):
         logger.error("任务入队失败：%s", queued.get("error"))

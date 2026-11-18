@@ -151,6 +151,11 @@ class AccountTaskStoreTests(unittest.TestCase):
         self.task_log_root_patch.start()
         self.task_log_tasks_patch.start()
         self.schema = f"test_account_tasks_{uuid.uuid4().hex[:12]}"
+        # Recovery consults durable permits in the same deployment schema.
+        # Isolate both models, rather than redirecting only the legacy alias.
+        schema_env = patch.dict(os.environ, {"TURB_DB_SCHEMA": self.schema, "OPERATION_TASK_DB_SCHEMA": self.schema})
+        schema_env.start()
+        self.addCleanup(schema_env.stop)
         self.schema_patch = patch.object(account_task_store, "_SCHEMA", self.schema)
         self.schema_patch.start()
         self.ready_patch = patch.object(account_task_store, "_READY_KEY", "")
@@ -593,8 +598,10 @@ class CodexRetryTaskTests(unittest.TestCase):
         }
         setup_order = []
 
-        def set_password(_driver, _email, _password, *, on_password_submitted=None):
+        def set_password(_driver, _email, _password, *, on_password_prepared=None, on_password_submitted=None):
             setup_order.append("password")
+            if on_password_prepared is not None:
+                on_password_prepared(_password)
             if on_password_submitted is not None:
                 on_password_submitted(_password)
 
@@ -767,8 +774,9 @@ class CodexRetryTaskTests(unittest.TestCase):
             patch.object(codex_retry_service.db, "update_account_session", return_value=True) as save_session,
             patch.object(codex_retry_service.account_task_store, "append_event") as append_event,
             patch("config.twofa.get_twofa_driver", return_value="browser"),
+            patch("core.auth.browser.selenium_auth.set_login_password") as set_password,
         ):
-            setup = codex_retry_service._build_roxy_account_setup("a@example.com", 101)
+            setup = codex_retry_service._build_roxy_account_setup("a@example.com", 101, include_password=False)
             self.assertFalse(setup(object(), {
                 "accessToken": "fresh-chatgpt-token",
                 "expires": "2026-09-01T00:00:00Z",
@@ -784,6 +792,7 @@ class CodexRetryTaskTests(unittest.TestCase):
             },
         )
         self.assertTrue(any(call.kwargs.get("stage") == "token" for call in append_event.call_args_list))
+        set_password.assert_not_called()
 
 
 class AccountActionLoginTests(unittest.TestCase):
@@ -1002,6 +1011,7 @@ class AccountTaskApiTests(PostgresTestCase):
         html = client.get("/", headers={"X-Auth-Code": "test-auth"}).get_data(as_text=True)
         for asset in (
             "css/shell.css", "js/shared/common.js", "js/pages/accounts/page.js",
+            "js/pages/accounts/bridge.js",
             "js/pages/operations/page.js", "js/pages/accounts/email-change.js",
             "js/pages/accounts/inspection.js",
         ):
@@ -1016,20 +1026,11 @@ class AccountTaskApiTests(PostgresTestCase):
         self.assertLess(html.index('data-tab="codex"'), html.index('data-tab="tasks"'))
         self.assertLess(html.index('data-tab="tasks"'), html.index('data-tab="outlook"'))
         self.assertIn('id="accountTasksPanel"', html)
-        self.assertIn('id="accountTaskRunSelect"', html)
-        self.assertIn('data-account-task-detail-tab="events"', html)
-        self.assertIn('data-account-task-detail-tab="logs"', html)
-        self.assertIn('data-account-task-detail-tab="artifacts"', html)
-        self.assertIn('data-column-filter="accountTaskTypeFilterV2"', html)
-        self.assertIn("values: ['registration', 'registration_resume'", html)
-        self.assertIn("codex_retry:'Codex 补跑'", html)
-        self.assertIn("password_setup:'补密码'", html)
-        self.assertIn("account_completion:'补全账号'", html)
-        self.assertIn("unsupported:'不支持'", html)
-        self.assertIn("interrupted:'执行中断'", html)
-        self.assertIn("const ACCOUNT_TASK_TYPE_LABELS = LIST_FACET_LABELS.task_type;", html)
-        self.assertIn("const ACCOUNT_TASK_STAGE_LABELS = LIST_FACET_LABELS.stage;", html)
-        self.assertIn("const OPERATION_TARGET_LABELS = LIST_FACET_LABELS.target_status;", html)
+        self.assertEqual(1, html.count('id="task-center-root"'))
+        self.assertIn('data-module-url="/static/task-center/task-center.js', html)
+        self.assertIn('data-style-url="/static/task-center/task-center.css', html)
+        self.assertNotIn('id="accountTaskLogPanel"', html)
+        # 运行切换、筛选、详情标签与中文动作由 Vue 组件测试覆盖。
         self.assertNotIn('data-codex-log=', html)
         self.assertIn("function _tokenDisplayState", html)
         self.assertIn("label: '正常'", html)
@@ -1037,10 +1038,18 @@ class AccountTaskApiTests(PostgresTestCase):
         self.assertIn("label: `失效 · ${liveHttpStatus || '未知'}`", html)
         self.assertIn('data-account-copy-secret="access_token"', html)
         self.assertIn("function configuredLiveCheckDriver", html)
-        self.assertIn("driver: configuredLiveCheckDriver()", html)
-        self.assertIn("配置驱动", html)
-        self.assertIn("实际驱动", html)
-        self.assertIn("function meaningfulTaskDetail", html)
+        self.assertIn("configuredLiveCheckDriver: () => configuredLiveCheckDriver()", html)
+        # Queue writes moved to the Vue action owner; the legacy entry only
+        # provides saved configuration to that owner.
+        action_source = (
+            Path(__file__).resolve().parents[2]
+            / "frontend/src/features/accounts/queuedActions.ts"
+        ).read_text(encoding="utf-8")
+        self.assertIn("driver: deps.configuredLiveCheckDriver()", action_source)
+        self.assertIn("'/api/accounts/check-live-bulk'", action_source)
+        self.assertIn("配置驱动", action_source)
+        self.assertIn("实际驱动", action_source)
+        self.assertIn("result.live_check_driver", action_source)
         self.assertIn("white-space:normal", html)
         self.assertIn("flex:1 1 auto; min-height:0; overflow:auto", html)
 

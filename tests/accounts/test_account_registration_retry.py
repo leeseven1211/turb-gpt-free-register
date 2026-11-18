@@ -204,7 +204,9 @@ class AccountRegistrationRetryTests(PostgresTestCase):
         account = self._account()
         root, attempt = self._chain(account)
         records.patch_row(records.JOBS, root, {"data": {"config_snapshot": {"registration_driver": "protocol"}}})
-        with patch.object(registration_service, "get_executor", return_value=Mock()):
+        with patch.object(registration_service, "get_executor", return_value=Mock()), patch.object(
+            registration_service, "start_dispatcher"
+        ) as start_dispatcher, patch.object(registration_service, "notify_dispatch") as notify_dispatch:
             response = self._post(account)
         self.assertEqual(202, response.status_code)
         created = response.get_json()["started"][0]
@@ -214,6 +216,9 @@ class AccountRegistrationRetryTests(PostgresTestCase):
         self.assertEqual(account, child["account_id"])
         self.assertEqual(attempt, child["attempt_id"])
         self.assertEqual("registration_resume", child["job_type"])
+        self.assertIs(child["registration_dispatch_ready"], True)
+        start_dispatcher.assert_called_once_with()
+        notify_dispatch.assert_called_once_with()
 
     def test_active_attempt_with_no_job_account_or_email_is_still_reused(self):
         account = self._account()

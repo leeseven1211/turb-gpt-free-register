@@ -121,7 +121,7 @@ def capture_settings(operation_key: str, parameters: Mapping | None = None) -> d
     """只捕获现有执行配置，不领取代理、不请求远端、不复制密钥。"""
     from config import schema
     from core.operations.task_gateway import normalize_config_snapshot
-    from core.accounts import operation_coordinator as coordinator
+    from core.accounts import operation_settings
     from core.runtime.capabilities import account_setup_unavailable
 
     parameters = normalize_parameters(operation_key, parameters)
@@ -149,7 +149,7 @@ def capture_settings(operation_key: str, parameters: Mapping | None = None) -> d
             unavailable = {"error_code": "operation_unavailable", "error": reason}
     else:
         captured = _with_parameters(schema.non_sensitive_snapshot(), operation_key, parameters)
-        snapshot = normalize_config_snapshot(captured, allowlist=coordinator._RUNTIME_CONFIG_ALLOWLIST)
+        snapshot = normalize_config_snapshot(captured, allowlist=operation_settings.RUNTIME_CONFIG_ALLOWLIST)
         snapshot["bulk_execution_frozen"] = True
         if operation_key == "account_completion":
             from core.accounts.plans.service import PLAN_CONFIG_ALLOWLIST

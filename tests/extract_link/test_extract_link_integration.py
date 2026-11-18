@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 from contextlib import nullcontext
+import subprocess
 import types
 import unittest
 from pathlib import Path
@@ -669,11 +670,11 @@ class ExtractLinkConfigUiTests(unittest.TestCase):
     ROOT = Path(__file__).resolve().parents[2]
 
     def test_config_uses_remote_type_select(self):
-        source = (self.ROOT / "webui/static/js/pages/config/page.js").read_text(encoding="utf-8")
-        self.assertIn("EXTRACT_LINK_TYPE", source)
-        self.assertIn("/api/extract-link/types", source)
-        self.assertIn("function loadExtractLinkTypesV2", source)
-        self.assertIn("<select data-key=", source)
+        result = subprocess.run(
+            ["node", "tests/config/vue_migration_contracts.cjs", "extract_remote_types"],
+            cwd=self.ROOT, capture_output=True, text=True, check=False, timeout=15,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
 if __name__ == "__main__":

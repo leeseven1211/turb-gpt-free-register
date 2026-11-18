@@ -8,13 +8,22 @@ from unittest.mock import Mock, patch
 
 from flask import Flask
 
-from core.operations import task_gateway
+from core.operations import action_service, concurrency, query_service, task_gateway
 from core.storage.operations import store as operation
 from webui import runtime
 from webui.routes import operations
 
 
 class OperationRouteMigrationPhase2Tests(unittest.TestCase):
+    def setUp(self):
+        managed_retry = patch("core.bulk_operations.service.retry_managed_task", return_value=None)
+        managed_retry.start()
+        self.addCleanup(managed_retry.stop)
+        aliases = patch.dict(concurrency._ALIASES)
+        aliases.start()
+        self.addCleanup(aliases.stop)
+        concurrency.register_admission_alias("bulk_live_check", "live_check")
+
     def _client(self):
         app = Flask("operation-route-migration")
         context = runtime.WebUIContext(app, logging.getLogger("operation-route-migration"))
@@ -48,7 +57,7 @@ class OperationRouteMigrationPhase2Tests(unittest.TestCase):
         with (
             patch.object(operations.operation_task_store, "get_task", return_value=self._task()),
             patch.object(
-                operations.codex_operation_service,
+                action_service.codex_operation_service,
                 "retry_task",
                 return_value=queued,
             ) as retry_task,
@@ -65,7 +74,7 @@ class OperationRouteMigrationPhase2Tests(unittest.TestCase):
         with (
             patch.object(operations.operation_task_store, "get_task", return_value=self._task()),
             patch.object(task_gateway, "operation_action") as action,
-            patch.object(operations.codex_operation_service, "retry_task", return_value=queued) as retry_task,
+            patch.object(action_service.codex_operation_service, "retry_task", return_value=queued) as retry_task,
         ):
             response = client.post("/api/operations/41/retry", json={"driver": "roxy"})
 
@@ -83,7 +92,7 @@ class OperationRouteMigrationPhase2Tests(unittest.TestCase):
             with self.subTest(task=task["task_type"], source=task["source_system"]):
                 with (
                     patch.object(operations.operation_task_store, "get_task", return_value=task),
-                    patch.object(operations.codex_operation_service, "retry_task") as retry_task,
+                    patch.object(action_service.codex_operation_service, "retry_task") as retry_task,
                 ):
                     response = client.post("/api/operations/41/retry", json={"driver": "roxy"})
                 self.assertEqual(400, response.status_code)
@@ -93,7 +102,7 @@ class OperationRouteMigrationPhase2Tests(unittest.TestCase):
         client = self._client()
         with (
             patch.object(operations.operation_task_store, "get_task") as get_task,
-            patch.object(operations.codex_operation_service, "retry_task") as retry_task,
+            patch.object(action_service.codex_operation_service, "retry_task") as retry_task,
         ):
             response = client.post("/api/operations/41/retry", json={"driver": "api"})
         self.assertEqual(400, response.status_code)
@@ -105,7 +114,7 @@ class OperationRouteMigrationPhase2Tests(unittest.TestCase):
         task = self._task(task_type="live_check")
         with (
             patch.object(operations.operation_task_store, "get_task", return_value=task),
-            patch.object(operations.codex_operation_service, "retry_task") as retry_task,
+            patch.object(action_service.codex_operation_service, "retry_task") as retry_task,
         ):
             response = client.post("/api/operations/41/retry")
 
@@ -237,7 +246,7 @@ class OperationRouteMigrationPhase2Tests(unittest.TestCase):
             account_id=7,
         )
         with (
-            patch.object(operations.account_task_store, "get_task", return_value=task),
+            patch.object(action_service.account_task_store, "get_task", return_value=task),
             patch.object(
                 runtime.db,
                 "get_account",
@@ -259,7 +268,7 @@ class OperationRouteMigrationPhase2Tests(unittest.TestCase):
             account_id=7,
         )
         with (
-            patch.object(operations.account_task_store, "get_task", return_value=task),
+            patch.object(action_service.account_task_store, "get_task", return_value=task),
             patch.object(
                 runtime.db,
                 "get_account",
@@ -317,7 +326,7 @@ class OperationRouteMigrationPhase2Tests(unittest.TestCase):
         with (
             patch.object(operations.operation_task_store, "get_task", return_value=native_task),
             patch.object(
-                operations.codex_operation_service,
+                action_service.codex_operation_service,
                 "request_cancel",
                 return_value={"ok": True, "run_id": 54, "state": "cancelling"},
             ) as request_cancel,
@@ -367,7 +376,7 @@ class OperationRouteMigrationPhase2Tests(unittest.TestCase):
         with (
             patch.object(operations.operation_task_store, "get_task", return_value=native_task),
             patch.object(
-                operations.codex_operation_service,
+                action_service.codex_operation_service,
                 "terminate",
                 return_value={"ok": True, "run_id": 64, "state": "stopped"},
             ) as terminate,
@@ -502,7 +511,7 @@ class OperationRouteMigrationPhase2Tests(unittest.TestCase):
                 "get_task",
                 side_effect=[queued, running],
             ),
-            patch.object(operations.codex_operation_service, "request_cancel") as request_cancel,
+            patch.object(action_service.codex_operation_service, "request_cancel") as request_cancel,
         ):
             response = client.post(
                 "/api/operations/bulk",
@@ -574,7 +583,7 @@ class OperationRouteMigrationPhase2Tests(unittest.TestCase):
         queued = self._task(status="queued", runs=[{"id": 56, "status": "queued"}])
         with (
             patch.object(operations.operation_task_store, "get_task", return_value=queued),
-            patch.object(operations.codex_operation_service, "terminate") as terminate,
+            patch.object(action_service.codex_operation_service, "terminate") as terminate,
         ):
             response = client.post(
                 "/api/operations/bulk",
@@ -684,11 +693,11 @@ class OperationRouteMigrationPhase2Tests(unittest.TestCase):
             "error": "WebUI 重启导致任务中断，请重新执行",
         }
         with (
-            patch.object(operations.account_task_store, "list_tasks", return_value={
+            patch.object(query_service.account_task_store, "list_tasks", return_value={
                 "items": [row], "total": 1,
             }),
             patch("core.accounts.token_refresh.settings", return_value={}),
-            patch.object(operations.codex_token_refresh_service, "settings", return_value={}),
+            patch("core.codex.token_refresh_service.settings", return_value={}),
         ):
             response = client.get("/api/account-tasks")
 

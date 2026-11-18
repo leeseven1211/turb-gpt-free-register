@@ -78,18 +78,18 @@
       "id": "account_page_operations",
       "name": "账号页、邮箱变更与巡检",
       "entrypoints": ["webui/routes/accounts.py", "webui/static/js/pages/accounts/page.js", "webui/static/js/pages/accounts/email-change.js", "webui/static/js/pages/accounts/inspection.js", "core/accounts/email_change/service.py", "core/accounts/inspection/service.py"],
-      "shared_components": ["core/storage/accounts/__init__.py", "core/storage/db_legacy.py", "core/storage/operations/store.py", "core/storage/accounts/inspections.py", "core/operations/task_gateway.py"],
+      "shared_components": ["core/accounts/operation_coordinator.py", "core/accounts/operation_settings.py", "core/accounts/completion.py", "core/accounts/operation_results.py", "core/accounts/setup_execution.py", "core/accounts/completion_execution.py", "core/accounts/completion_dependencies.py", "core/accounts/operation_handlers.py", "core/storage/accounts/__init__.py", "core/storage/db_legacy.py", "core/storage/operations/store.py", "core/storage/accounts/inspections.py", "core/operations/task_gateway.py"],
       "config_keys": ["ACCOUNT_BATCH_WORKERS", "ACCOUNT_EMAIL_CHANGE_ENABLED", "ACCOUNT_EMAIL_CHANGE_PROXY_MODE"],
-      "tests": ["tests/accounts/test_account_search_api.py", "tests/accounts/test_account_multi_filters.py", "tests/accounts/test_account_filters_frontend.cjs", "tests/accounts/test_account_search_frontend.cjs", "tests/accounts/test_email_change_ui.py", "tests/accounts/test_email_change_service.py", "tests/accounts/test_email_change_auth_guard.py", "tests/accounts/test_account_inspection.py", "tests/accounts/test_account_inspection_ui.cjs"],
+      "tests": ["tests/accounts/test_operation_settings.py", "tests/accounts/test_completion_execution_boundaries.py", "tests/accounts/test_completion_dispatch.py", "tests/accounts/test_completion_continuation.py", "tests/architecture/test_account_execution_boundaries.py", "tests/webui/test_webui_runtime.py", "tests/bulk/test_catalog_settings.py", "tests/accounts/test_account_search_api.py", "tests/accounts/test_account_multi_filters.py", "tests/accounts/test_account_filters_frontend.cjs", "tests/accounts/test_account_search_frontend.cjs", "tests/accounts/test_email_change_ui.py", "tests/accounts/test_email_change_service.py", "tests/accounts/test_email_change_auth_guard.py", "tests/accounts/test_account_inspection.py", "tests/accounts/test_account_inspection_ui.cjs"],
       "acceptance": ["README.md", "docs/development/release-verification.md"]
     },
     {
       "id": "account_task_center",
       "name": "账号任务中心",
-      "entrypoints": ["webui/routes/operations.py", "webui/static/js/pages/operations/page.js"],
-      "shared_components": ["core/storage/operations/store.py", "core/storage/operations/projection.py", "core/storage/operations/runtime.py", "core/operations/task_gateway.py", "core/operation_task_store.py", "core/account_task_store.py", "core/storage/operations/legacy_task_store.py"],
+      "entrypoints": ["webui/routes/operations.py", "webui/static/js/pages/operations/page.js", "frontend/src/features/tasks/TaskCenter.vue"],
+      "shared_components": ["core/operations/query_service.py", "core/operations/action_service.py", "core/operations/reconciliation.py", "contracts/task-center.openapi.json", "frontend/src/api/tasks.ts", "core/storage/operations/store.py", "core/storage/operations/projection.py", "core/storage/operations/runtime.py", "core/storage/operations/recovery.py", "core/storage/operations/common.py", "core/storage/operations/schema.py", "core/operations/task_gateway.py", "core/operation_task_store.py", "core/account_task_store.py", "core/storage/operations/legacy_task_store.py"],
       "config_keys": ["ACCOUNT_BATCH_WORKERS"],
-      "tests": ["tests/operations/test_account_tasks.py", "tests/operations/test_account_task_cancel_ui.py", "tests/webui/test_route_contract.py"],
+      "tests": ["tests/operations/test_task_center_queries.py", "tests/operations/test_task_center_actions.py", "tests/runtime/test_runtime_reconciliation.py", "tests/operations/test_operation_runtime_store.py", "tests/operations/test_operation_task_store.py", "tests/architecture/test_task_execution_ownership.py", "tests/architecture/test_task_center_boundaries.py", "frontend/src/features/tasks/TaskCenter.test.ts", "frontend/src/features/tasks/detail/detail.test.ts", "tests/operations/test_account_tasks.py", "tests/webui/test_route_contract.py"],
       "acceptance": ["README.md", "docs/development/release-verification.md", "docs/architecture/storage-architecture.md"]
     }
   ]

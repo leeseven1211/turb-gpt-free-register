@@ -140,7 +140,8 @@ class EmailChangeProtocolContractTests(unittest.TestCase):
         acquired_families = []
 
         @contextmanager
-        def lease(*, resource_family):
+        def lease(*, resource_family, scope_kind="step"):
+            self.assertEqual("final", scope_kind)
             acquired_families.append(resource_family)
             yield Mock()
 
@@ -270,6 +271,20 @@ class EmailChangeProtocolContractTests(unittest.TestCase):
 
 
 class EmailChangeLoggingTests(unittest.TestCase):
+    def setUp(self):
+        # These unit scenarios use fresh ordinary mailboxes; allocation recovery
+        # belongs to the database-backed email guard tests.
+        allocation = patch("core.email.derivation.store.find_allocation", return_value=None)
+        allocation.start()
+        self.addCleanup(allocation.stop)
+        for target, value in (
+            ("core.operation_task_store.register_resource", {"id": 901, "resource_uuid": "fixture-route-resource"}),
+            ("core.operation_task_store.release_resource", True),
+        ):
+            resource = patch(target, return_value=value)
+            resource.start()
+            self.addCleanup(resource.stop)
+
     class _GuardContext:
         account_id = 7
         run_id = 29
@@ -285,8 +300,14 @@ class EmailChangeLoggingTests(unittest.TestCase):
             self.events.append(event)
 
         @contextmanager
-        def lease(self, *, resource_family):
+        def lease(self, *, resource_family, scope_kind="step"):
             yield None
+
+        def register_cleanup(self, cleanup, *, key, blocking=True):
+            self.cleanup = cleanup
+
+        def add_settlement_obligation(self, *args, **kwargs):
+            self.obligation = (args, kwargs)
 
         def checkpoint(self):
             return None
@@ -478,8 +499,14 @@ class EmailChangeLoggingTests(unittest.TestCase):
                 self.events.append(event)
 
             @contextmanager
-            def lease(self, *, resource_family):
+            def lease(self, *, resource_family, scope_kind="step"):
                 yield None
+
+            def register_cleanup(self, cleanup, *, key, blocking=True):
+                self.cleanup = cleanup
+
+            def add_settlement_obligation(self, *args, **kwargs):
+                self.obligation = (args, kwargs)
 
             def checkpoint(self):
                 return None
@@ -492,6 +519,7 @@ class EmailChangeLoggingTests(unittest.TestCase):
 
         context = _Context()
         route = SimpleNamespace(
+            provider="synthetic",
             proxy_url="",
             public_dict=lambda: {},
             release=Mock(),
@@ -544,7 +572,7 @@ class EmailChangeLoggingTests(unittest.TestCase):
             "email_source": "outlook",
             "access_token": "old-at",
         }
-        route = SimpleNamespace(proxy_url="", public_dict=lambda: {}, release=Mock())
+        route = SimpleNamespace(proxy_url="", provider="synthetic", public_dict=lambda: {}, release=Mock())
         identity = SimpleNamespace(session_payload=lambda: {})
         for failure in ("prepare", "transport"):
             with self.subTest(failure=failure):
@@ -553,7 +581,7 @@ class EmailChangeLoggingTests(unittest.TestCase):
                     run_id=31,
                     task_id=32,
                     email="old@example.test",
-                    run={"data": {"email_source": "outlook"}, "trigger": "test"},
+                    run={"data": {"email_source": "outlook", "remail_acquisition_id": "change:32"}, "trigger": "test"},
                     config_snapshot={"email_change_enabled": True},
                 )
                 context.lease.return_value = nullcontext()
@@ -754,6 +782,15 @@ class EmailChangeLoggingTests(unittest.TestCase):
 
 
 class EmailChangeCloseoutTests(unittest.TestCase):
+    def setUp(self):
+        for target, value in (
+            ("core.operation_task_store.register_resource", {"id": 901, "resource_uuid": "fixture-route-resource"}),
+            ("core.operation_task_store.release_resource", True),
+        ):
+            resource = patch(target, return_value=value)
+            resource.start()
+            self.addCleanup(resource.stop)
+
     def test_successful_email_change_closes_consumed_email_as_used(self):
         from core.accounts.email_change import service as email_change_service
 
@@ -808,8 +845,14 @@ class EmailChangeCloseoutTests(unittest.TestCase):
                 return None
 
             @contextmanager
-            def lease(self, *, resource_family):
+            def lease(self, *, resource_family, scope_kind="step"):
                 yield None
+
+            def register_cleanup(self, cleanup, *, key, blocking=True):
+                self.cleanup = cleanup
+
+            def add_settlement_obligation(self, *args, **kwargs):
+                self.obligation = (args, kwargs)
 
             def checkpoint(self):
                 return None
@@ -822,6 +865,7 @@ class EmailChangeCloseoutTests(unittest.TestCase):
 
         context = _Context()
         route = SimpleNamespace(
+            provider="synthetic",
             proxy_url="",
             public_dict=lambda: {},
             release=Mock(),

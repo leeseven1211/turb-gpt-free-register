@@ -823,6 +823,56 @@ def _backfill_account_promotion_columns(cur) -> int:
     return max(0, int(cur.rowcount or 0))
 
 
+def _ensure_account_normalized_email_index(cur) -> None:
+    """补齐 Codex 账号关联的表达式索引，不覆盖同名但不兼容的已有对象。"""
+    name = "idx_registered_accounts_normalized_email"
+    cur.execute(
+        "SELECT c.relkind, am.amname, i.indisunique, i.indisexclusion, "
+        "i.indisvalid, i.indisready, i.indislive, i.indnkeyatts, i.indnatts, "
+        "i.indkey::text, i.indoption::text, i.indpred IS NULL AS unfiltered, "
+        "i.indrelid = to_regclass(%s) AS correct_table, "
+        "i.indclass[0] = (SELECT op.oid FROM pg_opclass op "
+        "WHERE op.opcmethod = am.oid AND op.opcnamespace = 'pg_catalog'::regnamespace "
+        "AND op.opcname = 'text_ops' AND op.opcintype = 'text'::regtype "
+        "AND op.opcdefault) AS default_text_ops, "
+        "i.indcollation[0] = (SELECT a.attcollation FROM pg_attribute a "
+        "WHERE a.attrelid = i.indrelid AND a.attname = 'email' "
+        "AND a.attnum > 0 AND NOT a.attisdropped) AS email_collation, "
+        "CASE WHEN i.indexrelid IS NOT NULL "
+        "THEN pg_get_indexdef(c.oid, 1, false) END AS expression "
+        "FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
+        "LEFT JOIN pg_index i ON i.indexrelid = c.oid "
+        "LEFT JOIN pg_am am ON am.oid = c.relam "
+        "WHERE n.nspname = %s AND c.relname = %s",
+        (_qualified(ACCOUNTS), postgres_store.schema_name(), name),
+    )
+    existing = cur.fetchone()
+    if existing:
+        # 单列反编译只给表达式；collation/opclass 必须核对各自目录 OID。
+        expected = {
+            "relkind": "i", "amname": "btree", "indisunique": False,
+            "indisexclusion": False, "indisvalid": True, "indisready": True,
+            "indislive": True, "indnkeyatts": 1, "indnatts": 1,
+            "indkey": "0", "indoption": "0", "unfiltered": True,
+            "correct_table": True, "default_text_ops": True, "email_collation": True,
+            "expression": "lower(btrim(COALESCE(email, ''::text)))",
+        }
+        if any(existing[key] != value for key, value in expected.items()):
+            raise RuntimeError(
+                f"索引 {postgres_store.qualified(name)} 的定义或状态不符合预期；"
+                "需要有效的非唯一账号规范邮箱 Btree 索引，初始化不会删除或重建已有对象"
+            )
+        return
+    # 已在 init 的事务级 advisory lock 内。在线大表应先在事务外 CONCURRENTLY
+    # 预建并 ANALYZE；这里为新库/旧库补建，不能在事务内使用 CONCURRENTLY。
+    cur.execute(
+        f"CREATE INDEX {postgres_store.quote_identifier(name)} "
+        f"ON {_qualified(ACCOUNTS)} (LOWER(BTRIM(COALESCE(email, ''))))"
+    )
+    # 表达式统计属于索引，只有新建时收集一次；正常重启不重复全表 ANALYZE。
+    cur.execute(f"ANALYZE {_qualified(ACCOUNTS)}")
+
+
 def init() -> None:
     """幂等建表。schema 变了会重新执行一次。"""
     global _READY_KEY
@@ -865,6 +915,7 @@ def init() -> None:
                         )
                     if spec is ACCOUNTS:
                         _backfill_account_promotion_columns(cur)
+                        _ensure_account_normalized_email_index(cur)
                     if spec is CODEX_CREDENTIALS:
                         # 按规范邮箱定位沿用列表的BTRIM/大小写口径，避免每账号扫描全库凭证。
                         cur.execute(
@@ -1449,17 +1500,19 @@ def patch_rows_where_returning(
     where: str,
     params: Iterable[Any] = (),
     conn=None,
+    id_only: bool = False,
 ) -> list[dict]:
-    """批量部分更新并返回真正命中的业务行。"""
+    """批量部分更新并返回真正命中的业务行；id_only 仅返回 ID 字典。"""
     spec = _resolve(table)
     init()
     sets, args = _build_set_clause(spec, changes, partial=True)
     args.extend(params)
-    sql = f"UPDATE {_qualified(spec)} SET {', '.join(sets)} WHERE {where} RETURNING *"
+    projection = "id" if id_only else "*"
+    sql = f"UPDATE {_qualified(spec)} SET {', '.join(sets)} WHERE {where} RETURNING {projection}"
 
     def _run(cur):
         cur.execute(sql, args)
-        return [_merge(spec, row) for row in cur.fetchall()]
+        return [dict(row) if id_only else _merge(spec, row) for row in cur.fetchall()]
 
     if conn is not None:
         with conn.cursor() as cur:

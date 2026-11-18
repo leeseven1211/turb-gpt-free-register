@@ -1,0 +1,117 @@
+.config-vue-page{--config-border:var(--line,#d9dee7);color:var(--text,#182234);font-size:14px;line-height:1.55;padding-bottom:112px}.config-vue-page button,.config-vue-page input,.config-vue-page select,.config-vue-page textarea{font:inherit}.config-vue-page button{cursor:pointer;min-height:36px;border:1px solid var(--config-border);border-radius:7px;background:var(--surface,#fff);color:inherit;padding:7px 12px}.config-vue-page button:disabled{opacity:.55;cursor:not-allowed}.config-vue-page :is(input,select,textarea){max-width:100%;box-sizing:border-box;border:1px solid var(--config-border);border-radius:6px;padding:8px;background:var(--surface,#fff);color:inherit}.config-vue-page :is(button,input,select,textarea,summary):focus-visible{outline:2px solid var(--blue,#2563eb);outline-offset:3px}.config-vue-page .hint{color:var(--muted,#5a6578);margin:6px 0;overflow-wrap:anywhere}.config-vue-overview{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:18px}.config-vue-overview>span{flex:1;min-width:160px;border:1px solid var(--config-border);border-radius:8px;padding:12px}.config-vue-overview strong,.config-vue-overview small{display:block;overflow-wrap:anywhere}.config-vue-layout{display:grid;grid-template-columns:220px minmax(0,1fr);gap:24px}.config-vue-navigation{position:sticky;top:16px;align-self:start}.config-vue-navigation input{width:100%}.config-vue-navigation label{display:block;margin-bottom:6px}.config-vue-nav-group button{display:flex;text-align:left;width:100%;flex-direction:column;margin-bottom:5px}.config-vue-navigation [aria-current=page],.config-vue-tabs [aria-pressed=true]{background:var(--blue-soft,#eaf1ff);border-color:var(--blue,#2563eb)}.config-vue-content{min-width:0}.config-vue-content h2{font-size:19px;margin:16px 0}.config-vue-content h3{font-size:15px;margin:20px 0 6px}.config-vue-tabs{display:flex;flex-wrap:wrap;gap:7px;margin:10px 0 16px}.config-vue-field{display:grid;grid-template-columns:minmax(0,1fr) minmax(180px,1fr);gap:20px;border-bottom:1px solid var(--config-border);padding:17px 0;scroll-margin-top:20px;scroll-margin-bottom:140px}.config-vue-field-copy label{font-weight:600}.config-vue-field-copy code{display:block;font-size:12px;color:var(--muted,#5a6578);overflow-wrap:anywhere}.config-vue-field-control{min-width:0}.config-vue-control-group{border:0;padding:0;margin:0;min-width:0;display:flex;gap:8px;align-items:start;flex-wrap:wrap}.config-vue-control-group :is(input:not([type=checkbox]),select,textarea){width:100%;min-width:0}.config-vue-control-group input[type=checkbox]{width:22px;height:22px}.config-vue-control-group textarea{min-height:96px;resize:vertical}.config-vue-composite{display:flex;gap:8px;width:100%}.config-vue-field-status{font-size:12px;color:var(--blue,#2563eb)}.config-vue-picker{position:relative;min-width:0;flex:1;border:1px solid var(--config-border);border-radius:6px;padding:7px 10px}.config-vue-picker summary{cursor:pointer;overflow-wrap:anywhere;min-height:24px}.config-vue-picker-menu{padding-top:8px;min-width:0}.config-vue-picker-options{max-height:240px;overflow:auto;display:flex;flex-direction:column;gap:4px;margin-top:8px}.config-vue-picker-options button{text-align:left}.config-vue-picker-options [aria-pressed=true]{background:var(--blue-soft,#eaf1ff)}.config-vue-chips{display:flex;gap:5px;flex-wrap:wrap;margin-top:8px}.config-vue-error,.config-vue-error-summary{color:var(--red,#b42318)}.config-vue-error-summary{border:1px solid currentColor;border-radius:8px;padding:12px;margin-bottom:15px}.config-vue-error-summary button{color:inherit;text-align:left}.config-vue-field.is-invalid{border-left:3px solid var(--red,#b42318);padding-left:10px}.config-vue-savebar{position:sticky;bottom:0;z-index:10;background:var(--surface,#fff);border:1px solid var(--config-border);box-shadow:0 -3px 12px #00000008;border-radius:9px;display:flex;gap:10px;align-items:center;padding:12px 16px;margin-top:22px}.config-vue-savebar>div{flex:1;min-width:0}.config-vue-savebar span{display:block;font-size:12px;overflow-wrap:anywhere}.config-vue-savebar .primary{background:var(--blue,#2563eb);border-color:var(--blue,#2563eb);color:white}.config-vue-pool-rules{width:100%;border-collapse:collapse;table-layout:fixed}.config-vue-pool-rules :is(th,td){text-align:left;padding:8px;border-bottom:1px solid var(--config-border);overflow-wrap:anywhere}.config-vue-pool-rules caption{text-align:left;font-weight:600;margin-bottom:8px}@media(max-width:700px){.config-vue-layout{grid-template-columns:minmax(0,1fr);gap:14px}.config-vue-navigation{position:static}.config-vue-nav-group{display:flex;flex-wrap:wrap;gap:6px}.config-vue-nav-group p{width:100%}.config-vue-nav-group button{width:auto;flex:1;min-width:135px;min-height:44px}.config-vue-field{grid-template-columns:minmax(0,1fr);gap:9px}.config-vue-savebar{flex-wrap:wrap;padding:10px}.config-vue-savebar>div{flex-basis:100%}.config-vue-savebar button{flex:1;min-height:44px}.config-vue-page{padding-bottom:160px}}
+.config-vue-page .config-vue-content {
+  display: block;
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  box-sizing: border-box;
+}
+.config-vue-content > .config-vue-tabs,
+.config-vue-content > section {
+  min-width: 0;
+  margin-inline: 0;
+}
+.config-vue-content section > .hint {
+  margin-inline: 0;
+}
+.config-vue-page .config-vue-tabs {
+  display: flex;
+  gap: 7px;
+}
+@media (min-width: 861px) {
+  /* The host shell disables document scrolling while configuration is open.
+     Keep navigation and the long field list in independent bounded regions. */
+  .config-vue-page {
+    display: flex;
+    flex-direction: column;
+    height: calc(100dvh - var(--topbar-height, 56px) - 28px);
+    min-height: 0;
+    padding-bottom: 0;
+    overflow: hidden;
+  }
+  .config-vue-overview {
+    flex-shrink: 0;
+  }
+  .config-vue-layout {
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+  }
+  .config-vue-navigation {
+    position: static;
+    height: 100%;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
+    padding-right: 6px;
+  }
+  .config-vue-page .config-vue-content {
+    height: 100%;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
+    padding: 0 6px 24px 0;
+  }
+  .config-vue-savebar {
+    position: static;
+    flex-shrink: 0;
+    max-height: 40%;
+    overflow-y: auto;
+    margin-top: 12px;
+  }
+  .config-vue-page > [role="alert"],
+  .config-vue-page > [role="status"] {
+    flex-shrink: 0;
+    max-height: 20%;
+    overflow-y: auto;
+  }
+}
+@media (max-width: 860px) {
+  .config-vue-layout {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 14px;
+  }
+  .config-vue-navigation {
+    position: static;
+  }
+  .config-vue-nav-group {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .config-vue-nav-group p {
+    width: 100%;
+  }
+  .config-vue-nav-group button {
+    width: auto;
+    flex: 1;
+    min-width: 135px;
+    min-height: 44px;
+  }
+  .config-vue-field {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 9px;
+  }
+  .config-vue-savebar {
+    position: fixed;
+    left: var(--page-gutter, 12px);
+    right: var(--page-gutter, 12px);
+    bottom: 12px;
+    flex-wrap: wrap;
+    padding: 10px;
+    max-height: 40dvh;
+    overflow-y: auto;
+  }
+  .config-vue-savebar > div {
+    flex-basis: 100%;
+  }
+  .config-vue-savebar button {
+    flex: 1;
+    min-height: 44px;
+  }
+  .config-vue-page {
+    padding-bottom: 160px;
+  }
+}

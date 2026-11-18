@@ -9,6 +9,7 @@ from core.operations import task_gateway
 from core.storage import codex, records
 from core.storage.operations import store as operation
 from tests.support_pg import PostgresTestCase
+from tests.support_settlement import install_native_settlement_fixture
 
 
 class Sub2ApiMonitorTests(PostgresTestCase):
@@ -254,6 +255,15 @@ class ManualSub2ApiContinuationTests(PostgresTestCase):
         self.oauth = self.stack.enter_context(patch.object(monitor.operation_service, "enqueue_oauth"))
         for key in ("SUB2API_MONITOR_ENABLED", "SUB2API_SYNC_RETRY_ENABLED"):
             self.stack.enter_context(patch.object(monitor._cfg, key, False))
+        self.settlement_fixture = install_native_settlement_fixture(self, timeout=10)
+
+    def tearDown(self):
+        self.settlement_fixture.close()
+
+    def execute(self, run_id):
+        result = task_gateway._execute_operation_handler("sub2api_sync", run_id)
+        self.settlement_fixture.wait_for_run_released(run_id)
+        return result
 
     def enqueue_refresh(self, filename, **kwargs):
         return task_gateway.submit_durable_operation(task_type="codex_token_refresh", account_id=self.account_id,
@@ -276,7 +286,7 @@ class ManualSub2ApiContinuationTests(PostgresTestCase):
             for _ in range(4):
                 for job in self.store.list_jobs(filename=self.filename):
                     if job["status"] == "queued":
-                        task_gateway._execute_operation_handler("sub2api_sync", job["run_id"])
+                        self.execute(job["run_id"])
                 self.monitor._run_once()
         self.assertEqual({71, 72}, {call.args[1] for call in update.call_args_list})
         self.assertEqual(["success", "success"], [row["status"] for row in self.store.list_jobs(filename=self.filename)])
@@ -338,7 +348,7 @@ class ManualSub2ApiContinuationTests(PostgresTestCase):
         job = next(row for row in self.store.list_jobs(filename=self.filename) if row["status"] == "queued")
         with patch.object(self.monitor.jobs.client, "update_and_enable_configured_account", side_effect=
                           self.monitor.jobs.client.Sub2ApiSyncError("upload", "sub2api_timeout", "模拟超时")):
-            task_gateway._execute_operation_handler("sub2api_sync", job["run_id"])
+            self.execute(job["run_id"])
         self.monitor._run_once()
         final = self.store.get_repair("manual-backend", self.account_id)
         self.assertFalse(final["manual_requested"])

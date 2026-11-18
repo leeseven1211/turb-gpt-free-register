@@ -13,6 +13,7 @@ from core.email import forward_imap as forward
 from core.storage import records as record_store
 from core.storage.email import address_allocations as store
 from tests.support_pg import PostgresTestCase
+from tests.support_legacy_derivation import seed_legacy_inventory
 
 
 class ButlerInboxProfileTests(PostgresTestCase):
@@ -39,7 +40,8 @@ class ButlerInboxProfileTests(PostgresTestCase):
 
     def generate(self, count=1, request="butler-stock"):
         with patch("core.email.icloud_hide.client.sync_aliases", return_value={"synced_account_ids": ["apple-test"]}):
-            return service.generate_inventory("icloud_hide", count, request)
+            profile = service._forward_profile()
+            return seed_legacy_inventory("icloud_hide", count, request, inbox_profile_id=profile["id"])
 
     def test_new_profile_keeps_fixed_endpoint_mailbox_and_versioned_key_out_of_pg(self):
         first = service._forward_profile()
@@ -61,16 +63,17 @@ class ButlerInboxProfileTests(PostgresTestCase):
 
     def test_butler_inventory_capacity_availability_claim_and_pinned_fetch(self):
         self.assertEqual(service.generation_capacity_summary("icloud_hide")["remaining"], 3)
-        self.assertEqual(self.generate(2)["created"], 2)
+        self.assertEqual(len(self.generate(2)), 2)
         self.assertEqual(service.capacity_summary("icloud_hide")["remaining"], 2)
-        self.assertTrue(feature_availability.email_source_availability()["icloud_hide"]["enabled"])
+        self.assertFalse(feature_availability.email_source_availability()["icloud_hide"]["enabled"])
+        store.claim_address(source="icloud_hide", acquisition_id="butler-claim", owner_kind="registration_root", owner_id="butler-claim")
         address = service.acquire_address("icloud_hide", acquisition_id="butler-claim", owner_kind="registration_root", owner_id="butler-claim")
         with patch.multiple(cfg, ICLOUD_HME_INBOX_MODE="forward_imap", EMAIL_BUTLER_API_BASE="https://changed.example.test/v1",
                 EMAIL_BUTLER_API_KEY="changed-key", ICLOUD_HME_FORWARD_IMAP_EMAIL="changed@example.test"), patch(
                 "core.email.email_butler.client.fetch_inbound_otp", return_value="654321") as fetch, patch.object(
                 forward, "_connect", side_effect=AssertionError("固定 Butler 路由不能连接 IMAP")):
             self.assertEqual(service.fetch_bound_otp(address, after_ts=100), "654321")
-            self.assertEqual(fetch.call_args.kwargs["api_base"], "https://first.example.test/v1")
+            self.assertEqual(fetch.call_args.kwargs["api_base"], "https://first.example.test/v2")
             self.assertEqual(fetch.call_args.kwargs["api_key"], "first-test-key")
             self.assertEqual(fetch.call_args.kwargs["mailbox_email"], "final@example.test")
         parent_profile = service.inbox_profile_for_address("alias@icloud.com")

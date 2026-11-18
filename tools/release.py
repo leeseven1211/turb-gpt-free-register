@@ -43,6 +43,7 @@ ACCOUNT_SOURCE_SUFFIXES = {
     ("core", "storage", "accounts"): {".py"},
     ("tests", "accounts"): {".py", ".cjs"},
     ("webui", "static", "js", "pages", "accounts"): {".js"},
+    ("frontend", "src", "features", "accounts"): {".ts", ".vue", ".css"},
 }
 LOCK_NAMES = ("requirements.txt", "requirements-dev.txt")
 
@@ -301,7 +302,7 @@ def check_release(
     for path in root.rglob("*"):
         if path.is_symlink():
             raise ReleaseError(f"release 不得包含符号链接: {path.relative_to(root)}")
-        if path.is_file() and path.name != MANIFEST_NAME:
+        if path.is_file() and path != root / MANIFEST_NAME:
             relative = path.relative_to(root)
             if _is_private_path(relative):
                 raise ReleaseError(f"release 包含私有文件: {relative}")
@@ -463,7 +464,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "check":
             target = args.release_dir or args.root
-            if (target / MANIFEST_NAME).is_file():
+            marker = target / MANIFEST_NAME
+            if args.release_dir is not None or marker.exists() or marker.is_symlink():
                 result = check_release(target, expected_release_id=args.release_id)
             else:
                 result = {"ok": True, "source": str(target.resolve()), "locks": _validate_project_files(target)}

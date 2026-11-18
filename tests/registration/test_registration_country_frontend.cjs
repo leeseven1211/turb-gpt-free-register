@@ -1,77 +1,34 @@
-const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
-const test = require('node:test');
-const vm = require('node:vm');
-
-const source = fs.readFileSync(path.join(__dirname, '../../webui/static/js/pages/config/page.js'), 'utf8');
-
-function createCountryView() {
-  const fields = [
-    {key: 'REGISTRATION_DRIVER', label: '注册主流程驱动', type: 'str', group: '注册主链路', value: 'roxy'},
-    {key: 'REGISTRATION_COUNTRY', label: '注册国家', type: 'str', group: '注册主链路', value: 'JP', country_codes: ['JP', 'US', 'NA']},
-    {key: 'REGISTRATION_AUTH_MODE', label: '注册密码策略', type: 'str', group: '注册主链路', value: 'password', options: [{value: 'password', label: '优先使用页面密码入口'}]},
-    {key: 'PROXY_POOL_DEFAULT_COUNTRY', label: '默认国家', type: 'str', group: '代理与网络', value: 'US', country_codes: ['JP', 'US', 'NA']},
-  ];
-  const root = {addEventListener() {}};
-  const context = {
-    CONFIG: fields, esc: String, attrEsc: String,
-    isPlaceholderEmpty: value => value === '' || value == null || String(value).trim().toLowerCase() === 'na',
-    $(selector) { return selector === '#tab-config' ? root : null; },
-    document: {querySelectorAll() { return []; }, getElementById() { return null; }},
-    localStorage: {setItem() {}, getItem() { return null; }},
-    window: {addEventListener() {}, scrollTo() {}}, activateTab() {},
-  };
-  vm.createContext(context);
-  vm.runInContext(`${source}
-    globalThis.view = {
-      groups: configGroups, setPending: setPendingConfigValue, pending: CONFIG_PENDING_UPDATES,
-      render: () => renderConfigDomainSectionV2('注册主链路', CONFIG.filter(field => field.group === '注册主链路')),
-      control: key => renderConfigControlMarkupV2(CONFIG.find(field => field.key === key)),
-      read: value => readConfigElementValue({value, dataset: {}}, CONFIG.find(field => field.key === 'REGISTRATION_COUNTRY')),
-      countryOptions: query => configCountryOptionsV2(CONFIG.find(field => field.key === 'REGISTRATION_COUNTRY'), query),
-      poolSummary: renderProxyTaskPoolSummaryV2,
-    };
-  `, context);
-  return context.view;
-}
-
-test('注册国家归入注册主链路基础流程，显示中文国家与代码下拉', () => {
-  const view = createCountryView();
-  assert.ok(view.groups()['注册与账号'].some(field => field.key === 'REGISTRATION_COUNTRY'));
-  const markup = view.render();
-  assert.match(markup, /select data-key="REGISTRATION_COUNTRY" aria-label="注册国家"/);
-  assert.match(markup, /option value="JP" selected>日本 · JP/);
-  assert.match(markup, /option value="NA">纳米比亚 · NA/);
-  assert.ok(markup.indexOf('data-key="REGISTRATION_DRIVER"') < markup.indexOf('data-key="REGISTRATION_COUNTRY"'));
-  assert.ok(markup.indexOf('data-key="REGISTRATION_COUNTRY"') < markup.indexOf('data-key="REGISTRATION_AUTH_MODE"'));
-  assert.deepEqual(Array.from(view.countryOptions('纳米比亚'), item => item.code), ['NA']);
-  assert.deepEqual(Array.from(view.countryOptions('us'), item => item.code), ['US']);
+const assert=require('node:assert/strict');
+const test=require('node:test');
+const {createConfigView,cleanup,navigation}=require('../config/vue_fixture.cjs');
+function fields(driver='roxy'){return [
+ {key:'REGISTRATION_DRIVER',label:'注册主流程驱动',type:'str',group:'注册主链路',value:driver,options:[{value:'roxy',label:'Roxy'},{value:'protocol_oss_2',label:'Proto2'}]},
+ {key:'REGISTRATION_COUNTRY',label:'注册国家',type:'str',group:'注册主链路',value:'JP',country_codes:['JP','US','NA']},
+ {key:'REGISTRATION_AUTH_MODE',label:'注册密码策略',type:'str',group:'注册主链路',value:'password',options:[{value:'password',label:'优先使用页面密码入口'}]},
+ {key:'PROXY_POOL_DEFAULT_COUNTRY',label:'默认国家',type:'str',group:'代理与网络',value:'US',country_codes:['JP','US','NA']},
+];}
+test.afterEach(cleanup);
+test('注册国家归入注册主链路基础流程，显示中文国家与代码下拉',async()=>{
+ const view=createConfigView(fields());await view.open('注册主链路');
+ const select=view.control('REGISTRATION_COUNTRY');
+ assert.equal(select.element.value,'JP');
+ assert.ok(select.findAll('option').some(option=>option.attributes('value')==='JP'&&option.text()==='日本 · JP'));
+ assert.ok(select.findAll('option').some(option=>option.attributes('value')==='NA'&&option.text()==='纳米比亚 · NA'));
+ const keys=view.wrapper.findAll('[data-config-setting]').map(item=>item.attributes('data-config-setting'));
+ assert.ok(keys.indexOf('REGISTRATION_DRIVER')<keys.indexOf('REGISTRATION_COUNTRY'));
+ assert.ok(keys.indexOf('REGISTRATION_COUNTRY')<keys.indexOf('REGISTRATION_AUTH_MODE'));
 });
-
-test('注册国家草稿独立于池默认国家并保留NA，不被空占位规则吞掉', () => {
-  const view = createCountryView();
-  assert.equal(view.read('NA'), 'NA');
-  view.setPending('REGISTRATION_COUNTRY', view.read('NA'));
-  view.setPending('PROXY_POOL_DEFAULT_COUNTRY', 'JP');
-  assert.match(view.render(), /option value="NA" selected>纳米比亚 · NA/);
-  assert.match(view.control('PROXY_POOL_DEFAULT_COUNTRY'), /option value="JP" selected>日本 · JP/);
-  view.setPending('PROXY_POOL_DEFAULT_COUNTRY', 'US');
-  assert.match(view.render(), /option value="NA" selected>纳米比亚 · NA/);
-  assert.equal(view.pending.REGISTRATION_COUNTRY, 'NA');
-  assert.match(view.poolSummary(), /注册主链路的注册国家/);
-  assert.doesNotMatch(view.poolSummary(), /注册入队时的池默认国家/);
+test('注册国家草稿独立于池默认国家并保留NA，不被空占位规则吞掉',async()=>{
+ const view=createConfigView(fields());await view.open('注册主链路');
+ await view.control('REGISTRATION_COUNTRY').setValue('NA');
+ view.owner.setField('PROXY_POOL_DEFAULT_COUNTRY','JP');
+ assert.equal(view.owner.readField('REGISTRATION_COUNTRY'),'NA');
+ await view.open('代理与网络');
+ assert.match(view.wrapper.text(),/注册主链路的注册国家/);
+ view.owner.setField('PROXY_POOL_DEFAULT_COUNTRY','US');await view.open('注册主链路');
+ assert.equal(view.control('REGISTRATION_COUNTRY').element.value,'NA');
 });
-
-
-test('注册配置缺省使用本地Roxy且历史值映射到现行驱动', () => {
-  const context = {document: {getElementById() { return null; }}, window: {addEventListener() {}},
-    localStorage: {getItem() { return null; }}, $() { return {addEventListener() {}}; }};
-  vm.createContext(context);
-  vm.runInContext(`${source}
- globalThis.readDriver = values => { CONFIG = values; return getRegistrationDriverValue(); };`, context);
-  assert.equal(context.readDriver([]), 'roxy');
-  for (const [previous, current] of [['', 'roxy'], ['protocol', 'protocol_oss_2'], ['protocol_oss', 'protocol_oss_2'], ['roxy_oss', 'roxy']]) {
-    assert.equal(context.readDriver([{key: 'REGISTRATION_DRIVER', value: previous}]), current);
-  }
+test('注册配置缺省使用本地Roxy且历史值映射到现行驱动',()=>{
+ assert.equal(navigation.registrationDriverValue(undefined),'roxy');
+ for(const [previous,current] of [['','roxy'],['protocol','protocol_oss_2'],['protocol_oss','protocol_oss_2'],['roxy_oss','roxy']])assert.equal(navigation.registrationDriverValue(previous),current);
 });

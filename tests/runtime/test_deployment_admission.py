@@ -14,6 +14,7 @@ from core.registration import service as registration
 from core.storage import records
 from core.storage.operations import store as operation
 from tests.support_pg import PostgresTestCase
+from tests.support_settlement import install_native_settlement_fixture
 from webui import runtime
 from webui.app import create_app
 
@@ -29,6 +30,10 @@ class DeploymentAdmissionTests(PostgresTestCase):
         self.stack.enter_context(patch.object(account_task_store, "_SCHEMA", self.schema))
         self.stack.enter_context(patch.object(account_task_store, "_READY_KEY", ""))
         account_task_store.init()
+        # PostgresTestCase truncates the capability marker between methods.
+        # Re-run startup migration despite the same-schema readiness cache.
+        operation.reset_ready()
+        operation.init()
         self.account_id = records.insert_row(records.ACCOUNTS, {
             "email": "deployment@example.test", "access_token": "test-access-token",
             "extra_json": {"account_password": "test-password", "account_password_state": "confirmed"},
@@ -241,6 +246,7 @@ class DeploymentAdmissionTests(PostgresTestCase):
         self.assertEqual("browser_unavailable_on_deployment", result["code"])
 
     def test_existing_browser_setup_queue_stops_before_remote_worker(self):
+        fixture = install_native_settlement_fixture(self)
         created = operation.create_runtime_task(
             task_type="twofa_setup", account_id=self.account_id, email="deployment@example.test",
             source_system="webui_runtime", source_id="browser-setup-before-deployment-change",
@@ -249,11 +255,13 @@ class DeploymentAdmissionTests(PostgresTestCase):
         runtime._register_runtime_handlers()
         with patch.object(runtime.codex_retry_service, "run_twofa_worker", side_effect=AssertionError("不应执行浏览器操作")):
             result = task_gateway._execute_operation_handler("twofa_setup", created["run"]["id"])
+            fixture.wait_for_run_released(int(created["run"]["id"]))
         self.assertEqual("failed", result["status"])
         stored = operation.get_run(created["run"]["id"])
         self.assertEqual("browser_unavailable_on_deployment", stored["result_summary"].get("error_code"))
 
     def test_existing_browser_live_queue_stops_before_remote_worker(self):
+        fixture = install_native_settlement_fixture(self)
         created = operation.create_runtime_task(
             task_type="live_check", account_id=self.account_id, email="deployment@example.test",
             data={"driver": "browser_roxy", "config_snapshot": {"live_check_driver": "browser_roxy"}},
@@ -261,6 +269,7 @@ class DeploymentAdmissionTests(PostgresTestCase):
         live.register_operation_handlers()
         with patch.object(live, "_run_live_check", side_effect=AssertionError("不应执行浏览器操作")):
             result = task_gateway._execute_operation_handler("live_check", created["run"]["id"])
+            fixture.wait_for_run_released(int(created["run"]["id"]))
         self.assertEqual("failed", result["status"])
         stored = operation.get_run(created["run"]["id"])
         self.assertEqual("browser_unavailable_on_deployment", stored["result_summary"].get("error_code"))

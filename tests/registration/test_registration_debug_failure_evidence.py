@@ -344,13 +344,26 @@ def test_confirmed_progress_prevents_recovered_otp_401_from_becoming_final():
     {"auth_error": {"code": "invalid_otp"}}, {"auth_error": {"code": "wrong_email_otp_code_typo"}},
     {"auth_error": {"category": "otp_rejected"}},
 ])
-def test_otp_rejection_requires_trusted_post_401_exact_code_and_same_stage(changes):
+@pytest.mark.parametrize("reason", ["request_unknown: otp_request_unconfirmed", "RuntimeError: 尚未确认下一步"])
+def test_otp_rejection_requires_trusted_post_401_exact_code_and_same_stage(changes, reason):
     value = roxy_email_session()
     value.update_stage("email_otp", state="running")
     record = rejected_otp_record()
     record.update(changes)
     value.record_network(record)
-    assert value._classify_failure("request_unknown: otp_request_unconfirmed")["code"] != "email_otp_code_rejected"
+    assert value._classify_failure(reason)["code"] != "email_otp_code_rejected"
+
+
+@pytest.mark.parametrize("stage,reason", [
+    ("email_otp", "RuntimeError: 尚未确认下一步"),
+    ("login_password", "PasswordPageError: 密码登录页显示错误，具体原因未识别"),
+])
+def test_missing_diagnostics_without_strong_network_evidence_stays_missing(stage, reason):
+    value = roxy_email_session()
+    value.update_stage(stage, state="running")
+    original_job = dict(value.job)
+    assert value._classify_failure(reason)["code"] == f"{stage}_failure_diagnostics_missing"
+    assert value.job == original_job
 
 
 @pytest.mark.parametrize("stage", ["", "browser", "submit_email", "profile", "complete"])

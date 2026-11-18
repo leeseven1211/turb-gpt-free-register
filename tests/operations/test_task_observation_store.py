@@ -7,6 +7,7 @@ from core import db, operation_task_store
 from core.operations import run_log as task_run_log
 from core.storage.operations import legacy_task_store
 from tests.support_pg import PostgresTestCase
+from tests.support_settlement import install_native_settlement_fixture
 
 
 class TaskObservationStoreTests(PostgresTestCase):
@@ -25,6 +26,9 @@ class TaskObservationStoreTests(PostgresTestCase):
         operation_task_store.init()
 
     def tearDown(self):
+        fixture = getattr(self, "settlement_fixture", None)
+        if fixture is not None:
+            fixture.close()
         task_run_log.clear_current_context()
         for item in reversed(self.patches):
             item.stop()
@@ -142,7 +146,7 @@ class TaskObservationStoreTests(PostgresTestCase):
 
     def test_public_gateway_captures_logger_once_with_current_stage(self):
         import logging
-        from core.operations import task_gateway
+        from core.operations import concurrency, task_gateway
         from core.operations.executor import operation_log_context
 
         def handler(context):
@@ -152,11 +156,18 @@ class TaskObservationStoreTests(PostgresTestCase):
             return task_gateway.OperationResult.success({"event_id": event["id"]})
 
         task_type = "test_observation_handler"
+        aliases = patch.dict(concurrency._ALIASES)
+        aliases.start()
+        self.addCleanup(aliases.stop)
+        concurrency.register_admission_alias(task_type, "maintenance_check")
         task_gateway.register_operation_handler(task_type, handler)
+        fixture = install_native_settlement_fixture(self)
         try:
             created = operation_task_store.create_runtime_task(task_type=task_type, account_id=4999, email="gateway@example.test", trigger="test")
             task_id, run_id = created["id"], created["run"]["id"]
-            task_gateway._execute_operation_handler(task_type, run_id)
+            result = task_gateway._execute_operation_handler(task_type, run_id)
+            self.assertEqual("success", result["status"], result)
+            fixture.wait_for_run_released(int(run_id))
             logs = operation_task_store.read_task_run_log(task_id, run_id, cursor=0)["items"]
             ordinary = [line for line in logs if line["message"] == "普通日志已归属当前阶段"]
             self.assertEqual(1, len(ordinary))
@@ -164,6 +175,7 @@ class TaskObservationStoreTests(PostgresTestCase):
             self.assertEqual(task_id, ordinary[0]["task_id"])
             self.assertIsNotNone(ordinary[0].get("event_id"))
         finally:
+            fixture.close()
             task_gateway.unregister_operation_handler(task_type)
 
     def test_legacy_event_log_correlation_uses_projected_identity(self):

@@ -17,9 +17,9 @@ from psycopg.rows import dict_row
 import requests
 
 try:
-    from tools.maintenance.reconcile_butler_service_facts import ReconcileError, address, digest, request_json, write_receipt, transport_base
+    from tools.maintenance.reconcile_butler_service_facts import ReconcileError, address, digest, request_json, write_receipt, transport_base, require_source_owner
 except ModuleNotFoundError:
-    from reconcile_butler_service_facts import ReconcileError, address, digest, request_json, write_receipt, transport_base
+    from reconcile_butler_service_facts import ReconcileError, address, digest, request_json, write_receipt, transport_base, require_source_owner
 
 
 def build_bindings(profiles, references, tombstones, instance):
@@ -128,6 +128,7 @@ def decrypt_routes(conn, cfg, schema, candidates):
 
 def run(args):
     cfg = dotenv_values(args.source_root / '.env', interpolate=False)
+    require_owner = require_source_owner(args, cfg) if args.apply else None
     schema = cfg.get('TURB_DB_SCHEMA') or 'public'
     with psycopg.connect(cfg['DATABASE_URL'], options='-c default_transaction_read_only=on', row_factory=dict_row) as conn:
         candidates, issues, skipped = collect_bindings(conn, schema, args.source_instance)
@@ -149,6 +150,7 @@ def run(args):
         groups.setdefault((row['api_base'], row['credential_ref']), []).append(row['item'])
     for (original, ref), items in groups.items():
         base = transport_base(original, args.transport_base)
+        require_owner()
         with requests.Session() as session:
             session.headers.update({'Authorization': 'Bearer ' + keys[ref], 'Accept': 'application/json'})
             who = request_json(session, 'GET', base + '/me')
@@ -160,6 +162,7 @@ def run(args):
                     fresh, fresh_issues, _ = collect_bindings(conn, schema, args.source_instance)
                 if fresh_issues or digest(json.dumps(fresh, sort_keys=True)) != summary['manifest_sha256']:
                     raise ReconcileError('read_binding_source_changed')
+                require_owner()
                 response = request_json(session, 'POST', base + '/service-read-bindings/batch', payload={'items': batch})
                 results = response.get('results')
                 expected = {r['address']: r for r in batch}

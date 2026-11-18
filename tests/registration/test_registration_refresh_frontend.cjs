@@ -1,408 +1,400 @@
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
 const test = require('node:test');
-const vm = require('node:vm');
+const {ownerFixture, deferred, response, flush, createRegistrationApi} = require('./registration_vue_owner_fixture.cjs');
 
-const jobsSource = fs.readFileSync(path.join(__dirname, '../../webui/static/js/pages/registration/page.js'), 'utf8');
-const commonSource = fs.readFileSync(path.join(__dirname, '../../webui/static/js/shared/common.js'), 'utf8');
-const bootstrapSource = fs.readFileSync(path.join(__dirname, '../../webui/static/js/bootstrap.js'), 'utf8');
-function functionSource(name, code = jobsSource) {
-  const index = code.indexOf(`function ${name}(`);
-  if (index < 0) return '';
-  const start = code.slice(Math.max(0, index - 6), index) === 'async ' ? index - 6 : index;
-  return code.slice(start, code.indexOf('\n}', index) + 2);
-}
-function deferred() {
-  let resolve;
-  const promise = new Promise(done => { resolve = done; });
-  return {promise, resolve};
-}
-function harness() {
-  const calls = [];
-  const busy = [];
-  const register = {dataset: {moduleView: 'launch'}, classList: {contains: () => false}};
-  const context = {
-    document: {hidden: false, querySelector: selector => selector === '#tab-register' ? register : null},
-    localStorage: {getItem: () => 'old-storage-batch', setItem() {}, removeItem() {}},
-    PAGERS: {jobs: {page: 1, size: 20}},
-    setListBusy: (_id, value) => busy.push(value),
-    updateJobStatusFilters() {}, renderJobs() {}, renderBatchProgress() {}, markViewReady() {},
-    renderTableStateRow: () => '加载失败', queueMicrotask,
-    api: url => {
-      const pending = deferred();
-      calls.push({url, ...pending});
-      return pending.promise;
-    },
-  };
-  vm.createContext(context);
-  vm.runInContext(commonSource.slice(0, commonSource.indexOf('// GET requests')), context);
-  context.$ = selector => selector === '#tab-register' ? register : null;
-  vm.runInContext([
-    'setJobProgressBatch', 'currentBatchJobs', 'jobsViewMode', 'shouldPollJobs', 'refreshJobs',
-  ].map(name => functionSource(name)).join('\n'), context);
-  const read = expression => vm.runInContext(expression, context);
-  const set = expression => vm.runInContext(expression, context);
-  const response = (batchId, status = 'running') => ({
-    items: [], total: 0, revision: batchId,
-    progress_batch: {batch_id: batchId, items: [{id: 1, status}], status_counts: {[status]: 1}},
-    progress_batches: [{batch_id: batchId}], status_counts: {active: status === 'running' ? 1 : 0},
-  });
-  return {context, register, calls, busy, read, set, response};
-}
-
-test('首次打开从最新批次开始，不使用 localStorage 历史批次', () => {
-  const h = harness();
-  assert.equal(h.read('JOB_PROGRESS_BATCH_ID'), '');
-});
-
-test('旧批次 GET 挂起时切换立即发起新 GET，同一签名共享进行中的请求', async () => {
-  const h = harness();
-  h.context.setJobProgressBatch('old');
-  const first = h.context.refreshJobs();
-  h.context.setJobProgressBatch('new');
-  const second = h.context.refreshJobs();
-  const duplicate = h.context.refreshJobs({automatic: true});
-  assert.equal(h.calls.length, 2);
-  assert.match(h.calls[1].url, /progress_batch_id=new/);
-  h.calls[1].resolve(h.response('new'));
-  await Promise.all([second, duplicate]);
-  h.calls[0].resolve(h.response('old'));
-  await first;
-  assert.equal(h.read('JOB_PROGRESS_BATCH_ID'), 'new');
-  assert.equal(h.read('JOB_PROGRESS_BATCH.batch_id'), 'new');
-});
-
-test('旧响应先返回不会改新请求的 loading，也不会覆盖当前数据', async () => {
-  const h = harness();
-  h.context.setJobProgressBatch('old');
-  const first = h.context.refreshJobs();
-  h.context.setJobProgressBatch('new');
-  const second = h.context.refreshJobs();
-  assert.equal(h.calls.length, 2);
-  h.calls[0].resolve(h.response('old'));
-  await first;
-  assert.equal(h.read('jobsLoading'), true);
-  assert.equal(h.read('JOB_PROGRESS_BATCH_ID'), 'new');
-  assert.equal(h.read('JOB_PROGRESS_BATCH'), null);
-  assert.equal(h.busy.at(-1), true);
-  h.calls[1].resolve(h.response('new'));
-  await second;
-  assert.equal(h.read('jobsLoading'), false);
-});
-
-test('发起注册只请求 batch，已有 tasks 视图只请求 table 并保留筛选分页', async () => {
-  const h = harness();
-  const launch = h.context.refreshJobs();
-  assert.equal(new URL(h.calls[0].url, 'http://local').searchParams.get('view'), 'batch');
-  h.register.dataset.moduleView = 'tasks';
-  h.set("JOB_EMAIL_FILTER = 'fixture+filter'; PAGERS.jobs.page = 2");
-  const table = h.context.refreshJobs();
-  assert.equal(h.calls.length, 2);
-  const params = new URL(h.calls[1].url, 'http://local').searchParams;
-  assert.equal(params.get('view'), 'table');
-  assert.equal(params.get('email'), 'fixture+filter');
-  assert.equal(params.get('page'), '2');
-  h.calls[1].resolve({items: [{id: 21}], total: 25, revision: 'table', facets: {}});
-  await table;
-  h.calls[0].resolve(h.response('old'));
-  await launch;
-  assert.equal(h.read('JOBS[0].id'), 21);
-  assert.equal(h.read('JOB_PROGRESS_BATCH'), null);
-});
-
-test('结束批次停止自动轮询，显式刷新和新任务主动选择仍可读取', async () => {
-  const h = harness();
-  h.context.setJobProgressBatch('done');
-  const initial = h.context.refreshJobs();
-  h.calls[0].resolve(h.response('done', 'success'));
-  await initial;
-  assert.equal(h.context.shouldPollJobs(), false);
-  await h.context.refreshJobs({automatic: true});
+test('首次读取最新批次，不恢复 localStorage 中的历史批次', async t => {
+  window.localStorage.setItem('gpt_console_registration_batch_id', 'stale-batch');
+  const h = ownerFixture(t);
+  h.owner.setVisible(true);
   assert.equal(h.calls.length, 1);
-  const manual = h.context.refreshJobs();
-  assert.equal(h.calls.length, 2);
-  h.calls[1].resolve(h.response('done', 'success'));
-  await manual;
-  h.context.setJobProgressBatch('created');
-  assert.equal(h.read('JOB_PROGRESS_BATCH'), null);
-  const created = h.context.refreshJobs();
-  assert.equal(h.calls.length, 3);
-  h.calls[2].resolve(h.response('created'));
-  await created;
-  assert.equal(h.context.shouldPollJobs(), true);
+  assert.equal(String(h.calls[0].params.progress_batch_id || ''), '');
+  h.calls[0].resolve(response('latest'));
+  await flush();
+  assert.equal(h.owner.state.batch.batch_id, 'latest');
 });
 
-test('任务表自动轮询低频更新筛选统计，换筛选和手动刷新立即更新', async () => {
-  const h = harness();
-  h.register.dataset.moduleView = 'tasks';
-  const facets = [];
-  h.context.updateJobStatusFilters = value => facets.push(value);
-  const initial = h.context.refreshJobs();
-  h.calls[0].resolve({items: [], total: 0, revision: 'first', facets: {status: ['running']}, status_counts: {running: 7}});
-  await initial;
-  const poll = h.context.refreshJobs({automatic: true});
-  assert.equal(new URL(h.calls[1].url, 'http://local').searchParams.get('include_facets'), '0');
-  h.calls[1].resolve({items: [], total: 0, revision: 'second'});
-  await poll;
-  assert.equal(facets.length, 1);
-  assert.equal(h.read('JOB_STATUS_COUNTS.running'), 7);
+test('注册隐藏页不读；显示后同签名 automatic 合并在途读取', async t => {
+  const h = ownerFixture(t);
+  await h.owner.load({automatic: true});
+  await h.owner.loadSummary();
+  assert.equal(h.calls.length, 0);
+  assert.equal(h.intervals.size, 0);
+  h.owner.setVisible(true);
+  const coalesced = h.owner.load({automatic: true});
+  assert.equal(h.calls.length, 1);
+  h.calls[0].resolve(response('active'));
+  await coalesced;
+  await flush();
+  assert.equal(h.owner.state.batch.batch_id, 'active');
+});
 
-  h.context.refreshJobs.tableFacets.loadedAt -= 31000;
-  const expired = h.context.refreshJobs({automatic: true});
-  assert.notEqual(new URL(h.calls[2].url, 'http://local').searchParams.get('include_facets'), '0');
-  h.calls[2].resolve({items: [], total: 0, revision: 'third', facets: {}, status_counts: {}});
-  await expired;
-  assert.equal(h.read('Object.keys(JOB_STATUS_COUNTS).length'), 0);
+test('切换批次立即读取，旧响应不覆盖新批次或解除当前 loading', async t => {
+  const h = ownerFixture(t);
+  h.owner.setVisible(true);
+  const newer = h.owner.load({progress_batch_id: 'new'});
+  assert.equal(h.calls.length, 2, 'switch must supersede the pending old GET');
+  assert.equal(h.calls[1].params.progress_batch_id, 'new');
+  h.calls[0].resolve(response('old'));
+  await flush();
+  assert.equal(h.owner.state.loading, true);
+  assert.equal(h.owner.state.batch, null);
+  h.calls[1].resolve(response('new'));
+  await newer;
+  assert.equal(h.owner.state.batch.batch_id, 'new');
+});
 
-  h.set("JOB_EMAIL_FILTER = 'new-filter'");
-  const filtered = h.context.refreshJobs({automatic: true});
-  assert.notEqual(new URL(h.calls[3].url, 'http://local').searchParams.get('include_facets'), '0');
-  h.calls[3].resolve({items: [], total: 0, facets: {}});
+test('A→B→A 创建新的读取代次，首个 A 不能覆盖最后选择', async t => {
+  const h = ownerFixture(t);
+  h.owner.setVisible(true);
+  h.calls[0].resolve(response('initial'));
+  await flush();
+  const a = h.owner.load({progress_batch_id: 'A'});
+  const b = h.owner.load({progress_batch_id: 'B'});
+  const latest = h.owner.load({progress_batch_id: 'A'});
+  assert.equal(h.calls.length, 4);
+  h.calls[1].resolve(response('A', 'failed'));
+  h.calls[2].resolve(response('B', 'success'));
+  await Promise.all([a, b]);
+  assert.equal(h.owner.state.batch, null);
+  assert.equal(h.owner.state.loading, true);
+  h.calls[3].resolve(response('A', 'running'));
+  await latest;
+  assert.equal(h.owner.state.batch.items[0].status, 'running');
+});
+
+test('批次与任务表读取隔离，表筛选分页在自动轮询中持久保留', async t => {
+  const h = ownerFixture(t);
+  h.owner.setVisible(true);
+  h.owner.setView('tasks');
+  const filtered = h.owner.load({page: 2, page_size: 20, email: 'fixture+filter', status: 'failed'});
+  assert.equal(h.calls.at(-1).params.view, 'table');
+  assert.equal(h.calls.at(-1).params.page, 2);
+  h.calls.at(-1).resolve({items: [{id: '9007199254740993'}], total: 25, facets: {}});
   await filtered;
-  const manual = h.context.refreshJobs();
-  assert.notEqual(new URL(h.calls[4].url, 'http://local').searchParams.get('include_facets'), '0');
-  h.calls[4].resolve({items: [], total: 0, facets: {}});
-  await manual;
+  await h.tick();
+  assert.equal(h.calls.at(-1).params.page, 2);
+  assert.equal(h.calls.at(-1).params.page_size, 20);
+  assert.equal(h.calls.at(-1).params.email, 'fixture+filter');
+  assert.equal(h.calls.at(-1).params.status, 'failed');
+  h.calls.at(-1).resolve({items: [{id: '9007199254740993'}], total: 25});
+  await flush();
+  h.calls[0].resolve(response('old-batch'));
+  await flush();
+  assert.equal(h.owner.state.jobs[0].id, '9007199254740993');
 });
 
-test('自动刷新只读取可见注册视图，bootstrap 使用自动模式', async () => {
-  const h = harness();
-  h.context.document.hidden = true;
-  const invisible = h.context.refreshJobs({automatic: true});
-  if (h.calls.length) h.calls[0].resolve(h.response('unexpected'));
-  await invisible;
-  assert.equal(h.calls.length, 0);
-  h.context.document.hidden = false;
-  h.register.classList.contains = () => true;
-  await h.context.refreshJobs({automatic: true});
-  assert.equal(h.calls.length, 0);
-  const intervals = [];
-  const noOp = () => {};
-  const context = {
-    document: {hidden: false, addEventListener: noOp},
-    localStorage: {getItem: () => 'overview'},
-    setInterval: callback => { intervals.push(callback); },
-    $: () => h.register,
-    refreshJobs: options => { context.options = options; },
-  };
-  for (const name of ['initResizableTables', 'loadRuntimeUiSettings', 'loadSummary', 'loadCapabilities', 'restoreModuleViewState', 'activateTab', 'initializeNavigationHistory']) context[name] = noOp;
-  h.register.classList.contains = () => false;
-  vm.createContext(context);
-  vm.runInContext(bootstrapSource, context);
-  intervals[0]();
-  assert.equal(context.options?.automatic, true);
-});
-
-test('切换批次立即清空旧步骤并显示当前批次的加载状态，保留批次下拉', () => {
-  const h = harness();
-  const elements = new Map();
-  for (const id of ['batchProgressV2', 'registrationBatchSelectV2', 'batchProgressStateV2', 'batchProgressSummaryV2', 'batchProgressStagesV2', 'batchProgressTimeV2', 'batchProgressListV2', 'btnBatchStopV2', 'btnBatchCancelV2', 'btnBatchRetryV2']) {
-    elements.set(id, {
-      textContent: '旧批次内容', innerHTML: '', disabled: false, attributes: {},
-      classList: {add() {}, remove() {}},
-      setAttribute(key, value) { this.attributes[key] = value; },
-    });
-  }
-  h.context.document.querySelector = selector => elements.get(selector.slice(1)) || null;
-  h.context.document.getElementById = id => elements.get(id) || null;
-  Object.assign(h.context, {esc: String, attrEsc: String, formatDateTime: String});
-  vm.runInContext([
-    'registrationBatchStateLabel', 'renderRegistrationBatchSelector', 'renderBatchProgress',
-  ].map(name => functionSource(name)).join('\n'), h.context);
-  h.set("JOB_PROGRESS_BATCH_ID = 'old'; JOB_PROGRESS_BATCH = {batch_id: 'old', items: [{id: 1}]}; JOB_PROGRESS_BATCHES = [{batch_id: 'old', total: 1}, {batch_id: 'new', total: 2}]");
-  h.context.setJobProgressBatch('new');
-  h.set('jobsLoading = true');
-  h.context.renderBatchProgress();
-  assert.equal(elements.get('batchProgressStateV2').textContent, '加载中…');
-  assert.equal(elements.get('batchProgressListV2').textContent, '');
-  assert.equal(elements.get('batchProgressV2').attributes['aria-busy'], 'true');
-  assert.equal(elements.get('btnBatchRetryV2').disabled, true);
-  const select = elements.get('registrationBatchSelectV2');
-  assert.equal(select.value, 'new');
-  assert.match(select.innerHTML, /value="old"/);
-  assert.match(select.innerHTML, /value="new"/);
-  assert.equal(select.disabled, false);
-});
-
-test('新建成功会覆盖所选历史终态批次并立即读取新批次，不等待旧 GET', async () => {
-  const h = harness();
-  h.context.setJobProgressBatch('old');
-  const oldRequest = h.context.refreshJobs();
-  const get = h.context.api;
-  h.context.api = (url, options) => options?.method === 'POST'
-    ? Promise.resolve({jobs: [{batch_id: 'created'}], submitted: 2})
-    : get(url);
-  Object.assign(h.context, {
-    registrationEmailSourceLabel: String, registrationDriverLabel: () => 'Protocol', esc: String,
-    setTimeout() {},
-  });
-  vm.runInContext(functionSource('startRegistrationFromInputs'), h.context);
-  await h.context.startRegistrationFromInputs({value: '2'}, {value: '1'}, {value: 'fixture'}, null);
+test('完成批次停止自动 jobs 读取，显式刷新和重新进入仍可读取', async t => {
+  const h = ownerFixture(t);
+  h.owner.setVisible(true);
+  h.calls[0].resolve(response('done', 'success'));
+  await flush();
+  await h.tick();
+  assert.equal(h.calls.length, 1, 'terminal batch must not keep polling jobs');
+  const manual = h.owner.load();
   assert.equal(h.calls.length, 2);
-  assert.equal(h.read('JOB_PROGRESS_BATCH_ID'), 'created');
-  assert.match(h.calls[1].url, /progress_batch_id=created/);
-  const createdRequest = h.context.refreshJobs({automatic: true});
-  h.calls[1].resolve(h.response('created'));
-  await createdRequest;
-  h.calls[0].resolve(h.response('old', 'success'));
-  await oldRequest;
-  assert.equal(h.read('JOB_PROGRESS_BATCH.batch_id'), 'created');
+  h.calls[1].resolve(response('done', 'success'));
+  await manual;
+  h.owner.setVisible(false);
+  h.owner.setVisible(true);
+  assert.equal(h.calls.length, 3);
 });
 
-test('投影延迟继续轮询，table 终态分页仍按当前页更新', async () => {
-  const h = harness();
-  h.context.setJobProgressBatch('delayed');
-  const launch = h.context.refreshJobs();
-  const delayed = h.response('delayed', 'success');
+test('投影延迟继续轮询，清除延迟后的终态暂停 jobs 读取', async t => {
+  const h = ownerFixture(t);
+  h.owner.setVisible(true);
+  const delayed = response('delayed', 'success');
   delayed.progress_batch.projection_delayed = true;
   h.calls[0].resolve(delayed);
-  await launch;
-  assert.equal(h.context.shouldPollJobs(), true);
-  h.register.dataset.moduleView = 'tasks';
-  h.set('PAGERS.jobs.page = 4');
-  const table = h.context.refreshJobs();
-  h.calls[1].resolve({items: [], total: 21, revision: 'page4'});
-  await new Promise(resolve => setImmediate(resolve));
+  await flush();
+  await h.tick();
+  assert.equal(h.calls.length, 2);
+  h.calls[1].resolve(response('delayed', 'success'));
+  await flush();
+  await h.tick();
+  assert.equal(h.calls.length, 2);
+});
+
+test('文档隐藏作废旧请求并解除旧 loading，恢复可见立即重新读', async t => {
+  const h = ownerFixture(t);
+  h.owner.setVisible(true);
+  h.hideDocument(true);
+  assert.equal(h.owner.state.loading, false);
+  assert.equal(h.intervals.size, 0);
+  h.hideDocument(false);
+  assert.equal(h.calls.length, 2);
+  h.calls[0].resolve(response('stale'));
+  await flush();
+  assert.equal(h.owner.state.batch, null);
+  assert.equal(h.owner.state.loading, true);
+  h.calls[1].resolve(response('fresh'));
+  await flush();
+  assert.equal(h.owner.state.batch.batch_id, 'fresh');
+});
+
+test('显示→隐藏→显示后旧 summary 也不得覆盖新一轮状态', async t => {
+  const first = deferred(), second = deferred();
+  let count = 0;
+  const h = ownerFixture(t, {api: {summary: () => ++count === 1 ? first.promise : second.promise}});
+  h.owner.setVisible(true);
+  h.owner.setVisible(false);
+  h.owner.setVisible(true);
+  second.resolve({accounts: 2, email_supply: {available: 0}});
+  await flush();
+  first.resolve({accounts: 99, email_supply: {available: 99}});
+  await flush();
+  assert.equal(h.owner.state.summary.accounts, 2);
+  assert.equal(h.owner.state.summary.email_supply.available, 0);
+});
+
+test('慢summary跨越多次十秒定时器仍只读一次并正常发布，显式刷新仍作废旧读取',async t=>{
+  const reads=[];
+  const h=ownerFixture(t,{api:{summary:signal=>{
+    const pending=deferred();reads.push({signal,...pending});return pending.promise;
+  }}});
+  h.owner.setVisible(true);
+  assert.equal(reads.length,1);
+  const timer=[...h.intervals.values()].find(item=>item.milliseconds===10000);
+  assert.ok(timer);
+  timer.callback();timer.callback();await flush();
+  assert.equal(reads.length,1,'slow automatic summary must not be restarted every ten seconds');
+  assert.equal(reads[0].signal.aborted,false);
+  reads[0].resolve({accounts:4,email_supply:{available:2}});
+  await flush();
+  assert.equal(h.owner.state.summary.accounts,4);
+  timer.callback();
+  assert.equal(reads.length,2,'the next interval can read after the old response settles');
+  const manual=h.owner.loadSummary();
+  assert.equal(reads.length,3,'manual refresh remains immediate');
+  assert.equal(reads[1].signal.aborted,true);
+  reads[2].resolve({accounts:8});await manual;
+  reads[1].resolve({accounts:99});await flush();
+  assert.equal(h.owner.state.summary.accounts,8);
+});
+
+test('新建受理后越过旧挂起 GET 立即查询新批次；旧 GET 不得覆盖回执', async t => {
+  const h = ownerFixture(t);
+  h.owner.setVisible(true);
+  const submit = h.owner.create({count: 2, workers: 50, email_source: 'outlook', debug_enabled: true});
+  h.writes[0].resolve({submitted: 2, workers: 50, jobs: [{id: '9007199254740993', batch_id: 'created'}]});
+  await submit;
+  assert.equal(h.calls.length, 2);
+  assert.equal(h.calls[1].params.progress_batch_id, 'created');
+  assert.equal(h.owner.state.receipt.message.includes('2'), true);
+  h.calls[0].resolve(response('old', 'failed'));
+  await flush();
+  assert.equal(h.owner.state.loading, true);
+  assert.notEqual(h.owner.state.batch?.batch_id, 'old');
+  h.calls[1].reject(new Error('follow-up read failed'));
+  await flush();
+  assert.equal(h.owner.state.receipt.tone, 'success');
+  assert.equal(h.owner.state.error, 'follow-up read failed');
+  assert.equal(h.writes.length, 1);
+});
+
+test('重复点击新建只发一次 POST，受理回执即使页面隐藏也保留且不重放', async t => {
+  const h = ownerFixture(t);
+  h.owner.setVisible(true);
+  const payload = {count: 1, workers: 100, email_source: 'outlook', debug_enabled: false};
+  const one = h.owner.create(payload), two = h.owner.create(payload);
+  assert.equal(h.writes.length, 1, 'pending create must have one outbound POST');
+  h.owner.setVisible(false);
+  h.writes[0].resolve({submitted: 1, jobs: [{id: '9007199254740993', batch_id: 'accepted'}]});
+  await Promise.all([one, two]);
+  assert.equal(h.owner.state.receipt.tone, 'success');
+  assert.equal(h.calls.length, 1);
+  h.owner.setVisible(true);
+  assert.equal(h.writes.length, 1);
+  assert.equal(h.calls.at(-1).params.progress_batch_id, 'accepted');
+});
+
+test('同批次重跑受理后显式 GET 作废旧失败 GET，保留调试 payload', async t => {
+  const h = ownerFixture(t);
+  h.owner.setVisible(true);
+  h.calls[0].resolve(response('same', 'failed'));
+  await flush();
+  const old = h.owner.load();
+  const retry = h.owner.action('/api/jobs/retry-bulk', {job_ids: ['9007199254740993'], debug_enabled: true});
+  assert.deepEqual(h.writes[0].payload, {job_ids: ['9007199254740993'], debug_enabled: true});
+  h.writes[0].resolve({batch_id: 'same', started_count: 1, message: '已提交重跑'});
+  await retry;
   assert.equal(h.calls.length, 3);
-  assert.equal(new URL(h.calls[2].url, 'http://local').searchParams.get('page'), '2');
-  h.calls[2].resolve({items: [{id: 21}], total: 21, revision: 'page2'});
-  await table;
-  assert.equal(h.read('JOBS[0].id'), 21);
-  assert.equal(h.read('PAGERS.jobs.page'), 2);
-  assert.equal(h.read('jobsLoading'), false);
-});
-
-test('摘要暂有所选批次但详情为空时不会等待自己的进行中请求', async () => {
-  const h = harness();
-  h.context.setJobProgressBatch('delayed');
-  const request = h.context.refreshJobs();
-  h.calls[0].resolve({items: [], progress_batch: null, progress_batches: [{batch_id: 'delayed'}]});
-  const result = await Promise.race([
-    request.then(() => 'done'),
-    new Promise(resolve => setTimeout(() => resolve('blocked'), 20)),
-  ]);
-  assert.equal(result, 'done');
-  assert.equal(h.read('jobsLoading'), false);
-});
-
-function useRealApi(h) {
-  const network = [];
-  h.context.fetch = (url, options = {}) => {
-    if (options.method === 'POST') return Promise.resolve({ok: true, json: async () => ({batch_id: 'same', started_count: 1})});
-    const pending = deferred();
-    network.push({url, resolve: payload => pending.resolve({ok: true, json: async () => payload})});
-    return pending.promise;
-  };
-  vm.runInContext('const API_INFLIGHT = new Map();\n' + functionSource('api', commonSource), h.context);
-  return network;
-}
-
-test('真实 api 去重下 A→B→A 最后一次选择创建新的 A 网络请求，首个 A 不可覆盖', async () => {
-  const h = harness();
-  const network = useRealApi(h);
-  h.context.setJobProgressBatch('A');
-  const oldA = h.context.refreshJobs();
-  h.context.setJobProgressBatch('B');
-  const oldB = h.context.refreshJobs();
-  h.context.setJobProgressBatch('A');
-  const latestA = h.context.refreshJobs();
-  assert.equal(network.length, 3);
-  assert.notEqual(network[0].url, network[2].url);
-  network[0].resolve(h.response('A', 'failed'));
-  await oldA;
-  assert.equal(h.read('JOB_PROGRESS_BATCH'), null);
-  assert.equal(h.read('jobsLoading'), true);
-  network[1].resolve(h.response('B', 'success'));
-  await oldB;
-  network[2].resolve(h.response('A', 'running'));
-  await latestA;
-  assert.equal(h.read('JOB_PROGRESS_BATCH.items[0].status'), 'running');
-  assert.equal(h.context.shouldPollJobs(), true);
-});
-
-test('真实 api 下同批次重跑 POST 成功后的显式刷新绕过挂起的失败 GET', async () => {
-  const h = harness();
-  const network = useRealApi(h);
-  h.context.setJobProgressBatch('same');
-  h.set("JOB_PROGRESS_BATCH = {batch_id: 'same', items: [{id: 1, status: 'failed', retryable: true}], status_counts: {failed: 1}}");
-  const old = h.context.refreshJobs();
-  Object.assign(h.context, {confirm: () => true, showToast() {}});
-  vm.runInContext(['registrationRetryPayload', 'retryBatchFailedJobs'].map(name => functionSource(name)).join('\n'), h.context);
-  await h.context.retryBatchFailedJobs();
-  assert.equal(network.length, 2);
-  assert.notEqual(network[0].url, network[1].url);
-  const fresh = h.read('jobsRequestPromise');
-  network[0].resolve(h.response('same', 'failed'));
+  assert.notEqual(h.calls[1].params.refresh_generation, h.calls[2].params.refresh_generation);
+  h.calls[1].resolve(response('same', 'failed'));
   await old;
-  assert.equal(h.read('jobsLoading'), true);
-  network[1].resolve(h.response('same', 'running'));
-  await fresh;
-  assert.equal(h.read('JOB_PROGRESS_BATCH.items[0].status'), 'running');
-  assert.equal(h.context.shouldPollJobs(), true);
+  assert.equal(h.owner.state.loading, true);
+  h.calls[2].resolve(response('same', 'running'));
+  await flush();
+  assert.equal(h.owner.state.batch.items[0].status, 'running');
+  assert.equal(h.owner.state.receipt.message, '已提交重跑');
 });
 
-test('真实 api 下自动刷新共享同签名 GET，后续轮询沿用 generation，显式刷新才递增', async () => {
-  const h = harness();
-  const network = useRealApi(h);
-  h.context.setJobProgressBatch('active');
-  const initial = h.context.refreshJobs();
-  const shared = h.context.refreshJobs({automatic: true});
-  assert.equal(network.length, 1);
-  network[0].resolve(h.response('active'));
-  await Promise.all([initial, shared]);
-  const poll = h.context.refreshJobs({automatic: true});
-  assert.equal(network.length, 2);
-  assert.equal(network[1].url, network[0].url);
-  const manual = h.context.refreshJobs();
-  assert.equal(network.length, 3);
-  assert.notEqual(network[2].url, network[1].url);
-  network[1].resolve(h.response('active', 'failed'));
-  await poll;
-  assert.equal(h.read('jobsLoading'), true);
-  network[2].resolve(h.response('active'));
+test('摘要有所选批次但详情空缺时正常收口，不等待自己的在途请求', async t => {
+  const h = ownerFixture(t);
+  h.owner.setVisible(true);
+  h.calls[0].resolve({items: [], progress_batch: null, progress_batches: [{batch_id: 'delayed'}]});
+  await flush();
+  assert.equal(h.owner.state.loading, false);
+});
+
+test('真实 typed API 对 bigint 响应与 retry/OTP body 保留十进制精度', async t => {
+  const original = global.fetch, requests = [];
+  t.after(() => {global.fetch = original;});
+  global.fetch = async (url, options = {}) => {
+    requests.push({url, options});
+    return new Response('{"items":[{"id":9007199254740993,"operation_task_id":9007199254740995}],"total":1}', {headers: {'Content-Type': 'application/json'}});
+  };
+  const api = createRegistrationApi();
+  const result = await api.jobs({view: 'table', page: 2, page_size: 20, email: 'fixture+filter'});
+  assert.equal(result.items[0].id, '9007199254740993');
+  assert.equal(result.items[0].operation_task_id, '9007199254740995');
+  await api.action('/api/jobs/retry-bulk', {job_ids: ['9007199254740993'], debug_enabled: true});
+  assert.equal(JSON.parse(requests[1].options.body).job_ids[0], '9007199254740993');
+  await api.action('/api/manual-otp', {job_id: '9007199254740993', email: 'fixture@example.invalid', code: '123456'});
+  assert.equal(JSON.parse(requests[2].options.body).job_id, '9007199254740993');
+});
+
+test('table 自动轮询30秒内省略 facets，手动刷新和新筛选立即刷新统计', async t => {
+  let now=1000;
+  const original=Date.now;t.after(()=>{Date.now=original;});Date.now=()=>now;
+  const h=ownerFixture(t,{deps:{view:'tasks'}});
+  h.owner.setVisible(true);
+  h.calls[0].resolve({items:[],total:0,facets:{status:[{value:'running',count:7}]},status_counts:{running:7}});
+  await flush();
+  const automatic=h.owner.load({automatic:true});
+  assert.equal(h.calls[1].params.include_facets,0);
+  h.calls[1].resolve({items:[],total:0});
+  await automatic;
+  assert.equal(h.owner.state.statusCounts.running,7);
+  assert.equal(h.owner.state.facets.status[0].count,7);
+  now+=31000;
+  const expired=h.owner.load({automatic:true});
+  assert.notEqual(h.calls[2].params.include_facets,0);
+  h.calls[2].resolve({items:[],total:0,facets:{},status_counts:{}});
+  await expired;
+  assert.deepEqual({...h.owner.state.statusCounts},{});
+  const manual=h.owner.load();
+  assert.notEqual(h.calls[3].params.include_facets,0);
+  h.calls[3].resolve({items:[],total:0,facets:{}});
   await manual;
-  assert.equal(h.context.shouldPollJobs(), true);
 });
 
-test('实际导航入口初始化同一注册视图只发一个 GET，终态重新进入仍读取且不合并变更刷新', async () => {
-  const h = harness();
-  const network = useRealApi(h);
-  const tabs = new Map();
-  for (const name of ['overview', 'register', 'bulk', 'accounts', 'extract-workbench', 'extract-stats', 'codex', 'outlook', 'proxy-traffic', 'config']) {
-    tabs.set(`tab-${name}`, name === 'register' ? h.register : {dataset: {}, classList: {toggle() {}}});
-  }
-  h.register.classList.toggle = () => {};
-  h.context.document.querySelector = selector => tabs.get(selector.slice(1)) || null;
-  h.context.document.querySelectorAll = () => [];
-  h.context.document.getElementById = id => tabs.get(id) || null;
-  Object.assign(h.context, {
-    NAV_ALLOWED_TABS: ['register'], ACTIVE_TAB: 'register',
-    TAB_META: {register: {title: '注册机', description: '发起注册'}},
-    MODULE_VIEW_META: {register: {launch: '发起注册'}},
-    closePageDialogsForNavigation() {}, closeMobileSidebar() {},
-    updateNavigationBackButton() {}, recordNavigationHistory() {},
-  });
-  vm.runInContext(['activateTab', 'setModuleView'].map(name => functionSource(name, commonSource)).join('\n'), h.context);
-  h.context.activateTab('register', false);
-  h.context.activateTab('register', false);
-  h.context.setModuleView('register', 'launch', false);
-  assert.equal(network.length, 1);
-  const initial = h.read('jobsRequestPromise');
-  network[0].resolve(h.response('latest', 'success'));
-  await initial;
-  assert.equal(h.context.shouldPollJobs(), false);
-  h.context.activateTab('register', false);
-  const navigation = h.read('jobsRequestPromise');
-  h.context.setModuleView('register', 'launch', false);
-  assert.equal(network.length, 2);
-  const mutation = h.context.refreshJobs();
-  assert.equal(network.length, 3);
-  assert.notEqual(network[2].url, network[1].url);
-  network[1].resolve(h.response('latest', 'success'));
-  await navigation;
-  assert.equal(h.read('jobsLoading'), true);
-  network[2].resolve(h.response('latest', 'running'));
-  await mutation;
-  assert.equal(h.context.shouldPollJobs(), true);
+test('表总数缩小时修正到最后一页，旧回包不可覆盖修正结果', async t => {
+  const h=ownerFixture(t,{deps:{view:'tasks'}});
+  h.owner.setVisible(true);
+  const fourth=h.owner.load({page:4,page_size:20});
+  h.calls[1].resolve({items:[],total:21});
+  await flush();
+  assert.equal(h.calls.length,3);
+  assert.equal(h.calls[2].params.page,2);
+  h.calls[2].resolve({items:[{id:'21'}],total:21});
+  await fourth;
+  h.calls[0].resolve({items:[{id:'999'}],total:999});
+  await flush();
+  assert.equal(h.owner.state.query.page,2);
+  assert.equal(h.owner.state.jobs[0].id,'21');
+});
+
+test('外部隐藏注册页打开日志仍独立轮询，文档隐藏和关闭则停止', async t => {
+  let logs=0;
+  const h=ownerFixture(t,{api:{log:async id=>{logs++;return {job:{id,status:'running'},log:`log ${id}`};}}});
+  h.owner.openLog('9007199254740993');
+  await flush();
+  assert.equal(h.calls.length,0,'hidden registration list must stay idle');
+  assert.equal(logs,1);
+  assert.equal(h.timeouts.size,1);
+  const poll=[...h.timeouts.values()][0];h.timeouts.clear();poll.callback();
+  await flush();
+  assert.equal(logs,2);
+  h.hideDocument(true);
+  assert.equal(h.timeouts.size,0);
+  h.hideDocument(false);
+  await flush();
+  assert.equal(logs,3);
+  h.owner.closeDetail();
+  assert.equal(h.timeouts.size,0);
+  assert.equal(h.owner.state.detail.id,null);
+});
+
+test('日志debug诊断串联每次await后核对代次，旧debug不能触发旧诊断或写入新详情', async t => {
+  const oldDebug=deferred(),diagnostics=[];
+  const h=ownerFixture(t,{api:{
+    log:async id=>({job:{id,status:'success'},log:`log ${id}`}),
+    debug:id=>String(id)==='1'?oldDebug.promise:Promise.resolve({enabled:true,job_id:id,events:[]}),
+    diagnostics:async id=>{diagnostics.push(id);return {enabled:true,captured:true};},
+  }});
+  h.owner.openLog(1);await flush();
+  h.owner.closeDetail();h.owner.openLog(2);await flush();
+  oldDebug.resolve({enabled:false,job_id:1});await flush();
+  assert.equal(h.owner.state.detail.id,2);
+  assert.equal(h.owner.state.detail.debug.job_id,2);
+  assert.equal(h.owner.state.detail.diagnostics,null);
+  assert.deepEqual(diagnostics,[]);
+});
+
+test('旧compare响应不能覆盖重新打开的日志，失败诊断也不能晚写', async t => {
+  const comparison=deferred(),oldDiagnostics=deferred();
+  const h=ownerFixture(t,{api:{
+    log:async id=>({job:{id,status:'success'},log:`log ${id}`}),
+    debug:async()=>({enabled:false}),
+    diagnostics:id=>String(id)==='1'?oldDiagnostics.promise:Promise.resolve({enabled:true,captured:true,job_id:id}),
+    compare:()=>comparison.promise,
+  }});
+  h.owner.openLog(1);await flush();
+  const oldCompare=h.owner.compare(1);
+  h.owner.closeDetail();h.owner.openLog(2);await flush();
+  oldDiagnostics.resolve({enabled:true,captured:true,job_id:1});
+  comparison.resolve({baseline_job_id:1,differences:[]});
+  assert.equal(await oldCompare,null);
+  await flush();
+  assert.equal(h.owner.state.detail.diagnostics.job_id,2);
+  assert.equal(h.owner.state.detail.comparison,null);
+});
+
+test('相同在途任务动作只发一个POST，失败后可见恢复不会自动重放',async t=>{
+  const h=ownerFixture(t);
+  const payload={job_ids:['9007199254740993'],debug_enabled:false};
+  const first=h.owner.action('/api/jobs/retry-bulk',payload);
+  const second=h.owner.action('/api/jobs/retry-bulk',payload);
+  assert.equal(h.writes.length,1);
+  const a=assert.rejects(first,/transport response missing/);
+  const b=assert.rejects(second,/transport response missing/);
+  h.writes[0].reject(new Error('transport response missing'));
+  await Promise.all([a,b]);
+  assert.equal(h.owner.state.receipt.tone,'danger');
+  h.owner.setVisible(true);
+  h.calls[0].resolve(response('existing'));
+  await flush();await h.tick();
+  assert.equal(h.writes.length,1);
+  assert.equal(h.owner.state.receipt.tone,'danger');
+});
+
+test('自动刷新共享同签名Promise与generation，显式刷新创建新代次',async t=>{
+  const h=ownerFixture(t);
+  h.owner.setVisible(true);h.calls[0].resolve(response('active'));await flush();
+  const poll=h.owner.load({automatic:true}),shared=h.owner.load({automatic:true});
+  assert.equal(poll,shared);
+  assert.equal(h.calls.length,2);
+  assert.equal(h.calls[1].params.refresh_generation,h.calls[0].params.refresh_generation);
+  const manual=h.owner.load();
+  assert.equal(h.calls.length,3);
+  assert.notEqual(h.calls[2].params.refresh_generation,h.calls[1].params.refresh_generation);
+  h.calls[1].resolve(response('active','failed'));await poll;
+  assert.equal(h.owner.state.loading,true);
+  h.calls[2].resolve(response('active','running'));await manual;
+  assert.equal(h.owner.state.batch.items[0].status,'running');
+});
+
+test('已选批次不存在时读取服务端最新批次，正常收口且无自等待',async t=>{
+  const h=ownerFixture(t);
+  h.owner.setVisible(true);h.calls[0].resolve(response('initial'));await flush();
+  const selected=h.owner.setBatch('deleted-batch');
+  h.calls[1].resolve({items:[],progress_batch:null,progress_batches:[{batch_id:'latest-batch'}]});
+  await flush();
+  assert.equal(h.calls.length,3);
+  assert.equal(h.calls[2].params.progress_batch_id,'latest-batch');
+  h.calls[2].resolve(response('latest-batch'));
+  await selected;
+  assert.equal(h.owner.state.batchId,'latest-batch');
+  assert.equal(h.owner.state.batch.batch_id,'latest-batch');
+  assert.equal(h.owner.state.loading,false);
 });

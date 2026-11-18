@@ -113,26 +113,44 @@ def current_revision(*, conn=None) -> int:
         return int(metadata["revision"]) if metadata else 0
 
 
+def read_snapshot(*, conn=None, keys: Iterable[str] | None = None) -> tuple[dict[str, str] | None, int]:
+    """One SQL snapshot binds values and DB revision, even at READ COMMITTED.
+
+    The existence probe never supplies a revision. Metadata and encrypted values
+    are read together by one statement in the caller's transaction; no isolation
+    settings, write locks, or DDL are imposed on a borrowed connection.
+    """
+    selected = list(dict.fromkeys(keys)) if keys is not None else None
+    metadata_table = postgres_store.qualified("runtime_config_meta")
+    values_table = postgres_store.qualified("runtime_config_values")
+    with _connection(conn) as current:
+        with current.cursor(row_factory=dict_row) as cur:
+            cur.execute("SELECT to_regclass(%s) AS relation", (metadata_table,))
+            if cur.fetchone()["relation"] is None:
+                return None, 0
+            condition = "m.active" if selected is None else "m.active AND v.key = ANY(%s)"
+            sql = (
+                f"SELECT m.active, m.revision, v.key, v.value_encrypted FROM {metadata_table} AS m "
+                f"LEFT JOIN {values_table} AS v ON {condition} WHERE m.id = 1 ORDER BY v.key"
+            )
+            cur.execute(sql, None if selected is None else (selected,))
+            rows = cur.fetchall()
+        if not rows:
+            return None, 0
+        revision = int(rows[0]["revision"])
+        if not rows[0]["active"]:
+            return None, revision
+        encrypted = [row for row in rows if row["key"] is not None]
+        if selected == []:
+            return {}, revision
+        cipher = _cipher()
+        return {row["key"]: _decrypt(cipher, row["value_encrypted"]) for row in encrypted}, revision
+
+
 def read_values(*, conn=None, keys: Iterable[str] | None = None) -> dict[str, str] | None:
     """未激活返回 None；可按键读取，避免无关配置的查询和解密成本。"""
-    with _connection(conn) as current:
-        metadata = _metadata(current)
-        if not metadata or not metadata["active"]:
-            return None
-        selected_keys = list(dict.fromkeys(keys)) if keys is not None else None
-        if selected_keys == []:
-            return {}
-        cipher = _cipher()
-        table = postgres_store.qualified("runtime_config_values")
-        with current.cursor(row_factory=dict_row) as cur:
-            if selected_keys is None:
-                cur.execute(f"SELECT key, value_encrypted FROM {table} ORDER BY key")
-            else:
-                cur.execute(
-                    f"SELECT key, value_encrypted FROM {table} WHERE key = ANY(%s) ORDER BY key",
-                    (selected_keys,),
-                )
-            return {row["key"]: _decrypt(cipher, row["value_encrypted"]) for row in cur.fetchall()}
+    values, _revision = read_snapshot(conn=conn, keys=keys)
+    return values
 
 
 def _require_transaction(conn) -> None:

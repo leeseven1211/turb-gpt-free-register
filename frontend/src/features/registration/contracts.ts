@@ -1,0 +1,10 @@
+import type {RegistrationApi,RegistrationBatch,RegistrationId,RegistrationJob,RegistrationMeta,RegistrationSummary} from '../../api/registration';
+export type RegistrationView='launch'|'tasks';
+export interface RegistrationQuery {
+  page:number;page_size:number;status:string;id:string;email:string;email_source:string;proxy:string;error:string;date_from:string;date_to:string;
+}
+export type RegistrationLoadOptions=Partial<RegistrationQuery>&{progress_batch_id?:string;automatic?:boolean;coalesce?:boolean};
+export type RegistrationAction='cancelAll'|'stopBatch'|'cancelBatch'|'retryBatch'|'stop'|'delete'|'retry'|'deleteBulk'|'retryBulk';
+export interface RegistrationDeps {api?:RegistrationApi;visible?:boolean;view?:RegistrationView;notify?(message:string):void;confirm?(message:string):boolean|Promise<boolean>;openTask?(taskId:RegistrationId,runId?:RegistrationId|null,stepId?:string|null):void}
+export interface RegistrationHandle {load(extra?:RegistrationLoadOptions):Promise<void>;ensureMeta(force?:boolean):Promise<void>;loadSources():Promise<void>;setVisible(value:boolean):void;setView(value:RegistrationView):void;setBatch(id:string):Promise<void>;loadSummary():Promise<void>;renderEmailSupply(value:RegistrationSummary['email_supply']):void;applySummary(value:RegistrationSummary):void;create(payload:{count:number;workers:number;email_source:string;debug_enabled:boolean}):Promise<Record<string,any>>;action(path:string,payload?:unknown):Promise<Record<string,any>>;runAction(kind:RegistrationAction,job?:RegistrationJob,ids?:RegistrationId[],debug?:boolean):Promise<Record<string,any>|null>;openLog(id:RegistrationId,stepId?:string|null):void;closeDetail():void;destroy():void}
+export interface RegistrationState {jobs:RegistrationJob[];total:number;batch:RegistrationBatch|null;batches:RegistrationBatch[];meta:RegistrationMeta|null;summary:RegistrationSummary|null;view:RegistrationView;loading:boolean;error:string;receipt:{tone:'success'|'warning'|'danger'|'neutral';message:string}|null}

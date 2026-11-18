@@ -1,5 +1,8 @@
 """Butler consumer intents and full-address remote identity protection."""
+import os
 from unittest.mock import patch
+
+from core.email.inventory import LocalEmailInventoryError
 
 from config import email as cfg
 from core.email.email_butler import client as client
@@ -13,10 +16,10 @@ from tests.support_pg import PostgresTestCase
 class ButlerConsumptionTests(PostgresTestCase):
     def setUp(self):
         record_store.init()
-        client._CONTEXT_CACHE.clear()
+        self.enterContext(patch.dict(client._CONTEXT_CACHE, {}, clear=True))
         self.scope = patch.multiple(cfg, EMAIL_BUTLER_API_BASE='https://butler.test/v1', EMAIL_BUTLER_API_KEY='fixture-key',USE_EMAIL_SERVICE=True)
         self.scope.start()
-        self.environment=patch.dict(__import__('os').environ)
+        self.environment=patch.dict(os.environ, {'LEGACY_BUTLER_TEST_SECRET': 'fixture-key'})
         self.environment.start()
         self.addCleanup(self.environment.stop)
         self.addCleanup(self.scope.stop)
@@ -30,43 +33,55 @@ class ButlerConsumptionTests(PostgresTestCase):
             'identity_type':'child','parent_email':'parent@example.test','identity_id':'identity-1',
             'mailbox_email':'final@example.test','recipient_mode':'forwarded_exact_v1','strict_family':True, **extra}}
 
+    def seed_legacy_intent(self, *, state='claimed', mailbox=None):
+        from core.storage.email import butler_claims as claims
+        intent = claims.prepare(acquisition_id='registration:17', owner_kind='registration_root', owner_id='17',
+                                api_base='https://butler.test/v2', credential_ref='LEGACY_BUTLER_TEST_SECRET')
+        if state == 'claimed':
+            return claims.record_result('registration:17', mailbox=mailbox or self.mailbox()['mailbox'])
+        if state == 'request_unknown':
+            claims.mark_submitting('registration:17')
+            return claims.record_result('registration:17', unknown=True)
+        return intent
+
     def acquire(self, **extra):
         return client.pick_account(owner_kind='registration_root',owner_id='17',acquisition_id='registration:17',**extra)
 
-    def test_intent_is_committed_before_network_and_unknown_resumes_same_id_after_restart(self):
+    def test_persisted_unknown_intent_blocks_reallocation_and_confirmed_receipt_restores(self):
         from core.storage.email import butler_claims as claims
-        def interrupted(*args, **kwargs):
-            if args[0]=='GET':
-                return {'capabilities':['mailboxes.acquisition.v1']}
-            intent = claims.get_intent('registration:17')
-            self.assertEqual((intent['owner_kind'],intent['owner_id']),('registration_root','17'))
-            raise client.requests.ReadTimeout('interrupted')
-        with patch.object(client,'_request',side_effect=interrupted):
-            with self.assertRaises(client.EmailButlerClaimUnknown) as caught:
+        self.seed_legacy_intent(state='request_unknown')
+        client._CONTEXT_CACHE.clear()
+        with patch.object(client, '_request', side_effect=AssertionError('旧意图不能重新提交')) as request:
+            with self.assertRaises(LocalEmailInventoryError) as caught:
+                self.acquire()
+            self.assertTrue(caught.exception.request_unknown)
+            self.assertEqual(claims.get_intent('registration:17')['status'], 'request_unknown')
+            # Model an already reconciled historical receipt; runtime must only restore it.
+            claims.record_result('registration:17', mailbox=self.mailbox()['mailbox'])
+            resumed = self.acquire()
+            self.assertEqual(resumed.email, 'parent+child@example.test')
+            self.assertEqual(resumed.acquisition_id, 'registration:17')
+            self.assertEqual(self.acquire().email, resumed.email)
+            with self.assertRaisesRegex(LocalEmailInventoryError, 'identity_conflict'):
+                client.pick_account(owner_kind='registration_root', owner_id='18', acquisition_id='registration:17')
+        request.assert_not_called()
+
+    def test_unresolved_legacy_receipt_stays_unknown_without_new_remote_request(self):
+        from core.storage.email import butler_claims as claims
+        self.seed_legacy_intent(state='request_unknown')
+        intent = claims.get_intent('registration:17')
+        record_store.patch_row(record_store.EMAIL_BUTLER_CLAIM_INTENTS, intent['id'],
+                               {'mailbox': {'email': 'incomplete@example.test'}})
+        with patch.object(client, '_request') as request:
+            with self.assertRaises(LocalEmailInventoryError) as caught:
                 self.acquire()
         self.assertTrue(caught.exception.request_unknown)
-        self.assertEqual(claims.get_intent('registration:17')['status'],'request_unknown')
-        client._CONTEXT_CACHE.clear()
-        with patch.object(client,'_request',return_value=self.mailbox()) as request:
-            resumed=self.acquire()
-        self.assertEqual(resumed.email,'parent+child@example.test')
-        self.assertEqual(request.call_args.kwargs['json']['acquisition_id'],'registration:17')
-        self.assertEqual(claims.get_intent('registration:17')['status'],'claimed')
-        with patch.object(client,'_request',side_effect=AssertionError('must restore locally')):
-            self.assertEqual(self.acquire().email,resumed.email)
-        with patch.object(client,'_request',side_effect=AssertionError('owner conflict before HTTP')):
-            with self.assertRaisesRegex(client.EmailButlerClientError,'identity_conflict'):
-                client.pick_account(owner_kind='registration_root',owner_id='18',acquisition_id='registration:17')
-
-    def test_success_with_unparseable_identity_stays_unknown(self):
-        from core.storage.email import butler_claims as claims
-        with patch.object(client,'_request',return_value={'mailbox':{'email':'incomplete@example.test'}}):
-            with self.assertRaises(client.EmailButlerClaimUnknown):
-                self.acquire()
-        self.assertEqual(claims.get_intent('registration:17')['status'],'request_unknown')
+        self.assertEqual(claims.get_intent('registration:17')['status'], 'request_unknown')
+        request.assert_not_called()
 
     def test_remote_child_persists_strict_identity_and_uses_nullable_local_fence(self):
-        with patch.object(client,'_request',return_value=self.mailbox()):
+        self.seed_legacy_intent()
+        with patch.object(client,'_request',side_effect=AssertionError('历史身份恢复不能新申请')):
             account=self.acquire()
         client._CONTEXT_CACHE.clear()
         restored=client.restore_account_context(account.email)
@@ -81,10 +96,13 @@ class ButlerConsumptionTests(PostgresTestCase):
         self.assertEqual(request['submission_state'],'result_unknown')
         self.assertIsNone(request['address_binding_id'])
 
-    def test_non_hme_child_without_exact_contract_fails_closed(self):
-        with patch.object(client,'_request',return_value=self.mailbox(provider='outlook',recipient_mode='',strict_family=False)):
-            with self.assertRaisesRegex(client.EmailButlerClientError,'recipient_contract_unsupported'):
+    def test_non_hme_legacy_child_without_exact_contract_fails_closed(self):
+        self.seed_legacy_intent(mailbox=self.mailbox(provider='outlook', recipient_mode='', strict_family=False)['mailbox'])
+        with patch.object(client, '_request') as request:
+            with self.assertRaisesRegex(client.EmailButlerClientError, 'recipient_contract_unsupported'):
                 self.acquire()
+        request.assert_not_called()
+        self.assertIsNone(client.get_account_context('parent+child@example.test'))
 
     def test_new_local_generation_is_closed_for_all_sources(self):
         for source in ('outlook','icloud_hide'):
@@ -119,7 +137,8 @@ class ButlerConsumptionTests(PostgresTestCase):
 
     def test_remote_child_fetch_records_generation_and_candidate(self):
         from core.email import provider as email_provider
-        with patch.object(client,'_request',return_value=self.mailbox()):
+        self.seed_legacy_intent()
+        with patch.object(client,'_request',side_effect=AssertionError('历史身份恢复不能新申请')):
             account=self.acquire()
         def receive(*args,**kwargs):
             self.assertIsNotNone(guard.current_session())
@@ -130,11 +149,12 @@ class ButlerConsumptionTests(PostgresTestCase):
             with patch.object(client,'fetch_latest_otp',side_effect=receive):
                 self.assertEqual(email_provider.wait_for_otp(account.email,after_ts=100.0,email_source='email_butler'),'000000')
 
-    def test_bridge_availability_uses_butler_not_sidecar_or_local_stock(self):
+    def test_bridge_configuration_does_not_make_empty_local_inventory_ready(self):
         from core.runtime import capabilities as feature_availability
         with patch.multiple(cfg,EMAIL_SOURCE='email_butler,icloud_hide',ICLOUD_HME_BUTLER_BRIDGE_ENABLED=True,ICLOUD_HME_API_BASE='',EMAIL_DERIVATION_ENABLED=False,ICLOUD_HME_AUTO_CREATE=False),patch('core.db.icloud_hide_email_pool_summary',side_effect=AssertionError('no local HME stock')):
             status=feature_availability.email_source_availability()['icloud_hide']
-        self.assertTrue(status['enabled'],status)
+        self.assertFalse(status['enabled'],status)
+        self.assertEqual(status['available'], 0)
 
     def test_cli_preparation_passes_butler_intent(self):
         import main
@@ -152,31 +172,36 @@ class ButlerConsumptionTests(PostgresTestCase):
         self.assertIsNone(error)
         self.assertEqual(acquire.call_args.kwargs,{'owner_kind':'email_change','owner_id':17,'acquisition_id':'change:17'})
 
-    def test_missing_original_secret_cannot_fall_back_or_repin_current_key(self):
-        import os
-        from core.storage.email import butler_claims as claims
-        with patch.object(client,'_request',side_effect=client.requests.ReadTimeout('interrupted')):
-            with self.assertRaises(client.EmailButlerClaimUnknown):
+    def test_missing_original_secret_cannot_repin_current_global_key(self):
+        self.seed_legacy_intent()
+        with patch.dict(os.environ, {'LEGACY_BUTLER_TEST_SECRET': ''}), patch(
+            'config.runtime.read_persisted_values', return_value={}
+        ), patch.object(cfg, 'EMAIL_BUTLER_API_KEY', 'new-global-key'), patch.object(client, '_request') as request:
+            with self.assertRaisesRegex(email_derivation.EmailDerivationError, 'email_derivation_profile_unavailable'):
                 self.acquire()
-        intent=claims.get_intent('registration:17')
-        with patch.dict(os.environ,{intent['credential_ref']:''}),patch('config.env_loader.read_env_file',return_value={}):
-            with patch.object(client,'_request',side_effect=AssertionError('cannot switch secret')):
-                with self.assertRaises(client.EmailButlerClaimUnknown):
-                    self.acquire()
+        request.assert_not_called()
+        self.assertIsNone(client.get_account_context('parent+child@example.test'))
 
-    def test_imported_butler_child_restores_exact_identity_before_auth(self):
-        email='parent+imported@example.test'
-        record_store.insert_row(record_store.ACCOUNTS,{'email':email,'email_source':'email_butler'})
-        with patch.object(client,'_request',return_value=self.mailbox(email)) as request:
+    def test_imported_butler_child_restores_persisted_exact_identity_before_auth(self):
+        email = 'parent+imported@example.test'
+        record_store.insert_row(record_store.ACCOUNTS, {'email': email, 'email_source': 'email_butler'})
+        self.seed_legacy_intent(mailbox=self.mailbox(email)['mailbox'])
+        with patch.object(client, '_request', side_effect=AssertionError('恢复不能重新分配')) as request:
             with guard.email_auth_session(email) as session:
                 self.assertIsNotNone(session)
                 self.assertIsNone(session.binding_id)
-        self.assertEqual(request.call_args.kwargs['json']['requested_email'],email)
-        self.assertEqual(client.active_mailbox_leases(), [])
-        client._CONTEXT_CACHE.clear()
-        with patch.object(client,'_request',side_effect=AssertionError('fixed profile must survive restart')):
+            profile = client._restore_hme_context(email)
+            self.assertEqual(profile.acquisition_id, 'registration:17')
+            client._CONTEXT_CACHE.clear()
             with guard.email_auth_session(email) as restored:
                 self.assertIsNotNone(restored)
+                self.assertIsNone(restored.binding_id)
+            # Auth can read the persisted fixed identity without populating the process cache.
+            restored_profile = client._restore_hme_context(email)
+            self.assertEqual(restored_profile.acquisition_id, profile.acquisition_id)
+            self.assertEqual(restored_profile.identity_id, profile.identity_id)
+            self.assertEqual(restored_profile.email, email)
+        request.assert_not_called()
 
     def test_core_inventory_status_writes_are_closed(self):
         with self.assertRaisesRegex(email_derivation.EmailDerivationError,'Butler'):
@@ -189,96 +214,87 @@ class ButlerConsumptionTests(PostgresTestCase):
             address=email_provider._pick_from_source('outlook',owner_kind='registration_root',owner_id='new',acquisition_id='new-primary')
         self.assertEqual(address,'primary@example.test')
 
-    def test_known_initial_rejection_is_not_unknown_but_prior_unknown_stays_unknown(self):
+    def test_legacy_store_rejection_cannot_downgrade_prior_unknown_receipt(self):
         from core.storage.email import butler_claims as claims
-        from unittest.mock import Mock
-        response=Mock(status_code=401)
-        response.json.return_value={'error_code':'invalid_key','message':'unauthorized'}
-        with patch.object(client.requests,'request',return_value=response):
-            with self.assertRaises(client.EmailButlerClientError) as rejected:
-                self.acquire()
-        self.assertFalse(getattr(rejected.exception,'request_unknown',False))
-        self.assertEqual(claims.get_intent('registration:17')['status'],'rejected')
-        with patch.object(client,'_request',side_effect=client.requests.ReadTimeout('interrupted')):
-            with self.assertRaises(client.EmailButlerClaimUnknown):
-                self.acquire()
-        with patch.object(client.requests,'request',return_value=response):
-            with self.assertRaises(client.EmailButlerClaimUnknown):
-                self.acquire()
-        self.assertEqual(claims.get_intent('registration:17')['status'],'request_unknown')
-
-    def test_unknown_claim_without_remote_acquisition_capability_never_reposts(self):
-        with patch.object(client,'_request',side_effect=client.requests.ReadTimeout('interrupted')):
-            with self.assertRaises(client.EmailButlerClaimUnknown):
-                self.acquire()
-        with patch.object(client,'_request',return_value={'capabilities':[]}) as request:
-            with self.assertRaises(client.EmailButlerClaimUnknown):
-                self.acquire()
-        self.assertEqual(request.call_count,1)
-        self.assertEqual(request.call_args.args,('GET','/me'))
-
-    def test_expired_non_hme_lease_never_allocates_again(self):
-        payload={'mailbox':{'id':'generic-1','email':'generic@example.test','provider':'mailcom','leased_until':'2000-01-01T00:00:00Z'}}
-        with patch.object(client,'_request',return_value=payload):
+        self.seed_legacy_intent(state='prepared')
+        admitted, submitted = claims.mark_submitting('registration:17')
+        self.assertTrue(admitted)
+        rejected = claims.record_result('registration:17', rejected=True, execution=submitted['submission_execution'])
+        self.assertEqual(rejected['status'], 'rejected')
+        admitted, _ = claims.mark_submitting('registration:17')
+        self.assertTrue(admitted)
+        claims.record_result('registration:17', unknown=True)
+        late = claims.record_result('registration:17', rejected=True, execution=submitted['submission_execution'])
+        self.assertEqual(late['status'], 'request_unknown')
+        with patch.object(client, '_request') as request, self.assertRaises(LocalEmailInventoryError) as caught:
             self.acquire()
+        self.assertTrue(caught.exception.request_unknown)
+        request.assert_not_called()
+
+    def test_unknown_legacy_claim_never_probes_or_reposts_retired_endpoint(self):
+        self.seed_legacy_intent(state='request_unknown')
+        with patch.object(client, '_request') as request:
+            with self.assertRaises(LocalEmailInventoryError) as caught:
+                self.acquire()
+        self.assertTrue(caught.exception.request_unknown)
+        request.assert_not_called()
+
+    def test_expired_non_hme_original_lease_fails_closed_without_new_allocation(self):
+        from core.email.email_butler import lease_bindings, v2
+        self.seed_legacy_intent(mailbox={'id': 'generic-1', 'email': 'generic@example.test',
+                                        'provider': 'mailcom', 'leased_until': '2000-01-01T00:00:00Z'})
+        account = self.acquire()
         client._CONTEXT_CACHE.clear()
-        with patch.object(client,'_request',side_effect=AssertionError('cannot renew by new allocation')):
-            with self.assertRaisesRegex(client.EmailButlerClientError,'lease_restore_required'):
-                self.acquire()
+        with patch.object(lease_bindings, 'resolve', side_effect=v2.ButlerV2Error('lease_expired', '原租约已到期')), \
+                patch.object(v2, 'create_lease') as create, patch.object(client, '_request') as request:
+            with self.assertRaisesRegex(client.EmailButlerClientError, '原租约已到期') as caught:
+                client.fetch_latest_otp(account.email, after_ts=100, max_wait=1)
+        self.assertEqual(caught.exception.error_code, 'lease_expired')
+        create.assert_not_called()
+        request.assert_not_called()
 
-    def test_ordinary_mailbox_read_keeps_claim_connection_after_global_change(self):
-        payload = {'mailbox': {'id': 'generic-1', 'email': 'generic@example.test',
-                              'provider': 'mailcom', 'leased_until': '2099-01-01T00:00:00Z'}}
-        with patch.object(client, '_request', return_value=payload):
-            account = self.acquire()
-        with patch.multiple(cfg, EMAIL_BUTLER_API_BASE='https://changed.test/v1', EMAIL_BUTLER_API_KEY='changed-key'), patch.object(
-                client, '_request', return_value={'messages': [{'code': '000000'}]}) as request:
-            self.assertEqual(client.fetch_latest_otp(account.email, max_wait=1, settle_seconds=0), '000000')
-        self.assertEqual(request.call_args.kwargs.get('api_base'), 'https://butler.test/v1')
-        self.assertEqual(request.call_args.kwargs.get('api_key'), 'fixture-key')
+    def test_ordinary_mailbox_v2_read_keeps_claim_connection_after_global_change(self):
+        from core.email.email_butler import lease_bindings, v2
+        self.seed_legacy_intent(mailbox={'id': 'generic-1', 'email': 'generic@example.test', 'provider': 'mailcom'})
+        account = self.acquire()
+        binding = {'lease_id': 'lse_original', 'client_id': 'original-client', 'api_base': 'https://butler.test/v2'}
+        receipt = {'lease_id': 'lse_original', 'service': 'openai', 'status': 'matched',
+                   'verification_code': '000000', 'code_id': 'code-original', 'received_at': '1970-01-01T00:02:00Z'}
+        with patch.multiple(cfg, EMAIL_BUTLER_API_BASE='https://changed.test/v2', EMAIL_BUTLER_API_KEY='changed-key'), \
+                patch.object(lease_bindings, 'resolve', return_value=binding) as resolve, \
+                patch.object(v2, 'code', return_value=receipt) as code, patch.object(v2, 'create_lease') as create:
+            self.assertEqual(client.fetch_latest_otp(account.email, after_ts=100, max_wait=1), '000000')
+        self.assertEqual(resolve.call_args.kwargs['api_base'], 'https://butler.test/v2')
+        self.assertEqual(resolve.call_args.kwargs['api_key'], 'fixture-key')
+        self.assertEqual(code.call_args.kwargs['api_base'], 'https://butler.test/v2')
+        self.assertEqual(code.call_args.kwargs['api_key'], 'fixture-key')
+        create.assert_not_called()
 
-    def test_expired_claim_and_owner_conflict_prevent_source_fallback(self):
+    def test_unknown_claim_and_owner_conflict_prevent_source_fallback(self):
         from core.email import provider as email_provider
-        payload = {'mailbox': {'id': 'generic-1', 'email': 'generic@example.test',
-                              'provider': 'mailcom', 'leased_until': '2000-01-01T00:00:00Z'}}
-        with patch.object(client, '_request', return_value=payload):
-            self.acquire()
+        self.seed_legacy_intent(state='request_unknown')
         with patch.object(cfg, 'EMAIL_SOURCE', 'email_butler,outlook'), patch(
-                'core.email.outlook.client.pick_account', side_effect=AssertionError('intent cannot change source')) as fallback:
+            'core.email.outlook.client.pick_account', side_effect=AssertionError('原意图不能换邮箱来源')
+        ) as fallback:
             for owner in ('17', '18'):
-                with self.subTest(owner=owner), self.assertRaises(client.EmailButlerClientError) as caught:
+                with self.subTest(owner=owner), self.assertRaises(LocalEmailInventoryError) as caught:
                     email_provider.acquire_email(owner_kind='registration_root', owner_id=owner,
                                                  acquisition_id='registration:17')
-                self.assertTrue(getattr(caught.exception, 'identity_locked', False))
+                self.assertTrue(caught.exception.request_unknown or caught.exception.identity_locked)
         fallback.assert_not_called()
 
     def test_delayed_known_rejection_never_overwrites_unknown_claim(self):
         from core.storage.email import butler_claims as claims
-        with patch.object(client,'_request',side_effect=client.requests.ReadTimeout('interrupted')):
-            with self.assertRaises(client.EmailButlerClaimUnknown):
-                self.acquire()
-        current=claims.record_result('registration:17',rejected=True)
-        self.assertEqual(current['status'],'request_unknown')
+        self.seed_legacy_intent(state='request_unknown')
+        current = claims.record_result('registration:17', rejected=True)
+        self.assertEqual(current['status'], 'request_unknown')
 
-    def test_concurrent_generic_claim_has_one_first_submission(self):
+    def test_concurrent_legacy_store_has_one_first_submitter(self):
         from concurrent.futures import ThreadPoolExecutor
-        import threading
         from core.storage.email import butler_claims as claims
-        ready=threading.Barrier(2)
-        posts=[]
-        def request(method,path,**kwargs):
-            if method=='GET':
-                ready.wait(timeout=5)
-                return {'capabilities':[]}
-            posts.append(kwargs['json']['acquisition_id'])
-            return {'mailbox':{'id':'generic-1','email':'generic@example.test','provider':'mailcom','leased_until':'2099-01-01T00:00:00Z'}}
-        def acquire(_):
-            try:
-                return self.acquire()
-            except client.EmailButlerClaimUnknown:
-                return None
-        with patch.object(client,'_request',side_effect=request),ThreadPoolExecutor(max_workers=2) as pool:
-            results=list(pool.map(acquire,range(2)))
-        self.assertEqual(posts,['registration:17'])
-        self.assertTrue(any(results))
-        self.assertEqual(claims.get_intent('registration:17')['status'],'claimed')
+        self.seed_legacy_intent(state='prepared')
+        with patch.object(client, '_request') as request, ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(lambda _: claims.mark_submitting('registration:17'), range(2)))
+        self.assertEqual(sum(admitted for admitted, _ in results), 1)
+        self.assertEqual(claims.get_intent('registration:17')['status'], 'submitting')
+        request.assert_not_called()

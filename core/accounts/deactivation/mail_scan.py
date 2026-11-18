@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 
 from config.schema import get_config_snapshot
 from core.runtime import scheduler_state
+from core.runtime.periodic import PeriodicThread
 from core.operations.runtime import OperationCancelled
 from core.operations import task_gateway as account_task_store
 from core.storage import accounts as db
@@ -46,7 +47,7 @@ _ENABLED = str(os.environ.get("EMAIL_BUTLER_RISK_SCAN_ENABLED", "1")).strip().lo
 }
 
 _LOCK = threading.RLock()
-_SCHEDULER_STARTED = False
+_SCHEDULER = PeriodicThread("deactivation-mail-scheduler")
 _SUPPORTED_SOURCES = {"email_butler", "cloudflare", "icloud_hide"}
 _HME_SCAN_MODE = "shared_mailbox_recipient_search"
 _HME_VALIDATION_METHOD = "mailbox_recipient_search"
@@ -307,6 +308,8 @@ def _scan(
             error=str(exc),
             validation_method="mailbox_cache",
         )
+    except (account_task_store.OperationSettlementPending, account_task_store.OperationSettlementConflict, account_task_store.OperationSettlementFenced):
+        raise
     except Exception as exc:
         db.update_account_deactivation_mail(account_id, {
             "status": "failed",
@@ -477,6 +480,8 @@ def _scan_hme_group(
         }
         try:
             context.report(**event)
+        except (account_task_store.OperationSettlementPending, account_task_store.OperationSettlementConflict, account_task_store.OperationSettlementFenced):
+            raise
         except Exception:
             # A reporting failure must not prevent the remaining aliases from
             # receiving their independent database result.
@@ -495,6 +500,8 @@ def _scan_hme_group(
                     "trigger": trigger,
                     "error": safe_error,
                 })
+            except (account_task_store.OperationSettlementPending, account_task_store.OperationSettlementConflict, account_task_store.OperationSettlementFenced):
+                raise
             except Exception:
                 logger.exception(
                     "[DeactivationMail] HME 未完成账号状态写入失败: account_id=%s status=%s",
@@ -579,6 +586,8 @@ def _scan_hme_group(
             payload["trigger"] = trigger
             try:
                 db.update_account_deactivation_mail(account_id, payload)
+            except (account_task_store.OperationSettlementPending, account_task_store.OperationSettlementConflict, account_task_store.OperationSettlementFenced):
+                raise
             except Exception as exc:
                 status = "failed"
                 error = f"账号结果写回失败: {type(exc).__name__}: {str(exc)[:300]}"
@@ -588,6 +597,8 @@ def _scan_hme_group(
                         "trigger": trigger,
                         "error": error,
                     })
+                except (account_task_store.OperationSettlementPending, account_task_store.OperationSettlementConflict, account_task_store.OperationSettlementFenced):
+                    raise
                 except Exception:
                     logger.exception(
                         "[DeactivationMail] HME 账号失败状态也无法写回: account_id=%s",
@@ -653,6 +664,8 @@ def _scan_hme_group(
                 "scan_mode": _HME_SCAN_MODE,
             },
         )
+    except (account_task_store.OperationSettlementPending, account_task_store.OperationSettlementConflict, account_task_store.OperationSettlementFenced):
+        raise
     except Exception as exc:
         error = f"{type(exc).__name__}: {str(exc)[:500]}"
         failed_count = mark_remaining("failed", error)
@@ -750,7 +763,7 @@ def _handle_deactivation_operation(context):
     if not isinstance(data, dict):
         data = {}
     trigger = str(context.run.get("trigger") or "manual")
-    with context.lease(resource_family="mailbox_scan"):
+    with context.lease(resource_family="mailbox_scan", scope_kind="final"):
         if bool(data.get("bulk")):
             _scan_hme_group(
                 context,
@@ -782,6 +795,15 @@ def _handle_deactivation_operation(context):
     return None
 
 
+def register_actions() -> None:
+    account_task_store.register_operation_actions(
+        "deactivation_mail",
+        retry_handler=account_task_store.default_operation_retry,
+        cancel_handler=account_task_store.default_operation_cancel,
+        terminate_handler=account_task_store.default_operation_terminate,
+    )
+
+
 def register_operation_handlers() -> bool:
     register = getattr(account_task_store, "register_operation_handler", None)
     if not callable(register):
@@ -792,6 +814,7 @@ def register_operation_handlers() -> bool:
         source_systems=("native_operations",),
         config_allowlist=DEACTIVATION_CONFIG_ALLOWLIST,
     )
+    register_actions()
     return True
 
 
@@ -1125,29 +1148,28 @@ def _scheduler_loop() -> None:
         enabled=scheduler_enabled,
         interval_seconds=scheduler_interval_seconds,
         initial_delay_seconds=_INITIAL_DELAY_SECONDS,
+        stop=_SCHEDULER.stop_event,
+        lifecycle=_SCHEDULER,
     )
 
 
 def start_periodic_scanner() -> bool:
-    """启动唯一扫描调度线程，关闭时休眠并等待配置热启用。"""
-    global _SCHEDULER_STARTED
-    with _LOCK:
-        if _SCHEDULER_STARTED:
-            return False
-        try:
-            threading.Thread(target=_scheduler_loop, name="deactivation-mail-scheduler", daemon=True).start()
-        except Exception:
-            logger.exception("[DeactivationMail] 调度线程启动失败，可再次启动")
-            return False
-        _SCHEDULER_STARTED = True
-    logger.info(
-        "[DeactivationMail] 调度器已启动 enabled=%s interval=%ss lookback=%sd workers=%s",
-        scheduler_enabled(),
-        scheduler_interval_seconds(),
-        _LOOKBACK_DAYS,
-        configured_workers(),
-    )
-    return True
+    """Start one observable producer; work remains behind runtime admission."""
+    try:
+        started = _SCHEDULER.start(_scheduler_loop)
+    except Exception:
+        logger.exception("Periodic scheduler start failed; it may be retried")
+        return False
+
+    return started
+
+
+def stop_periodic_scanner(timeout: float = 2.0) -> bool:
+    return _SCHEDULER.stop(timeout)
+
+
+def scheduler_status() -> dict:
+    return _SCHEDULER.status(enabled=scheduler_enabled())
 
 
 def queue_settings() -> dict:
@@ -1168,4 +1190,4 @@ def queue_settings() -> dict:
 # Register with the shared dispatcher when the runtime imports this service.
 # The runtime owns the single dispatcher thread; this call only installs the
 # task-type handler and its allowlist.
-register_operation_handlers()
+register_actions()

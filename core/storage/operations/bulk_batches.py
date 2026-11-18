@@ -25,6 +25,8 @@ from core.storage.operations.bulk_common import (
     target_status_sql,
     public_reason_target_ids,
     preserve_partial_counts,
+    preserve_partial_counts_many,
+    partial_counts_sql,
 )
 from core.storage.operations.bulk_selections import _source_target_filter, result_predicate, validate_member_scope
 
@@ -170,7 +172,7 @@ def get_batch(batch_id: int) -> dict:
         )
         rounds = [dict(x) for x in cur.fetchall()]
         result = public_batch(preserve_partial_counts(cur, row))
-        result["rounds"] = [public_round(preserve_partial_counts(cur, value, round_id=value["id"])) for value in rounds[:20]]
+        result["rounds"] = [public_round(value) for value in preserve_partial_counts_many(cur, rounds[:20], by_round=True)]
         result["rounds_has_more"] = len(rounds) > 20
         result["rounds_next_after_no"] = rounds[19]["round_no"] if len(rounds) > 20 else None
         cur.execute(
@@ -251,7 +253,7 @@ def list_batches(*, limit: int = 20, after_id: int | None = None, operation_key=
             (*page_params, page_size + 1),
         )
         raw_rows = [dict(x) for x in cur.fetchall()]
-        rows = [public_batch(preserve_partial_counts(cur, row)) for row in raw_rows]
+        rows = [public_batch(row) for row in preserve_partial_counts_many(cur, raw_rows)]
         summary = {}
         try:
             cur.execute(
@@ -269,13 +271,13 @@ def list_batches(*, limit: int = 20, after_id: int | None = None, operation_key=
             summary = {key: int(row.get(key) or 0) for key in (
                 "total_batches", "active_batches", "paused_batches", "ended_batches", "failed_targets", "attention_targets")}
             summary["failed_targets"] += summary.pop("attention_targets", 0)
-            cur.execute(f"""SELECT c.* FROM {table('operation_batch_controls')} c
+            historical = f"""SELECT c.batch_id FROM {table('operation_batch_controls')} c
               JOIN {table('operation_batches')} b ON b.id=c.batch_id
-              WHERE {" AND ".join(clauses)} AND coalesce((c.counts->>'attention_required')::bigint,0)>0""", tuple(params))
-            historical = [dict(value) for value in cur.fetchall()]
-            for value in historical:
-                corrected = preserve_partial_counts(cur, value)
-                summary["failed_targets"] -= int(value["counts"].get("attention_required", 0)) - int(corrected["counts"].get("attention_required", 0))
+              WHERE {" AND ".join(clauses)} AND coalesce((c.counts->>'attention_required')::bigint,0)>0"""
+            scope = "c.batch_id IN (SELECT batch_id FROM historical_batches)"
+            cur.execute(f"""WITH historical_batches AS MATERIALIZED ({historical})
+              SELECT coalesce(sum(n),0) AS n FROM ({partial_counts_sql(scope)}) partials""", tuple(params))
+            summary["failed_targets"] -= int(cur.fetchone()["n"])
         except Exception:
             summary = {}
         return {
@@ -704,7 +706,7 @@ def list_rounds(batch_id: int, *, limit: int = 100, after_round_no: int | None =
             (batch_id, after_round_no, after_round_no, size + 1),
         )
         raw_rows = [dict(row) for row in cur.fetchall()]
-        rows = [public_round(preserve_partial_counts(cur, row, round_id=row["id"])) for row in raw_rows]
+        rows = [public_round(row) for row in preserve_partial_counts_many(cur, raw_rows, by_round=True)]
         return {
             "items": rows[:size],
             "page": {

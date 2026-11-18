@@ -2,161 +2,85 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
-const vm = require('node:vm');
-
-const page = fs.readFileSync(path.join(__dirname, '../../webui/static/js/pages/accounts/page.js'), 'utf8');
+const {mountToolbarFixture,ACCOUNT_TOOLBAR_BUTTONS,ACCOUNT_ACTION_USAGE_KEY} = require('./toolbar_fixture.cjs');
 const template = fs.readFileSync(path.join(__dirname, '../../webui/templates/index.html'), 'utf8');
-const source = page.slice(page.indexOf('// ---------- 常用账号操作 ----------'), page.indexOf('function updateAccountSelectionUi('));
 const defaults = ['btnCheckSelectedLiveV2', 'btnCheckSelectedPlansV2', 'btnRefreshSelectedTokenV2', 'btnExtractSelectedLinksV2', 'btnAddTwofaSelectedAccountsV2'];
 const c2aId = 'btnReimportSelectedC2aV2';
 const pageActions = [
-  ['btnBulkFromAccountFilters', 'BulkTasks.fromAccounts(false)'],
-  ['btnBulkFromSelectedAccounts', 'BulkTasks.fromAccounts(true)'],
-  ['btnAccountInspection', 'openAccountInspectionStart()'],
-  ['btnAccountInspectionHistory', 'openAccountInspectionHistory()'],
-  ['btnDeleteDeactivatedAccounts', 'deleteDeactivatedAccounts()'],
+  ['btnBulkFromAccountFilters', 'bulk-from-account-filters'],
+  ['btnBulkFromSelectedAccounts', 'bulk-from-selected-accounts'],
+  ['btnAccountInspection', 'openAccountInspectionStart'],
+  ['btnAccountInspectionHistory', 'openAccountInspectionHistory'],
+  ['btnDeleteDeactivatedAccounts', 'deleteDeactivatedAccounts'],
 ];
+async function setup(options){const view=mountToolbarFixture(options);await view.ready;return view;}
 
-function setup({saved = null, storageBlocked = false} = {}) {
-  const elements = new Map();
-  const frames = [];
-  const storage = {value: saved};
-  class Node {
-    constructor(id = '') {
-      this.id = id;
-      this.children = [];
-      this.listeners = {};
-      this.parentNode = null;
-      this.disabled = false;
-      this.attributes = {};
-      this.classes = new Set();
-      this.classList = {contains: value => this.classes.has(value)};
-      if (id) elements.set(id, this);
-    }
-    get nextSibling() { return this.parentNode?.children[this.parentNode.children.indexOf(this) + 1] || null; }
-    appendChild(child) { return this.insertBefore(child, null); }
-    insertBefore(child, reference) {
-      if (child === reference) return child;
-      if (child.parentNode) child.parentNode.children.splice(child.parentNode.children.indexOf(child), 1);
-      const index = reference ? this.children.indexOf(reference) : this.children.length;
-      assert.ok(index >= 0);
-      this.children.splice(index, 0, child);
-      child.parentNode = this;
-      return child;
-    }
-    contains(child) { return this === child || this.children.some(node => node.contains(child)); }
-    addEventListener(name, handler) { this.listeners[name] = handler; }
-    getAttribute(name) { return this.attributes[name] ?? null; }
-    closest(selector) { return selector === 'button[id]' && this.id.startsWith('btn') ? this : null; }
-    querySelectorAll() { return this.children.flatMap(child => [child, ...child.querySelectorAll()]).filter(child => child.id.startsWith('btn')); }
-  }
-  const body = new Node('body');
-  const toolbar = body.appendChild(new Node('accountsToolbarV2'));
-  const quick = toolbar.appendChild(new Node('accountsQuickActionsV2'));
-  const more = toolbar.appendChild(new Node('accountsMoreActionsV2'));
-  const group = more.appendChild(new Node('group'));
-  const buttons = [...defaults, c2aId, 'btnCopySelectedEmailsV2', ...pageActions.map(([id]) => id)].map(id => group.appendChild(new Node(id)));
-  const document = {activeElement: body, dialogOpen: false, querySelector() { return this.dialogOpen ? {} : null; }, createComment: () => new Node(), addEventListener() {}};
-  const context = vm.createContext({
-    $, document, window: {addEventListener() {}},
-    localStorage: {
-      getItem() { if (storageBlocked) throw new Error('存储不可用'); return storage.value; },
-      setItem(key, value) { if (storageBlocked) throw new Error('存储不可用'); storage.value = value; },
-    },
-    requestAnimationFrame: callback => frames.push(callback),
-  });
-  function $(selector) { return elements.get(selector.slice(1)); }
-  vm.runInContext(source, context);
-  context.initAccountQuickActions();
-  return {
-    context, document, toolbar, quick, more, group, buttons, elements, storage,
-    ids: () => quick.children.map(button => button.id),
-    flush: () => frames.splice(0).forEach(callback => callback()),
-  };
-}
-
-test('无使用记录时恰好展示五个默认操作，C2A 留在更多操作且节点不重复', () => {
-  const view = setup();
+test('无使用记录时恰好展示五个默认操作，C2A 留在更多操作且节点不重复', async () => {
+  const view = await setup();
   assert.deepEqual(view.ids(), defaults);
-  assert.equal(view.group.contains(view.elements.get(c2aId)), true);
-  const rendered = view.toolbar.querySelectorAll().map(node => node.id);
-  assert.equal(rendered.length, 12);
-  assert.equal(new Set(rendered).size, 12);
+  assert.equal(view.get('accountsMoreActionsV2').contains(view.get(c2aId)), true);
+  const rendered = Array.from(view.get('accountsToolbarV2').querySelectorAll('button')).map(node => node.id);
+  assert.equal(rendered.length, 34);
+  assert.equal(new Set(rendered).size, 34);
 });
 
-test('一次入口点击累计一次，退出菜单、弹窗和工具栏焦点后才更新前五', () => {
-  const view = setup();
-  const button = view.elements.get(c2aId);
-  view.more.open = true;
-  view.document.activeElement = button;
-  view.toolbar.listeners.click({target: button});
-  view.flush();
+test('一次入口点击累计一次，退出菜单、弹窗和工具栏焦点后才更新前五', async () => {
+  const view = await setup();
+  const button = view.get(c2aId),more=view.get('accountsMoreActionsV2');
+  more.open = true;button.focus();await view.click(c2aId);await view.flush();
   assert.deepEqual(view.ids(), defaults);
+  assert.equal(view.calls.length,1);
   assert.equal(JSON.parse(view.storage.value)[c2aId], 1);
-  view.more.open = false;
-  view.document.dialogOpen = true;
-  view.context.refreshAccountQuickActions();
-  assert.deepEqual(view.ids(), defaults);
-  view.document.dialogOpen = false;
-  view.context.refreshAccountQuickActions();
-  assert.deepEqual(view.ids(), defaults);
-  view.document.activeElement = null;
-  view.context.refreshAccountQuickActions();
+  more.open = false;
+  const dialog=view.document.createElement('dialog');dialog.open=true;view.document.body.append(dialog);
+  await view.refresh();assert.deepEqual(view.ids(), defaults);
+  dialog.open=false;await view.refresh();assert.deepEqual(view.ids(), defaults);
+  button.blur();await view.refresh();
   assert.deepEqual(view.ids(), [c2aId, ...defaults.slice(0, 4)]);
-  assert.equal(view.group.contains(view.elements.get(defaults[4])), true);
-  assert.equal(view.toolbar.querySelectorAll().length, 12);
-  assert.deepEqual(setup({saved: view.storage.value}).ids(), view.ids());
+  assert.equal(more.contains(view.get(defaults[4])), true);
+  assert.equal(view.get('accountsToolbarV2').querySelectorAll('button').length, 34);
+  assert.equal(view.get(c2aId),button);
+  const expected=view.ids(),saved=view.storage.value;view.close();
+  assert.deepEqual((await setup({saved})).ids(), expected);
 });
 
-test('未选择或缺少能力配置的按钮不增加使用次数，存储仅接受有效白名单计数', () => {
-  const view = setup({saved: JSON.stringify({[c2aId]: -5, [defaults[0]]: 2, unknown: 900, [defaults[1]]: '100'})});
-  const button = view.elements.get(c2aId);
-  button.disabled = true;
-  view.context.recordAccountActionUse(button);
-  button.disabled = false;
-  button.classes.add('feature-unavailable');
-  view.context.recordAccountActionUse(button);
-  button.classes.clear();
-  button.attributes['aria-disabled'] = 'true';
-  view.context.recordAccountActionUse(button);
-  assert.equal(JSON.parse(view.storage.value)[c2aId], -5);
-  delete button.attributes['aria-disabled'];
-  view.context.recordAccountActionUse(button);
+test('未选择或缺少能力配置的按钮不增加使用次数，存储仅接受有效白名单计数', async () => {
+  const view = await setup({saved: JSON.stringify({[c2aId]: -5, [defaults[0]]: 2, unknown: 900, [defaults[1]]: '100'})});
+  const button = view.get(c2aId);
+  await view.setState({selectedCount:0,archived:false});await view.click(c2aId);
+  await view.setState({selectedCount:2,archived:false});await view.setCapabilities({c2a_sync:{enabled:false,reason:'配置缺失'}});await view.click(c2aId);
+  assert.equal(button.classList.contains('feature-unavailable'),true);
+  await view.setCapabilities({c2a_sync:{enabled:true}});button.setAttribute('aria-disabled','true');await view.click(c2aId);
+  assert.equal(JSON.parse(view.storage.value)[c2aId], -5);assert.equal(view.calls.length,0);
+  button.removeAttribute('aria-disabled');await view.click(c2aId);
   const saved = JSON.parse(view.storage.value);
-  assert.equal(saved[c2aId], 1);
-  assert.equal(saved[defaults[0]], 2);
-  assert.equal(saved[defaults[1]], 0);
-  assert.equal('unknown' in saved, false);
+  assert.equal(saved[c2aId], 1);assert.equal(saved[defaults[0]], 2);assert.equal(saved[defaults[1]], 0);assert.equal('unknown' in saved, false);
 });
 
-test('浏览器存储不可用时仍可操作并在当前页面累计排序', () => {
-  const view = setup({storageBlocked: true});
-  const button = view.elements.get(c2aId);
-  view.context.recordAccountActionUse(button);
-  view.context.recordAccountActionUse(button);
-  view.flush();
+test('浏览器存储不可用时仍可操作并在当前页面累计排序', async () => {
+  const view = await setup({storageBlocked: true});
+  await view.click(c2aId);await view.click(c2aId);await view.flush();
   assert.equal(view.ids()[0], c2aId);
-  assert.equal(view.context.accountActionUsageCounts([c2aId])[c2aId], 2);
+  assert.equal(view.calls.length,2);
+  assert.equal(JSON.parse(view.storage.writes.at(-1).value)[c2aId],2);
+  assert.equal(view.storage.value,null);
 });
 
-test('页面级动作也按次数进入五个快捷位置，保留单一节点和原点击入口', () => {
-  const toolbar = template.slice(template.indexOf('id="accountsToolbarV2"'), template.indexOf('<div class="list-toolbar-utilities">', template.indexOf('id="accountsToolbarV2"')));
-  const more = toolbar.match(/<details\b[\s\S]*?<\/details>/)[0];
-  assert.doesNotMatch(toolbar.replace(more, ''), /<button\b/);
-  for (const [id, handler] of pageActions) {
-    const buttonTag = more.match(new RegExp(`<button[^>]*id="${id}"[^>]*>`))?.[0];
-    assert.ok(buttonTag, `${id} 在更多操作内`);
-    assert.ok(buttonTag.includes(`onclick="${handler}"`));
-    assert.doesNotMatch(buttonTag, /\bdisabled\b/);
-    assert.equal(Array.from(template.matchAll(new RegExp(`id="${id}"`, 'g'))).length, 1);
+test('页面级动作也按次数进入五个快捷位置，保留单一节点和原动作边界', async () => {
+  const view=await setup();
+  const toolbar=view.get('accountsToolbarV2'),more=view.get('accountsMoreActionsV2');
+  for(const [id,descriptor] of pageActions){
+    const button=view.get(id);assert.equal(more.contains(button),true);assert.equal(button.getAttribute('onclick'),null);assert.equal(button.disabled,false);assert.equal(view.document.querySelectorAll(`#${id}`).length,1);
+    assert.equal(ACCOUNT_TOOLBAR_BUTTONS.find(item=>item.id===id).action,descriptor);
   }
-  const view = setup();
-  const history = view.elements.get('btnAccountInspectionHistory');
-  view.context.recordAccountActionUse(history);
-  view.flush();
-  assert.equal(view.ids().length, 5);
-  assert.equal(view.ids()[0], history.id);
-  assert.equal(view.quick.children[0], history);
-  assert.equal(history.disabled, false);
-  assert.equal(view.toolbar.querySelectorAll().length, 12);
+  assert.match(template,/id="accountToolbarHost"/);assert.match(template,/id="accounts-list-root"/);
+  assert.equal(toolbar.contains(view.document.getElementById('accounts-list-root')),false);
+  const history=view.get('btnAccountInspectionHistory');await view.click(history.id);await view.flush();
+  assert.equal(view.ids().length,5);assert.equal(view.ids()[0],history.id);assert.equal(view.get('accountsQuickActionsV2').querySelector('button'),history);assert.equal(history.disabled,false);assert.equal(toolbar.querySelectorAll('button').length,34);
+  assert.equal(view.calls.length,1);assert.equal(view.calls[0][0],'openAccountInspectionHistory');assert.equal(view.calls[0][1],view.context);assert.equal(view.calls[0][2],history);
+});
+
+test('外部存储事件只响应原键且卸载后不会恢复旧按钮',async()=>{
+  const view=await setup();view.storage.value=JSON.stringify({btnDeleteDeactivatedAccounts:9});view.external('other');await view.flush();assert.deepEqual(view.ids(),defaults);
+  view.external(ACCOUNT_ACTION_USAGE_KEY);await view.flush();assert.equal(view.ids()[0],'btnDeleteDeactivatedAccounts');view.close();view.external();await view.flush();assert.equal(view.document.querySelectorAll('#accountsToolbarV2 button').length,0);
 });

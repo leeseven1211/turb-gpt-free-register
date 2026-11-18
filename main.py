@@ -176,6 +176,9 @@ def main():
         logger.info(f"[批量] 并发线程数 {args.workers} 大于目标数量，已按 {args.count} 个任务执行")
         args.workers = args.count
 
+    from core.runtime.standalone import require_standalone_owner
+    require_standalone_owner()
+
     if args.workers > 1:
         results = run_parallel_batch(
             args.count, args.workers, args.delay, args.continue_on_fail,

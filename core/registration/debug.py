@@ -610,7 +610,8 @@ class RegistrationDebugSession:
         otp_wait_symptom = (
             self.job.get("job_type") in {"registration", "registration_resume"}
             and (self.failure_stage or self.current_stage) == "email_otp"
-            and (code in {"", "unknown.unclassified", "browser_stage_timeout", "email_submit_unconfirmed"}
+            and (code in {"", "unknown.unclassified", "browser_stage_timeout", "email_submit_unconfirmed",
+                          "email_otp_failure_diagnostics_missing"}
                  or code.endswith("_receipt_missing")
                  or (code == "external.email" and re.search(r"(?<![\w])otp_request_unconfirmed(?![\w])", str(reason))))
         )
@@ -618,7 +619,7 @@ class RegistrationDebugSession:
         # 结构化拒绝原因，不改变登录分支、提交回执或任务的远端结果状态。
         password_page_symptom = (
             (self.failure_stage or self.current_stage) == "login_password"
-            and code in {"", "unknown.unclassified", "password_page_error"}
+            and code in {"", "unknown.unclassified", "password_page_error", "login_password_failure_diagnostics_missing"}
         )
         if ((cause == "auth_cloudflare_challenge" and (_challenge_explains_error(info) or roxy_email_symptom))
                 or (cause == "roxy_proxy_tunnel_failed" and transport_symptom)

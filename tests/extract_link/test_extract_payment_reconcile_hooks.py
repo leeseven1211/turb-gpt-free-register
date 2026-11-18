@@ -5,16 +5,24 @@ from unittest.mock import Mock, patch
 
 from core.extract_link import service as extract_link_service
 from core.accounts.plans import service as plan_check_service
+from core.accounts import operation_results
+from core.storage import postgres
 from core.storage.extract_link import jobs as extract_link_jobs
 from core.storage.accounts import plan_countries
 
 
 class ExtractPaymentReconcileHookTests(unittest.TestCase):
     def run_single_plan(self, result, reconcile, *, trigger="manual", written=True):
-        context = SimpleNamespace(task_id=101, run_id=102, checkpoint=Mock(),
-            report=Mock(return_value={}), finish=Mock())
+        context = SimpleNamespace(task_id=101, run_id=102, execution_id="offline-plan-execution",
+            checkpoint=Mock(), report=Mock(return_value={}), finish=Mock(),
+            register_cleanup=Mock(), add_settlement_obligation=Mock())
         route = SimpleNamespace(proxy_url="", public_dict=lambda: {"network_route": "direct"}, release=Mock())
         with (
+            patch.object(postgres, "connect", side_effect=AssertionError("offline plan fixture cannot connect")),
+            patch.object(postgres, "connect_dedicated", side_effect=AssertionError("offline plan fixture cannot connect")),
+            patch.object(operation_results.operation_task_store, "register_resource",
+                return_value={"id": 901, "resource_uuid": "offline-plan-resource"}) as register_resource,
+            patch.object(operation_results.operation_task_store, "release_resource", return_value=True) as release_resource,
             patch.object(plan_check_service.db, "mark_account_plan_check_running", return_value=True),
             patch.object(plan_check_service.db, "update_account_plan_check", return_value=written) as save,
             patch("core.proxy.account_routes.acquire_account_proxy", return_value=route),
@@ -28,6 +36,23 @@ class ExtractPaymentReconcileHookTests(unittest.TestCase):
                 account_id=77, email="reconcile@example.test", access_token="fixture-at",
                 trigger=trigger, proxy=None, timezone_offset_min="-", operation_context=context,
             )
+        cleanup = context.register_cleanup.call_args.args[0]
+        self.assertIsInstance(cleanup, operation_results.AccountRouteCleanup)
+        self.assertIs(cleanup.route, route)
+        self.assertTrue(cleanup.release_confirmed)
+        context.register_cleanup.assert_called_once_with(cleanup, key=cleanup.resource_identity, blocking=True)
+        register_resource.assert_called_once_with(
+            102, resource_type="proxy_lease", provider="", external_id=cleanup.resource_identity,
+            detail={"execution_id": "offline-plan-execution", "purpose": "plan-check"},
+        )
+        context.add_settlement_obligation.assert_called_once_with(
+            "resource_release", resource_identity="operation-resource:offline-plan-resource",
+            payload={"resource_id": 901, "resource_uuid": "offline-plan-resource", "run_id": 102,
+                "execution_id": "offline-plan-execution", "external_id": cleanup.resource_identity},
+            blocks_permit=True,
+        )
+        release_resource.assert_called_once_with(901, state="released")
+        route.release.assert_called_once()
         return returned, save, sync
 
     def test_successful_plus_check_reconciles_only_after_account_writeback(self):

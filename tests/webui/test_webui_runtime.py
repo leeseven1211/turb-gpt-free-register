@@ -1,12 +1,14 @@
 # -*- coding: utf-8 -*-
 import logging
+import threading
 import unittest
 from contextlib import ExitStack
-from types import MappingProxyType
+from types import MappingProxyType, SimpleNamespace
 from unittest.mock import patch
 
 from flask import Flask
 
+from core.accounts import completion_execution, operation_handlers, operation_results, operation_settings
 from webui import runtime
 
 
@@ -14,7 +16,7 @@ class WebUIRuntimeTests(unittest.TestCase):
     def setUp(self):
         runtime._runtime_started = False
         runtime._runtime_started_at = None
-        runtime._RUNTIME_HANDLERS_REGISTERED = False
+        operation_handlers._RUNTIME_HANDLERS_REGISTERED = False
         usage_worker = patch("core.email.email_butler.usage_reports.start_worker")
         self.usage_worker = usage_worker.start()
         self.addCleanup(usage_worker.stop)
@@ -40,7 +42,12 @@ class WebUIRuntimeTests(unittest.TestCase):
     def tearDown(self):
         runtime._runtime_started = False
         runtime._runtime_started_at = None
-        runtime._RUNTIME_HANDLERS_REGISTERED = False
+        # ``start_runtime`` owns the legacy settlement carrier even when the
+        # rest of the periodic workers are patched in this unit suite.  Stop
+        # that real carrier before the next native fixture starts; resetting
+        # the flags alone leaves its thread alive across test methods.
+        self.assertTrue(runtime._stop_legacy_settlement_if_idle(timeout=10))
+        operation_handlers._RUNTIME_HANDLERS_REGISTERED = False
 
     def test_native_lifecycle_preserves_specific_error_with_pending_receipt(self):
         class Context:
@@ -74,6 +81,9 @@ class WebUIRuntimeTests(unittest.TestCase):
 
     def test_start_runtime_recovers_and_starts_periodic_workers_once(self):
         with ExitStack() as stack:
+            start_settlement = stack.enter_context(patch.object(runtime, "_start_legacy_settlement"))
+            start_sub2api_sync = stack.enter_context(patch("core.integrations.sub2api.jobs.start_periodic_sync"))
+            start_sub2api_monitor = stack.enter_context(patch("core.integrations.sub2api.monitor.start_periodic_monitor"))
             recover_jobs = stack.enter_context(
                 patch.object(runtime.db, "recover_interrupted_registration_jobs", return_value=2)
             )
@@ -161,6 +171,9 @@ class WebUIRuntimeTests(unittest.TestCase):
             self.assertLess(startup_order.index("recover_plans"), startup_order.index("resume_extract"))
 
         for mock in (
+            start_settlement,
+            start_sub2api_sync,
+            start_sub2api_monitor,
             init_bulk,
             start_bulk,
             recover_jobs,
@@ -253,7 +266,7 @@ class WebUIRuntimeTests(unittest.TestCase):
         }
         snapshot = ConfigSnapshot()
         with (
-            patch.object(runtime, "_runtime_config_snapshot", return_value=snapshot),
+            patch.object(operation_settings, "runtime_config_snapshot", return_value=snapshot),
             patch("config.account.completion_settings", return_value=fallback),
         ):
             captured, allowlist, settings = runtime._runtime_execution_settings(fallback)
@@ -332,8 +345,8 @@ class WebUIRuntimeTests(unittest.TestCase):
                 return_value={"status": "success", "ok": True, "message": "submitted"},
             ) as worker,
             patch.object(
-                runtime,
-                "_account_setup_receipt",
+                operation_results,
+                "account_setup_receipt",
                 return_value=(
                     "local_commit_required",
                     {
@@ -366,7 +379,7 @@ class WebUIRuntimeTests(unittest.TestCase):
                 "cause_code": "password_sentinel_failed",
                 "auth_diagnostics": {"operation": "password_sentinel", "curl_error_code": 35},
             }),
-            patch.object(runtime, "_account_setup_receipt", return_value=("unknown", {})),
+            patch.object(operation_results, "account_setup_receipt", return_value=("unknown", {})),
         ):
             failed_result = runtime._handle_native_account_setup(failed_context)
         self.assertEqual("password_sentinel_failed", failed_result.error)
@@ -508,6 +521,11 @@ class WebUIRuntimeTests(unittest.TestCase):
                 self.finished = False
                 self.last_result = None
                 self.released = 0
+                self._transition_lock = threading.RLock()
+                self._settlement_intent = None
+                self._settlement_obligations = {}
+
+            add_settlement_obligation = runtime.task_gateway.OperationHandlerContext.add_settlement_obligation
 
             def report(self, **_kwargs):
                 return {}
@@ -529,6 +547,7 @@ class WebUIRuntimeTests(unittest.TestCase):
 
         context = FakeContext()
         with (
+            patch.object(runtime.db, "get_account", return_value={}),
             patch.object(
                 runtime.account_task_store,
                 "submit_durable_operation",
@@ -545,6 +564,25 @@ class WebUIRuntimeTests(unittest.TestCase):
             patch.object(runtime.codex_retry_service, "run_twofa_worker") as setup_worker,
         ):
             result = runtime._handle_native_account_completion(context)
+            # Native handoff records a typed tail; the handler does not write
+            # the dependency before the parent's terminal receipt.
+            register.assert_not_called()
+            self.assertEqual(1, len(context._settlement_obligations))
+            obligation = next(iter(context._settlement_obligations.values()))
+            self.assertEqual("completion_dependency", obligation["action_kind"])
+            self.assertFalse(obligation["blocks_permit"])
+            register.return_value = {"status": "waiting"}
+            parent = {"id": context.task_id, "last_run_id": context.run_id,
+                      "status": "partial_success"}
+            # Exercise the real local tail consumer independently using its
+            # persisted-parent readback contract. Settlement scheduling is
+            # covered by the native fixture integration tests.
+            with (
+                patch.object(runtime.operation_task_store, "get_task", side_effect=lambda task_id, **_kw:
+                             parent if task_id == context.task_id else {"status": "queued"}),
+                patch.object(runtime.operation_task_store, "mark_task_dependency_ready", return_value=[]),
+            ):
+                self.assertTrue(completion_execution.apply_settlement_dependency(obligation["payload"]))
 
         self.assertTrue(context.finished)
         self.assertEqual("partial_success", result.status)
@@ -624,7 +662,7 @@ class WebUIRuntimeTests(unittest.TestCase):
 
         context = SimpleNamespace(account_id=591, email="pending@example.test", run={})
         self.registration_guard.return_value = {"id": 836, "status": "running"}
-        with patch.object(runtime, "_run_account_completion_worker") as worker:
+        with patch.object(completion_execution, "run_account_completion_worker") as worker:
             with self.assertRaises(runtime.task_gateway.OperationLeaseUnavailable):
                 runtime._handle_native_account_completion(context)
         worker.assert_not_called()
@@ -644,8 +682,8 @@ class WebUIRuntimeTests(unittest.TestCase):
         self.registration_guard.return_value = {"id": 836, "status": "running"}
         with (
             patch.object(runtime.codex_retry_service, "run_twofa_worker", return_value={"ok": True, "status": "success"}) as worker,
-            patch.object(runtime, "_account_setup_receipt", return_value=("confirmed", {})),
-            patch.object(runtime, "_finish_native_context"),
+            patch.object(operation_results, "account_setup_receipt", return_value=("confirmed", {})),
+            patch.object(operation_results, "finish_native_context"),
         ):
             with self.assertRaises(runtime.task_gateway.OperationLeaseUnavailable):
                 runtime._handle_native_account_setup(context)
@@ -879,20 +917,29 @@ class WebUIRuntimeTests(unittest.TestCase):
         self.assertTrue(callable(submit.call_args.args[2]))
 
     def test_busy_ready_dependency_returns_to_durable_queue_without_timer(self):
-        dependency = {"id": 902, "status": "running", "payload": {}}
+        from core.operations import concurrency
+        from core.storage.operations import dependency_handoffs
+
+        execution = SimpleNamespace(
+            execution_key="operation_dependency:902", permit_id="fixture-permit",
+            execution_id="fixture-execution", claimed_run={"id": 902, "attempts": 1},
+        )
+        dependency = {"id": 902, "status": "running", "payload": {},
+                      "_execution_context": execution}
         with (
             patch.object(runtime._ACCOUNT_EXECUTOR, "try_submit", return_value=None),
-            patch.object(runtime.operation_task_store, "complete_task_dependency", return_value=True) as complete,
-            patch.object(runtime.account_task_store, "notify_dependency_ready") as notify,
+            patch.object(dependency_handoffs, "requeue_dependency", return_value=True) as requeue,
+            patch.object(concurrency, "release_execution") as release,
+            patch.object(runtime.task_gateway, "notify_dispatch") as notify,
         ):
             self.assertIsNone(runtime._submit_ready_completion_dependency(dependency))
 
-        complete.assert_called_once_with(
-            902,
-            success=False,
-            error="账号操作共享并发预算已满",
+        requeue.assert_called_once_with(
+            902, permit_id="fixture-permit", execution_id="fixture-execution",
+            attempts=1, reason="executor_submit_failed",
         )
-        notify.assert_called_once_with(dependency)
+        release.assert_called_once_with(execution, reason="executor_submit_failed")
+        notify.assert_called_once_with()
 
     def test_stale_password_capability_does_not_block_completion(self):
         context = runtime.WebUIContext(Flask("test-runtime"), logging.getLogger("test-runtime"))

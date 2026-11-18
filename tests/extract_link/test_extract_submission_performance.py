@@ -17,6 +17,8 @@ from core.extract_link import service as extract_link_service
 from core.storage import postgres as postgres_store, records as record_store
 from core.operations import task_gateway
 from core.storage.operations import store as operation
+from core.storage.operations import common as operation_common
+from core.storage.operations import runtime as operation_runtime
 from tests.support_pg import PostgresTestCase, truncate_schema
 from tests.extract_link import test_extract_workbench_batches as fixtures
 
@@ -134,14 +136,14 @@ class ExtractSubmissionPerformanceTests(PostgresTestCase):
 
     def test_item_sql_failure_rolls_back_task_and_continues_with_same_config_revision(self):
         ids = self.accounts([{}, {}, {}])
-        original_insert = operation._insert_runtime_run
+        original_insert = operation_runtime._insert_runtime_run
 
         def fail_second(cur, **kwargs):
             if kwargs["account_id"] == ids[1]:
                 cur.execute("SELECT 1 / 0")
             return original_insert(cur, **kwargs)
 
-        with self.provider_patches(), patch.object(operation, "_insert_runtime_run", side_effect=fail_second):
+        with self.provider_patches(), patch.object(operation_runtime, "_insert_runtime_run", side_effect=fail_second):
             result = extract_link_service.create_workbench_batch(provider_id="lumen_flow", mode="extract_only", limit=3)
         self.assertEqual((2, 0, 1), tuple(result[key] for key in ("started", "skipped", "failed")))
         self.assertEqual("failed", record_store.get_row(record_store.ACCOUNTS, ids[1])["extract_link_status"])
@@ -177,7 +179,7 @@ class ExtractSubmissionPerformanceTests(PostgresTestCase):
         # 连接仅替换为同一隔离库的专用真实池，不替换任何业务 SQL 或事务。
         with ConnectionPool(postgres_store.database_url(), min_size=2, max_size=2, timeout=0.5,
                             kwargs={"row_factory": dict_row}) as pool:
-            with patch.object(operation, "_connect", side_effect=pool.connection), \
+            with patch.object(operation_common, "_connect", side_effect=pool.connection), \
                  patch.object(operation, "active_run_for_account", side_effect=lookup), \
                  ThreadPoolExecutor(max_workers=2) as executor:
 
@@ -218,11 +220,12 @@ class ExtractSubmissionPerformanceTests(PostgresTestCase):
             result = operation.list_tasks(include_facets=False)
         self.assertNotIn("facets", result)
         self.assertEqual(2, execute.call_count)
-        self.assertFalse(any(" AS facet" in str(call.args[1]) for call in execute.call_args_list))
         with patch.object(Cursor, "execute", autospec=True, side_effect=Cursor.execute) as default_execute:
             default = operation.list_tasks()
-        self.assertEqual(7, default_execute.call_count)
-        self.assertEqual({"task_type", "status", "target_status", "stage", "run_count"}, set(default["facets"]))
+        # 空列表只有总数、分页和一次合并分面查询；五个维度不再各占一次往返。
+        self.assertEqual(3, default_execute.call_count)
+        facet_names = {"task_type", "status", "target_status", "stage", "run_count"}
+        self.assertEqual({name: [] for name in facet_names}, default["facets"])
         self.assertEqual(result, {key: value for key, value in default.items() if key != "facets"})
 
     def test_synthetic_benchmark(self):

@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from functools import partial
+from core.bulk_operations.preflight_policy import PLAN_CHECK_POLICY, effective_settings
 from core.operations.presentation import public_result_status
 from core.storage import records
 from core.storage.operations import bulk_schema
@@ -33,6 +35,14 @@ _KIND = {
     "explicit_ids": "explicit_ids",
     "batch_targets": "batch_targets",
 }
+
+_DISPLAY = "jsonb_build_object('email',COALESCE(email,''),'created_at',created_at)"
+_MATCH = """jsonb_build_object('created_at',created_at,'promotion',account_promotion_value,
+  'reason_code',CASE WHEN email IS NULL THEN 'account_missing' WHEN deactivated THEN 'account_deactivated' ELSE NULL END)"""
+_BASELINE = """jsonb_build_object('plan_type',plan_type,'current_plan_type',current_plan_type,
+  'promotion',account_promotion_value,'has_password',account_has_password,'totp_enabled',account_totp_enabled,
+  'has_access_token',account_has_access_token,'codex_credential_state',codex_credential_state,
+  'plan_check',plan_comparison)"""
 
 
 def create_selection(
@@ -129,7 +139,13 @@ def freeze_selection(
     owner_id: str | None = None,
     fence: int | None = None,
     preflight=None,
+    preflight_identity_only: bool = False,
+    preflight_policy: str | None = None,
 ) -> dict:
+    if preflight_policy is not None and preflight_policy != PLAN_CHECK_POLICY:
+        raise BulkError("unknown_preflight_policy", "不支持的预检策略", 422)
+    if preflight_policy is not None and preflight is not None:
+        raise BulkError("preflight_policy_conflict", "内置策略不能与自定义预检同时使用", 422)
     bulk_schema.init()
     with connect() as conn, conn.cursor() as cur:
         # 来源批的投影锁必须早于selection锁；普通选择不争批次控制锁。
@@ -146,6 +162,8 @@ def freeze_selection(
         else:
             basis = None
         row = require_row(cur, f"SELECT * FROM {table('operation_selections')} WHERE id=%s FOR UPDATE", (selection_id,))
+        if preflight_policy is not None and row["action_key"] != "plan_check":
+            raise BulkError("preflight_policy_operation_mismatch", "预检策略与操作不匹配", 422)
         if row["status"] in ("ready", "consumed"):
             return public_selection(row)
         if row["status"] != "preparing":
@@ -155,6 +173,9 @@ def freeze_selection(
         source = row["query_spec"]["source"]
         account_table = records._qualified(records.ACCOUNTS)
         account_select = _account_select(plan_baseline=row["action_key"] == "plan_check")
+        if preflight_policy is not None:
+            from core.storage.operations import plan_preflight
+            account_select += plan_preflight.extra_account_columns()
         args: list = []
         limit = source.get("limit", source.get("query", {}).get("limit"))
         if limit is not None and (isinstance(limit, bool) or int(limit) <= 0):
@@ -182,34 +203,45 @@ def freeze_selection(
             query = f"""SELECT a.id,row_number() OVER(ORDER BY a.id DESC) AS ordinal,{account_select}
                 FROM {account_table} a WHERE ({where_sql}) ORDER BY a.id DESC LIMIT %s"""
             args = [*params, min(int(limit), 100001) if limit is not None else 100001]
-        cur.execute(
-            f"""WITH candidates AS MATERIALIZED ({query}), inserted AS (
+        frozen = None
+        if preflight_policy is not None:
+            # 大名单的 CTE 基数估算可能触发秒级 JIT 编译；仅限制本次
+            # 内置预检事务（含 Unicode 回退），提交/回滚后恢复连接原值。
+            cur.execute("SET LOCAL jit = off")
+            policy_settings = effective_settings(row["config_snapshot"] or {})
+            frozen = plan_preflight.freeze(
+                cur, query=query, args=args, selection_id=selection_id,
+                basis_revision=basis["summary_revision"] if basis else None,
+                settings=policy_settings, display=_DISPLAY, match=_MATCH, baseline=_BASELINE)
+            if frozen is None:
+                preflight = partial(plan_preflight.fallback_receipts, settings=policy_settings)
+                preflight_identity_only = True
+        if frozen is None:
+            cur.execute(
+                f"""WITH candidates AS MATERIALIZED ({query}), inserted AS (
           INSERT INTO {table("operation_selection_targets")}
             (selection_id,target_kind,target_id,ordinal,display_snapshot,match_evidence,baseline)
           SELECT %s,'account',id,ordinal,
-            jsonb_build_object('email',COALESCE(email,''),'created_at',created_at),
-            jsonb_build_object('created_at',created_at,'promotion',account_promotion_value,
-              'reason_code',CASE WHEN email IS NULL THEN 'account_missing' WHEN deactivated THEN 'account_deactivated' ELSE NULL END),
-            jsonb_build_object('plan_type',plan_type,'current_plan_type',current_plan_type,
-              'promotion',account_promotion_value,'has_password',account_has_password,'totp_enabled',account_totp_enabled,
-              'has_access_token',account_has_access_token,'codex_credential_state',codex_credential_state,
-              'plan_check',plan_comparison)
+            {_DISPLAY},{_MATCH},{_BASELINE}
           FROM candidates RETURNING id)
           UPDATE {table("operation_selections")} SET total_count=(SELECT count(*) FROM inserted),
             selected_at=statement_timestamp(),selection_revision=1,status='preparing',owner_id=NULL,lease_until=NULL,
             basis_summary_revision=%s,updated_at=now() WHERE id=%s RETURNING *""",
-            (*args, selection_id, basis["summary_revision"] if basis else None, selection_id),
-        )
-        frozen = dict(cur.fetchone())
+                (*args, selection_id, basis["summary_revision"] if basis else None, selection_id),
+            )
+            frozen = dict(cur.fetchone())
         if int(frozen["total_count"]) > 100000:
             raise BulkError("selection_capacity_exceeded", "匹配范围超过100,000个账号，请设置数量上限或缩小条件", 422)
         # 预检可追加固定目标的有限证据，必须纯数据库操作，不能发远端请求。
         if preflight is not None:
             summary = {"ready": 0, "waiting_account": 0, "not_executable": 0}
             cursor = 0
+            columns = "id,target_id,target_id AS account_id,ordinal"
+            if not preflight_identity_only:
+                columns += ",display_snapshot,baseline,match_evidence"
             while True:
                 cur.execute(
-                    f"""SELECT id,target_id,target_id AS account_id,ordinal,display_snapshot,baseline,match_evidence
+                    f"""SELECT {columns}
                   FROM {table("operation_selection_targets")} WHERE selection_id=%s AND ordinal>%s
                   ORDER BY ordinal LIMIT 5000""",
                     (selection_id, cursor),

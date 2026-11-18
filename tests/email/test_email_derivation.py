@@ -13,6 +13,7 @@ from core.email import derivation as service, provider as email_provider
 from core.storage import records as record_store
 from core.storage.email import address_allocations as store
 from tests.support_pg import PostgresTestCase
+from tests.support_legacy_derivation import seed_legacy_inventory
 
 
 class EmailDerivationIntegrationTests(PostgresTestCase):
@@ -35,9 +36,12 @@ class EmailDerivationIntegrationTests(PostgresTestCase):
         self.addCleanup(patch.stopall)
         with patch.object(service, "_forward_profile", return_value=self.profile), patch(
             "core.email.icloud_hide.client.sync_aliases", return_value={"synced_account_ids": ["test-apple"]}):
-            service.generate_inventory("icloud_hide", 3, "integration-stock")
+            seed_legacy_inventory("icloud_hide", 3, "integration-stock", inbox_profile_id=self.profile["id"])
 
     def acquire(self, number=1, **kwargs):
+        # Construct a pre-cutover claim, then exercise the real existing-identity restore.
+        store.claim_address(source="icloud_hide", owner_kind="registration_root", owner_id=number,
+                            acquisition_id=f"registration:{number}")
         with patch.object(service, "_forward_profile", return_value=self.profile), patch(
             "core.email.icloud_hide.client.sync_aliases", return_value={"synced_account_ids": ["test-apple"]},
         ):
@@ -46,20 +50,16 @@ class EmailDerivationIntegrationTests(PostgresTestCase):
                 acquisition_id=f"registration:{number}", **kwargs,
             )
 
-    def test_three_children_and_raising_limit_only_adds_new_addresses(self):
+    def test_three_historical_children_restore_but_raising_limit_cannot_reopen_generation(self):
         first = [self.acquire(index) for index in range(1, 4)]
         self.assertEqual(len(set(first)), 3)
         self.assertTrue(all(len(address.split("+")[1].split("@")[0]) == 6 for address in first))
-        with self.assertRaisesRegex(RuntimeError, "库存"):
+        with self.assertRaisesRegex(service.EmailDerivationError, "email_derivation_source_disabled"):
             self.acquire(4)
-        with patch.object(cfg, "EMAIL_DERIVATION_MAX_CHILDREN", 4), patch.object(
-            service, "_forward_profile", return_value=self.profile), patch(
-            "core.email.icloud_hide.client.sync_aliases", return_value={"synced_account_ids": ["test-apple"]}):
-            with self.assertRaisesRegex(RuntimeError, "库存"):
-                self.acquire(4)
-            service.generate_inventory("icloud_hide", 1, "integration-more")
-            fourth = self.acquire(4)
-        self.assertNotIn(fourth, first)
+        with patch.object(cfg, "EMAIL_DERIVATION_MAX_CHILDREN", 4):
+            with self.assertRaisesRegex(service.EmailDerivationError, "email_derivation_source_disabled"):
+                service.generate_inventory("icloud_hide", 1, "integration-more")
+        self.assertEqual(record_store.count_rows(record_store.EMAIL_ADDRESS_ALLOCATIONS), 3)
         self.assertEqual(self.acquire(1), first[0])
         self.assertEqual(db.get_icloud_hide_email_by_email("parent@icloud.com")["status"], "used")
 
@@ -108,7 +108,7 @@ class EmailDerivationIntegrationTests(PostgresTestCase):
         self.assertTrue(parent["archived"])
         self.assertFalse(parent["derivation_policy"]["enabled"])
         self.assertIsNotNone(service.restore_address(address))
-        with self.assertRaisesRegex(RuntimeError, "库存"):
+        with self.assertRaisesRegex(RuntimeError, "email_derivation_source_disabled"):
             self.acquire(2)
 
     def test_child_cannot_be_reimported_as_a_second_direct_resource(self):
@@ -169,6 +169,7 @@ class EmailDerivationIntegrationTests(PostgresTestCase):
             config_snapshot={"email_derivation_enabled": True, "email_derivation_sources": ["icloud_hide"],
                              "email_derivation_max_children": 3, "email_derivation_tag_length": 6},
         )
+        store.claim_address(source="icloud_hide", owner_kind="email_change", owner_id=42, acquisition_id="change:42")
         with patch.object(cfg, "EMAIL_DERIVATION_ENABLED", False), patch.object(
             service, "_forward_profile", return_value=self.profile,
         ), patch("core.email.icloud_hide.client.sync_aliases", return_value={"synced_account_ids": ["test-apple"]}):
@@ -214,6 +215,6 @@ class EmailDerivationIntegrationTests(PostgresTestCase):
         self.assertTrue(service.enabled_for("icloud_hide"))
 
     def test_unsupported_adapter_is_not_assumed_to_support_children(self):
-        with self.assertRaisesRegex(RuntimeError, "连接器"):
+        with self.assertRaisesRegex(RuntimeError, "email_derivation_source_disabled"):
             service.acquire_address("generic_api", owner_kind="registration_root", owner_id=1,
                                     acquisition_id="unsupported:1", policy={"enabled": True, "sources": ["generic_api"]})

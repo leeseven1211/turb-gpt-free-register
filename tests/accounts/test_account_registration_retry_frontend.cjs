@@ -1,14 +1,17 @@
+const {createReadFixture,row,list,presentation}=require('./read_owner_fixture.cjs');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
+const {installLegacyActionsFixture, vueHarness} = require('./actions_fixture.cjs');
 
 const source = require('../frontend_script_sources.cjs').readAccountScripts();
 const template = fs.readFileSync(path.join(__dirname, '../../webui/templates/index.html'), 'utf8');
 const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[char]));
 function load(names, dependencies = {}) {
   const context = vm.createContext({...dependencies});
+  require('../frontend_script_sources.cjs').installAccountActionHelpers(context);
   for (const name of names) {
     const match = new RegExp(`(?:async )?function ${name}\\(`).exec(source);
     assert.ok(match, `缺少 ${name}`);
@@ -16,6 +19,14 @@ function load(names, dependencies = {}) {
     vm.runInContext(source.slice(match.index, end), context);
   }
   return context;
+}
+
+function receiptView(t) {
+  vueHarness.cleanup();
+  vueHarness.document.body.innerHTML = '<div id="accountRegistrationReceiptHost"></div>';
+  const wrapper = vueHarness.mount(vueHarness.load('src/features/accounts/RegistrationRetryReceipt.vue').default);
+  t.after(() => vueHarness.cleanup());
+  return {wrapper, panel: vueHarness.document.getElementById('accountRegistrationRetryResultV2')};
 }
 
 test('行菜单根据后端资格显示继续、查看进行中任务或不可用原因', () => {
@@ -55,7 +66,7 @@ test('账号页刷新说明识别 v3，会话失效后才重新认证', () => {
 function operation({response, request, accepted = true} = {}) {
   const calls = {requests: [], confirms: [], messages: [], results: [], navigations: [], accounts: 0};
   const context = load(['retryAccountRegistration'], {
-    ACCOUNT_SELECTED: new Set([7, 8]), ACCOUNT_REGISTRATION_RETRY_PENDING: new Set(),
+    ACCOUNT_SELECTED: new Set([7, 8]),
     ACCOUNTS: [{id: 7, registration_retry: {label: '继续注册'}}],
     $: () => null,
     confirm: text => { calls.confirms.push(text); return accepted; },
@@ -64,12 +75,13 @@ function operation({response, request, accepted = true} = {}) {
       return request ? request() : response || {started: [{account_id: 7, job_id: 99}], started_count: 1};
     },
     showToast: text => calls.messages.push(text),
-    accountRegistrationRetrySummary: () => '已创建 1 个',
     showAccountRegistrationRetryResult: result => calls.results.push(result),
-    openAccountRegistrationRetryTasks: items => calls.navigations.push(items),
+    window: {TaskCenter: {open: async () => {}}},
+    openLog: jobId => calls.navigations.push([{job_id: jobId}]),
     loadAccounts: async () => { calls.accounts += 1; },
     updateAccountSelectionUi() {},
   });
+  installLegacyActionsFixture(context);
   return {context, calls};
 }
 
@@ -112,7 +124,7 @@ test('提交中的账号在按钮重绘或另一个入口再次点击时也不�
   assert.match(calls.messages.at(-1), /正在提交/);
   finish({started: [{account_id: 7, job_id: 99}]});
   await first;
-  assert.equal(context.ACCOUNT_REGISTRATION_RETRY_PENDING.size, 0);
+  assert.equal(context.window.AccountsPage.isActionPending('retryAccountRegistration'), false);
 });
 
 test('取消确认不提交；请求失败恢复按钮并允许再次提交', async () => {
@@ -124,7 +136,7 @@ test('取消确认不提交；请求失败恢复按钮并允许再次提交', as
   await context.retryAccountRegistration([7], button);
   assert.equal(button.disabled, false);
   assert.equal(button.textContent, '重跑注册');
-  assert.equal(context.ACCOUNT_REGISTRATION_RETRY_PENDING.size, 0);
+  assert.equal(context.window.AccountsPage.isActionPending('retryAccountRegistration'), false);
   assert.match(calls.messages.at(-1), /连接失败/);
 });
 
@@ -137,13 +149,14 @@ test('提交已成功但列表刷新失败时保留提交事实，不提示再�
   assert.equal(calls.results.length, 1);
 });
 
-test('批量结果保留所有跳过原因并转义内容，有原任务和新任务的明确入口', () => {
-  const context = load(['accountRegistrationRetrySummary', 'renderAccountRegistrationRetryResult'], {esc});
+test('批量结果保留所有跳过原因并转义内容，有原任务和新任务的明确入口', async t => {
+  const {wrapper, panel} = receiptView(t);
   const result = {started: [{account_id: 7, job_id: 99}], reused: [{account_id: 8, job_id: 100}], skipped: [
     {account_id: 9, reason: '<script>无来源</script>'}, {account_id: 10, reason: '已完成'},
   ]};
-  assert.match(context.accountRegistrationRetrySummary(result), /已创建 1 个.*进行中 1 个.*跳过 2 个/);
-  const html = context.renderAccountRegistrationRetryResult(result);
+  wrapper.vm.showResult(result, null, () => {}); await vueHarness.nextTick();
+  assert.match(panel.textContent, /已创建 1 个.*进行中 1 个.*跳过 2 个/);
+  const html = panel.innerHTML;
   assert.match(html, /data-registration-retry-result="0"/);
   assert.match(html, /data-registration-retry-result="1"/);
   assert.match(html, /&lt;script&gt;无来源&lt;\/script&gt;/);
@@ -151,21 +164,18 @@ test('批量结果保留所有跳过原因并转义内容，有原任务和新�
   assert.doesNotMatch(html, /<script>/);
 });
 
-test('定位优先使用统一任务ID，只有注册job时使用现有日志入口', () => {
+test('定位优先传递统一任务ID，只有注册job时等待任务页打开后使用原日志入口', async () => {
   const calls = [];
-  const filters = new Map();
   const context = load(['openAccountRegistrationRetryTasks'], {
-    $: selector => { if (!filters.has(selector)) filters.set(selector, {value: '旧筛选'}); return filters.get(selector); },
-    PAGERS: {accountTasks: {page: 4}}, ACCOUNTS: [{id: 7, email: 'fixture@example.test'}],
-    activateTab: tab => calls.push(['tab', tab]),
-    openAccountTaskLog: (...args) => calls.push(['task', ...args]),
+    window: {AccountsPage:{isReady:()=>true,getActionContext:()=>({accountIds:['7'],expectedEmails:{'7':'fixture@example.test'},archived:'0',querySnapshot:{},rowHints:[{id:7,email:'fixture@example.test'}]})},TaskCenter: {open: async options => { calls.push(['task-center', JSON.parse(JSON.stringify(options))]); }}},
     openLog: (...args) => calls.push(['job', ...args]),
   });
   context.openAccountRegistrationRetryTasks([{account_id: 7, task_id: 21, run_id: 22, job_id: 99}]);
-  assert.deepEqual(calls.at(-1), ['task', 21, 22]);
-  assert.equal(filters.get('#accountTaskTypeFilterV2').value, '');
-  assert.equal(filters.get('#accountTaskTargetFilterV2').value, 'fixture@example.test');
+  await Promise.resolve();
+  assert.deepEqual(calls, [['task-center', {filters: {target: 'fixture@example.test'}, taskId: 21, runId: 22}]]);
   context.openAccountRegistrationRetryTasks([{account_id: 7, job_id: 100}]);
+  await Promise.resolve();
+  assert.deepEqual(calls.at(-2), ['task-center', {filters: {target: 'fixture@example.test'}, runId: null}]);
   assert.deepEqual(calls.at(-1), ['job', 100]);
 });
 
@@ -173,78 +183,57 @@ for (const [action, taskId, runId] of [['codex', 201, 301], ['plan_check', 202, 
   test(`${action} 仅返回 operation_task_id 时直接打开新任务`, () => {
     const calls = [];
     const context = load(['openAccountRegistrationRetryTasks'], {
-      $: () => null, PAGERS: {accountTasks: {page: 1}}, ACCOUNTS: [],
-      activateTab() {},
-      openAccountTaskLog: (...args) => calls.push(['task', ...args]),
+      ACCOUNTS: [],
+      window: {TaskCenter: {open: async options => { calls.push(['task-center', JSON.parse(JSON.stringify(options))]); }}},
       openLog: (...args) => calls.push(['job', ...args]),
     });
     context.openAccountRegistrationRetryTasks([{
       account_id: 7, job_id: 99, operation_task_id: taskId, run_id: runId, retry_action: action,
     }]);
-    assert.deepEqual(calls, [['task', taskId, runId]]);
+    assert.deepEqual(calls, [['task-center', {filters: {target: ''}, taskId, runId}]]);
   });
 
-  test(`${action} 结果列表按钮携带新任务 ID，点击打开新 Run`, () => {
-    const calls = [];
-    const buttons = [];
-    const panel = {
-      hidden: true,
-      set innerHTML(html) {
-        this.html = html;
-        for (const match of html.matchAll(/<button[^>]*data-registration-retry-result="(\d+)"[^>]*>/g)) {
-          const dataset = {registrationRetryResult: match[1]};
-          const task = /data-registration-retry-task-id="(\d+)"/.exec(match[0]);
-          const run = /data-registration-retry-run-id="(\d+)"/.exec(match[0]);
-          if (task) dataset.registrationRetryTaskId = task[1];
-          if (run) dataset.registrationRetryRunId = run[1];
-          buttons.push({dataset, addEventListener: (_event, fn) => calls.push(fn)});
-        }
-      },
-      querySelector: () => null,
-      querySelectorAll: () => buttons,
-    };
+  test(`${action} 结果列表按钮携带新任务 ID，点击打开新 Run`, async t => {
+    const {wrapper, panel} = receiptView(t);
     const navigations = [];
     const context = load([
-      'accountRegistrationRetrySummary', 'renderAccountRegistrationRetryResult',
       'showAccountRegistrationRetryResult', 'openAccountRegistrationRetryTasks',
     ], {
       esc, $: selector => selector === '#accountRegistrationRetryResultV2' ? panel : null,
-      PAGERS: {accountTasks: {page: 1}}, ACCOUNTS: [], activateTab() {},
-      openAccountTaskLog: (...args) => navigations.push(['task', ...args]),
+      ACCOUNTS: [],
+      window: {AccountsPage: {showRegistrationResult: (...args) => wrapper.vm.showResult(...args)},
+        TaskCenter: {open: async options => { navigations.push(['task-center', JSON.parse(JSON.stringify(options))]); }}},
       openLog: (...args) => navigations.push(['job', ...args]),
     });
     context.showAccountRegistrationRetryResult({started: [{
       account_id: 7, job_id: 99, operation_task_id: taskId, run_id: runId, retry_action: action,
     }]});
+    await vueHarness.nextTick();
+    const buttons = panel.querySelectorAll('[data-registration-retry-result]');
     assert.equal(buttons[0].dataset.registrationRetryTaskId, String(taskId));
     assert.equal(buttons[0].dataset.registrationRetryRunId, String(runId));
-    calls[0]();
-    assert.deepEqual(navigations, [['task', taskId, runId]]);
+    buttons[0].click(); await vueHarness.nextTick();
+    assert.deepEqual(navigations, [['task-center', {filters: {target: ''}, taskId, runId}]]);
   });
 }
 
-test('更多菜单事件使用注册重跑入口，活动任务只查看', async () => {
-  const calls = [];
-  const context = load(['onAccountsBodyClick'], {
-    closeAccountsV2MoreMenus() {},
-    retryAccountRegistration: (...args) => calls.push(['retry', ...args]),
-    openAccountRegistrationRetryTasks: items => calls.push(['view', items]),
-  });
-  const button = {dataset: {accountRegistrationRetry: '7'}};
-  await context.onAccountsBodyClick({target: {closest: selector => selector === '[data-account-registration-retry]' ? button : null}});
-  assert.equal(calls[0][0], 'retry');
-  assert.equal(calls[0][1][0], 7);
-  assert.equal(calls[0][2], button);
-  const active = {dataset: {accountRegistrationTask: '100', accountId: '7'}};
-  await context.onAccountsBodyClick({target: {closest: selector => selector === '[data-account-registration-task]' ? active : null}});
-  assert.equal(calls[1][0], 'view');
-  assert.equal(calls[1][1][0].job_id, 100);
+test('更多菜单事件使用注册重跑入口，活动任务只查看', async t => {
+  const h=createReadFixture(t,{mounted:true,handlers:{list:async()=>list([row(7)])},render:{...presentation,menu:()=>'<button data-account-registration-retry="7">重跑</button><button data-account-registration-task="100" data-account-id="7">查看</button>'}});await h.ready;
+  for(const [selector,action] of [['[data-account-registration-retry]','account-registration-retry'],['[data-account-registration-task]','account-registration-task:100']]){
+    await h.wrapper.get('button[aria-label="更多账号操作"]').trigger('click');await h.settle();
+    const button=h.body.get(selector);await button.trigger('click');await h.settle();
+    const call=h.calls.at(-1);assert.equal(call[0],action);assert.deepEqual([...call[1].accountIds],['7']);assert.equal(Object.isFrozen(call[1]),true);assert.equal(call[2],button.element);
+  }
+  assert.equal(h.calls.length,2);
 });
 
-test('批量重跑工具栏按钮纳入勾选控制并绑定提交，原补全按钮保留', () => {
-  assert.match(template, /id="btnRetrySelectedRegistrationV2"[^>]*disabled[^>]*>重跑注册/);
-  assert.match(template, /id="accountRegistrationRetryResultV2"[^>]*hidden/);
-  assert.match(source, /bind\('btnRetrySelectedRegistrationV2',/);
-  assert.match(source, /'btnRetrySelectedRegistrationV2'/);
-  assert.match(template, /id="btnCompleteSelectedAccountsV2"/);
+test('批量重跑工具栏按钮纳入勾选控制并绑定提交，原补全按钮保留', async () => {
+  const {mountToolbarFixture} = require('./toolbar_fixture.cjs');
+  const ui = mountToolbarFixture({state: {selectedCount: 0, archived: false}}); await ui.ready;
+  const button = ui.get('btnRetrySelectedRegistrationV2');
+  assert.equal(button.disabled, true); assert.equal(button.textContent, '重跑注册');
+  assert.ok(ui.get('btnCompleteSelectedAccountsV2'));
+  assert.match(template, /id="accountRegistrationReceiptHost"/);
+  await ui.setState({selectedCount: 2}); await ui.click('btnRetrySelectedRegistrationV2');
+  assert.equal(ui.calls[0][0], 'retryAccountRegistration');
 });

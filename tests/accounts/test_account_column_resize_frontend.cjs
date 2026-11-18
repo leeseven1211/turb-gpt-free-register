@@ -76,9 +76,9 @@ function createResizableTable(key, savedWidths, savedTotal, options = {}) {
   const start = common.indexOf('const ACCOUNT_COLUMN_MIN_WIDTH =');
   const end = common.indexOf('function initResizableTables(');
   vm.createContext(view);
-  vm.runInContext(`${common.slice(start, end)}\nthis.testInitResizableTable = initResizableTable;`, view);
-  view.testInitResizableTable(table);
-  return {table, columns, headers, listeners, storage, layoutStorageKey};
+  vm.runInContext(`${common.slice(start, end)}\nthis.testInitResizableTable = initResizableTable; this.migrate = migrateAccountTableWidths;`, view);
+  if (!options.skipInit) view.testInitResizableTable(table);
+  return {table, columns, headers, listeners, storage, layoutStorageKey, migrate: view.migrate};
 }
 
 function pixelWidths(table) {
@@ -131,6 +131,20 @@ test('历史 15 列缓存插入注册驱动列，保留用户列宽并在刷新�
   );
   pixelWidths(reloaded.table).forEach((width, index) => assertPixels(width, expected[index], `刷新后第 ${index} 列`));
   assertPixels(reloaded.table.getBoundingClientRect().width, total + 104);
+});
+
+test('Vue 挂载前无需旧 table DOM 即可复用相同列宽迁移', () => {
+  const pixels = [36,55,233,93,86,97,62,110,122,176,61,90,88,75,600];
+  const total = pixels.reduce((sum, width) => sum + width, 0);
+  const h = createResizableTable('accounts', pixels, total, {layoutVersion: true, skipInit: true});
+  const migrated = h.migrate();
+  const expected = [...pixels]; expected.splice(4, 0, 104);
+  assert.equal(migrated.total, total + 104);
+  migrated.widths.forEach((width, index) => assertPixels(width, expected[index]));
+  assert.equal(h.headers.some(header => header.handle), false);
+  const again = h.migrate();
+  const sum = again.widths.reduce((a, b) => a + b, 0);
+  again.widths.forEach((weight, index) => assertPixels(weight / sum * again.total, expected[index]));
 });
 
 test('历史 15 列旧拖动布局先清理操作列再插入驱动列，其余列宽不变', () => {

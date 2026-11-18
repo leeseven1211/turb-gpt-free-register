@@ -16,6 +16,7 @@ from typing import Any
 
 from core import operation_task_store
 from core.runtime import scheduler_state
+from core.runtime.periodic import PeriodicThread
 from core.operations import run_log as task_run_log
 
 
@@ -28,7 +29,7 @@ _INTERVAL_SECONDS = 24 * 60 * 60
 _INITIAL_DELAY_SECONDS = 60
 logger = logging.getLogger('core.task_center_retention')
 _LOCK = threading.RLock()
-_SCHEDULER_STARTED = False
+_SCHEDULER = PeriodicThread("task-center-retention")
 
 
 def _archive_scrub(value: Any, depth: int = 0) -> Any:
@@ -204,33 +205,33 @@ def _scheduler_loop() -> None:
         enabled=scheduler_enabled,
         interval_seconds=scheduler_interval_seconds,
         initial_delay_seconds=_INITIAL_DELAY_SECONDS,
+        stop=_SCHEDULER.stop_event,
+        lifecycle=_SCHEDULER,
     )
 
 
 def start_periodic_cleanup() -> bool:
-    """Start the persisted daily scheduler at most once per process."""
-    global _SCHEDULER_STARTED
-    with _LOCK:
-        if _SCHEDULER_STARTED:
-            return False
-        _SCHEDULER_STARTED = True
-    threading.Thread(
-        target=_scheduler_loop,
-        name="task-center-retention",
-        daemon=True,
-    ).start()
-    logger.info(
-        "[TaskCenterRetention] scheduler started enabled=%s interval=%ss",
-        scheduler_enabled(),
-        _INTERVAL_SECONDS,
-    )
-    return True
+    """Start one observable producer; work remains behind runtime admission."""
+    try:
+        started = _SCHEDULER.start(_scheduler_loop)
+    except Exception:
+        logger.exception("Periodic scheduler start failed; it may be retried")
+        return False
+
+    return started
+
+
+def stop_periodic_cleanup(timeout: float = 2.0) -> bool:
+    return _SCHEDULER.stop(timeout)
+
+
+def scheduler_status() -> dict:
+    return _SCHEDULER.status(enabled=scheduler_enabled())
 
 
 def reset_for_tests() -> None:
-    global _SCHEDULER_STARTED
-    with _LOCK:
-        _SCHEDULER_STARTED = False
+    if not stop_periodic_cleanup(timeout=2.0):
+        raise RuntimeError("periodic_scheduler_still_running")
 
 
 __all__ = [
@@ -242,5 +243,7 @@ __all__ = [
     "scheduler_enabled",
     "scheduler_interval_seconds",
     "start_periodic_cleanup",
+    "stop_periodic_cleanup",
+    "scheduler_status",
     "reset_for_tests",
 ]

@@ -88,7 +88,8 @@ def main():
                 where, params = compile_query(spec)
                 def preflight(targets, conn):
                     return adapters.preflight_many(targets, operation_key="plan_check", settings=settings, conn=conn)
-                selected.append(bulk.freeze_selection(row["id"], where_sql=where, params=params, preflight=preflight))
+                selected.append(bulk.freeze_selection(row["id"], where_sql=where, params=params, preflight=preflight,
+                                                     preflight_identity_only=True))
             result["measurements"][f"selection_{size}"] = measure(freeze)
             def accept():
                 row = selected.pop()

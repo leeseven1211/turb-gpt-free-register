@@ -2,7 +2,7 @@
 import unittest
 from pathlib import Path
 
-from config import email
+from config import email, schema
 from config.env_loader import SECRET_ENV_KEYS
 from webui.config_editor import EDITABLE_FIELDS
 
@@ -22,8 +22,11 @@ class MailNestConfigTests(unittest.TestCase):
         self.assertEqual(key_field["group"], "邮箱 / OTP")
         self.assertTrue(key_field["secret"])
         self.assertEqual(key_field["storage"], "database")
-        project_field = next(item for item in EDITABLE_FIELDS if item["key"] == "MAIL_NEST_PROJECT_CODE")
-        self.assertEqual(project_field["type"], "str")
+        project_field = schema.CONFIG_SCHEMA["MAIL_NEST_PROJECT_CODE"]
+        self.assertEqual(project_field.type, "str")
+        self.assertEqual(project_field.default, "chatgpt001")
+        self.assertFalse(project_field.editable)
+        self.assertNotIn("MAIL_NEST_PROJECT_CODE", {item["key"] for item in EDITABLE_FIELDS})
 
 
 if __name__ == "__main__":

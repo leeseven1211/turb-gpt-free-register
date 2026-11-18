@@ -11,7 +11,9 @@ from core.codex import oauth, operation_service as service
 from core.integrations.sub2api import client as sub2api_client
 from core.operations import run_log
 from core.storage import codex as codex_store, records
+from core.storage.operations import store as operation
 from tests.support_pg import PostgresTestCase
+from tests.support_settlement import install_native_settlement_fixture
 
 
 class CodexOAuthSub2ApiTests(PostgresTestCase):
@@ -26,6 +28,10 @@ class CodexOAuthSub2ApiTests(PostgresTestCase):
         stack.enter_context(patch.object(account_task_store, "_READY_KEY", ""))
         stack.enter_context(patch.object(service, "_feature_ready", return_value=(True, "")))
         account_task_store.init()
+        # Each native test truncates the capability marker but retains readiness.
+        operation.reset_ready()
+        operation.init()
+        install_native_settlement_fixture(self)
         self.email = "oauth-sub2api@example.test"
         self.account_id = records.insert_row(records.ACCOUNTS, {
             "email": self.email, "account_status": "active",
@@ -60,7 +66,7 @@ class CodexOAuthSub2ApiTests(PostgresTestCase):
         with (
             patch("core.proxy.account_routes.acquire_account_proxy", return_value=route),
             patch.object(service, "_config_snapshot", return_value={"oauth_driver": "protocol", "auto_upload_sub2api": True}),
-            patch.object(oauth, "run_codex_oauth", side_effect=authorize),
+            patch.object(oauth, "run_codex_oauth", side_effect=authorize) as grant,
             patch.object(service.CancellationToken, "requested", side_effect=lambda **kwargs: cancellation["requested"]),
             patch.object(
                 sub2api_client, "upload_and_enable_configured_codex_oauth_credential",
@@ -68,7 +74,11 @@ class CodexOAuthSub2ApiTests(PostgresTestCase):
                 return_value={"ok": True, "uploaded": True, "enabled": True, "sub2api_account_id": 42},
             ) as upload,
         ):
-            returned = service._execute_run(int(task["run"]["id"]))
+            self._oauth_grant = grant
+            self._sub2api_upload = upload
+            run_id = int(task["run"]["id"])
+            returned = service._execute_run(run_id)
+            self.settlement_fixture.wait_for_run_released(run_id)
         run = service.operation_task_store.get_run(int(task["run"]["id"]))
         row = records.get_row_by(records.CODEX_CREDENTIALS, "filename", self.filename)
         return returned, run, row, upload
@@ -210,10 +220,59 @@ class CodexOAuthSub2ApiTests(PostgresTestCase):
         self.assertTrue(sync["uploaded"])
 
     def test_sync_finish_fence_rejection_does_not_rewrite_oauth_as_unknown(self):
-        with patch.object(service.operation_task_store, "finish_run", side_effect=PermissionError("租约写入被拒绝")):
-            returned, _, _, _ = self._execute()
+        from psycopg.errors import InsufficientPrivilege
+        from core.operations import settlement
+        from core.operations.settlement_contracts import OperationSettlementPending
+        from core.storage.operations import permits, settlements
 
-        self.assertEqual("success", returned["status"])
-        self.assertTrue(returned["credential_confirmed"])
-        self.assertFalse(returned["task_persistence_confirmed"])
+        execution = intent = None
+        try:
+            with patch.object(service.operation_task_store, "finish_run", side_effect=InsufficientPrivilege("synthetic denied")):
+                with self.assertRaises(OperationSettlementPending):
+                    self._execute()
+                executions = tuple(self.settlement_fixture.contexts.values())
+                self.assertEqual(1, len(executions))
+                execution = executions[0]
+                owner = settlement.responsibility(execution)
+                intent = owner.intent
+                self.assertIsNotNone(intent)
+                self.assertEqual("terminal", intent.kind)
+                self.assertEqual("success", intent.payload["status"])
+                self.assertTrue(intent.payload["result_summary"]["credential_confirmed"])
+                self.assertNotIn("request_unknown", json.dumps(settlement.thaw(intent.payload["result_summary"])))
+                self.assertEqual("valid", service.db.get_account(self.account_id)["codex_credential_state"])
+                self.assertEqual("running", operation.get_run(int(execution.claimed_run["id"]))["status"])
+                self.assertFalse(execution.released)
+                self.assertFalse(owner.released)
+                self.assertTrue(owner.callback_exited)
+                self.assertFalse(owner.callback_active)
+                self.assertEqual("settlement_storage_permission_denied", owner.error_code)
+                self.assertIsNone(owner.receipt)
+                self.assertIsNone(settlements.read_receipt(intent, domain=execution.settlement_domain))
+                self.assertTrue(permits.validate(
+                    execution.permit_id, execution.execution_id,
+                    schema=execution.settlement_domain.permit_schema,
+                    database_url=execution.settlement_domain.database_url,
+                ))
+                self.assertEqual(1, self._oauth_grant.call_count)
+                self.assertEqual(1, self._sub2api_upload.call_count)
+        finally:
+            # Confirm the exact original local intent after fault removal; no business replay.
+            if execution is None and self.settlement_fixture.contexts:
+                executions = tuple(self.settlement_fixture.contexts.values())
+                if len(executions) == 1:
+                    execution = executions[0]
+                    intent = settlement.responsibility(execution).intent
+            if execution is not None and intent is not None:
+                receipt = settlement.settle(execution, intent, lambda frozen, deadline:
+                    settlements.submit_intent(frozen, domain=execution.settlement_domain, deadline=deadline))
+                self.settlement_fixture.wait_for_run_released(int(execution.claimed_run["id"]))
+
+        self.assertEqual(intent.transition_id, receipt["transition_id"])
+        self.assertEqual(intent.request_digest, receipt["request_digest"])
+        self.assertEqual("success", receipt["actual_result"]["status"])
+        self.assertEqual("success", operation.get_run(int(execution.claimed_run["id"]))["status"])
         self.assertEqual("valid", service.db.get_account(self.account_id)["codex_credential_state"])
+        self.assertNotIn("request_unknown", json.dumps(receipt["actual_result"]["result_summary"]))
+        self.assertEqual(1, self._oauth_grant.call_count)
+        self.assertEqual(1, self._sub2api_upload.call_count)

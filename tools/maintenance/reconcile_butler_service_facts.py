@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import re
+import sys
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
@@ -23,6 +24,34 @@ import requests
 
 class ReconcileError(RuntimeError):
     """只暴露分类，不携带数据库连接或服务凭据。"""
+
+
+def require_source_owner(args, cfg):
+    """Fence apply against the source instance without loading this checkout's DB config."""
+    root = Path(args.source_root).resolve()
+    raw_directory = str(cfg.get('TURB_RUNTIME_DIR') or '').strip()
+    if str(cfg.get('TURB_RUNTIME_MODE') or 'combined').strip().lower() in {'web', 'worker'} and not raw_directory:
+        raise ReconcileError('runtime_directory_required')
+    directory = Path(raw_directory) if raw_directory else root / 'logs' / 'run'
+    if not directory.is_absolute():
+        raise ReconcileError('runtime_directory_absolute_required')
+    project = str(Path(__file__).resolve().parents[2])
+    if project not in sys.path:
+        sys.path.insert(0, project)
+    from core.runtime.bootstrap import RuntimeBootstrap
+    from core.runtime.standalone import require_standalone_owner
+    bootstrap = RuntimeBootstrap(mode='combined',
+        instance_id=str(cfg.get('TURB_INSTANCE_ID') or 'default').strip(),
+        runtime_dir=directory.resolve(), release='', legacy_paths=not raw_directory)
+    def connect():
+        return psycopg.connect(cfg['DATABASE_URL'], autocommit=True, connect_timeout=5,
+            application_name='turb-execution-owner',
+            options='-c statement_timeout=2000 -c idle_in_transaction_session_timeout=2000',
+            keepalives=1, keepalives_idle=5, keepalives_interval=1, keepalives_count=2,
+            tcp_user_timeout=5000)
+    require_standalone_owner(bootstrap=bootstrap, schema=cfg.get('TURB_DB_SCHEMA') or 'public',
+                             connect_dedicated=connect)
+    return require_standalone_owner
 
 
 POOL_TABLES = (
@@ -209,6 +238,7 @@ def write_receipt(path, data):
 
 def run(args):
     cfg = dotenv_values(args.source_root / '.env', interpolate=False)
+    require_owner = require_source_owner(args, cfg) if args.apply else None
     if not cfg.get('DATABASE_URL'):
         raise ReconcileError('source_database_missing')
     schema = cfg.get('TURB_DB_SCHEMA') or 'public'
@@ -230,6 +260,7 @@ def run(args):
         raise ReconcileError('service_fact_count_changed')
     base, key = connection
     base = transport_base(base, args.transport_base)
+    require_owner()
     session = requests.Session()
     session.headers.update({'Authorization': 'Bearer ' + key, 'User-Agent': 'Turb-Service-Facts-Reconcile/1.0', 'Accept': 'application/json'})
     who = request_json(session, 'GET', base + '/me')
@@ -239,6 +270,7 @@ def run(args):
         raise ReconcileError('service_fact_capability_required')
     for start in range(0, len(items), args.batch_size):
         batch = items[start:start + args.batch_size]
+        require_owner()
         result = request_json(session, 'POST', base + '/service-facts/batch', payload={'items': batch})
         summary['results'].extend(validate_results(batch, result))
         write_receipt(args.receipt, summary)

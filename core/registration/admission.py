@@ -164,11 +164,27 @@ def verify_job_execution(job_id: int) -> bool:
     return bool(job.get("status") == "running" and job.get("execution_id") == context.execution_id)
 
 
+def _rollback_unstarted_job(job_id: int, execution_id: str) -> bool:
+    """Only this generation's not-yet-invoked callback may return to pending."""
+    changed = records.claim_row(
+        records.JOBS, int(job_id),
+        changes={"status": "pending", "execution_id": None, "started_at": None},
+        guard='"status" = %s AND "execution_id" = %s',
+        guard_params=("running", str(execution_id)),
+    )
+    if changed:
+        db._sync_operation_job(int(job_id))
+    return changed
+
+
 def run_job(job_id: int, execute: Callable[[], object]):
     """兼容入口统一获准后执行，清理及调试保留都发生在许可归还之前。"""
     context = concurrency.current_execution()
     owns_permit = context is None
+    from core.runtime.execution_access import execution_allowed
     if owns_permit:
+        if not execution_allowed():
+            return None
         job = db.get_job(int(job_id))
         if not job or job.get("status") != "pending":
             return None
@@ -180,8 +196,14 @@ def run_job(job_id: int, execute: Callable[[], object]):
         raise RuntimeError("注册 worker 不能复用其他任务的执行许可")
     try:
         with concurrency.execution_scope(context):
+            if not execution_allowed():
+                _rollback_unstarted_job(job_id, context.execution_id)
+                return None
             # 读模型同步必须在准入事务提交之后，不持有准入锁等待另一连接。
             db._sync_operation_job(int(job_id))
+            if not execution_allowed():
+                _rollback_unstarted_job(job_id, context.execution_id)
+                return None
             return execute()
     finally:
         if owns_permit:
@@ -190,6 +212,8 @@ def run_job(job_id: int, execute: Callable[[], object]):
 
 def try_admit_cli(*, batch_id: str, index: int, batch_workers: int, driver: str):
     """CLI 的批次只提供附加上限，预算域仍是部署使用的同一 PostgreSQL。"""
+    from core.runtime.standalone import require_standalone_owner
+    require_standalone_owner()
     key = f"registration_cli:{batch_id}:{int(index)}"
     return concurrency.try_admit_and_claim(
         execution_key=key, task_type=registration_admission_class(driver=driver),

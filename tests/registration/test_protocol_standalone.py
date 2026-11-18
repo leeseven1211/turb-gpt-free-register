@@ -10,6 +10,7 @@ from core.registration.standalone import run_protocol_in_context
 from core.storage import registration
 from core.storage.registration import standalone as registration_standalone
 from tests.support_pg import PostgresTestCase
+from tests.support_runtime import standalone_owner_fixture
 
 
 class ProtocolStandaloneTests(PostgresTestCase):
@@ -48,6 +49,7 @@ class ProtocolStandaloneTests(PostgresTestCase):
 
     def setUp(self):
         super().setUp()
+        self.enterContext(standalone_owner_fixture())
         self.email = f"standalone-{self._testMethodName}@example.test"
         self.original = service.registration_fact_context()
         for key in self.original:

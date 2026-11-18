@@ -70,23 +70,33 @@ class _Repository:
     def __init__(self):
         self.values = {"ACCOUNT_BATCH_WORKERS": "8", "PROXY_POOL": "[]"}
         self.commit_error = False
+        self.revision = 1
 
     def read_values(self):
         return copy.deepcopy(self.values)
 
     def write_values(self, updates, **_kwargs):
+        changed = {key: value for key, value in updates.items()
+                   if self.values.get(key) != value}
         self.values.update(updates)
+        if changed:
+            self.revision += 1
         return list(updates)
+
+    def current_revision(self, *, conn=None):
+        return self.revision
 
     @contextmanager
     def transaction(self):
         before = dict(self.values)
+        before_revision = self.revision
         try:
             yield object()
             if self.commit_error:
                 raise RuntimeError("测试事务提交失败")
         except BaseException:
             self.values = before
+            self.revision = before_revision
             raise
 
 
@@ -131,8 +141,11 @@ class ConcurrencyMigrationSaveTests(unittest.TestCase):
         self.assertEqual(10, schema.non_sensitive_snapshot()["GLOBAL_TASK_WORKERS"])
         self.assertEqual("8", self.repository.values["ACCOUNT_BATCH_WORKERS"])
         self.assertEqual(old_file, self.path.read_bytes())
+        self.assertEqual(2, result["persisted_db_revision"])
+        self.assertEqual(schema.non_sensitive_snapshot().revision, result["local_snapshot_revision"])
         config_editor.update_config({"ACCOUNT_PLAN_CHECK_WORKERS": 20})
         self.assertEqual("20", self.repository.values["ACCOUNT_PLAN_CHECK_WORKERS"])
+        self.assertEqual(3, self.repository.revision)
 
     def test_commit_failure_restores_whole_policy_and_published_snapshot(self):
         config.reload_all()
@@ -143,6 +156,7 @@ class ConcurrencyMigrationSaveTests(unittest.TestCase):
         self.assertNotIn("CONCURRENCY_POLICY_REVISION", self.repository.values)
         self.assertNotIn("GLOBAL_TASK_WORKERS", self.repository.values)
         self.assertIs(before, schema.non_sensitive_snapshot())
+        self.assertEqual(1, self.repository.revision)
 
 
 class ConcurrencyConfigRouteTests(unittest.TestCase):

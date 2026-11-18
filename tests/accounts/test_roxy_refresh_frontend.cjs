@@ -3,11 +3,13 @@ const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
+const {installLegacyActionsFixture}=require('./actions_fixture.cjs');
 
 const accounts = require('../frontend_script_sources.cjs').readAccountScripts();
 const configSource = fs.readFileSync(path.join(__dirname, '../../webui/static/js/pages/config/page.js'), 'utf8');
 function load(source, names, dependencies = {}) {
   const context = vm.createContext({...dependencies});
+  require('../frontend_script_sources.cjs').installAccountActionHelpers(context);
   for (const name of names) {
     const match = new RegExp(`(?:async )?function ${name}\\(`).exec(source);
     assert.ok(match, `应提供 ${name}`);
@@ -22,23 +24,16 @@ const browserConfig = [
   {key: 'OPENAI_PROTOCOL_VERSION', value: 'v2'},
 ];
 
-test('诊断入口绑定当前 Run，切换历史运行时不展示其它运行的产物', () => {
-  const panel = {innerHTML: ''};
-  const context = load(accounts, ['renderAccountTaskArtifacts'], {
-    $: () => panel, activeAccountTaskRunId: 8, esc: value => String(value), formatDateTime: () => '',
+test('Roxy 诊断旧入口把指定 Run 交给任务中心，历史运行不被替换', () => {
+  // 两个 Run 的产物展示与切换断言已迁至 TaskDetail.test.ts 同名场景；
+  // 此处保留旧页面到组件的真实入口及两轮身份契约。
+  const opened = [];
+  const context = load(accounts, ['openAccountTaskLog'], {
+    window: {TaskCenter: {openDetail: (...args) => opened.push(args)}},
   });
-  const task = {resources: [], runs: [
-    {id: 7, debug_artifacts: {available: true, har_url: '/run-7/har'}},
-    {id: 8, result_summary: {debug_browser_kept: true}, debug_artifacts: {
-      available: true, state: 'failed', har_url: '/run-8/har', screenshot_url: '/run-8/screenshot',
-      page_state_url: '/run-8/page-state', summary: {request_count: 12},
-    }},
-  ]};
-  context.renderAccountTaskArtifacts(task);
-  assert.match(panel.innerHTML, /run-8\/har/);
-  assert.match(panel.innerHTML, /失败窗口已保留/);
-  assert.match(panel.innerHTML, /查看失败截图/);
-  assert.doesNotMatch(panel.innerHTML, /run-7/);
+  context.openAccountTaskLog(1, 8);
+  context.openAccountTaskLog(1, 7);
+  assert.deepEqual(opened, [[1, 8, null], [1, 7, null]]);
 });
 
 test('刷新描述按驱动和布尔调试值生成，不固定承诺邮箱 OTP', () => {
@@ -62,7 +57,7 @@ test('刷新描述按驱动和布尔调试值生成，不固定承诺邮箱 OTP'
 function operation({accepted = true, response, readConfig} = {}) {
   const calls = {confirms: [], requests: [], tasks: [], legacyLogs: []};
   const context = load(accounts, [
-    'accountAtRefreshUiSettings', 'loadAccountAtRefreshUiSettings', 'refreshSelectedToken',
+    'accountAtRefreshUiSettings', 'refreshSelectedToken',
   ], {
     CONFIG: [], ACCOUNT_SELECTED: new Set(),
     getAccountOperationWorkers: () => 3,
@@ -77,6 +72,7 @@ function operation({accepted = true, response, readConfig} = {}) {
     openLiveLog: email => calls.legacyLogs.push(email),
     loadAccounts: async () => {}, loadSummary() {}, updateAccountSelectionUi() {}, $: () => null,
   });
+  installLegacyActionsFixture(context);
   return {context, calls};
 }
 
@@ -116,21 +112,30 @@ test('旧接口没有任务 ID 时继续打开本次账号日志', async () => {
   assert.deepEqual(calls.legacyLogs, ['fixture@example.test']);
 });
 
-test('账号补全仅在刷新 AT 策略中展示新驱动和调试字段', () => {
-  const groups = [];
-  const context = load(configSource, ['orderedConfigFieldsV2', 'renderAccountCompletionSectionV2'], {
-    esc: String, configGroupSlug: () => 'account-completion',
-    configSectionIntro: () => '', renderConfigSectionHead: () => '', renderConfigSaveActions: () => '',
-    renderAccountCompletionRowV2: () => '',
-    renderConfigSettingGroupV2: (label, fields) => { groups.push({label, keys: fields.map(field => field.key)}); return ''; },
-  });
-  context.renderAccountCompletionSectionV2([
-    'ACCOUNT_AT_REFRESH_DRIVER', 'ACCOUNT_AT_REFRESH_ROXY_DEBUG_ENABLED', 'OPENAI_PROTOCOL_VERSION',
-    'ACCOUNT_LIVE_CHECK_DRIVER', 'LIVE_CHECK_ROXY_FALLBACK_ENABLED',
-  ].map(key => ({key})));
-  const refresh = groups.find(group => group.label === '刷新 AT 策略');
-  assert.deepEqual([...refresh.keys], [
-    'ACCOUNT_AT_REFRESH_DRIVER', 'OPENAI_PROTOCOL_VERSION', 'ACCOUNT_AT_REFRESH_ROXY_DEBUG_ENABLED', 'LIVE_CHECK_ROXY_FALLBACK_ENABLED',
-  ]);
-  for (const key of refresh.keys) assert.equal(groups.flatMap(group => group.keys).filter(item => item === key).length, 1);
+test('刷新 AT 驱动和调试字段只归属刷新 AT 策略，不重复进入账号补全', async () => {
+  const {vueHarness:vue}=require('./actions_fixture.cjs');
+  const {createConfigDraft}=vue.load('src/features/config/useConfigDraft.ts');
+  const {createConfigActions}=vue.load('src/features/config/configActions.ts');
+  const Page=vue.load('src/features/config/ConfigPage.vue').default;
+  const navigation=vue.load('src/features/config/navigation.ts');
+  const fields = ['ACCOUNT_AT_REFRESH_DRIVER', 'ACCOUNT_AT_REFRESH_ROXY_DEBUG_ENABLED', 'OPENAI_PROTOCOL_VERSION',
+    'ACCOUNT_LIVE_CHECK_DRIVER', 'LIVE_CHECK_ROXY_FALLBACK_ENABLED', 'ACCOUNT_COMPLETION_REFRESH_AT_ENABLED']
+    .map(key=>({key,label:key,group:'账号补全',type:'str',value:''}));
+  const owner=createConfigDraft({api:{getSchema:async()=>fields,save:async()=>({ok:true,updated:[]}),invalidate(){}},initialFields:fields});
+  const actions=createConfigActions(owner,{request:async()=>({items:[]})});
+  const wrapper=vue.mount(Page,{props:{owner,actions}});
+  const view={wrapper,async open(name){wrapper.vm.open(name);await vue.nextTick();}};
+  try {
+    await view.open('刷新 AT');
+    const groups=view.wrapper.findAll('.config-vue-setting-group');
+    const refresh=groups.find(group=>group.find('h3').exists()&&group.find('h3').text()==='刷新 AT 策略');
+    assert.ok(refresh);
+    const keys=refresh.findAll('[data-config-setting]').map(item=>item.attributes('data-config-setting'));
+    assert.deepEqual(keys,['ACCOUNT_AT_REFRESH_DRIVER','OPENAI_PROTOCOL_VERSION','LIVE_CHECK_ROXY_FALLBACK_ENABLED','ACCOUNT_AT_REFRESH_ROXY_DEBUG_ENABLED']);
+    for(const key of keys) assert.equal(view.wrapper.findAll(`[data-config-setting="${key}"]`).length,1);
+    await view.open('账号补全');
+    assert.deepEqual(view.wrapper.findAll('[data-config-setting]').map(item=>item.attributes('data-config-setting')),['ACCOUNT_COMPLETION_REFRESH_AT_ENABLED']);
+    assert.equal(navigation.fieldDomain(fields.find(item=>item.key==='ACCOUNT_LIVE_CHECK_DRIVER')),'查活');
+    assert.ok(fields.every(field=>field.group==='账号补全'));
+  } finally {wrapper.unmount();actions.dispose();owner.dispose();vue.cleanup();}
 });

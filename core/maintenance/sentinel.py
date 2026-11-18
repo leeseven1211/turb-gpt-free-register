@@ -40,37 +40,92 @@ def _cache_key(service):
 
 def register_handler():
     """恢复维护队列的处理器；注册和状态读取都不发起下载。"""
-    task_gateway.register_operation_handler(_TASK_TYPE, _handle_check, config_allowlist=(), cancel_handler=_cancel_check)
+    task_gateway.register_operation_handler(
+        _TASK_TYPE, _handle_check, config_allowlist=(),
+        retry_handler=_retry_check, cancel_handler=_cancel_check,
+    )
+    register_actions()
 
 
-def _cancel_check(task):
-    result = task_gateway.default_operation_cancel(task)
-    for service in _SERVICE_INSTANCES.values():
-        with service._mutex:
-            if service._queued_task_id == int(task["id"]) and service._pending_lease is not None:
-                service._pending_lease.close()
-                service._pending_lease = None
-                service._running = False
+def register_actions():
+    """Install durable Task Center actions in Web without execution handlers."""
+    task_gateway.register_operation_actions(
+        _TASK_TYPE, retry_handler=_retry_check, cancel_handler=_cancel_check,
+        terminate_handler=task_gateway.default_operation_terminate,
+    )
+
+
+def _retry_check(task):
+    """Serialize Task Center retry with the configuration page's acceptance."""
+    from core.storage.operations import runtime, sentinel_checks
+    task_id = int(task.get("id") or 0)
+    if not task_id:
+        return {"accepted": False, "busy": False, "error": "任务缺少 id"}
+    key = str((task.get("data") or {}).get("cache_key") or "")
+    def retry(conn):
+        run = runtime.retry_runtime_task(task_id, trigger="manual_retry",
+                                        data={"retry_action": "manual_retry"}, conn=conn)
+        return {"accepted": True, "busy": False, "reused": False,
+                "task_id": task_id, "run_id": int(run["id"]), "status": "queued",
+                "account_id": None, "email": "",
+                "source_system": str(task.get("source_system") or "native_operations")}
+    try:
+        result = sentinel_checks.request_check(key, create=retry)
+    except (LookupError, ValueError) as exc:
+        return {"accepted": False, "busy": False, "error": str(exc)}
+    task_gateway.notify_dispatch()
     return result
 
 
+def _cancel_check(task):
+    # The executing worker owns its file lease until child cleanup completes.
+    # A Web cancellation changes durable state only and cannot release it.
+    return task_gateway.default_operation_cancel(task)
+
+
+def _execution_allowed():
+    from core.runtime import process
+    return process.get_runtime_context() is None or process.execution_admitted()
+
+
 def _handle_check(context):
+    if not _execution_allowed():
+        return context.defer(delay_seconds=1, reason="runtime_execution_paused")
     key = str((context.run.get("data") or {}).get("cache_key") or "")
-    service = _SERVICE_INSTANCES.get(key) or get_service()
+    from core.runtime import process
+    # Managed processes rebuild only the bootstrap-trusted local service.
+    # The persisted key is an identity, never an instruction to open a path.
+    service = (get_service() if process.get_runtime_context() is not None
+               else _SERVICE_INSTANCES.get(key) or get_service())
     if _cache_key(service) != key:
         return task_gateway.OperationResult.failed("维护缓存配置已变化，请重新发起检查", {"error_code": "maintenance_cache_changed"})
     context.checkpoint()
     with service._mutex:
-        lease, service._pending_lease = service._pending_lease, None
-        if lease is None:
-            lease = service._lease(create=True)
+        lease = service._lease(create=True)
         if lease is None:
             return context.defer(delay_seconds=1, reason="maintenance_cache_busy")
         service._running = True
         service._queued_run_id = context.run_id
         service._queued_task_id = context.task_id
+    # Recheck after acquiring the local lease: ownership or cancellation may
+    # have changed while the worker was opening/locking the cache directory.
+    # Before _run_check takes over, this scope alone owns lease cleanup.
+    entered = False
+    try:
+        if not _execution_allowed():
+            return context.defer(delay_seconds=1, reason="runtime_execution_paused")
+        context.checkpoint()
+        entered = True
+    finally:
+        if not entered:
+            lease.close()
+            with service._mutex:
+                service._running = False
     result = service._run_check(lease)
-    summary = service.status()
+    # This result belongs to the completed check. The durable Run is settled
+    # by the gateway after returning, so a status query here sees itself active.
+    with service._mutex:
+        summary = service._summary(running=False)
     if result.status == "failed":
         return task_gateway.OperationResult.failed("Sentinel 候选检查未完成", summary)
     return task_gateway.OperationResult.success(summary, message="Sentinel 候选检查完成")
@@ -89,7 +144,8 @@ class SentinelMaintenanceService:
 
     def __init__(self, *, manager=None, builtin_path=None, builtin_version=None, clock=None, executor=None):
         self._use_subprocess = manager is None
-        self.manager = manager if manager is not None else SentinelAssetManager(_PROJECT_ROOT / "run" / "sentinel-candidates")
+        self.manager = manager if manager is not None else SentinelAssetManager(
+            _CACHE_DIRECTORY or _PROJECT_ROOT / "run" / "sentinel-candidates")
         self.builtin_path = Path(builtin_path) if builtin_path is not None else _PROJECT_ROOT / "sentinel" / "sdk.js"
         if builtin_version is None:
             from config.openai_protocol import SENTINEL_SV
@@ -216,18 +272,17 @@ class SentinelMaintenanceService:
         }
 
     def status(self):
+        from core.storage.operations import sentinel_checks
         with self._mutex:
-            task_active = False
-            if self._queued_run_id is not None:
-                from core.storage.operations import runtime
-
-                run = runtime.get_run(self._queued_run_id)
-                task_active = bool(run and run.get("status") in {"queued", "running", "cancelling", "settling", "waiting"})
-                if run and run.get("status") in {"cancelled", "failed", "interrupted"}:
-                    if self._pending_lease is not None:
-                        self._pending_lease.close()
-                        self._pending_lease = None
-                    self._running = False
+            try:
+                run = sentinel_checks.active_check(_cache_key(self))
+            except Exception:
+                return {**self._summary(running=self._running or self._external_running()),
+                        "error_code": "scheduler_store_unavailable"}
+            task_active = bool(run)
+            if run:
+                self._queued_run_id = run["run_id"]
+                self._queued_task_id = run["task_id"]
             if not self._running and not task_active:
                 self._load_local()
             return self._summary(running=self._running or task_active or self._external_running())
@@ -337,69 +392,51 @@ class SentinelMaintenanceService:
                 self._running = False
 
     def start_check(self):
+        from core.storage.operations import sentinel_checks
         with self._mutex:
-            if self._running:
-                return {**self._summary(running=True), "started": False}
             self._load_local()
-            try:
-                lease = self._lease(create=True)
-            except (ImportError, OSError, AssetError):
-                self._last_status, self._error_code = "failed", "cache_io_failed"
-                return {**self._summary(running=False), "started": False}
-            if lease is None:
-                return {**self._summary(running=True), "started": False}
-            self._running = True
-            self._pending_lease = lease
         try:
-            register_handler()
             key = _cache_key(self)
-            _SERVICE_INSTANCES[key] = self
-            queued = task_gateway.submit_durable_operation(
-                task_type=_TASK_TYPE, account_id=None, email="", trigger="manual",
-                resource_family="maintenance_check", source_id=f"sentinel-check:{uuid.uuid4().hex}",
-                data={"cache_key": key}, dispatch=False,
-            )
+            def create(conn):
+                return task_gateway.submit_durable_operation(
+                    task_type=_TASK_TYPE, account_id=None, email="", trigger="manual",
+                    resource_family="maintenance_check", source_id=f"sentinel-check:{uuid.uuid4().hex}",
+                    data={"cache_key": key}, dispatch=False, conn=conn,
+                )
+            queued = sentinel_checks.request_check(key, create=create)
             if not queued.get("accepted"):
                 raise RuntimeError("维护检查入队未确认")
             self._queued_run_id = queued["run_id"]
             self._queued_task_id = queued["task_id"]
         except Exception:
-            try:
-                self._finish(AssetCheck("failed", "scheduler_store_unavailable"), blocking=False)
-            finally:
-                self._pending_lease = None
-                lease.close()
-            return {**self.status(), "started": False}
-        def dispatch():
-            try:
-                task_gateway._execute_operation_handler(_TASK_TYPE, queued["run_id"])
-            except Exception:
-                # 持久队列与缓存租约仍保留，数据库恢复后由共享扫描继续派发。
-                pass
-
-        try:
-            if self.executor is _start_daemon:
-                thread = threading.Thread(target=dispatch, name="sentinel-maintenance", daemon=True)
-                self._worker_threads.append(thread)
-                thread.start()
-            else:
-                self.executor(dispatch)
-        except Exception:
-            # 调度承载失败保留持久排队记录，下一次共享扫描可继续派发。
-            with self._mutex:
-                if self._pending_lease is not None:
-                    self._pending_lease.close()
-                    self._pending_lease = None
-            queued["blocked_by"] = ["executor_submit_failed"]
+            # Even an ambiguous commit leaves only the durable request. Reads
+            # and repeats discover that same active cache key; never start work
+            # or write candidate files from this request error path.
+            return {**self._summary(running=self._running), "started": False,
+                    "error_code": "scheduler_store_unavailable"}
         task_gateway.notify_dispatch()
         with self._mutex:
-            return {**self._summary(running=self._running), "started": True, "accepted": True,
-                    "task_id": queued["task_id"], "run_id": queued["run_id"], "status": "queued",
+            return {**self._summary(running=True), "started": not queued.get("reused", False), "accepted": True,
+                    "task_id": queued["task_id"], "run_id": queued["run_id"], "status": queued.get("status", "queued"),
                     **({"blocked_by": queued["blocked_by"]} if queued.get("blocked_by") else {})}
 
 
 _SERVICE = None
 _SERVICE_LOCK = threading.Lock()
+_CACHE_DIRECTORY: Path | None = None
+
+
+def configure_cache_directory(path: Path):
+    """Trusted bootstrap only; never accepts a request/Run-provided path."""
+    global _CACHE_DIRECTORY
+    selected = Path(path)
+    if not selected.is_absolute():
+        raise ValueError("sentinel_cache_directory_absolute_required")
+    selected = selected.resolve()
+    with _SERVICE_LOCK:
+        if _SERVICE is not None and _SERVICE.manager.cache_dir.resolve() != selected:
+            raise RuntimeError("sentinel_cache_directory_already_initialized")
+        _CACHE_DIRECTORY = selected
 
 
 def get_service():

@@ -404,6 +404,10 @@ def update_config(updates: dict) -> dict:
             "reload_modules": [],
             "restart_required": [],
             "config_revision": config_revision(),
+            "local_snapshot_revision": config_revision(),
+            "persisted_db_revision": None,
+            "web_reloaded": False,
+            "worker_application": {"state": "unknown", "applied_db_revision": None},
         }
 
     from config.env_loader import env_file_lock, env_path, load_env, restore_environment
@@ -420,12 +424,13 @@ def update_config(updates: dict) -> dict:
         old_bytes = path.read_bytes() if old_exists else None
         old_environment = dict(os.environ)
         environment_expected = dict(os.environ)
+        persisted_db_revision = None
         try:
             # 在写 `.env` 前严格校验整套候选环境；候选 snapshot 仍未发布。
             # load_env 遵守 PYTHON_DOTENV_DISABLED，隔离测试不会被工作区 dotenv 污染。
             load_env(override=True)
             environment_expected = dict(os.environ)
-            with config_package.deferred_publication(), runtime.persistence_transaction():
+            with config_package.deferred_publication() as publication, runtime.persistence_transaction() as persistence_conn:
                 # 等待跨进程配置锁期间可能有其他进程提交，校验必须使用锁内最新值。
                 load_env(override=True)
                 environment_expected = dict(os.environ)
@@ -462,6 +467,11 @@ def update_config(updates: dict) -> dict:
                 environment_expected = dict(os.environ)
                 reload_modules = config_package.reload_all()
                 environment_expected = dict(os.environ)
+                if database_active:
+                    # Read the receipt inside this writer transaction. A later
+                    # writer must not change which revision this save reports.
+                    persisted_db_revision = runtime._repository().current_revision(conn=persistence_conn)
+                    publication["db_revision"] = persisted_db_revision
         except BaseException:
             # 恢复精确的单个 .env 文件；不会触碰其他目录或运行时数据。
             if old_exists:
@@ -471,6 +481,7 @@ def update_config(updates: dict) -> dict:
             restore_environment(old_environment, environment_expected)
             config_package.restore_reload_state(old_configuration)
             raise
+        local_snapshot_revision = config_revision()
 
     updated = list(normalized)
     if set(updated).intersection(WORKER_KEYS):
@@ -487,5 +498,11 @@ def update_config(updates: dict) -> dict:
         "reloaded": True,
         "reload_modules": reload_modules,
         "restart_required": [key for key in updated if key in RESTART_REQUIRED_KEYS],
-        "config_revision": config_revision(),
+        "config_revision": local_snapshot_revision,
+        "local_snapshot_revision": local_snapshot_revision,
+        "persisted_db_revision": persisted_db_revision,
+        "web_reloaded": True,
+        # T7 supplies fresh Worker status separately. Local publication is not
+        # evidence that another process has observed this DB revision.
+        "worker_application": {"state": "unknown", "applied_db_revision": None},
     }

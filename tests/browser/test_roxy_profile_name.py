@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import subprocess
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -15,18 +16,49 @@ from webui.routes.accounts import create_accounts_blueprint
 
 class RoxyProfileNameTests(unittest.TestCase):
     def test_modern_account_detail_refreshes_profile_window_name_and_id(self):
+        root = Path(__file__).resolve().parents[2]
         source = (
-            Path(__file__).resolve().parents[2]
-            / "webui/static/js/pages/accounts/page.js"
+            root / "webui/static/js/pages/accounts/page.js"
         ).read_text(encoding="utf-8")
-
         self.assertIn("Roxy Profile 窗口名称", source)
-        self.assertIn(
-            "/api/accounts/${encodeURIComponent(account.id)}/roxy-profile",
-            source,
+        # The Vue detail owner reads optional Roxy display data through its API
+        # and updates this opening's copy, rather than mutating the list row.
+        script = r"""
+const assert = require('node:assert/strict');
+const {createVueHarness} = require('./tests/frontend_vue_loader.cjs');
+const harness = createVueHarness();
+const {flushPromises} = require('./frontend/node_modules/@vue/test-utils');
+const {createAccountDetailApi} = harness.load('src/api/accountDetail.ts');
+const {useAccountDetail} = harness.load('src/features/accounts/useAccountDetail.ts');
+const originalFetch = globalThis.fetch, calls = [];
+globalThis.fetch = async (url, options) => {
+  calls.push({url, options});
+  return {ok: true, status: 200, headers: {get: () => 'application/json'}, json: async () => ({
+    ok: true, profile_id: ' profile-1 ', window_name: ' rb-window-1 ',
+  })};
+};
+const owner = useAccountDetail(createAccountDetailApi(), {notify: message => {throw new Error(message);}});
+const row = {id: 1940, email: 'account@example.test'};
+const lease = {openGeneration: 1, release() {},
+  loadPlanDetails: async id => ({accountId: id, item: {id: 1940}})};
+(async () => {
+  try {
+    assert.equal(owner.open('1940', row, lease, null), true);
+    await flushPromises();
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].url, '/api/accounts/1940/roxy-profile');
+    assert.equal(owner.account.value.roxy_profile_id, 'profile-1');
+    assert.equal(owner.account.value.roxy_profile_name, 'rb-window-1');
+    assert.equal(row.roxy_profile_id, undefined);
+    assert.equal(row.roxy_profile_name, undefined);
+  } finally {owner.close(false); globalThis.fetch = originalFetch; harness.close();}
+})().catch(error => {console.error(error); process.exitCode = 1;});
+"""
+        result = subprocess.run(
+            ["node", "--input-type=commonjs", "-e", script],
+            cwd=root, capture_output=True, text=True, check=False, timeout=15,
         )
-        self.assertIn("account.roxy_profile_id = String(result.profile_id || '').trim()", source)
-        self.assertIn("account.roxy_profile_name = String(result.window_name || '').trim()", source)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_recent_fingerprint_section_exposes_roxy_profile_window_name(self):
         source = (

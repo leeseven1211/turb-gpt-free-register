@@ -844,6 +844,8 @@ def _parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = _parse_args()
+    from core.runtime.standalone import require_standalone_owner
+    require_standalone_owner()
     roxy_cfg.ROXY_SELENIUM_TIMEOUT = 60
     roxy_cfg.ROXY_API_RETRIES = 1
     run = AuthInterfaceRun(args)

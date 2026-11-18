@@ -8,6 +8,7 @@ from core.accounts.plans import client as chatgpt_plan, service as plan_check_se
 from core.storage import records as record_store
 from core.storage.operations import store as operation
 from core.storage.accounts import plan_countries
+from tests.support_account_route_fixture import AccountRouteContext, account_route_resources
 from tests.support_pg import PostgresTestCase
 from tests.accounts.test_plan_country_check import offer_result
 
@@ -36,13 +37,27 @@ class CountryProgressTests(PostgresTestCase):
         self.clock += seconds
 
     def execute(self, acquire, *, countries=None, fence=None, query=None, real_rate=False, context=None):
+        delivered_routes = []
+        if context is not None:
+            context = AccountRouteContext(
+                run_id=fence["run_id"], execution_id=fence["execution_id"],
+                checkpoint=context.checkpoint,
+            )
+
+            def recorded_acquire(**kwargs):
+                route = acquire(**kwargs)
+                delivered_routes.append(route)
+                return route
+        else:
+            recorded_acquire = acquire
         with (
             patch("time.time", side_effect=lambda: self.clock),
             patch("time.monotonic", side_effect=lambda: self.clock),
             patch.object(plan_check_service.time, "sleep", side_effect=self.sleep),
-            patch("core.proxy.account_routes.acquire_account_proxy", side_effect=acquire),
+            patch("core.proxy.account_routes.acquire_account_proxy", side_effect=recorded_acquire),
             patch.object(plan_check_service, "check_account_plan", side_effect=query or (lambda token, **kw: offer_result(kw["proxy"]))),
             nullcontext() if real_rate else patch.object(plan_check_service, "_wait_for_rate_slot"),
+            account_route_resources(self, context, routes=delivered_routes) if context is not None else nullcontext(),
         ):
             return plan_check_service._run_country_plan_checks(
                 account_id=self.account_id, email="progress@example.test", access_token="synthetic-token",

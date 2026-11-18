@@ -26,4 +26,23 @@ function readAccountScript(name) {
   return fs.readFileSync(path.join(root, 'webui/static', accountFiles.get(name)), 'utf8');
 }
 
-module.exports = {readAccountScripts, readAccountScript, loadedFiles};
+// Extracted-function fixtures need the real explicit action boundary as well as
+// the action under test. A browser window and legacy mailbox map belong to the
+// fixture environment, while all decision/refresh logic comes from production.
+function installAccountActionHelpers(context) {
+  const vm = require('node:vm');
+  context.window ||= {};
+  context.ACCOUNT_SELECTED_EMAILS ||= new Map();
+  const source = readAccountScript('accounts.js');
+  const names = ['accountActionOwner', 'freezeAccountActionValue', 'captureAccountActionContext',
+    'accountActionIds', 'accountActionRow', 'accountActionRefresh', 'accountActionPollStatuses',
+    'accountActionSelectionUi', 'accountActionRemoveAcknowledged', 'accountActionClearSelection'];
+  for (const name of names) {
+    const start = source.indexOf(`function ${name}(`);
+    if (start < 0) throw new Error(`缺少账号动作 helper ${name}`);
+    const end = source.indexOf('\n}', start) + 2;
+    vm.runInContext(source.slice(start, end), context, {filename: `accounts.js:${name}`});
+  }
+}
+
+module.exports = {readAccountScripts, readAccountScript, loadedFiles, installAccountActionHelpers};

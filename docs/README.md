@@ -7,6 +7,9 @@
 | 需要了解 | 文档 |
 | --- | --- |
 | 入口、业务目录、依赖方向和兼容模块 | [当前架构](architecture/current-architecture.md) |
+| 全项目模块边界、任务中心样板与后续迁移顺序 | [架构收敛](architecture/convergence.md) |
+| 列名筛选、两行展示、结果短语与跳页组件 | [列表统一交互规范](architecture/list-ui.md) |
+| 已登记错误码、分类短语与完整原因的展示 | [任务错误短语目录](architecture/task-error-catalog.md) |
 | 数据表、事务、租约、运行配置与恢复 | [存储架构](architecture/storage-architecture.md) |
 | 功能入口、公共组件和测试选择 | [功能地图](architecture/functional-map.md)及其[结构化数据](architecture/functional-map.json) |
 | 代码、配置、API 和前端约定 | [代码规范](architecture/code-conventions.md) |

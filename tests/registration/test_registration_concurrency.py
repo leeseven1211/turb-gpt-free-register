@@ -16,19 +16,23 @@ from core.registration import admission, service, standalone
 from core.storage import registration, runtime_config
 from core.storage.operations import permits
 from tests.support_pg import PostgresTestCase
+from tests.support_legacy_release import install_legacy_release_fixture
+from tests.support_runtime import standalone_owner_fixture
 
 
 def _cli_hold_last_slot(start, stop, results):
-    start.wait(10)
-    admitted = admission.try_admit_cli(batch_id="cli-shared-budget", index=1, batch_workers=5, driver="roxy")
-    results.put(admitted.admitted)
-    stop.wait(10)
-    if admitted.context is not None:
-        concurrency.release_execution(admitted.context)
+    with standalone_owner_fixture():
+        start.wait(10)
+        admitted = admission.try_admit_cli(batch_id="cli-shared-budget", index=1, batch_workers=5, driver="roxy")
+        results.put(admitted.admitted)
+        stop.wait(10)
+        if admitted.context is not None:
+            concurrency.release_execution(admitted.context)
 
 
 class RegistrationConcurrencyTests(PostgresTestCase):
     def setUp(self):
+        self.enterContext(standalone_owner_fixture())
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.log_root = patch.object(run_log, "_LOG_ROOT", Path(self.temp.name))
@@ -48,6 +52,7 @@ class RegistrationConcurrencyTests(PostgresTestCase):
         self.addCleanup(self._restore_facts)
         permits.ensure_tables()
         self.policy(GLOBAL_TASK_WORKERS=4, REGISTRATION_ROXY_WORKERS=4)
+        install_legacy_release_fixture(self)
 
     def _release_contexts(self):
         for context in self.contexts:
@@ -142,6 +147,7 @@ class RegistrationConcurrencyTests(PostgresTestCase):
         self.assertEqual(1, claim.call_count)
         self.assertIn("conn", claim.call_args.kwargs)
         self.assertEqual(1, admit.call_count)
+        self.legacy_release_fixture.wait_for_released()
         self.assertEqual(0, concurrency.get_concurrency_status()["global"]["occupied"])
 
     def test_cancelled_job_is_never_claimed_or_given_a_permit(self):
@@ -163,6 +169,7 @@ class RegistrationConcurrencyTests(PostgresTestCase):
             self.assertIn("resource_capacity", blocked.blocked_by)
             self.assertEqual(1, concurrency.get_concurrency_status()["global"]["cleaning"])
         concurrency.release_execution(context)
+        self.legacy_release_fixture.wait_for_released(context)
         self.assertTrue(self.admit(child))
 
     def test_startup_recovery_preserves_owned_job_and_run_but_interrupts_legacy_queue(self):
@@ -281,4 +288,5 @@ class RegistrationConcurrencyTests(PostgresTestCase):
             result = main.run_one_batch_item(0, 1, "cleanup-order", registration_options={"registration_driver": "roxy"})
         self.assertTrue(result["success"])
         self.assertEqual(["proxy_cleaned"], events)
+        self.legacy_release_fixture.wait_for_released()
         self.assertEqual(0, concurrency.get_concurrency_status()["global"]["occupied"])

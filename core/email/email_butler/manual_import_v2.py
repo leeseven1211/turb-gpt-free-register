@@ -145,8 +145,11 @@ def create(data):
                 'candidate': None, 'status': 'pending', 'error_code': None,
                 'api_version': 2, 'requested_provider': snapshot['filters']['provider'],
             }, conn=conn)
+        # The request and every frozen remote intent commit together. A Web
+        # crash after commit cannot lose execution handoff or allocate again.
+        store.request_execution(batch_id, conn=conn)
         result = service._public(record_store.get_row(record_store.EMAIL_BUTLER_IMPORT_BATCHES, row_id, conn=conn), conn=conn)
-    service._launch(batch_id)
+    service.notify_dispatch()
     return result
 
 

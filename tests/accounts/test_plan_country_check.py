@@ -10,6 +10,8 @@ from core.operations.runtime import OperationCancelled
 from core.storage import accounts as db
 from core.storage import admin_repository
 from tests.support_pg import PostgresTestCase
+from tests.support_settlement import install_native_settlement_fixture
+from tests.support_account_route_fixture import AccountRouteContext, account_route_resources
 
 
 def offer_result(country, percentage=0):
@@ -29,10 +31,16 @@ class CountryPlanCheckTests(PostgresTestCase):
             "email": "country-plan@example.test", "access_token": "synthetic-token",
             "plan_check_status": "queued", "current_plan_type": "free",
         })
-        self.context = SimpleNamespace(checkpoint=Mock(), report=Mock(return_value={}), finish=Mock())
+        self.context = AccountRouteContext(
+            run_id=201, execution_id="fixture-country-plan",
+            checkpoint=Mock(), report=Mock(return_value={}), finish=Mock(),
+        )
         self.routes = []
 
     def execute(self, answers, countries=None, *, mismatch=None, trigger="manual"):
+        delivered_routes = []
+        queried_routes = []
+
         def acquire(**kwargs):
             country = kwargs.get("region") or "JP"
             answer = answers[country]
@@ -44,9 +52,11 @@ class CountryPlanCheckTests(PostgresTestCase):
                 release=Mock(),
             )
             self.routes.append(route)
+            delivered_routes.append(route)
             return route
 
         def query(token, **kwargs):
+            queried_routes.append(kwargs["proxy"])
             return dict(answers[kwargs["proxy"]])
 
         with (
@@ -54,14 +64,21 @@ class CountryPlanCheckTests(PostgresTestCase):
             patch.object(plan_check_service, "check_account_plan", side_effect=query),
             patch.object(plan_check_service, "_wait_for_rate_slot"),
             patch.object(plan_check_service, "_log_plan_result"),
+            account_route_resources(self, self.context, routes=delivered_routes),
         ):
-            return plan_check_service._run_plan_check(
+            result = plan_check_service._run_plan_check(
                 account_id=self.account_id, email="country-plan@example.test",
                 access_token="synthetic-token", trigger=trigger, proxy=None,
                 timezone_offset_min="-", operation_context=self.context,
                 config_snapshot={"country_wait_timeout": 5, "route_source": "provider:1024proxy"},
                 countries=countries if countries is not None else ["JP", "VN", "IN"],
             )
+            self.assertEqual(
+                [] if mismatch else [route.proxy_url for route in delivered_routes],
+                queried_routes,
+                "delivered matching routes must reach the original plan query",
+            )
+            return result
 
     def test_country_offers_are_saved_separately_and_best_is_aggregated(self):
         result = self.execute({"JP": offer_result("JP"), "VN": offer_result("VN", 100), "IN": offer_result("IN", 50)})
@@ -244,6 +261,9 @@ class CountryPlanCheckTests(PostgresTestCase):
         from core.storage.operations import store as operation
         from core.operations import task_gateway
         task_gateway.init()
+        operation.reset_ready()
+        operation.init()
+        fixture = install_native_settlement_fixture(self)
         plan_check_service.register_operation_handlers()
         task = operation.create_runtime_task(
             task_type="plan_check", account_id=self.account_id, email="country-plan@example.test",
@@ -261,12 +281,14 @@ class CountryPlanCheckTests(PostgresTestCase):
             patch.object(plan_check_service, "_wait_for_rate_slot"),
         ):
             first = task_gateway._execute_operation_handler("plan_check", int(task["run"]["id"]))
+            fixture.wait_for_run_released(int(task["run"]["id"]))
             self.assertEqual("success", first["status"])
             first_run = operation.get_run(int(task["run"]["id"]))
             self.assertEqual(2, first_run["result_summary"]["country_success_count"])
             retry = operation.retry_runtime_task(int(task["id"]))
             self.assertEqual(["JP", "VN"], retry["data"]["countries"])
             second = task_gateway._execute_operation_handler("plan_check", int(retry["id"]))
+            fixture.wait_for_run_released(int(retry["id"]))
         self.assertEqual("success", second["status"])
         self.assertEqual(["JP", "VN"], db.get_account(self.account_id)["plan_check_countries"])
         self.assertEqual(first_run["result_summary"], operation.get_run(int(task["run"]["id"]))["result_summary"])

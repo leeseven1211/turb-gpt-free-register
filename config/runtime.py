@@ -12,6 +12,7 @@ BOOTSTRAP_KEYS = frozenset({
     "DATABASE_URL", "TURB_ALLOW_PRODUCTION_DB", "WEBUI_AUTH_CODE", "WEBUI_SESSION_SECRET",
     "TURB_MAIL_CONSUMER_ID", "TURB_DB_SCHEMA", "TURB_DB_POOL_MAX", "TURB_CONFIG_ENCRYPTION_KEY",
     "C2A_API_KEY",
+    "TURB_RUNTIME_MODE", "TURB_INSTANCE_ID", "TURB_RUNTIME_DIR",
     "TASK_RUN_LOG_ROOT", "NODE_EXECUTABLE", "OPENAI_SENTINEL_NODE_PATH", "CLOAK_USER_DATA_DIR",
     "ACCOUNT_TASK_DB_SCHEMA", "OPERATION_TASK_DB_SCHEMA", "AUTH_CODE", "WEB_AUTH_CODE",
     "FLASK_SECRET_KEY", "PYTHON_DOTENV_DISABLED", "HOST", "PORT", "OPEN_BROWSER", "VERBOSE",
@@ -23,6 +24,34 @@ _CACHE_VALUES: dict[str, str] | None = None
 _CACHE_AT = 0.0
 _PROJECTED_KEYS: set[str] = set()
 _IN_TRANSACTION = ContextVar("runtime_config_facade_transaction", default=False)
+_PINNED_VALUES = ContextVar("runtime_config_pinned_values", default=None)
+
+
+def has_pinned_values() -> bool:
+    return _PINNED_VALUES.get() is not None
+
+
+@contextmanager
+def pinned_values(values):
+    """Reload one committed DB image without rereading DB or bootstrap files.
+
+    Caller holds config._RELOAD_LOCK before this facade lock, matching the Web
+    save order. No candidate values enter the shared cache before publication.
+    """
+    if not isinstance(values, dict) or any(
+        not isinstance(key, str) or not isinstance(value, str)
+        for key, value in values.items()
+    ):
+        raise ValueError("runtime_config_invalid_values")
+    if any(is_bootstrap_key(key) for key in values):
+        raise ValueError("runtime_config_bootstrap_forbidden")
+    with _LOCK:
+        token = _PINNED_VALUES.set(dict(values))
+        try:
+            yield
+        finally:
+            _PINNED_VALUES.reset(token)
+
 
 
 def is_bootstrap_key(key: str) -> bool:
@@ -57,11 +86,11 @@ def _known_runtime_keys() -> set[str]:
     return {key for key in keys if not is_bootstrap_key(key)}
 
 
-def _project(values: dict[str, str]) -> None:
+def _project(values: dict[str, str], *, read_file: bool = True) -> None:
     from config.env_loader import dotenv_loading_disabled, read_env_file
     global _PROJECTED_KEYS
     stale = _known_runtime_keys() | _PROJECTED_KEYS
-    if not dotenv_loading_disabled():
+    if read_file and not dotenv_loading_disabled():
         stale.update(key for key in read_env_file() if not is_bootstrap_key(key))
     for key in stale - values.keys():
         os.environ.pop(key, None)
@@ -72,6 +101,11 @@ def _project(values: dict[str, str]) -> None:
 def load_values(*, force: bool = False) -> dict[str, str] | None:
     """激活库时投影权威值；未激活返回 None，失败直接抛出。"""
     global _CACHE_KEY, _CACHE_VALUES, _CACHE_AT
+    pinned = _PINNED_VALUES.get()
+    if pinned is not None:
+        with _LOCK:
+            _project(pinned, read_file=False)
+            return dict(pinned)
     if not _automatic_database_allowed():
         return None
     from config.env_loader import env_path

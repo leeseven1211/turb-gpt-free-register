@@ -9,6 +9,7 @@
 import json
 import threading
 import unittest
+from unittest.mock import patch
 
 from core.storage import records as rs
 from core.storage.records import ACCOUNTS, GENERIC_API_POOL, JOBS, OUTLOOK_POOL
@@ -105,6 +106,58 @@ class PartialUpdateTests(PostgresTestCase):
         row = rs.get_row(ACCOUNTS, self.acc_id)
         self.assertEqual(row["note"], "新备注")
         self.assertEqual(row["access_token"], "token-original")
+
+    def test_patch_returning_ids_only_preserves_guard_without_merging_sparse_data(self):
+        busy_id = rs.insert_row(ACCOUNTS, {
+            "email": "busy@example.test", "plan_check_status": "running", "note": "busy-note",
+        })
+        with patch.object(rs, "_merge", side_effect=AssertionError("ID-only must not merge account data")):
+            rows = rs.patch_rows_where_returning(
+                ACCOUNTS, changes={"plan_check_status": "queued", "note": "new-note"},
+                where="id=ANY(%s) AND COALESCE(plan_check_status, '') <> %s",
+                params=([self.acc_id, busy_id, 999999], "running"), id_only=True,
+            )
+        self.assertEqual(rows, [{"id": self.acc_id}])
+        account = rs.get_row(ACCOUNTS, self.acc_id)
+        self.assertEqual(account["plan_check_status"], "queued")
+        self.assertEqual(account["note"], "new-note")
+        self.assertEqual(account["access_token"], "token-original")
+        busy = rs.get_row(ACCOUNTS, busy_id)
+        self.assertEqual(busy["plan_check_status"], "running")
+        self.assertEqual(busy["note"], "busy-note")
+
+    def test_patch_returning_defaults_to_full_merged_business_rows(self):
+        rows = rs.patch_rows_where_returning(
+            ACCOUNTS, changes={"plan_check_status": "queued", "note": "new-note"},
+            where="id = %s", params=(self.acc_id,),
+        )
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row["id"], self.acc_id)
+        self.assertEqual(row["email"], "merge@example.test")
+        self.assertEqual(row["plan_check_status"], "queued")
+        self.assertEqual(row["note"], "new-note")
+        self.assertEqual(row["access_token"], "token-original")
+        self.assertTrue(row["updated_at"])
+        self.assertNotIn("data", row)
+        self.assertNotIn("deactivated", row)
+
+    def test_patch_returning_borrowed_connection_rolls_back_in_both_modes(self):
+        for id_only in (False, True):
+            with self.subTest(id_only=id_only):
+                with self.assertRaisesRegex(RuntimeError, "rollback"):
+                    with rs.transaction() as conn:
+                        rows = rs.patch_rows_where_returning(
+                            ACCOUNTS, changes={"plan_check_status": "queued", "note": "new-note"},
+                            where="id = %s", params=(self.acc_id,), conn=conn, id_only=id_only,
+                        )
+                        self.assertEqual([row["id"] for row in rows], [self.acc_id])
+                        self.assertEqual(rs.get_row(ACCOUNTS, self.acc_id, conn=conn)["plan_check_status"], "queued")
+                        raise RuntimeError("rollback")
+                account = rs.get_row(ACCOUNTS, self.acc_id)
+                self.assertIsNone(account["plan_check_status"])
+                self.assertEqual(account["note"], "原备注")
+                self.assertEqual(account["access_token"], "token-original")
 
     def test_concurrent_patches_of_distinct_fields_both_survive(self):
         """旧的读全量→改→写全量在这里会丢掉其中一个改动。"""

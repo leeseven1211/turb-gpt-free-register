@@ -208,6 +208,9 @@ def _finish(event, *, delivered=False, blocked=False, local_only=False, error=No
 
 def dispatch_once():
     """归档旧待发送意图，保留本地证据，不调用已退役的报告接口。"""
+    from core.runtime.execution_access import execution_support_allowed
+    if not execution_support_allowed():
+        return False
     event = _claim_next()
     if not event:
         return False
@@ -222,7 +225,7 @@ def worker_status():
         for row in cur.fetchall():
             if row["state"] in counts:
                 counts[row["state"]] = int(row["n"])
-    return {"alive": bool(_worker and _worker.is_alive()), "counts": counts}
+    return {**worker_runtime_status(), "counts": counts}
 
 
 def _run_worker():
@@ -236,6 +239,9 @@ def _run_worker():
 
 
 def start_worker():
+    from core.runtime.execution_access import component_start_allowed
+    if not component_start_allowed():
+        return False
     global _worker
     with _worker_lock:
         if _worker and _worker.is_alive():
@@ -245,3 +251,38 @@ def start_worker():
         _worker = threading.Thread(target=_run_worker, name="email-usage-reports", daemon=True)
         _worker.start()
         return True
+
+
+def stop_worker(timeout: float = 3.0) -> bool:
+    from core.runtime.periodic import StopBudget, join_stopped
+    global _worker
+    budget = StopBudget(timeout)
+    _stop.set()
+    if not _worker_lock.acquire(timeout=budget.remaining()):
+        return False
+    try:
+        thread = _worker
+    finally:
+        _worker_lock.release()
+    if not join_stopped(thread, budget):
+        return False
+    if not _worker_lock.acquire(timeout=budget.remaining()):
+        return False
+    try:
+        if _worker is thread:
+            _worker = None
+        return not bool(_worker and _worker.is_alive())
+    finally:
+        _worker_lock.release()
+
+
+def worker_runtime_status() -> dict:
+    """Local lifecycle facts; readiness must not query outbox payloads."""
+    with _worker_lock:
+        thread = _worker
+        alive = bool(thread and thread.is_alive())
+        stopping = alive and _stop.is_set()
+        return {"started": thread is not None, "alive": alive,
+                "running": alive and not stopping, "idle": False,
+                "stopping": stopping,
+                "state": "stopping" if stopping else "running" if alive else "stopped"}

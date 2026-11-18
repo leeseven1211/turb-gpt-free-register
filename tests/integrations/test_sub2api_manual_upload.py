@@ -1,7 +1,10 @@
 """手动上传经共享准入执行，原手动步骤不恢复远端调度。"""
 from concurrent.futures import ThreadPoolExecutor
+import os
 import threading
 from unittest.mock import patch
+
+from cryptography.fernet import Fernet
 
 from core.integrations.sub2api import client, manual_upload
 from core.operations import concurrency, task_gateway
@@ -9,15 +12,17 @@ from core.storage import codex, records, runtime_config
 from core.storage.operations import store as operation
 from core.storage.operations import legacy_task_store
 from tests.support_pg import PostgresTestCase
+from tests.support_settlement import install_native_settlement_fixture
 
 
 class Sub2ApiManualUploadTests(PostgresTestCase):
     def setUp(self):
-        operation.reset_ready()
-        operation.init()
         legacy_schema = patch.object(legacy_task_store, "_SCHEMA", self.schema)
         legacy_schema.start()
         self.addCleanup(legacy_schema.stop)
+        self.enterContext(patch.object(legacy_task_store, "_READY_KEY", ""))
+        operation.reset_ready()
+        operation.init()
         task_gateway.init()
         self.account_id = records.insert_row(records.ACCOUNTS, {
             "email": "manual-upload@example.test", "codex_status": "success",
@@ -33,9 +38,16 @@ class Sub2ApiManualUploadTests(PostgresTestCase):
             context.start()
             self.addCleanup(context.stop)
         self.addCleanup(task_gateway.unregister_operation_handler, manual_upload.TASK_TYPE)
+        self.settlement_fixture = install_native_settlement_fixture(self, timeout=10)
+
+    def tearDown(self):
+        self.settlement_fixture.close()
 
     def execute(self, queued):
-        return task_gateway._execute_operation_handler(manual_upload.TASK_TYPE, queued["run_id"])
+        run_id = queued["run_id"]
+        result = task_gateway._execute_operation_handler(manual_upload.TASK_TYPE, run_id)
+        self.settlement_fixture.wait_for_run_released(run_id)
+        return result
 
     def test_queue_does_not_upload_and_persists_only_original_reference(self):
         with patch.object(client, "upload_configured_codex_oauth_credential") as upload:
@@ -153,6 +165,9 @@ class Sub2ApiManualUploadTests(PostgresTestCase):
         self.assertEqual("sub2api_manual_local_writeback_failed", run["result_summary"]["error_code"])
 
     def test_manual_upload_uses_global_and_sync_type_budget_with_other_business(self):
+        encryption_key = patch.dict(os.environ, {"TURB_CONFIG_ENCRYPTION_KEY": Fernet.generate_key().decode()})
+        encryption_key.start()
+        self.addCleanup(encryption_key.stop)
         queued = manual_upload.queue_filename(self.filename)
         entered, release = threading.Event(), threading.Event()
         def upload(*_args, **_kwargs):
@@ -160,7 +175,8 @@ class Sub2ApiManualUploadTests(PostgresTestCase):
             self.assertTrue(release.wait(10))
             return {"ok": True}
         policy = {"GLOBAL_TASK_WORKERS": "1", "SUB2API_SYNC_WORKERS": "1", "CONCURRENCY_POLICY_REVISION": "1"}
-        with patch.object(runtime_config, "read_values", return_value=policy), patch.object(
+        runtime_config.write_values(policy, activate=True, source="test")
+        with patch.object(
             client, "upload_configured_codex_oauth_credential", side_effect=upload
         ), ThreadPoolExecutor(max_workers=1) as executor:
             pending = executor.submit(self.execute, queued)

@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from core import db
 from core.operations.runtime import OperationCancelled
 from core.operations import run_log
+from core.operations.task_gateway import OperationSettlementPending, SETTLEMENT_CONTROL_ERRORS
 from core.payments import PaymentError, XXSYUNClient, select_payment_url
 from core.payments.runtime import configuration
 from core.storage.extract_link import jobs, payments
@@ -46,6 +47,11 @@ class ExtractionContext:
 
     def finish(self, **kwargs):
         self.result = kwargs
+
+    def lease(self, **kwargs):
+        # Provider extraction is a real intermediate scope. Its local finish
+        # only buffers a result; successful physical release gates payment.
+        return self._context.lease(**{**kwargs, "scope_kind": "step"})
 
     def report(self, **kwargs):
         # 外层仍是自动支付任务，提链阶段不发布“支付已跳过”的终态。
@@ -160,7 +166,7 @@ def _verify_plus(context, service, extraction, state, order, runtime):
                 access_token=str(current.get("access_token") or ""),
                 trigger="extract_post_payment", operation_context=context,
             )
-        except (OperationCancelled, service.account_task_store.OperationLeaseLost):
+        except (*SETTLEMENT_CONTROL_ERRORS, OperationCancelled, service.account_task_store.OperationLeaseLost):
             raise
         except Exception as exc:
             summary.update(plus_failure_code="PLAN_CHECK_ERROR", plus_failure_message=run_log.redact_text(str(exc), 300))
@@ -198,6 +204,24 @@ def handle(context, service):
         if not extraction or data.get("workbench_action") == "create" or data.get("independent_payment_wait_material") is True or data.get("independent_payment_refresh_material") is True:
             proxy = ExtractionContext(context)
             service._handle_provider_operation(proxy)
+            cleanups = getattr(proxy, "_extract_proxy_cleanup_handles", {})
+            if isinstance(cleanups, dict) and any(
+                    not item.release_confirmed for item in cleanups.values()):
+                # Account step deletion may already be confirmed while its
+                # physical proxy return is still unknown. Seal once here;
+                # owner cleanup must never resume this stack into payment.
+                context.finish(
+                    status="attention_required",
+                    message="提链步骤已结束，线路释放尚未确认，未执行独立支付",
+                    result_summary={
+                        "cause_code": "step_resource_release_unconfirmed",
+                        "outcome": "resource_cleanup_pending",
+                        "extraction_result": proxy.result or {},
+                        "payment_status": "not_started",
+                        "automatic_business_retry": False,
+                    },
+                )
+                raise OperationSettlementPending("original extraction resource release awaits confirmation")
             if proxy.result is None:
                 return
             if proxy.result.get("status") != "success":
@@ -205,7 +229,7 @@ def handle(context, service):
                 return
             extraction = _saved_extraction(context)
             context.run = {**context.run, "data": {**context.run.get("data", {}), "independent_payment_refresh_material": False}}
-    with context.lease(resource_family="openai_interactive"):
+    with context.lease(resource_family="openai_interactive", scope_kind="final"):
         return _execute_payment(context, service, order, new_attempt, extraction)
 
 

@@ -21,6 +21,7 @@ class _Repository:
     def __init__(self, values=None):
         self.values = values
         self.commit_error = False
+        self.revision = 1 if values is not None else 0
 
     def read_values(self):
         return copy.deepcopy(self.values)
@@ -28,18 +29,27 @@ class _Repository:
     def write_values(self, updates, **kwargs):
         if self.values is None:
             raise AssertionError("不得隐式激活部分配置")
+        changed = {key: value for key, value in updates.items()
+                   if self.values.get(key) != value}
         self.values.update(updates)
+        if changed:
+            self.revision += 1
         return list(updates)
+
+    def current_revision(self, *, conn=None):
+        return self.revision
 
     @contextmanager
     def transaction(self):
         before = copy.deepcopy(self.values)
+        before_revision = self.revision
         try:
             yield object()
             if self.commit_error:
                 raise RuntimeError("测试提交失败")
         except BaseException:
             self.values = before
+            self.revision = before_revision
             raise
 
 
@@ -135,6 +145,7 @@ class RuntimeConfigLoadingTests(unittest.TestCase):
         config.reload_all()
         before_file = self.path.read_bytes()
         old_snapshot = schema.non_sensitive_snapshot()
+        old_db_revision = self.repository.revision
         result = config_editor.update_config({"ACCOUNT_PLAN_CHECK_WORKERS": 7})
         self.assertEqual("7", self.repository.values["ACCOUNT_PLAN_CHECK_WORKERS"])
         self.assertEqual(before_file, self.path.read_bytes())
@@ -142,6 +153,11 @@ class RuntimeConfigLoadingTests(unittest.TestCase):
         self.assertEqual(7, schema.non_sensitive_snapshot()["ACCOUNT_PLAN_CHECK_WORKERS"])
         self.assertEqual([], result["env_updated"])
         self.assertEqual(["ACCOUNT_PLAN_CHECK_WORKERS"], result["database_updated"])
+        self.assertEqual(old_db_revision + 1, result["persisted_db_revision"])
+        self.assertEqual(schema.non_sensitive_snapshot().revision, result["local_snapshot_revision"])
+        self.assertEqual(result["persisted_db_revision"], config._APPLIED_DB_REVISION)
+        self.assertTrue(result["web_reloaded"])
+        self.assertEqual({"state": "unknown", "applied_db_revision": None}, result["worker_application"])
         metadata = {item["key"]: item for item in schema.effective_config_metadata()}
         self.assertEqual("database", metadata["ACCOUNT_PLAN_CHECK_WORKERS"]["storage"])
         self.assertEqual("database", metadata["ACCOUNT_PLAN_CHECK_WORKERS"]["source"])
@@ -152,6 +168,7 @@ class RuntimeConfigLoadingTests(unittest.TestCase):
         old_snapshot = schema.non_sensitive_snapshot()
         old_environment = dict(os.environ)
         old_file = self.path.read_bytes()
+        old_db_revision = self.repository.revision
         self.repository.commit_error = True
         with self.assertRaisesRegex(RuntimeError, "提交失败"):
             config_editor.update_config({"ACCOUNT_PLAN_CHECK_WORKERS": 7, "WEBUI_AUTH_CODE": "new-code"})
@@ -160,6 +177,7 @@ class RuntimeConfigLoadingTests(unittest.TestCase):
         self.assertEqual(old_file, self.path.read_bytes())
         self.assertEqual(6, config.ACCOUNT_PLAN_CHECK_WORKERS)
         self.assertIs(old_snapshot, schema.non_sensitive_snapshot())
+        self.assertEqual(old_db_revision, self.repository.revision)
 
     def test_reload_failure_rolls_back_staged_database_values(self):
         self.runtime.load_values(force=True)
@@ -200,6 +218,7 @@ class RuntimeConfigLoadingTests(unittest.TestCase):
             with self.subTest(commit_fails=fail):
                 old_snapshot = schema.non_sensitive_snapshot()
                 before = copy.deepcopy(self.repository.values)
+                before_revision = self.repository.revision
                 commit_started, release_commit = threading.Event(), threading.Event()
 
                 @contextmanager
@@ -213,6 +232,7 @@ class RuntimeConfigLoadingTests(unittest.TestCase):
                             raise RuntimeError("测试提交失败")
                     except BaseException:
                         self.repository.values = before
+                        self.repository.revision = before_revision
                         raise
 
                 target = int(before["ACCOUNT_PLAN_CHECK_WORKERS"]) + 1
@@ -240,9 +260,11 @@ class RuntimeConfigLoadingTests(unittest.TestCase):
                         with self.assertRaisesRegex(RuntimeError, "提交失败"):
                             saved.result(timeout=5)
                         self.assertIs(old_snapshot, schema.non_sensitive_snapshot())
+                        self.assertEqual(before_revision, self.repository.revision)
                     else:
-                        saved.result(timeout=5)
+                        receipt = saved.result(timeout=5)
                         self.assertEqual(target, schema.non_sensitive_snapshot()["ACCOUNT_PLAN_CHECK_WORKERS"])
+                        self.assertEqual(before_revision + 1, receipt["persisted_db_revision"])
                     self.assertEqual(self.repository.values, reader.result(timeout=5))
 
 

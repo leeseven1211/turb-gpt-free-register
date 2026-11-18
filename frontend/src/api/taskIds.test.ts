@@ -1,0 +1,35 @@
+import {afterEach,describe,expect,it,vi} from 'vitest';
+import {parseTaskJson,taskId,sameTaskId} from './taskIds';
+import {tasksApi} from './tasks';
+import {request} from './client';
+afterEach(()=>vi.unstubAllGlobals());
+describe('任务JSON与标识接收边界',()=>{
+ it('只保真已知标识，安全数/count/revision/日志字节游标保持原类型',()=>{
+  const value=parseTaskJson('{"task":{"id":9007199254740993,"last_run_id":9223372036854775807,"runs":[{"id":9223372036854775807,"task_id":9007199254740993,"run_no":2}],"resources":[{"run_id":9223372036854775807}],"parent":{"id":11}},"progress":{"task_id":9007199254740993,"outcome":{"child_tasks":[{"task_id":9007199254740995,"run_id":9007199254740997}]}},"items":[{"id":9007199254740999}],"next_after_id":9007199254740999,"next_cursor":1234,"count":123,"revision":12,"duration_ms":12.5,"message":"id: 9007199254740993"}') as Record<string,any>;
+  expect(value.task).toMatchObject({id:'9007199254740993',last_run_id:'9223372036854775807',runs:[{id:'9223372036854775807',task_id:'9007199254740993',run_no:2}],resources:[{run_id:'9223372036854775807'}],parent:{id:11}});expect(value.progress.outcome.child_tasks[0]).toEqual({task_id:'9007199254740995',run_id:'9007199254740997'});expect(value.items[0].id).toBe('9007199254740999');expect(value.next_after_id).toBe('9007199254740999');expect([value.next_cursor,value.count,value.revision,value.duration_ms]).toEqual([1234,123,12,12.5]);expect(value.message).toBe('id: 9007199254740993');
+ });
+ it('转义key按真实JSON语义识别，字符串内容不能被重写',()=>{
+  const value=parseTaskJson(String.raw`{"task\u005fid":9007199254740993,"message":"\"task_id\":9007199254740993","data":{"text":"\\\"id\\\":9007199254740993"},"event_ids":[2,9007199254740995],"deleted":[9007199254740997]}`) as Record<string,unknown>;
+  expect(value.task_id).toBe('9007199254740993');expect(value.message).toBe('"task_id":9007199254740993');expect(value.event_ids).toEqual([2,'9007199254740995']);expect(value.deleted).toEqual(['9007199254740997']);
+ });
+ it.each(['-1','1.5','1e3','9.007199254740993e15'])('ID非规范整数%s明确拒绝，不静默舍入',token=>{expect(()=>parseTaskJson(`{"task_id":${token}}`)).toThrow(/标识/);});
+ it.each(['{"id":01}','{"id":1,}','{"id":1}x','{"id":9007199254740993 "x":2}','{"id":"unterminated}'])('维持JSON合法性检查%s',text=>{expect(()=>parseTaskJson(text)).toThrow();});
+ it('入口保留安全数字兼容并拒绝已舍入的unsafe number',()=>{expect(taskId(71)).toBe(71);expect(taskId('71')).toBe(71);expect(taskId('9007199254740993')).toBe('9007199254740993');expect(sameTaskId('71',71)).toBe(true);expect(sameTaskId('9007199254740993','9007199254740992')).toBe(false);for(const value of [9007199254740992,-1,1.2,'-1','1e3','1.5','',undefined])expect(()=>taskId(value)).toThrow();});
+ it('真实Response.text在JSON.parse前保留大ID，详情/progress/events路径原样',async()=>{
+  const fetcher=vi.fn(async(_input:RequestInfo|URL)=>new Response('{"ok":true,"task":{"id":9007199254740993,"task_type":"plan_check","last_run_id":9007199254740995,"runs":[{"id":9007199254740995}]}}',{headers:{'content-type':'application/json'}}));vi.stubGlobal('fetch',fetcher);
+  const data=await tasksApi.detail('9007199254740993');expect(data.task.id).toBe('9007199254740993');await tasksApi.progress('9007199254740993','9007199254740995');await tasksApi.events('9007199254740993','9007199254740995',{after_id:'9007199254740997'});expect(fetcher.mock.calls.map(call=>call[0])).toEqual(['/api/operations/9007199254740993?include_events=0','/api/operations/9007199254740993/runs/9007199254740995/progress','/api/operations/9007199254740993/runs/9007199254740995/events?limit=500&after_id=9007199254740997']);
+ });
+ it('通用client默认JSON行为不变，其他API不会启用任务解码器',async()=>{vi.stubGlobal('fetch',vi.fn(async()=>new Response('{"id":1.5,"revision":1}',{headers:{'content-type':'application/json'}})));expect(await request('/other')).toEqual({id:1.5,revision:1});});
+ it('未知业务data.id和数值证据不是任务主键，不改写类型',()=>{expect(parseTaskJson('{"data":{"id":1.5,"revision":2},"result_summary":{"id":-1},"task":{"runs":[{"id":9007199254740993}]}}')).toEqual({data:{id:1.5,revision:2},result_summary:{id:-1},task:{runs:[{id:'9007199254740993'}]}});});
+ it('owner和related记录的关联ID保真，零游标仍是数字',()=>{expect(parseTaskJson('{"related_task":{"id":9007199254740993},"owned_run":{"id":9007199254740995,"owner_task_id":9007199254740997,"owner_run_id":9007199254740999},"next_after_id":0}')).toEqual({related_task:{id:'9007199254740993'},owned_run:{id:'9007199254740995',owner_task_id:'9007199254740997',owner_run_id:'9007199254740999'},next_after_id:0});});
+ it('代理记录的操作和注册关联标识不会在接收时舍入',()=>{
+  expect(parseTaskJson('{"items":[{"operation_task_id":9007199254740993,"operation_run_id":9007199254740995,"registration_job_id":9007199254740997,"registration_attempt_id":9007199254740999,"registration_run_id":9223372036854775807,"request_count":17,"duration_ms":1.5}]}')).toEqual({items:[{operation_task_id:'9007199254740993',operation_run_id:'9007199254740995',registration_job_id:'9007199254740997',registration_attempt_id:'9007199254740999',registration_run_id:'9223372036854775807',request_count:17,duration_ms:1.5}]});
+ });
+ it('邮箱历史和母资源的关联标识保真，文字归属保持原值',()=>{
+  expect(parseTaskJson('{"items":[{"id":9007199254740993,"parent_id":9007199254740995,"registered_account_id":9007199254740997,"root_task_id":9007199254740999}],"parents":[{"id":9223372036854775807,"parent_id":9007199254740995}],"history":{"root_task_id":"legacy-root-1"}}')).toEqual({items:[{id:'9007199254740993',parent_id:'9007199254740995',registered_account_id:'9007199254740997',root_task_id:'9007199254740999'}],parents:[{id:'9223372036854775807',parent_id:'9007199254740995'}],history:{root_task_id:'legacy-root-1'}});
+ });
+ it('注册和提链返回的 job、attempt、batch 关联标识保持精确',()=>{
+  expect(parseTaskJson('{"jobs":[{"id":9007199254740993,"job_id":9007199254740995,"batch_id":9007199254740997,"root_job_id":9007199254740999,"attempt_id":9223372036854775807}],"attempts":[{"id":9007199254741001,"parent_job_id":9007199254741003}],"job_ids":[9007199254741005],"attempt_ids":[9007199254741007]}')).toEqual({jobs:[{id:'9007199254740993',job_id:'9007199254740995',batch_id:'9007199254740997',root_job_id:'9007199254740999',attempt_id:'9223372036854775807'}],attempts:[{id:'9007199254741001',parent_job_id:'9007199254741003'}],job_ids:['9007199254741005'],attempt_ids:['9007199254741007']});
+ });
+ it('批量动作输出精确裸整数兼容Python int合同，重试幂等键和body保持一致',async()=>{const fetcher=vi.fn<typeof fetch>().mockRejectedValueOnce(new TypeError('网络中断')).mockImplementation(async()=>new Response('{"ok":true,"accepted":[{"task_id":9007199254740993,"run_id":9007199254740995}],"accepted_count":1}',{headers:{'content-type':'application/json'}}));vi.stubGlobal('fetch',fetcher);await expect(tasksApi.bulk('retry',['9007199254740993',7])).rejects.toThrow('网络中断');const response=await tasksApi.bulk('retry',['9007199254740993',7]);expect(fetcher.mock.calls[0]?.[1]?.body).toBe('{"action":"retry","task_ids":[9007199254740993,7]}');expect(fetcher.mock.calls[1]?.[1]).toEqual(fetcher.mock.calls[0]?.[1]);expect(response.accepted).toEqual([{task_id:'9007199254740993',run_id:'9007199254740995'}]);});
+});

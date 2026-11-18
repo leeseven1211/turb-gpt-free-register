@@ -11,6 +11,7 @@ from core.storage import records
 from core.storage.operations import legacy_task_store
 from core.storage.operations import store as operation
 from tests.support_pg import PostgresTestCase
+from tests.support_settlement import install_native_settlement_fixture
 
 
 def fixture_token(payload):
@@ -20,11 +21,12 @@ def fixture_token(payload):
 
 class C2AManualSyncTests(PostgresTestCase):
     def setUp(self):
-        operation.reset_ready()
-        operation.init()
         legacy_schema = patch.object(legacy_task_store, "_SCHEMA", self.schema)
         legacy_schema.start()
         self.addCleanup(legacy_schema.stop)
+        self.enterContext(patch.object(legacy_task_store, "_READY_KEY", ""))
+        operation.reset_ready()
+        operation.init()
         task_gateway.init()
         self.local_token = fixture_token({
             "exp": int(time.time()) + 3600,
@@ -50,6 +52,10 @@ class C2AManualSyncTests(PostgresTestCase):
         self.addCleanup(policy.stop)
         self.addCleanup(dispatcher.stop)
         self.addCleanup(task_gateway.unregister_operation_handler, manual_sync.TASK_TYPE)
+        self.settlement_fixture = install_native_settlement_fixture(self, timeout=10)
+
+    def tearDown(self):
+        self.settlement_fixture.close()
 
     def queue(self):
         account = db.get_account(self.account_id)
@@ -57,7 +63,10 @@ class C2AManualSyncTests(PostgresTestCase):
         return manual_sync.queue_account(account)
 
     def execute(self, queued):
-        return task_gateway._execute_operation_handler(manual_sync.TASK_TYPE, queued["run_id"])
+        run_id = queued["run_id"]
+        result = task_gateway._execute_operation_handler(manual_sync.TASK_TYPE, run_id)
+        self.settlement_fixture.wait_for_run_released(run_id)
+        return result
 
     @staticmethod
     def remote_account():
@@ -175,7 +184,8 @@ class C2AManualSyncTests(PostgresTestCase):
             task.get("error") or "C2A 请求超时", task_type=manual_sync.TASK_TYPE,
             result_summary=run["result_summary"], task_status=task["status"],
         )
-        self.assertIn("远端结果待确认", projection["summary"])
+        self.assertEqual("C2A 更新请求超时，未收到更新回执", projection["summary"])
+        self.assertEqual("c2a_timeout", projection["cause_code"])
         self.assertNotIn("未更新远端账号", projection["summary"])
         retried = task_gateway.default_operation_retry(task)
         self.assertTrue(retried["accepted"])

@@ -487,15 +487,31 @@ class ButlerManualImportTests(PostgresTestCase):
     def test_startup_marks_interrupted_batch_and_keeps_original_intents(self):
         batch, _ = self.create()
         before = [r['idempotency_key'] for r in self.items(batch)]
-        self.assertEqual(self.service.reconcile_interrupted(), 1)
+        # A durable request waiting for a Worker is not an interrupted execution.
+        self.assertEqual(self.service.reconcile_interrupted(), 0)
+        claimed = self.service._claim_batch_owner(batch['batch_id'])
+        self.assertIsNotNone(claimed)
+        self.assertFalse(self.service.store.batch(batch['batch_id'])['dispatch_requested'])
+        # Simulate that coordinator exiting before any remote allocation.
+        with patch.object(self.service.concurrency, 'owner_liveness', return_value='exited'):
+            self.assertEqual(self.service.reconcile_interrupted(), 1)
         self.assertEqual(self.service.get(batch['batch_id'])['status'], 'partial')
         self.assertEqual(self.calls, [])
         self.assertEqual(self.run_batch(batch)['imported'], 2)
         self.assertEqual(before, [r['idempotency_key'] for r in self.items(batch)])
 
     def test_startup_completes_imports_committed_before_summary(self):
+        from core.operations import concurrency
+
         batch, _ = self.create()
         self.run_batch(batch)
+        # This five-second fixture closure budget joins the original worker's
+        # heartbeat and deferred legacy releases before simulating a restart.
+        self.assertTrue(concurrency.stop_release_runtime(time.monotonic() + 5),
+                        concurrency.release_runtime_status())
+        self.assertEqual(concurrency.active_execution_keys(
+            prefix=f"butler-import:{batch['batch_id']}:",
+        ), set())
         row = record_store.get_row_by(record_store.EMAIL_BUTLER_IMPORT_BATCHES, 'batch_id', batch['batch_id'])
         record_store.patch_row(record_store.EMAIL_BUTLER_IMPORT_BATCHES, row['id'], {'status': 'running'})
         self.assertEqual(self.service.reconcile_interrupted(), 1)

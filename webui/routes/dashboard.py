@@ -28,6 +28,7 @@ from core.registration import service as svc
 from core.operations.errors import classify_task_error
 from config import codex as codex_config
 from webui import config_editor
+from webui.assets import page_asset_version
 from webui.blueprint import LegacyEndpointBlueprint
 from webui.runtime import WebUIContext
 from webui.display_statistics import DisplayStatisticsCache
@@ -78,7 +79,8 @@ def create_dashboard_blueprint(context: WebUIContext):
     @bp.get("/")
     def index():
         # 统一使用当前界面，历史书签参数和界面偏好 Cookie 不再参与模板选择。
-        return render_template("index.html")
+        # 模板、实际脚本链接和 Vue 构建共用内容版本，避免新旧资源混用。
+        return render_template("index.html", task_center_version=page_asset_version(context.app))
 
     @bp.get("/api/summary")
     def api_summary():

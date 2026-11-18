@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+from contextlib import ExitStack
+from pathlib import Path
+import tempfile
 import threading
 from types import MappingProxyType
 from unittest import TestCase
@@ -18,6 +21,8 @@ from core.codex import token_refresh_service as service
 from core.operations import task_gateway
 from core.storage.operations import store as operation, runtime as operation_runtime_store
 from tests.support_pg import PostgresTestCase
+from tests.support_settlement import install_native_settlement_fixture
+from tests.codex.support_token_refresh_crash import CodexCrashCohort, METHOD_CASES
 
 
 class CodexTokenRefreshRequestBoundaryTests(TestCase):
@@ -442,7 +447,39 @@ class CodexTokenRefreshSubmissionTests(TestCase):
 
 
 class CodexTokenRefreshDurablePostgresTests(PostgresTestCase):
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        # This session never adopts ART/preexisting PASS or cls.schema.  The
+        # base run() continues truncating only the ordinary scratch schema.
+        try:
+            cls._crash_cohort = CodexCrashCohort()
+        except BaseException:
+            super().tearDownClass()
+            raise
+        cls.addClassCleanup(cls._crash_cohort.close)
+
+    @classmethod
+    def tearDownClass(cls):
+        # Failure retains the case schemas and caller environment for diagnosis;
+        # do not let superclass cleanup obscure unresolved original ownership.
+        cls._crash_cohort.close()
+        super().tearDownClass()
+
     def setUp(self):
+        from core import account_task_store
+
+        self.resource_patches = ExitStack()
+        self.addCleanup(self._close_native_resources)
+        log_root = Path(tempfile.mkdtemp(prefix="codex-refresh-native-")).resolve()
+        self.resource_patches.enter_context(patch.object(task_run_log, "_LOG_ROOT", log_root))
+        self.resource_patches.enter_context(patch.object(task_run_log, "_TASK_LOG_ROOT", log_root / "tasks"))
+        self.resource_patches.enter_context(patch.object(account_task_store, "_SCHEMA", self.schema))
+        self.resource_patches.enter_context(patch.object(account_task_store, "_READY_KEY", ""))
+        account_task_store.init()
+        # TRUNCATE removes the capability marker but retains startup readiness.
+        operation.reset_ready()
+        operation.init()
         task_gateway.unregister_operation_handler(service.TASK_TYPE)
         service._HANDLER_REGISTERED = False
         self.auto_refresh_patch = patch.object(
@@ -450,12 +487,20 @@ class CodexTokenRefreshDurablePostgresTests(PostgresTestCase):
             "CODEX_TOKEN_AUTO_REFRESH_ENABLED",
             True,
         )
-        self.auto_refresh_patch.start()
+        self.resource_patches.enter_context(self.auto_refresh_patch)
+        if self._testMethodName not in METHOD_CASES:
+            self.settlement_fixture = install_native_settlement_fixture(self)
 
     def tearDown(self):
-        self.auto_refresh_patch.stop()
+        self._close_native_resources()
+
+    def _close_native_resources(self):
+        fixture = getattr(self, "settlement_fixture", None)
+        if fixture is not None:
+            fixture.close()
         task_gateway.unregister_operation_handler(service.TASK_TYPE)
         service._HANDLER_REGISTERED = False
+        self.resource_patches.close()
 
     def _seed_credential(self, stem: str, *, expired: str = "2020-01-01T00:00:00Z") -> tuple[int, str, str]:
         email = f"{stem}@example.test"
@@ -552,6 +597,7 @@ class CodexTokenRefreshDurablePostgresTests(PostgresTestCase):
                 service.TASK_TYPE,
                 int(created["run"]["id"]),
             )
+            self.settlement_fixture.wait_for_run_released(int(created["run"]["id"]))
 
         self.assertEqual("success", returned["status"])
         self.assertEqual("success", operation.get_run(int(created["run"]["id"]))["status"])
@@ -627,6 +673,7 @@ class CodexTokenRefreshDurablePostgresTests(PostgresTestCase):
         result = returned["result"]
         self.assertEqual("success", result["status"])
         self.assertEqual(1, post.call_count)
+        self.settlement_fixture.wait_for_run_released(run_id)
 
         run = operation.get_run(run_id)
         self.assertEqual("success", run["status"])
@@ -736,51 +783,33 @@ class CodexTokenRefreshDurablePostgresTests(PostgresTestCase):
         post.assert_not_called()
 
     def test_http_response_before_readback_crash_is_not_confirmed_or_retried(self):
-        account_id, email, filename = self._seed_credential("response-crash")
-        created = self._create_run(account_id, email, filename, "response-crash-run")
-        service._register_worker()
-        with (
-            patch.object(
-                service,
-                "_request_refresh",
-                return_value={"access_token": "new-access", "refresh_token": "new-refresh", "expires_in": 3600},
-            ) as refresh,
-            patch.object(service, "_persist_refreshed_credential", side_effect=SystemExit("synthetic crash")),
-        ):
-            with self.assertRaises(SystemExit):
-                task_gateway._execute_operation_handler(
-                    service.TASK_TYPE,
-                    int(created["run"]["id"]),
-                )
+        cohort = type(self)._crash_cohort
+        case = cohort.claim("response-crash")
+        with cohort.case_scope(case):
+            run_id = case.run_id
+            run = operation.get_run(run_id)
+            self.assertEqual("settling", run["status"])
+            intent = (run.get("data") or {}).get("remote_intent")
+            self.assertIsInstance(intent, dict)
+            detail = intent
+            self.assertEqual("response_received", detail["receipt_state"])
+            receipt = (run.get("data") or {}).get("remote_receipt")
+            self.assertEqual("response_received", receipt["outcome"])
+            self.assertFalse(receipt["detail"].get("terminal", False))
+            self.assertNotEqual("confirmed", detail["receipt_state"])
+            self.assertEqual(1, case.gate["refresh_calls"])
 
-        run_id = int(created["run"]["id"])
-        run = operation.get_run(run_id)
-        self.assertEqual("settling", run["status"])
-        intent = (run.get("data") or {}).get("remote_intent")
-        self.assertIsInstance(intent, dict)
-        detail = intent
-        self.assertEqual("response_received", detail["receipt_state"])
-        receipt = (run.get("data") or {}).get("remote_receipt")
-        self.assertEqual("response_received", receipt["outcome"])
-        self.assertFalse(receipt["detail"].get("terminal", False))
-        self.assertNotEqual("confirmed", detail["receipt_state"])
-        self.assertEqual(1, refresh.call_count)
+            # Real child death + natural default900/lease600, never backdate.
+            self.assertEqual(1, operation_runtime_store.recover_interrupted_runtime_runs())
+            with patch.object(service, "enqueue_refresh") as enqueue:
+                result = service.enqueue_due_credentials()
 
-        with operation._connect() as conn, conn.cursor() as cur:
-            cur.execute(
-                f"UPDATE {operation._table('operation_runs')} "
-                "SET heartbeat_at=now() - interval '1 hour' WHERE id=%s",
-                (run_id,),
-            )
-        self.assertEqual(1, operation_runtime_store.recover_interrupted_runtime_runs())
-        with patch.object(service, "enqueue_refresh") as enqueue:
-            result = service.enqueue_due_credentials()
-
-        self.assertEqual(0, result["started"])
-        self.assertEqual(1, result["reconciled"])
-        enqueue.assert_not_called()
-        row = record_store.get_row_by(record_store.CODEX_CREDENTIALS, "filename", filename)
-        self.assertIn(service.REQUEST_UNKNOWN, row["oauth_refresh_error"])
+            self.assertEqual(0, result["started"])
+            self.assertEqual(1, result["reconciled"])
+            enqueue.assert_not_called()
+            row = record_store.get_row_by(record_store.CODEX_CREDENTIALS, "filename", case.filename)
+            self.assertIn(service.REQUEST_UNKNOWN, row["oauth_refresh_error"])
+        cohort.finish(case)
 
     def test_readback_mismatch_keeps_receipt_unknown(self):
         account_id, email, filename = self._seed_credential("readback-mismatch")
@@ -823,115 +852,57 @@ class CodexTokenRefreshDurablePostgresTests(PostgresTestCase):
         self.assertFalse(receipt["detail"].get("readback_confirmed", False))
 
     def test_confirmed_receipt_before_terminal_finish_still_blocks_producer(self):
-        account_id, email, filename = self._seed_credential("confirmed-crash")
-        created = self._create_run(account_id, email, filename, "confirmed-crash-run")
-        service._register_worker()
-        updates = 0
+        cohort = type(self)._crash_cohort
+        case = cohort.claim("confirmed-crash")
+        with cohort.case_scope(case):
+            run_id = case.run_id
+            run = operation.get_run(run_id)
+            self.assertEqual("settling", run["status"])
+            data = run["data"]
+            intent = data["remote_intent"]
+            receipt = data["remote_receipt"]
+            self.assertEqual("confirmed", intent["receipt_state"])
+            self.assertEqual("confirmed", receipt["outcome"])
+            self.assertTrue(receipt["detail"]["remote_result_confirmed"])
+            self.assertTrue(receipt["detail"]["local_business_writeback_confirmed"])
+            self.assertTrue(receipt["detail"]["local_readback_confirmed"])
+            self.assertEqual(1, case.gate["refresh_calls"])
+            row = record_store.get_row_by(record_store.CODEX_CREDENTIALS, "filename", case.filename)
+            self.assertEqual(service.REQUEST_PENDING, row["oauth_refresh_error"])
 
-        def crash_after_worker_success_projection(*args, **kwargs):
-            nonlocal updates
-            updates += 1
-            if updates == 2:
-                raise SystemExit("synthetic crash before gateway finish")
+            self.assertEqual(1, operation_runtime_store.recover_interrupted_runtime_runs())
+            recovered = operation.get_run(run_id)
+            self.assertEqual("attention_required", recovered["status"])
+            self.assertEqual("request_unknown", recovered["result_summary"]["outcome"])
+            self.assertEqual("confirmed", recovered["result_summary"]["remote_intent_state"])
 
-        with (
-            patch.object(
-                service,
-                "_request_refresh",
-                return_value={"access_token": "new-access", "refresh_token": "new-refresh", "expires_in": 3600},
-            ) as refresh,
-            patch.object(service, "_sync_sub2_if_needed", return_value={"status": "disabled"}),
-            patch.object(service, "_update_account_state", side_effect=crash_after_worker_success_projection),
-        ):
-            with self.assertRaises(SystemExit):
-                task_gateway._execute_operation_handler(
-                    service.TASK_TYPE,
-                    int(created["run"]["id"]),
-                )
-
-        run_id = int(created["run"]["id"])
-        run = operation.get_run(run_id)
-        self.assertEqual("settling", run["status"])
-        data = run["data"]
-        intent = data["remote_intent"]
-        receipt = data["remote_receipt"]
-        self.assertEqual("confirmed", intent["receipt_state"])
-        self.assertEqual("confirmed", receipt["outcome"])
-        self.assertTrue(receipt["detail"]["remote_result_confirmed"])
-        self.assertTrue(receipt["detail"]["local_business_writeback_confirmed"])
-        self.assertTrue(receipt["detail"]["local_readback_confirmed"])
-        self.assertEqual(1, refresh.call_count)
-        row = record_store.get_row_by(record_store.CODEX_CREDENTIALS, "filename", filename)
-        self.assertEqual(service.REQUEST_PENDING, row["oauth_refresh_error"])
-
-        with operation._connect() as conn, conn.cursor() as cur:
-            cur.execute(
-                f"UPDATE {operation._table('operation_runs')} "
-                "SET heartbeat_at=now() - interval '1 hour' WHERE id=%s",
-                (run_id,),
-            )
-        self.assertEqual(1, operation_runtime_store.recover_interrupted_runtime_runs())
-        recovered = operation.get_run(run_id)
-        self.assertEqual("attention_required", recovered["status"])
-        self.assertEqual("request_unknown", recovered["result_summary"]["outcome"])
-        self.assertEqual("confirmed", recovered["result_summary"]["remote_intent_state"])
-
-        with patch.object(service, "enqueue_refresh") as enqueue:
-            result = service.enqueue_due_credentials()
-        self.assertEqual(0, result["started"])
-        self.assertEqual(1, result["reconciled"])
-        enqueue.assert_not_called()
+            with patch.object(service, "enqueue_refresh") as enqueue:
+                result = service.enqueue_due_credentials()
+            self.assertEqual(0, result["started"])
+            self.assertEqual(1, result["reconciled"])
+            enqueue.assert_not_called()
+        cohort.finish(case)
 
     def test_post_write_marker_restore_crash_uses_durable_producer_fence(self):
-        account_id, email, filename = self._seed_credential("post-write-crash")
-        created = self._create_run(account_id, email, filename, "post-write-crash-run")
-        service._register_worker()
-        original_mark = service.db.mark_codex_oauth_refresh
-        calls = 0
+        cohort = type(self)._crash_cohort
+        case = cohort.claim("post-write-crash")
+        with cohort.case_scope(case):
+            run_id = case.run_id
+            before_recovery = operation.get_run(run_id)
+            self.assertEqual("settling", before_recovery["status"])
+            self.assertEqual("response_received", before_recovery["data"]["remote_intent"]["receipt_state"])
+            row = record_store.get_row_by(record_store.CODEX_CREDENTIALS, "filename", case.filename)
+            self.assertIsNone(row["oauth_refresh_error"])
+            self.assertEqual(1, case.gate["refresh_calls"])
 
-        def crash_when_restoring_marker(name, *, error=None):
-            nonlocal calls
-            calls += 1
-            if calls == 2:
-                raise SystemExit("synthetic crash after credential readback")
-            return original_mark(name, error=error)
+            self.assertEqual(1, operation_runtime_store.recover_interrupted_runtime_runs())
+            with patch.object(service, "enqueue_refresh") as enqueue:
+                result = service.enqueue_due_credentials()
 
-        with (
-            patch.object(
-                service,
-                "_request_refresh",
-                return_value={"access_token": "new-access", "refresh_token": "new-refresh", "expires_in": 3600},
-            ) as refresh,
-            patch.object(service, "_sync_sub2_if_needed", return_value={"status": "disabled"}),
-            patch.object(service.db, "mark_codex_oauth_refresh", side_effect=crash_when_restoring_marker),
-        ):
-            with self.assertRaises(SystemExit):
-                task_gateway._execute_operation_handler(
-                    service.TASK_TYPE,
-                    int(created["run"]["id"]),
-                )
-
-        run_id = int(created["run"]["id"])
-        before_recovery = operation.get_run(run_id)
-        self.assertEqual("settling", before_recovery["status"])
-        self.assertEqual("response_received", before_recovery["data"]["remote_intent"]["receipt_state"])
-        row = record_store.get_row_by(record_store.CODEX_CREDENTIALS, "filename", filename)
-        self.assertIsNone(row["oauth_refresh_error"])
-        self.assertEqual(1, refresh.call_count)
-
-        with operation._connect() as conn, conn.cursor() as cur:
-            cur.execute(
-                f"UPDATE {operation._table('operation_runs')} "
-                "SET heartbeat_at=now() - interval '1 hour' WHERE id=%s",
-                (run_id,),
-            )
-        self.assertEqual(1, operation_runtime_store.recover_interrupted_runtime_runs())
-        with patch.object(service, "enqueue_refresh") as enqueue:
-            result = service.enqueue_due_credentials()
-
-        self.assertEqual(0, result["started"])
-        self.assertEqual(0, result["reconciled"])
-        enqueue.assert_not_called()
+            self.assertEqual(0, result["started"])
+            self.assertEqual(0, result["reconciled"])
+            enqueue.assert_not_called()
+        cohort.finish(case)
 
     def test_legacy_adapter_keeps_fence_and_marks_unknown_on_writeback_failure(self):
         account_id, email, filename = self._seed_credential("writeback")

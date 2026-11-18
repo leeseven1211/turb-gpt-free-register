@@ -7,6 +7,7 @@ Web、注册恢复、批量操作和 CLI 都只创建 operation task/run；执�
 from __future__ import annotations
 
 import logging
+import sys
 import threading
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -16,9 +17,13 @@ from core.storage import accounts as db
 from core.storage.operations import runtime as operation_task_store
 from core.operations import run_log as task_run_log
 from core.operations import task_gateway
+from core.operations.proxy_resources import capture_proxy_pool_child
 from core.operations.runtime import CancellationToken, OperationCancelled, operation_context
 from core.operations.executor import configured_workers
 from core.operations.executor import executor as _EXECUTOR
+from core.operations.settlement_contracts import (
+    OperationSettlementPending, OperationSettlementConflict, OperationSettlementFenced,
+)
 
 logger = logging.getLogger('core.codex_operation_service')
 
@@ -29,6 +34,60 @@ _DISPATCHED_RUNS: set[int] = set()
 _DISPATCH_LOCK = threading.RLock()
 _CONFIG_SNAPSHOT_PROVIDER: Callable[..., Any] | None = None
 _CONFIG_PROVIDER_LOCK = threading.RLock()
+
+
+class _RouteCleanup:
+    """Exact live route handle; the registry retains it until release confirms."""
+
+    def __init__(self, route, run_id: int, resource_id: int | None, *, domain=None) -> None:
+        self.route = route
+        self.run_id = int(run_id)
+        self.resource_id = int(resource_id) if resource_id is not None else None
+        self.proxy_pool_child = None
+        self.domain = domain
+        self.released = False
+        self.physical_released = False
+        self._provider_returned = False
+        lease = getattr(route, "lease", None)
+        lease_id = getattr(lease, "lease_id", None)
+        metadata = getattr(lease, "metadata", None)
+        self._persistent_lease_id = (
+            str(lease_id) if lease_id is not None and isinstance(metadata, Mapping)
+            and (metadata.get("persistent_lease") or metadata.get("pool_resource_id")) else None
+        )
+        self._lock = threading.RLock()
+
+    def release(self, *, deadline=None) -> bool:
+        with self._lock:
+            if self.released:
+                return True
+            if not self.physical_released:
+                if not self._provider_returned:
+                    result = self.route.release(reason=f"codex-operation-{self.run_id}")
+                    if result is False:
+                        raise OperationSettlementPending("Codex route release unconfirmed")
+                    self._provider_returned = True
+                if self._persistent_lease_id is not None:
+                    from core.storage import postgres
+                    from core.storage.operations.common import settlement_scope
+                    from psycopg.rows import dict_row
+                    with settlement_scope(self.domain, deadline=deadline):
+                        with postgres.connect(row_factory=dict_row, deadline=deadline) as conn, conn.cursor() as cur:
+                            cur.execute(
+                                f"SELECT lease_id, state FROM {postgres.qualified('proxy_leases')} WHERE lease_id=%s",
+                                (self._persistent_lease_id,),
+                            )
+                            row = cur.fetchone()
+                    if not row or row.get("state") not in {"released", "recent"}:
+                        raise OperationSettlementPending("Codex original proxy release unconfirmed")
+                self.physical_released = True
+            if self.resource_id is not None:
+                from core.storage.operations.common import settlement_scope
+                with settlement_scope(self.domain, deadline=deadline):
+                    if not operation_task_store.release_resource(self.resource_id, state="released"):
+                        raise OperationSettlementPending("Codex route resource release unconfirmed")
+            self.released = True
+            return True
 
 
 class _CompletionRegistrationPending(task_gateway.OperationLeaseUnavailable):
@@ -445,9 +504,52 @@ def _dispatch_queued_once(*, scan_limit: int | None = None) -> int:
     return task_gateway.dispatch_registered_once(limit=scan_limit)
 
 
+def _retry_operation_action(task: Mapping[str, Any]) -> dict:
+    return retry_task(int(task["id"]), trigger="manual_retry")
+
+
+def _stop_operation_action(task: Mapping[str, Any], *, force: bool) -> dict:
+    active = next((
+        run for run in reversed(task.get("runs") or [])
+        if run.get("status") in {"queued", "running", "stopping", "cancelling", "settling", "waiting"}
+    ), None)
+    if not active:
+        return {"ok": True, "state": "empty", "message": "任务没有活跃 attempt"}
+    if force:
+        return terminate(run_id=int(active["id"]))
+    kwargs = {"run_id": int(active["id"])}
+    if task.get("_expected_run_status"):
+        kwargs["expected_status"] = task["_expected_run_status"]
+    return request_cancel(**kwargs)
+
+
+def _cancel_operation_action(task: Mapping[str, Any]) -> dict:
+    return _stop_operation_action(task, force=False)
+
+
+def _terminate_operation_action(task: Mapping[str, Any]) -> dict:
+    return _stop_operation_action(task, force=True)
+
+
+def register_actions() -> None:
+    """Retain Codex account-state updates without starting its dispatcher."""
+    task_gateway.register_operation_actions(
+        "codex_retry", retry_handler=_retry_operation_action,
+        cancel_handler=_cancel_operation_action, terminate_handler=_terminate_operation_action,
+    )
+
+
+def register_handler() -> None:
+    task_gateway.register_dispatch_handler("codex_retry", _execute_run)
+    register_actions()
+
+
 def start_dispatcher() -> bool:
     """Register Codex and start the shared task-type dispatcher."""
-    task_gateway.register_dispatch_handler("codex_retry", _execute_run)
+    from core.runtime.execution_access import component_start_allowed
+    if not component_start_allowed():
+        return False
+    register_handler()
     return task_gateway.start_dispatcher()
 
 
@@ -835,14 +937,29 @@ def _execute_run(run_id: int) -> dict:
     if int(execution.claimed_run.get("id") or 0) != int(run_id) or not concurrency.validate_execution(execution):
         return {"status": "fenced", "run_id": run_id, "reason": "permit_owner_lost"}
     if execution.claimed_run.get("_deactivated_before_execution"):
-        operation_task_store.finish_run(run_id, status="deactivated", message="账号已确认停用，队列任务未执行",
-                                        execution_id=execution.execution_id,
-                                        result_summary={"status": "deactivated", "reason": "account_deactivated_before_execution"})
+        context = task_gateway.OperationHandlerContext(execution.claimed_run, execution_id=execution.execution_id)
+        context.finish(status="deactivated", message="账号已确认停用，队列任务未执行",
+                       result_summary={"status": "deactivated", "reason": "account_deactivated_before_execution"})
         return {"status": "deactivated", "run_id": run_id}
     return _execute_claimed_run(run_id, execution)
 
 
 def _execute_claimed_run(run_id: int, execution) -> dict:
+    context = task_gateway.OperationHandlerContext(execution.claimed_run, execution_id=execution.execution_id)
+    with context.storage_scope():
+        result = _execute_claimed_run_with_context(run_id, execution, context)
+    if context.last_result is not None:
+        actual = context.last_result
+        status = "attention_required" if actual.status == "request_unknown" else actual.status
+        result = {**result, "status": status, "ok": status == "success"}
+        if actual.message:
+            result["message"] = actual.message
+        if actual.error:
+            result["error"] = actual.error
+    return result
+
+
+def _execute_claimed_run_with_context(run_id: int, execution, settlement_context) -> dict:
     execution_id = execution.execution_id
     run = execution.claimed_run
     current = operation_task_store.get_run(run_id) or run
@@ -861,6 +978,7 @@ def _execute_claimed_run(run_id: int, execution) -> dict:
     remote_receipt_state: str | None = None
     route = None
     route_resource_id: int | None = None
+    route_cleanup: _RouteCleanup | None = None
     result: dict = {"status": "failed", "ok": False, "message": "OAuth 未返回结果"}
     preflight_open = True
     network_open = False
@@ -897,22 +1015,7 @@ def _execute_claimed_run(run_id: int, execution) -> dict:
         values = dict(summary or {})
         values.setdefault("execution_id", execution_id)
         values.setdefault("lease_owner", execution_id)
-        try:
-            operation_task_store.finish_run(
-                run_id,
-                status=status,
-                message=message,
-                error=error,
-                result_summary=values,
-                execution_id=execution_id,
-                lease_token=lease_token or None,
-            )
-        except PermissionError:
-            logger.warning(
-                "Codex operation 终态写入被 execution/lease fence 拒绝：run=%s",
-                run_id,
-            )
-            return False
+        settlement_context.finish(status=status, message=message, error=error, result_summary=values)
         return True
 
     with _LOCAL_TOKENS_LOCK:
@@ -929,16 +1032,11 @@ def _execute_claimed_run(run_id: int, execution) -> dict:
         file_handler.setLevel(logging.DEBUG)
         file_handler.addFilter(lambda record: record.thread == worker_thread_id)
         root_logger.addHandler(file_handler)
-        lease_token = operation_task_store.acquire_account_lease(account_id=account_id, run_id=run_id) or ""
-        if not lease_token:
-            raise RuntimeError("账号操作租约被另一执行占用")
-        lease_guard = task_gateway.OperationLease(
-            run_id=run_id,
-            account_id=account_id,
+        lease_guard = settlement_context.acquire_lease(
             resource_family=str(current.get("resource_family") or "openai_interactive"),
-            token=lease_token,
-            ttl_seconds=600,
+            ttl_seconds=600, scope_kind="final",
         )
+        lease_token = lease_guard.token
         raw_data = current.get("data") if isinstance(current.get("data"), dict) else {}
         if raw_data.get("completion_auth"):
             from core.accounts.completion import active_registration_job
@@ -967,23 +1065,50 @@ def _execute_claimed_run(run_id: int, execution) -> dict:
             token.checkpoint()
 
             driver = str(snapshot.get("oauth_driver") or "protocol")
+            protocol_driver = driver in {"protocol", "protocol_v2", "protocol_current", "protocol_direct"}
             from core.proxy.account_routes import acquire_account_proxy
 
             network_open = True
             report(stage="network", message="正在申请账号 OAuth 网络线路", state="running")
             route = acquire_account_proxy(account_id=account_id, email=email, purpose="codex-oauth")
+            route_cleanup = _RouteCleanup(
+                route, run_id, None, domain=settlement_context.settlement_domain,
+            )
+            settlement_context.register_cleanup(route_cleanup, key=f"codex-route:{run_id}", blocking=True)
+            route_cleanup.proxy_pool_child = capture_proxy_pool_child(
+                route, settlement_context,
+                actor_scope="owner_process" if protocol_driver else "external",
+            )
             public = route.public_dict()
+            resource_detail = {
+                "execution_id": execution_id,
+                "proxy_mode": route.mode,
+                "proxy_region": route.region,
+                "network_route": public.get("network_route"),
+            }
+            if route_cleanup.proxy_pool_child is not None:
+                resource_detail["proxy_pool_child"] = dict(route_cleanup.proxy_pool_child)
             resource = operation_task_store.register_resource(
                 run_id,
                 resource_type="proxy_lease",
                 provider=str(route.provider or ""),
-                detail={
-                    "proxy_mode": route.mode,
-                    "proxy_region": route.region,
-                    "network_route": public.get("network_route"),
-                },
+                external_id=f"codex-route:{execution_id}",
+                detail=resource_detail,
             )
             route_resource_id = int(resource["id"])
+            route_cleanup.resource_id = route_resource_id
+            resource_payload = {
+                "resource_id": route_resource_id, "resource_uuid": str(resource["resource_uuid"]),
+                "run_id": run_id, "execution_id": execution_id,
+            }
+            if route_cleanup.proxy_pool_child is not None:
+                resource_payload["external_id"] = f"codex-route:{execution_id}"
+                resource_payload["proxy_pool_child"] = dict(route_cleanup.proxy_pool_child)
+            settlement_context.add_settlement_obligation(
+                "resource_release", resource_identity=f"operation-resource:{resource['resource_uuid']}",
+                payload=resource_payload,
+                blocks_permit=True,
+            )
             report(
                 stage="network", message="账号 OAuth 网络线路已就绪", state="success",
                 detail={
@@ -995,7 +1120,6 @@ def _execute_claimed_run(run_id: int, execution) -> dict:
             )
             network_open = False
 
-            protocol_driver = driver in {"protocol", "protocol_v2", "protocol_current", "protocol_direct"}
             if protocol_driver:
                 # 协议链路没有浏览器生命周期；明确 skipped，避免保留一个
                 # 永远 running 的 browser scope。
@@ -1269,28 +1393,19 @@ def _execute_claimed_run(run_id: int, execution) -> dict:
                     final_status, message=sync_message, error=final_error, summary=run_summary,
                 )
                 return {**result, "status": final_status, "run_id": run_id, "task_persistence_confirmed": persisted}
-            operation_task_store.finish_run(
-                run_id,
-                status=final_status,
-                message=str(result.get("message") or ""),
-                error=final_error,
-                result_summary=run_summary,
-                execution_id=execution_id,
-                lease_token=lease_token,
-            )
+            _finish_fenced(final_status, message=str(result.get("message") or ""),
+                           error=final_error, summary=run_summary)
             return {**result, "status": final_status, "run_id": run_id}
+    except (OperationSettlementPending, OperationSettlementConflict, OperationSettlementFenced):
+        raise
     except _CompletionRegistrationPending as exc:
-        requeued = operation_task_store.requeue_claimed_run(
-            run_id,
-            execution_id=execution_id,
-            lease_token=lease_token or None,
-            reason=str(exc),
-            delay_seconds=1.0,
-        )
-        if requeued:
+        try:
+            settlement_context.defer(reason=str(exc), delay_seconds=1.0)
             db.update_account_codex_operation_state(email, execution_status="queued", active_run_id=run_id)
             task_gateway.notify_dispatch()
             return {"status": "deferred", "ok": False, "run_id": run_id, "reason": str(exc)}
+        except OperationCancelled:
+            pass
         message = "任务在等待注册结束前收到取消请求"
         db.update_account_codex_operation_state(
             email, execution_status="empty", last_run_status="cancelled",
@@ -1409,17 +1524,20 @@ def _execute_claimed_run(run_id: int, execution) -> dict:
                 file_handler.close()
             except Exception:
                 pass
-        if route is not None:
-            try:
-                route.release(reason=f"codex-operation-{run_id}")
-            finally:
-                if route_resource_id:
-                    operation_task_store.release_resource(route_resource_id, state="released")
-        if lease_guard is not None:
-            lease_guard.release()
-        elif lease_token:
-            operation_task_store.release_account_lease(run_id, lease_token)
+        active_error = sys.exc_info()[1]
+        cleanup_error = None
+        try:
+            if route_cleanup is not None:
+                route_cleanup.release()
+        except Exception as exc:
+            cleanup_error = exc
+        # The context retains the final guard until exact settlement confirms;
+        # pending finish/defer must not delete its only original fence here.
         with _LOCAL_TOKENS_LOCK:
             _LOCAL_TOKENS.pop(run_id, None)
         _forget_dispatched(run_id)
         task_run_log.clear_current_context()
+        if cleanup_error is not None and not isinstance(
+            active_error, (OperationSettlementPending, OperationSettlementConflict, OperationSettlementFenced),
+        ):
+            raise OperationSettlementPending("Codex route cleanup pending") from cleanup_error
