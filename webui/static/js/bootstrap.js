@@ -16,9 +16,7 @@ jobsTimer = setInterval(() => {
   if (!document.hidden && !$('#tab-register').classList.contains('hidden')) refreshJobs({automatic: true});
 }, 5000);
 setInterval(() => { if (!document.hidden) loadSummary(); }, 10000);
-setInterval(() => {
-  if (!document.hidden && !$('#tab-overview').classList.contains('hidden')) loadDashboard();
-}, 15000);
+// 总览由 Vue owner 按页面可见性管理读取与轮询。
 setInterval(() => {
   if (!document.hidden && !$('#tab-accounts').classList.contains('hidden') && $('#tab-accounts')?.dataset.moduleView !== 'tasks') pollAccountPlanStatuses();
 }, 5000);

@@ -1366,6 +1366,7 @@ updateTopbarClock();
 setInterval(updateTopbarClock, 30000);
 
 function closePageDialogsForNavigation() {
+  window.DashboardPage?.closeDialogs?.();
   // 离开页面时走完整关闭逻辑，清理轮询、焦点状态和滚动锁。
   const dialogs = [
     ['accountTaskLogPanel', typeof closeAccountTaskLogModal === 'function' ? closeAccountTaskLogModal : null],
@@ -1412,7 +1413,8 @@ function activateTab(tab, persist=true, historyMode=persist ? 'push' : 'none') {
   document.title = `${meta.title} · Turb Console`;
   closeMobileSidebar();
   if (persist) localStorage.setItem('gpt_console_active_tab', tab);
-  if (tab === 'overview') ensureViewLoaded('overview', loadDashboard);
+  window.DashboardPage?.setVisible(tab === 'overview');
+  if (tab === 'overview' && !window.DashboardPage) ensureViewLoaded('overview', loadDashboard);
   if (tab === 'bulk' && window.BulkTasks) void BulkTasks.activate();
   if (tab === 'tasks') ensureViewLoaded('account-tasks', loadAccountTasks);
   if (tab === 'accounts') {

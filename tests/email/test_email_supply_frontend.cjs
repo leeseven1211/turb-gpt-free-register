@@ -3,8 +3,12 @@ const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
+const {h, mountDashboard} = require('../webui/dashboard_vue_fixture.cjs');
+
+test.after(() => h.close());
 
 const source = fs.readFileSync(path.join(__dirname, '..', '..', 'webui/static/js/pages/dashboard/page.js'), 'utf8');
+const bridge = fs.readFileSync(path.join(__dirname, '..', '..', 'webui/static/js/shared/page-bridge.js'), 'utf8');
 const pools = ['outlook', 'generic_api', 'cloudflare_domain', 'icloud_hide', 'email_butler'];
 const localSupply = () => ({
   scope: 'local_pool', status: 'known', total: 20, available: 12, used: 6, failed: 2, reason: '',
@@ -35,13 +39,15 @@ function createView(responses = {}) {
   };
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
   const context = {
-    $: element, document: {addEventListener() {}}, summaryLoading: false, dashboardLoading: false,
+    $: element, document: {addEventListener() {}}, summaryLoading: false,
     CAPABILITIES: {email_sources: {icloud_hide: {enabled: false}}}, api: request, apiCached: request, esc, attrEsc: esc, pill: String,
     localStorage: {getItem() { return null; }, setItem() {}},
     showToast: value => toasts.push(value), markViewReady: value => ready.push(value),
   };
+  context.window = context;
   vm.createContext(context);
-  vm.runInContext(`${source}\nglobalThis.view = {loadSummary, loadDashboard, card: overviewRegistryCard};`, context);
+  vm.runInContext(bridge, context);
+  vm.runInContext(`${source}\nglobalThis.view = {loadSummary};`, context);
   return {view: context.view, element, calls, toasts, ready};
 }
 
@@ -80,18 +86,18 @@ test('本地库存为空显示确定的零', async () => {
 });
 
 test('概览只读本地 dashboard 汇总，不请求远端库存接口', async () => {
-  const {view, element, calls, ready, toasts} = createView();
-  await view.loadDashboard();
+  const {wrapper, calls, ready, toasts} = await mountDashboard(dashboard(localSupply()));
   assert.deepEqual(calls.sort(), ['/api/capabilities', '/api/dashboard']);
-  assert.match(element('#overviewMetrics').innerHTML, /<strong>12<\/strong>/);
-  assert.match(element('#overviewMetrics').innerHTML, /本地/);
+  assert.equal(wrapper.get('[data-dashboard-card="metric-email"] strong').text(), '12');
+  assert.match(wrapper.get('[data-dashboard-card="metric-email"]').text(), /本地/);
   assert.deepEqual(ready, ['overview']);
   assert.deepEqual(toasts, []);
 });
 
-test('本地库存详情优先五个池的数据，配置停用不隐藏库存', () => {
-  const {view} = createView();
-  const html = view.card('panel-email').render(dashboard(localSupply()));
+test('本地库存详情优先五个池的数据，配置停用不隐藏库存', async () => {
+  const capabilities = {email_sources: Object.fromEntries(pools.map(source => [source, {enabled: false}]))};
+  const {wrapper} = await mountDashboard(dashboard(localSupply()), capabilities);
+  const html = wrapper.get('[data-dashboard-card="panel-email"]').html();
   for (const source of pools) assert.ok(html.includes(source), html);
   assert.match(html, /<strong>12<\/strong>/);
   assert.doesNotMatch(html, /按需|运行时租用|Butler 连接/);

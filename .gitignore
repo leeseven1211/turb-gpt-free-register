@@ -73,3 +73,6 @@ bak
 backups/
 core/用于注册的API邮箱.json
 core/用于注册的API邮箱.txt
+
+# Frontend dependencies (directory or local development symlink)
+/frontend/node_modules

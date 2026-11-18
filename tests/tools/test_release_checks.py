@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import ast
+import json
 import shutil
 import subprocess
 import sys
@@ -299,3 +300,95 @@ def test_release_keeps_account_modules_without_copying_private_account_data(tmp_
         cwd=release, capture_output=True, text=True,
     )
     assert result.returncode == 0, result.stderr
+
+
+def _dashboard_source(source: Path, *, omit: str | None = None) -> dict[str, str]:
+    files = {
+        "frontend/package.json": '{"name": "dashboard", "private": true}\n',
+        "frontend/package-lock.json": '{"name": "dashboard", "lockfileVersion": 3, "packages": {}}\n',
+        "frontend/src/dashboard/main.ts": "export const dashboard = 'read-only';\n",
+        "frontend/src/dashboard/App.vue": "<template><main>Overview</main></template>\n",
+        "frontend/vite.config.ts": "export default {};\n",
+        "webui/static/dashboard/dashboard.js": "console.log('dashboard');\n",
+        "webui/static/dashboard/dashboard.css": "main { display: block; }\n",
+    }
+    for relative, content in files.items():
+        if relative == omit:
+            continue
+        path = source / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    return {name: content for name, content in files.items() if name != omit}
+
+
+def _commit_fixture_paths(source: Path, paths: list[str]) -> None:
+    subprocess.run(["git", "add", "--", *paths], cwd=source, check=True)
+    subprocess.run(
+        ["git", "-c", "user.name=release-test", "-c", "user.email=release-test@example.invalid",
+         "commit", "-qm", "test: dashboard release fixture"],
+        cwd=source, check=True,
+    )
+
+
+def test_release_keeps_dashboard_sources_and_assets_without_frontend_private_files(tmp_path):
+    source = _git_source(tmp_path)
+    files = _dashboard_source(source)
+    private_files = (
+        "frontend/node_modules/example/index.js",
+        "frontend/.vite/deps/cache.js",
+        "frontend/.cache/build.json",
+        "frontend/coverage/index.html",
+        "frontend/dist/dashboard.js",
+        "frontend/test-results/result.json",
+        "frontend/playwright-report/index.html",
+        "frontend/.npmrc",
+        "frontend/.env.local",
+        "frontend/vite.config.local.ts",
+    )
+    for relative in private_files:
+        path = source / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("private fixture\n", encoding="utf-8")
+    _commit_fixture_paths(source, [*files, *private_files])
+
+    release = prepare_release(source, tmp_path / "releases", "dashboard")
+
+    assert check_release(release)["ok"] is True
+    for relative, content in files.items():
+        assert (release / relative).read_text(encoding="utf-8") == content
+    for relative in private_files:
+        assert not (release / relative).exists()
+    manifest = json.loads((release / "release-manifest.json").read_text(encoding="utf-8"))
+    lock_entry = next(item for item in manifest["files"] if item["path"] == "frontend/package-lock.json")
+    assert manifest["locks"]["frontend/package-lock.json"] == lock_entry["sha256"]
+
+
+@pytest.mark.parametrize("missing", [
+    "frontend/package-lock.json",
+    "webui/static/dashboard/dashboard.js",
+    "webui/static/dashboard/dashboard.css",
+])
+def test_prepare_dashboard_rejects_missing_lock_or_built_assets(tmp_path, missing):
+    source = _git_source(tmp_path)
+    files = _dashboard_source(source, omit=missing)
+    _commit_fixture_paths(source, list(files))
+
+    with pytest.raises(ReleaseError, match=missing.replace(".", r"\.")):
+        prepare_release(source, tmp_path / "releases", "dashboard")
+
+
+@pytest.mark.parametrize("lock_hash", [None, "0" * 64])
+def test_check_dashboard_requires_frontend_lock_manifest_hash(tmp_path, lock_hash):
+    source = _git_source(tmp_path)
+    _commit_fixture_paths(source, list(_dashboard_source(source)))
+    release = prepare_release(source, tmp_path / "releases", "dashboard")
+    manifest_path = release / "release-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if lock_hash is None:
+        manifest["locks"].pop("frontend/package-lock.json")
+    else:
+        manifest["locks"]["frontend/package-lock.json"] = lock_hash
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ReleaseError, match="lock|依赖锁"):
+        check_release(release)

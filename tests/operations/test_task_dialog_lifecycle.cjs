@@ -8,7 +8,7 @@ const root = path.join(__dirname, '..', '..');
 const commonSource = fs.readFileSync(path.join(root, 'webui/static/js/shared/common.js'), 'utf8');
 const jobsSource = fs.readFileSync(path.join(root, 'webui/static/js/pages/registration/page.js'), 'utf8');
 const accountsSource = require('../frontend_script_sources.cjs').readAccountScripts();
-const dashboardSource = fs.readFileSync(path.join(root, 'webui/static/js/pages/dashboard/page.js'), 'utf8');
+const pageBridgeSource = fs.readFileSync(path.join(root, 'webui/static/js/shared/page-bridge.js'), 'utf8');
 
 function extractFunction(source, name, nextMarker) {
   const start = source.indexOf(`function ${name}(`);
@@ -27,8 +27,6 @@ const functions = [
   extractFunction(accountsSource, 'closeAccountTaskStepDialog', '\nfunction scrollAccountTaskDialogFromWheel('),
   extractFunction(accountsSource, 'closeAccountDetail', "\n$('#btnCloseAccountDetail')"),
   extractFunction(accountsSource, 'closeEmailChangeModal', '\nfunction trapEmailChangeFocus('),
-  extractFunction(dashboardSource, 'openOverviewCustomizer', '\nfunction closeOverviewCustomizer('),
-  extractFunction(dashboardSource, 'closeOverviewCustomizer', '\nfunction handleOverviewCardDrop('),
 ].join('\n');
 
 function element(classes = [], parentElement = null) {
@@ -74,7 +72,7 @@ function createView({activeTab = 'register', taskOpen = true, stepOpen = false, 
   const documentElement = element();
   documentElement.scrollTop = 0;
   body.parentElement = documentElement;
-  const tabs = ['overview', 'register', 'accounts', 'extract-workbench', 'codex', 'outlook', 'proxy-traffic', 'config'];
+  const tabs = ['overview', 'register', 'bulk', 'accounts', 'extract-workbench', 'extract-stats', 'codex', 'outlook', 'proxy-traffic', 'config'];
   const contentTab = activeTab === 'tasks' ? 'accounts' : activeTab;
   for (const tab of tabs) nodes.set(`#tab-${tab}`, element(tab === contentTab ? [] : ['hidden'], body));
   nodes.get('#tab-accounts').dataset.moduleView = activeTab === 'tasks' ? 'tasks' : 'active';
@@ -166,7 +164,6 @@ function createView({activeTab = 'register', taskOpen = true, stepOpen = false, 
     accountTaskStepDetailInert: inertState,
   };
   vm.runInNewContext(`let modalScrollY = 0;\n${functions}`, sandbox);
-  if (open.has('overviewCustomizer')) sandbox.openOverviewCustomizer();
   sandbox.updateModalScrollLock();
   return {sandbox, nodes, body, documentElement, overlay, inertState, previouslyInteractive, previouslyInert, clearedTimers, scrollRestores, focused, returnFocus};
 }
@@ -346,16 +343,25 @@ test('任务详情未打开时切页不触发任务关闭或误关其它弹窗',
   assert.deepEqual(view.focused, [], '未打开的总览面板不执行关闭逻辑');
 });
 
-test('离开总览关闭自定义面板并解除其独立滚动锁', () => {
-  const view = createView({activeTab: 'overview', taskOpen: false, otherModal: 'overviewCustomizer'});
-  assert.equal(view.body.classList.contains('overview-customizer-open'), true);
+test('离开总览经真实页面桥接关闭 Vue 自定义面板并停止页面读取', async () => {
+  const view = createView({activeTab: 'overview', taskOpen: false});
+  const calls = [];
+  // Vue 拥有 native dialog 和滚动锁；这里验证旧导航将关闭与可见性送达同一 owner。
+  // 实际 dialog 锁的获取/释放由 DashboardPage 和 useNativeDialog 组件测试覆盖。
+  view.nodes.delete('#overviewCustomizer');
+  view.nodes.delete('#overviewCustomizerBackdrop');
+  view.nodes.set('#dashboard-page-root', {dataset:{moduleUrl:'/dashboard/dashboard.js'}});
+  vm.runInNewContext(pageBridgeSource, view.sandbox);
+  view.sandbox.window.DashboardPage = view.sandbox.window.createPageBridge({
+    rootId:'dashboard-page-root',tabId:'tab-overview',mount:'mountDashboard',
+    loadModule:async()=>({mountDashboard:()=>({
+      setVisible:value=>calls.push(['visible',value]),
+      closeCustomizer:()=>calls.push(['close']),
+    })}),
+  });
+  await view.sandbox.window.DashboardPage.setVisible(true);
   assert.equal(view.body.classList.contains('modal-open'), false);
   view.sandbox.activateTab('register');
-  assert.equal(view.nodes.get('#overviewCustomizer').classList.contains('hidden'), true);
-  assert.equal(view.nodes.get('#overviewCustomizerBackdrop').classList.contains('hidden'), true);
-  assert.equal(view.nodes.get('#overviewCustomizer').getAttribute('aria-hidden'), 'true');
-  assert.equal(view.nodes.get('#btnCustomizeOverview').getAttribute('aria-expanded'), 'false');
-  assert.equal(view.sandbox.overviewCustomizerOpen, false);
-  assert.equal(view.body.classList.contains('overview-customizer-open'), false);
+  assert.deepEqual(calls,[['visible',true],['close'],['visible',false]]);
   assert.equal(view.body.classList.contains('modal-open'), false);
 });

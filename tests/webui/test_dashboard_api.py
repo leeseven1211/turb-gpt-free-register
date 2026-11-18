@@ -14,7 +14,6 @@ from tests.support_pg import PostgresTestCase
 
 
 class DashboardUiScriptTests(unittest.TestCase):
-    MODERN_DASHBOARD_JS = Path(__file__).resolve().parents[2] / "webui/static/js/pages/dashboard/page.js"
     MODERN_COMMON_JS = Path(__file__).resolve().parents[2] / "webui/static/js/shared/common.js"
     MODERN_CODEX_JS = Path(__file__).resolve().parents[2] / "webui/static/js/pages/codex/page.js"
 
@@ -29,293 +28,10 @@ class DashboardUiScriptTests(unittest.TestCase):
         self.assertNotIn("extra_json", compact)
         self.assertNotIn("access_token", compact)
 
-    def test_dashboard_proxy_platform_labels_follow_current_source_and_keep_legacy_aliases(self):
-        source = self.MODERN_DASHBOARD_JS.read_text(encoding="utf-8")
-        function_source = source[:source.index("function renderDashboard")]
-        harness = f"""
-const assert = require('node:assert/strict');
-function esc(value) {{ return String(value ?? ''); }}
-function attrEsc(value) {{ return String(value ?? ''); }}
-{function_source}
-for (const [platform, label, available] of [
-  ['1024proxy', '1024Proxy', true], ['711proxy', '711Proxy', true],
-  ['manual', '手动代理池', true], ['1024', '1024Proxy', true],
-  ['pool', '静态代理池', true], ['none', '直连', false], ['direct', '直连', false],
-]) {{
-  const data = {{proxy: {{platform, active_leases: 0, leases: []}}}};
-  assert.equal(overviewProxyPlatformLabel(platform), label);
-  assert.equal(overviewRegistryCard('panel-proxy').available(data), available);
-  assert.ok(overviewRegistryCard('panel-proxy').render(data).includes(label));
-  assert.ok(overviewRegistryCard('metric-proxy').render(data).includes(label));
-}}
-assert.equal(overviewProxyPlatformLabel(' 711PROXY '), '711Proxy');
-console.log('ok');
-"""
-        result = subprocess.run(["node", "--input-type=commonjs", "-e", harness], capture_output=True, text=True)
-        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
-        self.assertEqual(result.stdout.strip(), "ok")
-
-    def test_dashboard_proxy_summary_displays_at_most_three_exit_leases(self):
-        source = self.MODERN_DASHBOARD_JS.read_text(encoding="utf-8")
-        start = 0
-        end = source.index("$('#btnRefreshOverview')", start)
-        function_source = source[start:end]
-        harness = f"""
-const targets = new Map();
-function $(selector) {{
-  if (!targets.has(selector)) targets.set(selector, {{innerHTML: ''}});
-  return targets.get(selector);
-}}
-function esc(value) {{ return String(value ?? ''); }}
-function attrEsc(value) {{ return String(value ?? ''); }}
-function pill(status) {{ return String(status); }}
-{function_source}
-renderDashboard({{
-  accounts: {{plans: {{}}}},
-  email: {{sources: []}},
-  jobs: {{counts: {{}}, today_counts: {{}}}},
-  proxy: {{
-    platform: '1024',
-    active_leases: 4,
-    leases: Array.from({{length: 4}}, (_, index) => ({{
-      endpoint: `192.0.2.${{index + 1}}:8080`,
-      region: 'US',
-    }})),
-  }},
-  codex: {{}},
-}});
-const exitRows = ($('#overviewPanels').innerHTML.match(/overview-exit-row/g) || []).length;
-if (exitRows !== 3) throw new Error(`expected 3 exit rows, got ${{exitRows}}`);
-console.log('ok');
-"""
-        result = subprocess.run(
-            ["node", "--input-type=commonjs", "-e", harness],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
-        self.assertEqual(result.stdout.strip(), "ok")
-
-    def test_dashboard_hides_unavailable_cards_and_email_sources(self):
-        source = self.MODERN_DASHBOARD_JS.read_text(encoding="utf-8")
-        start = 0
-        end = source.index("$('#btnRefreshOverview')", start)
-        function_source = source[start:end]
-        harness = f"""
-const targets = new Map();
-function $(selector) {{
-  if (!targets.has(selector)) targets.set(selector, {{innerHTML: '', addEventListener() {{}}}});
-  return targets.get(selector);
-}}
-function esc(value) {{ return String(value ?? ''); }}
-function attrEsc(value) {{ return String(value ?? ''); }}
-function pill(status) {{ return String(status); }}
-let CAPABILITIES = {{
-  email_sources: {{
-    outlook: {{enabled: false}},
-    generic_api: {{enabled: false}},
-  }},
-  features: {{register: {{enabled: false}}}},
-  proxy: {{registration: {{enabled: false}}}},
-}};
-global.localStorage = {{getItem() {{ return null; }}, setItem() {{}}, removeItem() {{}}}};
-{function_source}
-renderDashboard({{
-  accounts: {{total: 0, active: 0, archived: 0, plans: {{}}}},
-  email: {{local_total: 0, local_available: 0, sources: [
-    {{source: 'outlook', label: 'Outlook', enabled: false, available: 4}},
-    {{source: 'generic_api', label: '通用 API', enabled: true, available: 0}},
-  ]}},
-  jobs: {{total: 0, counts: {{}}, today_counts: {{}}}},
-  proxy: {{platform: 'none', active_leases: 0, leases: []}},
-  codex: {{total: 0, pending: 0}},
-}});
-const allHtml = Array.from(targets.values()).map(item => item.innerHTML).join('\\n');
-if (allHtml.includes('Outlook') || allHtml.includes('通用 API')) throw new Error('unavailable email source rendered');
-if (allHtml.includes('data-overview-card="panel-email"')) throw new Error('unavailable email card rendered');
-if (allHtml.includes('data-overview-card="panel-proxy"')) throw new Error('unconfigured proxy card rendered');
-if (allHtml.includes('data-overview-card="metric-codex"')) throw new Error('empty Codex card rendered');
-console.log('ok');
-"""
-        result = subprocess.run(
-            ["node", "--input-type=commonjs", "-e", harness],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
-        self.assertEqual(result.stdout.strip(), "ok")
-
-    def test_dashboard_preferences_keep_order_and_remove_unknown_cards(self):
-        source = self.MODERN_DASHBOARD_JS.read_text(encoding="utf-8")
-        start = 0
-        end = source.index("function renderDashboard", start)
-        function_source = source[start:end]
-        harness = f"""
-{function_source}
-const prefs = normalizeOverviewPreferences({{
-  order: {{metrics: ['metric-jobs', 'metric-gone'], panels: ['panel-email']}},
-  hidden: ['panel-email', 'panel-gone'],
-}}, {{
-  metrics: ['metric-accounts', 'metric-jobs'],
-  panels: ['panel-email', 'panel-proxy'],
-}});
-if (JSON.stringify(prefs.order.metrics) !== JSON.stringify(['metric-jobs', 'metric-accounts'])) throw new Error('metric order not normalized');
-if (JSON.stringify(prefs.order.panels) !== JSON.stringify(['panel-email', 'panel-proxy'])) throw new Error('panel order not normalized');
-if (JSON.stringify(prefs.hidden) !== JSON.stringify(['panel-email'])) throw new Error('hidden cards not normalized');
-console.log('ok');
-"""
-        result = subprocess.run(
-            ["node", "--input-type=commonjs", "-e", harness],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
-        self.assertEqual(result.stdout.strip(), "ok")
-
-    def test_overview_card_sizes_are_saved_and_bounded(self):
-        source = self.MODERN_DASHBOARD_JS.read_text(encoding="utf-8")
-        function_source = source[:source.index("function renderDashboard")]
-        harness = f"""
-function esc(value) {{ return String(value ?? ''); }}
-function attrEsc(value) {{ return String(value ?? ''); }}
-{function_source}
-const available = {{metrics: ['metric-accounts'], panels: ['panel-email', 'panel-proxy']}};
-const prefs = normalizeOverviewPreferences({{
-  sizes: {{'metric-accounts': 'wide', 'panel-email': 'invalid', 'panel-proxy': 'full', missing: 'full'}},
-}}, available);
-if (prefs.sizes['metric-accounts'] !== 'wide') throw new Error('metric width lost');
-if (prefs.sizes['panel-email'] !== 'normal') throw new Error('invalid width was not reset');
-if (prefs.sizes['panel-proxy'] !== 'full') throw new Error('panel width lost');
-if ('missing' in prefs.sizes) throw new Error('unknown size retained');
-const html = renderOverviewPanel(overviewRegistryCard('panel-email'), {{email: {{sources: [{{source: 'outlook', label: 'Outlook', enabled: true, available: 5}}]}}}}, prefs);
-if (!html.includes('data-overview-size="normal"')) throw new Error('normalized width not rendered');
-if (!html.includes('data-overview-resize')) throw new Error('resize handle missing');
-if (!html.includes('overview-card-drag')) throw new Error('page drag handle missing');
-console.log('ok');
-"""
-        result = subprocess.run(["node", "--input-type=commonjs", "-e", harness], capture_output=True, text=True)
-        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
-        self.assertEqual(result.stdout.strip(), "ok")
-
-    def test_overview_card_reorder_can_place_card_after_target(self):
-        source = self.MODERN_DASHBOARD_JS.read_text(encoding="utf-8")
-        function_source = source[:source.index("function toggleOverviewCard")]
-        harness = f"""
-{function_source}
-const prefs = {{order: {{metrics: [], panels: ['panel-email', 'panel-proxy', 'panel-jobs', 'panel-accounts']}}}};
-reorderOverviewCard(prefs, 'panels', 'panel-email', 'panel-jobs', true);
-if (JSON.stringify(prefs.order.panels) !== JSON.stringify(['panel-proxy', 'panel-jobs', 'panel-email', 'panel-accounts'])) throw new Error('card not placed after target');
-reorderOverviewCard(prefs, 'panels', 'panel-accounts', 'panel-proxy', false);
-if (JSON.stringify(prefs.order.panels) !== JSON.stringify(['panel-accounts', 'panel-proxy', 'panel-jobs', 'panel-email'])) throw new Error('card not placed before target');
-console.log('ok');
-"""
-        result = subprocess.run(["node", "--input-type=commonjs", "-e", harness], capture_output=True, text=True)
-        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
-        self.assertEqual(result.stdout.strip(), "ok")
-
-    def test_overview_drag_uses_vertical_midpoint_across_grid_rows(self):
-        source = self.MODERN_DASHBOARD_JS.read_text(encoding="utf-8")
-        start = source.index("function overviewPageDropAfter")
-        end = source.index("function previewOverviewPageOrder", start)
-        function_source = source[start:end]
-        harness = f"""
-global.getComputedStyle = () => ({{gridTemplateColumns: '100px 100px'}});
-{function_source}
-const state = {{card: {{getBoundingClientRect: () => ({{left: 0, top: 0, width: 100, height: 100}})}}, grid: {{}}}};
-const sameRow = {{dataset: {{overviewSize: 'normal'}}, getBoundingClientRect: () => ({{left: 120, top: 0, width: 100, height: 100}})}};
-if (!overviewPageDropAfter(state, sameRow, 180, 10)) throw new Error('same-row target should use horizontal midpoint');
-const nextRow = {{dataset: {{overviewSize: 'normal'}}, getBoundingClientRect: () => ({{left: 0, top: 120, width: 100, height: 100}})}};
-if (overviewPageDropAfter(state, nextRow, 90, 140)) throw new Error('cross-row target should use vertical midpoint');
-if (!overviewPageDropAfter(state, nextRow, 10, 180)) throw new Error('cross-row lower half should insert after');
-const full = {{dataset: {{overviewSize: 'full'}}, getBoundingClientRect: () => ({{left: 0, top: 0, width: 220, height: 100}})}};
-if (overviewPageDropAfter(state, full, 200, 10)) throw new Error('full-width target should use vertical midpoint');
-console.log('ok');
-"""
-        result = subprocess.run(["node", "--input-type=commonjs", "-e", harness], capture_output=True, text=True)
-        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
-        self.assertEqual(result.stdout.strip(), "ok")
-
-    def test_overview_exposes_new_aggregate_cards(self):
-        source = self.MODERN_DASHBOARD_JS.read_text(encoding="utf-8")
-        function_source = source[:source.index("$('#btnRefreshOverview')")]
-        harness = f"""
-const targets = new Map();
-function $(selector) {{
-  if (!targets.has(selector)) targets.set(selector, {{innerHTML: ''}});
-  return targets.get(selector);
-}}
-function esc(value) {{ return String(value ?? ''); }}
-function attrEsc(value) {{ return String(value ?? ''); }}
-function pill(status) {{ return String(status); }}
-{function_source}
-renderDashboard({{
-  accounts: {{total: 20, active: 18, archived: 2, codex_ready: 9, plans: {{free: 18}}}},
-  email: {{local_available: 5, sources: [{{source: 'outlook', label: 'Outlook', kind: 'local_pool', enabled: true, total: 20, available: 5, used: 12, failed: 2, disabled: 1}}]}},
-  jobs: {{total: 30, counts: {{pending: 3, running: 2, stopping: 1, success: 20, failed: 4}}, today_counts: {{success: 4, failed: 1}}}},
-  proxy: {{platform: 'none', leases: []}},
-  codex: {{total: 12, exported: 7, pending: 5}},
-}});
-const html = $('#overviewPanels').innerHTML;
-for (const id of ['panel-task-queue', 'panel-email-health', 'panel-codex-progress', 'panel-job-history']) {{
-  if (!html.includes(`data-overview-card="${{id}}"`)) throw new Error(`${{id}} missing`);
-}}
-if (!html.includes('待处理') || !html.includes('失败邮箱') || !html.includes('已导出') || !html.includes('累计任务结果')) throw new Error('aggregate values missing');
-console.log('ok');
-"""
-        result = subprocess.run(["node", "--input-type=commonjs", "-e", harness], capture_output=True, text=True)
-        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
-        self.assertEqual(result.stdout.strip(), "ok")
-
-    def test_overview_data_rich_cards_explain_compact_hidden_rows(self):
-        source = self.MODERN_DASHBOARD_JS.read_text(encoding="utf-8")
-        function_source = source[:source.index("function renderDashboard")]
-        harness = f"""
-function esc(value) {{ return String(value ?? ''); }}
-function attrEsc(value) {{ return String(value ?? ''); }}
-function pill(status) {{ return String(status); }}
-{function_source}
-const email = overviewRegistryCard('panel-email').render({{email: {{sources: [
-  {{source: 'outlook', label: 'Outlook', kind: 'local_pool', enabled: true, available: 1}},
-  {{source: 'generic_api', label: 'API', kind: 'local_pool', enabled: true, available: 2}},
-  {{source: 'icloud_hide', label: 'iCloud', kind: 'local_pool', enabled: true, available: 3}},
-  {{source: 'email_butler', label: 'Butler', kind: 'on_demand', enabled: true}},
-]}}}});
-if (!email.includes('另有 2 个来源')) throw new Error('compact email summary missing');
-if (!email.includes('另有 3 个来源')) throw new Error('minimal email summary missing');
-const plans = overviewRegistryCard('panel-accounts').render({{accounts: {{plans: {{free: 10, plus: 8, pro: 6, team: 4, go: 2}}}}}});
-if (!plans.includes('另有 2 种套餐') || !plans.includes('另有 3 种套餐')) throw new Error('compact plan summaries missing');
-console.log('ok');
-"""
-        result = subprocess.run(["node", "--input-type=commonjs", "-e", harness], capture_output=True, text=True)
-        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
-        self.assertEqual(result.stdout.strip(), "ok")
-
-    def test_overview_compact_cards_keep_full_counts_and_priority_rows(self):
-        source = self.MODERN_DASHBOARD_JS.read_text(encoding="utf-8")
-        function_source = source[:source.index("function renderDashboard")]
-        harness = f"""
-function esc(value) {{ return String(value ?? ''); }}
-function attrEsc(value) {{ return String(value ?? ''); }}
-function pill(status) {{ return `<span class="pill">${{status}}</span>`; }}
-{function_source}
-const proxy = overviewRegistryCard('panel-proxy').render({{proxy: {{platform: '1024', active_leases: 4, leases: [
-  {{endpoint: 'a'}}, {{endpoint: 'b'}}, {{endpoint: 'c'}}, {{endpoint: 'd'}},
-]}}}});
-if (!proxy.includes('另有 3 个出口')) throw new Error('compact proxy count must include unrendered leases');
-const queue = overviewRegistryCard('panel-task-queue').render({{jobs: {{counts: {{pending: 3, running: 2, stopping: 1}}}}}});
-if (!queue.includes('overview-density-secondary"><span>停止中') || !queue.includes('停止中 1')) throw new Error('queue does not compact nonzero secondary status');
-const history = overviewRegistryCard('panel-job-history').render({{jobs: {{counts: {{success: 10, failed: 2, partial_success: 3, stopped: 1}}}}}});
-if (!history.includes('overview-density-secondary"><span>部分成功') || !history.includes('部分成功 3')) throw new Error('history does not compact nonzero secondary status');
-const today = overviewRegistryCard('panel-jobs').render({{jobs: {{today: 'today', today_counts: {{success: 10, partial_success: 3, failed: 2}}}}}});
-if (!/overview-density-secondary">\\s*<span class="pill">partial_success/.test(today) || !today.includes('部分成功 3')) throw new Error('today results do not compact partial success');
-console.log('ok');
-"""
-        result = subprocess.run(["node", "--input-type=commonjs", "-e", harness], capture_output=True, text=True)
-        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
-        self.assertEqual(result.stdout.strip(), "ok")
+    # The ten overview rendering/layout regressions now mount the production Vue
+    # owner in tests/webui/test_dashboard_vue_contracts.cjs. That suite also checks
+    # request coalescing and polling, and runs in the frontend CI job. Keeping it
+    # there allows these Python/backend checks to run without frontend dependencies.
 
     def test_task_error_ui_uses_short_code_and_summary_instead_of_raw_message(self):
         source = self.MODERN_COMMON_JS.read_text(encoding="utf-8")
@@ -373,6 +89,67 @@ console.log('ok');
         rule_end = source.index("}", rule_start)
 
         self.assertIn("table-layout: fixed !important;", source[rule_start:rule_end])
+
+
+class DashboardStaticAssetTests(unittest.TestCase):
+    def test_dashboard_has_one_versioned_lazy_host_and_served_assets(self):
+        from html.parser import HTMLParser
+        from urllib.parse import parse_qs, urlsplit
+
+        class Elements(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.nodes = []
+
+            def handle_starttag(self, tag, attrs):
+                self.nodes.append((tag, dict(attrs)))
+
+        client = create_app(auth_code="test-auth").test_client()
+        response = client.get("/", headers={"X-Auth-Code": "test-auth"})
+        self.assertEqual(response.status_code, 200)
+        parser = Elements()
+        parser.feed(response.get_data(as_text=True))
+        hosts = [attrs for _, attrs in parser.nodes if attrs.get("id") == "dashboard-page-root"]
+        self.assertEqual(len(hosts), 1)
+        versions = []
+        for attribute, expected_path in (
+            ("data-module-url", "/static/dashboard/dashboard.js"),
+            ("data-style-url", "/static/dashboard/dashboard.css"),
+        ):
+            asset_url = hosts[0][attribute]
+            parsed = urlsplit(asset_url)
+            self.assertEqual(parsed.path, expected_path)
+            version = parse_qs(parsed.query).get("v", [""])[0]
+            self.assertTrue(version)
+            versions.append(version)
+            with client.get(asset_url) as asset:
+                self.assertEqual(asset.status_code, 200, asset_url)
+                self.assertTrue(asset.data, asset_url)
+        scripts = [attrs.get("src", "") for tag, attrs in parser.nodes if tag == "script"]
+        scripts_by_path = {}
+        for script in scripts:
+            scripts_by_path.setdefault(urlsplit(script).path, []).append(script)
+        paths = [
+            "/static/js/shared/common.js",
+            "/static/js/shared/page-bridge.js",
+            "/static/js/pages/dashboard/page.js",
+            "/static/js/bootstrap.js",
+        ]
+        indices = []
+        for path in paths:
+            self.assertEqual(len(scripts_by_path.get(path, [])), 1, path)
+            script = scripts_by_path[path][0]
+            indices.append(scripts.index(script))
+            version = parse_qs(urlsplit(script).query).get("v", [""])[0]
+            self.assertTrue(version)
+            versions.append(version)
+            with client.get(script) as asset:
+                self.assertEqual(asset.status_code, 200, script)
+        self.assertEqual(indices, sorted(indices))
+        self.assertEqual(len(set(versions)), 1)
+        self.assertNotIn("/static/dashboard/dashboard.js", scripts_by_path)
+        for old_host in ("overviewMetrics", "overviewPanels", "overviewCustomizeDrawer"):
+            self.assertFalse(any(attrs.get("id") == old_host for _, attrs in parser.nodes), old_host)
 
 
 class DashboardApiTests(PostgresTestCase):
@@ -516,6 +293,14 @@ console.log('ok');
             credential_ref='DASHBOARD_FIXTURE_KEY', inbox_locator={
                 'api_base': 'https://butler.test/v1', 'mailbox_email': 'final@example.test'})['id']
 
+    def _local_hme(self, email):
+        # forward_butler 的本地库存必须已有已确认交接，不能仅凭 profile 算可用。
+        return {'email': email, 'status': 'available', 'remote_active': True,
+                'derivation_policy': {'inbox_profile_id': self._local_profile()},
+                'butler_handoff': {'version': 1, 'state': 'issued', 'owner_kind': 'local_inventory',
+                                   'owner_id': 'dashboard-fixture', 'acquisition_id': 'handoff:' + email,
+                                   'identity_id': 'identity:' + email}}
+
     @patch("core.proxy.pool.pool_source", return_value="1024proxy")
     @patch("core.proxy.provider.active_proxy_leases", return_value=[{"provider": "1024proxy", "endpoint": "1.2.*.*:80"}])
     @patch("webui.app.admin_repository.dashboard_aggregates", return_value={
@@ -538,7 +323,9 @@ console.log('ok');
         for spec, count in ((record_store.OUTLOOK_POOL, 4), (record_store.GENERIC_API_POOL, 2),
                             (record_store.DOMAIN_POOL, 2), (record_store.ICLOUD_HIDE_POOL, 3)):
             for index in range(count):
-                record_store.insert_row(spec, {'email': f'{spec.name}-{index}@example.test', 'status': 'available', 'derivation_policy': {'inbox_profile_id': self._local_profile()}})
+                email = f'{spec.name}-{index}@example.test'
+                row = self._local_hme(email) if spec == record_store.ICLOUD_HIDE_POOL else {'email': email, 'status': 'available'}
+                record_store.insert_row(spec, row)
         for source in ("1024proxy", "711proxy", "manual"):
             with self.subTest(source=source):
                 # 切换来源后旧租约仍可存续，总览平台必须使用当前池来源。
@@ -570,7 +357,7 @@ console.log('ok');
     def test_dashboard_email_sources_include_visibility_and_forward_butler_dependency(
         self, *_mocks
     ):
-        record_store.insert_row(record_store.ICLOUD_HIDE_POOL, {'email': 'local@icloud.com', 'status': 'available', 'derivation_policy': {'inbox_profile_id': self._local_profile()}})
+        record_store.insert_row(record_store.ICLOUD_HIDE_POOL, self._local_hme('local@icloud.com'))
         record_store.insert_row(record_store.OUTLOOK_POOL, {'email': 'disabled@example.test', 'status': 'disabled'})
         with patch("config.email.USE_EMAIL_SERVICE", True), patch("config.email.EMAIL_SOURCE", "icloud_hide"), patch(
             "config.email.ICLOUD_HME_INBOX_MODE", "forward_butler"
@@ -816,7 +603,7 @@ console.log('ok');
         self.assertEqual(response.status_code, 200)
         html = self._modern_page_source(response)
         self.assertIn("if (summaryLoading) return;", html)
-        self.assertIn("if (dashboardLoading) return;", html)
+        # Dashboard coalescing is covered by test_dashboard_vue_contracts.cjs.
         # 注册批次的请求去重与旧响应隔离由 Node 行为回归覆盖，切换批次允许立即发起新请求。
         self.assertIn("if (outlookLoading) { outlookReloadQueued = true; return; }", html)
         self.assertIn("if (codexLoading) { codexReloadQueued = true; return; }", html)

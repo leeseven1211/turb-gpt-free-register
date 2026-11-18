@@ -1,0 +1,50 @@
+const test=require('node:test'),assert=require('node:assert/strict');
+const {h,model,dashboard,mountDashboard,settle}=require('./dashboard_vue_fixture.cjs');
+test.after(()=>h.close());
+test('dashboard proxy labels preserve current and historical identities',async()=>{
+ for(const [platform,label,available]of [['1024proxy','1024Proxy',true],['711proxy','711Proxy',true],['manual','手动代理池',true],['1024','1024Proxy',true],['pool','静态代理池',true],['none','直连',false],['direct','直连',false]]){
+  const {wrapper}=await mountDashboard(dashboard({proxy:{platform,active_leases:0,leases:[]}}));assert.equal(model.proxyLabel(platform),label);assert.equal(wrapper.find('[data-dashboard-card="panel-proxy"]').exists(),available);if(available){assert.match(wrapper.get('[data-dashboard-card="metric-proxy"]').text(),new RegExp(label));assert.match(wrapper.get('[data-dashboard-card="panel-proxy"]').text(),new RegExp(label));}
+ }
+ assert.equal(model.proxyLabel(' 711PROXY '),'711Proxy');
+});
+test('dashboard proxy summary keeps at most three rendered exit leases and full compact total',async()=>{const {wrapper}=await mountDashboard();assert.equal(wrapper.findAll('.overview-exit-row').length,3);assert.match(wrapper.get('[data-dashboard-card="panel-proxy"]').text(),/另有 3 个出口/);});
+test('dashboard unavailable capabilities and empty inventory suppress their cards',async()=>{
+ const data=dashboard({accounts:{total:0,plans:{}},email:{sources:[{source:'outlook',label:'Outlook',enabled:false,available:4},{source:'generic_api',label:'API',enabled:true,available:0}]},jobs:{total:0,counts:{}},proxy:{platform:'none'},codex:{total:0}});
+ const {wrapper}=await mountDashboard(data,{email_sources:{generic_api:{enabled:false}},features:{register:{enabled:false}},proxy:{registration:{enabled:false}}});assert.equal(wrapper.findAll('[data-dashboard-card]').length,0);assert.doesNotMatch(wrapper.text(),/Outlook|API/);
+});
+test('dashboard layout normalization preserves order and prunes unknown hidden ids',()=>{
+ const p=model.normalizePreferences({order:{metrics:['metric-jobs','gone'],panels:['panel-email']},hidden:['panel-email','gone']},{metrics:['metric-accounts','metric-jobs'],panels:['panel-email','panel-proxy']});assert.deepEqual(p.order,{metrics:['metric-jobs','metric-accounts'],panels:['panel-email','panel-proxy']});assert.deepEqual(p.hidden,['panel-email']);
+});
+test('dashboard layout restores bounded widths and heights without unknown cards',async()=>{
+ const available={metrics:['metric-accounts'],panels:['panel-email','panel-proxy']};const p=model.normalizePreferences({sizes:{'metric-accounts':'wide','panel-email':'invalid','panel-proxy':'full',missing:'full'},heights:{'panel-email':210,'panel-proxy':999}},available);assert.equal(p.sizes['metric-accounts'],'wide');assert.equal(p.sizes['panel-email'],'normal');assert.equal(p.sizes['panel-proxy'],'full');assert.equal(p.heights['panel-email'],210);assert.equal(p.heights['panel-proxy'],undefined);assert.equal(p.sizes.missing,undefined);
+ const {wrapper}=await mountDashboard(dashboard(),{},p);assert.equal(wrapper.findAll('[data-overview-resize]').length,13);assert.equal(wrapper.findAll('.overview-card-drag').length,13);
+ assert.equal(wrapper.get('[data-dashboard-card="panel-email"]').attributes('data-overview-size'),'normal');assert.equal(wrapper.get('[data-dashboard-card="panel-proxy"]').attributes('data-overview-size'),'full');assert.equal(wrapper.get('[data-dashboard-card="metric-accounts"]').attributes('data-overview-size'),'wide');assert.match(wrapper.get('[data-dashboard-card="panel-email"]').attributes('style'),/min-height: 210px/);
+});
+test('dashboard customizer drag reorders within a region without crossing regions',async()=>{
+ const {wrapper}=await mountDashboard();const a=wrapper.get('[data-dashboard-custom-card="panel-email"]'),b=wrapper.get('[data-dashboard-custom-card="panel-jobs"]');await a.trigger('dragstart');await b.trigger('drop');await settle();const order=JSON.parse(localStorage.getItem(model.OVERVIEW_PREFERENCE_KEY)).order.panels;assert.deepEqual(order.slice(0,3),['panel-proxy','panel-email','panel-jobs']);
+ await wrapper.get('[data-dashboard-custom-card="metric-email"]').trigger('dragstart');await b.trigger('drop');assert.equal(JSON.parse(localStorage.getItem(model.OVERVIEW_PREFERENCE_KEY)).order.panels.includes('metric-email'),false);
+});
+test('dashboard pointer sorting uses vertical midpoint across grid rows and saves after target',async()=>{
+ const rect=(left,top,width=100)=>({left,top,width,height:100,right:left+width,bottom:top+100});
+ for(const {box,x,y,full,after} of [
+  {box:rect(120,0),x:180,y:10,after:true},
+  {box:rect(0,120),x:90,y:140,after:false},
+  {box:rect(0,120),x:10,y:180,after:true},
+  {box:rect(0,0,220),x:200,y:10,full:true,after:false},
+ ]){
+  const {wrapper}=await mountDashboard();const source=wrapper.get('[data-dashboard-card="metric-accounts"]'),target=wrapper.get('[data-dashboard-card="metric-jobs"]');
+  source.element.getBoundingClientRect=()=>rect(0,0);target.element.getBoundingClientRect=()=>box;source.element.parentElement.style.gridTemplateColumns='100px 100px';if(full)target.element.dataset.overviewSize='full';h.document.elementFromPoint=()=>target.element;
+  await source.get('.overview-card-drag').trigger('pointerdown',{button:0,pointerId:1,clientX:5,clientY:5});
+  const move=new MouseEvent('pointermove',{clientX:x,clientY:y});Object.defineProperty(move,'pointerId',{value:1});window.dispatchEvent(move);
+  const up=new MouseEvent('pointerup');Object.defineProperty(up,'pointerId',{value:1});window.dispatchEvent(up);await settle();
+  assert.deepEqual(JSON.parse(localStorage.getItem(model.OVERVIEW_PREFERENCE_KEY)).order.metrics.slice(0,3),after?['metric-email','metric-jobs','metric-accounts']:['metric-email','metric-accounts','metric-jobs']);
+ }
+});
+test('dashboard exposes all aggregate queue history health and Codex progress cards',async()=>{const {wrapper}=await mountDashboard();for(const id of ['panel-task-queue','panel-job-history','panel-email-health','panel-codex-progress'])assert.equal(wrapper.find(`[data-dashboard-card="${id}"]`).exists(),true);assert.match(wrapper.get('[data-dashboard-card="panel-email-health"]').text(),/可用邮箱12/);assert.match(wrapper.get('[data-dashboard-card="panel-codex-progress"]').text(),/已导出3/);});
+test('dashboard rich cards retain compact and minimal overflow summaries',async()=>{const {wrapper}=await mountDashboard();const email=wrapper.get('[data-dashboard-card="panel-email"]');assert.match(email.get('.overview-more-summary--compact').text(),/另有 3 个来源/);assert.match(email.get('.overview-more-summary--minimal').text(),/另有 4 个来源/);const plans=wrapper.get('[data-dashboard-card="panel-accounts"]');assert.match(plans.text(),/另有 2 种套餐/);assert.match(plans.text(),/另有 3 种套餐/);});
+test('dashboard compact priority rows keep nonzero results visible through summary evidence',async()=>{const {wrapper}=await mountDashboard();for(const[id,phrase]of [['panel-task-queue','停止中 1'],['panel-job-history','部分成功 3'],['panel-jobs','部分成功 3']]){const card=wrapper.get(`[data-dashboard-card="${id}"]`);assert.match(card.get('.overview-more-summary--compact').text(),new RegExp(phrase));assert.ok(card.findAll('.overview-density-secondary').some(row=>row.text().includes(phrase.split(' ')[0])),`${id} priority row lost its secondary density class`);}});
+test('dashboard single owner coalesces pending refreshes and stops fifteen-second polling while hidden',async()=>{
+ h.cleanup();Object.defineProperty(h.document,'hidden',{configurable:true,value:false});const priorSet=window.setInterval,priorClear=window.clearInterval,timers=new Map();let timerId=0,resolve,calls=0;window.setInterval=(fn,ms)=>{const id=++timerId;timers.set(id,{fn,ms});return id;};window.clearInterval=id=>timers.delete(id);
+ try{const component=h.load('src/features/dashboard/DashboardPage.vue').default;const wrapper=h.mount(component,{props:{api:{dashboard:()=>{calls++;return new Promise(done=>{resolve=done;});},capabilities:async()=>({})},deps:{visible:false}}});await wrapper.vm.load();assert.equal(calls,0);wrapper.vm.setVisible(true);const a=wrapper.vm.load(),b=wrapper.vm.load();assert.equal(calls,1);assert.equal([...timers.values()][0].ms,15000);resolve(dashboard());await Promise.all([a,b]);await settle();[...timers.values()][0].fn();assert.equal(calls,2);wrapper.vm.setVisible(false);assert.equal(timers.size,0);resolve(dashboard({accounts:{total:99,active:99}}));await settle();assert.notEqual(wrapper.get('[data-dashboard-card="metric-accounts"] strong').text(),'99');}
+ finally{h.cleanup();window.setInterval=priorSet;window.clearInterval=priorClear;}
+});

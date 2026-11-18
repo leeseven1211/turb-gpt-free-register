@@ -35,7 +35,11 @@ PRIVATE_DIRS = frozenset(
         "output",
         "data",
         "__pycache__",
+        "node_modules",
     }
+)
+FRONTEND_PRIVATE_DIRS = frozenset(
+    {".vite", ".cache", "coverage", "dist", "test-results", "playwright-report"}
 )
 PRIVATE_SUFFIXES = (".db", ".sqlite", ".sqlite3", ".jsonl")
 ACCOUNT_SOURCE_SUFFIXES = {
@@ -45,6 +49,12 @@ ACCOUNT_SOURCE_SUFFIXES = {
     ("webui", "static", "js", "pages", "accounts"): {".js"},
 }
 LOCK_NAMES = ("requirements.txt", "requirements-dev.txt")
+FRONTEND_PACKAGE = "frontend/package.json"
+FRONTEND_LOCK = "frontend/package-lock.json"
+DASHBOARD_ASSETS = (
+    "webui/static/dashboard/dashboard.js",
+    "webui/static/dashboard/dashboard.css",
+)
 
 
 class ReleaseError(ValueError):
@@ -68,6 +78,12 @@ def _is_private_path(relative: Path | PurePosixPath) -> bool:
         return True
     name = parts[-1]
     if name == ".env" or (name.startswith(".env.") and name != ".env.example"):
+        return True
+    if parts[0] == "frontend" and (
+        any(part in FRONTEND_PRIVATE_DIRS for part in parts[1:])
+        or name == ".npmrc"
+        or ".local." in name
+    ):
         return True
     for index, part in enumerate(parts):
         # 账号领域源码与测试目录不是运行时账号导出目录。
@@ -175,10 +191,19 @@ def _validate_project_files(root: Path) -> dict[str, int]:
     text = pyproject.read_text(encoding="utf-8")
     if not re.search(r"(?m)^\s*requires-python\s*=\s*[\"']>=3\.10[\"']\s*$", text):
         raise ReleaseError("pyproject.toml 必须声明 Python >=3.10")
+    if (root / FRONTEND_PACKAGE).is_file():
+        for name in (FRONTEND_LOCK, *DASHBOARD_ASSETS):
+            if not (root / name).is_file():
+                raise ReleaseError(f"总览前端发布文件缺失: {name}")
     try:
         return _lock_checker()(root)
     except Exception as exc:
         raise ReleaseError(f"依赖锁校验失败: {exc}") from exc
+
+
+def _project_lock_names(root: Path) -> tuple[str, ...]:
+    """Older releases without the dashboard package retain their original locks."""
+    return (*LOCK_NAMES, FRONTEND_LOCK) if (root / FRONTEND_PACKAGE).is_file() else LOCK_NAMES
 
 
 def _manifest_for(release_id: str, source_commit: str, files: list[dict[str, Any]], locks: dict[str, str]) -> dict[str, Any]:
@@ -237,7 +262,7 @@ def prepare_release(source: Path | str, releases_dir: Path | str, release_id: st
             )
         locks = {
             name: _sha256(staging / name)
-            for name in LOCK_NAMES
+            for name in _project_lock_names(staging)
             if (staging / name).is_file()
         }
         manifest = _manifest_for(safe_id, source_commit, files, locks)
@@ -312,9 +337,10 @@ def check_release(
         raise ReleaseError(f"release 文件清单不一致: extras={extras[:5]} missing={missing[:5]}")
 
     locks = manifest.get("locks")
-    if not isinstance(locks, dict) or any(name not in locks for name in LOCK_NAMES):
-        raise ReleaseError("manifest 必须记录运行与开发依赖锁")
-    for name in LOCK_NAMES:
+    lock_names = _project_lock_names(root)
+    if not isinstance(locks, dict) or any(name not in locks for name in lock_names):
+        raise ReleaseError("manifest 必须记录项目的运行、开发与前端依赖锁")
+    for name in lock_names:
         lock_path = root / name
         if not lock_path.is_file() or locks.get(name) != _sha256(lock_path):
             raise ReleaseError(f"manifest lock 校验失败: {name}")

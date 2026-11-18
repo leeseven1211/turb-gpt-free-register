@@ -48,3 +48,30 @@ jobs:
         run: python -m ruff check .
       - name: Run isolated tests
         run: python tools/test_isolated.py --profile default -- -q
+      - name: Verify release contents, dashboard assets and list statistics
+        run: >-
+          python tools/test_isolated.py --profile all --
+          tests/tools/test_release_checks.py tests/webui/test_page_assets.py
+          tests/accounts/test_account_grouped_facets.py -q
+
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm --prefix frontend ci
+      - run: npm --prefix frontend run check
+      - run: >-
+          node --test tests/webui/test_dashboard_vue_bridge.cjs
+          tests/webui/test_dashboard_vue_contracts.cjs tests/email/test_email_supply_frontend.cjs
+          tests/operations/test_task_dialog_lifecycle.cjs
+      - run: npm --prefix frontend run build
+      - name: Verify checked-in dashboard assets
+        run: |
+          git diff --exit-code -- webui/static/dashboard/
+          test -z "$(git ls-files --others --exclude-standard -- webui/static/dashboard/)"

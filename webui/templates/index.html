@@ -3,16 +3,16 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <link rel="icon" href="{{ url_for('static', filename='favicon.svg', v='20261030-layout-v2') }}" type="image/svg+xml">
+  <link rel="icon" href="{{ url_for('static', filename='favicon.svg', v=asset_version) }}" type="image/svg+xml">
   <title>GPT 注册控制台</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/shell.css', v='20261112-account-actions-c2a-01') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/shell.css', v=asset_version) }}">
   <!-- Shared UI foundation. Keep module-specific styles above while pages migrate to these tokens. -->
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/shared/ui-foundation.css', v='20261110-task-receipts') }}">
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/bulk.css', v='20261112-task-report-button-01') }}">
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/bulk-report.css', v='20261112-task-report-button-01') }}">
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/config.css', v='20261107-remove-menu-help') }}">
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/extract_link.css', v='20261112-workbench-search-inline-01') }}">
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/extract_stats.css', v='20261112-workbench-stats-01') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/shared/ui-foundation.css', v=asset_version) }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/bulk.css', v=asset_version) }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/bulk-report.css', v=asset_version) }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/config.css', v=asset_version) }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/extract_link.css', v=asset_version) }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/extract_stats.css', v=asset_version) }}">
   <style>
     #accountsPanelV2 > #accountRegistrationRetryResultV2 { flex-wrap: wrap; overflow: visible; align-items: center; }
     #accountRegistrationRetryResultV2 details { min-width: 0; max-width: 100%; font-size: 12px; }
@@ -232,36 +232,9 @@
 <main>
   <!-- ============ 总览 ============ -->
   <div id="tab-overview">
-    <section class="overview-hero" aria-label="平台状态总览">
-      <div>
-        <div class="data-panel-kicker">Operations overview</div>
-        <h2>整个平台，一屏看清</h2>
-        <p>拖动卡片标题旁的把手调整位置，拖动右下角调整大小；显示内容可按需设置。</p>
-      </div>
-      <div class="overview-hero-actions">
-        <button type="button" class="overview-customize-trigger" id="btnCustomizeOverview" aria-expanded="false" aria-controls="overviewCustomizer">自定义总览</button>
-        <button type="button" class="overview-refresh" id="btnRefreshOverview">刷新数据</button>
-      </div>
-    </section>
-
-    <div class="overview-customizer-backdrop hidden" id="overviewCustomizerBackdrop"></div>
-    <aside class="overview-customizer hidden" id="overviewCustomizer" role="dialog" aria-modal="true" aria-labelledby="overviewCustomizerTitle" aria-hidden="true">
-      <div class="overview-customizer-head">
-        <div>
-          <div class="data-panel-kicker">Customize overview</div>
-          <h3 id="overviewCustomizerTitle">显示与排序</h3>
-          <p>拖动卡片排序，也可以用上移/下移调整。未启用或未配置的功能不会出现在这里。</p>
-        </div>
-        <button type="button" class="overview-customizer-close" id="btnCloseOverviewCustomize" aria-label="关闭总览自定义面板">关闭</button>
-      </div>
-      <div class="overview-customizer-list" id="overviewCustomizeList"></div>
-      <div class="overview-customizer-foot">
-        <button type="button" class="overview-reset-layout" id="btnResetOverviewLayout">恢复默认布局</button>
-      </div>
-    </aside>
-
-    <div class="overview-metrics" id="overviewMetrics"></div>
-    <div class="overview-grid" id="overviewPanels"></div>
+    <div id="dashboard-page-root"
+         data-module-url="{{ url_for('static', filename='dashboard/dashboard.js', v=asset_version) }}"
+         data-style-url="{{ url_for('static', filename='dashboard/dashboard.css', v=asset_version) }}"></div>
   </div>
 
   <!-- ============ 注册 ============ -->
@@ -1242,22 +1215,23 @@
   <a id="qrOpenLink" class="qr-link" href="#" target="_blank" rel="noopener noreferrer"></a>
 </div>
 
-<script src="{{ url_for('static', filename='js/shared/common.js', v='20261112-workbench-stats-01') }}"></script>
-<script src="{{ url_for('static', filename='js/pages/dashboard/page.js', v='20261030-layout-v2') }}"></script>
-<script src="{{ url_for('static', filename='js/pages/registration/page.js', v='20261112-task-error-classification-01') }}"></script>
-<script src="{{ url_for('static', filename='js/shared/account-query.js', v='20261110-bulk-v1') }}"></script>
-<script src="{{ url_for('static', filename='js/shared/account-filters.js', v='20261110-bulk-create-v5') }}"></script>
-<script src="{{ url_for('static', filename='js/pages/accounts/page.js', v='20261113-account-copy-credentials-01') }}"></script>
-<script src="{{ url_for('static', filename='js/pages/operations/page.js', v='20261112-bulk-errors-integrated-01') }}"></script>
-<script src="{{ url_for('static', filename='js/pages/accounts/email-change.js', v='20261030-layout-v2') }}"></script>
-<script src="{{ url_for('static', filename='js/pages/accounts/inspection.js', v='20261112-task-error-classification-01') }}"></script>
-<script src="{{ url_for('static', filename='js/pages/email/page.js', v='20261112-task-error-classification-01') }}"></script>
-<script src="{{ url_for('static', filename='js/pages/email/butler-import.js', v='20261112-task-error-classification-01') }}"></script>
-<script src="{{ url_for('static', filename='js/pages/codex/page.js', v='20261112-codex-phone-option-01') }}"></script>
-<script src="{{ url_for('static', filename='js/pages/config/page.js', v='20261112-c2a-config-01') }}"></script>
-<script src="{{ url_for('static', filename='js/pages/extract_link/page.js', v='20261112-workbench-performance-01') }}"></script>
-<script src="{{ url_for('static', filename='js/pages/extract_link/stats.js', v='20261112-workbench-stats-01') }}"></script>
-<script src="{{ url_for('static', filename='js/pages/proxy/traffic.js', v='20261030-layout-v2') }}"></script>
-<script src="{{ url_for('static', filename='js/pages/bulk/report.js', v='20261112-task-report-button-01') }}"></script>
-<script src="{{ url_for('static', filename='js/pages/bulk/page.js', v='20261112-task-report-button-01') }}"></script>
-<script src="{{ url_for('static', filename='js/bootstrap.js', v='20261030-layout-v2') }}"></script>
+<script src="{{ url_for('static', filename='js/shared/common.js', v=asset_version) }}"></script>
+<script src="{{ url_for('static', filename='js/shared/page-bridge.js', v=asset_version) }}"></script>
+<script src="{{ url_for('static', filename='js/pages/dashboard/page.js', v=asset_version) }}"></script>
+<script src="{{ url_for('static', filename='js/pages/registration/page.js', v=asset_version) }}"></script>
+<script src="{{ url_for('static', filename='js/shared/account-query.js', v=asset_version) }}"></script>
+<script src="{{ url_for('static', filename='js/shared/account-filters.js', v=asset_version) }}"></script>
+<script src="{{ url_for('static', filename='js/pages/accounts/page.js', v=asset_version) }}"></script>
+<script src="{{ url_for('static', filename='js/pages/operations/page.js', v=asset_version) }}"></script>
+<script src="{{ url_for('static', filename='js/pages/accounts/email-change.js', v=asset_version) }}"></script>
+<script src="{{ url_for('static', filename='js/pages/accounts/inspection.js', v=asset_version) }}"></script>
+<script src="{{ url_for('static', filename='js/pages/email/page.js', v=asset_version) }}"></script>
+<script src="{{ url_for('static', filename='js/pages/email/butler-import.js', v=asset_version) }}"></script>
+<script src="{{ url_for('static', filename='js/pages/codex/page.js', v=asset_version) }}"></script>
+<script src="{{ url_for('static', filename='js/pages/config/page.js', v=asset_version) }}"></script>
+<script src="{{ url_for('static', filename='js/pages/extract_link/page.js', v=asset_version) }}"></script>
+<script src="{{ url_for('static', filename='js/pages/extract_link/stats.js', v=asset_version) }}"></script>
+<script src="{{ url_for('static', filename='js/pages/proxy/traffic.js', v=asset_version) }}"></script>
+<script src="{{ url_for('static', filename='js/pages/bulk/report.js', v=asset_version) }}"></script>
+<script src="{{ url_for('static', filename='js/pages/bulk/page.js', v=asset_version) }}"></script>
+<script src="{{ url_for('static', filename='js/bootstrap.js', v=asset_version) }}"></script>
