@@ -367,6 +367,59 @@ def account_query_count(spec: dict) -> int:
         return int(value or 0)
 
 
+def _account_list_grouped_facets_eligible(
+    *, archived: str, plan: str, q: str, date_from: str, date_to: str,
+    filters: dict[str, str],
+) -> bool:
+    """Use the measured shape only for canonical unfiltered list scopes."""
+    return (
+        archived in {"0", "all"}
+        and not any((plan, q, date_from, date_to))
+        and not any(filters.values())
+    )
+
+
+def _account_list_grouped_facets_sql(
+    accounts: str, base_clause: str, base_params: list[Any],
+) -> tuple[str, list[Any]]:
+    """Aggregate unchanged unfiltered facet projections without VALUES fanout."""
+    expressions = _account_facet_expressions()
+    dimensions = tuple(expressions)
+    columns = ", ".join(
+        f"{expression} AS {key}" for key, expression in expressions.items()
+    )
+    gated = ", ".join(
+        f"CASE WHEN TRUE THEN NULLIF(m.{dimension}, '') END AS __a2_dim_{index}"
+        for index, dimension in enumerate(dimensions)
+    )
+    facet_cases = " ".join(
+        f"WHEN GROUPING(__a2_dim_{index}) = 0 THEN '{dimension}'::text"
+        for index, dimension in enumerate(dimensions)
+    )
+    value_cases = " ".join(
+        f"WHEN GROUPING(__a2_dim_{index}) = 0 THEN __a2_dim_{index}"
+        for index in range(len(dimensions))
+    )
+    grouping_sets = ", ".join(
+        f"(__a2_dim_{index})" for index in range(len(dimensions))
+    )
+    sql = f"""WITH base AS MATERIALIZED (
+        SELECT {columns} FROM {accounts} a{base_clause}
+    ), __a2_matches AS NOT MATERIALIZED (
+        SELECT b.* FROM base b
+    ), __a2_gated AS NOT MATERIALIZED (
+        SELECT {gated} FROM __a2_matches m
+    ), __a2_grouped AS (
+        SELECT CASE {facet_cases} END AS facet,
+               CASE {value_cases} END AS value,
+               COUNT(*) AS count
+          FROM __a2_gated
+         GROUP BY GROUPING SETS ({grouping_sets})
+    )
+    SELECT facet, value, count FROM __a2_grouped WHERE value IS NOT NULL"""
+    return sql, list(base_params)
+
+
 def list_accounts(
     request: PageRequest,
     *,
@@ -386,30 +439,38 @@ def list_accounts(
         {key: request.filters.get(key, "") for key in ("id", "email")},
     )
     base_clause = f" WHERE {' AND '.join(base_where)}" if base_where else ""
-    expressions = _account_facet_expressions()
-    facet_columns = ", ".join(f"{expression} AS {key}" for key, expression in expressions.items())
-    facet_values = ", ".join(f"('{key}', b.{key})" for key in expressions)
-    facet_where = ["NULLIF(f.value, '') IS NOT NULL"]
-    for key, predicate, values in _account_facet_predicates(
-        plan, request.filters, {key: f"b.{key}" for key in expressions},
+    if _account_list_grouped_facets_eligible(
+        archived=archived, plan=plan, q=q, date_from=date_from, date_to=date_to,
+        filters=request.filters,
     ):
-        facet_where.append(f"(f.facet = %s OR ({predicate}))")
-        facet_params.extend((key, *values))
-    # 旧写法用 9 段 UNION ALL 重复扫描账号表，生产数据里的 extra_json 较大时，
-    # facets 一项就要约 200 ms。这里先物化一次轻量投影，再展开各个维度聚合；
-    # 复杂 JSON/正则表达式只计算一遍。每列统计保留其他列条件，仅忽略自身筛选；
-    # 搜索、日期、ID、邮箱与归档范围始终生效，且不受当前页限制。
-    facet_sql = f"""
-        WITH base AS MATERIALIZED (
-            SELECT {facet_columns}
-              FROM {accounts} a{base_clause}
+        facet_sql, facet_params = _account_list_grouped_facets_sql(
+            accounts, base_clause, facet_params,
         )
-        SELECT f.facet, f.value, COUNT(*) AS count
-          FROM base b
-          CROSS JOIN LATERAL (VALUES {facet_values}) AS f(facet, value)
-         WHERE {' AND '.join(facet_where)}
-         GROUP BY f.facet, f.value
-    """
+    else:
+        expressions = _account_facet_expressions()
+        facet_columns = ", ".join(f"{expression} AS {key}" for key, expression in expressions.items())
+        facet_values = ", ".join(f"('{key}', b.{key})" for key in expressions)
+        facet_where = ["NULLIF(f.value, '') IS NOT NULL"]
+        for key, predicate, values in _account_facet_predicates(
+            plan, request.filters, {key: f"b.{key}" for key in expressions},
+        ):
+            facet_where.append(f"(f.facet = %s OR ({predicate}))")
+            facet_params.extend((key, *values))
+        # 旧写法用 9 段 UNION ALL 重复扫描账号表，生产数据里的 extra_json 较大时，
+        # facets 一项就要约 200 ms。这里先物化一次轻量投影，再展开各个维度聚合；
+        # 复杂 JSON/正则表达式只计算一遍。每列统计保留其他列条件，仅忽略自身筛选；
+        # 搜索、日期、ID、邮箱与归档范围始终生效，且不受当前页限制。
+        facet_sql = f"""
+            WITH base AS MATERIALIZED (
+                SELECT {facet_columns}
+                  FROM {accounts} a{base_clause}
+            )
+            SELECT f.facet, f.value, COUNT(*) AS count
+              FROM base b
+              CROSS JOIN LATERAL (VALUES {facet_values}) AS f(facet, value)
+             WHERE {' AND '.join(facet_where)}
+             GROUP BY f.facet, f.value
+        """
     # chatgpt_session 是恢复用的敏感完整响应，不进入管理列表查询。
     promoted = [
         "id",
