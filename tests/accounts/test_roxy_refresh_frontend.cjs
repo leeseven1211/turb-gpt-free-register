@@ -116,21 +116,26 @@ test('旧接口没有任务 ID 时继续打开本次账号日志', async () => {
   assert.deepEqual(calls.legacyLogs, ['fixture@example.test']);
 });
 
-test('账号补全仅在刷新 AT 策略中展示新驱动和调试字段', () => {
+test('刷新驱动和 Roxy 调试字段仅展示在独立刷新 AT 菜单的刷新策略中', () => {
+  const refreshKeys = [
+    'ACCOUNT_AT_REFRESH_DRIVER', 'OPENAI_PROTOCOL_VERSION', 'LIVE_CHECK_ROXY_FALLBACK_ENABLED',
+    'ACCOUNT_AT_REFRESH_ROXY_DEBUG_ENABLED',
+  ];
+  const fields = [...refreshKeys, 'ACCOUNT_LIVE_CHECK_DRIVER'].map(key => ({key, group: '账号补全'}));
+  const events = {addEventListener() {}};
+  const context = vm.createContext({CONFIG: fields, $: () => events, window: events, esc: String, attrEsc: String});
+  vm.runInContext(configSource, context);
   const groups = [];
-  const context = load(configSource, ['orderedConfigFieldsV2', 'renderAccountCompletionSectionV2'], {
-    esc: String, configGroupSlug: () => 'account-completion',
-    configSectionIntro: () => '', renderConfigSectionHead: () => '', renderConfigSaveActions: () => '',
-    renderAccountCompletionRowV2: () => '',
-    renderConfigSettingGroupV2: (label, fields) => { groups.push({label, keys: fields.map(field => field.key)}); return ''; },
-  });
-  context.renderAccountCompletionSectionV2([
-    'ACCOUNT_AT_REFRESH_DRIVER', 'ACCOUNT_AT_REFRESH_ROXY_DEBUG_ENABLED', 'OPENAI_PROTOCOL_VERSION',
-    'ACCOUNT_LIVE_CHECK_DRIVER', 'LIVE_CHECK_ROXY_FALLBACK_ENABLED',
-  ].map(key => ({key})));
-  const refresh = groups.find(group => group.label === '刷新 AT 策略');
-  assert.deepEqual([...refresh.keys], [
-    'ACCOUNT_AT_REFRESH_DRIVER', 'OPENAI_PROTOCOL_VERSION', 'ACCOUNT_AT_REFRESH_ROXY_DEBUG_ENABLED', 'LIVE_CHECK_ROXY_FALLBACK_ENABLED',
+  const domains = context.configDomainGroupsV2(context.configGroups()['注册与账号']);
+  for (const [domain, items] of Object.entries(domains)) {
+    context.renderConfigSettingGroupV2 = (section, rows) => {
+      if (rows.length) groups.push({domain, section, keys: Array.from(rows, row => row.key)});
+      return '';
+    };
+    context.renderConfigDomainSectionV2(domain, items);
+  }
+  assert.deepEqual(groups, [
+    {domain: '刷新 AT', section: '刷新 AT 策略', keys: refreshKeys},
+    {domain: '查活', section: '查活策略', keys: ['ACCOUNT_LIVE_CHECK_DRIVER']},
   ]);
-  for (const key of refresh.keys) assert.equal(groups.flatMap(group => group.keys).filter(item => item === key).length, 1);
 });
