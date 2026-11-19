@@ -9,6 +9,7 @@ class _Cursor:
     def __init__(self, rows):
         self.rows = rows
         self.statement = ""
+        self.params = None
 
     def __enter__(self):
         return self
@@ -16,8 +17,9 @@ class _Cursor:
     def __exit__(self, *_args):
         return False
 
-    def execute(self, statement):
+    def execute(self, statement, params=None):
         self.statement = statement
+        self.params = params
 
     def fetchall(self):
         return self.rows
@@ -82,3 +84,16 @@ def test_backfill_reads_only_proxy_fields_and_keeps_idempotent_claims(monkeypatc
     assert claims[0][2]["registration_proxy_provider"] == "proxy-a"
     assert claims[1][2]["registration_proxy_region"] == "US"
     assert claims[2][2]["registration_proxy_region"] == "CA"
+
+
+def test_backfill_can_process_a_bounded_batch(monkeypatch):
+    connection = _Connection([])
+
+    @contextmanager
+    def connect(**_kwargs):
+        yield connection
+
+    monkeypatch.setattr(db_legacy.postgres_store, "connect", connect)
+    assert db_legacy.backfill_account_registration_proxy_context(limit=100) == 0
+    assert "JOIN latest" in connection.cursor_instance.statement
+    assert connection.cursor_instance.params == (100,)

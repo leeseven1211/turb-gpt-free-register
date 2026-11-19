@@ -15,8 +15,14 @@ from core.accounts.operation_handlers import RUNTIME_HANDLER_TYPES
 from core.codex import operation_service as codex_operation_service
 from core.extract_link import service as extract_link_service
 from core.operations import task_gateway as account_task_store
+from core.runtime.periodic import PeriodicThread, execution_allowed
 
 logger = logging.getLogger("webui.runtime")
+
+_PROXY_BACKFILL = PeriodicThread("registration-proxy-backfill")
+_PROXY_BACKFILL_BATCH_SIZE = 100
+_PROXY_BACKFILL_RETRY_SECONDS = 30.0
+_PROXY_BACKFILL_PAUSE_SECONDS = 0.1
 
 LEGACY_DURABLE_TASK_TYPES = frozenset({
     *RUNTIME_HANDLER_TYPES,
@@ -288,17 +294,62 @@ def recover_account_background_state(runtime_logger: logging.Logger | None = Non
 
 def run_deferred_account_proxy_backfill(
     runtime_logger: logging.Logger | None = None,
+    *,
+    limit: int | None = None,
 ) -> int:
     """在 Worker 心跳已启动后补齐历史账号代理上下文。"""
     active_logger = runtime_logger or logger
     try:
-        changed = int(db.backfill_account_registration_proxy_context() or 0)
+        kwargs = {} if limit is None else {"limit": int(limit)}
+        changed = int(db.backfill_account_registration_proxy_context(**kwargs) or 0)
     except Exception:
         active_logger.exception("历史账号注册代理来源/国家回填失败；下次启动将重试")
         return 0
     if changed:
         active_logger.info("已为 %s 个历史账号补齐注册代理来源/国家", changed)
     return changed
+
+
+def _proxy_backfill_loop() -> None:
+    """在独立维护线程中分批回填，不能占用 Worker 启动主线程。"""
+    ticker = _PROXY_BACKFILL.stop_event
+    while not ticker.is_set():
+        if not execution_allowed():
+            if ticker.wait(1.0):
+                return
+            continue
+        _PROXY_BACKFILL.work_started()
+        try:
+            changed = run_deferred_account_proxy_backfill(
+                logger, limit=_PROXY_BACKFILL_BATCH_SIZE,
+            )
+        finally:
+            _PROXY_BACKFILL.work_finished()
+        # 存储查询使用内连接；不足一批表示当前没有更多可匹配的历史上下文。
+        wait_for = (
+            _PROXY_BACKFILL_PAUSE_SECONDS
+            if changed >= _PROXY_BACKFILL_BATCH_SIZE
+            else _PROXY_BACKFILL_RETRY_SECONDS
+        )
+        if ticker.wait(wait_for):
+            return
+
+
+def start_periodic_account_proxy_backfill() -> bool:
+    """启动一次可观察、可停止的历史账号代理上下文维护。"""
+    try:
+        return _PROXY_BACKFILL.start(_proxy_backfill_loop)
+    except Exception:
+        logger.exception("历史账号代理上下文维护启动失败")
+        return False
+
+
+def stop_periodic_account_proxy_backfill(timeout: float = 2.0) -> bool:
+    return _PROXY_BACKFILL.stop(timeout)
+
+
+def account_proxy_backfill_status() -> dict:
+    return _PROXY_BACKFILL.status(enabled=True)
 
 
 def reconcile_recovered_projections(operation_logger: logging.Logger | None = None) -> int:

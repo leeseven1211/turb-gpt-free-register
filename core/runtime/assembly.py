@@ -35,6 +35,7 @@ _STOPS = {
  'sub2api_monitor': 'core.integrations.sub2api.monitor:stop_periodic_monitor',
  'auth_context_cleanup': 'core.accounts.auth_context_cleanup:stop_periodic_cleanup',
  'task_retention': 'core.operations.retention:stop_periodic_cleanup',
+ 'registration_proxy_backfill': 'core.operations.reconciliation:stop_periodic_account_proxy_backfill',
  'email_usage_reports': 'core.email.email_butler.usage_reports:stop_worker',
  'email_service_sync': 'core.email.email_butler.service_facts:stop_worker',
 }
@@ -55,6 +56,7 @@ _STATUS = {
  'sub2api_monitor': 'core.integrations.sub2api.monitor:scheduler_status',
  'auth_context_cleanup': 'core.accounts.auth_context_cleanup:scheduler_status',
  'task_retention': 'core.operations.retention:scheduler_status',
+ 'registration_proxy_backfill': 'core.operations.reconciliation:account_proxy_backfill_status',
  'email_usage_reports': 'core.email.email_butler.usage_reports:worker_runtime_status',
  'email_service_sync': 'core.email.email_butler.service_facts:worker_runtime_status',
 }

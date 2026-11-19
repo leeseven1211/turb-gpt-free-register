@@ -28,7 +28,8 @@ COMPONENT_NAMES = frozenset({
     'recover_local_artifacts', 'sms_cancel_worker', 'recover_account_background_state',
     'deactivation_scanner', 'at_refresher', 'codex_refresher', 'sub2api_sync',
     'sub2api_monitor', 'auth_context_cleanup', 'task_retention', 'email_usage_reports',
-    'email_service_sync', 'config_observer', 'account_executor', 'extract_executor',
+    'registration_proxy_backfill', 'email_service_sync', 'config_observer',
+    'account_executor', 'extract_executor',
     'registration_executor', 'butler_import_dispatcher',
 })
 SETTLEMENT_COUNT_NAMES = frozenset({'settlement_pending', 'resource_pending', 'permit_pending',

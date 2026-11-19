@@ -58,8 +58,6 @@ def main() -> None:
         install(bootstrap)
         start_runtime()
         started = True
-        from core.operations.reconciliation import run_deferred_account_proxy_backfill
-        run_deferred_account_proxy_backfill(logger)
         if os.environ.get('TURB_RUNTIME_MANAGER'):
             from core.runtime.role_launcher import publish_managed_identity
             publish_managed_identity(bootstrap)

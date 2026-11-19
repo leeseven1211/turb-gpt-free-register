@@ -57,6 +57,10 @@ COMPONENTS = (
     ComponentSpec("sub2api_monitor", "service", "core.integrations.sub2api.monitor:start_periodic_monitor"),
     ComponentSpec("auth_context_cleanup", "service", "core.accounts.auth_context_cleanup:start_periodic_cleanup"),
     ComponentSpec("task_retention", "service", "core.operations.retention:start_periodic_cleanup"),
+    ComponentSpec("registration_proxy_backfill", "service",
+                  "core.operations.reconciliation:start_periodic_account_proxy_backfill",
+                  required=False,
+                  stop_target="core.operations.reconciliation:stop_periodic_account_proxy_backfill"),
     ComponentSpec("email_usage_reports", "service", "core.email.email_butler.usage_reports:start_worker", required=False),
     ComponentSpec("email_service_sync", "service", "core.email.email_butler.service_facts:start_worker", required=False),
 )

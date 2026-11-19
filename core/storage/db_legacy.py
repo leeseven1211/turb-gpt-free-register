@@ -1738,7 +1738,7 @@ def update_account_registration_proxy(
     return _patch_account(int(acc_id), changes)
 
 
-def backfill_account_registration_proxy_context() -> int:
+def backfill_account_registration_proxy_context(*, limit: int | None = None) -> int:
     """从历史成功注册任务补齐账号的代理来源/实际国家；已有值不覆盖。"""
     # 启动恢复路径只需要四个代理字段。旧实现把两张表的完整 JSONB
     # 解码到 Python，再对每个账号线性扫描全部任务；生产库中这会把
@@ -1746,6 +1746,11 @@ def backfill_account_registration_proxy_context() -> int:
     # Worker 启动。让 PostgreSQL 做按账号/邮箱的最新任务匹配，并且只
     # 传递窄字段，保留原来的 id DESC 优先级和逐字段幂等 claim。
     from psycopg.rows import dict_row
+
+    if limit is not None:
+        limit = int(limit)
+        if limit <= 0:
+            raise ValueError("backfill_limit_invalid")
 
     accounts_table = postgres_store.qualified(record_store.ACCOUNTS.name)
     jobs_table = postgres_store.qualified(record_store.JOBS.name)
@@ -1799,11 +1804,18 @@ def backfill_account_registration_proxy_context() -> int:
             latest.proxy_provider,
             latest.proxy_region
         FROM missing_accounts AS a
-        LEFT JOIN latest USING (id)
+        JOIN latest USING (id)
+        WHERE (a.account_provider IS NULL AND latest.proxy_provider IS NOT NULL)
+           OR (a.account_region IS NULL AND latest.proxy_region IS NOT NULL)
         ORDER BY a.id
     """
+    if limit is not None:
+        query += "\n        LIMIT %s"
     with postgres_store.connect(row_factory=dict_row) as conn, conn.cursor() as cur:
-        cur.execute(query)
+        if limit is None:
+            cur.execute(query)
+        else:
+            cur.execute(query, (limit,))
         accounts = cur.fetchall()
     changed = 0
     for row in accounts:
