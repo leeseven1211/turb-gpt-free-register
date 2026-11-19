@@ -20,7 +20,7 @@ def _module(name, **values):
     return module
 
 
-def _exercise(*, owner=True, runtime_clean=True, stop_failure=None, log_delay=0, total=55):
+def _exercise(*, owner=True, owner_paused=False, runtime_clean=True, stop_failure=None, log_delay=0, total=55):
     spec = importlib.util.spec_from_file_location("worker_owner_loss_entry", ROOT / "worker.py")
     entry = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(entry)
@@ -30,6 +30,10 @@ def _exercise(*, owner=True, runtime_clean=True, stop_failure=None, log_delay=0,
     def owner_valid():
         calls.append("owner")
         return owner
+
+    def owner_lost():
+        calls.append("owner")
+        return not owner and not owner_paused
 
     def stop_runtime(*, timeout):
         calls.append(("stop", timeout))
@@ -78,6 +82,7 @@ def _exercise(*, owner=True, runtime_clean=True, stop_failure=None, log_delay=0,
         "core.runtime.process": _module(
             "core.runtime.process", start_runtime=lambda: calls.append("start"),
             stop_runtime=stop_runtime, execution_owner_valid=owner_valid,
+            execution_owner_lost=owner_lost,
             execution_admitted=lambda: False,
         ),
         "core.runtime.role_launcher": _module(
@@ -119,6 +124,14 @@ def test_worker_with_owner_keeps_running_when_admission_is_temporarily_closed():
     assert failure is None
     assert calls.count("owner") == 2
     assert calls == ["install", "start", "identity", "owner", "owner", ("stop", 55)]
+    assert receipts == [{"role": "worker", "clean": True, "code": 0}]
+    assert diagnostics == []
+
+
+def test_worker_does_not_exit_during_owner_probe_pause():
+    calls, receipts, diagnostics, failure = _exercise(owner=False, owner_paused=True)
+    assert failure is None
+    assert calls.count("owner") == 2
     assert receipts == [{"role": "worker", "clean": True, "code": 0}]
     assert diagnostics == []
 

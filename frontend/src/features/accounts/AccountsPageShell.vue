@@ -103,8 +103,11 @@ defineExpose({
 });
 </script>
 <template>
-  <Teleport to="#accountToolbarHost"><AccountsToolbar ref="toolbar" :state="toolbarState" :capabilities="capabilities" :runtime="toolbarRuntime" :get-context="()=>owner().getActionContext()" :invoke="invoke" :notify="callbacks.notify"/></Teleport>
-  <AccountsList ref="list" :adapter="adapter" :api="api" :presentation="presentation" :callbacks="callbacks"/>
+  <AccountsList ref="list" :adapter="adapter" :api="api" :presentation="presentation" :callbacks="callbacks">
+    <template #actions>
+      <AccountsToolbar ref="toolbar" :state="toolbarState" :capabilities="capabilities" :runtime="toolbarRuntime" :get-context="()=>owner().getActionContext()" :invoke="invoke" :notify="callbacks.notify"/>
+    </template>
+  </AccountsList>
   <AccountDetail ref="drawer" :api="detailApi" :presentation="detailPresentation" :callbacks="detailCallbacks"/>
   <Inspection ref="inspection" :deps="inspectionDependencies"/>
   <EmailChange ref="emailChange" :deps="emailChangeDependencies"/>

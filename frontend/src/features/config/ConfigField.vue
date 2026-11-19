@@ -54,8 +54,15 @@ const accountCodex=computed(()=>props.field.key==='ACCOUNT_CODEX_DRIVER');
 const quotaKeys=['EXTRACT_LINK_HUANGUANG_CDK','EXTRACT_LINK_HUANGUANG_PAYMENT_CDK','EXTRACT_LINK_HUANGUANG_XXSYUN_API_KEY','EXTRACT_LINK_PAYMENT_XXSYUN_API_KEY'];
 </script>
 <template>
- <div class="config-vue-field" :data-config-setting="field.key" :class="{'is-invalid':error}">
-  <div class="config-vue-field-copy"><label :for="id">{{ field.label || field.key }}</label><code>{{ field.key }}</code><p v-if="field.help" :id="`${id}-help`" class="hint">{{ field.help }}</p><span v-if="status" class="config-vue-field-status" role="status">{{ status }}</span></div>
+ <div class="config-vue-field" :data-config-setting="field.key" :class="{'is-invalid':error, 'is-dirty':owner.isDirty(field.key)}">
+  <div class="config-vue-field-copy">
+   <div class="config-vue-field-name">
+    <label :for="id" :title="field.key">{{ field.label || field.key }}</label>
+    <span v-if="status" class="config-vue-field-status" role="status">{{ status }}</span>
+   </div>
+   <p v-if="field.help" :id="`${id}-help`" class="hint">{{ field.help }}</p>
+   <code v-if="field.label && field.label !== field.key">{{ field.key }}</code>
+  </div>
   <div class="config-vue-field-control">
    <p v-if="legacy">兼容保留</p>
    <p v-else-if="accountCodex">{{ schemaOptions(owner.field('CODEX_OAUTH_DRIVER')).find(item=>item.value===owner.readField('CODEX_OAUTH_DRIVER'))?.label || owner.readField('CODEX_OAUTH_DRIVER') }} · 由注册主链路统一维护</p>
@@ -70,7 +77,11 @@ const quotaKeys=['EXTRACT_LINK_HUANGUANG_CDK','EXTRACT_LINK_HUANGUANG_PAYMENT_CD
     <ConfigChoicePicker v-else-if="isCountry||multi" :id="id" :data-key="field.key" :label="field.label" :country="isCountry" :values="list" :options="options" :empty-label="field.key==='PLAN_CHECK_COUNTRIES'?'沿用账号注册国家':field.key==='PROXY_POOL_COUNTRIES'?'未选择额外预热国家':'未选择'" @change="setList" />
     <select v-else-if="hasSelect" :id="id" :data-key="field.key" :value="selectValue" :aria-label="field.label" :aria-invalid="!!error" :aria-describedby="`${id}-help ${id}-error`" :disabled="options.length===1||options.every(item=>item.disabled)" @change="set(($event.target as HTMLSelectElement).value)"><option v-for="option in options" :key="option.value" :value="option.value" :disabled="option.disabled" :title="option.reason">{{ option.label }}{{ option.disabled&&option.reason?`（${option.reason}）`:'' }}</option></select>
     <textarea v-else-if="field.type==='list_str_multiline'" :id="id" :data-key="field.key" :value="list.join('\n')" :aria-label="field.label" :aria-invalid="!!error" :aria-describedby="`${id}-help ${id}-error`" :placeholder="field.secret?'留空保留已有值':'每行一条，可留空'" @input="input" />
-    <input v-else :id="id" :data-key="field.key" :type="field.type==='bool'?'checkbox':['int','float'].includes(field.type)?'number':field.secret?'password':'text'" :role="field.type==='bool'?'switch':undefined" :checked="!!value" :value="value??''" :min="field.range?.min??field.min" :max="field.range?.max??field.max" :step="field.type==='int'?'1':field.type==='float'?'0.1':undefined" :placeholder="field.secret?'留空保留已有值':'可留空'" autocomplete="off" :aria-label="field.label" :aria-invalid="!!error" :aria-describedby="`${id}-help ${id}-error`" @input="input" @change="normalizeText">
+    <label v-else-if="field.type==='bool'" class="config-vue-switch">
+     <input :id="id" :data-key="field.key" type="checkbox" role="switch" :checked="!!value" :aria-label="field.label" :aria-invalid="!!error" :aria-describedby="`${id}-help ${id}-error`" @input="input">
+     <span aria-hidden="true">{{ value ? '已开启' : '已关闭' }}</span>
+    </label>
+    <input v-else :id="id" :data-key="field.key" :type="['int','float'].includes(field.type)?'number':field.secret?'password':'text'" :value="value??''" :min="field.range?.min??field.min" :max="field.range?.max??field.max" :step="field.type==='int'?'1':field.type==='float'?'0.1':undefined" :placeholder="field.secret?'留空保留已有值':'可留空'" autocomplete="off" :aria-label="field.label" :aria-invalid="!!error" :aria-describedby="`${id}-help ${id}-error`" @input="input" @change="normalizeText">
     <button v-if="field.secret" type="button" :aria-label="`明确清除${field.label}`" @click="owner.clearSecret(field.key)">清除</button>
    </fieldset>
    <p v-if="accountCodex" class="hint">注册和账号补全共用同一套 Codex OAuth 执行方式，请到注册主链路修改。</p>

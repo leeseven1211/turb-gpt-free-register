@@ -301,12 +301,6 @@
   color: var(--ui-color-brand);
   border-color: var(--ui-color-brand);
 }
-.pt-filter-actions {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 8px;
-}
 .pt-detail-dialog {
   max-width: min(820px, calc(100vw - 32px));
   width: 820px;

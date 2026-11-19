@@ -783,6 +783,7 @@ def test_unexpected_carrier_exit_is_sticky_even_without_local_registry(registry)
     gate = SimpleNamespace(blocked=set())
     gate.block = gate.blocked.add
     gate.unblock = gate.blocked.discard
+    gate.reasons = lambda: tuple(gate.blocked)
     with patch.object(coordinator, "_STARTED", True), patch.object(
             coordinator, "_THREAD", SimpleNamespace(is_alive=lambda: False)), patch.object(
             coordinator, "_ADMISSION", gate):

@@ -26,7 +26,7 @@ npm run build
 
 外壳负责导航和可见性，各模块导出显式挂载函数，返回刷新、范围切换、弹窗关闭和销毁方法。页面隐藏、导航切换或销毁时停止相应读取与轮询，并丢弃已失效的迟到响应。账号与 Codex 的归档范围仍通过原菜单进入。
 
-总览读取 `/api/dashboard` 和 `/api/capabilities`，卡片动作使用导航回调，布局偏好保存在 `gpt_console_overview_preferences_v1`。代理库存和记录通过 `setView('pool' | 'records')` 切换；提链统计保留独立菜单和北京时间统计范围；历史子邮箱由邮箱页面管理，可筛选和复制已有记录。
+总览读取 `/api/dashboard` 和 `/api/capabilities`，卡片动作使用导航回调，布局偏好保存在 `gpt_console_overview_preferences_v1`。代理库存和记录通过 `setView('pool' | 'records')` 切换；提链统计从提链工作台的二级菜单进入，按北京时间统计；历史子邮箱由邮箱页面管理，可筛选和复制已有记录。
 
 页面继续沿用 `shell.css` 与基础样式，Vue 局部样式和原生弹窗滚动锁包含在共用 CSS 中。`npm run dev` 默认代理 `/api` 与 `/static` 到 `http://127.0.0.1:8000`，仅连接已确认的本地开发服务。
 

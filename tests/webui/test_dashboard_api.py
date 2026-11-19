@@ -705,7 +705,7 @@ console.log('ok');
         self.assertEqual(response.status_code, 200)
         parser = Elements()
         parser.feed(response.get_data(as_text=True))
-        for host in ("accounts-list-root", "accountToolbarHost", "accountDetailHost",
+        for host in ("accounts-list-root", "accountDetailHost",
                      "accountRegistrationReceiptHost", "accountC2aReceiptHost", "accountC2aConfirmHost"):
             self.assertEqual(sum(attrs.get("id") == host for _, attrs in parser.nodes), 1, host)
         root = next(attrs for _, attrs in parser.nodes if attrs.get("id") == "accounts-list-root")

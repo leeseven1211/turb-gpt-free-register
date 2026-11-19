@@ -7,6 +7,7 @@ import type {RegistrationAction,RegistrationDeps,RegistrationLoadOptions,Registr
 const activeStatuses=['pending','running','stopping'];
 const terminalStatuses=['success','partial_success','failed','stopped','cancelled','interrupted','request_unknown','manual_reconcile','attention_required','password_confirmation_pending','unsupported','deactivated'];
 const retryStatuses=['failed','partial_success','stopped','cancelled','interrupted','request_unknown','manual_reconcile','attention_required'];
+type BatchAction = 'stopBatch' | 'cancelBatch' | 'retryBatch';
 const emptyQuery=():RegistrationQuery=>({page:1,page_size:20,status:'',id:'',email:'',email_source:'',proxy:'',error:'',date_from:'',date_to:''});
 const message=(error:unknown)=>error instanceof Error?error.message:'请求失败';
 const batchString=(value:unknown)=>value==null?'':String(value).trim();
@@ -231,11 +232,20 @@ export function useRegistration(deps:RegistrationDeps){
     })();
     return createFlight;
   }
+  function batchCandidates(kind:BatchAction) {
+    const items=state.batch?.items||[];
+    if(kind==='stopBatch')return items.filter(row=>row.status==='running'||row.status==='stopping');
+    if(kind==='cancelBatch')return items.filter(row=>row.status==='pending');
+    return items.filter(row=>retryStatuses.includes(String(row.status))&&row.retryable);
+  }
+  const batchActions=computed(()=>({
+    stopBatch:Boolean(state.batchId)&&batchCandidates('stopBatch').length>0,
+    cancelBatch:Boolean(state.batchId)&&batchCandidates('cancelBatch').length>0,
+    retryBatch:batchCandidates('retryBatch').length>0,
+  }));
+
   async function executeAction(kind:RegistrationAction,job?:RegistrationJob,selected:RegistrationId[]=[],debug=false){
-    const batchJobs=state.batch?.items||[];
-    const candidates=kind==='stopBatch'?batchJobs.filter(row=>['running','stopping'].includes(String(row.status)))
-      :kind==='cancelBatch'?batchJobs.filter(row=>row.status==='pending')
-      :kind==='retryBatch'?batchJobs.filter(row=>retryStatuses.includes(String(row.status))&&row.retryable):[];
+    const candidates=kind==='stopBatch'||kind==='cancelBatch'||kind==='retryBatch'?batchCandidates(kind):[];
     const ids=kind==='retryBulk'||kind==='deleteBulk'?selected.map(id=>taskId(id)):candidates.map(row=>taskId(row.id));
     if(['stopBatch','cancelBatch','retryBatch','retryBulk','deleteBulk'].includes(kind)&&!ids.length){notify('当前没有可操作的任务');return null;}
     if(['stopBatch','cancelBatch'].includes(kind)&&!state.batchId)return null;
@@ -325,5 +335,5 @@ export function useRegistration(deps:RegistrationDeps){
   if(getCurrentInstance())onBeforeUnmount(dispose);
   return {state,active,creating,registrationUnavailable,ensureMeta,load,loadSummary,renderEmailSupply,applySummary,setVisible,setView,
     setBatch,updateQuery,setPage,setSize,shouldPollJobs,create,action,executeAction,compare,openLog,refreshDetail,closeDetail,notify,
-    terminalStatuses,activeStatuses,dispose};
+    terminalStatuses,activeStatuses,batchActions,dispose};
 }

@@ -110,6 +110,10 @@ class OperationSettlementFenced(PermissionError):
     code = "operation_settlement_fenced"
 
 
+class CleanupDiagnosticReadUnavailable(TimeoutError):
+    """Transient failure reading cleanup diagnostics before the claim starts."""
+
+
 def classify_failure(exc):
     """Return stable transport/SQLSTATE facts, never exception text."""
     state = getattr(exc, "sqlstate", None)

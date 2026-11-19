@@ -69,7 +69,7 @@ class ModernConfigUiContractTests(unittest.TestCase):
         # desktop/mobile measurements are recorded in the browser acceptance.
         self.assertIn("@media (max-width: 860px)", CONFIG_CSS)
         self.assertIn("grid-template-columns: minmax(0, 1fr)", CONFIG_CSS)
-        self.assertIn("min-width:0", CONFIG_CSS)
+        self.assertRegex(CONFIG_CSS, r"\.config-vue-navigation,\s*\.config-vue-content\s*\{\s*min-width:\s*0;")
         self.assertIn("padding-bottom: 160px", CONFIG_CSS)
 
     def test_config_workspace_uses_nested_scrolling_on_desktop(self):
@@ -96,15 +96,17 @@ class ModernConfigUiContractTests(unittest.TestCase):
         self._assert_vue_contract("custom_panels_and_subtabs_share_the_field_content_rail")
 
     def test_config_dense_forms_expand_single_fields_and_multiline_values(self):
-        self.assertIn(".config-vue-field{display:grid;grid-template-columns:minmax(0,1fr) minmax(180px,1fr)", CONFIG_CSS)
-        self.assertIn(".config-vue-control-group :is(input:not([type=checkbox]),select,textarea){width:100%;min-width:0}", CONFIG_CSS)
-        self.assertIn("textarea{min-height:96px;resize:vertical}", CONFIG_CSS)
+        self.assertRegex(CONFIG_CSS, r"\.config-vue-field\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)\s+minmax\(180px,")
+        self.assertRegex(CONFIG_CSS, r"\.config-vue-control-group :is\(input:not\(\[type=checkbox\]\),\s*select,\s*textarea\)\s*\{[^}]*width:\s*100%;")
+        self.assertRegex(CONFIG_CSS, r"\.config-vue-control-group textarea\s*\{[^}]*min-height:\s*96px;[^}]*resize:\s*vertical;")
 
     def test_config_section_subhelp_uses_the_same_content_rail(self):
-        self.assertIn(".config-vue-content section > .hint {\n  margin-inline: 0;", CONFIG_CSS)
+        self.assertRegex(CONFIG_CSS, r"\.config-vue-page \.hint\s*\{[^}]*margin:\s*4px 0 0;[^}]*overflow-wrap:\s*anywhere;")
 
     def test_config_subtabs_use_the_same_content_rail_on_desktop_and_mobile(self):
-        self.assertIn(".config-vue-content > .config-vue-tabs,\n.config-vue-content > section {\n  min-width: 0;\n  margin-inline: 0;", CONFIG_CSS)
+        self.assertRegex(CONFIG_CSS, r"\.config-vue-content-header\s*\{[^}]*padding:\s*\d+px 17px 0;")
+        self.assertRegex(CONFIG_CSS, r"\.config-vue-editor\s*\{[^}]*padding:\s*\d+px 17px \d+px;")
+        self.assertRegex(CONFIG_CSS, r"\.config-vue-content-header,\s*\.config-vue-editor\s*\{[^}]*padding-inline:\s*11px;")
 
     def test_switching_config_groups_resets_the_page_viewport(self):
         self._assert_vue_contract("switching_config_groups_resets_the_page_viewport_without_losing_drafts")

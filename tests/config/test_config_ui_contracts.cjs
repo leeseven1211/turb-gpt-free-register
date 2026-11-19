@@ -179,7 +179,7 @@ test('navigation_exposes_grouped_search_metadata_and_dirty_state', async () => {
   const view = createConfigView([field('REGISTER_NAME', '注册主链路', {help: '昵称搜索帮助'}), field('C2A_API_BASE', 'C2A'), field('TASK_CENTER_RETENTION_DAYS', '任务中心')]);
   assert.match(view.wrapper.get('nav').text(), /业务流程.*资源与服务.*系统/);
   await view.control('REGISTER_NAME').setValue('draft');
-  assert.match(view.wrapper.get('[data-config-nav="注册与账号"]').text(), /1 项 · 1 待保存/);
+  assert.match(view.wrapper.get('[data-config-nav="注册与账号"]').text(), /1 待保存/);
   await view.search('昵称搜索帮助');
   assert.equal(view.wrapper.findAll('[data-config-nav]').length, 1);
   await view.search('C2A_API_BASE');
@@ -188,7 +188,7 @@ test('navigation_exposes_grouped_search_metadata_and_dirty_state', async () => {
 });
 
 test('fields_show_compact_help_without_detail_disclosures', async () => {
-  const view = createConfigView(['ROXY_ONE_PROFILE_PER_ACCOUNT', 'ROXY_RANDOM_PROFILE_NAME_ON_CREATE'].map(key => field(key, 'RoxyBrowser', {type: 'bool', help: `字段帮助 ${key}`})));
+  const view = createConfigView(['ROXY_ONE_PROFILE_PER_ACCOUNT', 'ROXY_RANDOM_PROFILE_NAME_ON_CREATE'].map(key => field(key, 'RoxyBrowser', {label:'浏览器配置', type: 'bool', help: `字段帮助 ${key}`})));
   for (const key of ['ROXY_ONE_PROFILE_PER_ACCOUNT', 'ROXY_RANDOM_PROFILE_NAME_ON_CREATE']) {
     const row = view.wrapper.get(`[data-config-setting="${key}"]`);
     assert.equal(row.find('details').exists(), false);
@@ -238,7 +238,7 @@ test('save_bar_is_hidden_until_changes_or_a_save_receipt_exist', async () => {
 test('custom_panels_and_subtabs_share_the_field_content_rail', async () => {
   const view = createConfigView([field('ROXY_API_BASE', 'RoxyBrowser'), field('PROXY_POOL_SOURCE', '代理与网络', {value: 'manual'})]);
   await view.open('RoxyBrowser');
-  const main = view.wrapper.get('main');
+  const main = view.wrapper.get('.config-vue-content');
   assert.equal(main.find('[data-config-tool="roxy"]').exists(), true);
   assert.equal(main.find('[data-config-setting="ROXY_API_BASE"]').exists(), true);
   assert.equal(main.get('[data-config-tool="roxy"]').element.closest('section'), main.get('[data-config-setting="ROXY_API_BASE"]').element.closest('section'));
@@ -250,7 +250,7 @@ test('custom_panels_and_subtabs_share_the_field_content_rail', async () => {
 test('switching_config_groups_resets_the_page_viewport_without_losing_drafts', async t => {
   const view = createConfigView([field('REGISTER_NAME', '注册主链路'), field('C2A_API_BASE', 'C2A'), field('ROXY_API_BASE', 'RoxyBrowser')]);
   const scroll = t.mock.method(window, 'scrollTo', () => {});
-  const main = view.wrapper.get('main').element;
+  const main = view.wrapper.get('.config-vue-content').element;
   await view.control('REGISTER_NAME').setValue('draft');
   main.scrollTop = 500;
   await view.wrapper.get('[data-config-nav="服务集成"]').trigger('click');
@@ -265,7 +265,7 @@ test('switching_config_groups_resets_the_page_viewport_without_losing_drafts', a
 
 test('read_only_driver_values_keep_their_config_key_context', async () => {
   const options = [{value: 'protocol', label: '协议'}, {value: 'roxy', label: 'Roxy'}];
-  const view = createConfigView([field('CODEX_OAUTH_DRIVER', '注册主链路', {value: 'roxy', options}), field('ACCOUNT_CODEX_DRIVER', '账号补全', {value: 'protocol', options})]);
+  const view = createConfigView([field('CODEX_OAUTH_DRIVER', '注册主链路', {value: 'roxy', options}), field('ACCOUNT_CODEX_DRIVER', '账号补全', {label:'Codex 授权方式', value: 'protocol', options})]);
   await view.open('账号补全');
   const row = view.wrapper.get('[data-config-setting="ACCOUNT_CODEX_DRIVER"]');
   assert.equal(row.get('code').text(), 'ACCOUNT_CODEX_DRIVER');

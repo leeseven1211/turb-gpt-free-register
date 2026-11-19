@@ -128,7 +128,7 @@ async function submit() {
         source = (ROOT / "webui/templates/index.html").read_text()
         parser = _ElementCollector()
         parser.feed(source)
-        self.assertIsNotNone(parser.by_id("accountToolbarHost"))
+        self.assertIsNotNone(parser.by_id("accounts-list-root"))
         self.assertIsNotNone(parser.by_id("accountEmailChangeHost"))
         self.assertIsNone(parser.by_id("emailChangeModal"))
         self.run_vue(r"""

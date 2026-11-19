@@ -8,7 +8,7 @@ const CACHE_MS=30000;
 interface Inflight<T>{promise:Promise<T>;version:number}
 export function createExtractWorkbench(input:ExtractDeps={}){
  const api=input.api||createExtractApi(input);
- const state=reactive({query:blankQuery(),items:[] as ExtractTask[],total:0,counts:{} as Record<string,number>,batches:[] as ExtractBatch[],batchTotal:0,batchPage:1,batchDetail:null as ExtractBatch|null,config:null as ExtractConfig|null,summary:null as Record<string,number>|null,loading:false,error:'',auxErrors:{config:'',summary:'',batches:'',detail:''},visible:input.visible!==false,selected:new Set<string>(),cancellingBatch:'',bulkBusy:false,receipt:null as ExtractReceipt|null});
+ const state=reactive({query:blankQuery(),items:[] as ExtractTask[],total:0,counts:{} as Record<string,number>,batches:[] as ExtractBatch[],batchTotal:0,batchPage:1,batchLoading:false,batchDetail:null as ExtractBatch|null,config:null as ExtractConfig|null,summary:null as Record<string,number>|null,loading:false,error:'',auxErrors:{config:'',summary:'',batches:'',detail:''},visible:input.visible!==false,selected:new Set<string>(),cancellingBatch:'',bulkBusy:false,receipt:null as ExtractReceipt|null});
  let dead=false,life=0,listVersion=0,auxVersion=0,detailVersion=0,configAt=0,batchesAt=0,batchesPage=0,failures=0;
  let timer:ReturnType<typeof setTimeout>|undefined,configRead:Inflight<ExtractConfig>|undefined,summaryRead:Inflight<Record<string,number>>|undefined;
  let listController:AbortController|undefined;
@@ -29,7 +29,43 @@ export function createExtractWorkbench(input:ExtractDeps={}){
   configRead={version,promise};return promise;
  }
  function readSummary(epoch:number){if(summaryRead)return summaryRead.promise;const version=++auxVersion,c=controller();const promise=api.summary(c.signal).then(value=>{if(valid(epoch)){state.summary=value;state.auxErrors.summary='';}return value;}).catch(error=>{if(valid(epoch))state.auxErrors.summary=message(error);throw error;}).finally(()=>{controllers.delete(c);if(summaryRead?.version===version)summaryRead=undefined;});summaryRead={version,promise};return promise;}
- function readBatches(page:number,epoch:number){const pending=batchReads.get(page);if(pending)return pending.promise;const version=++auxVersion,c=controller();const promise=api.batches(page,c.signal).then(value=>{if(valid(epoch)&&page===state.batchPage&&batchReads.get(page)?.version===version){state.batches=value.items;state.batchTotal=value.total;batchesPage=page;batchesAt=Date.now();state.auxErrors.batches='';}return value;}).catch(error=>{if(valid(epoch)&&page===state.batchPage)state.auxErrors.batches=message(error);throw error;}).finally(()=>{controllers.delete(c);if(batchReads.get(page)?.version===version)batchReads.delete(page);});batchReads.set(page,{version,promise});return promise;}
+ function readBatches(page:number,epoch:number){
+  const pending=batchReads.get(page);
+  if(pending)return pending.promise;
+  const version=++auxVersion,c=controller();
+  state.batchLoading=true;
+  state.auxErrors.batches='';
+  const current=()=>valid(epoch)&&page===state.batchPage&&batchReads.get(page)?.version===version;
+  const promise=api.batches(page,c.signal).then(value=>{
+   if(current()){
+    state.batches=value.items;
+    state.batchTotal=value.total;
+    batchesPage=page;
+    batchesAt=Date.now();
+   }
+   return value;
+  }).catch(error=>{
+   if(current())state.auxErrors.batches=message(error);
+   throw error;
+  }).finally(()=>{
+   controllers.delete(c);
+   if(current())state.batchLoading=false;
+   if(batchReads.get(page)?.version===version)batchReads.delete(page);
+  });
+  batchReads.set(page,{version,promise});
+  return promise;
+ }
+ async function loadBatchPage(page:number){
+  if(!active()||state.batchLoading)return;
+  const previous=state.batchPage,epoch=life;
+  state.batchPage=page;
+  try{
+   await readBatches(page,epoch);
+  }catch{
+   // Keep the displayed options paired with their last successful page.
+   if(valid(epoch)&&state.batchPage===page)state.batchPage=previous;
+  }
+ }
  function readDetail(id:string,epoch:number){const pending=detailReads.get(id);if(pending)return pending.promise;const version=++auxVersion,c=controller();const promise=api.batch(id,c.signal).finally(()=>{controllers.delete(c);if(detailReads.get(id)?.version===version)detailReads.delete(id);});detailReads.set(id,{version,promise});return promise;}
  async function auxiliaries(options:ExtractLoadOptions,epoch:number){
   void readConfig(!!options.force,epoch).catch(()=>{});void readSummary(epoch).catch(()=>{});
@@ -69,10 +105,10 @@ export function createExtractWorkbench(input:ExtractDeps={}){
   }catch(error){state.error=message(error);}finally{state.cancellingBatch='';}
  }
  async function exportRows(filtered=true){try{if(filtered){download(await api.export({...state.query}),'extract-workbench.csv');notify('已导出当前筛选结果（最多 5000 条）');return;}const rows=state.items.filter(item=>state.selected.has(String(item.task_id)));download(new Blob([selectedCsv(rows)],{type:'text/csv;charset=utf-8'}),'extract-workbench-selected.csv');}catch(error){state.error=message(error);}}
- function suspend(){life++;listVersion++;detailVersion++;clearTimer();controllers.forEach(c=>c.abort());controllers.clear();listController=undefined;configRead=undefined;summaryRead=undefined;batchReads.clear();detailReads.clear();state.loading=false;}
+ function suspend(){life++;listVersion++;detailVersion++;clearTimer();controllers.forEach(c=>c.abort());controllers.clear();listController=undefined;configRead=undefined;summaryRead=undefined;batchReads.clear();detailReads.clear();state.batchPage=batchesPage||1;state.batchLoading=false;state.loading=false;}
  function setVisible(value:boolean){if(state.visible===value){if(value&&!state.loading)void load();return;}state.visible=value;if(value)void load();else suspend();}
  function onVisibility(){if(document.hidden)suspend();else if(state.visible)void load();}
  document.addEventListener('visibilitychange',onVisibility);
  function destroy(){dead=true;suspend();document.removeEventListener('visibilitychange',onVisibility);}
- return{state,load,setVisible,switchBatch,bulkAction,cancelBatch,exportRows,destroy};
+ return{state,load,loadBatchPage,setVisible,switchBatch,bulkAction,cancelBatch,exportRows,destroy};
 }

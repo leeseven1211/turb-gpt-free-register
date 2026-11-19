@@ -1322,14 +1322,18 @@ function activateTab(tab, persist=true, historyMode=persist ? 'push' : 'none') {
   if (!NAV_ALLOWED_TABS.includes(tab)) tab = 'overview';
   if (tab !== ACTIVE_TAB) closePageDialogsForNavigation();
   ACTIVE_TAB = tab;
+  const sidebarTab = tab === 'extract-stats' ? 'extract-workbench' : tab;
   $$('.sidebar-nav button[data-tab]').forEach(x => {
-    const active = x.dataset.tab === tab;
-    x.classList.toggle('active', active);
-    if (active) x.setAttribute('aria-current', 'page');
+    const subnav = x.classList.contains('sidebar-subnav-item');
+    const active = x.dataset.tab === (subnav ? tab : sidebarTab);
+    const extractParent = !subnav && x.dataset.tab === 'extract-workbench';
+    x.classList.toggle(subnav ? 'is-active' : 'active', active);
+    if (extractParent) x.setAttribute('aria-expanded', String(active));
+    if (active && !extractParent) x.setAttribute('aria-current', 'page');
     else x.removeAttribute('aria-current');
   });
   $$('.sidebar-module[data-sidebar-module]').forEach(item => {
-    item.classList.toggle('is-open', item.dataset.sidebarModule === tab);
+    item.classList.toggle('is-open', item.dataset.sidebarModule === sidebarTab);
   });
   const contentTabs = ['overview','register','bulk','accounts','codex','outlook','proxy-traffic','config','extract-workbench','extract-stats'];
   const accountTab = $('#tab-accounts');

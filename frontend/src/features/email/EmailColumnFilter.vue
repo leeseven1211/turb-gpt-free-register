@@ -19,6 +19,6 @@ function textInput(event:Event){if(!composing)emit('change',(event.target as HTM
    <input v-else :aria-label="label" :type="type==='date'||type==='range'?'date':'search'" :multiple="false" :value="value" @compositionstart="composing=true" @compositionend="compositionEnd" @input="textInput">
   </label>
   <label v-if="type==='range'" class="em-filter-field">结束日期<input type="date" :aria-label="`${label}结束`" :value="endValue" @input="emit('end',($event.target as HTMLInputElement).value)"></label>
-  <button type="button" class="em-button" @click="emit('change',emptyValue||'');type==='range'&&emit('end','')">清除条件</button>
+  <div class="list-filter-actions"><button type="button" @click="emit('change',emptyValue||'');type==='range'&&emit('end','')">清除条件</button></div>
  </FilterPopover>
 </template>

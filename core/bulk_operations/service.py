@@ -13,6 +13,8 @@ logger = logging.getLogger(__name__)
 _STOP = threading.Event()
 _WAKE = threading.Event()
 _LOCK = threading.RLock()
+_OWNER_RETRY_LOCK = threading.Lock()
+_OWNER_RETRY_IN_FLIGHT = 0
 _THREADS: dict[str, threading.Thread] = {}
 _STATUS: dict[str, dict] = {}
 _OWNER = uuid.uuid4().hex
@@ -261,6 +263,29 @@ def _settle_controls(store) -> int:
 
 def run_once(kind: str) -> int:
     """单轮有界协调，测试/恢复均可调用，不发出任何领域网络请求。"""
+    if kind not in {"selection", "expand"}:
+        return _run_once(kind)
+
+    from core.runtime.execution_access import execution_owner_valid
+    if not execution_owner_valid():
+        return 0
+    global _OWNER_RETRY_IN_FLIGHT
+    with _OWNER_RETRY_LOCK:
+        _OWNER_RETRY_IN_FLIGHT += 1
+    try:
+        # _run_once 检查归属后才开始写入。先登记，避免暂停时漏掉已进入的协调工作。
+        return _run_once(kind)
+    finally:
+        with _OWNER_RETRY_LOCK:
+            _OWNER_RETRY_IN_FLIGHT -= 1
+
+
+def idle_for_owner_retry() -> bool:
+    with _OWNER_RETRY_LOCK:
+        return _OWNER_RETRY_IN_FLIGHT == 0
+
+
+def _run_once(kind: str) -> int:
     from core.runtime.execution_access import execution_allowed, execution_owner_valid
     if not execution_owner_valid():
         return 0

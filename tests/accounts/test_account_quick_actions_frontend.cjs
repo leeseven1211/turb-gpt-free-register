@@ -73,7 +73,7 @@ test('页面级动作也按次数进入五个快捷位置，保留单一节点�
     const button=view.get(id);assert.equal(more.contains(button),true);assert.equal(button.getAttribute('onclick'),null);assert.equal(button.disabled,false);assert.equal(view.document.querySelectorAll(`#${id}`).length,1);
     assert.equal(ACCOUNT_TOOLBAR_BUTTONS.find(item=>item.id===id).action,descriptor);
   }
-  assert.match(template,/id="accountToolbarHost"/);assert.match(template,/id="accounts-list-root"/);
+  assert.match(template,/id="accounts-list-root"/);
   assert.equal(toolbar.contains(view.document.getElementById('accounts-list-root')),false);
   const history=view.get('btnAccountInspectionHistory');await view.click(history.id);await view.flush();
   assert.equal(view.ids().length,5);assert.equal(view.ids()[0],history.id);assert.equal(view.get('accountsQuickActionsV2').querySelector('button'),history);assert.equal(history.disabled,false);assert.equal(toolbar.querySelectorAll('button').length,34);

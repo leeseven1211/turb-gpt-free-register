@@ -4416,11 +4416,6 @@
 
 /* 手机端工具栏压缩：单行横滑、小按钮，把高度还给列表 */
 @media (max-width: 860px) {
-  #accountsPanelV2 #accountsToolbarV2 .account-quick-actions {
-    display: inline-flex !important; flex-wrap: nowrap !important; width: auto !important;
-    gap: 6px; padding: 0; border: 0;
-  }
-  #accountsPanelV2 .jobs-toolbar-v2.list-action-toolbar,
   #codexPanelV2 .jobs-toolbar-v2.list-action-toolbar {
     display: flex !important;
     flex-wrap: nowrap !important;
@@ -4432,11 +4427,8 @@
     -webkit-overflow-scrolling: touch;
     scrollbar-width: none;
   }
-  #accountsPanelV2 .jobs-toolbar-v2.list-action-toolbar::-webkit-scrollbar,
   #codexPanelV2 .jobs-toolbar-v2.list-action-toolbar::-webkit-scrollbar { display: none; }
-  #accountsPanelV2 .jobs-toolbar-v2.list-action-toolbar > *,
   #codexPanelV2 .jobs-toolbar-v2.list-action-toolbar > * { flex: 0 0 auto !important; margin: 0 !important; }
-  #accountsPanelV2 .jobs-toolbar-v2.list-action-toolbar .jobs-tb-btn,
   #codexPanelV2 .jobs-toolbar-v2.list-action-toolbar .jobs-tb-btn {
     width: auto !important;
     min-height: 32px !important;
@@ -4446,7 +4438,6 @@
     font-size: 12px !important;
     white-space: nowrap !important;
   }
-  #accountsPanelV2 .list-action-toolbar .list-selection-hint,
   #codexPanelV2 .list-action-toolbar .list-selection-hint { display: none !important; }
   #accountsPanelV2 .list-toolbar-utilities,
   #codexPanelV2 .list-toolbar-utilities {

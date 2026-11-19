@@ -1,4 +1,4 @@
-// node_modules/@vue/shared/dist/shared.esm-bundler.js
+// ../../../architecture-overview/turb-gpt-free-register/frontend/node_modules/@vue/shared/dist/shared.esm-bundler.js
 // @__NO_SIDE_EFFECTS__
 function e(e) {
 	let t = /* @__PURE__ */ Object.create(null);
@@ -980,7 +980,7 @@ function _n(e, t = Infinity, n) {
 	}
 	return e;
 }
-// node_modules/@vue/runtime-core/dist/runtime-core.esm-bundler.js
+// ../../../architecture-overview/turb-gpt-free-register/frontend/node_modules/@vue/runtime-core/dist/runtime-core.esm-bundler.js
 function vn(e, t, n, r) {
 	try {
 		return r ? e(...r) : e();

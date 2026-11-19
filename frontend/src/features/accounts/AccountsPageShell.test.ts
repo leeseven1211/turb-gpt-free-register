@@ -11,7 +11,7 @@ function inspectionDependencies():AccountInspectionDependencies{return{request:v
 
 let wrapper:ReturnType<typeof mount>;
 beforeEach(()=>{
-  document.body.innerHTML='<div id="accountToolbarHost"></div><div id="accountRegistrationReceiptHost"></div><div id="accountDetailHost"></div><div id="accountEmailChangeHost"></div><div id="accountC2aConfirmHost"></div><div id="accountC2aReceiptHost"></div>';
+  document.body.innerHTML='<div id="accountRegistrationReceiptHost"></div><div id="accountDetailHost"></div><div id="accountEmailChangeHost"></div><div id="accountC2aConfirmHost"></div><div id="accountC2aReceiptHost"></div>';
   Object.defineProperty(document,'hidden',{configurable:true,value:false});
   vi.stubGlobal('ResizeObserver',class{observe(){}unobserve(){}disconnect(){}});
   vi.stubGlobal('matchMedia',()=>({matches:false,addEventListener(){},removeEventListener(){}}));

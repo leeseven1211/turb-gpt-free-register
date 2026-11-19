@@ -19,10 +19,10 @@ function change(value:string){emit('change',current.value,value);}
     <select v-else-if="current==='status'" :value="value" aria-label="筛选状态值" @change="change(($event.target as HTMLSelectElement).value)"><option value="">全部状态</option><option v-for="status in statusOptions" :key="status" :value="status">{{statusLabel(status)}}</option></select>
     <input v-else :type="current.startsWith('date_')?'date':'search'" :value="value" :aria-label="`筛选${labels[current]}值`" @change="change(($event.target as HTMLInputElement).value)" @keydown.enter="emit('update:open',false)">
    </label>
-   <div class="registration-filter-actions"><button type="button" @click="change('')">清除此列</button><button type="button" @click="emit('update:open',false)">完成</button></div>
+   <div class="list-filter-actions"><button type="button" @click="change('')">清除此列</button><button type="button" class="list-filter-primary" @click="emit('update:open',false)">完成</button></div>
   </div>
  </FilterPopover>
 </template>
 <style scoped>
-.registration-filter-fields,.registration-filter-fields label{display:flex;flex-direction:column;gap:8px}.registration-filter-fields{gap:12px}.registration-filter-fields :is(input,select){width:100%;min-height:36px;min-width:0;border:1px solid var(--ui-color-border-strong);border-radius:5px;padding:5px 8px;background:var(--ui-color-surface);color:inherit}.registration-filter-actions{display:flex;justify-content:space-between;gap:8px}.registration-filter-actions button{min-height:34px;padding:4px 8px}
+.registration-filter-fields,.registration-filter-fields label{display:flex;flex-direction:column;gap:8px}.registration-filter-fields{gap:12px}
 </style>

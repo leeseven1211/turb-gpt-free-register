@@ -6,6 +6,8 @@ import os
 from pathlib import Path
 import sys
 import threading
+import time
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -18,8 +20,8 @@ if SOURCE.exists():
     spec.loader.exec_module(owner_module)
 
 class Result:
-    def __init__(self, value): self.value = value
-    def fetchone(self): return (self.value,)
+    def __init__(self, value, backend_pid): self.row = (value, backend_pid)
+    def fetchone(self): return self.row
 
 class FakeConnection:
     def __init__(self, acquire=True, autocommit=True):
@@ -29,17 +31,18 @@ class FakeConnection:
         self.probe = True
         self.calls = []
         self.close_count = 0
+        self.backend_pid = 123
         self.probe_entered = threading.Event()
         self.probe_release = None
         self.close_failure = False
     def execute(self, sql, params=()):
         self.calls.append((sql, params))
-        if 'pg_try_advisory_lock' in sql: return Result(self.acquire)
+        if 'pg_try_advisory_lock' in sql: return Result(self.acquire, self.backend_pid)
         if 'pg_locks' in sql:
             self.probe_entered.set()
             if self.probe_release is not None: self.probe_release.wait(2)
             if isinstance(self.probe, Exception): raise self.probe
-            return Result(self.probe)
+            return Result(self.probe, self.backend_pid)
         raise AssertionError('Unexpected SQL: '+sql)
     def close(self):
         self.close_count += 1
@@ -253,6 +256,19 @@ class InstanceOwnerTests(unittest.TestCase):
             with self.assertRaisesRegex(owner_module.OwnerError, 'owner_process_changed'): owner.require_owner()
             with self.assertRaisesRegex(owner_module.OwnerError, 'owner_process_changed'): owner.close()
         self.assertFalse(conn.closed); self.assertTrue(FakeFileLease.all[0].held)
+    def test_foreign_pid_rejected_before_acquiring_inherited_owner_mutex(self):
+        owner, _, _ = self.make()
+        owner.start()
+
+        class InheritedLockedMutex:
+            def __enter__(self):
+                raise AssertionError('inherited mutex may block forever in a child')
+
+        foreign_pid = os.getpid() + 1000
+        with patch.object(owner_module.os, 'getpid', return_value=foreign_pid), \
+                patch.object(owner, '_mutex', InheritedLockedMutex()):
+            with self.assertRaisesRegex(owner_module.OwnerError, 'owner_process_changed'):
+                owner.require_owner()
     def test_startup_interrupt_cleans_unadmitted_resources_and_preserves_signal(self):
         def interrupt(): raise KeyboardInterrupt()
         owner, _, _ = self.make(connector=interrupt)
@@ -275,6 +291,157 @@ class InstanceOwnerTests(unittest.TestCase):
         previous=owner.status().last_verified_at; conn.probe_release.set()
         self.assertFalse(owner.is_owner()); self.assertEqual(len(calls),1)
         self.assertTrue(owner.close(timeout=1)); self.assertEqual(owner.status().last_verified_at,previous)
+    def test_pause_discards_late_reply_and_only_fresh_lock_proof_resumes(self):
+        class TwoProbes(FakeConnection):
+            def __init__(self):
+                super().__init__()
+                self.entered = [threading.Event(), threading.Event()]
+                self.release = [threading.Event(), threading.Event()]
+                self.index = 0
+
+            def execute(self, sql, params=()):
+                if 'pg_locks' in sql and self.index < len(self.entered):
+                    index = self.index
+                    self.index += 1
+                    self.entered[index].set()
+                    if not self.release[index].wait(2):
+                        raise TimeoutError()
+                return super().execute(sql, params)
+
+        paused = threading.Event()
+        resumed = threading.Event()
+        lost = threading.Event()
+        conn = TwoProbes()
+        owner, _, calls = self.make(connection=conn, monitor_interval=.02, probe_timeout=1.,
+            on_lost=lost.set, on_pause=paused.set, can_resume=lambda: True, on_resume=resumed.set)
+        owner.start()
+        try:
+            self.assertTrue(conn.entered[0].wait(1))
+            verified = owner.status().last_verified_at
+            with owner._mutex:
+                owner._last_verified_mono -= 1.
+            with self.assertRaisesRegex(owner_module.OwnerError, '^owner_probe_paused$'):
+                owner.require_owner()
+            self.assertTrue(paused.is_set())
+            self.assertTrue(owner.status().file_lock_held)
+            conn.release[0].set()
+            self.assertTrue(conn.entered[1].wait(1))
+            self.assertFalse(resumed.is_set())
+            self.assertEqual(owner.status().last_verified_at, verified)
+            self.assertFalse(owner.is_owner())
+            conn.release[1].set()
+            self.assertTrue(resumed.wait(1))
+            self.assertTrue(owner.is_owner())
+            self.assertFalse(lost.is_set())
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(sum('pg_try_advisory_lock' in sql for sql, _ in conn.calls), 1)
+        finally:
+            for gate in conn.release:
+                gate.set()
+
+    def test_unverified_idle_state_cannot_resume_owner(self):
+        lost = threading.Event()
+        pause = threading.Event()
+        resume = threading.Event()
+        owner, conn, _ = self.make(monitor_interval=.02, probe_timeout=1.,
+            on_lost=lost.set, on_pause=pause.set, can_resume=lambda: False, on_resume=resume.set)
+        owner.start()
+        with owner._mutex:
+            owner._last_verified_mono -= 1.
+        self.assertTrue(lost.wait(1))
+        self.assertTrue(pause.is_set())
+        self.assertEqual(owner.status().state, 'lost')
+        self.assertFalse(resume.is_set())
+        self.assertFalse(conn.probe_entered.is_set())
+
+    def test_missed_retry_deadline_loses_owner_while_probe_still_blocked(self):
+        lost = threading.Event()
+        paused = threading.Event()
+        resumed = threading.Event()
+        conn = FakeConnection()
+        conn.probe_release = threading.Event()
+        owner, _, _ = self.make(connection=conn, monitor_interval=.01, probe_timeout=.10,
+            on_lost=lost.set, on_pause=paused.set, can_resume=lambda: True, on_resume=resumed.set)
+        owner.start()
+        self.assertTrue(conn.probe_entered.wait(1))
+        self.assertTrue(paused.wait(1))
+        self.assertTrue(lost.wait(1))
+        self.assertEqual(owner.status().error_code, 'owner_probe_timeout')
+        conn.probe_release.set()
+        self.assertTrue(owner.close(timeout=1))
+        self.assertFalse(resumed.is_set())
+
+    def test_fresh_retry_cannot_resume_after_database_session_change(self):
+        lost = threading.Event()
+        paused = threading.Event()
+        resumed = threading.Event()
+        owner, conn, _ = self.make(monitor_interval=.03, probe_timeout=1.,
+            on_lost=lost.set, on_pause=paused.set, can_resume=lambda: True, on_resume=resumed.set)
+        owner.start()
+        conn.backend_pid = 456
+        with owner._mutex:
+            owner._last_verified_mono -= 1.
+        self.assertTrue(lost.wait(1))
+        self.assertTrue(paused.is_set())
+        self.assertEqual(owner.status().state, 'lost')
+        self.assertFalse(resumed.is_set())
+
+    def test_retry_cannot_resume_if_work_is_found_after_the_new_probe(self):
+        lost = threading.Event()
+        resumed = threading.Event()
+        conn = FakeConnection()
+        conn.probe_release = threading.Event()
+        can_resume = threading.Event()
+        can_resume.set()
+        owner, _, _ = self.make(connection=conn, monitor_interval=.03, probe_timeout=1.,
+            on_lost=lost.set, on_pause=lambda: None, can_resume=can_resume.is_set, on_resume=resumed.set)
+        owner.start()
+        with owner._mutex:
+            owner._last_verified_mono -= 1.
+        self.assertTrue(conn.probe_entered.wait(1))
+        self.assertEqual(owner.status().state, 'paused')
+        can_resume.clear()
+        conn.probe_release.set()
+        self.assertTrue(lost.wait(1))
+        self.assertFalse(resumed.is_set())
+
+    def test_fresh_retry_still_requires_advisory_lock(self):
+        lost = threading.Event()
+        resumed = threading.Event()
+        conn = FakeConnection()
+        conn.probe = False
+        owner, _, _ = self.make(connection=conn, monitor_interval=.03, probe_timeout=1.,
+            on_lost=lost.set, on_pause=lambda: None, can_resume=lambda: True, on_resume=resumed.set)
+        owner.start()
+        with owner._mutex:
+            owner._last_verified_mono -= 1.
+        self.assertTrue(lost.wait(1))
+        self.assertEqual(owner.status().error_code, 'owner_lock_lost')
+        self.assertFalse(resumed.is_set())
+
+    def test_slow_resume_callback_cannot_publish_owner_past_grace_deadline(self):
+        offset = 0.
+
+        def monotonic():
+            return time.monotonic() + offset
+
+        def on_resume():
+            # Model a descheduled process while finishing the admission change.
+            nonlocal offset
+            offset = 2.
+
+        lost = threading.Event()
+        owner, _, _ = self.make(monitor_interval=.03, probe_timeout=1.,
+            on_lost=lost.set, on_pause=lambda: None, can_resume=lambda: True, on_resume=on_resume)
+        with patch.object(owner_module, 'time', SimpleNamespace(monotonic=monotonic, time=time.time)):
+            owner.start()
+            verified_at = owner.status().last_verified_at
+            with owner._mutex:
+                owner._last_verified_mono -= 1.
+            self.assertTrue(lost.wait(1))
+            self.assertFalse(owner.is_owner())
+            self.assertEqual(owner.status().error_code, 'owner_probe_timeout')
+            self.assertEqual(owner.status().last_verified_at, verified_at)
     def test_metadata_failure_before_admission_releases_both_resources(self):
         owner, conn, _ = self.make()
         with patch.object(FakeFileLease,'write_metadata',side_effect=OSError('private-path')):

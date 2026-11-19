@@ -28,6 +28,7 @@ _INSTANCE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$')
 logger = logging.getLogger(__name__)
 _LOSS_DIAGNOSTIC_CODES = frozenset({
     'owner_probe_timeout', 'owner_connection_lost', 'owner_lock_lost',
+    'owner_probe_callback_failed',
 })
 
 class OwnerError(RuntimeError):
@@ -158,9 +159,9 @@ class PosixFileLease:
 class ExecutionOwner:
     """Lifecycle ownership only; the runtime separately controls admission.
 
-    on_lost must be a fast, thread-safe blocker such as
-    lambda: context.admission.block('owner_lost'). No automatic reacquisition,
-    expiry takeover, business permit release or business retry happens here.
+    on_pause and on_resume may only update local state or wake a reporter. can_resume
+    checks whether work is idle without holding the owner state lock. on_lost
+    closes admission permanently. A paused session never reacquires its locks.
     close() belongs after execution components have stopped. False means the
     runtime must retain its fence and exit rather than report a clean stop.
     """
@@ -168,13 +169,20 @@ class ExecutionOwner:
                  connect_dedicated: Callable[[], object], on_lost: Callable[[], None],
                  file_lock_factory: Callable[[Path], FileLease] = PosixFileLease,
                  identity_provider: Callable[[], OwnerIdentity] = current_identity,
-                 monitor_interval: float = 1.0, probe_timeout: float = 5.0):
+                 monitor_interval: float = 1.0, probe_timeout: float = 5.0,
+                 on_pause: Callable[[], None] | None = None,
+                 can_resume: Callable[[], bool] | None = None,
+                 on_resume: Callable[[], None] | None = None):
         if mode not in {'web', 'worker', 'combined'}:
             raise ValueError('invalid runtime mode')
         if not Path(stable_dir).is_absolute():
             raise ValueError('runtime instance directory must be absolute and stable')
         if not (0 < monitor_interval < probe_timeout):
             raise ValueError('owner probe timeout must exceed its positive interval')
+        pause_callbacks = (on_pause, can_resume, on_resume)
+        if any(callback is not None for callback in pause_callbacks) and not all(
+                callable(callback) for callback in pause_callbacks):
+            raise ValueError('owner pause requires all callbacks')
         self.mode = mode
         self.instance_id = instance_id
         self.schema = schema
@@ -182,6 +190,9 @@ class ExecutionOwner:
         self._path = Path(stable_dir).resolve() / 'execution-owner' / self.lock.filename
         self._connect = connect_dedicated
         self._on_lost = on_lost
+        self._on_pause = on_pause
+        self._can_resume = can_resume
+        self._on_resume = on_resume
         self._file_factory = file_lock_factory
         self._identity_provider = identity_provider
         self._interval = float(monitor_interval)
@@ -193,6 +204,7 @@ class ExecutionOwner:
         self._identity: OwnerIdentity | None = None
         self._file: FileLease | None = None
         self._connection = None
+        self._backend_pid: int | None = None
         self._threads: list[threading.Thread] = []
         self._acquired_at: float | None = None
         self._last_verified_at: float | None = None
@@ -218,8 +230,10 @@ class ExecutionOwner:
     def require_owner(self) -> None:
         if not self._same_process():
             raise OwnerError('owner_process_changed')
-        if not self.is_owner():
-            raise OwnerError(self._error_code or 'execution_owner_required')
+        self._expire()
+        with self._mutex:
+            if self._state != 'held':
+                raise OwnerError(self._error_code or 'execution_owner_required')
 
     def start(self) -> OwnerStatus:
         with self._lifecycle:
@@ -255,9 +269,13 @@ class ExecutionOwner:
                 if self._connection.autocommit is not True or self._connection.closed:
                     raise OwnerError('owner_connection_invalid')
                 row = self._connection.execute(
-                    'SELECT pg_try_advisory_lock(%s::integer, %s::integer)', self.lock.advisory_key).fetchone()
+                    'SELECT pg_try_advisory_lock(%s::integer, %s::integer), pg_backend_pid()',
+                    self.lock.advisory_key).fetchone()
                 if not row or row[0] is not True:
                     raise OwnerError('owner_database_busy')
+                if len(row) != 2 or type(row[1]) is not int or row[1] <= 0:
+                    raise OwnerError('owner_connection_invalid')
+                self._backend_pid = row[1]
                 self._acquired_at = self._last_verified_at = time.time()
                 self._last_verified_mono = time.monotonic()
                 self._file.write_metadata({'namespace': _NAMESPACE, 'instance_id': self.instance_id,
@@ -285,11 +303,19 @@ class ExecutionOwner:
 
     def _lose(self, code: str) -> None:
         with self._mutex:
-            if self._state != 'held':
+            if not self._mark_lost_locked(code):
                 return
+        self._notify_lost(code)
+
+    def _mark_lost_locked(self, code: str) -> bool:
+        if self._state in ('held', 'paused'):
             self._state = 'lost'
             self._error_code = code
             self._stop.set()
+            return True
+        return False
+
+    def _notify_lost(self, code: str) -> None:
         # Publish the closed state before notifying the shared admission gate.
         try:
             self._on_lost()
@@ -304,22 +330,71 @@ class ExecutionOwner:
             pass
 
     def _expire(self) -> None:
+        lost = False
+        paused = False
+        reason = 'owner_probe_timeout'
         with self._mutex:
-            expired = self._same_process() and self._state == 'held' and time.monotonic() - self._last_verified_mono >= self._timeout
-        if expired:
-            self._lose('owner_probe_timeout')
+            if not self._same_process() or self._state not in ('held', 'paused'):
+                return
+            age = time.monotonic() - self._last_verified_mono
+            if self._state == 'held' and age >= self._timeout:
+                if self._on_pause is None or age >= 2 * self._timeout:
+                    lost = self._mark_lost_locked('owner_probe_timeout')
+                else:
+                    self._state = 'paused'
+                    self._error_code = 'owner_probe_paused'
+                    try:
+                        self._on_pause()
+                    except Exception:
+                        self._callback_failed = True
+                        reason = 'owner_probe_callback_failed'
+                        lost = self._mark_lost_locked(reason)
+                    else:
+                        paused = True
+            elif self._state == 'paused' and age >= 2 * self._timeout:
+                lost = self._mark_lost_locked('owner_probe_timeout')
+        if lost:
+            self._notify_lost(reason)
+        elif paused:
+            try:
+                logger.warning("执行归属验证超时，已暂停接单：code=owner_probe_paused")
+            except Exception:
+                pass
 
     def _watchdog(self) -> None:
         while not self._stop.wait(min(self._interval, self._timeout / 4)):
             self._expire()
 
+    def _idle_for_retry(self) -> bool:
+        try:
+            idle = self._can_resume() is True
+        except Exception:
+            with self._mutex:
+                self._callback_failed = True
+            self._lose('owner_probe_callback_failed')
+            return False
+        if not idle:
+            self._lose('owner_probe_timeout')
+        return idle
+
     def _monitor(self) -> None:
         unsigned_key = tuple(value & 0xffffffff for value in self.lock.advisory_key)
         while not self._stop.wait(self._interval):
             try:
+                self._expire()
+                with self._mutex:
+                    state = self._state
+                if state not in ('held', 'paused'):
+                    return
                 if self._connection is None or self._connection.closed:
                     self._lose('owner_connection_lost')
                     return
+                if state == 'paused':
+                    if not self._idle_for_retry():
+                        return
+                    self._expire()
+                    if self._stop.is_set():
+                        return
                 # A successful SELECT 1 alone does not prove this session still owns
                 # the lock. Two-int advisory locks have objsubid=2 in pg_locks.
                 row = self._connection.execute('''SELECT EXISTS (
@@ -327,18 +402,55 @@ class ExecutionOwner:
                     WHERE locktype = 'advisory' AND pid = pg_backend_pid()
                       AND classid = %s::oid AND objid = %s::oid AND objsubid = 2
                       AND mode = 'ExclusiveLock' AND granted
-                )''', unsigned_key).fetchone()
+                ), pg_backend_pid()''', unsigned_key).fetchone()
                 if not row or row[0] is not True:
                     self._lose('owner_lock_lost')
                     return
+                if len(row) != 2 or type(row[1]) is not int or row[1] != self._backend_pid:
+                    self._lose('owner_connection_lost')
+                    return
+                verified_mono, verified_at = time.monotonic(), time.time()
                 # A late success must not erase an expired verification budget,
                 # even if OS scheduling delayed the independent watchdog.
                 self._expire()
+                if self._stop.is_set():
+                    return
+                if state == 'paused' and not self._idle_for_retry():
+                    return
+                loss_reason = ''
                 with self._mutex:
-                    if self._state != 'held' or self._stop.is_set():
-                        return
-                    self._last_verified_at = time.time()
-                    self._last_verified_mono = time.monotonic()
+                    # A probe sent before the pause cannot clear it.
+                    if self._state != state:
+                        continue
+                    deadline = self._last_verified_mono + (
+                        2 * self._timeout if state == 'paused' else self._timeout)
+                    if time.monotonic() >= deadline:
+                        continue
+                    if state == 'paused':
+                        try:
+                            self._on_resume()
+                        except Exception:
+                            self._callback_failed = True
+                            loss_reason = 'owner_probe_callback_failed'
+                        else:
+                            if time.monotonic() >= min(deadline, verified_mono + self._timeout):
+                                loss_reason = 'owner_probe_timeout'
+                            else:
+                                self._state = 'held'
+                                self._error_code = ''
+                    if loss_reason:
+                        self._mark_lost_locked(loss_reason)
+                    else:
+                        self._last_verified_at = verified_at
+                        self._last_verified_mono = verified_mono
+                if loss_reason:
+                    self._notify_lost(loss_reason)
+                    return
+                if state == 'paused':
+                    try:
+                        logger.info("执行归属复查成功，已恢复接单：code=owner_probe_resumed")
+                    except Exception:
+                        pass
             except Exception:
                 self._lose('owner_connection_lost')
                 return

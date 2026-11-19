@@ -40,10 +40,40 @@ describe('registration list standards',()=>{
   const {wrapper,api}=setup();
   vi.mocked(api.jobs).mockResolvedValue({items:[],total:0,progress_batch:{batch_id:'batch-test',items:[{id:8,email:'steps@example.test',status:'success',progress:{main_steps:[{id:'prepare',label:'准备',state:'success'},{id:'verify',label:'核验',state:'skipped',depends_on:['prepare'],execution:{kind:'conditional',condition:{label:'已获得凭证',state:'not_met'},dependency_state:'satisfied'}}]}}]}});
   (wrapper.vm as unknown as {setView(view:'launch'):void}).setView('launch');await (wrapper.vm as unknown as {load():Promise<void>}).load();await flushPromises();
+  expect(wrapper.find('.registration-progress').exists()).toBe(false);
+  await wrapper.get('button[aria-label="查看阶段 · steps@example.test"]').trigger('click');
   const phase=wrapper.findAll('.registration-steps button').find(button=>button.text().includes('核验'))!;
   expect(phase.text()).toContain('条件未满足');expect(wrapper.get('.registration-progress details').text()).toContain('准备');expect(wrapper.get('.registration-progress details').text()).toContain('已获得凭证');
-  await phase.trigger('click');await flushPromises();expect(api.log).toHaveBeenCalled();expect(wrapper.find('dialog[open][aria-labelledby="registration-log-title"]').exists()).toBe(true);
+  await phase.trigger('click');await flushPromises();
+  expect(api.log).not.toHaveBeenCalled();
+  const log = wrapper.get('.registration-stage-selected').findAll('button').find(button => button.text() === '阶段日志')!;
+  await log.trigger('click');await flushPromises();expect(api.log).toHaveBeenCalled();expect(wrapper.find('dialog[open][aria-labelledby="registration-log-title"]').exists()).toBe(true);
   await wrapper.get('dialog[aria-labelledby="registration-log-title"]').trigger('cancel');await flushPromises();expect(wrapper.find('dialog[open][aria-labelledby="registration-log-title"]').exists()).toBe(false);
+ });
+ it('opens a single failed account and its recorded stage from the batch summary',async()=>{
+  const {wrapper,api}=setup();
+  vi.mocked(api.jobs).mockResolvedValue({
+   progress_batch:{batch_id:'batch-test',total:3,status_counts:{success:1,failed:1,pending:1,active:1},items:[
+    {id:7,email:'success@example.test',status:'success'},
+    {id:8,email:'failure@example.test',status:'failed',retryable:true,progress:{
+     failure:{step_id:'set_twofa',label:'配置 2FA',message:'校验失败的详细记录'},
+     main_steps:[{id:'set_twofa',label:'配置 2FA',state:'failed',message:'校验失败的详细记录'}],
+    }},
+    {id:9,email:'queued@example.test',status:'pending'},
+   ]},
+  });
+  (wrapper.vm as any).setView('launch');await (wrapper.vm as any).load();await flushPromises();
+  expect(wrapper.get('[aria-pressed="false"][data-batch-filter="active"]').text()).toBe('运行 / 排队 1');
+  expect(wrapper.get('.registration-batch').text()).not.toContain('校验失败的详细记录');
+  await wrapper.get('[data-batch-filter="failed"]').trigger('click');
+  expect(wrapper.findAll('.registration-batch-card')).toHaveLength(1);
+  expect(wrapper.get('.registration-batch-card').text()).toContain('failure@example.test');
+  expect(wrapper.get('.registration-stage-selected').text()).toContain('配置 2FA');
+  expect(wrapper.get('.registration-stage-selected').text()).toContain('校验失败的详细记录');
+  expect(api.log).not.toHaveBeenCalled();
+  await wrapper.get('[data-batch-filter="active"]').trigger('click');
+  expect(wrapper.get('.registration-batch-card').text()).toContain('queued@example.test');
+  expect(wrapper.find('.registration-progress').exists()).toBe(false);
  });
  it('selects manual email mode and shows the server worker count after creation',async()=>{
   const {wrapper,api}=setup();vi.mocked(api.metadata).mockResolvedValue({manual_mode:true,sources:[],registration_drivers:[]});vi.mocked(api.create).mockResolvedValue({submitted:1,workers:2});

@@ -1,5 +1,5 @@
-import { A as e, B as t, C as n, D as r, E as i, F as a, G as o, H as s, I as c, J as l, L as u, M as d, N as f, O as p, P as m, Q as h, R as g, S as _, T as v, U as y, V as b, W as x, X as S, Y as C, Z as w, _ as T, at as E, ct as ee, d as D, dt as O, et as k, f as te, ft as A, g as j, h as M, it as ne, j as re, k as N, l as ie, lt as ae, m as P, nt as oe, ot as se, p as ce, pt as le, q as ue, rt as de, st as F, t as fe, tt as pe, u as me, ut as he, v as ge, w as _e, x as ve } from "./_plugin-vue_export-helper-BSZsFlS8.js";
-// node_modules/reka-ui/dist/shared/createContext.js
+import { A as e, B as t, C as n, D as r, E as i, F as a, G as o, H as s, I as c, J as l, L as u, M as d, N as f, O as p, P as m, Q as h, R as g, S as _, T as v, U as y, V as b, W as x, X as S, Y as C, Z as w, _ as T, at as E, ct as ee, d as D, dt as O, et as k, f as te, ft as A, g as j, h as M, it as ne, j as re, k as N, l as ie, lt as ae, m as P, nt as oe, ot as se, p as ce, pt as le, q as ue, rt as de, st as F, t as fe, tt as pe, u as me, ut as he, v as ge, w as _e, x as ve } from "./_plugin-vue_export-helper-B9RV9BFd.js";
+// ../../../architecture-overview/turb-gpt-free-register/frontend/node_modules/reka-ui/dist/shared/createContext.js
 function ye(e, t) {
 	let n = typeof e == "string" && !t ? `${e}Context` : t, i = Symbol(n);
 	return [(t) => {
@@ -8,14 +8,14 @@ function ye(e, t) {
 		throw Error(`Injection \`${i.toString()}\` not found. Component must be used within ${Array.isArray(e) ? `one of the following components: ${e.join(", ")}` : `\`${e}\``}`);
 	}, (e) => (c(i, e), e)];
 }
-// node_modules/reka-ui/dist/shared/getActiveElement.js
+// ../../../architecture-overview/turb-gpt-free-register/frontend/node_modules/reka-ui/dist/shared/getActiveElement.js
 function I() {
 	let e = document.activeElement;
 	if (e == null) return null;
 	for (; e != null && e.shadowRoot != null && e.shadowRoot.activeElement != null;) e = e.shadowRoot.activeElement;
 	return e;
 }
-// node_modules/reka-ui/dist/shared/handleAndDispatchCustomEvent.js
+// ../../../architecture-overview/turb-gpt-free-register/frontend/node_modules/reka-ui/dist/shared/handleAndDispatchCustomEvent.js
 function be(e, t, n) {
 	let r = n.originalEvent.target, i = new CustomEvent(e, {
 		bubbles: !1,
@@ -24,7 +24,7 @@ function be(e, t, n) {
 	});
 	t && r.addEventListener(e, t, { once: !0 }), r.dispatchEvent(i);
 }
-// node_modules/@vueuse/shared/dist/index.js
+// ../../../architecture-overview/turb-gpt-free-register/frontend/node_modules/@vueuse/shared/dist/index.js
 function xe(e, t) {
 	return C() ? (w(e, t), !0) : !1;
 }
@@ -93,7 +93,7 @@ function Fe(e, t, n) {
 		immediate: !0
 	});
 }
-// node_modules/@vueuse/core/dist/index.js
+// ../../../architecture-overview/turb-gpt-free-register/frontend/node_modules/@vueuse/core/dist/index.js
 var Ie = L ? window : void 0;
 L && window.document, L && window.navigator, L && window.location;
 function Le(e) {
@@ -162,11 +162,11 @@ function Ue(t, n, r, i = {}) {
 		}
 	});
 }
-// node_modules/reka-ui/dist/shared/renderSlotFragments.js
+// ../../../architecture-overview/turb-gpt-free-register/frontend/node_modules/reka-ui/dist/shared/renderSlotFragments.js
 function We(e) {
 	return e ? e.flatMap((e) => e.type === D ? We(e.children) : [e]) : [];
 }
-// node_modules/reka-ui/dist/ConfigProvider/ConfigProvider.js
+// ../../../architecture-overview/turb-gpt-free-register/frontend/node_modules/reka-ui/dist/ConfigProvider/ConfigProvider.js
 var [Ge, Ke] = /*#__PURE__*/ ye("ConfigProvider"), qe = /* @__PURE__ */ new WeakMap();
 function Je(e, t) {
 	let n = qe.get(e);
@@ -179,7 +179,7 @@ function Ye(e, t) {
 	let n = qe.get(e);
 	n?.owners.delete(t) && n.owners.size === 0 && (qe.delete(e), e.body.style.pointerEvents = n.original);
 }
-// node_modules/defu/dist/defu.mjs
+// ../../../architecture-overview/turb-gpt-free-register/frontend/node_modules/defu/dist/defu.mjs
 function Xe(e) {
 	if (typeof e != "object" || !e) return !1;
 	let t = Object.getPrototypeOf(e);
@@ -253,19 +253,19 @@ function it(e) {
 	let t = e || window.event, n = t.target;
 	return n instanceof Element && rt(n) ? !1 : t.touches.length > 1 || (t.preventDefault && t.cancelable && t.preventDefault(), !1);
 }
-// node_modules/reka-ui/dist/shared/useDirection.js
+// ../../../architecture-overview/turb-gpt-free-register/frontend/node_modules/reka-ui/dist/shared/useDirection.js
 function at(e) {
 	let t = Ge({ dir: k("ltr") });
 	return P(() => e?.value || t.dir?.value || "ltr");
 }
-// node_modules/reka-ui/dist/shared/useEmitAsProps.js
+// ../../../architecture-overview/turb-gpt-free-register/frontend/node_modules/reka-ui/dist/shared/useEmitAsProps.js
 function ot(e) {
 	let t = _e(), n = t?.type.emits, r = {};
 	return n?.length || console.warn(`No emitted event found. Please check component: ${t?.type.__name}`), n?.forEach((t) => {
 		r[le(ee(t))] = (...n) => e(t, ...n);
 	}), r;
 }
-// node_modules/reka-ui/dist/shared/useFocusGuards.js
+// ../../../architecture-overview/turb-gpt-free-register/frontend/node_modules/reka-ui/dist/shared/useFocusGuards.js
 var st = 0;
 function ct() {
 	y((e) => {
@@ -280,7 +280,7 @@ function lt() {
 	let e = document.createElement("span");
 	return e.setAttribute("data-reka-focus-guard", ""), e.tabIndex = 0, e.style.outline = "none", e.style.opacity = "0", e.style.position = "fixed", e.style.pointerEvents = "none", e;
 }
-// node_modules/reka-ui/dist/shared/useForwardExpose.js
+// ../../../architecture-overview/turb-gpt-free-register/frontend/node_modules/reka-ui/dist/shared/useForwardExpose.js
 function R() {
 	let e = _e(), t = k(), n = P(() => r());
 	m(() => {
@@ -326,7 +326,7 @@ function R() {
 		currentElement: n
 	};
 }
-// node_modules/reka-ui/dist/shared/useForwardProps.js
+// ../../../architecture-overview/turb-gpt-free-register/frontend/node_modules/reka-ui/dist/shared/useForwardProps.js
 function ut(e) {
 	let t = _e(), n = Object.keys(t?.type.props ?? {}).reduce((e, n) => {
 		let r = (t?.type.props[n]).default;
@@ -342,7 +342,7 @@ function ut(e) {
 		}).reduce((e, t) => (r.value[t] !== void 0 && (e[t] = r.value[t]), e), {});
 	});
 }
-// node_modules/reka-ui/dist/shared/useForwardPropsEmits.js
+// ../../../architecture-overview/turb-gpt-free-register/frontend/node_modules/reka-ui/dist/shared/useForwardPropsEmits.js
 function dt(e, t) {
 	let n = ut(e), r = t ? ot(t) : {};
 	return P(() => ({
@@ -350,7 +350,7 @@ function dt(e, t) {
 		...r
 	}));
 }
-// node_modules/aria-hidden/dist/es2015/index.js
+// ../../../architecture-overview/turb-gpt-free-register/frontend/node_modules/aria-hidden/dist/es2015/index.js
 var ft = function(e) {
 	return typeof document > "u" ? null : (Array.isArray(e) ? e[0] : e).ownerDocument.body;
 }, pt = /* @__PURE__ */ new WeakMap(), mt = /* @__PURE__ */ new WeakMap(), ht = {}, gt = 0, _t = function(e) {
@@ -394,7 +394,7 @@ var ft = function(e) {
 		return null;
 	};
 };
-// node_modules/reka-ui/dist/shared/useHideOthers.js
+// ../../../architecture-overview/turb-gpt-free-register/frontend/node_modules/reka-ui/dist/shared/useHideOthers.js
 function xt(e) {
 	let t;
 	s(() => Le(e), (e) => {
@@ -412,7 +412,7 @@ function St(e, t = "reka") {
 	let n, r = Ge({ useId: void 0 });
 	return n = r.useId ? r.useId() : b?.(), t ? `${t}-${n}` : n;
 }
-// node_modules/reka-ui/dist/shared/useSize.js
+// ../../../architecture-overview/turb-gpt-free-register/frontend/node_modules/reka-ui/dist/shared/useSize.js
 function Ct(e) {
 	let t = k(), n = P(() => t.value?.width ?? 0), r = P(() => t.value?.height ?? 0), i;
 	return d(() => {
@@ -439,7 +439,7 @@ function Ct(e) {
 		height: r
 	};
 }
-// node_modules/reka-ui/dist/shared/useStateMachine.js
+// ../../../architecture-overview/turb-gpt-free-register/frontend/node_modules/reka-ui/dist/shared/useStateMachine.js
 function wt(e, t) {
 	let n = k(e);
 	function r(e) {
@@ -452,7 +452,7 @@ function wt(e, t) {
 		}
 	};
 }
-// node_modules/reka-ui/dist/Presence/usePresence.js
+// ../../../architecture-overview/turb-gpt-free-register/frontend/node_modules/reka-ui/dist/Presence/usePresence.js
 function Tt(t, n) {
 	let r = k({}), i = k("none"), a = k(t), o = t.value ? "mounted" : "unmounted", c, l = n.value?.ownerDocument.defaultView ?? Ie, { state: u, dispatch: d } = wt(o, {
 		mounted: {
@@ -505,7 +505,7 @@ function Tt(t, n) {
 function Et(e) {
 	return e && getComputedStyle(e).animationName || "none";
 }
-// node_modules/reka-ui/dist/Presence/Presence.js
+// ../../../architecture-overview/turb-gpt-free-register/frontend/node_modules/reka-ui/dist/Presence/Presence.js
 var Dt = /*#__PURE__*/ n({
 	name: "Presence",
 	props: {
@@ -636,7 +636,7 @@ function Ft(t, n, r = !0) {
 		}
 	};
 }
-// node_modules/reka-ui/dist/DismissableLayer/context.js
+// ../../../architecture-overview/turb-gpt-free-register/frontend/node_modules/reka-ui/dist/DismissableLayer/context.js
 var B = /*#__PURE__*/ h({
 	layersRoot: /* @__PURE__ */ new Set(),
 	layersWithOutsidePointerEventsDisabled: /* @__PURE__ */ new Set(),
@@ -740,7 +740,7 @@ function zt(e, t) {
 	let n = [...e], r = n.indexOf(t);
 	return r !== -1 && n.splice(r, 1), n;
 }
-// node_modules/reka-ui/dist/FocusScope/utils.js
+// ../../../architecture-overview/turb-gpt-free-register/frontend/node_modules/reka-ui/dist/FocusScope/utils.js
 var Bt = "focusScope.autoFocusOnMount", Vt = "focusScope.autoFocusOnUnmount", Ht = {
 	bubbles: !1,
 	cancelable: !0
@@ -790,7 +790,7 @@ function V(e, { select: t = !1 } = {}) {
 		e.focus({ preventScroll: !0 }), e !== n && Yt(e) && t && e.select();
 	}
 }
-// node_modules/reka-ui/dist/FocusScope/FocusScope.js
+// ../../../architecture-overview/turb-gpt-free-register/frontend/node_modules/reka-ui/dist/FocusScope/FocusScope.js
 var Xt = /* @__PURE__ */ n({
 	__name: "FocusScope",
 	props: {
@@ -987,7 +987,7 @@ var Xt = /* @__PURE__ */ n({
 		}, 8, ["as", "as-child"]));
 	}
 });
-// node_modules/reka-ui/dist/Popper/utils.js
+// ../../../architecture-overview/turb-gpt-free-register/frontend/node_modules/reka-ui/dist/Popper/utils.js
 function nn(e) {
 	return e !== null;
 }
@@ -1016,7 +1016,7 @@ function an(e) {
 	let [t, n = "center"] = e.split("-");
 	return [t, n];
 }
-// node_modules/@floating-ui/utils/dist/floating-ui.utils.mjs
+// ../../../architecture-overview/turb-gpt-free-register/frontend/node_modules/@floating-ui/utils/dist/floating-ui.utils.mjs
 var on = [
 	"top",
 	"right",
@@ -1119,7 +1119,7 @@ function Dn(e) {
 		y: n
 	};
 }
-// node_modules/@floating-ui/core/dist/floating-ui.core.mjs
+// ../../../architecture-overview/turb-gpt-free-register/frontend/node_modules/@floating-ui/core/dist/floating-ui.core.mjs
 function On(e, t, n) {
 	let { reference: r, floating: i } = e, a = q(t), o = mn(t), s = pn(o), c = K(t), l = a === "y", u = r.x + r.width / 2 - i.width / 2, d = r.y + r.height / 2 - i.height / 2, f = r[s] / 2 - i[s] / 2, p;
 	switch (c) {
@@ -1453,7 +1453,7 @@ var zn = function(e) {
 		}
 	};
 };
-// node_modules/@floating-ui/utils/dist/floating-ui.utils.dom.mjs
+// ../../../architecture-overview/turb-gpt-free-register/frontend/node_modules/@floating-ui/utils/dist/floating-ui.utils.dom.mjs
 function Un() {
 	return typeof window < "u";
 }
@@ -1549,7 +1549,7 @@ function or(e, t, n) {
 function sr(e) {
 	return e.parent && Object.getPrototypeOf(e.parent) ? e.frameElement : null;
 }
-// node_modules/@floating-ui/dom/dist/floating-ui.dom.mjs
+// ../../../architecture-overview/turb-gpt-free-register/frontend/node_modules/@floating-ui/dom/dist/floating-ui.dom.mjs
 function cr(e) {
 	let t = $(e), n = parseFloat(t.width) || 0, r = parseFloat(t.height) || 0, i = Z(e), a = i ? e.offsetWidth : n, o = i ? e.offsetHeight : r, s = sn(n) !== a || sn(r) !== o;
 	return s && (n = a, r = o), {
@@ -1866,7 +1866,7 @@ var Lr = zn, Rr = Bn, zr = Nn, Br = Hn, Vr = In, Hr = Mn, Ur = Vn, Wr = (e, t, n
 		platform: a
 	});
 };
-// node_modules/@floating-ui/vue/dist/floating-ui.vue.mjs
+// ../../../architecture-overview/turb-gpt-free-register/frontend/node_modules/@floating-ui/vue/dist/floating-ui.vue.mjs
 function Gr(e) {
 	return typeof e == "object" && !!e && "$el" in e;
 }
@@ -1953,7 +1953,7 @@ function Xr(e, t, n) {
 		update: b
 	};
 }
-// node_modules/reka-ui/dist/Popper/PopperContent.js
+// ../../../architecture-overview/turb-gpt-free-register/frontend/node_modules/reka-ui/dist/Popper/PopperContent.js
 var Zr = ["dir"], Qr = {
 	side: "bottom",
 	sideOffset: 0,
@@ -2960,7 +2960,7 @@ var Zr = ["dir"], Qr = {
 			_: 3
 		}, 8, ["open"]));
 	}
-}), [["__scopeId", "data-v-49f53dbd"]]), gi = ["title"], _i = {
+}), [["__scopeId", "data-v-c1df70b3"]]), gi = ["title"], _i = {
 	key: 0,
 	class: "list-cell-secondary"
 }, vi = /*#__PURE__*/ fe(/* @__PURE__ */ n({

@@ -33,6 +33,7 @@ class WorkerHeartbeat:
         self._clock = clock
         self._lock = threading.RLock()
         self._stop = threading.Event()
+        self._wake_writer = threading.Event()
         self._threads: list[threading.Thread] = []
         self._state = 'new'
         self._error = None
@@ -64,6 +65,7 @@ class WorkerHeartbeat:
                 self._started_threads = True
             except BaseException:
                 self._stop.set()
+                self._wake_writer.set()
                 self._state = 'start_failed'
                 self._error = 'heartbeat_start_failed'
                 self._fatal = True
@@ -178,12 +180,14 @@ class WorkerHeartbeat:
     def _run(self):
         try:
             while not self._stop.is_set():
+                self._wake_writer.clear()
                 self._check_health()
                 with self._lock:
                     if self._fatal:
                         return
                 self._pulse()
-                self._stop.wait(self._interval)
+                if not self._stop.is_set():
+                    self._wake_writer.wait(self._interval)
             # Nonready publication is best effort. It remains part of this
             # thread, so a blocked final write is visible to stop's join budget.
             self._pulse(final=True)
@@ -192,6 +196,10 @@ class WorkerHeartbeat:
         finally:
             if not self._stop.is_set():
                 self._fail('heartbeat_thread_dead', fatal=True)
+
+    def request_refresh(self) -> None:
+        """Wake the single writer for a new pulse after a readiness change."""
+        self._wake_writer.set()
 
     def _watch(self):
         try:
@@ -219,6 +227,7 @@ class WorkerHeartbeat:
         with self._lock:
             self._admission.block('heartbeat')
             self._stop.set()
+            self._wake_writer.set()
             self._state = 'stopping'
             threads = tuple(self._threads)
         for thread in threads:

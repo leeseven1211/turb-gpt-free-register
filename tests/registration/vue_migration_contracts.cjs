@@ -17,7 +17,9 @@ async function run(name){
   ]};
   const job={id:'9007199254740993',email:'synthetic@example.invalid',email_source:'outlook',status:'partial_success',display_status:'password_confirmation_pending',retryable:true,error_message:'remote response was not recorded',progress:snapshot,
    operation_task_id:'9007199254740995',operation_run_id:'9007199254740997'};
-  const batch={batch_id:'synthetic-batch-uuid',items:[job],total:1,status_counts:{running:2,pending:10}};
+  const running=Array.from({length:2},(_,index)=>({id:10+index,status:'running'}));
+  const pending=Array.from({length:10},(_,index)=>({id:20+index,status:'pending'}));
+  const batch={batch_id:'synthetic-batch-uuid',items:[job,...running,...pending],total:13,status_counts:{partial_success:1,running:2,pending:10}};
   const api={
    metadata:async()=>({sources:[{value:'outlook',label:'Outlook',enabled:true}],registration_drivers:[{value:'roxy',label:'本地 Roxy'}]}),
    summary:async()=>({accounts:0,email_supply:{status:'known',total:0,available:0,used:0,failed:0}}),
@@ -36,18 +38,21 @@ async function run(name){
    assert.doesNotMatch(card.text(),/任务完成，待确认/);
   }else if(name==='progress_controls'){
    const header=wrapper.get('.registration-batch>header');
-   for(const text of ['停止','取消','重跑失败'])assert.ok(header.findAll('button').some(button=>button.text()===text),text);
+   for(const text of ['停止运行','取消排队','重跑失败'])assert.ok(header.findAll('button').some(button=>button.text()===text),text);
    assert.ok(header.find('select[aria-label="选择任务批次"]').exists());
+   await wrapper.get('[aria-label="查看阶段 · synthetic@example.invalid"]').trigger('click');await settle();
    const steps=wrapper.findAll('.registration-steps>li');
    assert.equal(steps.length,2);assert.match(steps[0].text(),/分配网络/);
    assert.match(wrapper.text(),/依赖与执行记录/);
    assert.match(wrapper.get('.registration-progress details').text(),/依赖阶段.*分配网络/);
-   await steps[0].get('[aria-label="查看分配网络的关系与证据"]').trigger('click');await settle();
+   await steps[0].get('button').trigger('click');await settle();
+   await wrapper.get('[aria-label="查看分配网络的关系与证据"]').trigger('click');await settle();
    const evidence=wrapper.get('dialog[aria-label="注册步骤关系与证据"]');
    assert.equal(evidence.attributes('open'),'');
    assert.match(evidence.text(),/耗时1\.0 秒/);
    await evidence.trigger('cancel');await settle();assert.equal(evidence.attributes('open'),undefined);
    await steps[1].get('button').trigger('click');await settle();
+   await wrapper.get('.registration-stage-selected').findAll('button').find(button=>button.text()==='阶段日志').trigger('click');await settle();
    assert.deepEqual(openTask,[['9007199254740995','9007199254740997','email_otp']]);
    assert.equal(wrapper.find('[data-resizable-table]').exists(),false);
   }else if(name==='list_controls'){

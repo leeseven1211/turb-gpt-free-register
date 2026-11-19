@@ -70,10 +70,10 @@ function change(value: string) {
           {{ item.label }}
         </button>
       </div>
-      <div class="pt-filter-actions">
-        <button type="button" class="pt-link" @click="change(current === 'search' ? '' : 'all')">
+      <div class="list-filter-actions">
+        <button type="button" @click="change(current === 'search' ? '' : 'all')">
           清除此列</button
-        ><button type="button" class="pt-button" @click="emit('update:open', false)">完成</button>
+        ><button type="button" class="list-filter-primary" @click="emit('update:open', false)">完成</button>
       </div>
     </div>
   </FilterPopover>

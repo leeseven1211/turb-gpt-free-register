@@ -230,9 +230,9 @@ defineExpose({ refresh, setVisible });
                       placeholder="搜索批次名称或编号"
                       autocomplete="off"
                   /></label>
-                  <div class="bl-filter-actions">
+                  <div class="list-filter-actions">
                     <button type="button" @click="removeFilter('q')">清除此列</button
-                    ><button type="submit">查询</button>
+                    ><button class="list-filter-primary" type="submit">查询</button>
                   </div>
                 </form></FilterPopover
               >
@@ -244,9 +244,9 @@ defineExpose({ refresh, setVisible });
                 :summary="operations[navigation.operation || ''] || navigation.operation"
                 :open="openFilter === 'operation'"
                 @update:open="openFilter = $event ? 'operation' : null"
-                ><fieldset class="bl-filter-options">
+                ><fieldset class="list-filter-options">
                   <legend class="bl-sr-only">操作类型</legend>
-                  <label
+                  <label class="list-filter-option"
                     ><input
                       type="radio"
                       name="bulk-list-operation"
@@ -254,7 +254,7 @@ defineExpose({ refresh, setVisible });
                       :checked="!navigation.operation"
                       @change="filter('operation', '')"
                     />全部操作</label
-                  ><label v-for="(label, key) in operations" :key="key"
+                  ><label class="list-filter-option" v-for="(label, key) in operations" :key="key"
                     ><input
                       type="radio"
                       name="bulk-list-operation"
@@ -273,9 +273,9 @@ defineExpose({ refresh, setVisible });
                 :summary="states[navigation.state || ''] || navigation.state"
                 :open="openFilter === 'state'"
                 @update:open="openFilter = $event ? 'state' : null"
-                ><fieldset class="bl-filter-options">
+                ><fieldset class="list-filter-options">
                   <legend class="bl-sr-only">运行状态</legend>
-                  <label
+                  <label class="list-filter-option"
                     ><input
                       type="radio"
                       name="bulk-list-state"
@@ -283,7 +283,7 @@ defineExpose({ refresh, setVisible });
                       :checked="!navigation.state"
                       @change="filter('state', '')"
                     />全部状态</label
-                  ><label v-for="(label, key) in states" :key="key"
+                  ><label class="list-filter-option" v-for="(label, key) in states" :key="key"
                     ><input
                       type="radio"
                       name="bulk-list-state"
@@ -315,7 +315,7 @@ defineExpose({ refresh, setVisible });
                       type="date"
                       :value="navigation.created_to"
                       @change="filter('created_to', ($event.target as HTMLInputElement).value)" /></label
-                  ><button type="button" @click="removeFilter('date')">清除此列</button>
+                  ><div class="list-filter-actions"><button type="button" @click="removeFilter('date')">清除此列</button></div>
                 </div></FilterPopover
               >
             </th>

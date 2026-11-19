@@ -31,7 +31,31 @@ describe('extract list standards',()=>{
   const pagination=wrapper.get('nav[aria-label="提链任务分页"]');await pagination.get('[aria-label="跳转页码"]').setValue('4');await pagination.get('form').trigger('submit');await flushPromises();
   expect(vi.mocked(api.tasks).mock.calls.at(-1)?.[0]).toMatchObject({page:4,size:20});
   await pagination.get('[aria-label="每页条数"]').setValue('50');await flushPromises();expect(vi.mocked(api.tasks).mock.calls.at(-1)?.[0]).toMatchObject({page:1,size:50});
-  expect(wrapper.get('nav[aria-label="提链批次分页"]').find('[aria-label="跳转页码"]').exists()).toBe(true);
+  expect(document.querySelector('nav[aria-label="提链批次分页"]')).toBeNull();
+  await wrapper.get('button[aria-label="筛选批次"]').trigger('click');await flushPromises();
+  expect(document.querySelector('nav[aria-label="提链批次分页"] [aria-label="跳转页码"]')).not.toBeNull();
+ });
+ it('browses history without reloading or disturbing the current task page',async()=>{
+  const {wrapper,api}=setup();await flushPromises();
+  const tasks=vi.mocked(api.tasks);
+  tasks.mockResolvedValueOnce({...await tasks.mock.results[0]!.value,page:2});
+  await wrapper.get('nav[aria-label="提链任务分页"] [aria-label="第 2 页"]').trigger('click');await flushPromises();
+  const scroll=wrapper.get('.extract-table-wrap').element;
+  scroll.scrollTop=80;
+  const calls=tasks.mock.calls.length;
+  vi.mocked(api.batches).mockResolvedValueOnce({items:[{batch_id:9,title:'第二页批次'}],total:125,page:2});
+  await wrapper.get('button[aria-label="筛选批次"]').trigger('click');await flushPromises();
+  const picker=document.querySelector('nav[aria-label="提链批次分页"]')!;
+  (picker.querySelector('[aria-label="第 2 页"]') as HTMLButtonElement).click();await flushPromises();
+  expect(api.batches).toHaveBeenLastCalledWith(2,expect.any(AbortSignal));
+  expect(tasks).toHaveBeenCalledTimes(calls);
+  expect(scroll.scrollTop).toBe(80);
+  expect(wrapper.get('nav[aria-label="提链任务分页"] [aria-current="page"]').text()).toBe('2');
+  const selection=document.querySelector<HTMLSelectElement>('[aria-label="筛选批次值"]')!;
+  expect([...selection.options].map(option=>option.text)).toContain('第二页批次');
+  selection.value='9';selection.dispatchEvent(new Event('change',{bubbles:true}));await flushPromises();
+  expect(tasks).toHaveBeenLastCalledWith(expect.objectContaining({batch:'9',page:1}),expect.any(AbortSignal));
+  expect(scroll.scrollTop).toBe(0);
  });
  it('retains candidate promotion, limit, type and configured concurrency in the created request',async()=>{
   const {wrapper,api}=setup();await flushPromises();vi.mocked(api.candidates).mockResolvedValue({total:2,selected_count:2});

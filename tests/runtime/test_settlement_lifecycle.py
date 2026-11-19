@@ -571,6 +571,17 @@ class SettlementLifecycleTests(unittest.TestCase):
                 manager, _events = self.manager(counts=lambda: actual)
                 self.assertFalse(manager._idle())
 
+    def test_shutdown_counts_do_not_replace_live_readiness_counts(self):
+        from core.operations import concurrency, settlement
+
+        counts = dict.fromkeys(assembly.SETTLEMENT_COUNT_KEYS, 0)
+        with patch.object(assembly, '_business_counts', return_value={'accepted': 0, 'active': 0}), \
+                patch.object(concurrency, 'release_runtime_status', return_value={}), \
+                patch.object(settlement, 'active_counts', return_value={**counts, 'unverified_scan_pending': 1}), \
+                patch.object(settlement, 'drain_counts', create=True, return_value=counts):
+            self.assertEqual(assembly._active_counts()['unverified_scan_pending'], 1)
+            self.assertEqual(assembly._active_counts(draining=True)['unverified_scan_pending'], 0)
+
     def test_start_binding_passes_original_domain_without_querying_status(self):
         context = RuntimeContext('worker')
         domain = object()

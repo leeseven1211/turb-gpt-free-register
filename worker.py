@@ -72,7 +72,7 @@ def main() -> None:
     bootstrap.prepare_log_environment()
     from core.storage import postgres
     from core.runtime.assembly import install
-    from core.runtime.process import start_runtime, stop_runtime
+    from core.runtime.process import execution_owner_lost, start_runtime, stop_runtime
     logger = logging.getLogger(__name__)
     stopped = threading.Event()
     original_failure = False
@@ -106,8 +106,7 @@ def main() -> None:
             from core.runtime.role_launcher import publish_managed_identity
             publish_managed_identity(bootstrap)
         while not stopped.wait(.5):
-            from core.runtime.process import execution_owner_valid
-            if not execution_owner_valid():
+            if execution_owner_lost():
                 begin_shutdown()
                 logger.error("后台执行归属已失效，当前进程将收尾退出：code=runtime_execution_owner_lost")
                 raise SystemExit(1)

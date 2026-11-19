@@ -10,6 +10,7 @@ import unittest
 from unittest.mock import patch
 
 from core.runtime import bindings, composition, context, manifest, process
+from core.runtime.instance_owner import OwnerError
 
 
 class FakeOwner:
@@ -370,6 +371,21 @@ class RuntimeCompositionTests(unittest.TestCase):
         runtime.start()
         runtime.context.admission.unblock("web")
         self.assertFalse(facade.execution_admitted())
+
+    def test_owner_probe_pause_denies_execution_without_marking_owner_lost(self):
+        facade = self.process
+        runtime, owner = self.runtime()
+        facade.install_runtime(runtime)
+        runtime.start()
+        runtime.context.admission.block("owner_probe_paused")
+        with patch.object(owner, "require_owner", side_effect=OwnerError("owner_probe_paused")):
+            self.assertFalse(facade.execution_owner_valid())
+            self.assertFalse(facade.execution_admitted())
+            self.assertEqual(("owner_probe_paused",), runtime.context.admission.reasons())
+            self.assertFalse(facade.execution_owner_lost())
+        owner.alive = False
+        self.assertTrue(facade.execution_owner_lost())
+        self.assertIn("owner_lost", runtime.context.admission.reasons())
 
     def test_owner_valid_allows_drain_settlement_without_new_admission(self):
         facade = self.process

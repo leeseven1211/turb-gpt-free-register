@@ -11,15 +11,18 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 import inspect
+import logging
 import threading
 import time
 from typing import Any, Callable
 from types import SimpleNamespace
 
 from .settlement_contracts import (
-    OperationSettlementConflict, OperationSettlementFenced,
+    CleanupDiagnosticReadUnavailable, OperationSettlementConflict, OperationSettlementFenced,
     OperationSettlementPending, SettlementIntent, _freeze, same_intent, thaw, classify_failure,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(eq=False)
@@ -171,12 +174,13 @@ def reserve_admission():
     global _RESERVATIONS
     with _CONDITION:
         active = len(_EXPECTED)
-        granted = (_check_integrity() and _check_carrier_health()
+        owner_blocked = _owner_blocks_claiming()
+        granted = (not owner_blocked and _check_integrity() and _check_carrier_health()
                    and not (_THREAD is not None and _STOP)
                    and active + _RESERVATIONS < _MAX_RESPONSIBILITIES)
         if granted:
             _RESERVATIONS += 1
-        elif _ADMISSION is not None:
+        elif _ADMISSION is not None and not owner_blocked:
             _ADMISSION.block("settlement")
     reservation = [False]
     token = _RESERVATION.set(reservation if granted else None)
@@ -358,10 +362,8 @@ def _check_carrier_health():
     """Retain a managed carrier's lost verification without adopting its work."""
     global _CARRIER_ERROR
     alive = _THREAD is not None and _THREAD.is_alive()
-    pending = bool(_EXPECTED or _blocking_scans() or _SCAN_INFLIGHT
-                   or any(not item.released for item in _REGISTRY.values()))
     if ((_STARTED or _STOP_WITH_PENDING) and not alive
-            and (not _STOP or pending)):
+            and (not _STOP or not _local_work_idle() or _shutdown_blocking_scans())):
         _CARRIER_ERROR = "settlement_carrier_unavailable"
     if _CARRIER_ERROR and _ADMISSION is not None:
         _ADMISSION.block("settlement_carrier_unavailable")
@@ -814,6 +816,15 @@ def active_counts():
                 "registered": max(len(owned), len(_EXPECTED), int(not valid), int(not carrier_valid))}
 
 
+def drain_counts():
+    """Report shutdown obligations while retaining normal scan readiness facts."""
+    with _LOCK:
+        counts = active_counts()
+        counts["unverified_scan_pending"] = _shutdown_blocking_scans()
+        counts["registered"] += _RESERVATIONS
+        return counts
+
+
 def runtime_status():
     with _LOCK:
         counts = active_counts()
@@ -851,6 +862,48 @@ def runtime_status():
 def _blocking_scans():
     return sum(_SCAN_DIAGNOSTICS.get(key, {}).get("blocks_permit", True)
                for key in _SCAN_BLOCKED)
+
+
+def _local_work_idle():
+    return (not (_EXPECTED or _RESERVATIONS or _SCAN_INFLIGHT)
+            and all(item.released and not item.inflight and not item._release_inflight
+                    and not item.callback_active for item in _REGISTRY.values()))
+
+
+def _owner_blocks_claiming():
+    return _ADMISSION is not None and bool(
+        {"owner_lost", "owner_probe_paused"}.intersection(_ADMISSION.reasons()))
+
+
+def _read_only_scan_failures():
+    return bool(_SCAN_BLOCKED) and all(
+        code == "settlement_storage_unavailable"
+        and _SCAN_DIAGNOSTICS.get(key, {}).get("read_only_transient")
+        for key, code in _SCAN_BLOCKED.items())
+
+
+def idle_for_owner_retry():
+    """An ownership probe may retry only with locally verifiable idle state."""
+    if not _LOCK.acquire(blocking=False):
+        return False
+    try:
+        return (bool(_STARTED and _THREAD is not None and _THREAD.is_alive())
+                and not (_STOP or _DEADLINE is not None or _CARRIER_ERROR or _REGISTRY_ERROR)
+                and _local_work_idle()
+                and (not _SCAN_BLOCKED or _read_only_scan_failures()))
+    finally:
+        _LOCK.release()
+
+
+def _shutdown_blocking_scans():
+    if (_DEADLINE is not None and not (_REGISTRY_ERROR or _CARRIER_ERROR)
+            and _read_only_scan_failures() and _local_work_idle() and _ADMISSION is not None):
+        reasons = _ADMISSION.reasons()
+        if {"owner_lost", "draining"}.issubset(reasons) and "settlement_registration" not in reasons:
+            # The scan never claimed an action. The new owner must still verify
+            # storage on startup. Keep the failure and all admission blocks intact.
+            return 0
+    return _blocking_scans()
 
 
 def _clear_scan_diagnostic(domain):
@@ -913,8 +966,8 @@ def retry_cleanup(*, domain, identity):
     with _CONDITION:
         if (_STOP or _DEADLINE is not None or not _STARTED or _THREAD is None
                 or not _THREAD.is_alive() or not _check_carrier_health()
-                or (_ADMISSION is not None
-                    and {"owner_lost", "draining"}.intersection(_ADMISSION.reasons()))):
+                or _owner_blocks_claiming()
+                or (_ADMISSION is not None and "draining" in _ADMISSION.reasons())):
             raise OperationSettlementFenced("cleanup_retry_runtime_unavailable")
         _remember_domain(domain)
         _SCAN_INFLIGHT += 1
@@ -941,12 +994,12 @@ def retry_cleanup(*, domain, identity):
 def _scan_domains():
     global _SCAN_INFLIGHT, _SCAN_ERROR
     with _CONDITION:
-        if _STOP or (_ADMISSION is not None and "owner_lost" in _ADMISSION.reasons()):
+        if _STOP or _owner_blocks_claiming():
             return
         domains = list(_DOMAINS.values())
     for domain in domains:
         with _CONDITION:
-            if _STOP or (_ADMISSION is not None and "owner_lost" in _ADMISSION.reasons()):
+            if _STOP or _owner_blocks_claiming():
                 return
             if _SCAN_NEXT.get(domain.domain_id, 0.0) > time.monotonic():
                 continue
@@ -970,9 +1023,17 @@ def _scan_domains():
             with _LOCK:
                 code, permanent = classify_failure(exc)
                 known = _SCAN_DIAGNOSTICS.get(domain.domain_id, {})
-                if not known.get("durable") or domain.domain_id not in _SCAN_BLOCKED:
+                read_only = isinstance(exc, CleanupDiagnosticReadUnavailable)
+                if read_only and domain.domain_id in _SCAN_BLOCKED:
+                    # A new read failure cannot erase a previous uncertain
+                    # mutation or a known permanent/durable obligation.
+                    pass
+                elif not known.get("durable") or domain.domain_id not in _SCAN_BLOCKED:
                     _SCAN_BLOCKED[domain.domain_id] = code
-                    _SCAN_DIAGNOSTICS.pop(domain.domain_id, None)
+                    if read_only:
+                        _SCAN_DIAGNOSTICS[domain.domain_id] = {"read_only_transient": True}
+                    else:
+                        _SCAN_DIAGNOSTICS.pop(domain.domain_id, None)
                 elif permanent:
                     _SCAN_BLOCKED[domain.domain_id] = code
                     known["scan_failed_permanently"] = True
@@ -1010,7 +1071,8 @@ def _domain_rearm_allowed(domain, admission):
     if domain is None or domain.domain_id not in _SCAN_BLOCKED:
         return True
     gates = [gate for gate in (_ADMISSION, admission) if gate is not None]
-    lifecycle_blocked = any({"draining", "owner_lost"}.intersection(gate.reasons()) for gate in gates)
+    lifecycle_blocked = any({"draining", "owner_lost", "owner_probe_paused"}.intersection(gate.reasons())
+                            for gate in gates)
     return bool(not _STOP and _THREAD is not None and _THREAD.is_alive() and not lifecycle_blocked)
 
 
@@ -1114,13 +1176,25 @@ def drain_runtime(deadline):
     with _CONDITION:
         effective = _install_deadline(deadline)
         _CONDITION.notify_all()
-        while (_SCAN_INFLIGHT or _blocking_scans() or not _check_integrity()
-               or not _check_carrier_health() or any(not item.released for item in _REGISTRY.values())):
+        while (not _check_integrity() or not _check_carrier_health()
+               or not _local_work_idle() or _shutdown_blocking_scans()):
             remaining = effective - time.monotonic()
             if remaining <= 0:
-                return False
+                counts = drain_counts()
+                scans_in_flight = _SCAN_INFLIGHT
+                scan_source = ("read_only_transient" if _read_only_scan_failures() else
+                               "durable_or_unverified" if _SCAN_BLOCKED else "none")
+                break
             _CONDITION.wait(min(remaining, 0.05))
-        return True
+        else:
+            return True
+    logger.warning(
+        "结算排空超时：registered=%d callbacks=%d in_flight=%d scans_in_flight=%d "
+        "scan_pending=%d scan_source=%s",
+        counts["registered"], counts["callback_active"], counts["compensation_inflight"],
+        scans_in_flight, counts["unverified_scan_pending"], scan_source,
+    )
+    return False
 
 
 def stop_runtime(deadline):
@@ -1129,8 +1203,9 @@ def stop_runtime(deadline):
         _check_carrier_health()
         effective = _install_deadline(deadline)
         _STOP = True
-        _STOP_WITH_PENDING = bool(_blocking_scans() or _SCAN_INFLIGHT
-                                  or any(not item.released for item in _REGISTRY.values()))
+        valid = _check_integrity()
+        _STOP_WITH_PENDING = bool(not valid or _shutdown_blocking_scans()
+                                  or not _local_work_idle())
         _CONDITION.notify_all()
         thread = _THREAD
     if thread is not None and thread is not threading.current_thread():
@@ -1139,5 +1214,5 @@ def stop_runtime(deadline):
         joined = thread is None or not thread.is_alive()
         if joined:
             _STARTED = False
-        return (joined and not _blocking_scans() and _check_integrity() and _check_carrier_health()
-                and not any(not item.released for item in _REGISTRY.values()))
+        return (joined and valid and _check_integrity() and _local_work_idle()
+                and not _shutdown_blocking_scans() and _check_carrier_health())

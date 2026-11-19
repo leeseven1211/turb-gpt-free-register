@@ -30,17 +30,27 @@ const tool=computed<'roxy'|'proxy'|'butler'|'sentinel'|'sub2api'|'concurrency'|n
  if(current.domain==='并发控制')return 'concurrency';return null;
 });
 function remember(){try{localStorage.setItem(menuStorageKey,current.domain||current.menu);}catch{/* Navigation storage is optional; no field values are persisted. */}}
-function resetViewport(){void nextTick(()=>{const main=root.value?.querySelector<HTMLElement>('main');const scrolled=!!(main?.scrollTop||main?.scrollLeft||window.scrollY||window.scrollX||document.documentElement.scrollTop);if(main){main.scrollTop=0;main.scrollLeft=0;}if(scrolled)window.scrollTo({top:0,left:0,behavior:'auto'});});}
+function resetViewport(){void nextTick(()=>{const content=root.value?.querySelector<HTMLElement>('.config-vue-content');const scrolled=!!(content?.scrollTop||content?.scrollLeft||window.scrollY||window.scrollX||document.documentElement.scrollTop);if(content){content.scrollTop=0;content.scrollLeft=0;}if(scrolled)window.scrollTo({top:0,left:0,behavior:'auto'});});}
 function selectMenu(name:string){const next=destination(name,props.owner.fields.value);if(menus[name]&&rememberedDomains[next.menu])next.domain=rememberedDomains[next.menu]!;next.section=rememberedSections[next.domain]||subsectionsFor(next.domain,props.owner.fields.value)[0]||'';Object.assign(current,next);remember();resetViewport();}
 function selectDomain(name:string){current.domain=name;rememberedDomains[current.menu]=name;current.section=rememberedSections[name]||subsectionsFor(name,props.owner.fields.value)[0]||'';remember();resetViewport();}
 function selectSection(name:string){current.section=name;rememberedSections[current.domain]=name;resetViewport();}
-function search(value:string){query.value=value;const found=findDestination(value,props.owner.fields.value,current.menu);if(found)Object.assign(current,found);}
+function search(value:string) {
+ query.value=value;
+ const found=findDestination(value,props.owner.fields.value,current.menu);
+ if(!found || (current.menu===found.menu && current.domain===found.domain && current.section===found.section))return;
+ Object.assign(current,found);
+ resetViewport();
+}
 function selectProviders(values:string[]){for(const provider of providers.value)props.owner.setField(provider.enabledKey,values.includes(provider.value));}
 async function focusField(key:string){const field=props.owner.field(key);if(!field)return;if(query.value.trim()&&!searchText(field,props.owner.fields.value).includes(query.value.trim().toLowerCase()))query.value='';Object.assign(current,fieldDestination(field,props.owner.fields.value));remember();await nextTick();const wrapper=Array.from(root.value?.querySelectorAll<HTMLElement>('[data-config-setting]')||[]).find(element=>element.dataset.configSetting===key);wrapper?.querySelectorAll<HTMLDetailsElement>('details').forEach(element=>element.open=true);const details=wrapper?.closest('details');if(details)details.open=true;const element=wrapper?.querySelector<HTMLElement>('input:not([type=hidden]),select,textarea,summary,button');element?.focus();element?.scrollIntoView?.({block:'nearest'});}
 function discard(){if(props.owner.dirtyCount.value&&window.confirm('确定撤销全部未保存的配置修改？'))props.owner.reset();}
 function protectDraft(event:BeforeUnloadEvent){if(props.owner.dirtyCount.value){event.preventDefault();event.returnValue='';}}
 async function save(){const result=await props.owner.saveAll();if(result.status==='validation-error'){const key=Object.keys(result.fields||{})[0];if(key)props.owner.navigateField(key);}}
 function summary(key:string){const value=props.owner.readField(key);if(value===undefined||value===null||value==='')return '—';return schemaOptions(props.owner.field(key)).find(item=>item.value===value)?.label || (Array.isArray(value)?value.join('、'):String(value));}
+const codexAuto = computed(() => {
+ const value = props.owner.readField('ENABLE_CODEX_AUTO');
+ return typeof value === 'boolean' ? `自动授权${value ? '已开启' : '已关闭'}` : '';
+});
 watch(()=>props.owner.navigationTarget.value,target=>{if(target)void focusField(target.key);});
 watch(()=>props.active,active=>props.actions.setPageActive(active),{immediate:true});
 onBeforeUnmount(()=>{props.actions.setPageActive(false);window.removeEventListener('beforeunload',protectDraft);});
@@ -57,18 +67,29 @@ const poolRules=[['注册与账号认证','注册主链路的注册国家；账�
 </script>
 <template>
  <div ref="root" class="config-vue-page">
-  <div class="config-vue-overview" aria-label="当前配置概览"><span>注册主链路 <strong>{{ registrationDriverValue(owner.readField('REGISTRATION_DRIVER')) }}</strong></span><span>邮箱来源 <strong>{{ summary('EMAIL_SOURCE') }}</strong></span><span>Codex OAuth <strong>{{ summary('CODEX_OAUTH_DRIVER') }}</strong><small>自动授权：{{ owner.readField('ENABLE_CODEX_AUTO')?'已开启':'已关闭' }}</small></span><span>代理模式 <strong>{{ summary('REGISTRATION_PROXY_MODE') }}</strong></span></div>
+  <dl v-if="owner.fields.value.length" class="config-vue-overview" aria-label="配置概览">
+   <div><dt>注册主链路</dt><dd>{{ owner.field('REGISTRATION_DRIVER') ? registrationDriverValue(owner.readField('REGISTRATION_DRIVER')) : '—' }}</dd></div>
+   <div><dt>邮箱来源</dt><dd>{{ summary('EMAIL_SOURCE') }}</dd></div>
+   <div><dt>Codex OAuth</dt><dd>{{ summary('CODEX_OAUTH_DRIVER') }}<small v-if="codexAuto">{{ codexAuto }}</small></dd></div>
+   <div><dt>代理模式</dt><dd>{{ summary('REGISTRATION_PROXY_MODE') }}</dd></div>
+  </dl>
   <p v-if="owner.loading.value" role="status">正在读取配置…</p>
   <p v-if="owner.error.value" class="config-vue-error" role="alert">{{ owner.error.value }}</p>
   <p v-if="owner.refreshError.value" class="config-vue-error" role="status">{{ owner.refreshError.value }} <button type="button" @click="owner.refresh({force:true})">重新读取配置</button></p>
   <div v-if="errors.length" class="config-vue-error-summary" role="alert" tabindex="-1"><strong>请检查 {{ errors.length }} 项配置，草稿已保留</strong><ul><li v-for="[key,error] in errors" :key="key"><button type="button" @click="owner.navigateField(key)">{{ owner.field(key)?.label || key }}：{{ error }}</button></li></ul></div>
   <div class="config-vue-layout">
    <ConfigNavigation :owner="owner" :active="current.menu" :query="query" @select="selectMenu" @search="search" />
-   <main class="config-vue-content">
-    <div class="config-vue-tabs" role="group" :aria-label="`${current.menu}配置领域`"><button v-for="domain in domainNames" :key="domain" type="button" :data-config-domain-v2="domain" :aria-pressed="current.domain===domain" @click="selectDomain(domain)">{{ domain==='注册与账号'?'查询套餐':domain }}</button></div>
-    <section :data-config-section="current.domain">
+   <div v-if="current.domain" class="config-vue-content">
+    <header class="config-vue-content-header">
      <h2>{{ current.domain==='注册与账号'?'查询套餐':current.domain }}</h2>
-     <div v-if="sections.length" class="config-vue-tabs" role="group" :aria-label="`${current.domain}配置分类`"><button v-for="section in sections" :key="section" type="button" :data-config-subsection="section" :aria-pressed="current.section===section" @click="selectSection(section)">{{ section }}</button></div>
+     <div v-show="domainNames.length > 1" class="config-vue-tabs config-vue-domains" role="group" :aria-label="`${current.menu}配置领域`">
+      <button v-for="domain in domainNames" :key="domain" type="button" :data-config-domain-v2="domain" :aria-pressed="current.domain===domain" @click="selectDomain(domain)">{{ domain==='注册与账号'?'查询套餐':domain }}</button>
+     </div>
+     <div v-if="sections.length" class="config-vue-tabs config-vue-subsections" role="group" :aria-label="`${current.domain}配置分类`">
+      <button v-for="section in sections" :key="section" type="button" :data-config-subsection="section" :aria-pressed="current.section===section" @click="selectSection(section)">{{ section }}</button>
+     </div>
+    </header>
+    <section class="config-vue-editor" :data-config-section="current.domain">
      <table v-if="current.domain==='代理与网络'&&current.section==='任务用池'" class="config-vue-pool-rules"><caption>任务用池规则</caption><thead><tr><th>任务</th><th>国家需求</th><th>领取规则</th></tr></thead><tbody><tr v-for="row in poolRules" :key="row[0]"><td v-for="cell in row" :key="cell">{{ cell }}</td></tr></tbody></table>
      <div v-if="current.domain==='提链'&&current.section==='通用配置'" class="config-vue-field"><div class="config-vue-field-copy"><label>启用平台</label><p class="hint">选择允许在提链工作台中使用的平台；取消选择不会清除该平台的地址或 CDK。</p></div><ConfigChoicePicker label="启用平台" :values="selectedProviders" :options="providers" @change="selectProviders" /></div>
      <template v-if="current.domain==='代理与网络'&&current.section==='代理来源'">
@@ -80,10 +101,15 @@ const poolRules=[['注册与账号认证','注册主链路的注册国家；账�
      <p v-if="current.domain==='注册调试'" class="hint">“调试模式”仍是单个注册批次的现场保留开关，本页只控制失败诊断、保留时长和抓包预算。</p>
      <ConfigActionTools v-if="tool" :key="tool" :owner="owner" :actions="actions" :tool="tool" :active="active" />
     </section>
-   </main>
+   </div>
   </div>
   <div v-if="owner.dirtyCount.value||owner.receipt.value" class="config-vue-savebar">
-   <div role="status" aria-live="polite"><strong>{{ errors.length?'请检查标记的配置项':owner.error.value?'保存失败，请重试':owner.dirtyCount.value?`${owner.dirtyCount.value} 项待保存`:'配置已保存' }}</strong><span v-if="errors.length">请检查标记的配置项后再保存</span><span v-else-if="owner.error.value">请检查网络或服务状态后重试</span><span v-if="owner.receipt.value">数据库保存{{ owner.receipt.value.persistedDbRevision!==null?`版本 ${owner.receipt.value.persistedDbRevision}`:'成功' }} · Worker {{ owner.receipt.value.workerApplication.state==='applied'?'已应用':owner.receipt.value.workerApplication.state==='error'?'应用异常':owner.receipt.value.workerApplication.state==='pending'?'等待应用':'应用状态待确认' }}</span><span v-if="owner.receipt.value?.restartRequired.length">需重启：{{ owner.receipt.value.restartRequired.join('、') }}</span></div>
+   <div class="config-vue-save-state" role="status" aria-live="polite">
+    <strong>{{ errors.length?'请检查标记的配置项':owner.error.value?'保存失败，请重试':owner.dirtyCount.value?`${owner.dirtyCount.value} 项待保存`:'配置已保存' }}</strong>
+    <span v-if="owner.error.value && !errors.length">请检查网络或服务状态后重试</span>
+    <span v-if="owner.receipt.value">数据库保存{{ owner.receipt.value.persistedDbRevision!==null?`版本 ${owner.receipt.value.persistedDbRevision}`:'成功' }} · Worker {{ owner.receipt.value.workerApplication.state==='applied'?'已应用':owner.receipt.value.workerApplication.state==='error'?'应用异常':owner.receipt.value.workerApplication.state==='pending'?'等待应用':'应用状态待确认' }}</span>
+    <span v-if="owner.receipt.value?.restartRequired.length">需重启：{{ owner.receipt.value.restartRequired.join('、') }}</span>
+   </div>
    <button type="button" :disabled="!owner.dirtyCount.value||owner.saving.value" @click="discard">撤销修改</button><button type="button" class="primary" :disabled="!owner.dirtyCount.value||owner.saving.value" @click="save">{{ owner.saving.value?'正在保存…':'保存全部配置' }}</button>
   </div>
  </div>

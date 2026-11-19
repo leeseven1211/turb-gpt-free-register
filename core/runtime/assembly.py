@@ -5,6 +5,7 @@ from dataclasses import asdict, replace
 from importlib import import_module
 import logging
 from pathlib import Path
+from threading import Lock
 import time
 
 from .bindings import build_components
@@ -12,7 +13,7 @@ from .bootstrap import RuntimeBootstrap
 from .composition import ComponentHooks, RuntimeController
 from .config_observer import create_config_observer
 from .context import RuntimeContext
-from .instance_owner import ExecutionOwner
+from .instance_owner import ExecutionOwner, OwnerError
 from .managed import ManagedRuntime
 from .finalizer import BoundedFinalizer
 from .manifest import COMPONENTS
@@ -75,6 +76,14 @@ class _HeartbeatBinding:
         self.collector = collector
         self.reporter = None
         self.generation = None
+        self._pause_epoch = 0
+        self._epoch_lock = Lock()
+
+    def owner_pause_changed(self):
+        with self._epoch_lock:
+            self._pause_epoch += 1
+        if self.reporter is not None:
+            self.reporter.request_refresh()
 
     def start(self):
         from core.storage import postgres, runtime_workers
@@ -87,11 +96,27 @@ class _HeartbeatBinding:
             self.owner.require_owner()
             self.generation = runtime_workers.begin_generation(self.bootstrap.instance_id,
                 identity['nonce'], identity, conn=conn)
+        def collect():
+            with self._epoch_lock:
+                epoch = self._pause_epoch
+            return {**self.collector(), '_owner_pause_epoch': epoch}
+
         def write(status):
-            self.owner.require_owner()
-            return runtime_workers.heartbeat(self.generation, status)
+            with postgres.connect() as conn:
+                # Pool checkout can outlive an ownership pause. Recheck here,
+                # then use the same single writer and generation CAS as usual.
+                try:
+                    self.owner.require_owner()
+                except OwnerError as exc:
+                    if exc.code != 'owner_probe_paused':
+                        raise
+                    status = {**status, 'ready': False}
+                with self._epoch_lock:
+                    if status.get('_owner_pause_epoch') != self._pause_epoch:
+                        status = {**status, 'ready': False}
+                return runtime_workers.heartbeat(self.generation, status, conn=conn)
         self.reporter = WorkerHeartbeat(admission=self.context.admission,
-            write_heartbeat=write, collect_status=self.collector)
+            write_heartbeat=write, collect_status=collect)
         self.reporter.start()
 
     def stop(self, timeout=3.0):
@@ -186,10 +211,10 @@ class InstalledRuntime:
         return result
 
 
-def _active_counts():
+def _active_counts(*, draining=False):
     from core.operations import concurrency, settlement
     result = _business_counts()
-    counts = settlement.active_counts()
+    counts = settlement.drain_counts() if draining else settlement.active_counts()
     # Missing, bool or malformed facts remain unknown and prevent clean drain.
     result.update({name: counts.get(name) for name in SETTLEMENT_COUNT_KEYS})
     release_status = concurrency.release_runtime_status()
@@ -197,7 +222,28 @@ def _active_counts():
                   legacy_release_inflight=release_status.get('inflight'),
                   legacy_renewal_pending=release_status.get('renewal_pending'),
                   registration_pending=release_status.get('registration_pending'))
+    if draining:
+        result['active_admissions'] = concurrency.active_admissions()
     return result
+
+
+def _idle_for_owner_retry(context):
+    from core.bulk_operations import service as bulk
+    from core.operations import concurrency, settlement
+    from core.registration import service
+
+    # Keep unrelated admission reasons in force. A setup or shutdown in progress
+    # cannot enter the retry path. The dedicated probe and watchdog stay separate.
+    if {'startup', 'startup_failed', 'draining', 'owner_lost'}.intersection(
+            context.admission.reasons()):
+        return False
+    business_counts = _business_counts()
+    pending_dispatch = service.dispatcher_status().get('in_flight')
+    return (all(type(value) is int and value == 0 for value in business_counts.values())
+            and type(pending_dispatch) is int and pending_dispatch == 0
+            and bulk.idle_for_owner_retry()
+            and concurrency.idle_for_owner_retry()
+            and settlement.idle_for_owner_retry())
 
 
 def _business_counts():
@@ -240,10 +286,24 @@ def install(bootstrap: RuntimeBootstrap, *, logger=None):
         Path(__file__).resolve().parents[2] / 'run' / 'sentinel-candidates'
         if bootstrap.legacy_paths else bootstrap.runtime_dir / 'sentinel-candidates')
     observer = create_config_observer(context)
+
+    def pause():
+        context.admission.block('owner_probe_paused')
+        heartbeat.owner_pause_changed()
+
+    def resume():
+        context.admission.unblock('owner_probe_paused')
+        heartbeat.owner_pause_changed()
+
+    pause_hooks = dict(
+        on_pause=pause,
+        can_resume=lambda: _idle_for_owner_retry(context),
+        on_resume=resume,
+    ) if bootstrap.mode == 'worker' else {}
     owner = ExecutionOwner(mode=bootstrap.mode, instance_id=bootstrap.instance_id,
         schema=postgres.schema_name(), stable_dir=bootstrap.runtime_dir,
         connect_dedicated=postgres.connect_dedicated,
-        on_lost=lambda: context.admission.block('owner_lost')) if context.executes else None
+        on_lost=lambda: context.admission.block('owner_lost'), **pause_hooks) if context.executes else None
     components = build_components()
     for name, target in _STOPS.items():
         original = components[name]
@@ -275,7 +335,7 @@ def install(bootstrap: RuntimeBootstrap, *, logger=None):
     manager = ManagedRuntime(controller=controller, heartbeat=heartbeat,
         producer_names=_PRODUCERS if context.executes else (),
         claim_names=_CLAIMERS if context.executes else (),
-        active_counts=_active_counts if context.executes else lambda: {'accepted': 0},
+        active_counts=(lambda: _active_counts(draining=True)) if context.executes else lambda: {'accepted': 0},
         settle=BoundedFinalizer(settle),
         flush=BoundedFinalizer(finalize),
         close_connections=BoundedFinalizer(close_connections),

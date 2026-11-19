@@ -341,6 +341,64 @@ class SettlementPermitTests(unittest.TestCase):
         self.assertEqual([], claims)
         self.assertEqual(("settlement_capacity",), result.blocked_by)
 
+    def test_owner_probe_retry_detects_inflight_nonparticipating_claim(self):
+        from core.runtime.context import AdmissionGate
+
+        gate = AdmissionGate()
+        gate.unblock("startup")
+        claim_started = threading.Event()
+        finish_claim = threading.Event()
+
+        def claim(_conn, _execution_id):
+            claim_started.set()
+            if not finish_claim.wait(1):
+                raise AssertionError("did not release claim")
+            return {"id": 1}
+
+        def admit(**kwargs):
+            claimed = kwargs["claim"](object(), kwargs["execution_id"])
+            return {"blocked_by": ["not_claimable"]} if claimed is None else {
+                "permit_id": "permit-created", "claimed_run": claimed, "policy_revision": 1,
+            }
+
+        with ThreadPoolExecutor(max_workers=1) as pool, \
+                patch("core.runtime.execution_access.execution_allowed", gate.is_open), \
+                patch.object(permits, "current_owner", return_value={"pid": 101}), \
+                patch.object(permits, "try_admit", side_effect=admit):
+            task = pool.submit(concurrency.try_admit_and_claim, execution_key="butler-import:1:1",
+                               task_type="email_import", claim=claim)
+            try:
+                self.assertTrue(claim_started.wait(1))
+                gate.block("owner_probe_paused")
+                self.assertFalse(concurrency.idle_for_owner_retry())
+                self.assertFalse(concurrency.stop_release_runtime(time.monotonic()))
+                self.assertEqual(1, concurrency.active_admissions())
+            finally:
+                finish_claim.set()
+            result = task.result(timeout=1)
+        self.assertFalse(result.admitted)
+        self.assertTrue(concurrency.idle_for_owner_retry())
+        self.assertEqual(0, concurrency.active_admissions())
+
+    def test_owner_probe_retry_detects_nonparticipating_permit_until_release(self):
+        admitted = {"permit_id": "handoff-permit", "claimed_run": {"id": 1}, "policy_revision": 1}
+        with patch("core.runtime.execution_access.execution_allowed", return_value=True), \
+                patch("core.runtime.process.get_runtime_context", return_value=SimpleNamespace(mode="worker")), \
+                patch.object(permits, "current_owner", return_value={"pid": 101}), \
+                patch.object(permits, "try_admit", return_value=admitted), \
+                patch.object(concurrency, "release_permit", return_value=True):
+            result = concurrency.try_admit_and_claim(execution_key="operation_dependency:1",
+                                                     task_type="account_setup_retry", claim=lambda *_: {"id": 1})
+            self.assertTrue(result.admitted)
+            try:
+                self.assertFalse(concurrency.idle_for_owner_retry())
+                self.assertFalse(concurrency.stop_release_runtime(time.monotonic()))
+                self.assertEqual(1, concurrency.active_admissions())
+            finally:
+                self.assertTrue(concurrency.release_execution(result.context))
+        self.assertTrue(concurrency.idle_for_owner_retry())
+        self.assertEqual(0, concurrency.active_admissions())
+
     def test_postcommit_registration_failure_preserves_exact_context_and_stops_admission(self):
         @contextmanager
         def reservation():

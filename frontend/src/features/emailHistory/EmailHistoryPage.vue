@@ -73,7 +73,7 @@ function clearColumn(key: FilterKey) {
               <label v-else class="eh-field">{{ column.label }}
                 <input type="search" :aria-label="column.label" :value="state.filters[column.filter]" @input="textInput(column.filter, $event)" @compositionend="updateFilter(column.filter, ($event.target as HTMLInputElement).value)">
               </label>
-              <button type="button" class="eh-button" @click="clearColumn(column.filter)">清除条件</button>
+              <div class="list-filter-actions"><button type="button" @click="clearColumn(column.filter)">清除条件</button></div>
             </FilterPopover>
             <template v-else>操作 <button type="button" class="eh-clear" @click="resetFilters">清筛</button></template>
             <button type="button" class="eh-grip" :aria-label="`调整${column.label}列宽`" @pointerdown.prevent="resize(index,$event)" @keydown.left.prevent="resizeWithKeyboard(index,-10)" @keydown.right.prevent="resizeWithKeyboard(index,10)"/>

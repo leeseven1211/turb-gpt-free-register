@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from psycopg import errors
+from psycopg import OperationalError, errors
 
 from core.operations import settlement
 from core.operations.settlement_contracts import (
@@ -171,7 +171,7 @@ class CleanupScannerDiagnosticTests(unittest.TestCase):
             ("_REGISTRY", {}), ("_EXPECTED", set()), ("_REGISTRY_ERROR", ""),
             ("_CARRIER_ERROR", ""), ("_DOMAINS", {self.domain.domain_id: self.domain}),
             ("_SCAN_BLOCKED", {}), ("_SCAN_NEXT", {}), ("_SCAN_FAILURES", {}),
-            ("_SCAN_ERROR", ""), ("_SCAN_INFLIGHT", 0), ("_STOP", False),
+            ("_SCAN_ERROR", ""), ("_SCAN_INFLIGHT", 0), ("_RESERVATIONS", 0), ("_STOP", False),
             ("_SCAN_DIAGNOSTICS", {}),
             ("_STOP_WITH_PENDING", False), ("_DEADLINE", None), ("_STARTED", True),
             ("_THREAD", SimpleNamespace(is_alive=lambda: True)), ("_ADMISSION", self.gate),
@@ -180,6 +180,103 @@ class CleanupScannerDiagnosticTests(unittest.TestCase):
         self.stack.enter_context(patch.object(settlement, "time", self.clock))
         self.stack.enter_context(patch.object(postgres, "connect", side_effect=AssertionError("offline DB forbidden")))
         self.stack.enter_context(patch.object(postgres, "database_url", side_effect=AssertionError("offline config forbidden")))
+
+    def _read_timeout(self):
+        with patch.object(settlements, "cleanup_diagnostics", side_effect=TimeoutError("private")), \
+                patch.object(settlements, "_claim_cleanup") as claim:
+            settlement._scan_domains()
+        claim.assert_not_called()
+
+    def _begin_owner_loss_shutdown(self):
+        self.gate.block("owner_lost")
+        self.gate.block("draining")
+        settlement.begin_shutdown(self.clock.value)
+
+    def test_owner_loss_shutdown_can_exit_after_read_only_scan_timeout(self):
+        self._read_timeout()
+        self.assertEqual(1, settlement.active_counts()["unverified_scan_pending"])
+        self.assertFalse(component_ready("settlement", settlement.runtime_status()))
+        self.gate.block("owner_lost")
+        self.assertFalse(settlement.drain_runtime(self.clock.value))
+        self._begin_owner_loss_shutdown()
+        self.assertTrue(settlement.drain_runtime(self.clock.value))
+        self.assertEqual(0, settlement.drain_counts()["unverified_scan_pending"])
+        self.assertEqual(1, settlement.active_counts()["unverified_scan_pending"])
+
+        carrier = settlement._THREAD
+        carrier.join = lambda timeout: setattr(carrier, "is_alive", lambda: False)
+        self.assertTrue(settlement.stop_runtime(self.clock.value))
+        self.assertEqual({"owner_lost", "draining", "settlement"}, self.gate.blocked)
+        self.assertEqual(1, settlement.active_counts()["unverified_scan_pending"])
+
+    def test_owner_loss_shutdown_still_blocks_on_known_cleanup_after_read_timeout(self):
+        durable = {"state": "pending", "error_code": "settlement_storage_unavailable",
+                   "blocks_permit": True, "identity": {"permit_id": "original-permit"}}
+        with patch.object(settlements, "cleanup_diagnostics", return_value=[durable]), \
+                patch.object(settlements, "_claim_cleanup", return_value=None):
+            settlement._scan_domains()
+        self.clock.value += 1
+        self._read_timeout()
+        self._begin_owner_loss_shutdown()
+        self.assertFalse(settlement.drain_runtime(self.clock.value))
+        self.assertEqual(1, settlement.drain_counts()["unverified_scan_pending"])
+
+    def test_owner_loss_shutdown_still_blocks_after_ambiguous_cleanup_claim(self):
+        with patch.object(settlements, "cleanup_diagnostics", return_value=[]), \
+                patch.object(settlements, "_claim_cleanup", side_effect=OperationalError("private")):
+            settlement._scan_domains()
+        self.clock.value += 1
+        self._read_timeout()
+        self._begin_owner_loss_shutdown()
+        self.assertFalse(settlement.drain_runtime(self.clock.value))
+        self.assertEqual(1, settlement.drain_counts()["unverified_scan_pending"])
+
+    def test_owner_loss_shutdown_still_blocks_on_permanent_read_error(self):
+        with patch.object(settlements, "cleanup_diagnostics",
+                          side_effect=errors.InsufficientPrivilege("private")):
+            settlement._scan_domains()
+        self._begin_owner_loss_shutdown()
+        self.assertFalse(settlement.drain_runtime(self.clock.value))
+        self.assertEqual(1, settlement.drain_counts()["unverified_scan_pending"])
+
+    def test_owner_loss_shutdown_still_waits_for_inflight_work_after_read_timeout(self):
+        self._read_timeout()
+        with settlement.reserve_admission() as granted:
+            self.assertTrue(granted)
+            self._begin_owner_loss_shutdown()
+            self.assertFalse(settlement.drain_runtime(self.clock.value))
+        with patch.object(settlement, "_SCAN_INFLIGHT", 1):
+            self.assertFalse(settlement.drain_runtime(self.clock.value))
+        execution = SimpleNamespace(permit_id="live-permit", execution_id="live-execution")
+        settlement.register_execution(execution, vars(execution).copy())
+        self.assertTrue(settlement.callback_started(execution))
+        self.assertFalse(settlement.drain_runtime(self.clock.value))
+
+    def test_owner_retry_rejects_ambiguous_work_but_can_recheck_with_read_only_scan_error(self):
+        self._read_timeout()
+        self.assertTrue(settlement.idle_for_owner_retry())
+        with patch.object(settlement, "_SCAN_INFLIGHT", 1):
+            self.assertFalse(settlement.idle_for_owner_retry())
+        with settlement.reserve_admission() as granted:
+            self.assertTrue(granted)
+            self.assertFalse(settlement.idle_for_owner_retry())
+        self.clock.value += 1
+        with patch.object(settlements, "cleanup_diagnostics", return_value=[]), \
+                patch.object(settlements, "_claim_cleanup", side_effect=OperationalError("private")):
+            settlement._scan_domains()
+        self.assertFalse(settlement.idle_for_owner_retry())
+
+    def test_paused_owner_neither_claims_local_work_nor_starts_durable_scans(self):
+        self.gate.block("owner_probe_paused")
+        with settlement.reserve_admission() as granted:
+            self.assertFalse(granted)
+        with patch.object(settlements, "run_cleanup_once") as scan, \
+                patch.object(settlements, "retry_cleanup") as retry:
+            settlement._scan_domains()
+            with self.assertRaises(OperationSettlementFenced):
+                settlement.retry_cleanup(domain=self.domain, identity={})
+        scan.assert_not_called()
+        retry.assert_not_called()
 
     def test_real_dispatcher_blocked_return_makes_empty_registry_unready(self):
         row = job_for(self.domain)

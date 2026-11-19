@@ -1,4 +1,152 @@
-.registration-vue-page{display:block;min-width:0}.registration-summary{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px}.registration-summary>div{padding:14px;border:1px solid var(--ui-color-border,#ddd);border-radius:8px;background:var(--ui-color-surface,#fff)}.registration-summary span,.registration-summary strong{display:block}.registration-summary strong{font-size:24px;margin-top:4px}.registration-hint{color:var(--ui-color-text-secondary,#667);font-size:13px}.registration-launcher,.registration-filters,.registration-toolbar{display:flex;align-items:end;gap:10px;flex-wrap:wrap;margin:12px 0}.registration-launcher label,.registration-filters label{display:flex;flex-direction:column;gap:4px;font-size:13px}.registration-launcher input,.registration-launcher select,.registration-filters input,.registration-filters select{min-height:34px;padding:5px 8px;border:1px solid var(--ui-color-border-strong,#bbc);border-radius:5px;background:var(--ui-color-surface,#fff);color:inherit}.registration-debug{flex-direction:row!important;align-items:center;padding-bottom:8px}.registration-batch{margin-top:16px;padding:12px;border:1px solid var(--ui-color-border,#ddd);border-radius:8px}.registration-batch>header{display:flex;gap:8px;align-items:center;margin-bottom:10px}.registration-batch>header strong{margin-right:auto}.registration-batch-card{padding:10px 0;border-top:1px solid var(--ui-color-border,#ddd)}.registration-batch-card>div{display:flex;gap:8px;align-items:center}.registration-batch-card>div strong{margin-right:auto}.registration-steps{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}.registration-steps span{padding:3px 7px;border-radius:99px;background:#eef1f5;font-size:12px}.registration-steps .is-success{background:#e2f6ea}.registration-steps .is-failed{background:#fde8e8}.registration-receipt{position:sticky;bottom:12px;margin:10px 0;padding:8px 12px;border-radius:6px;background:#eef1f5}.registration-receipt.is-success{background:#e2f6ea}.registration-receipt.is-warning{background:#fff5db}.registration-receipt.is-danger{background:#fde8e8}.registration-dialog-backdrop{position:fixed;inset:0;z-index:1300;display:grid;place-items:center;padding:20px;background:#0006}.registration-dialog{width:min(900px,100%);max-height:90vh;overflow:auto;padding:16px;border-radius:10px;background:var(--ui-color-surface,#fff);color:var(--ui-color-text,#222)}.registration-dialog header{display:flex;align-items:center;gap:12px}.registration-dialog header h2{margin-right:auto}.registration-dialog pre{max-height:50vh;overflow:auto;white-space:pre-wrap;background:#f5f6f8;padding:12px}@media(max-width:680px){.registration-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.registration-launcher,.registration-filters{align-items:stretch;flex-direction:column}.registration-launcher>*{width:100%}.registration-dialog{padding:12px}}
-.registration-tasks{min-width:0;max-width:100%}.registration-count-row,.registration-count-main,.registration-count-actions{display:flex;align-items:center;gap:10px;min-width:0}.registration-count-row{justify-content:space-between;margin:12px 0}.registration-count-main{flex:1}.registration-count{flex:none;font-size:13px}.registration-count-main .list-filter-summary{flex:1}.registration-count-actions{flex-wrap:wrap}.registration-mobile-filter{display:none}.registration-table-wrap{min-width:0;max-width:100%;overflow:auto;border:1px solid var(--ui-color-border);border-radius:8px}.registration-table-wrap table{width:100%;min-width:1180px;table-layout:fixed;border-collapse:collapse}.registration-table-wrap th,.registration-table-wrap td{vertical-align:middle!important;white-space:normal!important;padding:9px 10px;overflow-wrap:anywhere}.registration-table-wrap th:first-child{width:40px}.registration-table-wrap th:nth-child(2){width:120px}.registration-table-wrap th:nth-child(3){width:190px}.registration-table-wrap th:nth-child(10){width:150px}.registration-table-wrap th:last-child{width:150px}.registration-row-actions button{margin:2px;min-height:32px}.registration-row-actions input{min-width:0;max-width:100%}.registration-dialog{box-sizing:border-box;width:min(900px,calc(100vw - 24px));max-width:calc(100vw - 24px);max-height:90dvh;border:1px solid var(--ui-color-border)}.registration-dialog::backdrop{background:#0006}.registration-dialog:not([open]){display:none}.registration-dialog[open]{display:block}.registration-dialog pre{overflow-wrap:anywhere}.registration-batch>header,.registration-batch-card>div:first-child{flex-wrap:wrap}.registration-batch-card>div:first-child strong{min-width:0;overflow-wrap:anywhere}.registration-steps{list-style:none;padding:0}.registration-steps li{display:flex;align-items:center;max-width:100%;border-radius:8px;background:var(--ui-color-surface-subtle);padding:4px}.registration-steps li button{display:flex;flex-direction:column;gap:3px;min-height:36px;border:0;background:transparent;color:inherit;text-align:left}.registration-step-note{font-size:12px;color:var(--ui-color-text-secondary)}.registration-list-error{padding:10px;color:var(--ui-color-danger)}
-@media(max-width:680px){.registration-count-row{flex-wrap:wrap;align-items:flex-start}.registration-count-main{flex-basis:100%}.registration-count-actions{margin-left:auto}.registration-mobile-filter{display:inline-flex}.registration-batch>header{align-items:flex-start}.registration-batch>header select{max-width:100%}.registration-dialog :is(header,footer){flex-wrap:wrap}}
+.registration-vue-page { display: block; min-width: 0; }
+.registration-launch {
+  --registration-indigo: color-mix(in srgb, var(--ui-color-brand) 48%, var(--ui-color-sidebar));
+  --registration-success-text: color-mix(in srgb, var(--ui-color-success) 66%, var(--ui-color-text));
+  --registration-danger-text: color-mix(in srgb, var(--ui-color-danger) 75%, var(--ui-color-text));
+  --registration-warning-text: color-mix(in srgb, var(--ui-color-warning) 62%, var(--ui-color-text));
+  display: grid;
+  gap: 12px;
+  color: var(--ui-color-text);
+}
+.registration-launch *, .registration-dialog * { box-sizing: border-box; }
+.registration-launch :is(h2, h3, p, dl, dd) { margin: 0; }
+.registration-launch h2 { font-size: 16px; line-height: 1.35; font-weight: 700; }
+.registration-launch h3 { font-size: 14px; line-height: 1.35; }
+.registration-summary {
+  display: grid;
+  grid-template-columns: 1.12fr repeat(4, minmax(0, 1fr));
+  overflow: hidden;
+  border: 1px solid var(--ui-color-border);
+  border-radius: var(--ui-radius-lg);
+  background: var(--ui-color-surface);
+}
+.registration-summary > div { min-width: 0; padding: 12px 16px; }
+.registration-summary > div + div { border-inline-start: 1px solid var(--ui-color-border); }
+.registration-summary > div:first-child { background: var(--registration-indigo); color: var(--ui-color-text-inverse, #fff); }
+.registration-summary dt { font-size: 12px; color: var(--ui-color-text-secondary); }
+.registration-summary > div:first-child dt { color: inherit; }
+.registration-summary dd { margin-top: 3px; font-size: 25px; font-weight: 700; line-height: 1.2; font-variant-numeric: tabular-nums; }
+.registration-launch-panel, .registration-batch {
+  min-width: 0;
+  border: 1px solid var(--ui-color-border);
+  border-radius: var(--ui-radius-lg);
+  background: var(--ui-color-surface);
+}
+.registration-launch-panel, .registration-batch-header { padding: 13px 15px; }
+.registration-launcher {
+  display: grid;
+  grid-template-columns: minmax(140px, 1.3fr) repeat(2, minmax(80px, .6fr)) auto auto;
+  gap: 10px;
+  align-items: end;
+  max-width: 980px;
+  margin-block: 9px;
+}
+.registration-launcher > label { display: grid; min-width: 0; gap: 4px; font-size: 12px; color: var(--ui-color-text-secondary); }
+.registration-launcher > .registration-debug { display: flex; align-items: center; min-height: 36px; white-space: nowrap; color: var(--ui-color-text); }
+.registration-debug input[type=checkbox] { width: 16px; height: 16px; margin: 0 3px; accent-color: var(--ui-color-brand); }
+.registration-launch :is(button, select, input:not([type=checkbox])) {
+  min-width: 0;
+  min-height: 36px;
+  padding: 5px 9px;
+  border: 1px solid var(--ui-color-border-strong);
+  border-radius: var(--ui-radius-sm);
+  background: var(--ui-color-surface);
+  color: var(--ui-color-text);
+  font: inherit;
+}
+.registration-launch :is(button, select, input, summary):focus-visible { outline: 2px solid var(--ui-color-brand); outline-offset: 2px; }
+.registration-launch button { white-space: nowrap; cursor: pointer; }
+.registration-launch button:not(:disabled):hover { background: var(--ui-color-brand-soft); color: var(--ui-color-brand-hover); }
+.registration-launch button:disabled { cursor: default; opacity: .56; }
+.registration-launch button.registration-start { padding-inline: 13px; background: var(--ui-color-brand-hover); border-color: transparent; color: var(--ui-color-text-inverse, #fff); font-weight: 650; }
+.registration-launch button.registration-start:not(:disabled):hover { background: var(--registration-indigo); color: var(--ui-color-text-inverse, #fff); }
+.registration-hint, .registration-step-note { color: var(--ui-color-text-secondary); font-size: 12px; }
+.registration-launch .registration-warning { color: var(--registration-warning-text); }
+.registration-batch-header { display: flex; justify-content: space-between; align-items: center; gap: 9px 14px; flex-wrap: wrap; }
+.registration-batch-title, .registration-batch-meta, .registration-batch-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.registration-batch-title + .registration-batch-meta { margin-top: 4px; }
+.registration-batch-meta > span + span::before { content: '·'; margin-inline-end: 6px; }
+.registration-batch-actions { min-width: 0; max-width: 100%; }
+.registration-batch-header .registration-batch-actions > select { width: auto; max-width: 100%; text-overflow: ellipsis; }
+.registration-state {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 7px;
+  border-radius: var(--ui-radius-sm);
+  background: var(--ui-color-surface-subtle);
+  color: var(--ui-color-text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+.registration-state[data-tone=success] { background: var(--ui-color-success-soft); color: var(--registration-success-text); }
+.registration-state[data-tone=failed] { background: var(--ui-color-danger-soft); color: var(--registration-danger-text); }
+.registration-state[data-tone=active] { background: var(--ui-color-brand-soft); color: var(--ui-color-brand-hover); }
+.registration-batch-meter { display: flex; height: 5px; margin: 0 15px; overflow: hidden; border-radius: var(--ui-radius-pill); background: var(--ui-color-border); }
+.registration-batch-meter > span { flex-basis: 0; }
+.registration-batch-meter [data-tone=success], .registration-status-dot[data-tone=success] { background: var(--ui-color-success); }
+.registration-batch-meter [data-tone=failed], .registration-status-dot[data-tone=failed] { background: var(--ui-color-danger); }
+.registration-batch-meter [data-tone=active], .registration-status-dot[data-tone=active] { background: var(--ui-color-brand); }
+.registration-batch-meter [data-tone=other], .registration-status-dot[data-tone=other] { background: var(--ui-color-border-strong); }
+.registration-batch-filters { display: flex; flex-wrap: wrap; gap: 4px; padding: 9px 15px; }
+.registration-launch .registration-batch-filters button { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; border-color: transparent; color: var(--ui-color-text-secondary); font-variant-numeric: tabular-nums; }
+.registration-batch-filters button[aria-pressed=true], .registration-batch-actions button[aria-expanded=true] { background: var(--ui-color-brand-soft); color: var(--ui-color-brand-hover); border-color: transparent; }
+.registration-status-dot { width: 7px; height: 7px; border-radius: 50%; }
+.registration-batch-card { padding: 8px 15px; border-top: 1px solid var(--ui-color-border); }
+.registration-batch-card[data-tone=failed] { box-shadow: inset 3px 0 var(--ui-color-danger); }
+.registration-batch-row { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(0, 1fr) 156px; align-items: center; gap: 8px; min-height: 36px; }
+.registration-batch-identity, .registration-batch-result { min-width: 0; }
+.registration-batch-identity > strong { display: block; overflow-wrap: anywhere; }
+.registration-batch-row small { font-size: 12px; color: var(--ui-color-text-secondary); overflow-wrap: anywhere; }
+.registration-batch-result { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; }
+.registration-batch-card[data-tone=failed] .registration-batch-result > small { color: var(--registration-danger-text); }
+.registration-batch-row-actions { justify-content: flex-end; }
+.registration-batch-row-actions button, .registration-stage-selected button { min-height: 32px; font-size: 12px; }
+.registration-batch-row-actions button { white-space: normal; }
+.registration-launch :is(.registration-batch-footer, .registration-batch-notice) { border-top: 1px solid var(--ui-color-border); padding: 8px 15px; overflow-wrap: anywhere; }
+.registration-batch-evidence { margin-block: 8px 3px; padding: 10px; border-radius: var(--ui-radius-md); background: var(--ui-color-surface-subtle); overflow-wrap: anywhere; }
+.registration-batch-evidence[hidden] { display: none; }
+.registration-stage-heading, .registration-stage-selected { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 5px 10px; }
+.registration-stage-selected { margin-block: 8px; padding-top: 8px; border-top: 1px solid var(--ui-color-border); }
+.registration-stage-selected p { margin-top: 4px; white-space: pre-wrap; }
+.registration-batch-evidence details { margin-top: 7px; }
+.registration-batch-evidence summary { color: var(--ui-color-text-secondary); cursor: pointer; }
+.registration-steps { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 116px), 1fr)); gap: 6px; margin: 7px 0; padding: 0; list-style: none; }
+.registration-steps li { display: flex; min-width: 0; border: 1px solid var(--ui-color-border-strong); border-radius: var(--ui-radius-sm); background: var(--ui-color-surface); }
+.registration-progress .registration-steps li button { display: flex; flex: 1; flex-direction: column; align-items: flex-start; justify-content: center; gap: 3px; border: 0; min-height: 54px; padding: 6px 8px; color: inherit; text-align: start; white-space: normal; overflow-wrap: anywhere; }
+.registration-steps li button:focus-visible { outline-offset: -2px; }
+.registration-steps li.is-inspected { border-color: var(--ui-color-brand); }
+.registration-steps li.is-inspected button { background: var(--ui-color-brand-soft); }
+.registration-steps small { color: var(--ui-color-text-secondary); font-size: 11px; }
+.registration-steps .is-success strong { color: var(--registration-success-text); }
+.registration-steps .is-failed strong { color: var(--registration-danger-text); }
+.registration-step-mark { margin-inline-end: 2px; }
+@media (max-width: 700px) {
+  .registration-launcher { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .registration-launcher > label:first-child { grid-column: 1 / -1; }
+  .registration-batch-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .registration-batch-identity { grid-column: 1 / -1; }
+}
+@media (max-width: 540px) {
+  .registration-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .registration-summary > div { padding: 8px 11px; }
+  .registration-summary > div:first-child { display: flex; align-items: center; justify-content: space-between; grid-column: 1 / -1; }
+  .registration-summary > div:nth-child(even) { border-inline-start: 0; }
+  .registration-summary > div:nth-child(n+4) { border-top: 1px solid var(--ui-color-border); }
+  .registration-summary dd { font-size: 20px; }
+  .registration-launch-panel, .registration-batch-header, .registration-batch-card, .registration-batch-filters, .registration-launch :is(.registration-batch-footer, .registration-batch-notice) { padding-inline: 10px; }
+  .registration-batch-meter { margin-inline: 10px; }
+  .registration-batch-header .registration-batch-actions > select { flex: 1 1 164px; }
+}
+@media (pointer: coarse) {
+  .registration-launch :is(button, select, input:not([type=checkbox])), .registration-launcher > .registration-debug,
+  .registration-launch :is(.registration-batch-filters, .registration-batch-actions) button { min-height: 44px; }
+  .registration-launch :is(select, input:not([type=checkbox])) { font-size: 16px; }
+}
+
+.registration-filters,.registration-toolbar{display:flex;align-items:end;gap:10px;flex-wrap:wrap;margin:12px 0}.registration-filters label{display:flex;flex-direction:column;gap:4px;font-size:13px}.registration-filters input,.registration-filters select{min-height:34px;padding:5px 8px;border:1px solid var(--ui-color-border-strong,#bbc);border-radius:5px;background:var(--ui-color-surface,#fff);color:inherit}
+.registration-receipt{position:sticky;bottom:12px;margin:10px 0;padding:8px 12px;border-radius:6px;background:#eef1f5}.registration-receipt.is-success{background:#e2f6ea}.registration-receipt.is-warning{background:#fff5db}.registration-receipt.is-danger{background:#fde8e8}.registration-dialog{position:fixed;inset:0;margin:auto;z-index:1300;overflow:auto;padding:16px;border-radius:10px;background:var(--ui-color-surface,#fff);color:var(--ui-color-text,#222)}.registration-dialog header{display:flex;align-items:center;gap:12px}.registration-dialog header :is(h2,h3){margin-right:auto}.registration-dialog pre{max-height:50vh;overflow:auto;white-space:pre-wrap;background:#f5f6f8;padding:12px}
+.registration-tasks{min-width:0;max-width:100%}.registration-count-row,.registration-count-main,.registration-count-actions{display:flex;align-items:center;gap:10px;min-width:0}.registration-count-row{justify-content:space-between;margin:12px 0}.registration-count-main{flex:1}.registration-count{flex:none;font-size:13px}.registration-count-main .list-filter-summary{flex:1}.registration-count-actions{flex-wrap:wrap}.registration-mobile-filter{display:none}.registration-table-wrap{min-width:0;max-width:100%;overflow:auto;border:1px solid var(--ui-color-border);border-radius:8px}.registration-table-wrap table{width:100%;min-width:1180px;table-layout:fixed;border-collapse:collapse}.registration-table-wrap th,.registration-table-wrap td{vertical-align:middle!important;white-space:normal!important;padding:9px 10px;overflow-wrap:anywhere}.registration-table-wrap th:first-child{width:40px}.registration-table-wrap th:nth-child(2){width:120px}.registration-table-wrap th:nth-child(3){width:190px}.registration-table-wrap th:nth-child(10){width:150px}.registration-table-wrap th:last-child{width:150px}.registration-row-actions button{margin:2px;min-height:32px}.registration-row-actions input{min-width:0;max-width:100%}.registration-dialog{box-sizing:border-box;width:min(900px,calc(100vw - 24px));max-width:calc(100vw - 24px);max-height:90dvh;border:1px solid var(--ui-color-border)}.registration-dialog::backdrop{background:#0006}.registration-dialog:not([open]){display:none}.registration-dialog[open]{display:block}.registration-dialog pre{overflow-wrap:anywhere}.registration-list-error{padding:10px;color:var(--ui-color-danger)}
+@media(max-width:680px){.registration-filters{align-items:stretch;flex-direction:column}.registration-dialog{padding:12px}.registration-count-row{flex-wrap:wrap;align-items:flex-start}.registration-count-main{flex-basis:100%}.registration-count-actions{margin-left:auto}.registration-mobile-filter{display:inline-flex}.registration-dialog :is(header,footer){flex-wrap:wrap}}
 .registration-table-wrap th{position:relative;padding-right:18px}.registration-column-resize{position:absolute;right:-4px;top:0;bottom:0;width:9px;min-height:100%;padding:0;border:0;background:transparent;cursor:col-resize;touch-action:none}.registration-column-resize:focus-visible{outline:2px solid var(--ui-color-brand);outline-offset:-2px}.registration-column-resize:hover{background:var(--ui-color-brand-soft)}

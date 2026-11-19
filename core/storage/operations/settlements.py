@@ -14,6 +14,8 @@ from collections.abc import Mapping
 from contextlib import nullcontext
 from typing import Any
 
+from psycopg import OperationalError
+
 from core.storage.operations import common as _common
 
 _RECEIPT_VERSION = 1
@@ -1239,8 +1241,15 @@ def _execute_cleanup(job, *, domain, deadline=None):
 
 def run_cleanup_once(*, domain, deadline=None, permit_id=None, execution_id=None):
     _verify_domain_identity(domain)
-    diagnostics = cleanup_diagnostics(domain=domain, deadline=deadline,
-                                     permit_id=permit_id, execution_id=execution_id)
+    try:
+        diagnostics = cleanup_diagnostics(domain=domain, deadline=deadline,
+                                         permit_id=permit_id, execution_id=execution_id)
+    except (TimeoutError, OperationalError) as exc:
+        if not _protocol().classify_failure(exc)[1]:
+            # This read precedes the claim and all physical cleanup. Later
+            # transport failures may leave an unverified claim or completion.
+            raise _protocol().CleanupDiagnosticReadUnavailable() from exc
+        raise
     job = _claim_cleanup(domain=domain, deadline=deadline, permit_id=permit_id, execution_id=execution_id)
     if job is None:
         if not diagnostics:

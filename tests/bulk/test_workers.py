@@ -32,6 +32,57 @@ class WorkerLifecycleTests(TestCase):
             self.assertFalse(service.start_workers())
 
 
+class BulkOwnerRetryFenceTests(TestCase):
+    def test_selection_and_expansion_are_counted_through_store_work(self):
+        from core.runtime import assembly
+
+        context = Mock()
+        context.admission.reasons.return_value = ("owner_probe_paused",)
+        with patch.object(assembly, "_business_counts", return_value={"active": 0}), patch(
+            "core.registration.service.dispatcher_status", return_value={"in_flight": 0}
+        ), patch("core.operations.concurrency.idle_for_owner_retry", return_value=True), patch(
+            "core.operations.settlement.idle_for_owner_retry", return_value=True
+        ):
+            self.assertTrue(assembly._idle_for_owner_retry(context))
+            for kind, method in (("selection", "freeze_selection"), ("expand", "process_batch")):
+                with self.subTest(kind=kind):
+                    store = Mock(BulkError=bulk.BulkError)
+                    store.claim_work.side_effect = lambda work, owner, limit: (
+                        [{"id": 1, "action_key": "plan_check"}] if work == "selection" else []
+                    )
+                    store.list_active_batches.return_value = [{"batch_id": 7}]
+
+                    def fail_during_work(*args, **kwargs):
+                        self.assertFalse(assembly._idle_for_owner_retry(context))
+                        raise RuntimeError("worker error")
+
+                    getattr(store, method).side_effect = fail_during_work
+                    with patch.object(service, "_store", return_value=store), patch(
+                        "core.runtime.execution_access.execution_owner_valid", return_value=True
+                    ), patch("core.runtime.execution_access.execution_allowed", return_value=True), patch(
+                        "core.bulk_operations.execution.repair_pending_handoffs", return_value=0
+                    ):
+                        with self.assertRaisesRegex(RuntimeError, "worker error"):
+                            service.run_once(kind)
+                    self.assertTrue(assembly._idle_for_owner_retry(context))
+
+    def test_bulk_cycle_reserves_then_rechecks_owner_before_claiming(self):
+        store = Mock()
+        checks = iter((True, False))
+
+        def owner_valid():
+            valid = next(checks)
+            self.assertEqual(valid, service.idle_for_owner_retry())
+            return valid
+
+        with patch("core.runtime.execution_access.execution_owner_valid", side_effect=owner_valid), patch.object(
+            service, "_store", return_value=store,
+        ):
+            self.assertEqual(0, service.run_once("selection"))
+        store.claim_work.assert_not_called()
+        self.assertTrue(service.idle_for_owner_retry())
+
+
 class SelectionWorkerRoutingTests(TestCase):
     def run_selection(self, operation_key, freeze):
         store = Mock(BulkError=bulk.BulkError)

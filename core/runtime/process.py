@@ -76,3 +76,10 @@ def execution_owner_valid() -> bool:
     with _LOCK:
         runtime = _RUNTIME
     return runtime is not None and runtime.execution_owner_valid()
+
+
+def execution_owner_lost() -> bool:
+    """Treat an absent runtime as terminal, but allow a bounded probe pause."""
+    with _LOCK:
+        runtime = _RUNTIME
+    return runtime is None or runtime.execution_owner_lost()

@@ -1,9 +1,9 @@
-import { A as e, C as t, F as n, G as r, H as i, K as a, L as o, Q as s, S as c, Z as l, _ as u, a as d, c as f, d as p, dt as m, et as h, ft as g, g as _, h as v, j as y, k as b, l as x, lt as S, m as C, n as w, nt as T, s as E, st as D, v as O, x as k, y as A } from "./_plugin-vue_export-helper-BSZsFlS8.js";
-import { n as j, r as M, t as N } from "./ListFilterSummary-_oaD8AlZ.js";
-import { t as ee } from "./ListPagination-BjETSj81.js";
-import { t as P } from "./ListResult-BtznEB_S.js";
+import { A as e, C as t, F as n, G as r, H as i, K as a, L as o, Q as s, S as c, Z as l, _ as u, a as d, c as f, d as p, dt as m, et as h, ft as g, g as _, h as v, j as y, k as b, l as x, lt as S, m as C, n as w, nt as T, s as E, st as D, v as O, x as k, y as A } from "./_plugin-vue_export-helper-B9RV9BFd.js";
+import { n as j, r as M, t as N } from "./ListFilterSummary-BG5Tu2p5.js";
+import { t as ee } from "./ListPagination-C9YIC0H7.js";
+import { t as P } from "./ListResult-bYxNy-51.js";
 import { n as F, t as I } from "./time-DOD6oyhP.js";
-import { t as L } from "./useColumnWidths-D1sKP53m.js";
+import { t as L } from "./useColumnWidths-BPlqSIGT.js";
 import { n as R, r as z } from "./client-BBEPwkQG.js";
 import { r as te } from "./taskIds-BlchWwUp.js";
 // src/features/proxy/presentation.ts
@@ -449,7 +449,7 @@ var De = { class: "pt-filter-fields" }, Oe = {
 	"data-proxy-filter-option",
 	"aria-pressed",
 	"onClick"
-], Pe = { class: "pt-filter-actions" }, Fe = /* @__PURE__ */ t({
+], Pe = { class: "list-filter-actions" }, Fe = /* @__PURE__ */ t({
 	__name: "ProxyFilters",
 	props: {
 		column: {},
@@ -509,11 +509,10 @@ var De = { class: "pt-filter-fields" }, Oe = {
 				}, g(e.label), 9, Ne))), 128))], 8, Me)),
 				v("div", Pe, [v("button", {
 					type: "button",
-					class: "pt-link",
 					onClick: i[3] ||= (e) => S(m.value === "search" ? "" : "all")
 				}, " 清除此列"), v("button", {
 					type: "button",
-					class: "pt-button",
+					class: "list-filter-primary",
 					onClick: i[4] ||= (e) => s("update:open", !1)
 				}, "完成")])
 			])]),

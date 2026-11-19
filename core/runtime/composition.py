@@ -8,6 +8,7 @@ import time
 from typing import Any, Protocol
 
 from .context import RuntimeContext
+from .instance_owner import OwnerError
 from .manifest import COMPONENTS
 
 
@@ -195,16 +196,25 @@ class RuntimeController:
                 "remaining_components": list(self._remaining),
             }
 
-    def execution_owner_valid(self) -> bool:
-        """Allow fenced settlement during drain without admitting new work."""
+    def _execution_owner_state(self) -> str:
         if not self.context.executes or not self._owner_acquired or self.owner is None:
-            return False
+            return "lost"
         try:
             self.owner.require_owner()
-        except Exception:
+        except Exception as exc:
+            if isinstance(exc, OwnerError) and exc.code == "owner_probe_paused":
+                return "paused"
             self.context.admission.block("owner_lost")
-            return False
-        return self._owner_acquired
+            return "lost"
+        return "held" if self._owner_acquired else "lost"
+
+    def execution_owner_valid(self) -> bool:
+        """Allow fenced settlement during drain without admitting new work."""
+        return self._execution_owner_state() == "held"
+
+    def execution_owner_lost(self) -> bool:
+        """Only a terminal failure tells the Worker entrypoint to exit."""
+        return self._execution_owner_state() == "lost"
 
     def execution_admitted(self) -> bool:
         """Fast admission hint; task/permit CAS remains authoritative."""

@@ -143,6 +143,8 @@ _RELEASE_PENDING: dict[tuple[str, str], tuple[ExecutionContext, str]] = {}
 _RELEASE_LOCK = threading.Lock()
 _RELEASE_RETRY_THREAD: threading.Thread | None = None
 _RELEASE_INFLIGHT = 0
+_ADMISSION_INFLIGHT = 0
+_LEGACY_ADMISSIONS: set[tuple[str, str]] = set()
 _REGISTRATION_FAILED = threading.Event()
 _PERMIT_RENEWALS: dict[tuple[str, str, str, str], Any] = {}
 
@@ -288,63 +290,79 @@ def try_admit_and_claim(*, execution_key: str, task_type: str,
                         run_id: int | None = None, metadata: Mapping | None = None,
                         extra_scopes: list[dict] | None = None) -> AdmissionResult:
     from core.runtime.execution_access import execution_allowed
-    if _REGISTRATION_FAILED.is_set():
-        return AdmissionResult(blocked_by=("settlement_registration",))
-    if not execution_allowed():
-        return AdmissionResult(blocked_by=("runtime_not_ready",))
-    classification = resolve_admission_class(task_type)
-    execution_id = str(execution_id or uuid.uuid4().hex)
-    if not execution_key or not callable(claim):
-        raise ConcurrencyPolicyError("concurrency_policy_invalid", "准入缺少稳定执行身份或原子认领函数")
-    owner = permits.current_owner()
-    policy = _scope_policy(classification,batch_key=batch_key,batch_limit=batch_limit,
-                            provider_key=provider_key,provider_limit=provider_limit,extra_scopes=extra_scopes)
+    from core.runtime.process import get_runtime_context
 
-    original_claim = claim
-
-    def guarded_claim(conn, claim_execution_id):
+    global _ADMISSION_INFLIGHT
+    # Count before checking the gate. A pause must see work that already
+    # passed it, including legacy claims without a settlement reservation.
+    with _RELEASE_LOCK:
+        _ADMISSION_INFLIGHT += 1
+    try:
+        if _REGISTRATION_FAILED.is_set():
+            return AdmissionResult(blocked_by=("settlement_registration",))
         if not execution_allowed():
-            return None
-        return original_claim(conn, claim_execution_id)
+            return AdmissionResult(blocked_by=("runtime_not_ready",))
+        classification = resolve_admission_class(task_type)
+        execution_id = str(execution_id or uuid.uuid4().hex)
+        if not execution_key or not callable(claim):
+            raise ConcurrencyPolicyError("concurrency_policy_invalid", "准入缺少稳定执行身份或原子认领函数")
+        owner = permits.current_owner()
+        policy = _scope_policy(classification, batch_key=batch_key, batch_limit=batch_limit,
+                               provider_key=provider_key, provider_limit=provider_limit, extra_scopes=extra_scopes)
 
-    from core.operations import settlement
+        def guarded_claim(conn, claim_execution_id):
+            if not execution_allowed():
+                return None
+            claimed = claim(conn, claim_execution_id)
+            # Returning None rolls back the claim savepoint if it crossed a pause.
+            return claimed if claimed is None or execution_allowed() else None
 
-    participates = permits._participates_settlement(str(execution_key), classification.key, metadata or {})
-    reservation = settlement.reserve_admission() if participates else nullcontext(True)
-    with reservation as reserved:
-        if not reserved:
-            return AdmissionResult(blocked_by=("settlement_capacity",))
-        try:
-            result = permits.try_admit(execution_key=str(execution_key), task_type=classification.key,
-                                      execution_id=execution_id, run_id=run_id, batch_key=str(batch_key or ""),
-                                      owner=owner, metadata=dict(metadata or {}), policy=policy, claim=guarded_claim)
-        except ConcurrencyPolicyError:
-            raise
-        except Exception as exc:
-            raise ConcurrencyStoreUnavailable("并发存储不可用，暂停新准入") from exc
-        if not result.get("permit_id"):
-            return AdmissionResult(blocked_by=tuple(result.get("blocked_by") or ()))
-        context = ExecutionContext(result["permit_id"], execution_id, str(execution_key), classification.key,
-                                   result["claimed_run"], int(result["policy_revision"]))
-        if result.get("settlement_ticket"):
-            context.settlement_ticket = result["settlement_ticket"]
-            context.settlement_domain = result["settlement_domain"]
-            context.domain_schema = context.settlement_domain.permit_schema
-            context._domain_url = context.settlement_domain.database_url
+        from core.operations import settlement
+
+        participates = permits._participates_settlement(str(execution_key), classification.key, metadata or {})
+        reservation = settlement.reserve_admission() if participates else nullcontext(True)
+        with reservation as reserved:
+            if not reserved:
+                return AdmissionResult(blocked_by=("settlement_capacity",))
+            if not execution_allowed():
+                return AdmissionResult(blocked_by=("runtime_not_ready",))
             try:
-                settlement.register_execution(context, context.settlement_ticket)
+                result = permits.try_admit(execution_key=str(execution_key), task_type=classification.key,
+                                           execution_id=execution_id, run_id=run_id, batch_key=str(batch_key or ""),
+                                           owner=owner, metadata=dict(metadata or {}), policy=policy, claim=guarded_claim)
+            except ConcurrencyPolicyError:
+                raise
             except Exception as exc:
-                # Claim and ticket already committed. Never run the callback or
-                # mark an exit. The exception preserves exact private evidence.
-                error = ConcurrencyStoreUnavailable("执行收尾责任登记失败，保留原许可")
-                error.execution_context = context
-                _REGISTRATION_FAILED.set()
-                from core.runtime.process import get_runtime_context
-                runtime = get_runtime_context()
-                if runtime is not None:
-                    runtime.admission.block("settlement_registration")
-                raise error from exc
-        return AdmissionResult(context)
+                raise ConcurrencyStoreUnavailable("并发存储不可用，暂停新准入") from exc
+            if not result.get("permit_id"):
+                return AdmissionResult(blocked_by=tuple(result.get("blocked_by") or ()))
+            runtime = get_runtime_context()
+            if not result.get("settlement_ticket") and runtime is not None and runtime.mode == "worker":
+                # Cover the transfer to the caller before it queues or runs the work.
+                with _RELEASE_LOCK:
+                    _LEGACY_ADMISSIONS.add((result["permit_id"], execution_id))
+            context = ExecutionContext(result["permit_id"], execution_id, str(execution_key), classification.key,
+                                       result["claimed_run"], int(result["policy_revision"]))
+            if result.get("settlement_ticket"):
+                context.settlement_ticket = result["settlement_ticket"]
+                context.settlement_domain = result["settlement_domain"]
+                context.domain_schema = context.settlement_domain.permit_schema
+                context._domain_url = context.settlement_domain.database_url
+                try:
+                    settlement.register_execution(context, context.settlement_ticket)
+                except Exception as exc:
+                    # Claim and ticket already committed. Never run the callback or
+                    # mark an exit. The exception preserves exact private evidence.
+                    error = ConcurrencyStoreUnavailable("执行收尾责任登记失败，保留原许可")
+                    error.execution_context = context
+                    _REGISTRATION_FAILED.set()
+                    if runtime is not None:
+                        runtime.admission.block("settlement_registration")
+                    raise error from exc
+            return AdmissionResult(context)
+    finally:
+        with _RELEASE_LOCK:
+            _ADMISSION_INFLIGHT -= 1
 
 
 def heartbeat_permit(permit_id: str, execution_id: str, *, state: str | None = None,
@@ -421,6 +439,7 @@ def _release_execution_locked(context: ExecutionContext, *, reason: str, deadlin
         permits.clear_execution_exit(context.permit_id, context.execution_id)
         with _RELEASE_LOCK:
             _RELEASE_PENDING.pop((context.permit_id, context.execution_id), None)
+            _LEGACY_ADMISSIONS.discard((context.permit_id, context.execution_id))
         return result
     except Exception:
         logger.exception("执行已退出，许可释放暂不可用，保留占用并重试：permit_id=%s", context.permit_id)
@@ -455,6 +474,24 @@ def _retry_releases() -> None:
                     _RELEASE_INFLIGHT -= 1
 
 
+def idle_for_owner_retry() -> bool:
+    """Check local permit activity without doing I/O or waiting for a release."""
+    if not _RELEASE_LOCK.acquire(blocking=False):
+        return False
+    try:
+        return not (_ADMISSION_INFLIGHT or _LEGACY_ADMISSIONS or _RELEASE_PENDING
+                    or _RELEASE_INFLIGHT or _PERMIT_RENEWALS
+                    or _REGISTRATION_FAILED.is_set())
+    finally:
+        _RELEASE_LOCK.release()
+
+
+def active_admissions() -> int:
+    """Count claims in progress and legacy permits still owned by this worker."""
+    with _RELEASE_LOCK:
+        return _ADMISSION_INFLIGHT + len(_LEGACY_ADMISSIONS)
+
+
 def release_runtime_status() -> dict[str, Any]:
     """Nonparticipant retries retain their own truthful lifecycle accounting."""
     with _RELEASE_LOCK:
@@ -479,7 +516,8 @@ def stop_release_runtime(deadline: float) -> bool:
     if thread is not None and thread is not threading.current_thread():
         thread.join(timeout=max(0.0, float(deadline) - time.monotonic()))
     status = release_runtime_status()
-    return not any(status.values()) and all(handle.release_confirmed for handle in renewals)
+    return (not any(status.values()) and active_admissions() == 0
+            and all(handle.release_confirmed for handle in renewals))
 
 
 @contextmanager
