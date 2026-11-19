@@ -17,6 +17,78 @@ class OperationTaskReadOptimizationTests(PostgresTestCase):
     def tearDown(self):
         self.schema_patch.stop()
 
+    def test_only_public_running_pages_without_facets_or_other_filters_prescreen(self):
+        import psycopg
+
+        recorded = []
+        execute = psycopg.Cursor.execute
+
+        def trace(cursor, statement, params=None, **kwargs):
+            result = execute(cursor, statement, params, **kwargs)
+            if "running_task_candidates" in str(statement):
+                recorded.append(tuple(params))
+            return result
+
+        defaults = dict(public_status=True, include_facets=False, status="running", page_size=3)
+        with patch.object(psycopg.Cursor, "execute", trace):
+            for page in (1, 40):
+                recorded.clear()
+                operation_task_store.list_tasks(**defaults, page=page)
+                self.assertEqual([("running",), ("running", 3, (page - 1) * 3)], recorded)
+            for filters in (
+                {"status": " RUNNING "}, {"status": "queued"}, {"public_status": False},
+                {"include_facets": True}, {"task_type": "x"}, {"source": "x"}, {"q": " "},
+                {"batch_id": 0}, {"task_id": "#1"}, {"target": "x"}, {"target_status": "ready"},
+                {"batch": "x"}, {"run_count": "0"}, {"stage": "x"}, {"result": "x"},
+                {"created_from": "2020-01-01"}, {"created_to": "2030-01-01"},
+            ):
+                with self.subTest(filters=filters):
+                    recorded.clear()
+                    operation_task_store.list_tasks(**(defaults | filters))
+                    self.assertEqual([], recorded)
+
+    def test_running_pages_match_full_projection_with_mixed_historical_sources(self):
+        table = operation_task_store._table
+        with operation_task_store._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"""INSERT INTO {table('account_action_tasks')}
+                (id,task_uuid,task_type,trigger,status,queued_at) VALUES
+                (77,'old-account','report','test','running','2020-01-03T00:00:00Z')""")
+            cur.execute(f"""INSERT INTO {table('registration_jobs')}
+                (id,job_uuid,status,created_at,updated_at,data) VALUES
+                (77,'old-job','success','2020-01-01Z','2020-01-01Z','{{}}'),
+                (78,'overlay-job','success','2020-01-01Z','2020-01-01Z','{{}}')""")
+            cur.execute(f"""INSERT INTO {table('operation_tasks')}
+                (id,task_uuid,source_system,source_id,task_type,target_type,requested_action,
+                 status,created_at,data)
+                SELECT id,'task-'||id,'native_operations',id::text,'report','none','read',
+                    CASE WHEN id IN (3,5,6) THEN ' RUNNING ' ELSE 'failed' END,
+                    '2020-01-02Z',CASE WHEN id=6 THEN '{{"deleted_by_user":true}}'::jsonb ELSE '{{}}' END
+                FROM generate_series(1,8) id""")
+            cur.execute(f"""INSERT INTO {table('operation_runs')}
+                (id,run_uuid,task_id,run_no,source_system,source_id,status,data,result_summary) VALUES
+                (11,'older-active',1,1,'native_operations','11','running','{{}}','{{"marker":11}}'),
+                (12,'newer-terminal',1,2,'native_operations','12','failed','{{}}','{{"marker":12}}'),
+                (21,'legacy-active',2,1,'account_action_tasks','77','failed','{{}}',NULL),
+                (41,'other-active',4,2,'native_operations','41','waiting','{{}}',NULL),
+                (42,'old-running',4,1,'native_operations','42','running','{{}}',NULL),
+                (51,'legacy-terminal',5,1,'registration_jobs','77','running','{{}}',NULL),
+                (71,'mixed-case',7,1,'native_operations','71',' RUNNING ','{{}}',NULL),
+                (81,'overlay',8,1,'registration_jobs','78','running',
+                 '{{"completion_handoff":true}}','{{"completion_handoff":true}}')""")
+            cur.execute(f"UPDATE {table('operation_tasks')} SET last_run_id=12 WHERE id=1")
+
+        # The full query also normalizes the filter. Compare every display field as well as
+        # checking a hand-derived page order, including equal sort times and the empty page.
+        expected_pages = [[(2, 21), (7, 71)], [(3, None), (1, 11)], [(8, 81)], []]
+        for page, expected in enumerate(expected_pages, 1):
+            with self.subTest(page=page):
+                options = dict(page=page, page_size=2, include_facets=False, public_status=True)
+                full = operation_task_store.list_tasks(status=" RUNNING ", **options)
+                actual = operation_task_store.list_tasks(status="running", **options)
+                self.assertEqual(5, actual["total"])
+                self.assertEqual(expected, [(i["id"], i["last_run_id"]) for i in actual["items"]])
+                self.assertEqual(full, actual)
+
     def test_run_count_facets_and_active_run_selection_keep_their_semantics(self):
         task = operation_task_store.create_runtime_task(
             task_type="read-optimization",

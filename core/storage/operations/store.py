@@ -3018,13 +3018,27 @@ def _operation_task_indexed_run_join_sql(*, sort_only: bool = False) -> str:
     )
 
 
-def _operation_task_current_run_relation_sql() -> str:
+def _operation_task_running_candidates_cte_sql() -> str:
+    """先按原始事实收集可能公开显示 running 的任务，仍用所有 Run 选出当前项。"""
+    return (
+        "running_task_candidates AS MATERIALIZED ("
+        f"SELECT rr.task_id AS id FROM {_table('operation_runs')} rr "
+        f"WHERE rr.status IN ({_ACTIVE_RUN_STATUS_SQL}) OR "
+        "LOWER(BTRIM(COALESCE(rr.status::text,'')))='running' OR "
+        "rr.source_system IN ('registration_jobs','account_action_tasks') "
+        f"UNION SELECT t.id FROM {_table('operation_tasks')} t WHERE "
+        "LOWER(BTRIM(COALESCE(t.status::text,'')))='running')"
+    )
+
+
+def _operation_task_current_run_relation_sql(*, running_candidates: bool = False) -> str:
     """Run相关筛选保留有效活跃优先的集合投影。"""
+    candidate_join = "JOIN running_task_candidates c ON c.id=rr.task_id " if running_candidates else ""
     return (
         f"SELECT DISTINCT ON (current_run.task_id) current_run.* "
         f"FROM ("
         f"SELECT rr.*, {_compatibility_run_projection_sql()} "
-        f"FROM {_table('operation_runs')} rr {_compatibility_run_joins_sql()}"
+        f"FROM {_table('operation_runs')} rr {candidate_join}{_compatibility_run_joins_sql()}"
         f") current_run "
         f"ORDER BY current_run.task_id, "
         f"CASE WHEN current_run.effective_status IN ({_ACTIVE_RUN_STATUS_SQL}) THEN 0 ELSE 1 END, "
@@ -3115,6 +3129,10 @@ def list_tasks(
         run_count=run_count, stage=stage, created_from=created_from,
         created_to=created_to, result=result,
     )
+    running_only = (
+        public_status and status == "running" and not include_facets and batch_id is None
+        and not any(value for key, value in filters.items() if key != "status")
+    )
     run_count_expression = "COALESCE(run_counts.run_count, 0)"
     where, params = _operation_task_where(
         **filters, run_count_expression=run_count_expression, public_status=public_status,
@@ -3132,11 +3150,35 @@ def list_tasks(
         include_run_count=bool(run_count),
     )
     page_from_sql = _operation_task_query_base(include_current_run=True, include_run_count=bool(run_count))
+    count_cte = ""
     page_cte = ""
     page_clause = clause
     page_params = (*params, page_size, (page - 1) * page_size)
     page_order = "COALESCE(r.effective_created_at_sort, t.created_at) DESC, t.id DESC LIMIT %s OFFSET %s"
-    if not uses_current_run() and not run_count:
+    if running_only:
+        candidates = _operation_task_running_candidates_cte_sql()
+        current_runs = _operation_task_current_run_relation_sql(running_candidates=True)
+        count_cte = f"WITH {candidates} "
+        count_from_sql = (
+            f"FROM running_task_candidates c JOIN {_table('operation_tasks')} t ON t.id=c.id "
+            f"LEFT JOIN ({current_runs}) r ON r.task_id=t.id "
+        )
+        # Keep the winning Run ID from the same snapshot for both ordering and display.
+        page_cte = (
+            f"WITH {candidates}, page_ids AS MATERIALIZED ("
+            f"SELECT t.id,r.id AS current_run_id,COALESCE(r.effective_created_at_sort,t.created_at) AS sort_at "
+            f"{count_from_sql}{clause} ORDER BY sort_at DESC,t.id DESC LIMIT %s OFFSET %s) "
+        )
+        page_from_sql = (
+            f"FROM page_ids selected JOIN {_table('operation_tasks')} t ON t.id=selected.id "
+            f"LEFT JOIN {_table('operation_batches')} b ON b.id=t.batch_id "
+            f"LEFT JOIN LATERAL (SELECT rr.*, {_compatibility_run_projection_sql()} "
+            f"FROM {_table('operation_runs')} rr {_compatibility_run_joins_sql()} "
+            f"WHERE rr.id=selected.current_run_id LIMIT 1) r ON TRUE "
+        )
+        page_clause = ""
+        page_order = "selected.sort_at DESC,t.id DESC"
+    elif not uses_current_run() and not run_count:
         # 先确定50个任务ID，再加载这些任务的Run/次数/结果。原生任务按任务创建时间，
         # 兼容任务仍按其有效Run来源时间排序，不以last_run_id替代活跃优先选择。
         candidate_from = (f"FROM {_table('operation_tasks')} t "
@@ -3155,7 +3197,7 @@ def list_tasks(
         page_clause = ""
         page_order = "selected.sort_at DESC,t.id DESC"
     with _connect() as conn, conn.cursor() as cur:
-        cur.execute(f"SELECT COUNT(*) AS n {count_from_sql}{clause}", params)
+        cur.execute(f"{count_cte}SELECT COUNT(*) AS n {count_from_sql}{clause}", params)
         total = int(cur.fetchone()["n"])
         cur.execute(
             f"""
