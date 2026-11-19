@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
+import json
 import subprocess
 import unittest
 from datetime import datetime
+from html.parser import HTMLParser
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -11,6 +13,36 @@ from core import db
 from core.storage import records as record_store
 from webui.app import create_app
 from tests.support_pg import PostgresTestCase
+
+
+class _DashboardMarkup(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.filters = {}
+        self.config_buttons = []
+        self.table = None
+        self.button = None
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag == "table":
+            self.table = attrs.get("data-resizable-table")
+        if tag == "th" and "data-column-filter" in attrs:
+            self.filters.setdefault(self.table, []).append(attrs["data-column-filter"])
+        if tag == "button" and "data-config-domain-v2" in attrs:
+            self.button = (attrs["data-config-domain-v2"], [])
+
+    def handle_data(self, data):
+        if self.button:
+            self.button[1].append(data)
+
+    def handle_endtag(self, tag):
+        if tag == "table":
+            self.table = None
+        if tag == "button" and self.button:
+            domain, text = self.button
+            self.config_buttons.append((domain, "".join(text).strip()))
+            self.button = None
 
 
 class DashboardUiScriptTests(unittest.TestCase):
@@ -189,6 +221,15 @@ class DashboardApiTests(PostgresTestCase):
     def _modern_page_source(self, response):
         return self._page_source(response, self.MODERN_ASSETS)
 
+    def _ui_fixture(self, name, inputs=None):
+        fixture = Path(__file__).with_name("dashboard_ui_fixture.cjs")
+        result = subprocess.run(
+            ["node", str(fixture), name], input=json.dumps(inputs),
+            capture_output=True, text=True, timeout=10,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
     def test_modern_facet_select_hides_zero_count_options_and_clears_stale_selection(self):
         source = self.MODERN_COMMON_JS.read_text(encoding="utf-8")
         start = source.index("function syncFacetSelect")
@@ -231,29 +272,18 @@ console.log('ok');
         self.assertEqual(result.stdout.strip(), "ok")
 
     def test_batch_progress_distinguishes_submitted_password_pending_confirmation(self):
-        source = self.MODERN_JOBS_JS.read_text(encoding="utf-8")
-        start = source.index("function progressJobResult")
-        end = source.index("function refreshBatchProgressDurations", start)
-        function_source = source[start:end]
-        harness = f"""
-{function_source}
-const result = progressJobResult({{
-  status: 'partial_success',
-  display_status: 'password_confirmation_pending',
-}});
-if (result.label !== '待确认 · 密码已提交' || result.cls !== 'is-failed') {{
-  throw new Error(JSON.stringify(result));
-}}
-console.log('ok');
-"""
-        result = subprocess.run(
-            ["node", "--input-type=commonjs", "-e", harness],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
-        self.assertEqual(result.stdout.strip(), "ok")
+        from webui.route_helpers import _compact_job_for_list
+
+        raw = {"id": 10, "status": "partial_success", "display_status": "password_confirmation_pending"}
+        published = [
+            _compact_job_for_list(row, include_progress=False, public_status=True)
+            for row in (raw, {**raw, "requested_status": "partial_success"})
+        ]
+        self.assertEqual(self._ui_fixture("password", [raw, *published]), [
+            {"label": "失败 · 密码响应缺失", "cls": "is-failed"},
+            {"label": "失败", "cls": "is-failed"},
+            {"label": "部分完成", "cls": "is-failed"},
+        ])
 
     def test_frontend_static_assets_are_referenced_and_served(self):
         assets = self.MODERN_ASSETS + (
@@ -490,23 +520,48 @@ console.log('ok');
         self.assertNotIn('data-lifecycle-section-v2', html)
         self.assertNotIn('renderLifecycleDriverSelect', html)
         self.assertIn('config-setting-row-v2', html)
-        self.assertIn("'注册与账号': ['注册主链路', '账号补全', '注册与账号']", html)
-        self.assertIn("'系统与维护': ['通用配置', 'WebUI 授权', '定时任务', '任务中心', '注册调试']", html)
-        self.assertIn('注册调试', html)
+        from config.schema import CONFIG_SCHEMA
+
+        # Use the editor's schema field identities only, without reading any configured values.
+        fields = [{key: item.get(key) for key in ("key", "group", "hidden")}
+                  for item in CONFIG_SCHEMA.editor_metadata()]
+        menu_markup = self._ui_fixture("config", fields)
+        for markup, expected in zip(menu_markup, [
+            [("注册主链路", "注册主链路"), ("账号补全", "账号补全"), ("注册与账号", "查询套餐"),
+             ("查活", "查活"), ("刷新 AT", "刷新 AT"), ("补密码", "补密码"), ("补 2FA", "补 2FA"), ("邮箱换绑", "邮箱换绑")],
+            [(domain, domain) for domain in ("并发控制", "通用配置", "WebUI 授权", "定时任务", "任务中心", "注册调试")],
+        ], strict=True):
+            buttons = _DashboardMarkup()
+            buttons.feed(markup)
+            self.assertEqual(buttons.config_buttons, expected)
         operation_start = html.index('>操作</span>')
         deactivation_mail = html.index('>查封号邮件</button>')
         copy_export = html.index('>复制与导出</span>')
         self.assertLess(operation_start, deactivation_mail)
         self.assertLess(deactivation_mail, copy_export)
         self.assertIn("/api/accounts/setup-bulk", html)
-        self.assertIn("syncFacetSelect('accountPlanFilterV2'", html)
+        # A list refresh must send each API facet to its own header control.
+        self.assertEqual(self._ui_fixture("account-facets"), {
+            "accountPlanFilterV2": {"group": "plan", "items": [{"value": "plus", "count": 1}]},
+            "accountTrialFilterV2": {"group": "promotion", "items": [{"value": "free_trial", "count": 1}]},
+        })
         self.assertIn("syncFacetSelect('codexStatusFilterV2'", html)
         self.assertIn("syncFacetSelect('codexOauthFilterV2'", html)
         self.assertIn("syncFacetSelect('outlookStatusFilterV2'", html)
         self.assertNotIn('id="codexFilterV2"', html)
         self.assertNotIn('id="accountsFilterV2"', html)
         self.assertIn('id="outlookToolbarV2"', html)
-        self.assertEqual(html.count('data-column-filter="'), 53)
+        headers = _DashboardMarkup()
+        headers.feed(response.get_data(as_text=True))
+        self.assertEqual(headers.filters, {
+            "jobs": "jobIdFilterV2 jobEmailFilterV2 jobSourceColumnFilterV2 jobProxyFilterV2 jobStatusColumnFilterV2 jobDateFromV2 jobDateToV2 jobErrorFilterV2".split(),
+            "accounts": "accountIdFilterV2 qAccountsV2 accountSourceFilterV2 accountRegistrationDriverFilterV2 accountTokenFilterV2 accountStatusFilterV2 accountPasswordFilterV2 accountPlanFilterV2 accountTrialFilterV2 accountTotpFilterV2 accountRiskFilterV2 accountCodexFilterV2 dateFromAccountsV2".split(),
+            "accountTasks": "accountTaskIdFilterV2 accountTaskTypeFilterV2 accountTaskTargetFilterV2 accountTaskStatusFilterV2 accountTaskTargetStatusFilterV2 accountTaskBatchFilterV2 accountTaskRunCountFilterV2 accountTaskStageFilterV2 accountTaskDateFromV2 accountTaskResultFilterV2".split(),
+            "codex": "qCodexV2 codexPlanFilterV2 codexStatusFilterV2 codexOauthFilterV2 codexAccountFilterV2 codexSub2apiIdFilterV2 dateFromCodexV2 codexExpiredFilterV2".split(),
+            "outlook": "qOutlookV2 poolSourceV2 outlookStatusFilterV2 outlookUsedFilterV2".split(),
+        })
+        # Proxy filters are rendered by the Vue owner in ProxyTrafficPage.test.ts.
+        self.assertIn('id="proxy-page-root"', response.get_data(as_text=True))
         self.assertIn('class="column-filter-trigger"', html)
         self.assertIn('class="column-filter-search"', html)
         self.assertIn('data-column-filter-options', html)
@@ -517,7 +572,6 @@ console.log('ok');
         self.assertNotIn('select.innerHTML = options.map(item => `<option value="${esc(item.value)}">', html)
         self.assertNotIn('class="list-column-filters"', html)
         self.assertIn('data-column-filter="accountPlanFilterV2"', html)
-        self.assertIn("syncFacetSelect('accountTrialFilterV2'", html)
         self.assertIn('data-column-filter="accountTrialFilterV2"', html)
         self.assertIn('>套餐优惠</th>', html)
         self.assertIn('data-filter-label="按 Plus 优惠类型筛选"', html)
@@ -530,7 +584,7 @@ console.log('ok');
         self.assertIn("sub2api_id", html)
         self.assertIn('data-column-filter="outlookStatusFilterV2"', html)
         self.assertNotIn('id="configOverviewV2"', html)
-        self.assertIn("activateTab(localStorage.getItem('gpt_console_active_tab') || 'overview', false)", html)
+        self.assertEqual(self._ui_fixture("startup"), [["overview"], ["accounts"]])
         self.assertIn('data-column-filter="jobDateFromV2"', html)
         self.assertIn('id="btnResetJobFiltersV2"', html)
         self.assertIn('id="btnBatchStopV2"', html)
@@ -653,8 +707,11 @@ console.log('ok');
         self.assertNotIn('id="btnCodexUploadSub2HeroV2"', html)
         self.assertIn('id="btnCodexUploadSub2V2"', html)
         self.assertIn('data-codex-reauthorize="${esc(r.filename)}"', html)
-        self.assertIn("if (status === 'queued') return '等待执行';", html)
-        self.assertIn("if (status === 'running') return '执行中';", html)
+        self.assertEqual(self._ui_fixture("queue", [
+            {"status": "queued"},
+            {"status": "queued", "admission_wait_reasons": [{"code": "global_capacity", "occupied": 10, "limit": 10}]},
+            {"status": "running", "admission_wait_reason": "global_capacity"},
+        ]), ["等待执行", "等待全局空位（10/10）", "执行中"])
         self.assertIn(">重试</button>", html)
         self.assertIn(">删除</button>", html)
         self.assertIn(">取消</button>", html)
@@ -772,10 +829,18 @@ console.log('ok');
         payload = response.get_json()
         self.assertEqual(payload["total"], 1)
         self.assertEqual(payload["items"][0]["email"], "target@example.com")
-        self.assertEqual({item["value"] for item in payload["facets"]["source"]}, {"outlook", "icloud_hide"})
-        self.assertEqual({item["value"] for item in payload["facets"]["codex"]}, {"success", "failed"})
-        self.assertEqual({item["value"] for item in payload["facets"]["password"]}, {"has", "none"})
-        self.assertEqual({item["value"] for item in payload["facets"]["promotion"]}, {"free_trial", "not_applicable"})
+
+        def counts(page, name):
+            return {item["value"]: item["count"] for item in page["facets"][name]}
+
+        for name, value in {"source": "outlook", "codex": "success", "password": "has", "promotion": "free_trial"}.items():
+            self.assertEqual(counts(payload, name), {value: 1}, name)
+        # Each facet ignores only its own filter. With only source selected the other
+        # source is still available, while the Codex options remain limited to Outlook.
+        one_filter = self.client.get("/api/accounts?paged=1&source=outlook", headers=self.headers).get_json()
+        self.assertEqual(one_filter["total"], 1)
+        self.assertEqual(counts(one_filter, "source"), {"outlook": 1, "icloud_hide": 1})
+        self.assertEqual(counts(one_filter, "codex"), {"success": 1})
         self.assertTrue(payload["items"][0]["has_account_password"])
         self.assertTrue(payload["items"][0]["totp_enabled"])
         self.assertEqual(payload["items"][0]["quota_type"], "月限额")
@@ -1085,11 +1150,23 @@ class EmailButlerLeaseApiTests(PostgresTestCase):
         self.assertEqual(response.get_json()["items"][0]["email"], "lease@example.com")
 
     @patch("core.email.email_butler.client.active_mailbox_leases", return_value=[{"email": "lease@example.com", "mailbox_id": "m-1"}])
-    @patch("core.email.email_butler.client.pick_account", return_value=SimpleNamespace(email="lease@example.com", mailbox_id="m-1"))
-    def test_create_lease(self, _pick, _active):
-        response = self.client.post("/api/email-butler/leases", json={}, headers=self.headers)
+    @patch("core.email.email_butler.client.pick_local_account", return_value=SimpleNamespace(email="lease@example.com", mailbox_id="m-1"))
+    def test_create_lease(self, pick, active):
+        url = "/api/email-butler/leases"
+        missing = self.client.post(url, json={}, headers=self.headers)
+        self.assertEqual(missing.status_code, 400)
+        self.assertEqual(missing.json["code"], "invalid_request_id")
+        self.assertFalse(missing.json["request_unknown"])
+        pick.assert_not_called()
+        active.assert_not_called()
+
+        request_id = "f9f14fef-2929-4ab8-bf18-dbb74723fe0a"
+        response = self.client.post(url, json={"request_id": request_id}, headers=self.headers)
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.get_json()["item"]["mailbox_id"], "m-1")
+        self.assertEqual(response.json["item"], {"email": "lease@example.com", "mailbox_id": "m-1"})
+        self.assertEqual(response.json["request_id"], request_id)
+        self.assertFalse(response.json["request_unknown"])
+        pick.assert_called_once_with(owner_kind="manual", owner_id=request_id, acquisition_id="manual:" + request_id)
 
     @patch("core.email.email_butler.client.release_account")
     @patch("core.email.email_butler.client.get_account_context", return_value=SimpleNamespace(email="lease@example.com"))
