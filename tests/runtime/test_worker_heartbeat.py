@@ -4,6 +4,7 @@ from __future__ import annotations
 import threading
 import time
 import unittest
+import logging
 
 from core.runtime import context as context_module
 from core.runtime import worker_heartbeat as heartbeat_module
@@ -34,6 +35,91 @@ class HeartbeatTests(unittest.TestCase):
         worker._state = 'starting'
         gate.block('heartbeat')
         return worker, gate, now
+
+    def test_failure_logs_once_until_recovery_without_private_exception_text(self):
+        def failed_writer(_payload):
+            raise RuntimeError('postgres://private-password@private-host/private-db')
+
+        worker, gate, _now = self.make_clocked(failed_writer)
+        with self.assertLogs('core.runtime.worker_heartbeat', level='WARNING') as captured:
+            worker._pulse()
+            worker._pulse()
+            worker._pulse()
+            worker._write = lambda _: True
+            worker._pulse()
+            worker._write = failed_writer
+            worker._pulse()
+        self.assertEqual(len(captured.records), 2)
+        for record in captured.records:
+            self.assertIn('heartbeat_write_failed', record.getMessage())
+            self.assertIn('RuntimeError', record.getMessage())
+            self.assertNotIn('private', record.getMessage())
+            self.assertIsNone(record.exc_info)
+        self.assertEqual(worker.status()['error_code'], 'heartbeat_write_failed')
+        self.assertIn('heartbeat', gate.reasons())
+
+    def test_collector_failure_log_names_exception_class_without_payload(self):
+        def failed_collector():
+            raise ValueError('private-status-and-account')
+
+        worker, _gate, _now = self.make_clocked(collector=failed_collector)
+        with self.assertLogs('core.runtime.worker_heartbeat', level='WARNING') as captured:
+            worker._pulse()
+            worker._pulse()
+        self.assertEqual(len(captured.records), 1)
+        message = captured.records[0].getMessage()
+        self.assertIn('heartbeat_collect_failed', message)
+        self.assertIn('ValueError', message)
+        self.assertNotIn('private', message)
+        self.assertIsNone(captured.records[0].exc_info)
+
+    def test_watchdog_and_pulse_timeout_diagnostics_run_outside_state_lock(self):
+        for source in ('watchdog', 'collector', 'writer'):
+            with self.subTest(source=source):
+                worker, _gate, now = self.make_clocked()
+                probes = []
+
+                class LockProbe(logging.Handler):
+                    def emit(self, _record):
+                        acquired = threading.Event()
+
+                        def probe():
+                            with worker._lock:
+                                acquired.set()
+
+                        thread = threading.Thread(target=probe, daemon=True)
+                        thread.start()
+                        probes.append((thread, acquired.wait(.2)))
+
+                logger = logging.getLogger('core.runtime.worker_heartbeat')
+                handler = LockProbe()
+                logger.addHandler(handler)
+                try:
+                    if source == 'watchdog':
+                        now[0] = .061
+                        worker._check_health()
+                    elif source == 'collector':
+                        def slow_collector():
+                            now[0] = .061
+                            return {'state': 'running', 'ready': True}
+
+                        worker._collect = slow_collector
+                        worker._pulse()
+                    else:
+                        def slow_writer(_payload):
+                            now[0] = .061
+                            return True
+
+                        worker._write = slow_writer
+                        worker._pulse()
+                finally:
+                    logger.removeHandler(handler)
+                    handler.close()
+                    for thread, _acquired in probes:
+                        thread.join(1.)
+                self.assertEqual(len(probes), 1)
+                self.assertTrue(probes[0][1], 'diagnostic held the heartbeat state lock')
+                self.assertEqual(worker.status()['error_code'], 'heartbeat_timeout')
 
     def start_pulse(self, worker, entered, release):
         pulse = threading.Thread(target=worker._pulse, daemon=True)

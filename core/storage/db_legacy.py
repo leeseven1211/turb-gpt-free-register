@@ -1738,7 +1738,12 @@ def update_account_registration_proxy(
     return _patch_account(int(acc_id), changes)
 
 
-def backfill_account_registration_proxy_context(*, limit: int | None = None) -> int:
+def backfill_account_registration_proxy_context(
+    *,
+    limit: int | None = None,
+    deadline: float | None = None,
+    cancelled: Callable[[], bool] | None = None,
+) -> int:
     """从历史成功注册任务补齐账号的代理来源/实际国家；已有值不覆盖。"""
     # 启动恢复路径只需要四个代理字段。旧实现把两张表的完整 JSONB
     # 解码到 Python，再对每个账号线性扫描全部任务；生产库中这会把
@@ -1751,6 +1756,13 @@ def backfill_account_registration_proxy_context(*, limit: int | None = None) -> 
         limit = int(limit)
         if limit <= 0:
             raise ValueError("backfill_limit_invalid")
+    total_deadline = time.monotonic() + 5.0 if deadline is None else float(deadline)
+
+    def stopped() -> bool:
+        return (cancelled is not None and cancelled()) or time.monotonic() >= total_deadline
+
+    if stopped():
+        return 0
 
     accounts_table = postgres_store.qualified(record_store.ACCOUNTS.name)
     jobs_table = postgres_store.qualified(record_store.JOBS.name)
@@ -1806,14 +1818,14 @@ def backfill_account_registration_proxy_context(*, limit: int | None = None) -> 
         FROM missing_accounts AS a
         JOIN latest USING (id)
         WHERE (a.account_provider IS NULL AND latest.proxy_provider IS NOT NULL)
-           OR (a.account_region IS NULL AND latest.proxy_region IS NOT NULL)
+           OR (a.account_region IS NULL AND LENGTH(latest.proxy_region) = 2)
         ORDER BY a.id
     """
     if limit is not None:
         query += "\n        LIMIT %s"
-    # 历史维护不能无限等待锁；超时后由下一轮小批次重试，不能拖住 Worker 心跳。
+    # 查询和逐字段 claim 共用总预算，单次借连接和 SQL 等待最多 2 秒。
     with postgres_store.connect(
-        row_factory=dict_row, deadline=time.monotonic() + 2.0,
+        row_factory=dict_row, deadline=min(total_deadline, time.monotonic() + 2.0),
     ) as conn, conn.cursor() as cur:
         if limit is None:
             cur.execute(query)
@@ -1822,6 +1834,8 @@ def backfill_account_registration_proxy_context(*, limit: int | None = None) -> 
         accounts = cur.fetchall()
     changed = 0
     for row in accounts:
+        if stopped():
+            return changed
         if row["account_provider"] and row["account_region"]:
             continue
         account_id = int(row["id"] or 0)
@@ -1830,24 +1844,27 @@ def backfill_account_registration_proxy_context(*, limit: int | None = None) -> 
         if not provider and len(region) != 2:
             continue
         row_changed = False
-        if not row["account_provider"] and provider:
-            if record_store.claim_row(
-                record_store.ACCOUNTS,
-                account_id,
-                changes={"registration_proxy_provider": provider, "updated_at": _now()},
-                guard="COALESCE(data->>'registration_proxy_provider', '') = %s",
-                guard_params=("",),
-            ):
-                row_changed = True
-        if not row["account_region"] and len(region) == 2:
-            if record_store.claim_row(
-                record_store.ACCOUNTS,
-                account_id,
-                changes={"registration_proxy_region": region, "updated_at": _now()},
-                guard="COALESCE(data->>'registration_proxy_region', '') = %s",
-                guard_params=("",),
-            ):
-                row_changed = True
+        fields = (
+            ("registration_proxy_provider", provider if not row["account_provider"] else ""),
+            ("registration_proxy_region", region if not row["account_region"] and len(region) == 2 else ""),
+        )
+        for field, value in fields:
+            if not value:
+                continue
+            if stopped():
+                return changed + int(row_changed)
+            with postgres_store.connect(
+                deadline=min(total_deadline, time.monotonic() + 2.0),
+            ) as conn:
+                if record_store.claim_row(
+                    record_store.ACCOUNTS,
+                    account_id,
+                    changes={field: value, "updated_at": _now()},
+                    guard=f"COALESCE(data->>'{field}', '') = %s",
+                    guard_params=("",),
+                    conn=conn,
+                ):
+                    row_changed = True
         if row_changed:
             changed += 1
     return changed

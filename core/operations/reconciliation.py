@@ -7,7 +7,8 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+import time
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from core import db, operation_task_store
@@ -21,6 +22,7 @@ logger = logging.getLogger("webui.runtime")
 
 _PROXY_BACKFILL = PeriodicThread("registration-proxy-backfill")
 _PROXY_BACKFILL_BATCH_SIZE = 100
+_PROXY_BACKFILL_BUDGET_SECONDS = 5.0
 _PROXY_BACKFILL_RETRY_SECONDS = 30.0
 _PROXY_BACKFILL_PAUSE_SECONDS = 0.1
 
@@ -296,11 +298,17 @@ def run_deferred_account_proxy_backfill(
     runtime_logger: logging.Logger | None = None,
     *,
     limit: int | None = None,
+    deadline: float | None = None,
+    cancelled: Callable[[], bool] | None = None,
 ) -> int:
     """在 Worker 心跳已启动后补齐历史账号代理上下文。"""
     active_logger = runtime_logger or logger
     try:
         kwargs = {} if limit is None else {"limit": int(limit)}
+        if deadline is not None:
+            kwargs["deadline"] = deadline
+        if cancelled is not None:
+            kwargs["cancelled"] = cancelled
         changed = int(db.backfill_account_registration_proxy_context(**kwargs) or 0)
     except Exception:
         active_logger.exception("历史账号注册代理来源/国家回填失败；下次启动将重试")
@@ -322,6 +330,8 @@ def _proxy_backfill_loop() -> None:
         try:
             changed = run_deferred_account_proxy_backfill(
                 logger, limit=_PROXY_BACKFILL_BATCH_SIZE,
+                deadline=time.monotonic() + _PROXY_BACKFILL_BUDGET_SECONDS,
+                cancelled=lambda: ticker.is_set() or not execution_allowed(),
             )
         finally:
             _PROXY_BACKFILL.work_finished()

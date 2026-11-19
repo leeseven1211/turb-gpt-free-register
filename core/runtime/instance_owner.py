@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -24,6 +25,10 @@ import uuid
 _NAMESPACE = 'turb.runtime.execution-owner:v1'
 _SCHEMA = re.compile(r'^[A-Za-z_][A-Za-z0-9_]{0,62}$')
 _INSTANCE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$')
+logger = logging.getLogger(__name__)
+_LOSS_DIAGNOSTIC_CODES = frozenset({
+    'owner_probe_timeout', 'owner_connection_lost', 'owner_lock_lost',
+})
 
 class OwnerError(RuntimeError):
     """Stable public reason, deliberately excluding exception/connection text."""
@@ -220,18 +225,23 @@ class ExecutionOwner:
         with self._lifecycle:
             if not self._same_process():
                 raise OwnerError('owner_process_changed')
+            already_held = False
             with self._mutex:
                 if self._state == 'held':
-                    self.require_owner()
+                    already_held = True
+                elif self._state == 'disabled':
                     return self.status()
-                if self._state == 'disabled':
-                    return self.status()
-                if self._state != 'new':
+                elif self._state != 'new':
                     raise OwnerError(self._error_code or 'owner_not_restartable')
-                if self.mode == 'web':
+                elif self.mode == 'web':
                     self._state = 'disabled'
                     return self.status()
-                self._state = 'starting'
+                else:
+                    self._state = 'starting'
+            if already_held:
+                # 验证过期可能触发失去归属的诊断，不能在状态锁内记录日志。
+                self.require_owner()
+                return self.status()
             try:
                 self._identity = self._identity_provider()
                 if self._identity.pid != os.getpid() or not self._identity.process_start or not self._identity.nonce:
@@ -286,6 +296,12 @@ class ExecutionOwner:
         except Exception:
             with self._mutex:
                 self._callback_failed = True
+        # 先关闭接单，再在状态锁外记录固定原因；日志故障不影响已有收口。
+        safe_code = code if code in _LOSS_DIAGNOSTIC_CODES else 'owner_lost'
+        try:
+            logger.warning("执行归属已丢失：code=%s", safe_code)
+        except Exception:
+            pass
 
     def _expire(self) -> None:
         with self._mutex:

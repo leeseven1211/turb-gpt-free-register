@@ -20,7 +20,8 @@ from .readiness import (compatibility_status, execution_ready, remote_status,
                         SETTLEMENT_COUNT_KEYS)
 
 _PRODUCERS = ('deactivation_scanner', 'at_refresher', 'codex_refresher', 'sub2api_sync',
-              'sub2api_monitor', 'auth_context_cleanup', 'task_retention')
+              'sub2api_monitor', 'auth_context_cleanup', 'task_retention',
+              'registration_proxy_backfill')
 _CLAIMERS = ('registration_dispatcher', 'operation_dispatcher', 'dependency_dispatcher',
              'butler_import_dispatcher')
 _STOPS = {

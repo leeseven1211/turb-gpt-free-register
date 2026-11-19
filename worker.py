@@ -62,7 +62,11 @@ def main() -> None:
             from core.runtime.role_launcher import publish_managed_identity
             publish_managed_identity(bootstrap)
         while not stopped.wait(.5):
-            pass
+            from core.runtime.process import execution_owner_valid
+            if not execution_owner_valid():
+                begin_shutdown()
+                logger.error("后台执行归属已失效，当前进程将收尾退出：code=runtime_execution_owner_lost")
+                raise SystemExit(1)
     except BaseException as exc:
         original_failure = not (isinstance(exc, SystemExit) and exc.code in (None, 0))
         failure_code = (exc.code if isinstance(exc, SystemExit) and isinstance(exc.code, int) else 1) if original_failure else 0

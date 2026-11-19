@@ -1,6 +1,7 @@
 """Contract tests: fake external locks/PG only; no application imports or DB."""
 from __future__ import annotations
 import importlib.util
+import logging
 import os
 from pathlib import Path
 import sys
@@ -156,6 +157,70 @@ class InstanceOwnerTests(unittest.TestCase):
         owner.start(); self.assertTrue(lost.wait(1)); self.assertFalse(owner.is_owner())
         self.assertEqual(owner.status().error_code, 'owner_lock_lost')
         self.assertTrue(FakeFileLease.all[0].held)
+    def test_owner_loss_diagnostic_is_once_and_outside_its_state_lock(self):
+        callbacks = []
+        owner, _, _ = self.make(on_lost=lambda: callbacks.append('closed'))
+        owner.start()
+        observed = []
+        class Capture(logging.Handler):
+            def emit(self, record):
+                observed.append((record, owner._mutex._is_owned(), list(callbacks), owner.status().state))
+        diagnostic = logging.getLogger(owner_module.__name__)
+        handler = Capture()
+        diagnostic.addHandler(handler)
+        self.addCleanup(diagnostic.removeHandler, handler)
+        with self.assertLogs(diagnostic, level='WARNING') as captured:
+            # assertLogs replaces handlers, so keep the lock/ordering observer too.
+            diagnostic.addHandler(handler)
+            owner._lose('owner_connection_lost')
+            owner._lose('owner_probe_timeout')
+        self.assertEqual(len(captured.records), 1)
+        self.assertEqual(len(observed), 1)
+        record, mutex_owned, callbacks_at_log, state_at_log = observed[0]
+        self.assertFalse(mutex_owned)
+        self.assertEqual(callbacks_at_log, ['closed'])
+        self.assertEqual(state_at_log, 'lost')
+        self.assertIn('code=owner_connection_lost', record.getMessage())
+        self.assertIsNone(record.exc_info)
+        for private in ('host-fixture', 'start-fixture', 'nonce-fixture', 'test_fixture'):
+            self.assertNotIn(private, record.getMessage())
+        self.assertEqual(owner.status().error_code, 'owner_connection_lost')
+    def test_owner_loss_diagnostic_redacts_unrecognized_reason_text(self):
+        owner, _, _ = self.make(); owner.start()
+        private_reason = 'postgres://private-user:private-password@private-host/private-db'
+        with self.assertLogs(owner_module.__name__, level='WARNING') as captured:
+            owner._lose(private_reason)
+        self.assertEqual(len(captured.records), 1)
+        self.assertIn('code=owner_lost', captured.records[0].getMessage())
+        self.assertNotIn(private_reason, captured.records[0].getMessage())
+        self.assertIsNone(captured.records[0].exc_info)
+        self.assertEqual(owner.status().error_code, private_reason)
+    def test_rechecking_held_owner_logs_expiry_outside_its_state_lock(self):
+        owner, _, _ = self.make(); owner.start()
+        observed = []
+        class Capture(logging.Handler):
+            def emit(self, record):
+                observed.append(owner._mutex._is_owned())
+        diagnostic = logging.getLogger(owner_module.__name__)
+        handler = Capture()
+        with self.assertLogs(diagnostic, level='WARNING') as captured:
+            diagnostic.addHandler(handler)
+            with owner._mutex:
+                owner._last_verified_mono -= 600
+            with self.assertRaisesRegex(owner_module.OwnerError, 'owner_probe_timeout'):
+                owner.start()
+        self.assertEqual(len(captured.records), 1)
+        self.assertEqual(observed, [False])
+    def test_diagnostic_failure_cannot_change_owner_loss_or_callback(self):
+        callbacks = []
+        owner, _, _ = self.make(on_lost=lambda: callbacks.append('closed'))
+        owner.start()
+        with patch.object(logging.getLogger(owner_module.__name__), 'warning',
+                          side_effect=OSError('private-log-destination')):
+            owner._lose('owner_lock_lost')
+        self.assertEqual(owner.status().state, 'lost')
+        self.assertEqual(owner.status().error_code, 'owner_lock_lost')
+        self.assertEqual(callbacks, ['closed'])
     def test_probe_blackhole_has_independent_watchdog_and_close_cannot_release_early(self):
         lost = threading.Event(); conn = FakeConnection(); conn.probe_release = threading.Event()
         owner, _, _ = self.make(connection=conn,on_lost=lost.set,monitor_interval=.01,probe_timeout=.05)

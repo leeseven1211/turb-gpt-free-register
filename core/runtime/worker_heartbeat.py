@@ -6,9 +6,16 @@ DB failures recover on a later timely write. No permit/lease cleanup exists here
 from __future__ import annotations
 
 import math
+import logging
 import threading
 import time
 from collections.abc import Callable, Mapping
+
+logger = logging.getLogger(__name__)
+_DIAGNOSTIC_CODES = frozenset({
+    'heartbeat_timeout', 'heartbeat_fenced', 'heartbeat_collect_failed',
+    'heartbeat_write_failed', 'heartbeat_interrupted', 'heartbeat_thread_dead',
+})
 
 
 class WorkerHeartbeat:
@@ -62,20 +69,43 @@ class WorkerHeartbeat:
                 self._fatal = True
                 raise
 
-    def _fail(self, code, *, fatal=False):
+    def _fail(self, code, *, fatal=False, exception_type=None):
         with self._lock:
-            self._admission.block('heartbeat')
-            if self._fatal:
-                return
-            # Error codes can change after timeout (e.g. a write failure).
-            # Invalidate old pulses once until a fresh successful pulse recovers.
-            if code == 'heartbeat_timeout' and not self._timeout_pending:
-                self._timeout_epoch += 1
-                self._timeout_pending = True
-            self._error = code
-            self._fatal = fatal
-            if not self._stop.is_set():
-                self._state = 'fenced' if code == 'heartbeat_fenced' else 'error'
+            diagnostic = self._fail_locked(code, fatal=fatal, exception_type=exception_type)
+        self._log_failure(diagnostic)
+
+    def _fail_locked(self, code, *, fatal=False, exception_type=None):
+        self._admission.block('heartbeat')
+        if self._fatal:
+            return None
+        previous = (self._state, self._error)
+        # Error codes can change after timeout (e.g. a write failure).
+        # Invalidate old pulses once until a fresh successful pulse recovers.
+        if code == 'heartbeat_timeout' and not self._timeout_pending:
+            self._timeout_epoch += 1
+            self._timeout_pending = True
+        self._error = code
+        self._fatal = fatal
+        if not self._stop.is_set():
+            self._state = 'fenced' if code == 'heartbeat_fenced' else 'error'
+        if previous == (self._state, self._error):
+            return None
+        safe_code = code if code in _DIAGNOSTIC_CODES else 'heartbeat_failed'
+        safe_type = (exception_type if isinstance(exception_type, str)
+                     and len(exception_type) <= 80 and exception_type.isascii()
+                     and exception_type.isidentifier() else 'none')
+        return safe_code, safe_type
+
+    @staticmethod
+    def _log_failure(diagnostic):
+        if diagnostic is None:
+            return
+        # 日志处理器可能阻塞；所有调用者必须先退出心跳状态锁。
+        try:
+            logger.warning('后台心跳异常：code=%s exception_type=%s', *diagnostic)
+        except Exception:
+            # 诊断失败不能改变既有执行门禁与失败状态。
+            pass
 
     def _pulse(self, *, final=False):
         with self._lock:
@@ -96,11 +126,12 @@ class WorkerHeartbeat:
                     raise ValueError('heartbeat_invalid_collector')
                 payload = dict(payload)
             with self._lock:
-                if self._clock() - started >= self._budget:
-                    self._fail('heartbeat_timeout')
-                    return
-                if self._stop.is_set() and not final:
-                    return
+                timed_out = self._clock() - started >= self._budget
+                diagnostic = self._fail_locked('heartbeat_timeout') if timed_out else None
+                aborted = timed_out or (self._stop.is_set() and not final)
+            self._log_failure(diagnostic)
+            if aborted:
+                return
             if final:
                 payload['state'], payload['ready'] = 'stopping', False
             stage = 'write'
@@ -115,32 +146,34 @@ class WorkerHeartbeat:
                 if self._stop.is_set() or self._fatal:
                     return
                 if self._clock() - started >= self._budget:
-                    self._fail('heartbeat_timeout')
-                    return
-                if timeout_epoch != self._timeout_epoch:
-                    return
-                self._timeout_pending = False
-                self._last_success = self._clock()
-                self._state, self._error = 'running', None
-                self._admission.unblock('heartbeat')
-        except Exception:
-            self._fail('heartbeat_collect_failed' if stage == 'collect' else 'heartbeat_write_failed')
-        except BaseException:
-            self._fail('heartbeat_interrupted', fatal=True)
+                    diagnostic = self._fail_locked('heartbeat_timeout')
+                elif timeout_epoch == self._timeout_epoch:
+                    self._timeout_pending = False
+                    self._last_success = self._clock()
+                    self._state, self._error = 'running', None
+                    self._admission.unblock('heartbeat')
+            self._log_failure(diagnostic)
+        except Exception as exc:
+            self._fail('heartbeat_collect_failed' if stage == 'collect' else 'heartbeat_write_failed',
+                       exception_type=type(exc).__name__)
+        except BaseException as exc:
+            self._fail('heartbeat_interrupted', fatal=True, exception_type=type(exc).__name__)
         finally:
             with self._lock:
                 self._inflight = False
 
     def _check_health(self):
+        diagnostic = None
         with self._lock:
             if self._stop.is_set() or self._started_at is None or self._fatal:
                 return
             if self._started_threads and any(not thread.is_alive() for thread in self._threads):
-                self._fail('heartbeat_thread_dead', fatal=True)
-                return
-            reference = self._last_success if self._last_success is not None else self._started_at
-            if self._clock() - reference >= self._budget:
-                self._fail('heartbeat_timeout')
+                diagnostic = self._fail_locked('heartbeat_thread_dead', fatal=True)
+            else:
+                reference = self._last_success if self._last_success is not None else self._started_at
+                if self._clock() - reference >= self._budget:
+                    diagnostic = self._fail_locked('heartbeat_timeout')
+        self._log_failure(diagnostic)
 
     def _run(self):
         try:
