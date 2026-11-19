@@ -34,6 +34,8 @@ test('独立邮箱状态筛选进入列表和轮询共用查询参数', () => {
     accountAdvancedSearchQuery: '', PAGERS: {accounts: {page: 2, size: 10}},
     columnFilterValue: control => control?.value || '',
   });
+  context.window = context;
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../../webui/static/js/shared/account-query.js'), 'utf8'), context);
   assert.equal(context.accountListQueryParams().get('email_status'), 'invalid');
   controls.get('accountEmailStatusFilterV2').value = 'unmarked';
   assert.equal(context.accountListQueryParams().get('email_status'), 'unmarked');
@@ -126,7 +128,7 @@ test('勾选和全选记录邮箱快照，取消选择后不残留快照', () =>
     ACCOUNT_SELECTED: new Set(), ACCOUNT_SELECTED_EMAILS: new Map(),
     ACCOUNTS: [{id: 7, email: 'seven@example.test'}, {id: 8, email: 'eight@example.test'}],
     $: () => null, document: {getElementById: () => null},
-    SHOW_ARCHIVED_ACCOUNTS: false, renderAccounts() {},
+    SHOW_ARCHIVED_ACCOUNTS: false, ACCOUNT_QUICK_ACTIONS: {pending: false}, renderAccounts() {},
   });
   const change = checked => context.onAccountsBodyChange({target: {closest: () => ({checked, dataset: {accountId: '7'}})}});
   change(true);
@@ -173,7 +175,7 @@ test('轻量轮询用false和null移除当前页旧邮箱失效显示且不改�
   const calls = {renders: 0, reloads: 0};
   const context = load(['applyAccountStatusSnapshot', 'pollAccountPlanStatuses'], {
     planStatusLoading: false, accountsLoading: false, accountSearchErrorQuery: null,
-    accountAdvancedSearchQuery: '', planStatusRevision: 'before',
+    accountAdvancedSearchQuery: '', planStatusRevision: 'before', accountsReadGeneration: 1, accountsRenderedQuery: 'email_status=',
     accountListQueryParams: () => new URLSearchParams('email_status='), URLSearchParams,
     ACCOUNTS: [account], ACCOUNTS_TOTAL: 1,
     api: async () => ({total: 1, revision: 'after', items: [{id: 7, email_invalid: false, email_invalid_reason: null, email_invalid_at: null, email_invalid_source: null}]}),

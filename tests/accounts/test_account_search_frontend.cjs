@@ -31,7 +31,7 @@ function harness() {
     document: {getElementById: element}, $: selector => element(selector.slice(1)),
     URLSearchParams, SHOW_ARCHIVED_ACCOUNTS: false, SHOW_PLUS_ACCOUNTS_ONLY: false,
     accountAdvancedSearchQuery: '',
-    accountsRenderedQuery: '',
+    accountsRenderedQuery: '', accountsReadGeneration: 0,
     accountSearchTerms: [], accountSearchErrorQuery: null,
     esc: value => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('"', '&quot;'),
     PAGERS: {accounts: {page: 3, size: 20}}, ACCOUNT_SELECTED: new Set([7]),
@@ -253,6 +253,7 @@ test('错误搜索显示行内提示并清除旧结果，修正后正常恢复',
 
 test('过期搜索错误不会覆盖新条件或显示过期提示', async () => {
   const {view, element} = harness();
+  view.PAGERS.accounts.page = 1;
   const pending = [];
   Object.assign(view, {
     accountsLoading: false, accountsReloadQueued: false, ACCOUNTS: [], ACCOUNTS_TOTAL: 0,
@@ -271,6 +272,90 @@ test('过期搜索错误不会覆盖新条件或显示过期提示', async () =>
   pending[1].resolve({items: [{id: 9}], total: 1});
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(view.ACCOUNTS[0].id, 9);
+});
+
+function pendingReads(rows) {
+  const {view} = harness();
+  const requests = [];
+  const renders = [];
+  view.PAGERS.accounts.page = 1;
+  Object.assign(view, {
+    ACCOUNTS: rows, ACCOUNTS_TOTAL: rows.length, accountsLoading: false, accountsReloadQueued: false,
+    accountsRenderedQuery: view.accountListQueryParams().toString(), planStatusLoading: false, planStatusRevision: 'before',
+    setListBusy() {}, syncFacetSelect() {}, markViewReady() {}, showToast(message) {assert.fail(message);},
+    renderAccounts() { renders.push(view.ACCOUNTS.map(row => row.id)); },
+    api: url => new Promise(resolve => requests.push({url, resolve})),
+  });
+  const start = source.indexOf('async function loadAccounts(');
+  vm.runInContext(source.slice(start, source.indexOf('\nfunction _codexCell(', start)), view);
+  return {view, requests, renders};
+}
+
+test('翻页后立即返回原页，较早发起的同页响应不会覆盖列表', async () => {
+  const {view, requests, renders} = pendingReads([{id: 5}]);
+  const old = view.loadAccounts();
+  view.PAGERS.accounts.page = 2;
+  await view.loadAccounts();
+  view.PAGERS.accounts.page = 1;
+  await view.loadAccounts();
+  requests[0].resolve({items: [{id: 6}], total: 1});
+  await old;
+  assert.equal(view.ACCOUNTS[0].id, 5);
+  assert.equal(renders.length, 0);
+  assert.equal(requests.length, 2);
+  assert.equal(requests[0].url, requests[1].url);
+  requests[1].resolve({items: [{id: 7}], total: 1});
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(renders, [[7]]);
+});
+
+test('同页刷新后忽略迟到的轮询，新列表可接收与旧轮询相同版本的快照', async () => {
+  const {view, requests, renders} = pendingReads([{id: 7, live_check_status: 'queued'}]);
+  const old = view.pollAccountPlanStatuses();
+  const fresh = view.loadAccounts();
+  requests[1].resolve({items: [{id: 7, live_check_status: 'live'}], total: 1});
+  await fresh;
+  requests[0].resolve({items: [{id: 7, live_check_status: 'failed'}], total: 1, revision: 'delayed'});
+  await old;
+  assert.equal(view.ACCOUNTS[0].live_check_status, 'live');
+  assert.equal(renders.length, 1);
+  const current = view.pollAccountPlanStatuses();
+  requests[2].resolve({items: [{id: 7, live_check_status: 'running'}], total: 1, revision: 'before'});
+  await current;
+  assert.equal(view.ACCOUNTS[0].live_check_status, 'running');
+});
+
+test('尚未载入的新页不发轮询，页内重复或换序时重新读取并保留上一页数据直至成功', async () => {
+  for (const ids of [[7, 7], [8, 7]]) {
+    const {view, requests, renders} = pendingReads([{id: 7}, {id: 8}]);
+    view.PAGERS.accounts.page = 2;
+    await view.pollAccountPlanStatuses();
+    assert.equal(requests.length, 0);
+    view.PAGERS.accounts.page = 1;
+    const read = view.pollAccountPlanStatuses();
+    requests[0].resolve({items: ids.map(id => ({id, live_check_status: 'failed'})), total: 2, revision: 'inconsistent'});
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(new URL(requests[1].url, 'http://example.test').pathname, '/api/accounts');
+    assert.ok(view.ACCOUNTS.every(row => !row.live_check_status));
+    requests[1].resolve({items: [{id: 8}, {id: 7}], total: 2});
+    await read;
+    assert.deepEqual(renders, [[8, 7]]);
+  }
+});
+
+test('总数收缩先修正页码，越界页的账号与筛选项不进入当前列表', async () => {
+  const {view, requests, renders} = pendingReads([{id: 55}]);
+  view.PAGERS.accounts.page = 3;
+  const outOfBounds = view.loadAccounts();
+  requests[0].resolve({items: [], total: 1});
+  await outOfBounds;
+  assert.equal(view.PAGERS.accounts.page, 1);
+  assert.equal(view.ACCOUNTS[0].id, 55);
+  assert.equal(renders.length, 0);
+  assert.equal(new URL(requests[1].url, 'http://example.test').searchParams.get('page'), '1');
+  requests[1].resolve({items: [{id: 7}], total: 1});
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(renders, [[7]]);
 });
 
 test('API 错误保留业务错误码，供搜索框显示语法提示', async () => {

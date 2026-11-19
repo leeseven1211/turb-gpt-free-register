@@ -40,6 +40,8 @@ vm.runInContext([
   functionSource('_accountCountryDetailMarkup'),
   functionSource('_accountDetailAuthMethod'),
   functionSource('_accountPasswordAuthDisplay'),
+  functionSource('compactAccountStatus'),
+  functionSource('accountCodexDisplay'),
   functionSource('_accountDetailMarkup'),
   functionSource('accountTaskResultText'),
   functionSource('accountTaskResultTooltipText'),

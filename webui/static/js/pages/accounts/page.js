@@ -2,6 +2,7 @@
 let accountsLoading = false;
 let accountsReloadQueued = false;
 let accountsRenderedQuery = '';
+let accountsReadGeneration = 0;
 let planStatusLoading = false;
 let planStatusRevision = '';
 let accountSessionDownloadLoading = false;
@@ -93,8 +94,10 @@ function showAccountsLoadingState(query) {
   if (body) body.innerHTML = renderTableStateRow(16, '正在加载筛选结果…', '', 'loading');
 }
 async function loadAccounts() {
-  const params = accountListQueryParams();
-  const query = params.toString();
+  const query = accountListQueryParams().toString();
+  // 同一组筛选也可以被重新读取，例如从第二页返回第一页或手动刷新。
+  const generation = ++accountsReadGeneration;
+  const isCurrent = () => generation === accountsReadGeneration && query === accountListQueryParams().toString();
   showAccountsLoadingState(query);
   if (accountsLoading) {
     accountsReloadQueued = true;
@@ -105,8 +108,16 @@ async function loadAccounts() {
   setListBusy('accountsPanelV2', true);
   try {
     const p = PAGERS.accounts;
-    const res = await api(`/api/accounts?${params.toString()}`);
-    if (params.toString() !== accountListQueryParams().toString()) {
+    const res = await api(`/api/accounts?${query}`);
+    if (!isCurrent()) {
+      accountsReloadQueued = true;
+      return;
+    }
+    const rows = res.items || [];
+    const total = Number(res.total ?? rows.length);
+    const totalPages = Math.max(1, Math.ceil(total / p.size));
+    if (p.page > totalPages) {
+      p.page = totalPages;
       accountsReloadQueued = true;
       return;
     }
@@ -130,23 +141,18 @@ async function loadAccounts() {
     syncAccountFacet('accountRiskFilterV2', facets.risk, {group:'risk'});
     syncAccountFacet('accountCodexFilterV2', facets.codex, {group:'codex'});
     syncAccountFacet('accountStatusFilterV2', facets.account_status, {group:'account_status', values:['active','deactivated']});
-    if (params.toString() !== accountListQueryParams().toString()) {
+    if (!isCurrent()) {
       accountsReloadQueued = true;
       return;
     }
-    ACCOUNTS = res.items || [];
-    ACCOUNTS_TOTAL = Number(res.total || ACCOUNTS.length || 0);
-    const totalPages = Math.max(1, Math.ceil(ACCOUNTS_TOTAL / p.size));
-    if (p.page > totalPages) {
-      p.page = totalPages;
-      accountsReloadQueued = true;
-      return;
-    }
-    accountsRenderedQuery = params.toString();
+    ACCOUNTS = rows;
+    ACCOUNTS_TOTAL = total;
+    accountsRenderedQuery = query;
+    planStatusRevision = '';
     renderAccounts();
     markViewReady(`accounts:${SHOW_ARCHIVED_ACCOUNTS ? 'archived' : 'active'}`);
   } catch(e) {
-    if (params.toString() !== accountListQueryParams().toString()) {
+    if (!isCurrent()) {
       accountsReloadQueued = true;
       return;
     }
@@ -207,23 +213,23 @@ function loadAccountPlanDetails(account) {
 }
 async function pollAccountPlanStatuses() {
   if (planStatusLoading || accountsLoading || accountSearchErrorQuery === accountAdvancedSearchQuery) return;
+  const query = accountListQueryParams().toString();
+  if (query !== accountsRenderedQuery) return;
+  const generation = accountsReadGeneration;
   planStatusLoading = true;
   try {
-    const params = accountListQueryParams().toString();
-    const snapshot = await api(`/api/accounts/plan-check-status?${params}&compact=1`);
-    if (accountsLoading || params !== accountListQueryParams().toString()) return;
+    const snapshot = await api(`/api/accounts/plan-check-status?${query}&compact=1`);
+    if (generation !== accountsReadGeneration || query !== accountListQueryParams().toString()) return;
     const items = snapshot.items || [];
-    const accountById = new Map(ACCOUNTS.map(r => [Number(r.id), r]));
-    const hasUnknown = items.some(item => !accountById.has(Number(item.id)));
-    if (hasUnknown || items.length !== ACCOUNTS.length || Number(snapshot.total || 0) !== ACCOUNTS_TOTAL) {
-      planStatusRevision = snapshot.revision || '';
+    if (items.length !== ACCOUNTS.length || Number(snapshot.total) !== ACCOUNTS_TOTAL ||
+        items.some((item, index) => String(item.id) !== String(ACCOUNTS[index].id))) {
       await loadAccounts();
       return;
     }
     if ((snapshot.revision || '') !== planStatusRevision) {
       let needsFullReload = false;
-      items.forEach(item => {
-        const account = accountById.get(Number(item.id));
+      items.forEach((item, index) => {
+        const account = ACCOUNTS[index];
         const wasChecking = ['queued', 'running'].includes(account?.plan_check_status);
         const isChecking = ['queued', 'running'].includes(item.plan_check_status);
         const wasExtracting = ['queued', 'running'].includes(account?.extract_link_status);
@@ -254,47 +260,56 @@ function _codexCell(r) {
   if (s === 'deactivated') return `<span class="pill status-failed" title="账号已被 OpenAI 删除/停用/封禁，无法授权">已废号</span>`;
   return `<span class="muted">-</span>`;
 }
-function _codexCellV2(r) {
-  if (accountIsDeactivated(r)) return '<span class="acc-v2-codex is-fail" title="账号已确认停用/封禁">封号</span>';
-  const s = r.codex_status || '';
-  const exec = r.codex_execution_status || '';
-  const err = r.codex_error || '';
-  const titleAttr = err ? ` title="${esc(err)}"` : '';
-  if (['queued','running','cancelling'].includes(exec)) return `<span class="acc-v2-codex is-run"${titleAttr}>${exec === 'queued' ? '排队中' : exec === 'cancelling' ? '停止中' : '补跑中'}</span>`;
-  if (s === 'success') return `<span class="acc-v2-codex is-ok"${titleAttr}>已通过</span>`;
-  if (s === 'retrying') return `<span class="acc-v2-codex is-run"${titleAttr}>补跑中</span>`;
-  if (s === 'stopped') return `<span class="acc-v2-codex is-mute"${titleAttr}>已停止</span>`;
-  if (s === 'failed') return `<span class="acc-v2-codex is-fail"${titleAttr}>失败</span>`;
-  if (s === 'pending_confirmation' || r.codex_credential_state === 'pending_confirmation') return `<span class="acc-v2-codex is-mute"${titleAttr}>凭据核验缺失</span>`;
-  if (s === 'skipped') return `<span class="acc-v2-codex is-skip"${titleAttr}>已跳过</span>`;
-  if (s === 'deactivated') return `<span class="acc-v2-codex is-fail" title="账号已被 OpenAI 删除/停用/封禁，无法授权">已废号</span>`;
-  return `<span class="acc-v2-muted">-</span>`;
+function compactAccountStatus(text, fallback) {
+  return Array.from(text).length > 10 ? fallback : text;
 }
-function _accountStatusCellV2(r) {
-  const reason = String(r.account_status_reason || '').trim();
-  const lines = (status, summary = '', summaryTitle = summary) => `<div class="account-cell-lines"><div class="account-cell-line">${status}</div>${summary ? `<div class="account-cell-line account-cell-line--sub" title="${esc(summaryTitle)}">${esc(short(summary, 34))}</div>` : ''}</div>`;
+function accountCodexDisplay(r) {
+  const status = String(r.codex_status || '').toLowerCase();
+  // 旧记录可能把执行态直接存在 codex_status。
+  const execution = String(r.codex_execution_status || status).toLowerCase();
+  const active = ['queued', 'running', 'cancelling'].includes(execution);
+  const reason = String(r.codex_error || (active ? '授权处理中' : ''));
+  const display = (label, style, title = reason) => ({
+    label, style, title, secondary: compactAccountStatus(reason, '执行异常'), secondaryTitle: reason,
+  });
+  if (accountIsDeactivated(r)) return display('封号', 'fail', '账号已确认停用/封禁');
+  if (active) return display({queued: '排队中', running: '补跑中', cancelling: '停止中'}[execution], 'run');
+  if (status === 'success' || status === 'completed') return display('已通过', 'ok');
+  if (status === 'retrying') return display('补跑中', 'run');
+  if (status === 'stopped') return display('已停止', 'mute');
+  if (status === 'failed') return display('失败', 'fail');
+  if (status === 'pending_confirmation' || r.codex_credential_state === 'pending_confirmation') return display('凭据核验缺失', 'mute');
+  if (status === 'skipped') return display('已跳过', 'skip');
+  return display('-', 'mute');
+}
+function accountHealthDisplay(r) {
   if (accountIsDeactivated(r)) {
-    return lines(`<span class="acc-v2-account-status is-fail"${reason ? ` title="${esc(reason)}"` : ''}>已废号</span>`, reason);
+    const reason = String(r.account_status_reason || '').trim();
+    return {label: '已废号', style: 'fail', title: reason, secondary: compactAccountStatus(reason, '账号已停用'), secondaryTitle: reason};
   }
   const liveStatus = String(r.live_check_status || '').toLowerCase();
-  const liveHttp = _liveCheckHttpStatus(r);
-  const liveReason = String(r.live_check_error || '').trim();
   if (liveStatus === 'failed') {
-    const tokenIssue = liveHttp === 401 || liveHttp === 403;
-    const label = tokenIssue ? `Token 异常 · HTTP ${liveHttp}` : '查活失败';
-    const detail = [liveHttp ? `HTTP ${liveHttp}` : '', liveReason].filter(Boolean).join('；');
-    return lines(`<span class="acc-v2-account-status is-fail"${detail ? ` title="${esc(detail)}"` : ''}>${label}</span>`, liveReason || (liveHttp ? `HTTP ${liveHttp}` : ''));
+    const code = _liveCheckHttpStatus(r);
+    const http = code ? `HTTP ${code}` : '';
+    const reason = String(r.live_check_error || '').trim();
+    const title = [http, reason].filter(Boolean).join('；');
+    return {label: code === 401 || code === 403 ? 'Token 异常' : '查活失败', style: 'fail', title,
+      secondary: http || compactAccountStatus(reason, '执行异常'), secondaryTitle: title};
   }
   if (liveStatus === 'queued' || liveStatus === 'running') {
-    return '<span class="acc-v2-account-status is-mute">查活中</span>';
+    return {label: '查活中', style: 'mute'};
   }
   if (liveStatus === 'live') {
     const checkedAt = _fmtPlanTime(r.live_checked_at);
-    const title = `上次查活通过：${checkedAt || '时间未记录'}；AT 有效期见 Token 列`;
-    const time = checkedAt ? checkedAt.replace(/^\d{4}-/, '') : '时间未记录';
-    return lines(`<span class="acc-v2-account-status is-ok" title="${esc(title)}">查活通过</span>`, time, checkedAt || time);
+    return {label: '查活通过', style: 'ok', title: `上次查活通过：${checkedAt || '时间未记录'}；AT 有效期见 Token 列`,
+      secondary: checkedAt ? checkedAt.replace(/^\d{4}-/, '') : '时间未记录', secondaryTitle: checkedAt};
   }
-  return '<span class="acc-v2-account-status is-mute" title="尚未完成查活，不能确认账号正常">待查活</span>';
+  return {label: '待查活', style: 'mute', title: '尚未完成查活，不能确认账号正常'};
+}
+function accountStatusLines(display, className) {
+  const title = display.title ? ` title="${esc(display.title)}"` : '';
+  const secondary = display.secondary ? `<div class="account-cell-line account-cell-line--sub" title="${esc(display.secondaryTitle || display.secondary)}">${esc(display.secondary)}</div>` : '';
+  return `<div class="account-cell-lines"><div class="account-cell-line"><span class="${className} is-${display.style}"${title}>${esc(display.label)}</span></div>${secondary}</div>`;
 }
 function _fmtPlanTime(v, dateOnly = false) {
   if (!v) return '';
@@ -1035,12 +1050,15 @@ function _extractLinkCell(r) {
   const s = r.extract_link_status || '';
   const err = r.extract_link_error || '';
   const msg = r.extract_link_message || '';
-  const title = esc(err || msg || r.extract_link_job_id || '');
-  if (s === 'queued') return `<span class="pill status-running" title="${title}">提链排队</span>`;
-  if (s === 'running') return `<span class="pill status-running" title="${title}">${esc(msg || '提链中')}</span>`;
+  const title = [err, msg].filter(Boolean).join('；') || r.extract_link_job_id || '';
+  if (s === 'queued') return `<span class="pill status-running" title="${esc(title)}">提链排队</span>`;
+  if (s === 'running') return `<span class="pill status-running" title="${esc(title)}">${esc(compactAccountStatus(msg, '提链中') || '提链中')}</span>`;
   if (s === 'success') {
     const typ = (r.extract_link_type || '').toUpperCase();
-    return `<div class="extract-link-cell"><span class="pill status-success" title="${title || '提炼成功，可在更多菜单复制地址'}">提链成功${typ ? '(' + esc(typ) + ')' : ''}</span></div>`;
+    const label = typ ? `提链成功(${typ})` : '提链成功';
+    const shortLabel = compactAccountStatus(label, '提链成功');
+    const detail = [title || '提炼成功，可在更多菜单复制地址', shortLabel !== label ? label : ''].filter(Boolean).join('；');
+    return `<div class="extract-link-cell"><span class="pill status-success" title="${esc(detail)}">${esc(shortLabel)}</span></div>`;
   }
   return '';
 }
@@ -1306,10 +1324,10 @@ function _accountDetailMarkup(r) {
   const plan = (r.current_plan_type || r.plan_type || '未查询').toString();
   const promotionDisplay = _accountPromotionDisplay(r);
   const countryDisplays = _accountCountryPromotionDisplays(r);
-  const codexRaw = (r.codex_status || r.codex_execution_status || '').toString().toLowerCase();
-  const codexLabels = { success: '已通过', completed: '已通过', failed: '失败', deactivated: '已废号', running: '补跑中', queued: '排队中', cancelling: '停止中', retrying: '补跑中', stopped: '已停止', pending_confirmation: '凭据核验缺失', skipped: '已跳过' };
-  const codex = codexLabels[codexRaw] || '未授权';
-  const codexTone = ['success', 'completed'].includes(codexRaw) ? 'success' : (['failed', 'deactivated'].includes(codexRaw) ? 'danger' : (['running', 'queued', 'cancelling', 'retrying'].includes(codexRaw) ? 'warning' : 'neutral'));
+  const codex = accountCodexDisplay(r);
+  const codexTone = {ok: 'success', fail: 'danger', run: 'warning'}[codex.style] || 'neutral';
+  const liveDetail = [r.live_checked_at ? `检查于 ${_fmtPlanTime(r.live_checked_at)}` : '',
+    r.live_check_status === 'failed' ? r.live_check_error : ''].filter(Boolean).join('；');
   const risk = r.deactivation_mail_detected ? '发现封号邮件' : (r.deactivation_mail_scan_status === 'success' ? '未发现封号邮件' : '待扫描');
   const riskTone = r.deactivation_mail_detected ? 'danger' : (r.deactivation_mail_scan_status === 'success' ? 'success' : 'neutral');
   const authFallback = r.last_auth_fallback_used === true ? '已使用回退' : (r.last_auth_fallback_used === false ? '未使用回退' : '未记录');
@@ -1333,7 +1351,8 @@ function _accountDetailMarkup(r) {
     <p class="account-detail-section-copy">本地保存不代表远端已接受。远端密码结果是最近一次有记录的认证结果，不代表当前密码或登录态仍有效。</p>
     <div class="account-detail-grid">
       ${_accountDetailState('访问 Token', tokenState, tokenTone, r.token_expires_at ? `${tokenDisplay.key === 'invalid' ? 'JWT 标称到期' : '到期'} ${_fmtPlanTime(r.token_expires_at)}` : '')}
-      ${_accountDetailState('在线状态', liveState, liveTone, r.live_checked_at ? `检查于 ${_fmtPlanTime(r.live_checked_at)}` : '')}
+      ${_accountDetailState('在线状态', liveState, liveTone, liveDetail)}
+      ${accountIsDeactivated(r) ? _accountDetailState('账号状态', '已废号', 'danger', r.account_status_reason) : ''}
       ${_accountDetailState('邮箱状态', r.email_invalid === true ? '邮箱失效' : '未标记失效', r.email_invalid === true ? 'danger' : 'neutral', r.email_invalid === true ? [r.email_invalid_reason, r.email_invalid_at ? `标记于 ${_fmtPlanTime(r.email_invalid_at)}` : ''].filter(Boolean).join('；') : '未标记不代表已验证邮箱可用')}
       ${_accountDetailState('账号密码（本地）', r.has_account_password ? '本地已保存' : '本地未保存', r.has_account_password ? 'info' : 'neutral')}
       ${_accountDetailState('最近远端密码结果', passwordAuth.label, passwordAuth.tone)}
@@ -1350,7 +1369,8 @@ function _accountDetailMarkup(r) {
     <div class="account-detail-grid">
       ${_accountDetailState('当前套餐', plan, plan.toLowerCase() === 'free' ? 'info' : 'success', r.plan_checked_at ? `检查于 ${_fmtPlanTime(r.plan_checked_at)}` : '')}
       ${countryDisplays.length ? _accountCountryDetailMarkup(r, countryDisplays) : _accountPromotionGroups(promotionDisplay.items).map(group => _accountDetailState(`${_promotionPlanLabel(group.plan)} 优惠`, _accountPromotionGroupLabel(group), _accountPromotionTone(group.lead), _accountPromotionGroupDetail(group, promotionDisplay.context))).join('')}
-      ${_accountDetailState('Codex', codex, codexTone)}
+      ${_accountDetailState('Codex', codex.label === '-' ? '未授权' : codex.label, codexTone, codex.secondaryTitle)}
+      ${r.extract_link_message ? _accountDetailState('提链进度', r.extract_link_message) : ''}
       ${_accountDetailState('套餐检查', r.plan_checked_at ? _fmtPlanTime(r.plan_checked_at) : '未检查')}
     </div>
   </div>`;
@@ -1479,27 +1499,12 @@ function _htmlText(html) {
   return (div.textContent || '').replace(/\s+/g, ' ').trim();
 }
 
-function _accountRowTone(tr) {
-  const cell = tr.querySelector('.col-account-status');
-  const html = cell ? cell.innerHTML : '';
-  if (/status-(failed|error|invalid|rejected)/.test(html)) return 'bad';
-  if (/status-(warning|pending|unknown|used)/.test(html)) return 'warn';
-  return 'ok';
-}
-
 // 手机端双行列表：主行邮箱 + 状态点，次行元信息在渲染时拼好。
 function decorateAccountMobileRows(body) {
   if (!body) return;
   body.querySelectorAll('tr').forEach(tr => {
     const emailCell = tr.querySelector('.col-email');
     if (!emailCell) return;
-    const link = emailCell.querySelector('.acc-v2-email-link');
-    if (link && !link.querySelector('.acc-mobile-dot')) {
-      const dot = document.createElement('span');
-      dot.className = `acc-mobile-dot is-${_accountRowTone(tr)}`;
-      dot.setAttribute('aria-hidden', 'true');
-      link.insertBefore(dot, link.firstChild);
-    }
     if (tr.dataset.mobileTapBound === '1') return;
     tr.dataset.mobileTapBound = '1';
     tr.addEventListener('click', ev => {
@@ -1515,12 +1520,15 @@ function renderAccounts() {
   const rows = ACCOUNTS;
   const rowHtmlV2 = (r) => {
     const extractLink = _extractLinkCell(r);
-    const codexSummary = r.codex_error || (['queued', 'running', 'cancelling'].includes(r.codex_execution_status) ? '授权处理中' : '');
+    const plan = _planCell(r);
+    const health = accountHealthDisplay(r);
+    const dot = {fail: 'bad', mute: 'warn', ok: 'ok'}[health.style];
+    const codex = accountCodexDisplay(r);
     const mobileMeta = [
       r.email_source,
-      _htmlText(_planCell(r)),
+      _htmlText(plan),
       r.totp_enabled ? '2FA 已验证' : '2FA 未验证',
-      (() => { const codex = _htmlText(_codexCellV2(r)); return codex && codex !== '-' ? `Codex ${codex}` : ''; })(),
+      codex.label === '-' ? '' : `Codex ${codex.label}`,
     ].filter(value => value && value !== '-').join(' · ');
     return `
     <tr>
@@ -1528,6 +1536,7 @@ function renderAccounts() {
       <td class="col-id">#${esc(r.id)}</td>
       <td class="col-email" title="${esc([r.email || '-', r.user_name || ''].filter(Boolean).join(' · '))}">
         <button type="button" class="acc-v2-email-link account-cell-line" data-account-detail-id="${esc(r.id)}" title="查看账号详情">
+          <span class="acc-mobile-dot is-${dot}" role="img" aria-label="${esc(health.label)}"></span>
           <span class="acc-v2-email">${esc(r.email)}${r.archived ? ' <span class="pill status-used" title="该账号已归档">归档</span>' : ''}</span>
         </button>
         <div class="acc-v2-sub account-cell-line account-cell-line--sub account-email-meta"><span class="account-email-name">${esc(r.user_name || '-')}</span>${_accountEmailInvalidBadge(r)}</div>
@@ -1536,14 +1545,14 @@ function renderAccounts() {
       <td class="col-source">${esc(r.email_source || '-')}</td>
       <td class="col-registration-driver" title="${esc(accountRegistrationDriverLabel(r.registration_driver))}">${esc(accountRegistrationDriverLabel(r.registration_driver))}</td>
       <td class="col-token" data-label="Token">${_tokenCellV2(r)}</td>
-      <td class="col-account-status" data-label="账号状态">${_accountStatusCellV2(r)}</td>
+      <td class="col-account-status" data-label="账号状态">${accountStatusLines(health, 'acc-v2-account-status')}</td>
       <td class="col-small col-password" data-label="账号密码">${_passwordCellV2(r)}</td>
-      <td class="col-plan" data-label="套餐"><div class="account-cell-lines"><div class="account-cell-line">${_planCell(r)}</div>${extractLink ? `<div class="account-cell-line account-cell-line--sub">${extractLink}</div>` : ''}</div></td>
+      <td class="col-plan" data-label="套餐"><div class="account-cell-lines"><div class="account-cell-line">${plan}</div>${extractLink ? `<div class="account-cell-line account-cell-line--sub">${extractLink}</div>` : ''}</div></td>
       <td class="col-quota">${_quotaCell(r)}</td>
       <td class="col-trial" data-label="套餐优惠">${_promotionCell(r)}</td>
       <td class="col-small col-2fa" data-label="2FA">${_totpCellV2(r)}</td>
       <td class="col-risk-mail">${_deactivationMailCell(r)}</td>
-      <td class="col-status" data-label="Codex"><div class="account-cell-lines"><div class="account-cell-line">${_codexCellV2(r)}</div>${codexSummary ? `<div class="account-cell-line account-cell-line--sub" title="${esc(codexSummary)}">${esc(short(codexSummary, 34))}</div>` : ''}</div></td>
+      <td class="col-status" data-label="Codex">${accountStatusLines(codex, 'acc-v2-codex')}</td>
       <td class="col-time">${_accountTimesCellV2(r)}</td>
       <td class="col-actions">
         <div class="account-cell-lines acc-v2-actions">

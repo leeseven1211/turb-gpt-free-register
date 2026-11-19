@@ -30,7 +30,7 @@ function harness() {
     esc: value => String(value), attrEsc: value => String(value),
     refreshColumnFilterState() {}, renderColumnFilterOptions() {},
     SHOW_ARCHIVED_ACCOUNTS: false, SHOW_PLUS_ACCOUNTS_ONLY: false,
-    accountAdvancedSearchQuery: '', PAGERS: {accounts: {page: 2, size: 20}},
+    accountAdvancedSearchQuery: '', accountsReadGeneration: 0, PAGERS: {accounts: {page: 2, size: 20}},
   };
   view.window = view;
   vm.createContext(view);

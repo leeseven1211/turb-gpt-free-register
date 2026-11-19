@@ -20,7 +20,7 @@ function view() {
     _accountPromotionDisplay: () => ({items: []}), _accountCountryPromotionDisplays: () => [],
     _accountPromotionGroups: () => [], _accountDetailFingerprintMarkup: () => '',
   });
-  for (const name of ['_passwordCellV2', '_accountPasswordAuthDisplay', '_accountDetailState', '_accountDetailAuthMethod', '_accountDetailMarkup']) {
+  for (const name of ['accountIsDeactivated', 'compactAccountStatus', 'accountCodexDisplay', '_passwordCellV2', '_accountPasswordAuthDisplay', '_accountDetailState', '_accountDetailAuthMethod', '_accountDetailMarkup']) {
     vm.runInContext(functionSource(name), context);
   }
   return context;
