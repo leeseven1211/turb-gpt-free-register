@@ -11,7 +11,7 @@ import time
 import uuid
 import threading
 from collections.abc import Mapping
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from typing import Any
 
 from psycopg import OperationalError
@@ -901,6 +901,17 @@ def _cleanup_handoff_ready(origin):
     return False
 
 
+@contextmanager
+def _cleanup_read():
+    """The guarded phase can fail without claiming a cleanup action."""
+    try:
+        yield
+    except (TimeoutError, OperationalError) as exc:
+        if not _protocol().classify_failure(exc)[1]:
+            raise _protocol().CleanupDiagnosticReadUnavailable() from exc
+        raise
+
+
 def _claim_cleanup(*, domain, deadline=None, permit_id=None, execution_id=None):
     # Never hold a database lock while checking local registry/liveness. Callback
     # exit is irreversible; the final claim is a bounded exact-row CAS.
@@ -908,7 +919,7 @@ def _claim_cleanup(*, domain, deadline=None, permit_id=None, execution_id=None):
     with _CLEANUP_SCAN_LOCK:
         after_id=_CLEANUP_SCAN_CURSORS.get(str(domain.domain_id),0) if permit_id is None else 0
     with _common.settlement_scope(domain, deadline=deadline):
-        with _common._connect() as conn, conn.cursor() as cur:
+        with _cleanup_read(), _common._connect() as conn, conn.cursor() as cur:
             cur.execute(f'''SELECT job.*,receipt.origin,receipt.actual_result AS settlement_actual_result,
                     handoff.receipt_id AS handoff_receipt_id
                 FROM {_common._table('operation_settlement_cleanup')} job
@@ -999,6 +1010,17 @@ def cleanup_diagnostics(*, domain, deadline=None, permit_id=None, execution_id=N
                     'age_seconds': max(0.0, float(row['age_seconds'])),
                 })
             return result
+
+
+def has_unfinished_blocking_cleanup(*, domain, deadline=None):
+    """Check for unfinished actions, including those that cannot be claimed yet."""
+    _verify_domain_identity(domain)
+    with _common.settlement_scope(domain, deadline=deadline):
+        with _common._connect() as conn, conn.cursor() as cur:
+            cur.execute(f'''SELECT 1 FROM {_common._table('operation_settlement_cleanup')}
+                WHERE domain_id=%s AND state <> 'done' AND state <> 'superseded'
+                  AND blocks_permit LIMIT 1''', (domain.domain_id,))
+            return cur.fetchone() is not None
 
 
 def retry_cleanup(*, domain, identity, deadline=None):
@@ -1241,16 +1263,18 @@ def _execute_cleanup(job, *, domain, deadline=None):
 
 def run_cleanup_once(*, domain, deadline=None, permit_id=None, execution_id=None):
     _verify_domain_identity(domain)
-    try:
+    protocol = _protocol()
+    with _cleanup_read():
         diagnostics = cleanup_diagnostics(domain=domain, deadline=deadline,
-                                         permit_id=permit_id, execution_id=execution_id)
-    except (TimeoutError, OperationalError) as exc:
-        if not _protocol().classify_failure(exc)[1]:
-            # This read precedes the claim and all physical cleanup. Later
-            # transport failures may leave an unverified claim or completion.
-            raise _protocol().CleanupDiagnosticReadUnavailable() from exc
-        raise
-    job = _claim_cleanup(domain=domain, deadline=deadline, permit_id=permit_id, execution_id=execution_id)
+                                          permit_id=permit_id, execution_id=execution_id)
+    try:
+        job = _claim_cleanup(domain=domain, deadline=deadline, permit_id=permit_id, execution_id=execution_id)
+    except protocol.CleanupDiagnosticReadUnavailable as exc:
+        if not diagnostics:
+            raise
+        # The diagnostic SELECT does not see every unfinished action. Preserve
+        # its observations without reporting a completed scan to the caller.
+        raise protocol.CleanupDiagnosticReadUnavailable(diagnostics=diagnostics) from exc
     if job is None:
         if not diagnostics:
             return None
@@ -1266,7 +1290,7 @@ def run_cleanup_once(*, domain, deadline=None, permit_id=None, execution_id=None
         disposition = outcome.get('state', 'done') if isinstance(outcome, dict) else outcome or 'done'
         detail = outcome if isinstance(outcome, dict) else {}
     except Exception as exc:
-        code, blocked = _protocol().classify_cleanup_failure(exc)
+        code, blocked = protocol.classify_cleanup_failure(exc)
         delay = min(5.0, 0.1 * 2 ** min(int(job.get('attempts') or 1), 6))
         state = 'reconciliation_required' if blocked else 'pending'
         if not _complete_cleanup(job, domain=domain, error_code=code, deadline=deadline,

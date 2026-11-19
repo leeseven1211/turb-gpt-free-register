@@ -161,7 +161,8 @@ class ExecutionOwner:
 
     on_pause and on_resume may only update local state or wake a reporter. can_resume
     checks whether work is idle without holding the owner state lock. on_lost
-    closes admission permanently. A paused session never reacquires its locks.
+    closes admission permanently. An idle veto keeps admission paused within the
+    original verification deadline. A paused session never reacquires its locks.
     close() belongs after execution components have stopped. False means the
     runtime must retain its fence and exit rather than report a clean stop.
     """
@@ -209,6 +210,7 @@ class ExecutionOwner:
         self._acquired_at: float | None = None
         self._last_verified_at: float | None = None
         self._last_verified_mono = 0.0
+        self._last_idle_veto = 'none'
         self._error_code = ''
         self._callback_failed = False
 
@@ -315,7 +317,8 @@ class ExecutionOwner:
             return True
         return False
 
-    def _notify_lost(self, code: str) -> None:
+    def _notify_lost(self, code: str, *, verified_age: float | None = None,
+                     last_idle_veto: str = 'none') -> None:
         # Publish the closed state before notifying the shared admission gate.
         try:
             self._on_lost()
@@ -325,7 +328,12 @@ class ExecutionOwner:
         # 先关闭接单，再在状态锁外记录固定原因；日志故障不影响已有收口。
         safe_code = code if code in _LOSS_DIAGNOSTIC_CODES else 'owner_lost'
         try:
-            logger.warning("执行归属已丢失：code=%s", safe_code)
+            if verified_age is not None:
+                logger.warning(
+                    "执行归属已丢失：code=%s retry=deadline last_idle_veto=%s verified_age_ms=%d",
+                    safe_code, last_idle_veto, int(verified_age * 1000))
+            else:
+                logger.warning("执行归属已丢失：code=%s", safe_code)
         except Exception:
             pass
 
@@ -353,8 +361,10 @@ class ExecutionOwner:
                         paused = True
             elif self._state == 'paused' and age >= 2 * self._timeout:
                 lost = self._mark_lost_locked('owner_probe_timeout')
+            last_idle_veto = self._last_idle_veto
         if lost:
-            self._notify_lost(reason)
+            self._notify_lost(reason, verified_age=age if reason == 'owner_probe_timeout' else None,
+                              last_idle_veto=last_idle_veto)
         elif paused:
             try:
                 logger.warning("执行归属验证超时，已暂停接单：code=owner_probe_paused")
@@ -365,7 +375,7 @@ class ExecutionOwner:
         while not self._stop.wait(min(self._interval, self._timeout / 4)):
             self._expire()
 
-    def _idle_for_retry(self) -> bool:
+    def _idle_for_retry(self, phase: str) -> bool:
         try:
             idle = self._can_resume() is True
         except Exception:
@@ -374,7 +384,9 @@ class ExecutionOwner:
             self._lose('owner_probe_callback_failed')
             return False
         if not idle:
-            self._lose('owner_probe_timeout')
+            with self._mutex:
+                if self._state == 'paused':
+                    self._last_idle_veto = phase
         return idle
 
     def _monitor(self) -> None:
@@ -390,8 +402,8 @@ class ExecutionOwner:
                     self._lose('owner_connection_lost')
                     return
                 if state == 'paused':
-                    if not self._idle_for_retry():
-                        return
+                    if not self._idle_for_retry('before_probe'):
+                        continue
                     self._expire()
                     if self._stop.is_set():
                         return
@@ -415,9 +427,11 @@ class ExecutionOwner:
                 self._expire()
                 if self._stop.is_set():
                     return
-                if state == 'paused' and not self._idle_for_retry():
-                    return
+                if state == 'paused' and not self._idle_for_retry('after_probe'):
+                    # Work may settle in time, but a later attempt needs a new proof.
+                    continue
                 loss_reason = ''
+                verified_age = None
                 with self._mutex:
                     # A probe sent before the pause cannot clear it.
                     if self._state != state:
@@ -433,18 +447,23 @@ class ExecutionOwner:
                             self._callback_failed = True
                             loss_reason = 'owner_probe_callback_failed'
                         else:
-                            if time.monotonic() >= min(deadline, verified_mono + self._timeout):
+                            now = time.monotonic()
+                            if now >= min(deadline, verified_mono + self._timeout):
                                 loss_reason = 'owner_probe_timeout'
+                                verified_age = now - self._last_verified_mono
                             else:
                                 self._state = 'held'
                                 self._error_code = ''
+                                self._last_idle_veto = 'none'
+                    last_idle_veto = self._last_idle_veto
                     if loss_reason:
                         self._mark_lost_locked(loss_reason)
                     else:
                         self._last_verified_at = verified_at
                         self._last_verified_mono = verified_mono
                 if loss_reason:
-                    self._notify_lost(loss_reason)
+                    self._notify_lost(loss_reason, verified_age=verified_age,
+                                      last_idle_veto=last_idle_veto)
                     return
                 if state == 'paused':
                     try:

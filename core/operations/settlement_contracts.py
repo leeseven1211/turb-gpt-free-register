@@ -113,6 +113,10 @@ class OperationSettlementFenced(PermissionError):
 class CleanupDiagnosticReadUnavailable(TimeoutError):
     """Transient failure reading cleanup diagnostics before the claim starts."""
 
+    def __init__(self, *args, diagnostics=()):
+        super().__init__(*args)
+        self.diagnostics = tuple(diagnostics)
+
 
 def classify_failure(exc):
     """Return stable transport/SQLSTATE facts, never exception text."""

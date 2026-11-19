@@ -748,7 +748,8 @@ def _progress(item):
                     if cleanup_result is None:
                         detail = _SCAN_DIAGNOSTICS.get(domain.domain_id, {})
                         identity = detail.get("identity") or {}
-                        if (_SCAN_BLOCKED.get(domain.domain_id) not in _PERMANENT_CODES
+                        if (not detail.get("requires_domain_scan")
+                                and _SCAN_BLOCKED.get(domain.domain_id) not in _PERMANENT_CODES
                                 and (not detail.get("durable")
                                      or (identity.get("permit_id") == item.execution.permit_id
                                          and identity.get("execution_id") == item.execution.execution_id))):
@@ -937,11 +938,11 @@ def _record_cleanup_result(domain, result, *, scoped=False):
     identity = result.get("identity") or {}
     same_owner = (prior_identity.get("permit_id") == identity.get("permit_id")
                   and prior_identity.get("execution_id") == identity.get("execution_id"))
-    if (scoped and known.get("durable") and known.get("blocks_permit", True)
-            and (not same_owner or not prior_identity.get("permit_id"))):
+    if scoped and (known.get("requires_domain_scan") or (
+            known.get("durable") and known.get("blocks_permit", True)
+            and (not same_owner or not prior_identity.get("permit_id")))):
         # An owned call sees only its original permit/execution. It cannot
-        # replace a known foreign domain-wide blocking obligation, even after
-        # its own nonblocking handoff safely leaves this process.
+        # verify an incomplete domain scan or replace another permit's record.
         _update_admission()
         return True
     _SCAN_BLOCKED[domain.domain_id] = code
@@ -976,6 +977,11 @@ def retry_cleanup(*, domain, identity):
         result = settlements.retry_cleanup(domain=domain, identity=identity, deadline=_attempt_deadline())
         diagnostics = settlements.cleanup_diagnostics(domain=domain, deadline=_attempt_deadline())
         with _CONDITION:
+            if _SCAN_DIAGNOSTICS.get(domain.domain_id, {}).get("requires_domain_scan"):
+                # Retrying an exact job cannot prove the rest of the domain.
+                # Wake the carrier if scanner access is available.
+                _SCAN_NEXT[domain.domain_id] = 0.0
+                return result
             remaining = _cleanup_failure_result({"diagnostics": diagnostics})
             _SCAN_BLOCKED.pop(domain.domain_id, None)
             _SCAN_DIAGNOSTICS.pop(domain.domain_id, None)
@@ -1007,10 +1013,16 @@ def _scan_domains():
                     and (not _SCAN_DIAGNOSTICS.get(domain.domain_id, {}).get("durable")
                          or _SCAN_DIAGNOSTICS.get(domain.domain_id, {}).get("scan_failed_permanently"))):
                 continue
+            check_unfinished = _SCAN_DIAGNOSTICS.get(domain.domain_id, {}).get("requires_domain_scan")
             _SCAN_INFLIGHT += 1
         try:
             from core.storage.operations import settlements
-            result = settlements.run_cleanup_once(domain=domain, deadline=_attempt_deadline())
+            deadline = _attempt_deadline()
+            result = settlements.run_cleanup_once(domain=domain, deadline=deadline)
+            if check_unfinished and settlements.has_unfinished_blocking_cleanup(domain=domain, deadline=deadline):
+                # A successful bounded scan can omit claims whose lease has
+                # not expired and pending actions whose retry is not due.
+                raise OperationSettlementPending("settlement_cleanup_scan_still_unverified")
             with _LOCK:
                 if not _record_cleanup_result(domain, result):
                     _SCAN_BLOCKED.pop(domain.domain_id, None)
@@ -1024,7 +1036,17 @@ def _scan_domains():
                 code, permanent = classify_failure(exc)
                 known = _SCAN_DIAGNOSTICS.get(domain.domain_id, {})
                 read_only = isinstance(exc, CleanupDiagnosticReadUnavailable)
-                if read_only and domain.domain_id in _SCAN_BLOCKED:
+                if read_only and exc.diagnostics:
+                    observed = _cleanup_failure_result({"diagnostics": exc.diagnostics})
+                    if ((domain.domain_id not in _SCAN_BLOCKED or known.get("read_only_transient"))
+                            and observed and observed.get("blocks_permit", True)):
+                        _record_cleanup_result(domain, observed)
+                        known = _SCAN_DIAGNOSTICS[domain.domain_id]
+                    _SCAN_BLOCKED.setdefault(domain.domain_id, code)
+                    known.pop("read_only_transient", None)
+                    known.update(requires_domain_scan=True, blocks_permit=True)
+                    _SCAN_DIAGNOSTICS[domain.domain_id] = known
+                elif read_only and domain.domain_id in _SCAN_BLOCKED:
                     # A new read failure cannot erase a previous uncertain
                     # mutation or a known permanent/durable obligation.
                     pass
@@ -1032,11 +1054,16 @@ def _scan_domains():
                     _SCAN_BLOCKED[domain.domain_id] = code
                     if read_only:
                         _SCAN_DIAGNOSTICS[domain.domain_id] = {"read_only_transient": True}
+                    elif not permanent or known.get("requires_domain_scan"):
+                        _SCAN_DIAGNOSTICS[domain.domain_id] = {"requires_domain_scan": True}
                     else:
                         _SCAN_DIAGNOSTICS.pop(domain.domain_id, None)
                 elif permanent:
                     _SCAN_BLOCKED[domain.domain_id] = code
-                    known["scan_failed_permanently"] = True
+                    known.update(scan_failed_permanently=True, requires_domain_scan=True, blocks_permit=True)
+                else:
+                    known["requires_domain_scan"] = True
+                    known["blocks_permit"] = True
                 # A transport failure cannot erase a known foreign durable
                 # blocker. Owned scoped success proves only its own work.
                 _SCAN_ERROR = sorted(set(_SCAN_BLOCKED.values()))[0]
@@ -1077,7 +1104,7 @@ def _domain_rearm_allowed(domain, admission):
 
 
 def start_runtime(*, domain=None, admission=None):
-    global _THREAD, _STOP, _STARTED, _DEADLINE, _ADMISSION
+    global _THREAD, _STOP, _STARTED, _DEADLINE, _ADMISSION, _SCAN_ERROR
     with _CONDITION:
         if not _check_carrier_health() or not _domain_rearm_allowed(domain, admission):
             return False
@@ -1099,7 +1126,16 @@ def start_runtime(*, domain=None, admission=None):
             return False
         if domain is not None:
             _remember_domain(domain)
-            if not _SCAN_DIAGNOSTICS.get(domain.domain_id, {}).get("durable"):
+            detail = _SCAN_DIAGNOSTICS.get(domain.domain_id, {})
+            if detail.get("requires_domain_scan"):
+                if _SCAN_BLOCKED.get(domain.domain_id) in _PERMANENT_CODES:
+                    # Verification may restore access to the scanner. Preserve
+                    # the block while a fresh scan verifies unfinished work.
+                    _SCAN_BLOCKED[domain.domain_id] = "settlement_storage_unavailable"
+                    detail.pop("scan_failed_permanently", None)
+                    _SCAN_ERROR = sorted(set(_SCAN_BLOCKED.values()))[0]
+                    _SCAN_NEXT[domain.domain_id] = 0.0
+            elif not detail.get("durable"):
                 # A capability probe repairs scanner access, not an original
                 # persisted action. Keep that action's error/count/due gate
                 # until its exact retry or authoritative completion.

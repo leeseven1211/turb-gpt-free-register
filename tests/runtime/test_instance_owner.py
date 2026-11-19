@@ -339,20 +339,67 @@ class InstanceOwnerTests(unittest.TestCase):
             for gate in conn.release:
                 gate.set()
 
-    def test_unverified_idle_state_cannot_resume_owner(self):
+    def test_persistent_idle_veto_expires_at_original_deadline(self):
         lost = threading.Event()
         pause = threading.Event()
         resume = threading.Event()
-        owner, conn, _ = self.make(monitor_interval=.02, probe_timeout=1.,
-            on_lost=lost.set, on_pause=pause.set, can_resume=lambda: False, on_resume=resume.set)
-        owner.start()
-        with owner._mutex:
-            owner._last_verified_mono -= 1.
-        self.assertTrue(lost.wait(1))
+        rechecked = threading.Event()
+        checks = 0
+
+        def can_resume():
+            nonlocal checks
+            checks += 1
+            if checks == 2:
+                rechecked.set()
+            return False
+
+        owner, conn, _ = self.make(monitor_interval=.02, probe_timeout=10.,
+            on_lost=lost.set, on_pause=pause.set, can_resume=can_resume, on_resume=resume.set)
+        with self.assertLogs(owner_module.__name__, level='WARNING') as captured:
+            with owner._mutex:
+                owner.start()
+                owner._last_verified_mono -= 10.
+                paused_proof = owner._last_verified_mono
+            self.assertTrue(rechecked.wait(1))
+            self.assertEqual(owner.status().state, 'paused')
+            self.assertFalse(lost.is_set())
+            with owner._mutex:
+                self.assertEqual(owner._last_verified_mono, paused_proof)
+                owner._last_verified_mono -= 10.
+            self.assertTrue(lost.wait(1))
+            self.assertEqual(owner.status().state, 'lost')
+            self.assertTrue(owner.close(timeout=1))
         self.assertTrue(pause.is_set())
-        self.assertEqual(owner.status().state, 'lost')
+        self.assertEqual(owner.status().error_code, 'owner_probe_timeout')
         self.assertFalse(resume.is_set())
         self.assertFalse(conn.probe_entered.is_set())
+        self.assertIn('retry=deadline last_idle_veto=before_probe', captured.records[-1].getMessage())
+
+    def test_idle_veto_before_probe_can_settle_within_original_deadline(self):
+        lost = threading.Event()
+        resumed = threading.Event()
+        vetoed = threading.Event()
+        work_settled = threading.Event()
+
+        def can_resume():
+            if work_settled.is_set():
+                return True
+            vetoed.set()
+            return False
+
+        owner, conn, _ = self.make(monitor_interval=.02, probe_timeout=10.,
+            on_lost=lost.set, on_pause=lambda: None, can_resume=can_resume, on_resume=resumed.set)
+        with owner._mutex:
+            owner.start()
+            owner._last_verified_mono -= 10.
+        self.assertTrue(vetoed.wait(1))
+        self.assertEqual(owner.status().state, 'paused')
+        self.assertFalse(conn.probe_entered.is_set())
+        work_settled.set()
+        self.assertTrue(resumed.wait(1))
+        self.assertTrue(conn.probe_entered.is_set())
+        self.assertTrue(owner.is_owner())
+        self.assertFalse(lost.is_set())
 
     def test_missed_retry_deadline_loses_owner_while_probe_still_blocked(self):
         lost = threading.Event()
@@ -362,14 +409,17 @@ class InstanceOwnerTests(unittest.TestCase):
         conn.probe_release = threading.Event()
         owner, _, _ = self.make(connection=conn, monitor_interval=.01, probe_timeout=.10,
             on_lost=lost.set, on_pause=paused.set, can_resume=lambda: True, on_resume=resumed.set)
-        owner.start()
-        self.assertTrue(conn.probe_entered.wait(1))
-        self.assertTrue(paused.wait(1))
-        self.assertTrue(lost.wait(1))
-        self.assertEqual(owner.status().error_code, 'owner_probe_timeout')
-        conn.probe_release.set()
-        self.assertTrue(owner.close(timeout=1))
+        with self.assertLogs(owner_module.__name__, level='WARNING') as captured:
+            owner.start()
+            self.assertTrue(conn.probe_entered.wait(1))
+            self.assertTrue(paused.wait(1))
+            self.assertTrue(lost.wait(1))
+            self.assertEqual(owner.status().error_code, 'owner_probe_timeout')
+            conn.probe_release.set()
+            self.assertTrue(owner.close(timeout=1))
         self.assertFalse(resumed.is_set())
+        self.assertIn('retry=deadline', captured.records[-1].getMessage())
+        self.assertRegex(captured.records[-1].getMessage(), r'\bverified_age_ms=\d+\b')
 
     def test_fresh_retry_cannot_resume_after_database_session_change(self):
         lost = threading.Event()
@@ -386,24 +436,49 @@ class InstanceOwnerTests(unittest.TestCase):
         self.assertEqual(owner.status().state, 'lost')
         self.assertFalse(resumed.is_set())
 
-    def test_retry_cannot_resume_if_work_is_found_after_the_new_probe(self):
+    def test_idle_veto_after_probe_discards_proof_and_requires_new_probe(self):
         lost = threading.Event()
         resumed = threading.Event()
+        vetoed = threading.Event()
         conn = FakeConnection()
         conn.probe_release = threading.Event()
-        can_resume = threading.Event()
-        can_resume.set()
-        owner, _, _ = self.make(connection=conn, monitor_interval=.03, probe_timeout=1.,
-            on_lost=lost.set, on_pause=lambda: None, can_resume=can_resume.is_set, on_resume=resumed.set)
-        owner.start()
+        work_settled = threading.Event()
+        work_settled.set()
+        resumed_after_probe = []
+
+        def can_resume():
+            if work_settled.is_set():
+                return True
+            vetoed.set()
+            return False
+
+        def on_resume():
+            resumed_after_probe.append(sum('pg_locks' in sql for sql, _ in conn.calls))
+            resumed.set()
+
+        owner, _, _ = self.make(connection=conn, monitor_interval=.03, probe_timeout=10.,
+            on_lost=lost.set, on_pause=lambda: None, can_resume=can_resume, on_resume=on_resume)
         with owner._mutex:
-            owner._last_verified_mono -= 1.
+            owner.start()
+            last_verified = owner.status().last_verified_at
+            owner._last_verified_mono -= 10.
+            paused_proof = owner._last_verified_mono
         self.assertTrue(conn.probe_entered.wait(1))
         self.assertEqual(owner.status().state, 'paused')
-        can_resume.clear()
+        work_settled.clear()
         conn.probe_release.set()
-        self.assertTrue(lost.wait(1))
+        self.assertTrue(vetoed.wait(1))
         self.assertFalse(resumed.is_set())
+        paused_status = owner.status()
+        self.assertEqual(paused_status.state, 'paused')
+        self.assertEqual(paused_status.last_verified_at, last_verified)
+        with owner._mutex:
+            self.assertEqual(owner._last_verified_mono, paused_proof)
+        work_settled.set()
+        self.assertTrue(resumed.wait(1))
+        self.assertEqual(resumed_after_probe, [2])
+        self.assertTrue(owner.is_owner())
+        self.assertFalse(lost.is_set())
 
     def test_fresh_retry_still_requires_advisory_lock(self):
         lost = threading.Event()

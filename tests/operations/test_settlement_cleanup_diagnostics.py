@@ -9,7 +9,7 @@ import hashlib
 import json
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from psycopg import OperationalError, errors
 
@@ -231,10 +231,147 @@ class CleanupScannerDiagnosticTests(unittest.TestCase):
         self.assertFalse(settlement.drain_runtime(self.clock.value))
         self.assertEqual(1, settlement.drain_counts()["unverified_scan_pending"])
 
+    def test_owner_loss_shutdown_can_exit_after_candidate_read_unavailable(self):
+        for boundary in ("checkout", "query"):
+            with self.subTest(boundary=boundary):
+                cursor = MagicMock()
+                cursor.execute.side_effect = TimeoutError("private")
+                connect = MagicMock(side_effect=OperationalError("private") if boundary == "checkout" else None)
+                connect.return_value.__enter__.return_value.cursor.return_value.__enter__.return_value = cursor
+                with patch.object(settlements, "cleanup_diagnostics", return_value=[]), \
+                        patch.object(settlements._common, "_connect", connect):
+                    settlement._scan_domains()
+                self.assertEqual(1, settlement.active_counts()["unverified_scan_pending"])
+                self.assertTrue(settlement.idle_for_owner_retry())
+                if boundary == "query":
+                    self.assertTrue(cursor.execute.call_args.args[0].lstrip().startswith("SELECT "))
+                self._begin_owner_loss_shutdown()
+                self.assertTrue(settlement.drain_runtime(self.clock.value))
+                self.gate.unblock("owner_lost")
+                self.gate.unblock("draining")
+                self.assertTrue(settlement.end_shutdown(self.clock.value))
+                self.clock.value += 1
+
+    def test_candidate_read_failure_retains_durable_work_observed_in_same_scan(self):
+        durable = {"state": "pending", "error_code": "settlement_storage_unavailable",
+                   "blocked": False, "blocks_permit": True, "identity": {"permit_id": "original-permit"}}
+        with patch.object(settlements, "cleanup_diagnostics", return_value=[durable]), \
+                patch.object(settlements._common, "_connect", side_effect=TimeoutError("private")):
+            settlement._scan_domains()
+        self._begin_owner_loss_shutdown()
+        self.assertFalse(settlement.drain_runtime(self.clock.value))
+        self.assertEqual(durable["identity"], settlement._SCAN_DIAGNOSTICS[self.domain.domain_id]["identity"])
+
+    def test_candidate_read_failure_does_not_assume_nonblocking_diagnostic_is_only_work(self):
+        diagnostic = {"state": "pending", "blocked": False, "blocks_permit": False,
+                      "error_code": "settlement_storage_unavailable"}
+        with patch.object(settlements, "cleanup_diagnostics", return_value=[diagnostic]), \
+                patch.object(settlements._common, "_connect", side_effect=TimeoutError("private")):
+            settlement._scan_domains()
+        self._begin_owner_loss_shutdown()
+        self.assertFalse(settlement.drain_runtime(self.clock.value))
+        self.assertEqual(1, settlement.drain_counts()["unverified_scan_pending"])
+
+    def _assert_partial_scan_preserves_prior_block(self, *, ambiguous):
+        observed = {"state": "pending", "error_code": "settlement_storage_unavailable", "blocked": False,
+                    "blocks_permit": True, "identity": {"permit_id": "original-permit",
+                                                        "execution_id": "original-execution"}}
+        prior = {**observed, "identity": {"permit_id": "prior-permit", "execution_id": "prior-execution"}}
+        with patch.object(settlements, "cleanup_diagnostics", return_value=[] if ambiguous else [prior]), \
+                patch.object(settlements, "_claim_cleanup", return_value=None,
+                             side_effect=OperationalError("write result unknown") if ambiguous else None):
+            settlement._scan_domains()
+        self.clock.value += 1
+        with patch.object(settlements, "cleanup_diagnostics", return_value=[observed]), \
+                patch.object(settlements._common, "_connect", side_effect=TimeoutError("private")):
+            settlement._scan_domains()
+        execution = SimpleNamespace(**observed["identity"], settlement_domain=self.domain, released=False)
+        ticket = {**observed["identity"], "domain_id": self.domain.domain_id}
+        item = settlement.register_execution(execution, ticket)
+        item.intent = seal_intent(kind="terminal", origin=ticket, payload={"status": "success"})
+        item._receipt = {"transition_id": item.intent.transition_id}
+        item.callback_exited = item.release_requested = item._durable_pending = True
+        self._begin_owner_loss_shutdown()
+        with patch.object(settlements, "mark_cleanup_handoff", return_value=True), \
+                patch.object(settlements, "run_cleanup_once", return_value=None), \
+                patch.object(settlements, "cleanup_blocks_permit", return_value=False), \
+                patch.object(settlement, "_release_execution",
+                             side_effect=lambda *args: setattr(execution, "released", True)):
+            settlement._progress(item)
+        self.assertTrue(execution.released)
+        self.assertFalse(settlement.drain_runtime(self.clock.value))
+        self.assertEqual(1, settlement.drain_counts()["unverified_scan_pending"])
+        expected = None if ambiguous else prior["identity"]
+        actual = settlement._SCAN_DIAGNOSTICS[self.domain.domain_id].get("identity")
+        self.assertEqual(expected, actual)
+
+    def test_partial_scan_preserves_prior_cleanup_through_unrelated_owned_success(self):
+        self._assert_partial_scan_preserves_prior_block(ambiguous=False)
+
+    def test_partial_scan_preserves_ambiguous_claim_through_unrelated_owned_success(self):
+        self._assert_partial_scan_preserves_prior_block(ambiguous=True)
+
+    def test_owner_loss_shutdown_still_blocks_on_claim_write_timeout(self):
+        reader, writer = MagicMock(), MagicMock()
+        reader.__enter__.return_value.cursor.return_value.__enter__.return_value.fetchall.return_value = [
+            {"id": 17, "handoff_receipt_id": 23},
+        ]
+        writer_cursor = writer.__enter__.return_value.cursor.return_value.__enter__.return_value
+        writer_cursor.execute.side_effect = TimeoutError("write result unknown")
+        with patch.object(settlements, "cleanup_diagnostics", return_value=[]), \
+                patch.object(settlements._common, "_connect", side_effect=[reader, writer]):
+            settlement._scan_domains()
+        self.assertTrue(writer_cursor.execute.call_args.args[0].lstrip().startswith("UPDATE "))
+        self._begin_owner_loss_shutdown()
+        self.assertFalse(settlement.drain_runtime(self.clock.value))
+
+    def test_empty_due_scan_keeps_ambiguous_claim_until_unfinished_work_is_checked(self):
+        with patch.object(settlements, "cleanup_diagnostics", return_value=[]), \
+                patch.object(settlements, "_claim_cleanup", side_effect=OperationalError("write result unknown")):
+            settlement._scan_domains()
+        connection = MagicMock()
+        cursor = connection.__enter__.return_value.cursor.return_value.__enter__.return_value
+        with patch.object(settlements, "cleanup_diagnostics", return_value=[]), \
+                patch.object(settlements, "_claim_cleanup", return_value=None), \
+                patch.object(settlements._common, "_connect", return_value=connection):
+            cursor.fetchone.return_value = {"present": 1}
+            self.clock.value += 1
+            settlement._scan_domains()
+            self.assertEqual(1, settlement.drain_counts()["unverified_scan_pending"])
+            query, parameters = cursor.execute.call_args.args
+            self.assertIn("blocks_permit", query)
+            self.assertIn("state <> 'done'", query)
+            self.assertIn("state <> 'superseded'", query)
+            self.assertNotIn("claim_until", query)
+            self.assertNotIn("next_attempt_at", query)
+            self.assertEqual((self.domain.domain_id,), parameters)
+            cursor.fetchone.return_value = None
+            self.clock.value += 1
+            settlement._scan_domains()
+        self.assertEqual(0, settlement.drain_counts()["unverified_scan_pending"])
+
     def test_owner_loss_shutdown_still_blocks_on_permanent_read_error(self):
         with patch.object(settlements, "cleanup_diagnostics",
                           side_effect=errors.InsufficientPrivilege("private")):
             settlement._scan_domains()
+        self._begin_owner_loss_shutdown()
+        self.assertFalse(settlement.drain_runtime(self.clock.value))
+        self.assertEqual(1, settlement.drain_counts()["unverified_scan_pending"])
+
+    def test_permanent_candidate_error_blocks_shutdown_after_nonblocking_cleanup(self):
+        nonblocking = {"state": "pending", "blocked": False, "blocks_permit": False,
+                       "error_code": "settlement_storage_unavailable"}
+        with patch.object(settlements, "cleanup_diagnostics", return_value=[nonblocking]), \
+                patch.object(settlements, "_claim_cleanup", return_value=None):
+            settlement._scan_domains()
+        self.assertEqual(0, settlement.drain_counts()["unverified_scan_pending"])
+        self.clock.value += 1
+        with patch.object(settlements, "cleanup_diagnostics", return_value=[]), \
+                patch.object(settlements._common, "_connect",
+                             side_effect=errors.InsufficientPrivilege("private")):
+            settlement._scan_domains()
+        self.assertEqual("settlement_storage_permission_denied",
+                         settlement.runtime_status()["cleanup_scan_error_code"])
         self._begin_owner_loss_shutdown()
         self.assertFalse(settlement.drain_runtime(self.clock.value))
         self.assertEqual(1, settlement.drain_counts()["unverified_scan_pending"])
