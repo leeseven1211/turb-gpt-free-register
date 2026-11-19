@@ -439,7 +439,7 @@ test('清空条件和退出固定名单后重新加载对应范围的可选项',
 test('账号明细直接衔接状态标签与表格',()=>{
   const source=fs.readFileSync(path.join(root,'webui/static/js/pages/bulk/page.js'),'utf8');
   const detail=source.slice(source.indexOf('  function renderDetailShell('),source.indexOf('  function detailParams('));
-  const host={innerHTML:''};const ctx={state:{nav:{}},host,$b:()=>host,operationNames:{},labels:{},terminal:[],
+  const host={innerHTML:''};const ctx={state:{nav:{}},host,$b:()=>host,disposeReportView:()=>{},operationNames:{},labels:{},terminal:[],
     optionsMarkup:()=>'',text:String,attrEsc:String,label:String};vm.createContext(ctx);vm.runInContext(detail,ctx);
   ctx.renderDetailShell();assert.ok(!host.innerHTML.includes('data-bulk-results-form'));
   assert.ok(host.innerHTML.includes('bulk-state-strip"></div><div data-bulk-targets'));

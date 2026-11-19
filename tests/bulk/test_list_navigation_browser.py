@@ -32,7 +32,12 @@ def release_delayed_response():
 
 
 @pytest.fixture
-def bulk_browser(request, release_delayed_response):
+def blocked_report_asset(request):
+    return getattr(request, 'param', None)
+
+
+@pytest.fixture
+def bulk_browser(request, release_delayed_response, blocked_report_asset):
     api = pytest.importorskip('playwright.sync_api')
     for asset in ('bulk.js', 'bulk.css'):
         assert (WEBUI / 'static' / 'bulk' / asset).is_file(), f'缺少批次列表构建产物 {asset}'
@@ -73,8 +78,17 @@ def bulk_browser(request, release_delayed_response):
         if path == f'bulk/batches/{BATCH_ID}/targets':
             return bulk_response({'items': [], 'page': {'next_cursor': None}})
         if path == f'bulk/batches/{BATCH_ID}/report':
-            return bulk_response({'operation_key': 'plan_check', 'phase': 'completed', 'summary_revision': 1,
-                                  'totals': {'accounts': 3, 'completed': 3, 'success': 2, 'failed': 1}})
+            return bulk_response({
+                'operation_key': 'plan_check', 'phase': 'completed', 'summary_revision': 1,
+                'totals': {'accounts': 3, 'completed': 3, 'success': 2, 'failed': 1},
+                'duration': {'sample_count': 3, 'avg_seconds': 75},
+                'at_refresh': {'attempted_accounts': 2, 'succeeded_accounts': 1},
+                'plans': [{'plan': 'plus', 'accounts': 2}],
+                'offers': {'with_offer_accounts': 1, 'by_plan': [
+                    {'plan': 'plus', 'accounts': 1, 'kinds': [{'kind': 'half_price', 'accounts': 1}]},
+                ]},
+                'business_summary': {'country_query.success': 7},
+            })
         if path == 'bulk/catalog':
             return bulk_response({'operations': [{'key': 'plan_check', 'label': '查询套餐'}]})
         if path == 'bulk/query-facets':
@@ -96,10 +110,15 @@ def bulk_browser(request, release_delayed_response):
             browser = runtime.chromium.launch()
             context = browser.new_context(service_workers='block', timezone_id='UTC',
                                           viewport={'width': 1280, 'height': 840})
+            blocked_requests = []
 
             def only_loopback(route):
-                if urlsplit(route.request.url).netloc != urlsplit(origin).netloc:
+                target = urlsplit(route.request.url)
+                if target.netloc != urlsplit(origin).netloc:
                     unexpected.append(('off-origin', route.request.url))
+                    return route.abort()
+                if target.path == blocked_report_asset:
+                    blocked_requests.append(target.path)
                     return route.abort()
                 return route.continue_()
 
@@ -121,6 +140,8 @@ def bulk_browser(request, release_delayed_response):
             yield page, api.expect, calls
             context.close()
             browser.close()
+            if blocked_report_asset:
+                assert blocked_report_asset in blocked_requests
     finally:
         release_delayed_response.set()
         server.shutdown()
@@ -140,6 +161,35 @@ def list_query(page):
     view, _, query = fragment.partition('?')
     assert view == 'bulk/list'
     return parse_qs(query)
+
+
+@pytest.mark.parametrize('bulk_browser', [f'#bulk/detail?batch_id={BATCH_ID}'], indirect=True)
+@pytest.mark.parametrize('blocked_report_asset', [
+    pytest.param('/static/js/pages/bulk/report.js', id='vue-without-legacy-renderer'),
+    pytest.param('/static/bulk/bulk.js', id='legacy-after-module-import-fails'),
+], indirect=True)
+def test_direct_detail_report_with_each_renderer(bulk_browser, blocked_report_asset):
+    page, expect, calls = bulk_browser
+    report = page.get_by_role('region', name='批次报告', exact=True)
+    expect(report.get_by_role('heading', name='查套餐完成报告')).to_be_visible()
+    expect(report.get_by_text('当前结果 · 每个账号取最近一轮 · 3 个账号')).to_be_visible()
+
+    def assert_metric(section, title, expected):
+        metric = section.get_by_text(title, exact=True).locator('..').locator('dd')
+        expect(metric).to_have_text(expected)
+
+    assert_metric(report.locator('.bulk-report-outcomes'), '成功', '2个')
+    assert_metric(report.locator('.bulk-report-outcomes'), '失败', '1个')
+    assert_metric(report.get_by_role('region', name='账号执行耗时'), '平均耗时', '1 分 15 秒')
+    assert_metric(report.get_by_role('region', name='AT 检查与自动刷新'), '刷新成功', '1个')
+    assert_metric(report.get_by_role('region', name='当前订阅套餐'), 'Plus', '2个')
+    assert_metric(report.get_by_role('region', name='优惠结果'), '半价优惠', '1个')
+    report.get_by_text('更多查询统计', exact=False).click()
+    assert_metric(report.locator('details[open]'), '国家项查询成功', '7')
+    assert [args for path, args in calls if path == f'bulk/batches/{BATCH_ID}/report'] == [
+        {'view': ['current']},
+    ]
+    assert all(path != 'bulk/batches' for path, _ in calls)
 
 
 def test_column_filters_and_cursor_navigation(bulk_browser):

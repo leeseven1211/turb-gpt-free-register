@@ -189,6 +189,7 @@ window.BulkTasks = (() => {
   function configRevision() {return String(operation()?.effective_settings?.config_revision ?? operation()?.config_revision ?? state.catalog?.config_revision ?? '');}
   function operationLabel(value) {return operations().find(item=>item.key===value)?.label || operationNames[value] || value || '批量操作';}
   function shell() {
+    disposeReportView();
     const root=document.getElementById('bulk-shell');
     root.innerHTML=`<div class="bulk-page"><header class="bulk-heading"><div class="bulk-heading-copy"><button type="button" class="bulk-back" data-bulk-action="list" aria-label="返回批次列表" ${state.nav.view==='list'?'hidden':''}>←</button><div><h2 data-bulk-title>批次列表</h2><p data-bulk-subtitle></p></div></div><div class="bulk-actions"><button type="button" class="jobs-tb-btn" data-bulk-action="view-report" hidden>查看报告</button><button type="button" class="jobs-tb-btn" data-bulk-action="refresh">刷新</button><button type="button" class="jobs-tb-btn ${state.nav.view==='list'?'jobs-tb-btn--primary':''}" data-bulk-action="new">新建批次</button></div></header><p class="bulk-error" data-bulk-error role="alert" hidden></p><p class="bulk-notice" data-bulk-notice role="status" hidden></p><div class="bulk-notice bulk-inline-fields" data-bulk-recovery hidden></div><div data-bulk-content ${state.nav.view==='list'?'hidden':''}></div><dialog class="bulk-confirm" data-bulk-confirm aria-labelledby="bulkConfirmTitle"><form method="dialog" class="bulk-confirm-card"><div class="bulk-confirm-head"><strong id="bulkConfirmTitle" data-bulk-confirm-title>确认操作</strong><button type="button" class="bulk-confirm-close" data-bulk-confirm-cancel aria-label="关闭">×</button></div><p class="bulk-confirm-body" data-bulk-confirm-body></p><ul class="bulk-confirm-list" data-bulk-confirm-list hidden></ul><div class="bulk-confirm-actions"><button type="button" class="jobs-tb-btn" data-bulk-confirm-cancel>返回</button><button type="button" class="jobs-tb-btn jobs-tb-btn--danger" data-bulk-confirm-ok>确认</button></div></form></dialog><dialog class="bulk-confirm bulk-result-dialog" data-bulk-result-dialog aria-labelledby="bulkResultDetailTitle"><div class="bulk-confirm-card"><div class="bulk-confirm-head"><strong id="bulkResultDetailTitle" data-bulk-result-title></strong><button type="button" class="bulk-confirm-close" data-bulk-action="close-cell-detail" aria-label="关闭完整内容">×</button></div><pre class="bulk-result-detail-content" data-bulk-result-content></pre><div class="bulk-confirm-actions"><button type="button" class="jobs-tb-btn" data-bulk-action="close-cell-detail">关闭</button></div></div></dialog></div>`;
     const dialog=$b('[data-bulk-confirm]');
@@ -419,6 +420,7 @@ window.BulkTasks = (() => {
     } finally {state.creating=false;if(state.nav.view==='create')renderSelection();}
   }
   function renderDetailShell() {
+    disposeReportView();
     $b('[data-bulk-content]').innerHTML=`<section class="bulk-card bulk-overview"><div class="bulk-detail-toolbar"><div data-bulk-detail-meta></div><div class="bulk-actions"><label class="bulk-round-picker"><span class="bulk-sr-only">结果视图</span><select data-bulk-view aria-label="结果视图"><option value="current">当前结果</option></select></label><button type="button" class="jobs-tb-btn" data-bulk-action="more-rounds" disabled>更多轮次</button><button type="button" class="jobs-tb-btn" data-bulk-action="copy-targets">同一名单再次执行</button><button type="button" class="jobs-tb-btn" data-bulk-action="copy-query">复制条件新建</button></div></div><div class="bulk-control-strip" data-bulk-control-strip><div class="bulk-control-copy"><strong>运行控制</strong><span data-bulk-control-note>只影响当前批次，已开始执行会协作收尾</span></div><div class="bulk-actions"><button type="button" class="jobs-tb-btn" data-bulk-action="pause">暂停批次</button><button type="button" class="jobs-tb-btn" data-bulk-action="resume" disabled>继续批次</button><button type="button" class="jobs-tb-btn jobs-tb-btn--danger" data-bulk-action="cancel">取消排队账号</button><button type="button" class="jobs-tb-btn jobs-tb-btn--danger" data-bulk-action="stop">停止正在执行</button></div></div><div data-bulk-stats class="bulk-summary-grid"></div><p class="bulk-view-note" data-bulk-view-note></p><div data-bulk-business></div></section><div data-bulk-plan-report class="bulk-report-target" tabindex="-1" role="region" aria-label="批次报告" hidden></div><section class="bulk-card bulk-results-card"><div class="bulk-results-heading"><h3>账号明细 <span data-bulk-selected></span><button type="button" class="bulk-link" data-bulk-action="clear-selection" disabled>清空选择</button></h3><div class="bulk-retry-toolbar"><select data-bulk-retry-states aria-label="重跑范围">${optionsMarkup([['failed','失败'],['partial_success','部分成功'],['not_executed','未执行'],['cancelled','已取消'],['unsuccessful','全部未成功']])}</select><button class="jobs-tb-btn jobs-tb-btn--primary" data-bulk-action="retry">重跑失败</button><button class="jobs-tb-btn" data-bulk-action="retry-selected" disabled>重跑勾选</button></div></div><p class="bulk-error" data-bulk-action-error role="alert" hidden></p><p class="bulk-notice" data-bulk-action-notice role="status" hidden></p><div data-bulk-state-strip class="bulk-state-strip"></div><div data-bulk-targets class="bulk-table-wrap"><div class="bulk-empty" role="status">正在加载账号结果…</div></div><nav class="bulk-pager" aria-label="账号结果分页"><button class="jobs-tb-btn" data-bulk-action="target-prev" disabled>上一页</button><span data-target-page>第 1 页</span><button class="jobs-tb-btn" data-bulk-action="target-next" disabled>下一页</button></nav></section>`;
   }
   function detailParams() {
@@ -480,19 +482,55 @@ window.BulkTasks = (() => {
   function resetPlanReport() {
     state.planReport=null;state.reportError='';state.reportLoading=false;state.reportLoadedAt=0;state.reportScope='';state.reportFocusPending=false;state.reportFocusStarted=false;
   }
+  let reportView = null;
+  function disposeReportView() {
+    reportView?.instance?.destroy();
+    reportView = null;
+  }
+  function updateReportView(host, view) {
+    if (reportView?.host !== host) {
+      disposeReportView();
+      const entry = document.getElementById('bulk-list-root')?.dataset.moduleUrl;
+      if (!entry) return false;
+      const mounted = {host, view, instance: null, failed: false};
+      reportView = mounted;
+      import(entry).then(module => {
+        if (reportView !== mounted || !host.isConnected) return;
+        mounted.instance = module.mountBulkReport(host, mounted.view);
+      }).catch(() => {
+        // A cached older bundle can still display the report through the original renderer.
+        if (reportView !== mounted || !host.isConnected) return;
+        mounted.failed = true;
+        delete host.__bulkMarkup;
+        renderLegacyReport(host, mounted.view.operationKey);
+      });
+    }
+    if (reportView) {
+      reportView.view = view;
+      reportView.instance?.setView(view);
+    }
+    return Boolean(reportView && !reportView.failed);
+  }
   function renderPlanReport() {
     const host=$b('[data-bulk-plan-report]');if(!host)return;
     const op=state.detail?.operation?.key||state.detail?.operation_key||state.detail?.action_key;
     host.hidden=!Object.hasOwn(operationNames,op);if(host.hidden)return;
+    const mounted = updateReportView(host, {
+      operationKey: op, report: state.planReport, error: state.reportError,
+      formatDateTime, onRetry: () => loadPlanReport({force:true}),
+    });
+    if (!mounted) renderLegacyReport(host, op);
+    if(state.reportFocusPending&&(!state.reportFocusStarted||state.planReport||state.reportError)){
+      host.focus({preventScroll:true});host.scrollIntoView({block:'start'});state.reportFocusStarted=true;
+      if(state.planReport||state.reportError){state.reportFocusPending=false;state.reportFocusStarted=false;}
+    }
+  }
+  function renderLegacyReport(host, op) {
     const renderer=window.BulkPlanReport;
     if(!renderer){host.innerHTML='<p class="bulk-error" role="alert">报告组件未加载，请刷新页面。</p>';return;}
     const retry='<button type="button" class="jobs-tb-btn" data-bulk-action="report-refresh">重新读取报告</button>';
     const error=state.reportError?`<div class="bulk-report-load-error"><p class="bulk-error" role="alert">${text(state.reportError)}</p>${retry}</div>`:'';
     preserveMarkup(host,state.planReport?renderer.render(state.planReport,businessMarkup(state.planReport.business_summary||{},true))+error:state.reportError?renderer.error(state.reportError,op)+retry:renderer.loading(op));
-    if(state.reportFocusPending&&(!state.reportFocusStarted||state.planReport||state.reportError)){
-      host.focus({preventScroll:true});host.scrollIntoView({block:'start'});state.reportFocusStarted=true;
-      if(state.planReport||state.reportError){state.reportFocusPending=false;state.reportFocusStarted=false;}
-    }
   }
   async function loadPlanReport({force=false,epoch=state.epoch}={}) {
     const detail=state.detail;

@@ -2,6 +2,7 @@ import {createApp, defineComponent, h, nextTick, shallowRef} from 'vue';
 import {request} from './api/client';
 import BulkList from './features/bulk/BulkList.vue';
 import type {BulkListDependencies, BulkNavigation} from './features/bulk/contracts';
+export {mountBulkReport} from './features/bulk/mountBulkReport';
 
 type MountOptions = Pick<BulkListDependencies, 'callbacks'> & {view: BulkNavigation};
 
