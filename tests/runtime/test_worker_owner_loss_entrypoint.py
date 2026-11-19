@@ -20,7 +20,7 @@ def _module(name, **values):
     return module
 
 
-def _exercise(*, owner=True, runtime_clean=True, log_delay=0, total=55):
+def _exercise(*, owner=True, runtime_clean=True, stop_failure=None, log_delay=0, total=55):
     spec = importlib.util.spec_from_file_location("worker_owner_loss_entry", ROOT / "worker.py")
     entry = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(entry)
@@ -35,9 +35,18 @@ def _exercise(*, owner=True, runtime_clean=True, log_delay=0, total=55):
         calls.append(("stop", timeout))
         return runtime_clean
 
-    def error(message, *_args):
-        diagnostics.append(message)
+    def error(message, *args):
+        diagnostics.append(message % args if args else message)
         now[0] += log_delay
+
+    def manager_status():
+        if isinstance(stop_failure, Exception):
+            raise stop_failure
+        return {"state": "stop_incomplete", "error_code": stop_failure}
+
+    def install(_bootstrap):
+        calls.append("install")
+        return SimpleNamespace(manager=SimpleNamespace(status=manager_status))
 
     class Event:
         def __init__(self):
@@ -64,7 +73,7 @@ def _exercise(*, owner=True, runtime_clean=True, log_delay=0, total=55):
             RuntimeBootstrap=SimpleNamespace(from_environment=lambda **_kwargs: bootstrap),
         ),
         "core.runtime.assembly": _module(
-            "core.runtime.assembly", install=lambda _bootstrap: calls.append("install"),
+            "core.runtime.assembly", install=install,
         ),
         "core.runtime.process": _module(
             "core.runtime.process", start_runtime=lambda: calls.append("start"),
@@ -134,3 +143,28 @@ def test_owner_loss_preserves_one_stop_deadline_including_diagnostic_time(total)
     assert isinstance(failure, SystemExit)
     assert failure.code == 1
     assert calls[-1] == ("stop", total - 9)
+
+
+def test_failed_drain_logs_the_runtime_stage_with_original_owner_loss_exit():
+    _calls, receipts, diagnostics, failure = _exercise(
+        owner=False, runtime_clean=False, stop_failure="runtime_settlement_drain_timeout",
+    )
+    assert "后台排空未完成：code=runtime_settlement_drain_timeout" in diagnostics
+    assert isinstance(failure, SystemExit)
+    assert failure.code == 1
+    assert receipts == [{"role": "worker", "clean": False, "code": 1}]
+
+
+@pytest.mark.parametrize("stop_failure", [
+    "runtime_unapproved_detail",
+    RuntimeError("private diagnostic"),
+    None,
+])
+def test_failed_drain_uses_fixed_fallback_if_stage_is_unknown_or_unavailable(stop_failure):
+    _calls, receipts, diagnostics, failure = _exercise(
+        runtime_clean=False, stop_failure=stop_failure,
+    )
+    assert diagnostics == ["后台排空未完成：code=runtime_stop_failed"]
+    assert isinstance(failure, SystemExit)
+    assert failure.code == 3
+    assert receipts == [{"role": "worker", "clean": False, "code": 3}]

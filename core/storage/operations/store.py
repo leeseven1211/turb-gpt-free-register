@@ -5,6 +5,7 @@ from __future__ import annotations
 import threading
 import time
 from collections.abc import Mapping
+from contextlib import ExitStack
 from datetime import datetime, timedelta
 from typing import Any, Iterable
 from core.storage.task_query_context import task_read_connection
@@ -1018,26 +1019,41 @@ def find_task_by_source(
         return _row(dict(raw)) if raw else None
 
 
+_RETENTION_FETCH_ROWS = 32
+
+
 def cleanup_terminal_history(
     *,
     retention_days: int,
     limit: int = 500,
-    archive,
+    archive=None,
+    archive_stream=None,
+    check_cancel=None,
 ) -> dict[str, Any]:
     """Archive and delete one bounded batch of expired task-center history.
 
-    The archive callback runs inside the transaction after candidates are
-    locked and before any row is deleted.  Raising from the callback aborts
-    the transaction, so a task is never removed without a verified archive.
+    回调在锁定候选后、删除数据前的同一个事务内执行。流式回调必须完整消费
+    所有分段。回调或取消检查抛出的异常会回滚当前批次。
     """
+    def checkpoint():
+        if check_cancel is not None:
+            check_cancel()
+
+    if check_cancel is not None and not callable(check_cancel):
+        raise ValueError("归档取消检查必须可调用")
+    checkpoint()
     _schema.init_operation_schema()
     days = int(retention_days or 0)
     if days <= 0:
         return {"deleted_tasks": 0, "deleted_batches": 0, "disabled": True}
-    if not callable(archive):
-        raise ValueError("任务中心清理必须提供归档回调")
+    if (archive is None) == (archive_stream is None) or not callable(
+        archive if archive_stream is None else archive_stream
+    ):
+        raise ValueError("任务中心清理必须提供一个归档回调")
+
     row_limit = max(1, min(5000, int(limit or 500)))
     cutoff = _common._now() - timedelta(days=days)
+    checkpoint()
     with _common._connect() as conn, conn.cursor() as cur:
         cur.execute(
             "SELECT pg_try_advisory_xact_lock(hashtext(%s)) AS locked",
@@ -1046,11 +1062,13 @@ def cleanup_terminal_history(
         if not bool(cur.fetchone()["locked"]):
             return {"deleted_tasks": 0, "deleted_batches": 0, "locked": True}
         # 与订单预约、关联写入共用锁，避免候选选出后出现新的原单引用。
+        checkpoint()
         cur.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
                     (f"{_common._schema_name()}:independent-payment:xxsyun",))
+        checkpoint()
         cur.execute(
             f"""
-            SELECT task.*
+            SELECT task.id, task.batch_id, task.source_system
             FROM {_common._table('operation_tasks')} task
             WHERE task.status IN ({_common._TERMINAL_STATUS_SQL})
               AND NOT (task.data ? 'bulk_target_round_id')
@@ -1129,10 +1147,11 @@ def cleanup_terminal_history(
             """,
             (cutoff, row_limit),
         )
-        tasks = [dict(row) for row in cur.fetchall()]
+        task_candidates = cur.fetchall()
+        checkpoint()
         cur.execute(
             f"""
-            SELECT batch.*
+            SELECT batch.id
             FROM {_common._table('operation_batches')} batch
             WHERE batch.status IN ({_common._TERMINAL_STATUS_SQL})
               AND batch.source_system <> 'bulk_manager'
@@ -1158,77 +1177,55 @@ def cleanup_terminal_history(
             """,
             (cutoff, row_limit),
         )
-        empty_batches = [dict(row) for row in cur.fetchall()]
-        if not tasks and not empty_batches:
+        empty_batch_ids = [int(row["id"]) for row in cur.fetchall()]
+        if not task_candidates and not empty_batch_ids:
             return {
                 "deleted_tasks": 0,
                 "deleted_batches": 0,
                 "cutoff": cutoff.isoformat(),
             }
-        task_ids = [int(row["id"]) for row in tasks]
-        task_batch_ids = sorted({int(row["batch_id"]) for row in tasks if row.get("batch_id")})
-        empty_batch_ids = [int(row["id"]) for row in empty_batches]
+        task_ids = [int(row["id"]) for row in task_candidates]
+        task_batch_ids = sorted({int(row["batch_id"]) for row in task_candidates if row.get("batch_id")})
         batch_ids = sorted(set(task_batch_ids) | set(empty_batch_ids))
-
-        def fetch(sql: str, params=()) -> list[dict]:
-            cur.execute(sql, params)
-            return [dict(row) for row in cur.fetchall()]
-
-        runs = (
-            fetch(
-                f"SELECT * FROM {_common._table('operation_runs')} WHERE task_id=ANY(%s) ORDER BY id",
-                (task_ids,),
-            ) if task_ids else []
-        )
-        run_ids = [int(row["id"]) for row in runs]
         native_task_ids = {
-            int(row["id"]) for row in tasks
+            int(row["id"]) for row in task_candidates
             if str(row.get("source_system") or "") == "native_operations"
         }
-        native_log_files = sorted({
-            str(row.get("log_file") or "").strip()
-            for row in runs
-            if int(row["task_id"]) in native_task_ids
-            and str(row.get("log_file") or "").strip()
-        })
-        events = (
-            fetch(
+        run_scope = f"SELECT id FROM {_common._table('operation_runs')} WHERE task_id=ANY(%s)"
+        sections_sql = {
+            "tasks": (
+                f"SELECT * FROM {_common._table('operation_tasks')} WHERE id=ANY(%s) ORDER BY completed_at, id",
+                task_ids,
+            ),
+            "runs": (
+                f"SELECT * FROM {_common._table('operation_runs')} WHERE task_id=ANY(%s) ORDER BY id",
+                task_ids,
+            ),
+            "events": (
                 f"SELECT * FROM {_common._table('operation_events')} WHERE task_id=ANY(%s) ORDER BY id",
-                (task_ids,),
-            ) if task_ids else []
-        )
-        resources = (
-            fetch(
-                f"SELECT * FROM {_common._table('operation_resources')} WHERE run_id=ANY(%s) ORDER BY id",
-                (run_ids,),
-            ) if run_ids else []
-        )
-        leases = (
-            fetch(
-                f"SELECT * FROM {_common._table('account_operation_leases')} WHERE run_id=ANY(%s) ORDER BY run_id",
-                (run_ids,),
-            ) if run_ids else []
-        )
-        batch_items = (
-            fetch(
+                task_ids,
+            ),
+            "resources": (
+                f"SELECT * FROM {_common._table('operation_resources')} WHERE run_id IN ({run_scope}) ORDER BY id",
+                task_ids,
+            ),
+            "leases": (
+                f"SELECT * FROM {_common._table('account_operation_leases')} WHERE run_id IN ({run_scope}) ORDER BY run_id",
+                task_ids,
+            ),
+            "batch_items": (
                 f"SELECT * FROM {_common._table('operation_batch_items')} WHERE task_id=ANY(%s) ORDER BY id",
-                (task_ids,),
-            ) if task_ids else []
-        )
-        batches = (
-            fetch(
+                task_ids,
+            ),
+            "batches": (
                 f"SELECT * FROM {_common._table('operation_batches')} WHERE id=ANY(%s) ORDER BY id",
-                (batch_ids,),
-            ) if batch_ids else []
-        )
-        projection_queue = (
-            fetch(
+                batch_ids,
+            ),
+            "projection_queue": (
                 f"SELECT * FROM {_common._table('operation_projection_queue')} WHERE batch_id=ANY(%s) ORDER BY id",
-                (batch_ids,),
-            ) if batch_ids else []
-        )
-        dependencies = (
-            fetch(
+                batch_ids,
+            ),
+            "dependencies": (
                 f"""
                 SELECT dependency.*
                 FROM {_common._table('operation_task_dependencies')} dependency
@@ -1247,35 +1244,69 @@ def cleanup_terminal_history(
                 )
                 ORDER BY dependency.id
                 """,
-                (task_ids,),
-            ) if task_ids else []
-        )
-        payment_orders = (
-            fetch(f"SELECT * FROM {_common._table('extract_link_payment_orders')} WHERE task_id=ANY(%s) ORDER BY id",
-                  (task_ids,)) if task_ids else []
-        )
-        snapshot = {
+                task_ids,
+            ),
+            "extract_link_payment_orders": (
+                f"SELECT * FROM {_common._table('extract_link_payment_orders')} WHERE task_id=ANY(%s) ORDER BY id",
+                task_ids,
+            ),
+        }
+        metadata = {
             "version": 1,
             "created_at": _common._now().isoformat(),
             "cutoff": cutoff.isoformat(),
             "retention_days": days,
-            "tasks": [_common._row(row) or {} for row in tasks],
-            "runs": [_common._row(row) or {} for row in runs],
-            "events": [_common._row(row) or {} for row in events],
-            "resources": [_common._row(row) or {} for row in resources],
-            "leases": [_common._row(row) or {} for row in leases],
-            "batch_items": [_common._row(row) or {} for row in batch_items],
-            "batches": [_common._row(row) or {} for row in batches],
-            "projection_queue": [_common._row(row) or {} for row in projection_queue],
-            "dependencies": [_common._row(row) or {} for row in dependencies],
-            "extract_link_payment_orders": [_common._row(row) or {} for row in payment_orders],
         }
-        archive_result = archive(snapshot)
+        completed_dependency_ids: list[int] = []
+        native_log_files: set[str] = set()
+        finished_sections: set[str] = set()
+        locked_ids = {"tasks": task_ids, "batches": batch_ids}
 
-        completed_dependency_ids = [
-            int(row["id"]) for row in dependencies
-            if str(row.get("status") or "") == "completed"
-        ]
+        def stream_section(name, sql, ids):
+            expected = locked_ids.get(name)
+            read_count = 0
+            if ids:
+                checkpoint()
+                with conn.cursor(name=f"task_history_{name}") as reader:
+                    reader.execute(sql, (ids,))
+                    while True:
+                        checkpoint()
+                        rows = reader.fetchmany(_RETENTION_FETCH_ROWS)
+                        if not rows:
+                            break
+                        for row in rows:
+                            checkpoint()
+                            if expected is not None and (
+                                read_count >= len(expected) or int(row["id"]) != expected[read_count]
+                            ):
+                                raise RuntimeError("归档记录与锁定候选不一致")
+                            read_count += 1
+                            if name == "dependencies" and row.get("status") == "completed":
+                                completed_dependency_ids.append(int(row["id"]))
+                            if name == "runs" and int(row["task_id"]) in native_task_ids:
+                                log_file = str(row.get("log_file") or "").strip()
+                                if log_file:
+                                    native_log_files.add(log_file)
+                            yield _common._row(row) or {}
+            if expected is not None and read_count != len(expected):
+                raise RuntimeError("归档记录与锁定候选不一致")
+            finished_sections.add(name)
+
+        with ExitStack() as readers:
+            sections = {}
+            for name, (query, ids) in sections_sql.items():
+                section = stream_section(name, query, ids)
+                readers.callback(section.close)
+                sections[name] = section
+            if archive_stream is not None:
+                archive_result = archive_stream(metadata, sections, check_cancel=check_cancel)
+                if finished_sections != sections_sql.keys():
+                    raise RuntimeError("归档分段未完整读取")
+            else:
+                snapshot = {**metadata, **{name: list(section) for name, section in sections.items()}}
+                archive_result = archive(snapshot)
+
+        checkpoint()
         if completed_dependency_ids:
             cur.execute(
                 f"DELETE FROM {_common._table('operation_task_dependencies')} WHERE id=ANY(%s)",
@@ -1283,6 +1314,7 @@ def cleanup_terminal_history(
             )
         deleted_tasks = 0
         if task_ids:
+            checkpoint()
             cur.execute(
                 f"DELETE FROM {_common._table('operation_tasks')} WHERE id=ANY(%s)",
                 (task_ids,),
@@ -1290,6 +1322,7 @@ def cleanup_terminal_history(
             deleted_tasks = int(cur.rowcount)
         deleted_batches = 0
         if empty_batch_ids:
+            checkpoint()
             cur.execute(
                 f"""
                 DELETE FROM {_common._table('operation_batches')} batch
@@ -1316,6 +1349,7 @@ def cleanup_terminal_history(
             )
             deleted_batches += int(cur.rowcount)
         if task_batch_ids:
+            checkpoint()
             cur.execute(
                 f"""
                 DELETE FROM {_common._table('operation_batches')} batch
@@ -1331,12 +1365,13 @@ def cleanup_terminal_history(
                 (task_batch_ids, cutoff),
             )
             deleted_batches += int(cur.rowcount)
+        checkpoint()
         return {
             "deleted_tasks": deleted_tasks,
             "deleted_batches": deleted_batches,
             "cutoff": cutoff.isoformat(),
             "archive": archive_result,
-            "native_log_files": native_log_files,
+            "native_log_files": sorted(native_log_files),
             # Deleting a leaf can make its expired parent eligible.  Force one
             # more bounded pass after any deletion; an empty pass terminates
             # the daily drain without guessing from the current batch size.

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import importlib.util
 import logging
 import os
 from pathlib import Path
@@ -261,18 +262,19 @@ class WorkerEntrypointCleanupTests(unittest.TestCase):
                     "core.storage": _module("core.storage",
                         postgres=SimpleNamespace(require_ready=lambda: None)),
                 }
-                main = _entrypoint("worker.py", {
-                    "logging": SimpleNamespace(DEBUG=10, INFO=20,
-                        basicConfig=lambda **_kwargs: None, getLogger=lambda _name: LOGGER),
-                    "os": SimpleNamespace(environ={}),
-                    "threading": SimpleNamespace(Event=lambda: object()),
-                    "signal": SimpleNamespace(SIGTERM=signal.SIGTERM, SIGINT=signal.SIGINT,
-                        signal=lambda *_args: None),
-                })
+                spec = importlib.util.spec_from_file_location("worker_cleanup_entry", ROOT / "worker.py")
+                entry = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(entry)
+                entry.logging = SimpleNamespace(DEBUG=10, INFO=20,
+                    basicConfig=lambda **_kwargs: None, getLogger=lambda _name: LOGGER)
+                entry.os = SimpleNamespace(environ={})
+                entry.threading = SimpleNamespace(Event=lambda: object())
+                entry.signal = SimpleNamespace(SIGTERM=signal.SIGTERM, SIGINT=signal.SIGINT,
+                    signal=lambda *_args: None)
                 with self.subTest(stage=stage, cleanup_raises=cleanup_raises), \
                         patch.dict(sys.modules, modules), patch.object(sys, "argv", ["worker.py"]):
                     with self.assertRaises(StartupFailure) as caught:
-                        main()
+                        entry.main()
                     self.assertIs(caught.exception, failure)
                     self.assertTrue(state.cleaned)
 

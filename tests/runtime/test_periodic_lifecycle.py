@@ -258,6 +258,16 @@ class SchedulerLoopTests(RuntimeContextTestCase):
             self.run_loop(work, stop)
         mark.assert_called_once_with("task")
 
+    def test_cancelled_cycle_does_not_record_completion(self):
+        stop = ScriptedStop()
+        def work():
+            stop.set()
+            raise scheduler.PeriodicCycleCancelled()
+        with patch.object(scheduler, "seconds_until_due", return_value=0), \
+             patch.object(scheduler, "mark_ran") as mark:
+            self.run_loop(work, stop)
+        mark.assert_not_called()
+
     def test_write_failure_does_not_repeat_cycle_after_sixty_seconds(self):
         stop = ScriptedStop(lambda event, n: event.set() if n >= 4 else None)
         calls = []

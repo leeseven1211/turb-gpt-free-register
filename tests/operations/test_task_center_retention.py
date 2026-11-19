@@ -1,15 +1,171 @@
 # -*- coding: utf-8 -*-
 import gzip
+import hashlib
 import importlib
+import io
 import json
 import os
 import tempfile
+import threading
 import time
 import unittest
 from core.runtime.periodic import PeriodicThread
 from tests.runtime.test_periodic_lifecycle import FakeThread
 from pathlib import Path
 from unittest.mock import patch
+
+
+class TaskCenterRetentionStreamWriterTests(unittest.TestCase):
+    def setUp(self):
+        self.retention = importlib.import_module("core.operations.retention")
+        self.metadata = {
+            "version": 1,
+            "created_at": "2026-11-19T00:00:00+00:00",
+            "cutoff": "2026-11-12T00:00:00+00:00",
+            "retention_days": 7,
+        }
+        self.assertTrue(hasattr(self.retention, "archive_snapshot_stream"), "流式归档入口尚未实现")
+
+    def test_stream_writes_same_v1_json_as_legacy_with_one_shot_iterators(self):
+        deep = leaf = {}
+        for _ in range(24):
+            leaf["next"] = {}
+            leaf = leaf["next"]
+        sections = {
+            "tasks": [{
+                "id": 1,
+                "data": {"access_token": "synthetic-private-value", "content": "中文\n\\\"", "deep": deep},
+                "output": (b"test", "session_id=synthetic-session"),
+            }],
+            "runs": [],
+            "events": [{"id": number} for number in range(125)],
+        }
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            legacy = self.retention.archive_snapshot({**self.metadata, **sections}, archive_root=root)
+            result = self.retention.archive_snapshot_stream(
+                dict(reversed(tuple(self.metadata.items()))),
+                {name: iter(rows) for name, rows in sections.items()},
+                archive_root=root,
+            )
+            archive = Path(result["path"])
+            compressed = archive.read_bytes()
+            payload = gzip.decompress(compressed)
+            self.assertEqual(gzip.decompress(Path(legacy["path"]).read_bytes()), payload)
+            self.assertEqual(legacy["counts"], result["counts"])
+            self.assertEqual({"tasks": 1, "runs": 0, "events": 125}, result["counts"])
+            self.assertEqual(hashlib.sha256(compressed).hexdigest(), result["sha256"])
+            self.assertEqual(len(compressed), result["size"])
+            self.assertNotIn(b"synthetic-private-value", payload)
+            self.assertNotIn(b"synthetic-session", payload)
+            self.assertIn(b"[truncated]", payload)
+            self.assertFalse(list(root.glob("*.tmp")))
+
+    def test_unexpected_decompressed_content_is_not_published(self):
+        open_gzip = gzip.open
+
+        def open_for_test(path, mode, **kwargs):
+            if mode == "rb":
+                with open_gzip(path, mode) as handle:
+                    content = handle.read()
+                return io.BytesIO(content.replace(b'"id":1', b'"id":2'))
+            return open_gzip(path, mode, **kwargs)
+
+        with tempfile.TemporaryDirectory() as td, patch.object(
+            self.retention.gzip, "open", side_effect=open_for_test,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "回读校验不一致"):
+                self.retention.archive_snapshot_stream(
+                    self.metadata, {"tasks": iter([{"id": 1}])}, archive_root=Path(td),
+                )
+            self.assertEqual([], list(Path(td).iterdir()))
+
+    def test_stream_removes_temporary_file_if_record_source_fails(self):
+        def source():
+            yield {"id": 1}
+            raise LookupError("synthetic source failed")
+
+        with tempfile.TemporaryDirectory() as td:
+            with self.assertRaisesRegex(LookupError, "synthetic source failed"):
+                self.retention.archive_snapshot_stream(
+                    self.metadata, {"tasks": source()}, archive_root=Path(td),
+                )
+            self.assertEqual([], list(Path(td).iterdir()))
+
+    def test_stream_rejects_gzip_footer_corruption_after_reading_multiple_chunks(self):
+        open_gzip = gzip.open
+
+        def open_for_test(path, mode, **kwargs):
+            if mode == "rb":
+                with path.open("r+b") as raw:
+                    raw.seek(-8, os.SEEK_END)
+                    original = raw.read(1)
+                    raw.seek(-1, os.SEEK_CUR)
+                    raw.write(bytes([original[0] ^ 1]))
+            return open_gzip(path, mode, **kwargs)
+
+        with tempfile.TemporaryDirectory() as td, patch.object(
+            self.retention.gzip, "open", side_effect=open_for_test,
+        ), patch.object(self.retention, "_ARCHIVE_CHUNK_SIZE", 64):
+            with self.assertRaises(gzip.BadGzipFile):
+                self.retention.archive_snapshot_stream(
+                    self.metadata, {"events": ({"id": number} for number in range(125))},
+                    archive_root=Path(td),
+                )
+            self.assertEqual([], list(Path(td).iterdir()))
+
+    def test_stream_checks_cancellation_before_scrubbing_next_row(self):
+        read = []
+
+        def source():
+            for id_ in range(3):
+                read.append(id_)
+                yield {"id": id_}
+
+        def check_cancel():
+            if read == [0]:
+                raise InterruptedError("synthetic stop")
+
+        with tempfile.TemporaryDirectory() as td:
+            with self.assertRaisesRegex(InterruptedError, "synthetic stop"):
+                self.retention.archive_snapshot_stream(
+                    self.metadata, {"events": source()},
+                    archive_root=Path(td), check_cancel=check_cancel,
+                )
+            self.assertEqual([0], read)
+            self.assertEqual([], list(Path(td).iterdir()))
+
+    def test_stream_does_not_publish_if_cancelled_after_verified_readback(self):
+        verified = False
+        open_gzip = gzip.open
+
+        class VerifyRead(io.BytesIO):
+            def read(self, size=-1):
+                nonlocal verified
+                data = super().read(size)
+                if not data:
+                    verified = True
+                return data
+
+        def open_for_test(path, mode, **kwargs):
+            if mode == "rb":
+                with open_gzip(path, mode) as handle:
+                    return VerifyRead(handle.read())
+            return open_gzip(path, mode, **kwargs)
+
+        def check_cancel():
+            if verified:
+                raise InterruptedError("synthetic stop")
+
+        with tempfile.TemporaryDirectory() as td, patch.object(
+            self.retention.gzip, "open", side_effect=open_for_test,
+        ):
+            with self.assertRaisesRegex(InterruptedError, "synthetic stop"):
+                self.retention.archive_snapshot_stream(
+                    self.metadata, {"tasks": [{"id": 1}]},
+                    archive_root=Path(td), check_cancel=check_cancel,
+                )
+            self.assertEqual([], list(Path(td).iterdir()))
 
 
 class TaskCenterRetentionArchiveTests(unittest.TestCase):
@@ -81,7 +237,22 @@ class TaskCenterRetentionArchiveTests(unittest.TestCase):
         self.assertEqual(2, result["batches"])
         self.assertEqual(2, cleanup.call_count)
         self.assertEqual(7, cleanup.call_args_list[0].kwargs["retention_days"])
-        self.assertTrue(callable(cleanup.call_args_list[0].kwargs["archive"]))
+        self.assertIs(cleanup.call_args_list[0].kwargs["archive_stream"], retention.archive_snapshot_stream)
+
+    def test_scheduled_cycle_passes_cancellation_through_to_archive_transaction(self):
+        retention = importlib.import_module("core.operations.retention")
+        stop = threading.Event()
+
+        def cleanup(**kwargs):
+            stop.set()
+            kwargs["check_cancel"]()
+
+        with patch("config.operations.TASK_CENTER_RETENTION_DAYS", 7), patch.object(
+            retention.operation_task_store, "cleanup_terminal_history", side_effect=cleanup,
+        ), patch.object(retention, "remove_expired_archives") as remove:
+            with self.assertRaises(retention.scheduler_state.PeriodicCycleCancelled):
+                retention.cleanup_once(stop=stop)
+        remove.assert_not_called()
 
     def test_expired_archive_cleanup_removes_only_managed_files(self):
         retention = importlib.import_module("core.operations.retention")
@@ -148,7 +319,9 @@ class TaskCenterRetentionArchiveTests(unittest.TestCase):
 
         kwargs = run_periodic.call_args.kwargs
         self.assertEqual("task_center_retention", kwargs["task"])
-        self.assertIs(retention.cleanup_once, kwargs["work"])
+        with patch.object(retention, "cleanup_once") as cleanup:
+            kwargs["work"]()
+        cleanup.assert_called_once_with(stop=retention._SCHEDULER.stop_event)
         self.assertEqual(86400, kwargs["interval_seconds"]())
 
     def test_periodic_cleanup_starts_at_most_one_worker(self):

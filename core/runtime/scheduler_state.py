@@ -22,6 +22,10 @@ _COLLECTION = "scheduler_state"
 _POLL_CAP_SECONDS = 60.0
 
 
+class PeriodicCycleCancelled(Exception):
+    """The current cycle was interrupted and must remain due."""
+
+
 def _task_key(task: str) -> str:
     key = str(task)
     if not key:
@@ -180,9 +184,13 @@ def run_periodic(
                 continue
             if lifecycle:
                 lifecycle.work_started()
+            cancelled = False
             try:
                 result = work()
                 logger.info("[%s] scheduled run: %s", label, result)
+            except PeriodicCycleCancelled:
+                cancelled = True
+                logger.info("[%s] scheduled cycle cancelled", label)
             except Exception:
                 logger.exception("[%s] scheduled cycle failed", label)
                 if lifecycle:
@@ -190,6 +198,10 @@ def run_periodic(
             finally:
                 if lifecycle:
                     lifecycle.work_finished()
+            if cancelled:
+                if ticker.wait(_POLL_CAP_SECONDS):
+                    return
+                continue
             # Failed cycles also advance cadence. Record even if stop was
             # requested during the work; join must wait for this final write.
             local_not_before = time.monotonic() + max(interval, 0.05)

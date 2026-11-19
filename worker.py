@@ -10,6 +10,49 @@ import threading
 import time
 
 
+# Publish only fixed ManagedRuntime stop reasons, never exception text or
+# readiness details from other components.
+_STOP_FAILURE_CODES = frozenset({
+    "runtime_stop_deadline_exhausted",
+    "runtime_settlement_shutdown_start_failed",
+    "runtime_producers_still_running",
+    "runtime_claimers_still_running",
+    "runtime_settlement_drain_timeout",
+    "runtime_drain_timeout",
+    "runtime_executors_still_running",
+    "runtime_executor_handoff_pending",
+    "runtime_settle_timeout",
+    "runtime_settle_failed",
+    "runtime_components_still_running",
+    "runtime_settlement_final_drain_timeout",
+    "runtime_final_cleanup_pending",
+    "runtime_settlement_still_running",
+    "runtime_settlement_stop_failed",
+    "runtime_permit_releases_still_running",
+    "runtime_permit_releases_stop_failed",
+    "runtime_flush_timeout",
+    "runtime_flush_failed",
+    "runtime_heartbeat_still_running",
+    "runtime_connections_still_running",
+    "runtime_owner_close_failed",
+    "runtime_settlement_background_resume_failed",
+})
+
+
+def _stop_failure_code(runtime) -> str:
+    if runtime is not None:
+        try:
+            status = runtime.manager.status()
+            code = status.get("error_code")
+            if (status.get("state") == "stop_incomplete"
+                    and isinstance(code, str) and code in _STOP_FAILURE_CODES):
+                return code
+        except Exception:
+            # Diagnostics must not replace the original exit reason.
+            pass
+    return "runtime_stop_failed"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Turb 独立后台执行进程")
     parser.add_argument("--verbose", action="store_true")
@@ -35,6 +78,7 @@ def main() -> None:
     original_failure = False
     failure_code = 0
     install_attempted = False
+    runtime = None
     shutdown_deadline = None
     started = False
 
@@ -55,7 +99,7 @@ def main() -> None:
             signal.signal(getattr(signal, name), request_stop)
         postgres.require_ready()
         install_attempted = True
-        install(bootstrap)
+        runtime = install(bootstrap)
         start_runtime()
         started = True
         if os.environ.get('TURB_RUNTIME_MANAGER'):
@@ -87,7 +131,7 @@ def main() -> None:
                 clean = False
                 logger.exception('role_exit_receipt_failed')
         if not clean:
-            logger.error("后台排空未完成")
+            logger.error("后台排空未完成：code=%s", _stop_failure_code(runtime))
             if not original_failure:
                 raise SystemExit(3)
 

@@ -10,6 +10,7 @@ import tempfile
 import threading
 import time
 import uuid
+from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -22,6 +23,8 @@ from core.operations import run_log as task_run_log
 
 
 _ARCHIVE_ROOT = task_log_root() / "task-center-archives"
+_ARCHIVE_METADATA_KEYS = ("version", "created_at", "cutoff", "retention_days")
+_ARCHIVE_CHUNK_SIZE = 256 * 1024
 _DELETE_BATCH_SIZE = 500
 _MAX_BATCHES_PER_RUN = 20
 SCHEDULER_TASK = "task_center_retention"
@@ -99,13 +102,125 @@ def archive_snapshot(snapshot: dict[str, Any], *, archive_root: Path | None = No
     }
 
 
-def cleanup_once() -> dict[str, Any]:
+def _read_archive_digest(handle, check_cancel: Callable[[], None]) -> tuple[int, str]:
+    digest = hashlib.sha256()
+    size = 0
+    while True:
+        check_cancel()
+        block = handle.read(_ARCHIVE_CHUNK_SIZE)
+        if not block:
+            return size, digest.hexdigest()
+        digest.update(block)
+        size += len(block)
+
+
+def archive_snapshot_stream(
+    metadata: Mapping[str, Any],
+    sections: Mapping[str, Iterable[dict[str, Any]]],
+    *,
+    archive_root: Path | None = None,
+    check_cancel: Callable[[], None] | None = None,
+) -> dict[str, Any]:
+    """Write, reread, and verify the version-1 archive without collecting its rows."""
+    def checkpoint() -> None:
+        if check_cancel is not None:
+            check_cancel()
+
+    if set(metadata) != set(_ARCHIVE_METADATA_KEYS) or type(metadata["version"]) is not int or metadata["version"] != 1:
+        raise ValueError("invalid version-1 archive metadata")
+    for name in sections:
+        # Match the old envelope's key handling and prevent duplicate metadata keys.
+        if (not isinstance(name, str) or name in metadata
+                or next(iter(_archive_scrub({name: None})), None) != name):
+            raise ValueError("invalid archive section name")
+
+    checkpoint()
+    root = Path(archive_root or _ARCHIVE_ROOT)
+    root.mkdir(parents=True, exist_ok=True)
+    created = datetime.now(timezone.utc)
+    final_path = root / (
+        f"task-center-{created.strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:8]}.json.gz"
+    )
+    encoder = json.JSONEncoder(ensure_ascii=False, separators=(",", ":"))
+    counts: dict[str, int] = {}
+    content_digest = hashlib.sha256()
+    content_size = 0
+    buffer = bytearray()
+    with tempfile.NamedTemporaryFile(
+        prefix=".task-center-", suffix=".json.gz.tmp", dir=root, delete=False,
+    ) as tmp_handle:
+        tmp_path = Path(tmp_handle.name)
+    try:
+        with gzip.open(tmp_path, "wb") as handle:
+            def flush() -> None:
+                nonlocal content_size
+                checkpoint()
+                handle.write(buffer)
+                content_digest.update(buffer)
+                content_size += len(buffer)
+                buffer.clear()
+
+            def emit(text: str) -> None:
+                buffer.extend(text.encode("utf-8"))
+                if len(buffer) >= _ARCHIVE_CHUNK_SIZE:
+                    flush()
+
+            def encode_value(value: Any) -> str:
+                text = encoder.encode(value)
+                # v1 accepts infinities. Preserve the old readback comparison
+                # for NaN, whose equality can differ after decoding.
+                if "NaN" in text and json.loads(text) != value:
+                    raise RuntimeError("任务中心清理归档回读校验不一致")
+                return text
+
+            emit(encode_value(_archive_scrub({key: metadata[key] for key in _ARCHIVE_METADATA_KEYS}))[:-1])
+            for name, rows in sections.items():
+                checkpoint()
+                emit("," + encoder.encode(name) + ":[")
+                count = 0
+                for row in rows:
+                    checkpoint()
+                    if count:
+                        emit(",")
+                    emit(encode_value(_archive_scrub(row, depth=2)))
+                    count += 1
+                counts[name] = count
+                emit("]")
+            emit("}")
+            if buffer:
+                flush()
+        checkpoint()
+        with gzip.open(tmp_path, "rb") as handle:
+            # Reading to EOF also checks the gzip footer and CRC.
+            verified = _read_archive_digest(handle, checkpoint)
+        if verified != (content_size, content_digest.hexdigest()):
+            raise RuntimeError("任务中心清理归档回读校验不一致")
+        checkpoint()
+        with tmp_path.open("rb") as handle:
+            size, sha256 = _read_archive_digest(handle, checkpoint)
+        checkpoint()
+        tmp_path.replace(final_path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
+    return {"path": str(final_path), "size": size, "sha256": sha256, "counts": counts}
+
+
+def cleanup_once(*, stop: threading.Event | None = None) -> dict[str, Any]:
     """Drain a bounded number of archive-first retention batches."""
     from config import operations as operation_config
 
     days = int(getattr(operation_config, "TASK_CENTER_RETENTION_DAYS", 7) or 0)
     if days <= 0:
         return {"enabled": False, "deleted_tasks": 0, "deleted_batches": 0, "batches": 0}
+
+    def check_cancel() -> None:
+        if stop is None:
+            return
+        from core.runtime.periodic import execution_allowed
+
+        if stop.is_set() or not execution_allowed():
+            raise scheduler_state.PeriodicCycleCancelled()
+
     totals: dict[str, Any] = {
         "enabled": True,
         "retention_days": days,
@@ -115,10 +230,12 @@ def cleanup_once() -> dict[str, Any]:
         "batches": 0,
     }
     for _ in range(_MAX_BATCHES_PER_RUN):
+        check_cancel()
         result = operation_task_store.cleanup_terminal_history(
             retention_days=days,
             limit=_DELETE_BATCH_SIZE,
-            archive=archive_snapshot,
+            archive_stream=archive_snapshot_stream,
+            check_cancel=check_cancel,
         )
         totals["batches"] += 1
         totals["deleted_tasks"] += int(result.get("deleted_tasks") or 0)
@@ -130,6 +247,7 @@ def cleanup_once() -> dict[str, Any]:
             totals["last_archive"] = result["archive"]
         if not result.get("has_more"):
             break
+    check_cancel()
     archive_days = int(
         getattr(operation_config, "TASK_CENTER_ARCHIVE_RETENTION_DAYS", 30) or 0
     )
@@ -201,7 +319,7 @@ def _scheduler_loop() -> None:
     scheduler_state.run_periodic(
         task=SCHEDULER_TASK,
         label="TaskCenterRetention",
-        work=cleanup_once,
+        work=lambda: cleanup_once(stop=_SCHEDULER.stop_event),
         enabled=scheduler_enabled,
         interval_seconds=scheduler_interval_seconds,
         initial_delay_seconds=_INITIAL_DELAY_SECONDS,
@@ -237,6 +355,7 @@ def reset_for_tests() -> None:
 __all__ = [
     "SCHEDULER_TASK",
     "archive_snapshot",
+    "archive_snapshot_stream",
     "cleanup_once",
     "remove_expired_archives",
     "remove_native_task_logs",
