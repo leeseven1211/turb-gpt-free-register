@@ -20,9 +20,10 @@ from core.accounts.credentials import account_email_is_invalid
 from core.accounts.liveness.protocol.otp_diagnostics import mark_otp_failure
 from core.accounts.liveness.protocol.otp_delivery import ensure_initial_otp_sent as _ensure_at_otp_sent, resend_otp as _resend_at_otp
 from core.auth.humanize import delay as human_delay
+from core.runtime.paths import task_log_root
 
 logger = logging.getLogger('core.account_liveness')
-_LOG_DIR = Path(__file__).resolve().parents[4] / "logs"
+_LOG_DIR = task_log_root()
 _RUNNING: set[str] = set()
 _RUNNING_LOCK = threading.Lock()
 

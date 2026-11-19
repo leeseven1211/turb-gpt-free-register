@@ -17,6 +17,7 @@ output/playwright/
 /docs/reference/protocol-har-summary.json
 .mypy_cache/
 .ruff_cache/
+node_modules/
 .superpowers
 
 # 历史调试输出（_xxx.out / _xxx_dump.html）

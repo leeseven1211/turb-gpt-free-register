@@ -39,23 +39,16 @@ class SharedTaskDialogLayoutTests(unittest.TestCase):
             Path(__file__).resolve().parents[2] / "webui/templates/index.html"
         ).read_text())
 
-    def test_task_dialog_is_available_from_every_page(self):
-        dialogs = self.template.nodes["accountTaskLogPanel"]
-        self.assertEqual(1, len(dialogs), "只能有一个共享任务详情")
-        ancestors = dialogs[0]["ancestors"]
-        self.assertFalse(
-            any(node_id and node_id.startswith("tab-") for _, node_id in ancestors),
-            "注册页打开任务详情时不能被其它页面的隐藏祖先挡住",
-        )
-        self.assertEqual(("body", None), ancestors[-1])
+    def test_task_center_has_one_mount_and_one_lazy_resource_entry(self):
+        roots = self.template.nodes["task-center-root"]
+        self.assertEqual(1, len(roots), "任务中心只保留一个组件实例")
+        attrs = roots[0]["attrs"]
+        self.assertIn("task-center/task-center.js", attrs["data-module-url"])
+        self.assertIn("task-center/task-center.css", attrs["data-style-url"])
+        self.assertIn(("section", "accountTasksPanel"), roots[0]["ancestors"])
 
-    def test_step_details_remain_inside_shared_task_dialog(self):
-        for node_id in ("accountTaskStepDetailOverlay", "accountTaskStepDetailDialog"):
-            with self.subTest(node_id=node_id):
-                nodes = self.template.nodes[node_id]
-                self.assertEqual(1, len(nodes))
-                self.assertIn(("div", "accountTaskLogPanel"), nodes[0]["ancestors"])
-        attrs = self.template.nodes["accountTaskLogPanel"][0]["attrs"]
-        self.assertEqual("dialog", attrs["role"])
-        self.assertEqual("true", attrs["aria-modal"])
-        self.assertEqual("accountTaskLogTitle", attrs["aria-labelledby"])
+    def test_template_does_not_keep_a_second_task_dialog(self):
+        # Vue TaskDetail 使用 Teleport 和原生 dialog；全局可见性、Escape、焦点与滚动
+        # 由 frontend/src/features/tasks/detail/detail.test.ts 及真实浏览器验收覆盖。
+        for node_id in ("accountTaskLogPanel", "accountTaskStepDetailOverlay", "accountTaskStepDetailDialog"):
+            self.assertNotIn(node_id, self.template.nodes)

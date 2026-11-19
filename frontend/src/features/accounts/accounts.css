@@ -1,0 +1,68 @@
+/* Existing account presenter styles remain loaded; these rules only own the Vue list shell. */
+.ac-root{display:flex;flex:1 1 auto;flex-direction:column;min-width:0;min-height:0;overflow:hidden;color:var(--ui-color-text);background:var(--ui-color-surface)}
+.ac-toolbar{display:flex;align-items:center;gap:8px 16px;flex-wrap:wrap;padding:8px 12px;border-bottom:1px solid var(--ui-color-border);flex:0 0 auto}
+.ac-toolbar-main{display:flex;align-items:center;gap:10px;min-width:0;flex:1 1 320px}
+.ac-count{flex:none;font-size:12px;font-variant-numeric:tabular-nums;color:var(--ui-color-text-secondary)}
+.ac-toolbar-utilities{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0}
+.ac-button,.ac-link{min-height:28px;padding:3px 8px;border:1px solid var(--ui-color-border);border-radius:5px;background:var(--ui-color-surface);color:var(--ui-color-text);font:inherit;font-size:12px;cursor:pointer}
+.ac-link{border-color:transparent;background:transparent;color:var(--ui-color-brand)}
+.ac-button:disabled{opacity:.55;cursor:default}
+.ac-root button:focus-visible,.ac-root input:focus-visible,.ac-row-menu button:focus-visible{outline:2px solid var(--ui-color-brand);outline-offset:2px}
+.ac-search{display:flex;align-items:center;gap:6px;font-size:12px;min-width:0}
+.ac-search input{width:220px;min-width:0;height:30px;padding:4px 8px;border:1px solid var(--ui-color-border);border-radius:5px;background:var(--ui-color-surface);color:var(--ui-color-text);font:inherit}
+.ac-search button{border:0;background:transparent;color:var(--ui-color-text-secondary);min-width:28px;min-height:28px;cursor:pointer}
+.ac-feedback{margin:0;display:flex;align-items:center;gap:8px;padding:8px 12px;color:var(--ui-color-danger);font-size:12px;flex:0 0 auto}
+.ac-table-scroll{flex:1 1 auto;min-height:120px;min-width:0;overflow:auto;overscroll-behavior:contain}
+.ac-table{table-layout:fixed;border-collapse:separate;border-spacing:0;max-width:none;min-width:0;font-size:12px}
+.ac-table th{position:sticky;top:0;z-index:2;height:36px;padding:6px 8px;text-align:left;background:var(--ui-color-surface-secondary,var(--ui-color-surface));border-bottom:1px solid var(--ui-color-border);font-weight:500}
+.ac-table.accounts-table-v2 td{height:50px;padding:1px 8px;vertical-align:middle;border-bottom:1px solid var(--ui-color-border);overflow:hidden}
+.ac-table .col-check{padding:5px;text-align:center}
+.ac-table .col-id{font-variant-numeric:tabular-nums}
+.ac-table.accounts-table-v2 .account-cell-lines{display:flex;flex-direction:column;justify-content:center;align-items:stretch;gap:2px;min-width:0;max-height:46px;overflow:hidden}
+.ac-table.accounts-table-v2 .account-cell-line{display:flex;align-items:center;gap:4px;flex:none;min-width:0;line-height:20px;min-height:22px;max-height:22px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ac-table.accounts-table-v2 .account-cell-line--sub{margin-top:0;font-size:11px;color:var(--ui-color-text-secondary)}
+.ac-table.accounts-table-v2 .account-cell-line:only-child{min-height:26px;max-height:26px}
+.ac-table.accounts-table-v2 .pill,.ac-table.accounts-table-v2 .account-cell-line button,.ac-table.accounts-table-v2 .acc-v2-actions>button{box-sizing:border-box;flex:none;min-height:22px;height:22px;padding:0 6px;font-size:12px;line-height:20px;vertical-align:middle}
+.ac-table.accounts-table-v2 .account-cell-line:only-child :is(button,.pill){min-height:26px;height:26px;line-height:24px}
+.ac-table.accounts-table-v2 .acc-v2-token-state{min-width:0;max-width:100%}
+.ac-table.accounts-table-v2 .acc-v2-sub{display:flex;margin-top:2px}
+.ac-table.accounts-table-v2 .acc-v2-email-link{display:flex;width:100%;padding:0}
+.ac-table.accounts-table-v2 .acc-v2-email{display:block;min-width:0;max-width:100%;text-overflow:ellipsis}
+.ac-table.accounts-table-v2 .ac-legacy-cell{max-height:46px;overflow:hidden}
+.ac-table.accounts-table-v2 .acc-v2-actions{align-items:flex-start}
+.ac-table.accounts-table-v2 .acc-v2-actions>button{display:inline-flex;align-items:center}
+.ac-table.accounts-table-v2 .account-promotion-country-row{height:22px;min-height:22px}
+.ac-table .acc-mobile-meta,.ac-table .acc-mobile-dot{display:none}
+.ac-row-selected td{background:var(--ui-color-brand-soft)}
+.ac-column-resize{position:absolute;right:-3px;top:0;bottom:0;width:7px;padding:0;border:0;background:transparent;cursor:col-resize;z-index:3;touch-action:none}
+.ac-column-resize:focus-visible{background:var(--ui-color-brand-soft)}
+.ac-filter-fields{display:grid;gap:10px;min-width:220px;max-width:min(340px,calc(100vw - 32px));font-size:12px}
+.ac-filter-field{display:grid;gap:5px}
+.ac-filter-field input,.ac-filter-field select{min-height:32px;padding:5px 8px;border:1px solid var(--ui-color-border);border-radius:5px;background:var(--ui-color-surface);color:var(--ui-color-text);font:inherit}
+.ac-filter-options{border:0;margin:0;padding:0;display:grid;gap:2px;max-height:300px;overflow:auto}
+.ac-filter-options label{display:flex;align-items:center;gap:8px;min-height:30px;padding:3px 2px;cursor:pointer}
+.ac-filter-options small{margin-left:auto;color:var(--ui-color-text-secondary)}
+.ac-filter-actions{display:flex;justify-content:space-between;gap:8px}
+.ac-row-menu{z-index:1200;min-width:164px;max-width:min(320px,calc(100vw - 16px));max-height:var(--reka-popper-available-height);overflow:auto;overscroll-behavior:contain;box-sizing:border-box;padding:4px;border:1px solid var(--ui-color-border);border-radius:6px;background:var(--ui-color-surface);box-shadow:0 8px 28px rgb(0 0 0 / .14)}
+.ac-row-menu .ac-menu-content{display:flex!important;position:static!important;flex-direction:column;gap:2px;min-width:0;max-height:none!important;overflow:visible!important;border:0;box-shadow:none}
+.ac-row-menu button{display:block;min-height:30px;text-align:left;padding:5px 8px;border:0;background:transparent;color:var(--ui-color-text);font:inherit;font-size:12px;cursor:pointer}
+.ac-row-menu button:disabled{opacity:.5;cursor:default}
+.ac-row-menu button.danger{color:var(--ui-color-danger)}
+.ac-empty{text-align:center!important;height:180px!important;white-space:normal!important}
+.ac-empty p{color:var(--ui-color-text-secondary);margin:8px 0}
+.ac-sr-only{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+.ac-mobile-filters{display:none}
+@media(max-width:860px){
+  .ac-toolbar{padding:8px}.ac-toolbar-main{flex-basis:100%}.ac-toolbar-utilities{width:100%}.ac-mobile-filters{display:block}.ac-search{flex:1;min-width:180px}.ac-search input{width:100%}
+  .ac-table{display:block;width:100%!important}.ac-table colgroup,.ac-table thead{display:none}.ac-table tbody{display:block}
+  .ac-table.accounts-table-v2 tbody tr{display:grid;grid-template-columns:32px minmax(0,1fr) 64px;grid-template-rows:auto;align-items:center;gap:0;height:auto;min-height:64px;margin:0;padding:0;border:0;border-bottom:1px solid var(--ui-color-border);border-radius:0;box-shadow:none}
+  .ac-table.accounts-table-v2 tbody td{display:none;height:auto;min-width:0;width:auto;margin:0;border:0;position:static;inset:auto;order:initial}.ac-table.accounts-table-v2 tbody .col-check,.ac-table.accounts-table-v2 tbody .col-email,.ac-table.accounts-table-v2 tbody .col-actions{display:block;padding:8px 6px;grid-row:1}
+  .ac-table.accounts-table-v2 tbody .col-check{grid-column:1}.ac-table.accounts-table-v2 tbody .col-email{grid-column:2}.ac-table.accounts-table-v2 tbody .col-actions{grid-column:3;align-self:center;justify-self:stretch}
+  .ac-table.accounts-table-v2 .col-email .acc-v2-email{white-space:nowrap;overflow-wrap:normal}
+  .ac-table.accounts-table-v2 .col-email .acc-v2-sub{display:none}.ac-table .acc-mobile-meta{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;color:var(--ui-color-text-secondary);margin-top:4px}
+  .ac-table .acc-mobile-dot{display:inline-block;width:7px;height:7px;flex:0 0 auto;border-radius:50%;background:#22a06b}
+  .ac-table .acc-mobile-dot.is-warn{background:#e0a020}
+  .ac-table .acc-mobile-dot.is-bad{background:#d9534f}
+  .ac-table.accounts-table-v2 .col-actions .acc-v2-detail{display:none}.ac-table.accounts-table-v2 .col-actions button{min-height:36px;height:36px}
+  .ac-table.accounts-table-v2 tbody .ac-empty{display:block;grid-column:1 / -1}.ac-filter-options label{min-height:36px}
+}

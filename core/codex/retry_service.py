@@ -18,10 +18,11 @@ from core.auth.protocol.openai_auth import AccountUnusableError
 from core.auth.browser.auth_context import AuthExecutionContext, execution_context
 from core.auth.state_machine import CancellationRequested
 from core.operations.task_gateway import OperationLeaseLost
+from core.runtime.paths import task_log_root
 
 logger = logging.getLogger('core.codex_retry_service')
 
-_LOG_DIR = Path(__file__).resolve().parents[2] / "logs"
+_LOG_DIR = task_log_root()
 _RETRYING: set[str] = set()
 _RETRYING_LOCK = threading.Lock()
 _STOP_REQUESTED: set[str] = set()

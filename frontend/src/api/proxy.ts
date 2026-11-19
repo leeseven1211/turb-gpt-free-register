@@ -1,4 +1,5 @@
 import { isAbort, request } from './client';
+import { parseTaskJson } from './taskIds';
 import type {
   ProxyPage,
   ProxyPoolSnapshot,
@@ -6,25 +7,6 @@ import type {
   ProxySummary,
   ProxyTrafficApi,
 } from '../features/proxy/contracts';
-// JSON.parse rounds bigint IDs before Vue can format them. Consume whole JSON strings
-// (including escapes) so numbers in labels and URLs are never rewritten.
-const integerIds = new Set([
-  'id',
-  'account_id',
-  'operation_task_id',
-  'operation_run_id',
-  'registration_job_id',
-  'registration_attempt_id',
-  'registration_run_id',
-]);
-function parseProxyPage(text: string): unknown {
-  const tokens = /("(?:[^"\\]|\\.)*")(?:(\s*:\s*)(-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?))?/g;
-  const exact = text.replace(tokens, (match: string, key: string, colon?: string, numeric?: string) => {
-    if (!colon || !numeric || !/^\d+$/.test(numeric) || Number.isSafeInteger(Number(numeric))) return match;
-    return integerIds.has(JSON.parse(key)) ? key + colon + JSON.stringify(numeric) : match;
-  });
-  return JSON.parse(exact);
-}
 const paths = {
   current: '/api/proxy-traffic/current',
   history: '/api/proxy-traffic/history',
@@ -72,7 +54,7 @@ export function createProxyApi(): ProxyTrafficApi {
         state: query.state,
         search: query.search.trim(),
       });
-      return normalizeProxyPage(view, await request(paths[view] + '?' + params, { signal }, parseProxyPage));
+      return normalizeProxyPage(view, await request(paths[view] + '?' + params, { signal }, parseTaskJson));
     },
     async summary(signal) {
       const payload = await request<ProxySummary>('/api/proxy-traffic/summary', { signal });

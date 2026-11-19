@@ -42,7 +42,7 @@ def _handle(context):
     if not invalid:
         return task_gateway.OperationResult.success({"inspection_outcome":"valid","checked":True,"invalid":False},message="AT 本地有效，无需网络请求")
     summary={"checked":True,"invalid":True}
-    with context.lease(resource_family=context.resource_family):
+    with context.lease(resource_family=context.resource_family, scope_kind="final"):
         snapshot={"email":account["email"],"token":str(account.get("access_token") or "")}
 
         def write_result(result):
@@ -65,6 +65,8 @@ def _handle(context):
                 context.checkpoint()
             except (task_gateway.OperationLeaseLost,OperationCancelled):
                 raise
+            except (task_gateway.OperationSettlementPending, task_gateway.OperationSettlementConflict, task_gateway.OperationSettlementFenced):
+                raise
             except Exception as exc:
                 plan={"ok":False,"error":task_run_log.redact_text(str(exc),500)}
             try:
@@ -72,6 +74,8 @@ def _handle(context):
                     expected_email=snapshot["email"],expected_token=snapshot["token"]):
                     plan={"ok":False,"error":"账号套餐结果未能保存"}
             except (task_gateway.OperationLeaseLost,OperationCancelled):
+                raise
+            except (task_gateway.OperationSettlementPending, task_gateway.OperationSettlementConflict, task_gateway.OperationSettlementFenced):
                 raise
             except Exception as exc:
                 # AT 已确认落库；套餐存储故障不能改写成认证失败。
@@ -120,11 +124,22 @@ def _retry_parent(task):
     return start_inspection(workers=int(data.get("workers",3)),archived=data.get("archived","0"))
 
 
+def _cancel_parent(task):
+    return cancel_inspection(task["id"])
+
+
+def register_actions():
+    task_gateway.register_operation_actions(store.ITEM_TYPE,
+        retry_handler=task_gateway.default_operation_retry, cancel_handler=_cancel_item,
+        terminate_handler=task_gateway.default_operation_terminate)
+    task_gateway.register_operation_actions(store.PARENT_TYPE,retry_handler=_retry_parent,
+        cancel_handler=_cancel_parent,terminate_handler=_cancel_parent)
+
+
 def register_operation_handlers():
     task_gateway.register_operation_handler(store.ITEM_TYPE,_handle,config_allowlist=CONFIG_ALLOWLIST,
         cancel_handler=_cancel_item)
-    task_gateway.register_operation_actions(store.PARENT_TYPE,retry_handler=_retry_parent,
-        cancel_handler=lambda task:cancel_inspection(task["id"]),terminate_handler=lambda task:cancel_inspection(task["id"]))
+    register_actions()
     return True
 
 
@@ -141,4 +156,4 @@ def start_inspection(*,workers=None,archived="0",idempotency_key=None):
     return {"id":task_id,"task_id":task_id,"created":created}
 
 
-register_operation_handlers()
+register_actions()

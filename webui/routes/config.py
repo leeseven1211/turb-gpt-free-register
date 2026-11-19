@@ -150,20 +150,26 @@ def create_config_blueprint(context: WebUIContext):
             }), 500
 
         restart_required = result.get("restart_required", [])
-        reload_ok = bool(result.get("reloaded"))
-        if reload_ok and restart_required:
-            note = f"✅ 已保存并热加载；{', '.join(restart_required)} 需重启后完整生效"
-        elif reload_ok:
-            note = "✅ 已保存并热加载，新值立即生效"
+        reload_ok = bool(result.get("web_reloaded", result.get("reloaded")))
+        if reload_ok:
+            note = "✅ 已保存并在 Web 进程加载；Worker 应用状态待确认"
         else:
-            note = "⚠️ 已保存但尚未热加载，需重启 Web 服务才能生效"
+            note = "⚠️ 已保存，Web 进程尚未加载；Worker 应用状态待确认"
+        if restart_required:
+            note += f"；{', '.join(restart_required)} 需重启后完整生效"
         return jsonify({
             "ok": True,
             "updated": result["updated"],
             "ignored": result["ignored"],
             "restart_required": restart_required,
             "reloaded": reload_ok,
+            "web_reloaded": reload_ok,
             "config_revision": result["config_revision"],
+            "local_snapshot_revision": result.get("local_snapshot_revision", result["config_revision"]),
+            "persisted_db_revision": result.get("persisted_db_revision"),
+            "worker_application": result.get("worker_application", {
+                "state": "unknown", "applied_db_revision": None,
+            }),
             "note": note,
         })
 

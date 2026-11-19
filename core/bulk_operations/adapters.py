@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 
 from core.accounts.completion import completion_plan
 from core.bulk_operations.catalog import normalize_parameters
+from core.bulk_operations import preflight_policy
 from core.operations import task_gateway
 from core.storage import records
 from core.storage.operations import store
@@ -59,6 +60,11 @@ def prepare_many(targets: Sequence[Mapping], *, context: Mapping, conn, prefligh
     if not account_ids:
         return [{"target": dict(target), "disposition": "not_executable", "reason_code": "account_missing"} for target in targets]
     key, snapshot = _key(context), _settings(context)
+    if preflight_only and key == "plan_check":
+        return preflight_policy.prepare_plan_check(
+            targets, settings=snapshot, conn=conn, account_table=records._qualified(records.ACCOUNTS),
+            run_table=store._table('operation_runs'), job_table=records._qualified(records.JOBS),
+            active_statuses=store._ACTIVE_RUN_STATUSES)
     if preflight_only and key in {"plan_check", "token_refresh", "codex_retry"}:
         # 只读资格不需要解压账号会话、历史结果或凭据；与执行时重检分开。
         with conn.cursor() as cur:
@@ -71,7 +77,8 @@ def prepare_many(targets: Sequence[Mapping], *, context: Mapping, conn, prefligh
         accounts = {int(row["id"]): row for row in records.list_rows(records.ACCOUNTS, where="id=ANY(%s)", params=(account_ids,), conn=conn)}
     active = {}
     with conn.cursor() as cur:
-        cur.execute(f"SELECT id,task_id,account_id,resource_family FROM {store._table('operation_runs')} WHERE account_id=ANY(%s) AND status=ANY(%s)",
+        order = " ORDER BY id" if key == "plan_check" else ""
+        cur.execute(f"SELECT id,task_id,account_id,resource_family FROM {store._table('operation_runs')} WHERE account_id=ANY(%s) AND status=ANY(%s){order}",
                     (account_ids, list(store._ACTIVE_RUN_STATUSES)))
         for row in cur.fetchall():
             active.setdefault(int(row["account_id"]), dict(row))
@@ -89,6 +96,13 @@ def prepare_many(targets: Sequence[Mapping], *, context: Mapping, conn, prefligh
     for target in targets:
         account = accounts.get(_identity(target))
         item = {"target": dict(target), "account": account, "disposition": "ready", "reason_code": None, "blocker_run_id": None}
+        if key == "plan_check":
+            item.update(preflight_policy.plan_check_result(
+                account, blocker_run_id=(active.get(_identity(target)) or {}).get("id"),
+                registration_busy=(_identity(target) in busy_accounts or str((account or {}).get("email") or "").strip().lower() in busy_emails),
+                settings=snapshot))
+            prepared.append(item)
+            continue
         if not account:
             item.update(disposition="not_executable", reason_code="account_missing")
         elif store._account_is_deactivated(account):
@@ -99,8 +113,6 @@ def prepare_many(targets: Sequence[Mapping], *, context: Mapping, conn, prefligh
             item.update(disposition="waiting_account", reason_code="account_busy", blocker_run_id=int(active[_identity(target)]["id"]))
         elif _identity(target) in busy_accounts or str(account.get("email") or "").strip().lower() in busy_emails:
             item.update(disposition="waiting_account", reason_code="registration_in_progress")
-        elif key == "plan_check" and not account.get("access_token") and not snapshot.get("auto_refresh_at_enabled", True):
-            item.update(disposition="not_executable", reason_code="access_token_missing")
         elif key == "token_refresh":
             from core.accounts.liveness import service as live_service
             if not str(account.get("access_token") or "").strip():
@@ -114,14 +126,14 @@ def prepare_many(targets: Sequence[Mapping], *, context: Mapping, conn, prefligh
                 if unavailable:
                     item.update(disposition="not_executable", reason_code=unavailable.get("error_code") or "operation_unavailable")
         elif key in {"password_setup", "twofa_setup", "account_completion"}:
-            from core.accounts import operation_coordinator as coordinator
+            from core.accounts import operation_settings
             from core.runtime.capabilities import account_setup_unavailable
             plan = completion_plan(account, snapshot)
             item["plan"] = plan
             steps = set(plan["missing_steps"]) if key == "account_completion" else {"password" if key == "password_setup" else "twofa"}
             scope = tuple(sorted(steps))
             if scope not in availability:
-                availability[scope] = coordinator._completion_deployment_unavailable(steps, snapshot) if key == "account_completion" else account_setup_unavailable(steps, snapshot)
+                availability[scope] = operation_settings.completion_deployment_unavailable(steps, snapshot) if key == "account_completion" else account_setup_unavailable(steps, snapshot)
             unavailable = availability[scope]
             if unavailable:
                 item.update(disposition="not_executable", reason_code=unavailable.get("error_code") or "operation_unavailable")
@@ -267,7 +279,7 @@ def _submit_fresh(conn, items: Sequence[Mapping], context: Mapping) -> dict[int,
             "plan_check_status": "queued", "plan_check_ok": False, "plan_check_trigger": "manual_bulk",
             "plan_check_queued_at": now, "plan_check_started_at": None, "plan_check_deadline_at": None,
             "plan_check_completed_at": None, "plan_check_error": None, "updated_at": now,
-        }, where=f"id=ANY(%s) AND ({guard})", params=([int(item["account"]["id"]) for item in eligible], *guard_params), conn=conn)
+        }, where=f"id=ANY(%s) AND ({guard})", params=([int(item["account"]["id"]) for item in eligible], *guard_params), conn=conn, id_only=True)
         allowed = {int(row["id"]) for row in claimed}
         for item in eligible:
             if int(item["account"]["id"]) not in allowed:
@@ -279,7 +291,7 @@ def _submit_fresh(conn, items: Sequence[Mapping], context: Mapping) -> dict[int,
         from core.storage import db_legacy
         guard, guard_params = db_legacy._stage_claim_guard("live_check", require_alive=True)
         claimed = records.patch_rows_where_returning(records.ACCOUNTS, changes=_refresh_queue_changes(now),
-            where=f"id=ANY(%s) AND ({guard})", params=([int(item["account"]["id"]) for item in eligible], *guard_params), conn=conn)
+            where=f"id=ANY(%s) AND ({guard})", params=([int(item["account"]["id"]) for item in eligible], *guard_params), conn=conn, id_only=True)
         allowed = {int(row["id"]) for row in claimed}
         for item in eligible:
             if int(item["account"]["id"]) not in allowed:

@@ -21,6 +21,34 @@ class TaskPreflightReportingTests(unittest.TestCase):
     def _scenario(self, service, *, native=True):
         events = []
         execution = []
+        cleanups, obligations, resources = {}, [], {}
+
+        def register_cleanup(cleanup, *, key, blocking=True, before_transition=False):
+            self.assertNotIn(key, cleanups)
+            self.assertTrue(blocking)
+            cleanups[key] = cleanup
+            return cleanup
+
+        def add_settlement_obligation(action_kind, *, resource_identity, payload, blocks_permit=True):
+            self.assertEqual("resource_release", action_kind)
+            self.assertTrue(blocks_permit)
+            obligations.append((resource_identity, dict(payload)))
+
+        def register_resource(run_id, *, resource_type, provider="", external_id="", detail=None):
+            self.assertEqual(902, run_id)
+            self.assertEqual("proxy_lease", resource_type)
+            resource_id = len(resources) + 1
+            row = {"id": resource_id, "resource_uuid": f"preflight-route-{resource_id}",
+                   "released": False}
+            resources[resource_id] = row
+            return dict(row)
+
+        def release_resource(resource_id, *, state="released", detail=None):
+            self.assertIn(resource_id, resources)
+            self.assertEqual("released", state)
+            self.assertFalse(resources[resource_id]["released"])
+            resources[resource_id]["released"] = True
+            return True
 
         def report(*_args, **event):
             events.append(dict(event))
@@ -33,6 +61,7 @@ class TaskPreflightReportingTests(unittest.TestCase):
         context = SimpleNamespace(
             task_id=901,
             run_id=902,
+            execution_id="preflight-execution-902",
             account_id=7,
             email="fixture@example.test",
             run={"data": {}},
@@ -42,6 +71,8 @@ class TaskPreflightReportingTests(unittest.TestCase):
             checkpoint=Mock(),
             is_cancel_requested=Mock(return_value=False),
             lease=Mock(side_effect=lambda **_kwargs: nullcontext()),
+            register_cleanup=register_cleanup,
+            add_settlement_obligation=add_settlement_obligation,
         )
         database = Mock()
         database.mark_account_plan_check_running.return_value = True
@@ -76,12 +107,23 @@ class TaskPreflightReportingTests(unittest.TestCase):
                 service.account_task_store, "finish_task",
                 side_effect=lambda *_args, **kwargs: finish(**kwargs),
             ))
+            # Preserve real route ownership and cleanup; only its storage is synthetic.
+            stack.enter_context(patch(
+                "core.accounts.operation_results.operation_task_store.register_resource",
+                side_effect=register_resource,
+            ))
+            stack.enter_context(patch(
+                "core.accounts.operation_results.operation_task_store.release_resource",
+                side_effect=release_resource,
+            ))
             network = stack.enter_context(patch("core.proxy.account_routes.acquire_account_proxy", side_effect=acquire))
             if service is plan_check_service:
                 remote = stack.enter_context(patch.object(service, "_query_account_plan", side_effect=query))
             else:
                 stack.enter_context(patch.object(service, "_append_log"))
                 stack.enter_context(patch.object(service, "_resolve_protocol_identity", return_value=None))
+                # This progress fixture does not exercise configured-country detection.
+                stack.enter_context(patch.object(service, "_resolve_at_refresh_country", return_value="US"))
                 stack.enter_context(patch.object(service, "token_claims", return_value={}))
                 remote = stack.enter_context(patch.object(service, "run_probe", side_effect=query))
             yield SimpleNamespace(
@@ -95,6 +137,11 @@ class TaskPreflightReportingTests(unittest.TestCase):
                 remote=remote,
                 finish=context.finish if native else legacy_finish,
             )
+            self.assertEqual(len(resources), len(cleanups))
+            self.assertEqual(len(resources), len(obligations))
+            # Observe the service's release; do not invoke cleanup from the fixture.
+            self.assertTrue(all(cleanup.release_confirmed for cleanup in cleanups.values()))
+            self.assertTrue(all(row["released"] for row in resources.values()))
 
     def _run(self, service, scenario, **kwargs):
         arguments = {
@@ -434,9 +481,11 @@ class TaskPreflightReportingTests(unittest.TestCase):
         service = codex_token_refresh_service
         for unknown in (False, True):
             with self.subTest(unknown=unknown):
+                lease = SimpleNamespace(token="preflight-refresh-lease", heartbeat=Mock(return_value=True))
                 context = SimpleNamespace(
                     task_id=901,
                     run_id=902,
+                    execution_id="preflight-refresh-execution-902",
                     account_id=7,
                     email="fixture@example.test",
                     run={"data": {"credential_filename": "fixture-codex.json"}},
@@ -445,7 +494,7 @@ class TaskPreflightReportingTests(unittest.TestCase):
                     checkpoint=Mock(),
                     is_cancel_requested=Mock(return_value=False),
                     finish=Mock(),
-                    lease=Mock(side_effect=lambda **_kwargs: nullcontext()),
+                    lease=Mock(side_effect=lambda **_kwargs: nullcontext(lease)),
                 )
                 error = (
                     service.TokenRefreshRequestUnknownError("远端结果待确认")

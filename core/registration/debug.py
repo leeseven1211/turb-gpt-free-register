@@ -27,6 +27,7 @@ from urllib.request import Request, urlopen
 from config import registration_debug as _cfg
 from core.network.response_diagnostics import auth_error_from_body, auth_submission_endpoint, is_auth_session_diagnostic, otp_resend_success_from_body, safe_auth_error, safe_response_headers
 from core.operations.stages import EVENT_TYPES, normalize_stage, normalize_wait_reason
+from core.runtime.paths import legacy_log_roots, task_log_root
 
 logger = logging.getLogger('core.registration_debug')
 
@@ -72,8 +73,9 @@ def _is_expected_data_saver_failure(item: dict[str, Any] | None) -> bool:
 
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
-_ARTIFACT_ROOT = _PROJECT_ROOT / "logs" / "debug"
+_ARTIFACT_ROOT = task_log_root() / "debug"
 _LEGACY_ARTIFACT_ROOT = _PROJECT_ROOT / "注册日志" / "debug"
+_ADDITIONAL_LEGACY_ARTIFACT_ROOTS = tuple(root / "debug" for root in legacy_log_roots())
 _CURRENT_SESSION: contextvars.ContextVar["RegistrationDebugSession | None"] = contextvars.ContextVar(
     "registration_debug_session",
     default=None,
@@ -610,7 +612,8 @@ class RegistrationDebugSession:
         otp_wait_symptom = (
             self.job.get("job_type") in {"registration", "registration_resume"}
             and (self.failure_stage or self.current_stage) == "email_otp"
-            and (code in {"", "unknown.unclassified", "browser_stage_timeout", "email_submit_unconfirmed"}
+            and (code in {"", "unknown.unclassified", "browser_stage_timeout", "email_submit_unconfirmed",
+                          "email_otp_failure_diagnostics_missing"}
                  or code.endswith("_receipt_missing")
                  or (code == "external.email" and re.search(r"(?<![\w])otp_request_unconfirmed(?![\w])", str(reason))))
         )
@@ -618,7 +621,7 @@ class RegistrationDebugSession:
         # 结构化拒绝原因，不改变登录分支、提交回执或任务的远端结果状态。
         password_page_symptom = (
             (self.failure_stage or self.current_stage) == "login_password"
-            and code in {"", "unknown.unclassified", "password_page_error"}
+            and code in {"", "unknown.unclassified", "password_page_error", "login_password_failure_diagnostics_missing"}
         )
         if ((cause == "auth_cloudflare_challenge" and (_challenge_explains_error(info) or roxy_email_symptom))
                 or (cause == "roxy_proxy_tunnel_failed" and transport_symptom)
@@ -2196,12 +2199,15 @@ def _artifact_dir_for_job(job: dict) -> Path:
     if resolved == resolved_root or resolved_root in resolved.parents:
         return resolved
 
-    legacy_root = _LEGACY_ARTIFACT_ROOT.resolve()
-    if resolved == legacy_root or legacy_root in resolved.parents:
-        mapped = resolved_root / resolved.relative_to(legacy_root)
-        if mapped.exists():
-            return mapped
-        return resolved
+    for legacy in (_LEGACY_ARTIFACT_ROOT, *_ADDITIONAL_LEGACY_ARTIFACT_ROOTS):
+        legacy_root = legacy.resolve()
+        if resolved == legacy_root or legacy_root in resolved.parents:
+            mapped = (resolved_root / resolved.relative_to(legacy_root)).resolve()
+            if mapped != resolved_root and resolved_root not in mapped.parents:
+                raise ValueError("调试产物路径不在允许目录")
+            if mapped.exists():
+                return mapped
+            return resolved
 
     raise ValueError("调试产物路径不在允许目录")
 
@@ -2386,6 +2392,10 @@ def delete_job_artifacts(job: dict) -> None:
     try:
         path = _artifact_dir_for_job(job)
     except ValueError:
+        return
+    # 白名单只让旧材料继续可读；新实例不删除旧 release 的恢复证据。
+    resolved_root = _ARTIFACT_ROOT.resolve()
+    if path != resolved_root and resolved_root not in path.parents:
         return
     if not path.exists():
         return

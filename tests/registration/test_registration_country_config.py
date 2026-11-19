@@ -166,8 +166,8 @@ class RegistrationCountrySaveMigrationTests(unittest.TestCase):
 
     def test_unrelated_config_change_does_not_persist_a_registration_country(self):
         with self.temporary_editor_environment("PROXY_POOL_DEFAULT_COUNTRY=US\n"):
-            result = config_editor.update_config({"ACCOUNT_BATCH_WORKERS": 4})
-            self.assertEqual(["ACCOUNT_BATCH_WORKERS"], result["updated"])
+            result = config_editor.update_config({"REGISTRATION_PROXY_RETRIES": 2})
+            self.assertEqual(["REGISTRATION_PROXY_RETRIES"], result["updated"])
             self.assertNotIn("REGISTRATION_COUNTRY", runtime.read_persisted_values())
 
     def test_old_supplier_country_fields_also_freeze_the_previous_country(self):

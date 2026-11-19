@@ -4,6 +4,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from core.accounts import completion_execution, operation_settings
 from core.accounts import completion as account_completion_service
 from core.operations import task_gateway
 from webui import runtime
@@ -14,7 +15,7 @@ class CompletionContinuationTests(unittest.TestCase):
         active = patch.object(account_completion_service, "active_registration_job", return_value=None)
         active.start()
         self.addCleanup(active.stop)
-        settings = patch.object(runtime, "_completion_settings_from_snapshot", return_value={})
+        settings = patch.object(operation_settings, "completion_settings_from_snapshot", return_value={})
         settings.start()
         self.addCleanup(settings.stop)
 
@@ -44,7 +45,7 @@ class CompletionContinuationTests(unittest.TestCase):
         context = self._context(data)
         context.last_result = task_gateway.OperationResult.success()
         with (
-            patch.object(runtime, "_run_account_completion_worker") as worker,
+            patch.object(completion_execution, "run_account_completion_worker") as worker,
             patch.object(runtime.db, "get_account", return_value={"id": 41}),
             patch.object(account_completion_service, "completion_plan", return_value={"missing_steps": missing_steps}) as plan,
         ):

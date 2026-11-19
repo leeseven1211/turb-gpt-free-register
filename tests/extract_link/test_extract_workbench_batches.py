@@ -5,6 +5,7 @@ import threading
 import unittest
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -16,6 +17,7 @@ from core.storage import records as record_store
 from core.storage.extract_link import batches as extract_link_batches, jobs as extract_link_jobs
 from core.storage.operations import store as operation
 from tests.support_pg import PostgresTestCase
+from tests.support_settlement import NativeSettlementAbort, install_native_settlement_fixture
 
 
 class ExtractWorkbenchBatchValidationTests(unittest.TestCase):
@@ -272,6 +274,20 @@ class ExtractWorkbenchBatchStorageTests(PostgresTestCase):
 
     def setUp(self):
         operation.init()
+        self._pending_dispatch_patch_stack = None
+        if self._testMethodName in {
+            "test_dispatch_reserves_batch_and_provider_capacity_before_extract_workers",
+            "test_dispatch_supports_fifty_workers_and_preserves_lower_capacity_limits",
+        }:
+            # Per-test TRUNCATE removes the native domain capability marker.
+            operation.reset_ready()
+            operation.init()
+            self.settlement_fixture = install_native_settlement_fixture(self)
+
+    def tearDown(self):
+        fixture = getattr(self, "settlement_fixture", None)
+        if fixture is not None:
+            fixture.close()
 
     def test_cancel_batch_covers_all_pages_and_preserves_other_tasks(self):
         batch = operation.create_runtime_batch(batch_type="extract_link", title="待取消批次", requested_count=203,
@@ -527,6 +543,8 @@ class ExtractWorkbenchBatchStorageTests(PostgresTestCase):
         from core.storage import runtime_config
         from config.concurrency import policy_values
 
+        if self._pending_dispatch_patch_stack is not None:
+            raise NativeSettlementAbort("previous dispatch capacity case retains native dependencies")
         if not hasattr(self, "_concurrency_test_key"):
             self._concurrency_test_key = Fernet.generate_key().decode()
         encryption = patch.dict(os.environ, {"TURB_CONFIG_ENCRYPTION_KEY": self._concurrency_test_key})
@@ -546,6 +564,15 @@ class ExtractWorkbenchBatchStorageTests(PostgresTestCase):
         started = threading.Condition()
         active = []
         errors = []
+        released_runs = set()
+
+        def wait_for_original_releases():
+            with started:
+                completed = set(active) - released_runs
+            for run_id in sorted(completed):
+                self.settlement_fixture.wait_for_run_released(run_id)
+            released_runs.update(completed)
+
         def handler(run_id):
             try:
                 context = concurrency.current_execution()
@@ -556,47 +583,57 @@ class ExtractWorkbenchBatchStorageTests(PostgresTestCase):
                     active.append(run_id)
                     started.notify_all()
                 release.wait(timeout=10)
-                operation.finish_run(run_id, status="success", execution_id=context.execution_id)
+                task_gateway.OperationHandlerContext(
+                    run, execution_id=context.execution_id,
+                ).finish(status="success")
             except Exception as exc:
                 errors.append(exc)
+        patches = ExitStack()
+        self._pending_dispatch_patch_stack = patches
+        # Native fixture cleanup closes the original carrier before restoring
+        # these dependencies if a subcase fails. Never unwind live actors.
+        self.addCleanup(patches.close)
         try:
-            with (
-                patch("core.operations.executor.configured_workers", return_value=shared_workers),
-                patch.object(task_gateway, "_extract_executor", return_value=executor),
-                patch.dict(task_gateway._DISPATCH_HANDLERS, {}, clear=True),
-                patch.dict(task_gateway._DISPATCH_CAPACITY_HANDLERS, {}, clear=True),
-                patch.object(extract_link_service, "_provider_dispatch_capacity_limit", return_value=provider_limit),
-            ):
-                task_gateway.register_dispatch_handler("extract_link", handler,
-                    dispatch_capacity_key=extract_link_service._provider_dispatch_capacity_key,
-                    dispatch_capacity_limit=extract_link_service._provider_dispatch_capacity_limit)
-                dispatch_limit = max(20, len(tasks))
-                self.assertEqual(expected_first, task_gateway.dispatch_registered_once(limit=dispatch_limit))
-                with started:
-                    self.assertTrue(started.wait_for(lambda: len(active) == expected_first, timeout=10))
-                if expected_indices is None:
-                    expected_indices = [0, *range(2, expected_first + 1)]
-                self.assertEqual({tasks[index]["run"]["id"] for index in expected_indices}, set(active))
-                self.assertEqual(shared_workers - expected_first, executor.available_slots())
-                self.assertEqual(0, task_gateway.dispatch_registered_once(limit=dispatch_limit))
-                release.set()
-                # 等待真实 worker 终态与容量回调，再运行剩余任务。
+            patches.enter_context(patch("core.operations.executor.configured_workers", return_value=shared_workers))
+            patches.enter_context(patch.object(task_gateway, "_extract_executor", return_value=executor))
+            patches.enter_context(patch.dict(task_gateway._DISPATCH_HANDLERS, {}, clear=True))
+            patches.enter_context(patch.dict(task_gateway._DISPATCH_CAPACITY_HANDLERS, {}, clear=True))
+            patches.enter_context(patch.object(extract_link_service, "_provider_dispatch_capacity_limit", return_value=provider_limit))
+            task_gateway.register_dispatch_handler("extract_link", handler,
+                dispatch_capacity_key=extract_link_service._provider_dispatch_capacity_key,
+                dispatch_capacity_limit=extract_link_service._provider_dispatch_capacity_limit)
+            dispatch_limit = max(20, len(tasks))
+            self.assertEqual(expected_first, task_gateway.dispatch_registered_once(limit=dispatch_limit))
+            with started:
+                self.assertTrue(started.wait_for(lambda: len(active) == expected_first, timeout=10))
+            if expected_indices is None:
+                expected_indices = [0, *range(2, expected_first + 1)]
+            self.assertEqual({tasks[index]["run"]["id"] for index in expected_indices}, set(active))
+            self.assertEqual(shared_workers - expected_first, executor.available_slots())
+            self.assertEqual(0, task_gateway.dispatch_registered_once(limit=dispatch_limit))
+            release.set()
+            # 等待真实 callback 退出及原 permit/cleanup 闭合，再运行剩余任务。
+            with executor._condition:
+                self.assertTrue(executor._condition.wait_for(lambda: executor._accepted == 0, timeout=10))
+            wait_for_original_releases()
+            remaining = len(tasks) - expected_first
+            while remaining:
+                dispatched = task_gateway.dispatch_registered_once(limit=dispatch_limit)
+                self.assertGreater(dispatched, 0)
+                remaining -= dispatched
                 with executor._condition:
                     self.assertTrue(executor._condition.wait_for(lambda: executor._accepted == 0, timeout=10))
-                remaining = len(tasks) - expected_first
-                while remaining:
-                    dispatched = task_gateway.dispatch_registered_once(limit=dispatch_limit)
-                    self.assertGreater(dispatched, 0)
-                    remaining -= dispatched
-                    with executor._condition:
-                        self.assertTrue(executor._condition.wait_for(lambda: executor._accepted == 0, timeout=10))
-                self.assertEqual([], errors)
+                wait_for_original_releases()
+            self.assertEqual([], errors)
         finally:
             release.set()
             if executor._executor:
                 executor._executor.shutdown(wait=True)
             for task in tasks:
                 task_gateway.release_dispatch(task["run"]["id"])
+        # Only a proven successful case may restore dispatch dependencies.
+        patches.close()
+        self._pending_dispatch_patch_stack = None
 
     def test_batch_creation_persists_membership_and_filtered_task_counts(self):
         ids = self.accounts([{}, {}, {"email_source": "domain"}])

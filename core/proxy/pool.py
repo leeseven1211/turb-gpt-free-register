@@ -285,6 +285,9 @@ def _validate_lifetime(provider: str, options: dict, policy: dict) -> None:
 
 def start(*, prewarm: bool = False) -> None:
     """显式启动或按首次申请启动；重启先收口失效库存，不复活任务租约。"""
+    from core.runtime.execution_access import component_start_allowed
+    if not component_start_allowed():
+        return
     global _prewarm
     policy = settings()
     record_store.init()
@@ -307,12 +310,25 @@ def _ensure_workers(count: int) -> None:
                 thread.start()
 
 
-def stop() -> None:
+def stop(timeout: float = 3.0) -> bool:
+    from core.runtime.periodic import StopBudget, join_stopped
+    budget = StopBudget(timeout)
     _stop.set()
     _wake.set()
-    for thread in list(_threads):
-        if thread is not threading.current_thread():
-            thread.join(timeout=1)
+    if not _lock.acquire(timeout=budget.remaining()):
+        return False
+    try:
+        threads = tuple(_threads)
+    finally:
+        _lock.release()
+    stopped = all([join_stopped(thread, budget) for thread in threads])
+    if not _lock.acquire(timeout=budget.remaining()):
+        return False
+    try:
+        # Recheck the current collection as configuration/start may race stop.
+        return stopped and all(not thread.is_alive() for thread in _threads)
+    finally:
+        _lock.release()
 
 
 atexit.register(stop)
@@ -384,6 +400,8 @@ def acquire(*, provider: str = "1024proxy", progress_callback=None, cancel=None,
             static_urls: list[str] | None = None, _source_resolver=None,
             _claim_scope: dict | None = None, **kwargs):
     """任务只等待已校验库存；默认持续等待，可显式限制领取期限。"""
+    from core.runtime.execution_access import require_execution_component
+    require_execution_component()
     from core.operations.runtime import check_cancelled
 
     policy = settings()
@@ -798,6 +816,10 @@ def _worker(index: int) -> None:
     turn = 0
     while not _stop.is_set():
         try:
+            from core.runtime.execution_access import execution_support_allowed
+            if not execution_support_allowed():
+                _stop.wait(0.25)
+                continue
             workers = settings()["workers"]
             if index >= workers:
                 return
@@ -858,3 +880,14 @@ def snapshot() -> dict:
             "worker_budget_local": {"supply": (policy["workers"] + 1) // 2,
                                     "check": policy["workers"] // 2,
                                     "alternating": policy["workers"] == 1}}
+
+
+def worker_status() -> dict:
+    """Local pool lifecycle; does not read inventory or provider settings."""
+    with _lock:
+        workers = sum(bool(thread.is_alive()) for thread in _threads)
+        stopping = bool(workers and _stop.is_set())
+        return {"started": bool(_threads), "alive": bool(workers),
+                "workers_alive": workers, "running": bool(workers and not stopping),
+                "idle": False, "stopping": stopping,
+                "state": "stopping" if stopping else "running" if workers else "stopped"}

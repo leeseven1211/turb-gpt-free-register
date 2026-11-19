@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import json
 from concurrent.futures import ThreadPoolExecutor
+from core.runtime.periodic import PeriodicThread
+from tests.runtime.test_periodic_lifecycle import FakeThread
 from unittest.mock import patch
 
 from core.storage import codex, records
 from core.storage.operations import store as operation
+from core.storage.operations import legacy_task_store
 from core.operations import task_gateway
 from tests.support_pg import PostgresTestCase
+from tests.support_settlement import install_native_settlement_fixture
 
 
 class Sub2ApiJobTests(PostgresTestCase):
@@ -18,6 +22,8 @@ class Sub2ApiJobTests(PostgresTestCase):
         from core.storage import sub2api as store
 
         self.jobs, self.store = jobs, store
+        self.enterContext(patch.object(legacy_task_store, "_SCHEMA", self.schema))
+        self.enterContext(patch.object(legacy_task_store, "_READY_KEY", ""))
         operation.reset_ready()
         operation.init()
         store.init()
@@ -44,9 +50,15 @@ class Sub2ApiJobTests(PostgresTestCase):
         ):
             mocked.start()
             self.addCleanup(mocked.stop)
+        self.settlement_fixture = install_native_settlement_fixture(self, timeout=10)
+
+    def tearDown(self):
+        self.settlement_fixture.close()
 
     def execute(self, run_id):
-        return task_gateway._execute_operation_handler("sub2api_sync", run_id)
+        result = task_gateway._execute_operation_handler("sub2api_sync", run_id)
+        self.settlement_fixture.wait_for_run_released(run_id)
+        return result
 
     def rows(self):
         return self.store.list_jobs(filename=self.filename)
@@ -418,7 +430,8 @@ class Sub2ApiJobTests(PostgresTestCase):
 
     def test_invalid_configuration_does_not_interrupt_runtime_startup(self):
         with (
-            patch.object(self.jobs, "_STARTED", False),
+            patch.object(self.jobs, "_SCHEDULER", PeriodicThread("test-sub2api")),
+            patch("core.runtime.process.get_runtime_context", return_value=None),
             patch.object(self.jobs, "_enabled", return_value=True),
             patch.object(
                 self.jobs,
@@ -427,11 +440,11 @@ class Sub2ApiJobTests(PostgresTestCase):
                     "configuration", "sub2api_config_invalid", "模拟配置为空"
                 ),
             ),
-            patch.object(self.jobs.threading, "Thread") as thread,
+            patch.object(self.jobs.threading, "Thread", side_effect=FakeThread) as thread,
             self.assertLogs(self.jobs.logger, level="WARNING") as logged,
         ):
             self.assertTrue(self.jobs.start_periodic_sync())
-            thread.return_value.start.assert_called_once()
-            self.assertTrue(self.jobs._STARTED)
+            thread.assert_called_once()
+            self.assertTrue(self.jobs.scheduler_status()["alive"])
             self.assertIn("sub2api_config_invalid", " ".join(logged.output))
             self.assertIn("sub2api_sync", task_gateway.registered_operation_types())

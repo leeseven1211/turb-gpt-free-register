@@ -21,6 +21,17 @@ class _Context:
         self.started = []
         self.receipts = []
         self.state = ""
+        self.cleanups = {}
+        self.obligations = []
+
+    def register_cleanup(self, cleanup, *, key, blocking=True, before_transition=False):
+        if key in self.cleanups:
+            raise AssertionError("duplicate fixture cleanup identity")
+        self.cleanups[key] = cleanup
+        return cleanup
+
+    def add_settlement_obligation(self, action_kind, *, resource_identity, payload, blocks_permit=True):
+        self.obligations.append((action_kind, resource_identity, dict(payload), blocks_permit))
 
     def remote_request_started(self, action, **kwargs):
         self.started.append((action, kwargs))
@@ -56,6 +67,19 @@ class AtNetworkRecoveryTests(unittest.TestCase):
         account = {"id": 7, "email": EMAIL, "access_token": "fixture-old"}
         iterator = iter(outcomes)
         calls = []
+        resources = {}
+
+        def register_resource(run_id, *, resource_type, provider="", external_id="", detail=None):
+            resource_id = len(resources) + 1
+            row = {"id": resource_id, "resource_uuid": f"fixture-at-route-{resource_id}", "released": False}
+            resources[resource_id] = row
+            return dict(row)
+
+        def release_resource(resource_id, *, state="released", detail=None):
+            self.assertIn(resource_id, resources)
+            self.assertEqual("released", state)
+            resources[resource_id]["released"] = True
+            return True
 
         def acquire(**kwargs):
             acquisitions.append(kwargs)
@@ -97,6 +121,9 @@ class AtNetworkRecoveryTests(unittest.TestCase):
                 patch.object(service, "_append_log"), patch.object(service, "_checkpoint"),
                 patch.object(service, "token_claims", return_value={}),
                 patch.object(service, "_resolve_protocol_identity", return_value=None),
+                # Keep real ownership/cleanup; only its durable storage is synthetic.
+                patch("core.accounts.operation_results.operation_task_store.register_resource", side_effect=register_resource),
+                patch("core.accounts.operation_results.operation_task_store.release_resource", side_effect=release_resource),
                 patch("core.proxy.account_routes.acquire_account_proxy", side_effect=acquire),
                 patch("core.accounts.liveness.protocol.v2.refresh_access_token", side_effect=refresh),
                 patch("core.accounts.liveness.protocol.v3.refresh_access_token", side_effect=refresh),
@@ -107,6 +134,13 @@ class AtNetworkRecoveryTests(unittest.TestCase):
             result = service._run_live_check(account_id=7, email=EMAIL, proxy=proxy, trigger="fixture",
                 force_refresh=True, refresh_driver=driver, operation_context=context, config_snapshot=snapshot,
                 completion_auth=completion_auth, on_authenticated=on_authenticated)
+            if context is not None:
+                self.assertEqual(len(routes), len(context.cleanups))
+                self.assertEqual(len(routes), len(context.obligations))
+                # Do not drain here: that would hide a missing service release.
+                self.assertTrue(all(cleanup.release_confirmed for cleanup in context.cleanups.values()))
+                self.assertTrue(all(row["released"] for row in resources.values()))
+                self.assertTrue(all(route.release.call_count == 1 for route in routes))
         return result, calls, routes, acquisitions, reporter
 
     def test_network_failure_isolated_then_new_route_succeeds_for_all_drivers(self):

@@ -5,5 +5,11 @@ window.ProxyTraffic = window.createPageBridge({
   mount: 'mountProxyTraffic',
   initialView: 'pool',
   notify: message => showToast(`代理与流量加载失败：${message}`),
-  dependencies: () => ({facetLabel, notify: message => showToast(message)}),
+  dependencies: () => ({
+    facetLabel,
+    notify: message => showToast(message),
+    onReady: () => markViewReady('proxy-traffic'),
+  }),
 });
+
+function loadProxyTraffic(view = null) {return window.ProxyTraffic.load(view);}

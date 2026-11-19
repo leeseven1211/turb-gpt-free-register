@@ -313,11 +313,14 @@ _RELOADABLE_SUBMODULES = (
 
 _RELOAD_LOCK = _threading.RLock()
 _DEFERRED_PUBLICATION = _ContextVar("runtime_config_deferred_publication", default=None)
+_APPLIED_DB_REVISION = None  # DB counter; independent of ConfigSnapshot.revision.
+
 
 
 @_contextmanager
 def deferred_publication():
     """数据库事务提交前不向任务读者发布候选快照。"""
+    global _APPLIED_DB_REVISION
     existing = _DEFERRED_PUBLICATION.get()
     if existing is not None:
         yield existing
@@ -328,7 +331,12 @@ def deferred_publication():
         yield holder
         if "candidate" in holder:
             from config.schema import publish_config_snapshot
-            holder["published"] = publish_config_snapshot(holder["candidate"])
+            guard = holder.get("before_publish")
+            if guard is None:
+                holder["published"] = publish_config_snapshot(holder["candidate"])
+            else:
+                holder["published"] = publish_config_snapshot(holder["candidate"], before_publish=guard)
+            _APPLIED_DB_REVISION = holder.get("db_revision")
     finally:
         _DEFERRED_PUBLICATION.reset(token)
 
@@ -371,6 +379,7 @@ def reload_all() -> list[str]:
     子模块或顶层同步失败时全部恢复。新 snapshot 读者只会看到旧版或新版；
     旧式直接读取模块常量的读者仍受逐模块 reload 迁移边界约束。
     """
+    global _APPLIED_DB_REVISION
     with _RELOAD_LOCK:
         # 先确保已有稳定旧版本；这样并发读者不会在本次候选 reload 期间
         # 首次初始化并发布一份可能需要回滚的环境快照。
@@ -412,6 +421,7 @@ def reload_all() -> list[str]:
             deferred = _DEFERRED_PUBLICATION.get()
             if deferred is None:
                 publish_config_snapshot(candidate_snapshot)
+                _APPLIED_DB_REVISION = None
             else:
                 deferred["candidate"] = candidate_snapshot
             return reloaded
@@ -437,6 +447,50 @@ def reload_all() -> list[str]:
                 globals().pop(key, None)
             globals().update(package_before)
             raise
+
+
+def apply_runtime_snapshot(values: dict[str, str], db_revision: int, *, before_publish=None) -> tuple[int, int]:
+    """Strictly apply one committed DB image; return DB and local revisions.
+
+    Never opens a DB transaction or reloads bootstrap. The observer's deadline
+    fence runs while the old immutable snapshot is still published. A failed
+    validation/reload/fence/publisher restores modules, env, facade and snapshot.
+    """
+    from config import runtime, schema
+    from config.env_loader import restore_environment
+
+    if isinstance(db_revision, bool) or not isinstance(db_revision, int) or db_revision < 0:
+        raise ValueError("runtime_config_invalid_revision")
+    with _RELOAD_LOCK:
+        if _DEFERRED_PUBLICATION.get() is not None:
+            raise RuntimeError("runtime_config_nested_publication")
+        if _APPLIED_DB_REVISION is not None and _APPLIED_DB_REVISION >= db_revision:
+            # Web save may have committed a newer image while observer was
+            # reading. Never overwrite it with a stale candidate.
+            if before_publish is not None:
+                before_publish()
+            return _APPLIED_DB_REVISION, schema.non_sensitive_snapshot().revision
+        # Freeze the old snapshot before any candidate projection, including
+        # the very first observer application in this process.
+        schema.non_sensitive_snapshot()
+        with runtime.pinned_values(values):
+            saved = capture_reload_state()
+            environment_before = dict(_os.environ)
+            try:
+                with deferred_publication() as publication:
+                    reload_all()
+                    publication["db_revision"] = db_revision
+                    publication["before_publish"] = before_publish
+                    if before_publish is not None:
+                        before_publish()
+            except BaseException:
+                restore_environment(environment_before, dict(_os.environ))
+                restore_reload_state(saved)
+                raise
+            # Invalidate facade cache only after successful publication. Future
+            # readers may observe newer persisted data, never an old cache image.
+            runtime.reset_cache()
+            return db_revision, schema.non_sensitive_snapshot().revision
 
 
 def _refresh_top_level_constants() -> None:

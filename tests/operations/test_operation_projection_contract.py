@@ -4,6 +4,7 @@ from unittest import TestCase
 from unittest.mock import Mock, patch
 
 from core.storage.operations import store as operation
+from core.storage.operations import projection as operation_projection
 from webui.routes import jobs
 
 
@@ -134,7 +135,7 @@ class OperationProjectionContractTests(TestCase):
 
     def test_batch_refresh_deduplicates_and_sorts_only_explicit_ids(self):
         cursor = Mock()
-        with patch.object(operation, "_refresh_batch") as refresh:
+        with patch.object(operation_projection, "_refresh_batch") as refresh:
             operation._refresh_batches(cursor, [7, 2, 7, None, 4])
 
         self.assertEqual([(cursor, 2), (cursor, 4), (cursor, 7)], [call.args for call in refresh.call_args_list])

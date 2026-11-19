@@ -1,46 +1,43 @@
 # 控制台前端
 
-总览、代理与流量、提链历史统计、历史子邮箱和批次列表使用 Vue 3、TypeScript 和 Vite，沿用现有导航外壳、样式和同域 API。
+控制台使用 Vue 3、TypeScript 和 Vite，十个页面入口覆盖总览、注册、账号、任务中心、批量任务、邮箱、代理与流量、Codex 凭证、配置和提链。各页面沿用现有导航外壳、样式和同域 API。[架构收敛](../docs/architecture/convergence.md)描述各层职责。
 
-## 安装与验证
+## 安装、生成与验证
 
-要求 Node.js 22.12 或更高版本。依赖版本以 `package-lock.json` 为准，保留候选架构版本的锁文件，以便复用同版本的通用组件。
+要求 Node.js 22.12 或更高版本，依赖以 `package-lock.json` 为准。错误目录生成检查使用 Python 3 标准库，无需连接数据库。
 
 ```sh
 npm ci
+npm run generate:api
+npm run generate:labels
 npm run check
 npm run build
 ```
 
-`check` 执行 TypeScript 检查与 `src/**/*.test.ts` 行为测试。测试使用合成数据和请求替身，不连接数据库或生产服务。
+`check` 校验生成契约、TypeScript 和 `src/**/*.test.ts` 行为测试。测试使用合成数据和请求替身，不连接数据库或生产服务。OpenAPI 类型源位于 `contracts/`，生成的 `src/api/*schema.d.ts` 不手工维护。运行时 API 与错误处理集中在 `src/api/`，页面通过显式类型和依赖回调连接外壳。
 
-`build` 从 `src/dashboard.ts`、`src/proxy.ts`、`src/extractStats.ts`、`src/emailHistory.ts` 和 `src/bulk.ts` 分别生成页面模块。
+错误短语源为 `core/operations/error_labels.py`；修改后运行 `npm run generate:labels`，将生成的 `src/generated/task-error-labels.json` 一同提交。构建会校验目录一致性，依据与覆盖清单见[错误分类目录](../docs/architecture/task-error-catalog.md)。
 
-- `webui/static/dashboard/dashboard.js`
-- `webui/static/dashboard/dashboard.css`
-- `webui/static/proxy/proxy.js`
-- `webui/static/proxy/proxy.css`
-- `webui/static/extractStats/extractStats.js`
-- `webui/static/extractStats/extractStats.css`
-- `webui/static/emailHistory/emailHistory.js`
-- `webui/static/emailHistory/emailHistory.css`
-- `webui/static/bulk/bulk.js`
-- `webui/static/bulk/bulk.css`
+列表按[统一交互规范](../docs/architecture/list-ui.md)复用 `ListCell`、`ListResult`、`ListPagination` 和 `FilterPopover`。筛选从表头打开，桌面与手机入口共用编辑器；筛选、分页、选择、数据和轮询状态由各 Vue 页面拥有。完整错误码与证据保留在展开区。
 
-源码、锁文件和各页面的 JS、CSS 产物一同发布。在相同工具链下重复构建，产物应保持一致。
+## 构建与外壳接口
 
-## 外壳接口
+`build` 一次生成十个模块到 `webui/static/task-center/`：`dashboard.js`、`registration.js`、`accounts.js`、`task-center.js`、`bulk.js`、`email.js`、`proxy.js`、`codex.js`、`config.js`、`extract.js`，共用 `task-center.css` 与按内容命名的共享模块。构建不清空目录；源码、锁文件、生成类型和产物一同发布。Flask 模板对外壳、桥接脚本及所有页面产物使用统一内容版本作为缓存参数。
 
-总览模块导出 `mountDashboard(element, dependencies)`。外壳传入导航、通知、能力更新和就绪回调，通过返回句柄控制可见性、刷新、自定义布局与卸载。挂载时默认不可见，由外壳调用 `setVisible(true)` 后开始读取。
+外壳负责导航和可见性，各模块导出显式挂载函数，返回刷新、范围切换、弹窗关闭和销毁方法。页面隐藏、导航切换或销毁时停止相应读取与轮询，并丢弃已失效的迟到响应。账号与 Codex 的归档范围仍通过原菜单进入。
 
-总览页读取 `/api/dashboard` 和 `/api/capabilities`。卡片按钮调用导航回调，布局偏好保存在 `gpt_console_overview_preferences_v1`。
+总览读取 `/api/dashboard` 和 `/api/capabilities`，卡片动作使用导航回调，布局偏好保存在 `gpt_console_overview_preferences_v1`。代理库存和记录通过 `setView('pool' | 'records')` 切换；提链统计保留独立菜单和北京时间统计范围；历史子邮箱由邮箱页面管理，可筛选和复制已有记录。
 
-代理模块导出 `mountProxyTraffic(element, dependencies)`。左栏在库存与记录间切换时调用 `setView('pool' | 'records')`。页面通过 GET 读取 `/api/proxy-pool` 和 `/api/proxy-traffic/` 下的 `current`、`history`、`traffic`、`summary`。两个页面隐藏或卸载时均会停止轮询并丢弃未完成响应。
+页面继续沿用 `shell.css` 与基础样式，Vue 局部样式和原生弹窗滚动锁包含在共用 CSS 中。`npm run dev` 默认代理 `/api` 与 `/static` 到 `http://127.0.0.1:8000`，仅连接已确认的本地开发服务。
 
-历史统计模块导出 `mountExtractStats`。打开「提链统计」按选定的平台和时间范围读取报表，统计时间使用北京时间。
+## 合成预览与验收范围
 
-历史子邮箱模块导出 `mountEmailHistory`，在邮箱子菜单或库存行的「查看历史」打开后读取已有记录。母邮箱范围可从列表的筛选条件中移除。
+从项目根目录运行：
 
-页面沿用现有 `shell.css` 与基础样式；产物 CSS 包含总览 Vue 的局部样式及原生弹窗必需的背景滚动锁。
+```sh
+python tools/diagnostics/preview_task_center.py --port 8017
+```
 
-`npm run dev` 默认代理 `/api` 与 `/static` 到 `http://127.0.0.1:8000`；仅连接已确认的本地开发服务。它提供模块开发服务，不代替现有 Flask 导航外壳。
+预览使用内存合成任务，不加载 `.env`、不连接数据库、不启动 Worker，也不发送外部业务请求。可检查导航、筛选、分页、详情、进度、日志、窄屏和键盘行为。
+
+后端相关测试通过 `tools/test_isolated.py` 在非生产测试库执行。合成预览和隔离测试不代表真实注册、外部服务或生产性能验收。

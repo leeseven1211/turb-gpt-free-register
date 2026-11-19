@@ -16,17 +16,21 @@ import requests
 
 from config import codex as _cfg
 from core.runtime import scheduler_state
+from core.runtime.periodic import PeriodicThread
 from core.operations import run_log as task_run_log
 from core.operations import task_gateway
 from core.storage import codex as db
 from core.storage.operations import runtime as operation_runtime_store
 from core.operations.runtime import OperationCancelled
+from core.operations.settlement_contracts import (
+    OperationSettlementPending, OperationSettlementConflict, OperationSettlementFenced,
+)
 from core.operations.executor import operation_log_context
 
 logger = logging.getLogger('core.codex_token_refresh_service')
 
 _LOCK = threading.RLock()
-_SCHEDULER_STARTED = False
+_SCHEDULER = PeriodicThread("codex-token-refresh-producer")
 _HANDLER_REGISTERED = False
 _HANDLER_LOCK = threading.RLock()
 TASK_TYPE = "codex_token_refresh"
@@ -502,6 +506,104 @@ def _clear_refresh_marker_after_terminal(filename: str) -> bool:
     return True
 
 
+def _read_settlement_marker(conn, filename: str, *, for_update: bool = False) -> dict | None:
+    """Read an already initialized original table without a global schema check."""
+    from core.storage import postgres, records
+
+    with conn.cursor() as cur:
+        cur.execute(
+            f"SELECT *, xmin::text AS __record_version FROM {postgres.qualified('codex_credentials')} "
+            "WHERE filename=%s" + (" FOR UPDATE" if for_update else ""),
+            (filename,),
+        )
+        return records.merge_row(records.CODEX_CREDENTIALS, cur.fetchone())
+
+
+def _patch_settlement_marker(conn, row: Mapping[str, Any], changes: Mapping[str, Any]) -> bool:
+    """CAS only this original credential row; never initialize or migrate tables."""
+    from core.storage import postgres
+
+    with conn.cursor() as cur:
+        cur.execute(
+            f"UPDATE {postgres.qualified('codex_credentials')} "
+            "SET data=data || %s::jsonb, updated_at=%s "
+            "WHERE id=%s AND filename=%s AND xmin::text=%s",
+            (json.dumps(dict(changes)), _iso_utc(_utc_now()), int(row["id"]),
+             str(row["filename"]), str(row["__record_version"])),
+        )
+        return cur.rowcount == 1
+
+
+def _capture_settlement_marker(
+    filename: str, run_id: int, updated: Mapping[str, Any], *,
+    execution_id: str, lease_token: str,
+) -> dict:
+    """Bind the verified credential projection to one original Run and row version."""
+    from core.storage import postgres
+    from psycopg.rows import dict_row
+
+    marker_version = uuid.uuid4().hex
+    with postgres.connect(row_factory=dict_row) as conn:
+        with conn.cursor() as cur:
+            operation_runtime_store.fence_execution(
+                cur, run_id, execution_id=execution_id, lease_token=lease_token,
+            )
+        row = _read_settlement_marker(conn, filename, for_update=True)
+        content = (row or {}).get("content") or {}
+        if not row or row.get("oauth_refresh_error") != _PENDING_MARKER or any(
+            str(content.get(name) or "") != str(updated.get(name) or "")
+            for name in ("access_token", "refresh_token")
+        ):
+            raise TokenRefreshRequestUnknownError(
+                "refresh marker credential generation changed", credential_persisted=True,
+            )
+        if not _patch_settlement_marker(
+            conn, row,
+            {"oauth_refresh_settlement_run_id": int(run_id),
+             "oauth_refresh_settlement_version": marker_version,
+             "oauth_refresh_settlement_state": "pending"},
+        ):
+            raise TokenRefreshRequestUnknownError(
+                "refresh marker generation changed", credential_persisted=True,
+            )
+        stamped = _read_settlement_marker(conn, filename)
+        return {
+            "filename": filename, "credential_id": int(row["id"]), "run_id": int(run_id),
+            "marker_version": marker_version,
+            "expected_record_version": str(stamped["__record_version"]),
+            "expected_mtime": str(stamped.get("mtime") or ""),
+        }
+
+
+def apply_settlement_marker(payload: Mapping[str, Any], *, deadline: float | None = None) -> bool | dict:
+    """Clear only the exact original pending marker; a newer generation is untouched."""
+    from core.storage import postgres
+    from psycopg.rows import dict_row
+
+    with postgres.connect(row_factory=dict_row, deadline=deadline) as conn:
+        row = _read_settlement_marker(conn, str(payload["filename"]), for_update=True)
+        if not row:
+            return {"state": "superseded", "original_resource_disposition": "superseded"}
+        if (
+            int(row["id"]) != int(payload["credential_id"])
+            or int(row.get("oauth_refresh_settlement_run_id") or 0) != int(payload["run_id"])
+            or str(row.get("oauth_refresh_settlement_version") or "") != str(payload["marker_version"])
+        ):
+            return {"state": "superseded", "original_resource_disposition": "superseded"}
+        if row.get("oauth_refresh_settlement_state") == "cleared" and row.get("oauth_refresh_error") is None:
+            return True
+        if (
+            str(row["__record_version"]) != str(payload["expected_record_version"])
+            or str(row.get("mtime") or "") != str(payload["expected_mtime"])
+            or row.get("oauth_refresh_error") != _PENDING_MARKER
+        ):
+            raise OperationSettlementConflict("Codex original marker projection changed")
+        return _patch_settlement_marker(
+            conn, row,
+            {"oauth_refresh_error": None, "oauth_refresh_settlement_state": "cleared"},
+        )
+
+
 def _persist_refreshed_credential(
     actual_filename: str,
     updated: Mapping[str, Any],
@@ -586,6 +688,9 @@ def _perform_refresh(
     defer_refresh_marker_clear: bool = False,
     persist_pending: bool = True,
     sync_sub2api: bool = True,
+    marker_run_id: int | None = None,
+    marker_fence: Mapping[str, Any] | None = None,
+    marker_domain: Any = None,
 ) -> dict[str, Any]:
     """Run the single refresh attempt shared by native and compatibility handlers."""
     cancel = is_cancel_requested or (lambda: False)
@@ -895,6 +1000,15 @@ def _perform_refresh(
                        else {"status": "deferred_to_original_targets"})
     except Exception as exc:
         sync_result = {"status": "failed", "error": _safe_error(exc)}
+    settlement_marker = None
+    if defer_refresh_marker_clear and marker_run_id is not None:
+        from core.storage.operations.common import settlement_scope
+        with settlement_scope(marker_domain):
+            fence = marker_fence or {}
+            settlement_marker = _capture_settlement_marker(
+                actual_filename, marker_run_id, updated,
+                execution_id=str(fence["execution_id"]), lease_token=str(fence["lease_token"]),
+            )
     summary = {
         "ok": True,
         "status": "success",
@@ -916,6 +1030,8 @@ def _perform_refresh(
     }
     if sync_result.get("status") == "failed":
         summary["sub2_sync_error"] = _safe_text(sync_result.get("error"))
+    if settlement_marker:
+        summary["_settlement_marker"] = settlement_marker
     _report(
         report,
         stage="refresh_token",
@@ -1243,7 +1359,7 @@ def _handle_operation_context(context: Any) -> Any:
         if not account_id:
             report(stage="preflight", state="failed", level="ERROR", message="durable refresh task 缺少 account_id")
             raise TokenRefreshError("durable refresh task 缺少 account_id")
-        with context.lease(resource_family=RESOURCE_FAMILY, ttl_seconds=600) as lease:
+        with context.lease(resource_family=RESOURCE_FAMILY, ttl_seconds=600, scope_kind="final") as lease:
             _update_account_state(email, execution_status="running", active_run_id=run_id)
             snapshot = getattr(context, "config_snapshot", {})
             snapshot = snapshot if isinstance(snapshot, Mapping) else {}
@@ -1268,6 +1384,9 @@ def _handle_operation_context(context: Any) -> Any:
                     on_remote_receipt=on_remote_receipt,
                     defer_refresh_marker_clear=True,
                     sync_sub2api=not bool(_run_data(run).get("sub2api_sync_deferred")),
+                    marker_run_id=run_id,
+                    marker_fence={"execution_id": context.execution_id, "lease_token": lease.token},
+                    marker_domain=getattr(context, "settlement_domain", None),
                 )
         _update_account_state(
             email,
@@ -1277,6 +1396,15 @@ def _handle_operation_context(context: Any) -> Any:
             error=None,
             active_run_id=0,
         )
+        result = dict(result)
+        marker = result.pop("_settlement_marker", None)
+        if marker:
+            context.add_settlement_obligation(
+                "codex_refresh_marker",
+                resource_identity=f"{marker['filename']}:{marker['marker_version']}",
+                payload=marker,
+                blocks_permit=True,
+            )
         terminal_result = _b_operation_result(
             "success",
             message="Codex OAuth Token 刷新成功",
@@ -1286,8 +1414,9 @@ def _handle_operation_context(context: Any) -> Any:
         # metadata clear, the producer still sees request_pending and the
         # recovery path promotes it to reconcile instead of refreshing again.
         context.finish(terminal_result)
-        _clear_refresh_marker_after_terminal(str(result.get("filename") or filename))
         return None
+    except (OperationSettlementPending, OperationSettlementConflict, OperationSettlementFenced):
+        raise
     except OperationAccountDeactivated as exc:
         summary = {
             "filename": filename,
@@ -1869,31 +1998,28 @@ def _scheduler_loop() -> None:
         enabled=scheduler_enabled,
         interval_seconds=scheduler_interval_seconds,
         initial_delay_seconds=initial,
+        stop=_SCHEDULER.stop_event,
+        lifecycle=_SCHEDULER,
     )
 
 
 def start_periodic_refresher() -> bool:
-    """启动唯一巡检线程；关闭自动刷新时保留休眠线程以支持热启用。"""
-    global _SCHEDULER_STARTED
-    with _LOCK:
-        if _SCHEDULER_STARTED:
-            return False
-        try:
-            _register_worker()
-            # 此线程只生产任务；claim、资源租约和执行仍由共享 gateway 负责。
-            threading.Thread(target=_scheduler_loop, name="codex-token-refresh-producer", daemon=True).start()
-        except Exception:
-            logger.exception("[Codex Token Refresh] 调度器启动失败，可再次启动")
-            return False
-        _SCHEDULER_STARTED = True
-    logger.info(
-        "[Codex Token Refresh] 调度器已启动 enabled=%s interval=%ss before=%sh max_per_cycle=%s",
-        scheduler_enabled(),
-        scheduler_interval_seconds(),
-        getattr(_cfg, "CODEX_TOKEN_REFRESH_BEFORE_HOURS", 24),
-        getattr(_cfg, "CODEX_TOKEN_REFRESH_MAX_PER_CYCLE", 20),
-    )
-    return True
+    """Start one observable producer; work remains behind runtime admission."""
+    try:
+        started = _SCHEDULER.start(_scheduler_loop, before_start=_register_worker)
+    except Exception:
+        logger.exception("Periodic scheduler start failed; it may be retried")
+        return False
+
+    return started
+
+
+def stop_periodic_refresher(timeout: float = 2.0) -> bool:
+    return _SCHEDULER.stop(timeout)
+
+
+def scheduler_status() -> dict:
+    return _SCHEDULER.status(enabled=scheduler_enabled())
 
 
 def resume_queued(*, limit: int | None = None) -> int:

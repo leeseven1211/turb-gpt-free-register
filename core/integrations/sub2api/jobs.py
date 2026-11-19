@@ -9,6 +9,7 @@ from core.integrations.sub2api import client
 from core.operations import task_gateway
 from core.operations.runtime import OperationCancelled
 from core.runtime import scheduler_state
+from core.runtime.periodic import PeriodicThread
 from core.storage import codex, records, sub2api as store
 
 logger = logging.getLogger(__name__)
@@ -16,7 +17,7 @@ TASK_TYPE = "sub2api_sync"
 RESOURCE_FAMILY = "openai_interactive"
 credential_generation = store.credential_generation
 _START_LOCK = threading.Lock()
-_STARTED = False
+_SCHEDULER = PeriodicThread("sub2api-sync-producer")
 
 
 class _Superseded(RuntimeError):
@@ -172,9 +173,23 @@ def _submit(row, conn):
     )
 
 
+def register_actions() -> None:
+    task_gateway.register_operation_actions(
+        TASK_TYPE,
+        retry_handler=task_gateway.default_operation_retry,
+        cancel_handler=task_gateway.default_operation_cancel,
+        terminate_handler=task_gateway.default_operation_terminate,
+    )
+
+
+def register_handler() -> None:
+    task_gateway.register_operation_handler(TASK_TYPE, _handle, config_allowlist=())
+    register_actions()
+
+
 def enqueue_due():
     """只投递已存在的补传记录，绝不产生 OAuth 或 Token 刷新任务。"""
-    task_gateway.register_operation_handler(TASK_TYPE, _handle, config_allowlist=())
+    register_handler()
     backend = client.configured_backend_identity()
     result = store.enqueue_due(backend, _submit, include_retries=_enabled())
     # 已存在的 queued Run 也要唤醒；重启后由共享 dispatcher 收口失去 worker 的 Run。
@@ -184,7 +199,7 @@ def enqueue_due():
 
 def _handle(context):
     data = context.run.get("data") or {}
-    with context.lease(resource_family=RESOURCE_FAMILY):
+    with context.lease(resource_family=RESOURCE_FAMILY, scope_kind="final"):
         row = store.begin(int(data["sync_job_id"]), generation=str(data["generation"]), run_id=context.run_id)
         if row is None:
             return task_gateway.OperationResult.success({"superseded": True}, message="旧代际补传已由新凭证接续")
@@ -333,6 +348,8 @@ def _scheduler_loop():
         enabled=_scheduler_ready,
         interval_seconds=lambda: 15,
         initial_delay_seconds=0,
+        stop=_SCHEDULER.stop_event,
+        lifecycle=_SCHEDULER,
     )
 
 
@@ -346,27 +363,40 @@ def _scheduler_ready():
     return store.has_dispatch_requests(backend)
 
 
-def start_periodic_sync():
-    """关闭时保留休眠线程以支持热启用；恢复仍由 PostgreSQL 与 durable 网关裁决。"""
-    global _STARTED
-    with _START_LOCK:
-        if _STARTED:
-            return False
-        task_gateway.register_operation_handler(TASK_TYPE, _handle, config_allowlist=())
-        threading.Thread(target=_scheduler_loop, name="sub2api-sync-producer", daemon=True).start()
-        _STARTED = True
-        if _enabled():
-            try:
-                enqueue_due()
-            except client.Sub2ApiSyncError as exc:
-                logger.warning("Sub2API 初始补传暂缓：阶段=%s 原因=%s；配置修正后自动恢复", exc.stage, exc.code)
-            except Exception as exc:
-                logger.warning(
-                    "Sub2API 初始补传暂缓：原因=sub2api_sync_startup_failed 类型=%s；后台稍后继续", type(exc).__name__
-                )
-        return True
+def _register_scheduler_handler() -> None:
+    register_handler()
+
+
+def start_periodic_sync() -> bool:
+    """Start one observable producer; work remains behind runtime admission."""
+    try:
+        started = _SCHEDULER.start(_scheduler_loop, before_start=_register_scheduler_handler)
+    except Exception:
+        logger.exception("Periodic scheduler start failed; it may be retried")
+        return False
+
+    # Managed loop starts at delay=0 and obeys admission. Preserve the old
+    # synchronous best-effort request only for an unmanaged standalone caller.
+    from core.runtime.process import get_runtime_context
+    if started and get_runtime_context() is None and _enabled():
+        try:
+            enqueue_due()
+        except client.Sub2ApiSyncError as exc:
+            logger.warning("Sub2API startup enqueue deferred: stage=%s code=%s", exc.stage, exc.code)
+        except Exception as exc:
+            logger.warning("Sub2API startup enqueue deferred: %s", type(exc).__name__)
+
+    return started
+
+
+def stop_periodic_sync(timeout: float = 2.0) -> bool:
+    return _SCHEDULER.stop(timeout)
+
+
+def scheduler_status() -> dict:
+    return _SCHEDULER.status(enabled=_enabled())
 
 
 def status():
     counts = store.job_counts()
-    return {"enabled": _enabled(), "started": _STARTED, "counts": counts, "total": sum(counts.values())}
+    return {**scheduler_status(), "counts": counts, "total": sum(counts.values())}

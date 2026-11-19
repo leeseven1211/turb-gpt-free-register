@@ -66,6 +66,10 @@ OPTIONAL_VUE_PAGES = (
     ("extractStats", "webui/templates/partials/extract_stats.html", "提链统计页"),
     ("bulk", "webui/templates/index.html", "批次列表页"),
 )
+TASK_CENTER_ENTRYPOINTS = (
+    "task-center", "accounts", "bulk", "codex", "config", "dashboard",
+    "email", "extract", "proxy", "registration",
+)
 
 
 class ReleaseError(ValueError):
@@ -203,19 +207,34 @@ def _validate_project_files(root: Path, *, pre_dashboard_release: bool = False) 
     if not re.search(r"(?m)^\s*requires-python\s*=\s*[\"']>=3\.10[\"']\s*$", text):
         raise ReleaseError("pyproject.toml 必须声明 Python >=3.10")
     if not pre_dashboard_release and (root / FRONTEND_PACKAGE).is_file():
-        for name in (FRONTEND_LOCK, *DASHBOARD_ASSETS):
-            if not (root / name).is_file():
-                raise ReleaseError(f"总览前端发布文件缺失: {name}")
-        for page, template_name, label in OPTIONAL_VUE_PAGES:
-            asset = f"{page}/{page}"
-            files = (f"frontend/src/{page}.ts", f"webui/static/{asset}.js", f"webui/static/{asset}.css")
-            template = root / template_name
-            linked = template.is_file() and f"{asset}.js" in template.read_text(encoding="utf-8")
-            if not linked and not any((root / name).exists() for name in files):
-                continue
-            for name in files:
+        if not (root / FRONTEND_LOCK).is_file():
+            raise ReleaseError(f"总览前端发布文件缺失: {FRONTEND_LOCK}")
+        task_center = root / "webui/static/task-center"
+        if task_center.exists() or (root / "worker.py").is_file():
+            for page in TASK_CENTER_ENTRYPOINTS:
+                source_name = "main" if page == "task-center" else page
+                for name in (
+                    f"frontend/src/{source_name}.ts",
+                    f"webui/static/task-center/{page}.js",
+                ):
+                    if not (root / name).is_file():
+                        raise ReleaseError(f"任务中心发布文件缺失: {name}")
+            if not (task_center / "task-center.css").is_file():
+                raise ReleaseError("任务中心发布文件缺失: webui/static/task-center/task-center.css")
+        else:
+            for name in DASHBOARD_ASSETS:
                 if not (root / name).is_file():
-                    raise ReleaseError(f"{label}发布文件缺失: {name}")
+                    raise ReleaseError(f"总览前端发布文件缺失: {name}")
+            for page, template_name, label in OPTIONAL_VUE_PAGES:
+                asset = f"{page}/{page}"
+                files = (f"frontend/src/{page}.ts", f"webui/static/{asset}.js", f"webui/static/{asset}.css")
+                template = root / template_name
+                linked = template.is_file() and f"{asset}.js" in template.read_text(encoding="utf-8")
+                if not linked and not any((root / name).exists() for name in files):
+                    continue
+                for name in files:
+                    if not (root / name).is_file():
+                        raise ReleaseError(f"{label}发布文件缺失: {name}")
     try:
         return _lock_checker()(root)
     except Exception as exc:

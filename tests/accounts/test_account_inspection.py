@@ -14,8 +14,10 @@ from core.operations import run_log as task_run_log
 from core.accounts.inspection import service as service
 from core.storage.accounts import inspections as store
 from core.storage.operations import store as operation
+from core.storage.operations import legacy_task_store
 from core.operations import task_gateway
 from tests.support_pg import PostgresTestCase
+from tests.support_settlement import install_native_settlement_fixture
 
 
 def token(exp):
@@ -55,12 +57,18 @@ class InspectionTokenTests(TestCase):
 
 class AccountInspectionTests(PostgresTestCase):
     def setUp(self):
+        self.enterContext(patch.object(legacy_task_store, "_SCHEMA", self.schema))
+        self.enterContext(patch.object(legacy_task_store, "_READY_KEY", ""))
         operation.reset_ready()
         operation.init()
         self.dispatch=patch.object(task_gateway,"notify_dispatch")
         self.dispatch.start()
         self.addCleanup(self.dispatch.stop)
         service.register_operation_handlers()
+        self.settlement_fixture = install_native_settlement_fixture(self, timeout=10)
+
+    def tearDown(self):
+        self.settlement_fixture.close()
 
     def account(self,n=1,**extra):
         data={"email":f"inspection-{n}@example.test","access_token":token(time.time()+3600),

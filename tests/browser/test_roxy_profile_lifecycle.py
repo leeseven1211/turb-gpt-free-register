@@ -7,6 +7,7 @@ from unittest.mock import ANY, Mock, call, patch
 
 from core.browser.roxy import client as roxybrowser_client
 from core.registration import dispatcher
+from core.runtime import standalone as runtime_standalone
 from core.browser.roxy.client import RoxyBrowserClient, RoxyOpenResult
 
 
@@ -508,13 +509,25 @@ class RoxyProfileLifecycleTests(unittest.TestCase):
             "profile_id": "profile-1",
         }
         expected = {"success": True}
+        before = (runtime_standalone._OWNER, runtime_standalone._BINDING, runtime_standalone._LOST)
+        was_lost = before[2].is_set()
         with patch.object(dispatcher._roxy_cfg, "REGISTRATION_DRIVER", "roxybrowser"), patch(
             "core.registration.roxy.run_roxy_registration", return_value=expected
-        ) as run_roxy:
+        ) as run_roxy, patch(
+            "core.registration.standalone.run_registration_in_context",
+            side_effect=lambda driver, kwargs, **_options: driver(**kwargs),
+        ), patch.object(
+            runtime_standalone, "require_standalone_owner",
+            side_effect=AssertionError("parameter forwarding must not enter process ownership"),
+        ):
             result = dispatcher.run_registration(**args)
 
         self.assertIs(result, expected)
         self.assertEqual(run_roxy.call_args.kwargs["profile_id"], "profile-1")
+        after = (runtime_standalone._OWNER, runtime_standalone._BINDING, runtime_standalone._LOST)
+        for original, current in zip(before, after):
+            self.assertIs(current, original)
+        self.assertEqual(runtime_standalone._LOST.is_set(), was_lost)
 
 
 if __name__ == "__main__":

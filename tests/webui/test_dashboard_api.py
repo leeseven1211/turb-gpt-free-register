@@ -47,7 +47,34 @@ class _DashboardMarkup(HTMLParser):
 
 class DashboardUiScriptTests(unittest.TestCase):
     MODERN_COMMON_JS = Path(__file__).resolve().parents[2] / "webui/static/js/shared/common.js"
-    MODERN_CODEX_JS = Path(__file__).resolve().parents[2] / "webui/static/js/pages/codex/page.js"
+
+    def test_account_vue_list_preserves_toolbar_filters_columns_and_actions(self):
+        # Accounts mount lazily. Execute their production Vue owners instead of
+        # treating source concatenation as server-rendered account controls.
+        frontend = Path(__file__).resolve().parents[2] / "frontend"
+        result = subprocess.run(
+            ["node", "node_modules/vitest/vitest.mjs", "run",
+             "src/features/accounts/AccountsToolbar.test.ts",
+             "src/features/accounts/AccountFilters.test.ts",
+             "src/features/accounts/AccountsTable.test.ts",
+             "src/features/accounts/AccountsList.test.ts",
+             "src/shared/useColumnWidths.test.ts",
+             "src/features/accounts/actions.test.ts",
+             "src/features/accounts/setupActions.test.ts",
+             "src/features/accounts/queuedActions.test.ts"],
+            cwd=frontend, check=False, capture_output=True, text=True, timeout=120,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_account_menu_and_legacy_column_preferences_use_real_compatibility_contracts(self):
+        root = Path(__file__).resolve().parents[2]
+        result = subprocess.run(
+            ["node", "--test", "tests/accounts/test_account_more_menu_frontend.cjs",
+             "tests/accounts/test_account_column_resize_frontend.cjs",
+             "tests/accounts/test_accounts_vue_bridge.cjs"],
+            cwd=root, check=False, capture_output=True, text=True, timeout=120,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_compact_account_keeps_registration_driver_without_private_metadata(self):
         from webui.route_helpers import _compact_account_for_list
@@ -60,10 +87,45 @@ class DashboardUiScriptTests(unittest.TestCase):
         self.assertNotIn("extra_json", compact)
         self.assertNotIn("access_token", compact)
 
-    # The ten overview rendering/layout regressions now mount the production Vue
-    # owner in tests/webui/test_dashboard_vue_contracts.cjs. That suite also checks
-    # request coalescing and polling, and runs in the frontend CI job. Keeping it
-    # there allows these Python/backend checks to run without frontend dependencies.
+    def _run_dashboard_vue_contract(self, case):
+        # Execute the current Vue owner instead of slicing retired page.js helpers.
+        root = Path(__file__).resolve().parents[2]
+        result = subprocess.run(
+            ["node", "--test", "--test-name-pattern", case,
+             "tests/webui/test_dashboard_vue_contracts.cjs"],
+            cwd=root, check=False, capture_output=True, text=True, timeout=120,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_dashboard_proxy_platform_labels_follow_current_source_and_keep_legacy_aliases(self):
+        self._run_dashboard_vue_contract("dashboard proxy labels preserve current and historical identities")
+
+    def test_dashboard_proxy_summary_displays_at_most_three_exit_leases(self):
+        self._run_dashboard_vue_contract("dashboard proxy summary keeps at most three rendered exit leases and full compact total")
+
+    def test_dashboard_hides_unavailable_cards_and_email_sources(self):
+        self._run_dashboard_vue_contract("dashboard unavailable capabilities and empty inventory suppress their cards")
+
+    def test_dashboard_preferences_keep_order_and_remove_unknown_cards(self):
+        self._run_dashboard_vue_contract("dashboard layout normalization preserves order and prunes unknown hidden ids")
+
+    def test_overview_card_sizes_are_saved_and_bounded(self):
+        self._run_dashboard_vue_contract("dashboard layout restores bounded widths and heights without unknown cards")
+
+    def test_overview_card_reorder_can_place_card_after_target(self):
+        self._run_dashboard_vue_contract("dashboard customizer drag reorders within a region without crossing regions")
+
+    def test_overview_drag_uses_vertical_midpoint_across_grid_rows(self):
+        self._run_dashboard_vue_contract("dashboard pointer sorting uses vertical midpoint across grid rows and saves after target")
+
+    def test_overview_exposes_new_aggregate_cards(self):
+        self._run_dashboard_vue_contract("dashboard exposes all aggregate queue history health and Codex progress cards")
+
+    def test_overview_data_rich_cards_explain_compact_hidden_rows(self):
+        self._run_dashboard_vue_contract("dashboard rich cards retain compact and minimal overflow summaries")
+
+    def test_overview_compact_cards_keep_full_counts_and_priority_rows(self):
+        self._run_dashboard_vue_contract("dashboard compact priority rows keep nonzero results visible through summary evidence")
 
     def test_task_error_ui_uses_short_code_and_summary_instead_of_raw_message(self):
         source = self.MODERN_COMMON_JS.read_text(encoding="utf-8")
@@ -91,36 +153,29 @@ console.log('ok');
         self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
         self.assertEqual(result.stdout.strip(), "ok")
 
-    def test_codex_export_badge_shows_sub2api_link_as_associated(self):
-        source = self.MODERN_CODEX_JS.read_text(encoding="utf-8")
-        start = source.index("function _codexStatusBadge")
-        end = source.index("function _codexOauthBadge", start)
-        function_source = source[start:end]
-        harness = f"""
-function esc(value) {{ return String(value ?? '').replace(/[&<>\"']/g, ''); }}
-{function_source}
-const badge = _codexStatusBadge({{exported: true, exported_count: 0, sub2api_account_id: 150}});
-if (!badge.includes('已关联')) throw new Error('Sub2API-linked badge missing');
-if (badge.includes('未导出')) throw new Error('linked credential still shown as unexported');
-console.log('ok');
-"""
-        result = subprocess.run(
-            ["node", "--input-type=commonjs", "-e", harness],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
-        self.assertEqual(result.stdout.strip(), "ok")
+    def test_index_uses_shared_page_asset_content_version(self):
+        import ast
 
-    def test_codex_resizable_table_uses_fixed_column_layout(self):
-        css_path = Path(__file__).resolve().parents[2] / "webui/static/css/shared/ui-foundation.css"
-        source = css_path.read_text(encoding="utf-8")
-        selector = 'table[data-resizable-table="codex"] {'
-        rule_start = source.rindex(selector)
-        rule_end = source.index("}", rule_start)
+        path = Path(__file__).resolve().parents[2] / "webui/routes/dashboard.py"
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        factory = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "create_dashboard_blueprint")
+        index = next(node for node in factory.body if isinstance(node, ast.FunctionDef) and node.name == "index")
+        index.decorator_list = []
+        module = ast.fix_missing_locations(ast.Module(body=[index], type_ignores=[]))
+        app = object()
+        calls = []
+        namespace = {
+            "context": SimpleNamespace(app=app),
+            "page_asset_version": lambda value: calls.append(value) or "content-version",
+            "render_template": lambda template, **values: (template, values),
+        }
+        exec(compile(module, str(path), "exec"), namespace)
+        self.assertEqual(namespace["index"](), ("index.html", {"asset_version": "content-version"}))
+        self.assertEqual(calls, [app])
 
-        self.assertIn("table-layout: fixed !important;", source[rule_start:rule_end])
+    # Codex badge priorities and no-secret presentation now run against the real
+    # TypeScript projection in features/codex/presentation.test.ts. Column layout
+    # is exercised by CodexCredentials.test.ts and useColumnWidths.test.ts.
 
 
 class DashboardStaticAssetTests(unittest.TestCase):
@@ -145,8 +200,8 @@ class DashboardStaticAssetTests(unittest.TestCase):
         self.assertEqual(len(hosts), 1)
         versions = []
         for attribute, expected_path in (
-            ("data-module-url", "/static/dashboard/dashboard.js"),
-            ("data-style-url", "/static/dashboard/dashboard.css"),
+            ("data-module-url", "/static/task-center/dashboard.js"),
+            ("data-style-url", "/static/task-center/task-center.css"),
         ):
             asset_url = hosts[0][attribute]
             parsed = urlsplit(asset_url)
@@ -179,7 +234,7 @@ class DashboardStaticAssetTests(unittest.TestCase):
                 self.assertEqual(asset.status_code, 200, script)
         self.assertEqual(indices, sorted(indices))
         self.assertEqual(len(set(versions)), 1)
-        self.assertNotIn("/static/dashboard/dashboard.js", scripts_by_path)
+        self.assertNotIn("/static/task-center/dashboard.js", scripts_by_path)
         for old_host in ("overviewMetrics", "overviewPanels", "overviewCustomizeDrawer"):
             self.assertFalse(any(attrs.get("id") == old_host for _, attrs in parser.nodes), old_host)
 
@@ -271,19 +326,17 @@ console.log('ok');
         self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
         self.assertEqual(result.stdout.strip(), "ok")
 
-    def test_batch_progress_distinguishes_submitted_password_pending_confirmation(self):
-        from webui.route_helpers import _compact_job_for_list
-
-        raw = {"id": 10, "status": "partial_success", "display_status": "password_confirmation_pending"}
-        published = [
-            _compact_job_for_list(row, include_progress=False, public_status=True)
-            for row in (raw, {**raw, "requested_status": "partial_success"})
-        ]
-        self.assertEqual(self._ui_fixture("password", [raw, *published]), [
-            {"label": "失败 · 密码响应缺失", "cls": "is-failed"},
-            {"label": "失败", "cls": "is-failed"},
-            {"label": "部分完成", "cls": "is-failed"},
-        ])
+    def test_batch_progress_reports_missing_password_response_as_failure(self):
+        result = subprocess.run(
+            ["node", "tests/registration/vue_migration_contracts.cjs", "password_result"],
+            cwd=Path(__file__).resolve().parents[2],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        self.assertEqual(result.stdout.strip(), "ok password_result")
 
     def test_frontend_static_assets_are_referenced_and_served(self):
         assets = self.MODERN_ASSETS + (
@@ -492,8 +545,7 @@ console.log('ok');
         self.assertEqual(response.status_code, 200)
         html = self._modern_page_source(response)
         self.assertIn('id="tab-overview"', html)
-        self.assertIn('class="accounts-command-deck"', html)
-        self.assertIn('id="butlerImportPanel"', html)
+        self.assertIn('id="email-page-root"', html)
         self.assertIn('data-module-subnav="register"', html)
         self.assertIn('data-sidebar-module="register"', html)
         self.assertIn('data-sidebar-module="accounts"', html)
@@ -503,120 +555,57 @@ console.log('ok');
         self.assertIn('data-module-subnav="outlook"', html)
         self.assertNotIn('<nav class="module-subnav"', html)
         self.assertIn("$$('[data-module-subnav]').forEach", html)
-        self.assertIn('id="btnCodexUploadSub2V2"', html)
-        self.assertIn('id="btnAddPasswordSelectedAccountsV2"', html)
-        self.assertIn('id="btnAddTwofaSelectedAccountsV2"', html)
-        self.assertIn('id="btnCompleteSelectedAccountsV2"', html)
-        self.assertIn('>刷新 AT</button>', html)
-        self.assertIn('>查封号邮件</button>', html)
-        self.assertIn('>补 Codex</button>', html)
-        self.assertIn('>复制 Token</button>', html)
+        self.assertIn('id="codex-credentials-root"', html)
         self.assertNotIn('id="btnOpenAccountCompletionConfigTopV2"', html)
         self.assertNotIn('>补全规则</button>', html)
         self.assertNotIn('>补全配置</button>', html)
         self.assertNotIn('旧版补齐配置', html)
-        self.assertIn("'注册与账号': '注册主链路'", html)
-        self.assertIn("'执行方式': '注册主链路'", html)
         self.assertNotIn('data-lifecycle-section-v2', html)
         self.assertNotIn('renderLifecycleDriverSelect', html)
-        self.assertIn('config-setting-row-v2', html)
-        from config.schema import CONFIG_SCHEMA
-
-        # Use the editor's schema field identities only, without reading any configured values.
-        fields = [{key: item.get(key) for key in ("key", "group", "hidden")}
-                  for item in CONFIG_SCHEMA.editor_metadata()]
-        menu_markup = self._ui_fixture("config", fields)
-        for markup, expected in zip(menu_markup, [
-            [("注册主链路", "注册主链路"), ("账号补全", "账号补全"), ("注册与账号", "查询套餐"),
-             ("查活", "查活"), ("刷新 AT", "刷新 AT"), ("补密码", "补密码"), ("补 2FA", "补 2FA"), ("邮箱换绑", "邮箱换绑")],
-            [(domain, domain) for domain in ("并发控制", "通用配置", "WebUI 授权", "定时任务", "任务中心", "注册调试")],
-        ], strict=True):
-            buttons = _DashboardMarkup()
-            buttons.feed(markup)
-            self.assertEqual(buttons.config_buttons, expected)
-        operation_start = html.index('>操作</span>')
-        deactivation_mail = html.index('>查封号邮件</button>')
-        copy_export = html.index('>复制与导出</span>')
-        self.assertLess(operation_start, deactivation_mail)
-        self.assertLess(deactivation_mail, copy_export)
-        self.assertIn("/api/accounts/setup-bulk", html)
-        # A list refresh must send each API facet to its own header control.
-        self.assertEqual(self._ui_fixture("account-facets"), {
-            "accountPlanFilterV2": {"group": "plan", "items": [{"value": "plus", "count": 1}]},
-            "accountTrialFilterV2": {"group": "promotion", "items": [{"value": "free_trial", "count": 1}]},
-        })
-        self.assertIn("syncFacetSelect('codexStatusFilterV2'", html)
-        self.assertIn("syncFacetSelect('codexOauthFilterV2'", html)
-        self.assertIn("syncFacetSelect('outlookStatusFilterV2'", html)
+        # Config navigation and field rows are rendered by the real Vue owner.
+        # Preserve aliases, domain order and actual navigation as behavior.
+        config_navigation = subprocess.run(
+            ["node", "tests/config/vue_migration_contracts.cjs", "primary_navigation"],
+            cwd=Path(__file__).resolve().parents[2],
+            capture_output=True, text=True, check=False, timeout=15,
+        )
+        self.assertEqual(0, config_navigation.returncode, config_navigation.stdout + config_navigation.stderr)
+        # Account toolbar labels/section order and setup endpoints are exercised
+        # by test_account_vue_list_preserves_toolbar_filters_columns_and_actions.
+        # Codex facet options and unknown selected values belong to the Vue state tests.
+        # Email facets and actions are checked on the actual Vue owner below.
         self.assertNotIn('id="codexFilterV2"', html)
         self.assertNotIn('id="accountsFilterV2"', html)
-        self.assertIn('id="outlookToolbarV2"', html)
-        headers = _DashboardMarkup()
-        headers.feed(response.get_data(as_text=True))
-        self.assertEqual(headers.filters, {
-            "jobs": "jobIdFilterV2 jobEmailFilterV2 jobSourceColumnFilterV2 jobProxyFilterV2 jobStatusColumnFilterV2 jobDateFromV2 jobDateToV2 jobErrorFilterV2".split(),
-            "accounts": "accountIdFilterV2 qAccountsV2 accountSourceFilterV2 accountRegistrationDriverFilterV2 accountTokenFilterV2 accountStatusFilterV2 accountPasswordFilterV2 accountPlanFilterV2 accountTrialFilterV2 accountTotpFilterV2 accountRiskFilterV2 accountCodexFilterV2 dateFromAccountsV2".split(),
-            "accountTasks": "accountTaskIdFilterV2 accountTaskTypeFilterV2 accountTaskTargetFilterV2 accountTaskStatusFilterV2 accountTaskTargetStatusFilterV2 accountTaskBatchFilterV2 accountTaskRunCountFilterV2 accountTaskStageFilterV2 accountTaskDateFromV2 accountTaskResultFilterV2".split(),
-            "codex": "qCodexV2 codexPlanFilterV2 codexStatusFilterV2 codexOauthFilterV2 codexAccountFilterV2 codexSub2apiIdFilterV2 dateFromCodexV2 codexExpiredFilterV2".split(),
-            "outlook": "qOutlookV2 poolSourceV2 outlookStatusFilterV2 outlookUsedFilterV2".split(),
-        })
-        # Proxy filters are rendered by the Vue owner in ProxyTrafficPage.test.ts.
-        self.assertIn('id="proxy-page-root"', response.get_data(as_text=True))
+        self.assertNotIn('id="outlookToolbarV2"', html)
+        # Shared legacy filters still serve their remaining owners. Migrated
+        # registration controls are exercised on the mounted Vue page below.
         self.assertIn('class="column-filter-trigger"', html)
         self.assertIn('class="column-filter-search"', html)
         self.assertIn('data-column-filter-options', html)
         self.assertIn('class="column-filter-native" hidden', html)
-        self.assertIn('data-filter-summary="accounts"', html)
-        self.assertIn('data-filter-end-id="dateToAccountsV2"', html)
         self.assertIn('select.innerHTML = options.map(item => `<option value="${attrEsc(item.value)}">', html)
         self.assertNotIn('select.innerHTML = options.map(item => `<option value="${esc(item.value)}">', html)
         self.assertNotIn('class="list-column-filters"', html)
-        self.assertIn('data-column-filter="accountPlanFilterV2"', html)
-        self.assertIn('data-column-filter="accountTrialFilterV2"', html)
-        self.assertIn('>套餐优惠</th>', html)
-        self.assertIn('data-filter-label="按 Plus 优惠类型筛选"', html)
-        self.assertIn('data-account-more-id="${esc(r.id)}"', html)
-        self.assertIn('function restoreAccountsV2MoreMenu(accountId)', html)
         self.assertNotIn('data-column-filter="accountNoteFilterV2"', html)
         self.assertNotIn('>备注</th>', html)
-        self.assertIn('data-column-filter="codexStatusFilterV2"', html)
-        self.assertIn('data-column-filter="codexSub2apiIdFilterV2"', html)
-        self.assertIn("sub2api_id", html)
-        self.assertIn('data-column-filter="outlookStatusFilterV2"', html)
+        # Codex status/OAuth/Sub2API filters are verified by mounted component tests.
+        self.assertNotIn('data-column-filter="outlookStatusFilterV2"', html)
         self.assertNotIn('id="configOverviewV2"', html)
-        self.assertEqual(self._ui_fixture("startup"), [["overview"], ["accounts"]])
-        self.assertIn('data-column-filter="jobDateFromV2"', html)
-        self.assertIn('id="btnResetJobFiltersV2"', html)
-        self.assertIn('id="btnBatchStopV2"', html)
-        self.assertIn('id="btnBatchCancelV2"', html)
-        self.assertIn('id="btnBatchRetryV2"', html)
-        self.assertIn('id="registrationBatchSelectV2"', html)
-        self.assertIn('progress_batch_id=${encodeURIComponent(JOB_PROGRESS_BATCH_ID)}', html)
-        self.assertIn('id="accountTaskStageProgress"', html)
-        self.assertIn('function renderAccountTaskStageProgress(task, selectedRunId = null)', html)
-        self.assertIn('/runs/${encodeURIComponent(activeAccountTaskRunId)}/progress', html)
-        self.assertIn('function renderAccountTaskProgressSnapshot(progress)', html)
-        self.assertNotIn('observed.forEach((value, key)', html)
-        self.assertNotIn("legacyRegistration && !observed.has('network')", html)
+        self.assertIn("initializeNavigationHistory(localStorage.getItem('gpt_console_active_tab') || 'overview')", html)
+        self.assertEqual(1, html.count('id="registrationRoot"'))
+        self.assertRegex(html, r'data-module-url="/static/task-center/registration\.js\?v=[^"]+"')
+        for legacy_id in ("jobsBodyV2", "jobsPanelV2", "registrationBatchSelectV2", "btnResetJobFiltersV2"):
+            self.assertNotIn(f'id="{legacy_id}"', html)
+        registration_progress = subprocess.run(
+            ["node", "tests/registration/vue_migration_contracts.cjs", "progress_controls"],
+            cwd=Path(__file__).resolve().parents[2],
+            capture_output=True, text=True, check=False, timeout=20,
+        )
+        self.assertEqual(0, registration_progress.returncode, registration_progress.stdout + registration_progress.stderr)
         self.assertIn("skipped:'已跳过'", html)
-        self.assertNotIn("stage.seen ? 'success'", html)
-        self.assertIn('data-progress-retry-job', html)
-        self.assertIn('batch-progress-v2-step-duration', html)
-        self.assertIn('data-progress-duration-start', html)
-        modern_css = (Path(__file__).resolve().parents[2] / 'webui/static/css/shell.css').read_text(encoding='utf-8')
-        self.assertIn('grid-template-columns:repeat(var(--batch-progress-step-count),minmax(0,1fr));', modern_css)
-        jobs_js = (Path(__file__).resolve().parents[2] / 'webui/static/js/pages/registration/page.js').read_text(encoding='utf-8')
-        self.assertIn('style="--batch-progress-step-count:${Math.max(displayStages.length, 1)}"', jobs_js)
-        self.assertNotIn('repeat(11, minmax(74px, 1fr))', html)
-        self.assertIn('batchProgressRenderSignature', html)
-        self.assertIn('currentBatchJobs().find', html)
         self.assertNotIn('batch-progress-v2-error', html)
         self.assertNotIn('class="jobs-column-filters"', html)
-        self.assertIn('data-column-filter="jobStatusColumnFilterV2"', html)
-        self.assertIn('data-filter-summary="accountTasks"', html)
-        self.assertIn('data-column-filter="accountTaskTargetFilterV2"', html)
-        self.assertIn('data-column-filter="accountTaskTargetStatusFilterV2"', html)
-        self.assertIn('id="btnResetAccountTaskFiltersV2"', html)
+        self.assertEqual(1, html.count('id="task-center-root"'))
         self.assertNotIn('id="accountTaskSearch"', html)
         self.assertNotIn('id="qJobsV2"', html)
         self.assertNotIn("Automation queue", html)
@@ -656,48 +645,41 @@ console.log('ok');
         response = self.client.get("/", headers=self.headers)
         self.assertEqual(response.status_code, 200)
         html = self._modern_page_source(response)
-        self.assertIn("if (summaryLoading) return;", html)
-        # Dashboard coalescing is covered by test_dashboard_vue_contracts.cjs.
-        # 注册批次的请求去重与旧响应隔离由 Node 行为回归覆盖，切换批次允许立即发起新请求。
-        self.assertIn("if (outlookLoading) { outlookReloadQueued = true; return; }", html)
-        self.assertIn("if (codexLoading) { codexReloadQueued = true; return; }", html)
-        self.assertIn("if (accountTasksLoading) {", html)
-        self.assertIn("accountTasksReloadQueued = true;", html)
+        lifecycle = subprocess.run(
+            ["node", "--test", "tests/registration/test_registration_refresh_frontend.cjs",
+             "tests/webui/test_dashboard_vue_contracts.cjs", "tests/webui/test_page_owner_bridge.cjs"],
+            cwd=Path(__file__).resolve().parents[2],
+            capture_output=True, text=True, check=False, timeout=30,
+        )
+        self.assertEqual(0, lifecycle.returncode, lifecycle.stdout + lifecycle.stderr)
+        self.assertNotIn("outlookLoading", html)
+        self.assertIn("window.EmailPage?.setVisible(tab === 'outlook')", html)
+        # Codex stale-response cancellation and absence of polling are behavioral
+        # assertions in useCodexList.test.ts and test_codex_bridge.cjs.
+        self.assertNotIn("codexLoading", html)
         self.assertNotIn("    loadSummary();\n  } catch(e) {}\n}", html)
-        self.assertIn("}, 10000);", html)
-        self.assertIn("}, 5000);", html)
-        self.assertIn("!document.hidden", html)
+        bootstrap = (Path(__file__).resolve().parents[2] / "webui/static/js/bootstrap.js").read_text(encoding="utf-8")
+        self.assertNotIn("setInterval(", bootstrap)
+        self.assertIn("window.DashboardPage?.setVisible(tab === 'overview')", html)
+        self.assertIn("window.RegistrationPage?.setVisible(tab === 'register')", html)
 
     def test_all_list_actions_remain_available_with_resizable_columns(self):
         response = self.client.get("/", headers=self.headers)
+        self.assertEqual(response.status_code, 200)
         html = self._modern_page_source(response)
-        action_ids = {
-            # 任务记录
-            "btnRetrySelectedJobsV2", "btnDeleteSelectedJobsV2", "btnCancelPendingV2", "btnRefreshJobsV2",
-            # 账号
-            "btnCheckSelectedLiveV2", "btnRefreshSelectedTokenV2", "btnCheckSelectedPlansV2", "btnExtractSelectedLinksV2",
-            "btnRetrySelectedCodexV2", "btnDownloadSelectedCpaV2", "btnUploadSelectedCodexSub2V2",
-            "btnStopSelectedCodexV2", "btnCheckSelectedDeactivationMailV2",
-            "btnCopySelectedTokensV2", "btnCopySelectedLinesV2", "btnCopySelectedEmailsV2", "btnCopySelectedPasswordsV2", "btnCopySelectedTotpsV2", "btnDownloadSelectedTxtV2",
-            "btnArchiveSelectedAccountsV2", "btnDeleteSelectedAccountsV2", "btnRefreshAccountsV2",
-            # Codex 凭证
-            "btnCodexReauthorizeBulkV2", "btnCodexDownloadBulkV2", "btnCodexDownloadBulkCpaV2", "btnCodexUploadSub2V2",
-            "btnCodexRefreshTokenBulkV2", "btnCodexArchiveBulkV2", "btnCodexDeleteBulkV2", "btnRefreshCodexV2",
-            # 邮箱池
-            "btnMarkSelectedOutlookAvailableV2", "btnDisableSelectedOutlookV2",
-            "btnFailSelectedOutlookV2", "btnDeleteSelectedOutlookV2", "copyAllEmailsV2",
-            "btnImportOutlookV2", "btnRefreshOutlookV2",
-        }
-        for action_id in action_ids:
-            self.assertIn(f'id="{action_id}"', html, action_id)
-        self.assertIn("bind('btnRefreshSelectedTokenV2', () => refreshSelectedToken());", html)
-        self.assertIn("bind('btnCopySelectedTotpsV2', copySelectedAccountTotpSecrets);", html)
-        self.assertIn("fetchAccountSecrets(ids, 'totp_secret')", html)
-        for table_name in ("jobs", "accounts", "codex", "outlook"):
-            self.assertIn(f'data-resizable-table="{table_name}"', html)
-            reset_id = f"btnReset{table_name.capitalize()}ColumnsV2"
-            self.assertIn(f'id="{reset_id}"', html)
-        self.assertGreaterEqual(html.count("list-action-toolbar"), 4)
+        registration_contract = subprocess.run(
+            ["node", "tests/registration/vue_migration_contracts.cjs", "list_controls"],
+            cwd=Path(__file__).resolve().parents[2],
+            capture_output=True, text=True, check=False, timeout=20,
+        )
+        self.assertEqual(0, registration_contract.returncode, registration_contract.stdout + registration_contract.stderr)
+        email_contract = subprocess.run(
+            ["node", "tests/email/vue_migration_contracts.cjs", "inventory_controls"],
+            cwd=Path(__file__).resolve().parents[2],
+            capture_output=True, text=True, check=False, timeout=20,
+        )
+        self.assertEqual(0, email_contract.returncode, email_contract.stdout + email_contract.stderr)
+        self.assertNotIn('data-resizable-table="jobs"', html)
         self.assertNotIn('id="codexBulkWorkersV2"', html)
         self.assertNotIn('id="codexStatsV2"', html)
         self.assertNotIn('id="codexStatTotalV2"', html)
@@ -705,68 +687,95 @@ console.log('ok');
         self.assertNotIn('id="codexStatPendingV2"', html)
         self.assertNotIn('class="codex-sync-callout"', html)
         self.assertNotIn('id="btnCodexUploadSub2HeroV2"', html)
-        self.assertIn('id="btnCodexUploadSub2V2"', html)
-        self.assertIn('data-codex-reauthorize="${esc(r.filename)}"', html)
-        self.assertEqual(self._ui_fixture("queue", [
-            {"status": "queued"},
-            {"status": "queued", "admission_wait_reasons": [{"code": "global_capacity", "occupied": 10, "limit": 10}]},
-            {"status": "running", "admission_wait_reason": "global_capacity"},
-        ]), ["等待执行", "等待全局空位（10/10）", "执行中"])
-        self.assertIn(">重试</button>", html)
-        self.assertIn(">删除</button>", html)
-        self.assertIn(">取消</button>", html)
+        self.assertIn('id="codex-credentials-root"', html)
 
-    def test_codex_resizable_defaults_match_all_table_columns(self):
+    def test_accounts_has_one_versioned_lazy_mount_and_dedicated_hosts(self):
+        from html.parser import HTMLParser
+        from urllib.parse import parse_qs, urlsplit
+
+        class Elements(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.nodes = []
+
+            def handle_starttag(self, tag, attrs):
+                self.nodes.append((tag, dict(attrs)))
+
         response = self.client.get("/", headers=self.headers)
-        source = self._modern_page_source(response)
-        common_source = self.client.get("/static/js/shared/common.js").get_data(as_text=True)
-        defaults_start = common_source.index("[", common_source.index("codex:    [")) + 1
-        defaults_end = common_source.index("]", defaults_start)
-        default_count = len([item for item in common_source[defaults_start:defaults_end].split(",") if item.strip()])
-        table_start = source.index('<table class="codex-table-v2"')
-        colgroup_end = source.index("</colgroup>", table_start)
-        column_count = source[table_start:colgroup_end].count("<col ")
-        self.assertEqual(default_count, column_count)
-
-    def test_task_center_uses_shared_resizable_table_layout(self):
-        response = self.client.get("/", headers=self.headers)
-        source = self._modern_page_source(response)
-
-        self.assertIn('data-resizable-table="accountTasks"', source)
-        self.assertIn('id="btnResetAccountTaskColumnsV2"', source)
-        self.assertIn('table[data-resizable-table="accountTasks"] {', source)
-        self.assertIn('width: max(100%, 1240px) !important;', source)
-        self.assertIn('min-width: 1240px !important;', source)
-        self.assertIn("if (header.classList.contains('col-check') || (key !== 'accounts' && index >= headers.length - 1)) return;", source)
-        self.assertIn("header.classList.contains('task-col-id')", source)
-        self.assertIn("headers[nextIndex].classList.contains('task-col-actions')", source)
-
-    def test_task_center_exposes_safe_bulk_actions_and_shared_chinese_labels(self):
-        response = self.client.get("/", headers=self.headers)
-        source = self._modern_page_source(response)
-
-        self.assertIn('id="accountTasksSelectAllV2"', source)
-        self.assertIn('class="task-col-check col-check"', source)
-        for action_id in (
-            "btnRetrySelectedAccountTasksV2",
-            "btnCancelSelectedAccountTasksV2",
-            "btnTerminateSelectedAccountTasksV2",
+        self.assertEqual(response.status_code, 200)
+        parser = Elements()
+        parser.feed(response.get_data(as_text=True))
+        for host in ("accounts-list-root", "accountToolbarHost", "accountDetailHost",
+                     "accountRegistrationReceiptHost", "accountC2aReceiptHost", "accountC2aConfirmHost"):
+            self.assertEqual(sum(attrs.get("id") == host for _, attrs in parser.nodes), 1, host)
+        root = next(attrs for _, attrs in parser.nodes if attrs.get("id") == "accounts-list-root")
+        versions = []
+        for attribute, expected_path in (
+            ("data-module-url", "/static/task-center/accounts.js"),
+            ("data-style-url", "/static/task-center/task-center.css"),
         ):
-            self.assertIn(f'id="{action_id}"', source)
-        self.assertIn("const ACCOUNT_TASK_SELECTED = new Set();", source)
-        self.assertIn("/api/operations/bulk", source)
-        self.assertIn("function bulkAccountTasks", source)
-        self.assertIn("facetLabel('task_type'", source)
-        self.assertIn("pillV2(task.target_status, 'target_status')", source)
-        self.assertIn("renderTableStateRow(12, '任务记录加载失败'", source)
-        self.assertIn("['queued','running','stopping','cancelling','settling','waiting']", source)
-        self.assertIn("password_change:'修改密码'", source)
-        self.assertIn("twofa_change:'修改 2FA'", source)
+            url = urlsplit(root[attribute])
+            self.assertEqual(url.path, expected_path)
+            version = parse_qs(url.query).get("v", [""])[0]
+            self.assertTrue(version)
+            versions.append(version)
+        scripts = [attrs.get("src", "") for tag, attrs in parser.nodes if tag == "script"]
+        account_scripts = [url for url in scripts if urlsplit(url).path in (
+            "/static/js/pages/accounts/page.js", "/static/js/pages/accounts/bridge.js")]
+        self.assertEqual([urlsplit(url).path for url in account_scripts], [
+            "/static/js/pages/accounts/page.js", "/static/js/pages/accounts/bridge.js"])
+        for url in account_scripts:
+            versions.append(parse_qs(urlsplit(url).query).get("v", [""])[0])
+            with self.client.get(url) as asset:
+                self.assertEqual(asset.status_code, 200, url)
+        self.assertEqual(len(set(versions)), 1)
+        self.assertFalse(any(urlsplit(url).path == "/static/task-center/accounts.js" for url in scripts))
+        ids = {attrs.get("id") for _, attrs in parser.nodes}
+        self.assertTrue({"accountsBodyV2", "accountsToolbarV2", "pager-accounts-v2", "accountDetailDrawer"}.isdisjoint(ids))
 
-    def test_task_center_auto_expands_only_unsaved_columns_and_filter_popovers(self):
+    def test_codex_credentials_has_one_versioned_lazy_mount_without_legacy_state(self):
+        from html.parser import HTMLParser
+        from urllib.parse import parse_qs, urlsplit
+
+        class Elements(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.nodes = []
+
+            def handle_starttag(self, tag, attrs):
+                self.nodes.append((tag, dict(attrs)))
+
+        response = self.client.get("/", headers=self.headers)
+        self.assertEqual(response.status_code, 200)
+        parser = Elements()
+        parser.feed(response.get_data(as_text=True))
+        roots = [attrs for _, attrs in parser.nodes if attrs.get("id") == "codex-credentials-root"]
+        self.assertEqual(len(roots), 1)
+        root = roots[0]
+        for attribute, expected_path in (
+            ("data-module-url", "/static/task-center/codex.js"),
+            ("data-style-url", "/static/task-center/task-center.css"),
+        ):
+            url = urlsplit(root[attribute])
+            self.assertEqual(url.path, expected_path)
+            self.assertTrue(parse_qs(url.query).get("v", [""])[0])
+        scripts = [attrs.get("src", "") for tag, attrs in parser.nodes if tag == "script"]
+        bridges = [url for url in scripts if urlsplit(url).path == "/static/js/pages/codex/page.js"]
+        self.assertEqual(len(bridges), 1)
+        self.assertTrue(parse_qs(urlsplit(bridges[0]).query).get("v", [""])[0])
+        # A module URL on the root is inert until the bridge activates the page.
+        self.assertFalse(any(urlsplit(url).path == "/static/task-center/codex.js" for url in scripts))
+        ids = {attrs.get("id") for _, attrs in parser.nodes}
+        self.assertNotIn("codexBodyV2", ids)
+        self.assertNotIn("codexToolbarV2", ids)
+        self.assertNotIn("pager-codex-v2", ids)
+        html = self._modern_page_source(response)
+        for name in ("CODEX_SELECTED", "CODEX_SHOW_ARCHIVED", "CODEX_TOTAL", "codexLoading", "codexReloadQueued"):
+            self.assertNotIn(name, html)
+
+    def test_legacy_tables_keep_saved_widths_and_filter_popover_order(self):
         source = self._modern_page_source(self.client.get("/", headers=self.headers))
 
-        self.assertIn("function autoSizeResizableTableColumns", source)
         self.assertIn("readSavedTableWidths(key, cols.length)", source)
         self.assertIn("columnFilterOptionWidth", source)
         self.assertIn("table.dataset.autoSized", source)
@@ -774,8 +783,6 @@ console.log('ok');
             source.index("renderColumnFilterOptions(document.getElementById(header.dataset.columnFilter))"),
             source.index("positionColumnFilterPopover(header)", source.index("renderColumnFilterOptions(document.getElementById(header.dataset.columnFilter))")),
         )
-        self.assertIn("accountTaskRequestId", source)
-        self.assertIn("accountTasksReloadQueued", source)
 
     def test_navigation_avoids_unnecessary_vertical_scrolling(self):
         response = self.client.get("/", headers=self.headers)
@@ -829,18 +836,19 @@ console.log('ok');
         payload = response.get_json()
         self.assertEqual(payload["total"], 1)
         self.assertEqual(payload["items"][0]["email"], "target@example.com")
-
-        def counts(page, name):
-            return {item["value"]: item["count"] for item in page["facets"][name]}
-
-        for name, value in {"source": "outlook", "codex": "success", "password": "has", "promotion": "free_trial"}.items():
-            self.assertEqual(counts(payload, name), {value: 1}, name)
-        # Each facet ignores only its own filter. With only source selected the other
-        # source is still available, while the Codex options remain limited to Outlook.
-        one_filter = self.client.get("/api/accounts?paged=1&source=outlook", headers=self.headers).get_json()
-        self.assertEqual(one_filter["total"], 1)
-        self.assertEqual(counts(one_filter, "source"), {"outlook": 1, "icloud_hide": 1})
-        self.assertEqual(counts(one_filter, "codex"), {"success": 1})
+        # 每列 facets 只忽略自身条件，邮箱与其他列仍限制候选范围。
+        self.assertEqual(payload["facets"]["source"], [{"value": "outlook", "count": 1}])
+        alternatives = self.client.get("/api/accounts?paged=1&source=outlook", headers=self.headers).get_json()
+        self.assertEqual(alternatives["total"], 1)
+        self.assertEqual({item["value"]: item["count"] for item in alternatives["facets"]["source"]},
+                         {"outlook": 1, "icloud_hide": 1})
+        for key, value in (("codex", "success"), ("password", "has"), ("promotion", "free_trial")):
+            self.assertEqual(payload["facets"][key], [{"value": value, "count": 1}])
+        unfiltered = self.client.get("/api/accounts?paged=1", headers=self.headers).get_json()
+        self.assertEqual(unfiltered["total"], 2)
+        self.assertEqual({item["value"] for item in unfiltered["facets"]["codex"]}, {"success", "failed"})
+        self.assertEqual({item["value"] for item in unfiltered["facets"]["password"]}, {"has", "none"})
+        self.assertEqual({item["value"] for item in unfiltered["facets"]["promotion"]}, {"free_trial", "not_applicable"})
         self.assertTrue(payload["items"][0]["has_account_password"])
         self.assertTrue(payload["items"][0]["totp_enabled"])
         self.assertEqual(payload["items"][0]["quota_type"], "月限额")
@@ -1083,8 +1091,9 @@ console.log('ok');
         self.assertIn('title="获取并复制当前 6 位 TOTP 验证码"', html)
         self.assertNotIn('data-account-copy-secret="totp_secret"', html)
         self.assertNotIn('title="复制 2FA 密钥（不是当前 6 位验证码）"', html)
-        self.assertIn("const result = await api(`/api/accounts/${encodeURIComponent(id)}/totp-code`);", html)
-        self.assertIn("const copied = await copyText(result.code, false);", html)
+        # actions.test.ts executes the exact TOTP endpoint, clipboard call,
+        # remaining-seconds feedback and failure handling via the Vue contract.
+        self.assertIn("window.AccountsPage.invokeAction('account-totp-copy', context, btn)", html)
         self.assertNotIn('data-account-totp-value', html)
         self.assertNotIn('data-account-totp-ttl', html)
         self.assertNotIn('data-account-totp-code="${esc(r.id)}"', html)
@@ -1151,22 +1160,22 @@ class EmailButlerLeaseApiTests(PostgresTestCase):
 
     @patch("core.email.email_butler.client.active_mailbox_leases", return_value=[{"email": "lease@example.com", "mailbox_id": "m-1"}])
     @patch("core.email.email_butler.client.pick_local_account", return_value=SimpleNamespace(email="lease@example.com", mailbox_id="m-1"))
-    def test_create_lease(self, pick, active):
-        url = "/api/email-butler/leases"
-        missing = self.client.post(url, json={}, headers=self.headers)
-        self.assertEqual(missing.status_code, 400)
-        self.assertEqual(missing.json["code"], "invalid_request_id")
-        self.assertFalse(missing.json["request_unknown"])
-        pick.assert_not_called()
-        active.assert_not_called()
-
-        request_id = "f9f14fef-2929-4ab8-bf18-dbb74723fe0a"
-        response = self.client.post(url, json={"request_id": request_id}, headers=self.headers)
+    def test_create_lease(self, _pick, _active):
+        request_id = "fb4ae841-1745-4450-ae65-a73ec0f28f99"
+        response = self.client.post("/api/email-butler/leases", json={"request_id": request_id}, headers=self.headers)
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json["item"], {"email": "lease@example.com", "mailbox_id": "m-1"})
-        self.assertEqual(response.json["request_id"], request_id)
-        self.assertFalse(response.json["request_unknown"])
-        pick.assert_called_once_with(owner_kind="manual", owner_id=request_id, acquisition_id="manual:" + request_id)
+        self.assertEqual(response.get_json()["item"]["mailbox_id"], "m-1")
+        self.assertEqual(response.get_json()["request_id"], request_id)
+        self.assertFalse(response.get_json()["request_unknown"])
+        _pick.assert_called_once_with(owner_kind="manual", owner_id=request_id, acquisition_id="manual:" + request_id)
+
+    @patch("core.email.email_butler.client.pick_local_account")
+    def test_create_lease_requires_browser_request_id_before_claim(self, pick):
+        response = self.client.post("/api/email-butler/leases", json={}, headers=self.headers)
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.get_json()["code"], "invalid_request_id")
+        self.assertFalse(response.get_json()["request_unknown"])
+        pick.assert_not_called()
 
     @patch("core.email.email_butler.client.release_account")
     @patch("core.email.email_butler.client.get_account_context", return_value=SimpleNamespace(email="lease@example.com"))

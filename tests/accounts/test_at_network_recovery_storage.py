@@ -8,6 +8,7 @@ from core.operations import task_gateway
 from core.storage import records
 from core.storage.operations import store as operation
 from tests.support_pg import PostgresTestCase
+from tests.support_settlement import install_native_settlement_fixture
 
 
 class AtNetworkRecoveryStorageTests(PostgresTestCase):
@@ -16,6 +17,10 @@ class AtNetworkRecoveryStorageTests(PostgresTestCase):
         operation.reset_ready()
         operation.init()
         service.register_operation_handlers()
+        self.settlement_fixture = install_native_settlement_fixture(self, timeout=10)
+
+    def tearDown(self):
+        self.settlement_fixture.close()
 
     def scenario(self, final_result, *, no_mail_fallback=False):
         email = "network-recovery@example.test"
@@ -76,6 +81,7 @@ class AtNetworkRecoveryStorageTests(PostgresTestCase):
                                                           trigger="fixture_network_recovery")
             self.assertTrue(submitted["accepted"])
             task_gateway._execute_operation_handler("token_refresh", submitted["run_id"])
+            self.settlement_fixture.wait_for_run_released(int(submitted["run_id"]))
         run = operation.get_run(submitted["run_id"])
         events = operation.list_task_events(submitted["task_id"], run_id=submitted["run_id"], limit=200)["items"]
         return account_id, run, events, routes, calls

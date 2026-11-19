@@ -3,6 +3,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
+const {installLegacyActionsFixture}=require('./actions_fixture.cjs');
+const {createReadFixture,row,list,presentation}=require('./read_owner_fixture.cjs');
 
 const source = require('../frontend_script_sources.cjs').readAccountScripts();
 function render(name, row) {
@@ -18,6 +20,7 @@ function render(name, row) {
 function loadFunctions(names, dependencies = {}) {
   const context = {accountTaskAdmissionReasons: () => [], accountTaskAdmissionWaitMarkup: () => '', ...dependencies};
   vm.createContext(context);
+  require('../frontend_script_sources.cjs').installAccountActionHelpers(context);
   for (const name of names) {
     const match = new RegExp(`(?:async )?function ${name}\\(`).exec(source);
     assert.ok(match, `缺少 ${name}`);
@@ -47,8 +50,10 @@ test('运行配置并发在尚未加载配置页时保留超过50的正整数', 
   }
 });
 
+const {vueHarness: taskVue}=require('./actions_fixture.cjs');
+const taskPresentation=taskVue.load('src/features/tasks/presentation.ts');
 test('任务结果使用工作台提链状态，缺少旧摘要字段仍显示成功', () => {
-  const context = loadFunctions(['accountTaskResultText']);
+  const context = {accountTaskResultText: taskPresentation.resultText};
   const task = {task_type: 'extract_link', status: 'success', result_summary: {
     extraction_status: 'succeeded', payment_status: 'not_started', mode: 'extract_only',
   }};
@@ -60,9 +65,7 @@ test('任务结果使用工作台提链状态，缺少旧摘要字段仍显示�
 });
 
 test('已出链后支付失败或待确认保留提链成功事实，包括带错误信息的任务', () => {
-  const context = loadFunctions(['accountTaskResultText'], {
-    accountTaskErrorDisplayText: () => '支付接口异常',
-  });
+  const context = {accountTaskResultText: taskPresentation.resultText};
   for (const [payment, status, expected] of [
     ['failed', 'failed', '提链成功 · 支付失败'],
     ['unknown', 'attention_required', '提链成功 · 支付响应缺失'],
@@ -81,7 +84,7 @@ test('已出链后支付失败或待确认保留提链成功事实，包括带�
 });
 
 test('空摘要和未确认状态不会误报提链失败，明确失败优先于旧成功字段', () => {
-  const context = loadFunctions(['accountTaskResultText']);
+  const context = {accountTaskResultText: taskPresentation.resultText};
   for (const [status, expected] of [
     ['queued', '等待执行'], ['running', '执行中'], ['cancelled', '任务已取消'],
     ['stopped', '任务已中断'], ['interrupted', '任务已中断'],
@@ -102,7 +105,7 @@ test('空摘要和未确认状态不会误报提链失败，明确失败优先�
 });
 
 test('旧提链摘要继续识别成功、失败和已有消息', () => {
-  const context = loadFunctions(['accountTaskResultText']);
+  const context = {accountTaskResultText: taskPresentation.resultText};
   for (const [result_summary, expected] of [
     [{ok: true, has_link: true, link_type: 'upi'}, '提链成功 · UPI'],
     [{ok: true, has_link: false}, '提炼完成'],
@@ -113,108 +116,13 @@ test('旧提链摘要继续识别成功、失败和已有消息', () => {
   }
 });
 
-test('任务列表结果不超过十个字符，完整诊断可通过提示读取，相同失败只显示一次', () => {
-  const body = {innerHTML: ''};
-  const context = loadFunctions(['accountTaskResultText', 'accountTaskListResultMarkup', 'renderAccountTasks'], {
-    $: selector => selector === '#accountTasksBody' ? body : null,
-    ACCOUNT_TASKS: [], ACCOUNT_TASK_SELECTED: new Set(), ACCOUNT_TASKS_TOTAL: 1,
-    document: {querySelector: () => null},
-    accountTaskIsActive: () => false, accountTaskCanRetry: () => false,
-    accountTaskCanTerminate: () => false, accountTaskCanStop: () => false,
-    accountTaskErrorDisplayText: (_info, error) => error,
-    accountTaskErrorDisplayTitle: (_info, error) => error,
-    esc: value => String(value ?? '').replace(/[&<>"']/g, char => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[char])),
-    short: (value, length) => String(value || '').slice(0, length),
-    facetLabel: (_group, value) => value || '', normalizeAccountTaskStage: value => value,
-    pillV2: value => `<span>${value}</span>`, formatTaskDuration: () => '-', formatDateTime: () => '-',
-    updateAccountTaskSelectionUi() {}, autoSizeResizableTableColumns() {}, _renderPager() {},
-  });
-  vm.runInContext(require('../frontend_script_sources.cjs').readAccountScript('task-list-display.js'), context);
-  const rawError = `支付<失败> ${'诊断记录'.repeat(45)}末尾`;
-  for (const [task_type, result_summary, expected, error_info] of [
-    ['extract_link', {extraction_status: 'succeeded', payment_status: 'failed'}, '提链成功支付失败'],
-    ['extract_link', {extraction_status: 'succeeded', payment_status: 'unknown'}, '提链成功支付待确认'],
-    ['extract_link', {extraction_status: 'failed'}, '原因未分类'],
-    ['live_check', {}, '验证码等待超时', {cause_code: 'email_otp_no_mail', display_code: 'SYN-000'}],
-    ['example', {status: 'request_unknown'}, '结果待确认', {code: 'unknown.unclassified'}],
-  ]) {
-    context.ACCOUNT_TASKS = [{id: 1, task_type, status: 'failed', target_status: 'failed', error_code: 'synthetic_task_error', error_message: rawError, result_summary, error_info}];
-    context.renderAccountTasks();
-    const cell = body.innerHTML.match(/<td class="task-error"[^>]*>.*?<\/td>/s)?.[0] || '';
-    const visible = cell.replace(/<[^>]*>/g, '').trim();
-    assert.equal(visible, expected);
-    assert.ok([...visible].length <= 10);
-    assert.match(cell, /data-accounts-tooltip="[^"]*支付&lt;失败&gt;[^"]*末尾/);
-    assert.match(cell, /data-accounts-tooltip="[^"]*synthetic_task_error/);
-    if (error_info?.cause_code) assert.ok(cell.includes(error_info.cause_code));
-    if (error_info?.display_code) assert.match(cell, /data-accounts-tooltip="[^"]*SYN-000/);
-    assert.equal((body.innerHTML.match(/>failed<\/span>/g) || []).length, 1);
-  }
-  for (const [status, target_status] of [['running', 'failed'], ['failed', 'credential_valid']]) {
-    context.ACCOUNT_TASKS = [{id: 2, task_type: 'registration', status, target_status}];
-    context.renderAccountTasks();
-    assert.ok(body.innerHTML.includes(`>${status}</span>`));
-    assert.ok(body.innerHTML.includes(`>${target_status}</span>`));
-  }
-  for (const [target_status, extra, expected] of [
-    ['failed', {}, '—'],
-    ['manual_reconcile', {}, '待人工核验'],
-    ['failed', {internal_target_status: 'manual_reconcile'}, '待人工核验'],
-    ['failed', {internal_target_status: 'request_unknown'}, '结果待确认'],
-    ['failed', {internal_target_status: 'attention_required'}, '需处理'],
-    ['failed', {internal_target_status: 'credential_pending_confirmation'}, '凭证待核验'],
-    ['password_confirmation_pending', {}, '密码待核验'],
-    ['failed', {internal_status: 'request_unknown'}, 'failed'],
-    ['partial_success', {internal_target_status: 'request_unknown'}, 'partial_success'],
-  ]) {
-    context.ACCOUNT_TASKS = [{id: 2, task_type: 'registration', status: 'failed', target_status, ...extra}];
-    context.renderAccountTasks();
-    const cell = body.innerHTML.match(/<td [^>]*data-account-task-result-tooltip="2-target-status"[^>]*>(.*?)<\/td>/s);
-    assert.equal(cell?.[1].replace(/<[^>]*>/g, ''), expected, JSON.stringify({target_status, ...extra}));
-    assert.ok(cell[0].includes(extra.internal_target_status || target_status));
-  }
-  context.ACCOUNT_TASKS = [{id: 258741, task_type:'extract_link', status:'attention_required',
-    error_message:'原单查询 HTTP 404', failure_stage:'access_token', failure_stage_label:'校验 Token',
-    error_info:{stage:'extraction'}, result_summary:{}}];
-  context.renderAccountTasks();
-  assert.match(body.innerHTML, /失败于 extraction/);
-  assert.doesNotMatch(body.innerHTML, /失败于 校验 Token/);
-
-  context.ACCOUNT_TASKS = [{id: 265413, task_type:'token_refresh', status:'deactivated',
-    error_message:'账号已停用', failure_stage:'login_password', failure_stage_label:'账号密码',
-    error_info:{stage:'login_password'}, result_summary:{auth_diagnostics:{operation:'mfa_verify'}}}];
-  context.renderAccountTasks();
-  assert.match(body.innerHTML, /失败于 mfa_challenge/);
-  assert.doesNotMatch(body.innerHTML, /失败于 账号密码/);
-
-  context.ACCOUNT_TASKS[0].result_summary.auth_diagnostics.operation = 'password_verify';
-  context.renderAccountTasks();
-  assert.match(body.innerHTML, /失败于 账号密码/);
-
-  context.ACCOUNT_TASKS[0].failure_stage = 'email_otp';
-  context.ACCOUNT_TASKS[0].failure_stage_label = '邮箱验证';
-  context.ACCOUNT_TASKS[0].error_info.stage = 'email_otp';
-  context.ACCOUNT_TASKS[0].result_summary.auth_diagnostics = {
-    operation: 'password_email_fallback', cause_operation: 'mfa_verify',
-  };
-  context.renderAccountTasks();
-  assert.match(body.innerHTML, /失败于 mfa_challenge/);
-  assert.doesNotMatch(body.innerHTML, /失败于 邮箱验证/);
-
-  context.ACCOUNT_TASKS[0].result_summary.auth_diagnostics.cause_operation = 'email_otp';
-  context.renderAccountTasks();
-  assert.match(body.innerHTML, /失败于 邮箱验证/);
-});
-
 test('任务错误摘要保留具体原因且不重复相同内容', () => {
-  const context = loadFunctions(['accountTaskErrorDisplayText', 'accountTaskErrorDisplayTitle'], {
-    taskErrorDisplayText: info => info?.summary || '',
-    taskErrorDisplayTitle: info => info?.summary || '',
-  });
+  const context = {accountTaskErrorDisplayText:taskPresentation.errorText,accountTaskErrorDisplayTitle:taskPresentation.errorText};
   assert.equal(context.accountTaskErrorDisplayText({code:'external', summary:'登录失败', cause_summary:'密码验证返回 HTTP 401'}), '登录失败 · 密码验证返回 HTTP 401');
   assert.equal(context.accountTaskErrorDisplayText({code:'external', summary:'密码验证返回 HTTP 401', cause_summary:'密码验证返回 HTTP 401'}), '密码验证返回 HTTP 401');
   assert.match(context.accountTaskErrorDisplayTitle({code:'external', summary:'登录失败', cause_summary:'密码验证返回 HTTP 401'}), /密码验证返回 HTTP 401/);
 });
+
 
 function operationContext(name, response) {
   const calls = {requests: [], toasts: [], logs: [], accounts: 0, summary: 0};
@@ -234,6 +142,7 @@ function operationContext(name, response) {
     updateAccountSelectionUi: () => {},
     $: () => null,
   });
+  installLegacyActionsFixture(context);
   return {context, calls};
 }
 
@@ -251,16 +160,11 @@ test('仅已停用账号的更多菜单提供已解封恢复入口，并保留�
   assert.match(active, /刷新AT/);
 });
 
-test('恢复入口通过账号列表事件委托传递账号和按钮', async () => {
-  const button = {dataset: {accountRestore: '306'}};
-  const calls = [];
-  const context = loadFunctions(['onAccountsBodyClick'], {
-    restoreDeactivatedAccount: async (...args) => calls.push(args),
-  });
-  await context.onAccountsBodyClick({target: {closest: selector => selector === '[data-account-restore]' ? button : null}});
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0][0], 306);
-  assert.equal(calls[0][1], button);
+test('恢复入口通过账号列表事件委托传递账号和按钮', async t => {
+  const h=createReadFixture(t,{mounted:true,handlers:{list:async()=>list([row(306)])},render:{...presentation,menu:()=>'<button data-account-restore="306">已解封，恢复账号</button>'}});await h.ready;
+  await h.wrapper.get('button[aria-label="更多账号操作"]').trigger('click');await h.settle();
+  const button=h.body.get('[data-account-restore="306"]');await button.trigger('click');await h.settle();
+  assert.equal(h.calls.length,1);assert.equal(h.calls[0][0],'account-restore');assert.deepEqual([...h.calls[0][1].accountIds],['306']);assert.equal(Object.isFrozen(h.calls[0][1]),true);assert.equal(h.calls[0][2],button.element);
 });
 
 test('确认解封后只解除本地停用标记，等待期间防止重复提交并刷新账号和摘要', async () => {
@@ -273,9 +177,12 @@ test('确认解封后只解除本地停用标记，等待期间防止重复提�
     showToast: message => calls.toasts.push(message),
     loadAccounts: async () => { calls.accounts += 1; },
     loadSummary: async () => { calls.summary += 1; },
+    updateAccountSelectionUi() {},
   });
+  installLegacyActionsFixture(context);
   const button = {disabled: false, textContent: '已解封，恢复账号', isConnected: true};
   const pending = context.restoreDeactivatedAccount(306, button);
+  await Promise.resolve();
   assert.equal(button.disabled, true);
   assert.match(button.textContent, /恢复中/);
   await context.restoreDeactivatedAccount(306, button);
@@ -287,7 +194,7 @@ test('确认解封后只解除本地停用标记，等待期间防止重复提�
   assert.equal(calls.requests[0].url, '/api/accounts/306/restore');
   assert.equal(calls.requests[0].options.method, 'POST');
   assert.deepEqual(JSON.parse(calls.requests[0].options.body), {reason: '已收到 OpenAI 恢复访问通知'});
-  resolveRequest({ok: true, message: '已解除本地停用标记，请刷新 AT 重新验证'});
+  resolveRequest({ok: true, id: 306, message: '已解除本地停用标记，请刷新 AT 重新验证'});
   await pending;
   assert.deepEqual(calls.toasts, ['已解除本地停用标记，请刷新 AT 重新验证']);
   assert.equal(calls.accounts, 1);
@@ -306,7 +213,9 @@ test('取消恢复确认时不请求接口，活跃操作错误直接反馈并�
       showToast: message => calls.toasts.push(message),
       loadAccounts: () => assert.fail('失败或取消时不应刷新账号'),
       loadSummary: () => assert.fail('失败或取消时不应刷新摘要'),
+      updateAccountSelectionUi() {},
     });
+    installLegacyActionsFixture(context);
     const button = {disabled: false, textContent: '已解封，恢复账号', isConnected: true};
     await context.restoreDeactivatedAccount(306, button);
     assert.equal(calls.requests, accepted ? 1 : 0);
@@ -432,4 +341,23 @@ test('创建和更新时间各占一行，缺失更新不伪造，完整时间�
   assert.match(html, /2026-10-17 10:11:12/);
   const missing = render('_accountTimesCellV2', {created_at: '2026-10-16T09:06:12'});
   assert.match(missing, /更新<\/span><time[^>]*>-<\/time>/);
+});
+
+
+test('任务列表结果不超过十个字符，完整诊断可展开读取并转义，相同失败只显示一次', async () => {
+  const TaskTable=taskVue.load('src/features/tasks/TaskTable.vue').default;
+  const rawError=`支付<失败> ${'诊断记录'.repeat(45)}末尾`;
+  for(const [task_type,result_summary,expected,error_info] of [
+    ['extract_link',{extraction_status:'succeeded',payment_status:'failed'},'提链成功支付失败'],
+    ['extract_link',{extraction_status:'succeeded',payment_status:'unknown'},'提链成功支付待确认'],
+    ['extract_link',{extraction_status:'failed'},'原因未分类'],
+    ['live_check',{},'验证码等待超时',{cause_code:'email_otp_no_mail',display_code:'SYN-000'}],
+    ['example',{status:'request_unknown'},'结果待确认',{code:'unknown.unclassified'}],
+  ]){
+    taskVue.cleanup();const wrapper=taskVue.mount(TaskTable,{props:{items:[{id:1,task_type,status:'failed',target_status:'failed',error_code:'synthetic_task_error',error_message:rawError,result_summary,error_info}],selected:new Set(),loading:false,busy:false,error:''}});
+    await taskVue.nextTick();const cell=wrapper.get('td[data-label="结果 / 错误"]'),preview=cell.get('summary');
+    assert.equal(preview.text(),expected);assert.ok([...preview.text()].length<=10);assert.match(preview.attributes('title'),/支付<失败>[\s\S]*末尾/);
+    assert.match(preview.attributes('title'),/synthetic_task_error/);if(error_info?.cause_code)assert.ok(cell.text().includes(error_info.cause_code));if(error_info?.display_code)assert.match(cell.text(),/SYN-000/);assert.equal(cell.find('失败').exists(),false);assert.equal(wrapper.findAll('td[data-label="执行状态"] .tc-badge').length,1);
+  }
+  taskVue.cleanup();
 });

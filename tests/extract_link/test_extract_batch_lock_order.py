@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from core.storage.extract_link import batches as extract_link_batches
 from core.storage.operations import store as operation
+from core.storage.operations import projection as operation_projection
 from tests.support_pg import PostgresTestCase
 
 
@@ -67,7 +68,7 @@ class ExtractBatchLockOrderTests(PostgresTestCase):
                 batch = operation.create_runtime_batch(batch_type="extract_link", title="锁顺序测试", requested_count=1)
                 batch_id = int(batch["id"])
                 attempted = threading.Event()
-                original_lock = operation._lock_projection_batch
+                original_lock = operation_projection._lock_projection_batch
 
                 def observed_lock(cur, target):
                     if threading.current_thread().name.startswith("batch-writer"):
@@ -79,7 +80,7 @@ class ExtractBatchLockOrderTests(PostgresTestCase):
                         return extract_link_batches.finish_submission(batch_id, skipped=0, failed=0, complete=True)
                     return operation.set_runtime_batch_skipped(batch_id, [{"reason": "测试"}])
 
-                with patch.object(operation, "_lock_projection_batch", side_effect=observed_lock):
+                with patch.object(operation_projection, "_lock_projection_batch", side_effect=observed_lock):
                     with ThreadPoolExecutor(max_workers=1, thread_name_prefix="batch-writer") as pool:
                         with operation._connect() as conn, conn.cursor() as cur:
                             cur.execute("SET LOCAL statement_timeout='5s'")

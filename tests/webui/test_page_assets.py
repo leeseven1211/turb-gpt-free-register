@@ -33,16 +33,10 @@ class PageAssetTemplateTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         parser.feed(response.get_data(as_text=True))
         paths = {urlsplit(url).path for url in parser.urls}
-        self.assertIn("/static/dashboard/dashboard.js", paths)
-        self.assertIn("/static/dashboard/dashboard.css", paths)
-        self.assertIn("/static/emailHistory/emailHistory.js", paths)
-        self.assertIn("/static/emailHistory/emailHistory.css", paths)
-        self.assertIn("/static/proxy/proxy.js", paths)
-        self.assertIn("/static/proxy/proxy.css", paths)
-        self.assertIn("/static/extractStats/extractStats.js", paths)
-        self.assertIn("/static/extractStats/extractStats.css", paths)
-        self.assertIn("/static/bulk/bulk.js", paths)
-        self.assertIn("/static/bulk/bulk.css", paths)
+        for page in ("accounts", "codex", "config", "dashboard", "email", "extract",
+                     "proxy", "registration", "bulk", "task-center"):
+            self.assertIn(f"/static/task-center/{page}.js", paths)
+        self.assertIn("/static/task-center/task-center.css", paths)
         self.assertIn("/static/js/pages/proxy/traffic.js", paths)
         self.assertIn("/static/js/shared/common.js", paths)
         self.assertIn("/static/js/pages/config/page.js", paths)
@@ -54,23 +48,52 @@ class PageAssetTemplateTests(unittest.TestCase):
         self.assertEqual(version[0], page_asset_version(app))
 
 
+class ConfigPageAssetLinkTests(unittest.TestCase):
+    def test_actual_config_mount_uses_the_index_content_version_for_both_assets(self):
+        from flask import Flask, render_template
+        from html.parser import HTMLParser
+        from urllib.parse import parse_qs, urlsplit
+
+        class ConfigMountParser(HTMLParser):
+            attributes = None
+
+            def handle_starttag(self, tag, attributes):
+                values = dict(attributes)
+                if values.get("id") == "config-page-root":
+                    self.attributes = values
+
+        root = Path(__file__).resolve().parents[2] / "webui"
+        app = Flask(__name__, template_folder=str(root / "templates"), static_folder=str(root / "static"))
+        with app.test_request_context("/"):
+            rendered = render_template("index.html", asset_version="synthetic-content-version")
+        parser = ConfigMountParser()
+        parser.feed(rendered)
+        self.assertIsNotNone(parser.attributes)
+        for key, suffix in (("data-module-url", "/task-center/config.js"),
+                            ("data-style-url", "/task-center/task-center.css")):
+            with self.subTest(asset=key):
+                url = urlsplit(parser.attributes[key])
+                self.assertTrue(url.path.endswith(suffix))
+                self.assertEqual(parse_qs(url.query).get("v"), ["synthetic-content-version"])
+
+
 class PageAssetVersionTests(unittest.TestCase):
     def setUp(self):
         self.root = Path(tempfile.mkdtemp(prefix="turb-page-assets-"))
         self.static = self.root / "static"
-        self.bundle = self.static / "dashboard"
+        self.bundle = self.static / "task-center"
         self.bundle.mkdir(parents=True)
         (self.root / "templates").mkdir()
         self.template = self.root / "templates/index.html"
-        self.template.write_text("<script src=\"{{ url_for('static', filename='js/bridge.js', v=asset_version) }}\"></script>\n", encoding="utf-8")
+        self.template.write_text("<script src=\"{{ url_for('static', filename='js/bridge.js', v=task_center_version) }}\"></script>\n", encoding="utf-8")
         self.legacy = self.static / "js/bridge.js"
         self.legacy.parent.mkdir()
         self.legacy.write_bytes(b"legacy-one")
-        self.entry = self.bundle / "dashboard.js"
+        self.entry = self.bundle / "accounts.js"
         self.entry.write_bytes(b"entry-one")
         self.shared = self.bundle / "shared-a.js"
         self.shared.write_bytes(b"shared-one")
-        self.css = self.bundle / "dashboard.css"
+        self.css = self.bundle / "task-center.css"
         self.css.write_bytes(b"css-one")
         self.app = SimpleNamespace(root_path=str(self.root), static_folder=str(self.static), template_folder="templates")
         self.addCleanup(self.remove_synthetic_files)
@@ -166,7 +189,7 @@ class PageAssetVersionTests(unittest.TestCase):
 
     def test_chunk_add_remove_and_ignored_source_maps(self):
         version = self.version()
-        source_map = self.bundle / "dashboard.js.map"
+        source_map = self.bundle / "accounts.js.map"
         source_map.write_bytes(b"map")
         self.assertEqual(self.version(), version)
         chunk = self.bundle / "new-hash.js"

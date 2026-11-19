@@ -2,18 +2,11 @@ const $ = (s) => document.querySelector(s);
 const $$ = (s) => Array.from(document.querySelectorAll(s));
 let copySeq = 0;
 const copyStore = new Map();
-let ACCOUNTS = [], OUTLOOK = [], CONFIG = [];
-let ACCOUNT_TASKS = [], ACCOUNT_TASKS_TOTAL = 0;
-const ACCOUNT_TASK_SELECTED = new Set();
-let accountTasksReloadQueued = false;
+let ACCOUNTS = [], CONFIG = [];
 let ACCOUNTS_TOTAL = 0;
-let OUTLOOK_TOTAL = 0;
-let outlookLoading = false;
-let outlookReloadQueued = false;
 let SHOW_ARCHIVED_ACCOUNTS = false;
 let SHOW_PLUS_ACCOUNTS_ONLY = false;
 const ACCOUNT_SELECTED = new Set();
-const OUTLOOK_SELECTED = new Set();
 let JOBS = [];
 let JOBS_TOTAL = 0;
 let JOB_STATUS_COUNTS = {};
@@ -42,7 +35,6 @@ let jobsRequestGeneration = 0;
 let jobsRequestSignature = '';
 let jobsRequestPromise = null;
 let jobsBatchError = '';
-let accountTasksLoading = false;
 
 // GET requests are shared while in flight so startup and navigation cannot
 // create duplicate requests for the same resource. A small explicit cache is
@@ -256,9 +248,6 @@ function setColumnFilterValue(control, value) {
 const PAGERS = {
   jobs:     { page: 1, size: 20 },
   accounts: { page: 1, size: 10 },
-  outlook:  { page: 1, size: 20 },
-  codex:    { page: 1, size: 20 },
-  accountTasks: { page: 1, size: 20 },
 };
 const PAGER_LAYOUTS = new WeakMap();
 
@@ -350,7 +339,7 @@ function pagerJump(id, val, input) {
 }
 
 function _reloadPagedList(id) {
-  ({ jobs: refreshJobs, accounts: loadAccounts, outlook: loadOutlook, codex: loadCodex, accountTasks: loadAccountTasks })[id]?.();
+  ({ jobs: refreshJobs, accounts: loadAccounts })[id]?.();
 }
 function pagerGo(id, dir) {
   pagerGoTo(id, PAGERS[id].page + dir);
@@ -376,12 +365,6 @@ const TABLE_DEFAULT_WIDTHS = {
   jobs:     [4, 6, 15, 9, 11, 8, 9, 9, 13, 16],
   // 默认账号行按桌面视口排布；长内容仍可从单元格提示和详情抽屉查看。
   accounts: [36, 72, 160, 80, 104, 84, 88, 72, 88, 88, 192, 72, 88, 72, 96, 108],
-  codex:    [4, 19, 7, 9, 9, 11, 11, 11, 11, 19],
-  outlook:  [4, 20, 9, 9, 8, 14, 14, 18],
-  accountTasks: [4, 6, 9, 18, 10, 11, 13, 10, 11, 17, 15, 10],
-  proxyCurrent: [145, 144, 108, 156, 126, 220, 88, 188],
-  proxyHistory: [145, 144, 108, 156, 126, 220, 188, 92],
-  proxyTraffic: [132, 92, 108, 170, 188, 220, 188, 92],
 };
 const TABLE_WIDTH_STORAGE_PREFIX = 'gpt_console_table_widths_';
 const TABLE_WIDTH_TOTAL_STORAGE_PREFIX = 'gpt_console_table_total_';
@@ -448,37 +431,41 @@ function columnTextWidth(value) {
   );
 }
 
-function autoSizeResizableTableColumns(table) {
-  if (!table || table.dataset.resizableTable !== 'accountTasks') return;
-  if (table.dataset.autoSized === '1') return;
-  const cols = Array.from(table.querySelectorAll('colgroup col'));
-  const headers = Array.from(table.querySelectorAll('thead tr:first-child th'));
-  if (!cols.length || cols.length !== headers.length) return;
-  const key = table.dataset.resizableTable;
-  if (readSavedTableWidths(key, cols.length)) {
-    const savedTotal = readSavedTableTotal(key);
-    if (savedTotal && key !== 'accountTasks') table.style.setProperty('width', `${Math.max(1240, savedTotal)}px`, 'important');
-    table.dataset.autoSized = '1';
-    return;
+function migrateAccountTableWidths(expectedLength = 16) {
+  const key = 'accounts';
+  const savedWidths = readSavedTableWidths(key, expectedLength)
+    || (expectedLength === 16 ? readSavedTableWidths(key, 15) : null);
+  let effectiveWidths = savedWidths || TABLE_DEFAULT_WIDTHS.accounts;
+  const needsDriverColumn = savedWidths?.length === 15 && expectedLength === 16;
+  let tableWidth = readSavedTableTotal(key) || (needsDriverColumn ? 1396 : 1500);
+  const layoutVersion = localStorage.getItem(ACCOUNT_COLUMN_LAYOUT_STORAGE_KEY);
+  if (savedWidths && layoutVersion !== ACCOUNT_COLUMN_LAYOUT_VERSION) {
+    const weights = savedWidths.map(value => Math.max(0, Number(value) || 0));
+    const weightTotal = weights.reduce((sum, value) => sum + value, 0);
+    const lastIndex = weights.length - 1;
+    const actionWidth = weightTotal > 0 ? weights[lastIndex] / weightTotal * tableWidth : 0;
+    const defaultActionWidth = TABLE_DEFAULT_WIDTHS.accounts.at(-1);
+    // 旧相邻拖动布局会把创建列收窄的空间转给操作列；升级时清理一次，
+    // 保留前面各列的像素宽度。新版本中主动拖宽的末列继续正常记忆。
+    const hasTransferredSpace = layoutVersion === '1' && actionWidth > defaultActionWidth;
+    const hasLegacyBlank = actionWidth > defaultActionWidth * 2 && actionWidth > tableWidth * .2;
+    if (hasTransferredSpace || hasLegacyBlank) {
+      effectiveWidths = weights.map(value => value / weightTotal * tableWidth);
+      effectiveWidths[lastIndex] = defaultActionWidth;
+      tableWidth = Number(effectiveWidths.reduce((sum, value) => sum + value, 0).toFixed(4));
+      saveTableWidths(key, effectiveWidths.map(value => value / tableWidth), tableWidth);
+    }
+    localStorage.setItem(ACCOUNT_COLUMN_LAYOUT_STORAGE_KEY, ACCOUNT_COLUMN_LAYOUT_VERSION);
   }
-  const minWidths = [38, 48, 68, 128, 78, 76, 100, 64, 72, 126, 152, 108];
-  const maxWidths = [56, 132, 240, 150, 160, 180, 220, 120, 200, 220, 420, 210];
-  const rows = Array.from(table.tBodies?.[0]?.rows || []).slice(0, 20);
-  const widths = headers.map((header, index) => {
-    const values = [header.dataset.filterLabel || header.textContent || ''];
-    rows.forEach(row => { if (row.cells[index]) values.push(row.cells[index].innerText || row.cells[index].textContent || ''); });
-    const natural = Math.max(...values.map(columnTextWidth), minWidths[index] || 64) + 30;
-    return Math.min(maxWidths[index] || 360, Math.max(minWidths[index] || 64, natural));
-  });
-  const total = widths.reduce((sum, value) => sum + value, 0);
-  const availableWidth = table.parentElement?.clientWidth || 0;
-  const tableWidth = availableWidth > 0
-    ? availableWidth
-    : Math.max(1080, readSavedTableTotal(key), Math.ceil(total));
-  table.style.setProperty('width', `${tableWidth}px`, 'important');
-  localStorage.setItem(TABLE_WIDTH_TOTAL_STORAGE_PREFIX + key, String(tableWidth));
-  applyResizableTableWidths(table, widths.map(value => value / total));
-  table.dataset.autoSized = '1';
+  if (needsDriverColumn) {
+    // 先还原历史列的像素宽度，再插入注册驱动列，避免后续列错位或被压缩。
+    const weightTotal = effectiveWidths.reduce((sum, value) => sum + Math.max(0, Number(value) || 0), 0);
+    effectiveWidths = effectiveWidths.map(value => weightTotal > 0 ? Math.max(0, Number(value) || 0) / weightTotal * tableWidth : 0);
+    effectiveWidths.splice(4, 0, TABLE_DEFAULT_WIDTHS.accounts[4]);
+    tableWidth = Number(effectiveWidths.reduce((sum, value) => sum + value, 0).toFixed(4));
+    saveTableWidths(key, effectiveWidths.map(value => value / tableWidth), tableWidth);
+  }
+  return {widths: effectiveWidths, total: tableWidth};
 }
 
 function initResizableTable(table) {
@@ -488,43 +475,11 @@ function initResizableTable(table) {
   const headers = Array.from(table.querySelectorAll('thead tr:first-child th'));
   if (!key || !cols.length || cols.length !== headers.length) return;
   table.dataset.resizableReady = '1';
-  const savedWidths = readSavedTableWidths(key, cols.length)
-    || (key === 'accounts' && cols.length === 16 ? readSavedTableWidths(key, 15) : null);
-  if (savedWidths && key === 'accountTasks') {
-    table.style.removeProperty('width');
-  }
-  let effectiveWidths = savedWidths || TABLE_DEFAULT_WIDTHS[key];
+  let effectiveWidths = readSavedTableWidths(key, cols.length) || TABLE_DEFAULT_WIDTHS[key];
   if (key === 'accounts') {
-    const needsDriverColumn = savedWidths?.length === 15 && cols.length === 16;
-    let tableWidth = readSavedTableTotal(key) || (needsDriverColumn ? 1396 : 1500);
-    const layoutVersion = localStorage.getItem(ACCOUNT_COLUMN_LAYOUT_STORAGE_KEY);
-    if (savedWidths && layoutVersion !== ACCOUNT_COLUMN_LAYOUT_VERSION) {
-      const weights = savedWidths.map(value => Math.max(0, Number(value) || 0));
-      const weightTotal = weights.reduce((sum, value) => sum + value, 0);
-      const lastIndex = weights.length - 1;
-      const actionWidth = weightTotal > 0 ? weights[lastIndex] / weightTotal * tableWidth : 0;
-      const defaultActionWidth = TABLE_DEFAULT_WIDTHS.accounts.at(-1);
-      // 旧相邻拖动布局会把创建列收窄的空间转给操作列；升级时清理一次，
-      // 保留前面各列的像素宽度。新版本中主动拖宽的末列继续正常记忆。
-      const hasTransferredSpace = layoutVersion === '1' && actionWidth > defaultActionWidth;
-      const hasLegacyBlank = actionWidth > defaultActionWidth * 2 && actionWidth > tableWidth * .2;
-      if (hasTransferredSpace || hasLegacyBlank) {
-        effectiveWidths = weights.map(value => value / weightTotal * tableWidth);
-        effectiveWidths[lastIndex] = defaultActionWidth;
-        tableWidth = Number(effectiveWidths.reduce((sum, value) => sum + value, 0).toFixed(4));
-        saveTableWidths(key, effectiveWidths.map(value => value / tableWidth), tableWidth);
-      }
-      localStorage.setItem(ACCOUNT_COLUMN_LAYOUT_STORAGE_KEY, ACCOUNT_COLUMN_LAYOUT_VERSION);
-    }
-    if (needsDriverColumn) {
-      // 先还原历史列的像素宽度，再插入注册驱动列，避免后续列错位或被压缩。
-      const weightTotal = effectiveWidths.reduce((sum, value) => sum + Math.max(0, Number(value) || 0), 0);
-      effectiveWidths = effectiveWidths.map(value => weightTotal > 0 ? Math.max(0, Number(value) || 0) / weightTotal * tableWidth : 0);
-      effectiveWidths.splice(4, 0, TABLE_DEFAULT_WIDTHS.accounts[4]);
-      tableWidth = Number(effectiveWidths.reduce((sum, value) => sum + value, 0).toFixed(4));
-      saveTableWidths(key, effectiveWidths.map(value => value / tableWidth), tableWidth);
-    }
-    applyTablePixelWidth(table, tableWidth);
+    const layout = migrateAccountTableWidths(cols.length);
+    effectiveWidths = layout.widths;
+    applyTablePixelWidth(table, layout.total);
   }
   applyResizableTableWidths(table, effectiveWidths);
 
@@ -594,9 +549,6 @@ function initResizableTables() {
   const resetButtons = {
     btnResetJobsColumnsV2: 'jobs',
     btnResetAccountsColumnsV2: 'accounts',
-    btnResetCodexColumnsV2: 'codex',
-    btnResetOutlookColumnsV2: 'outlook',
-    btnResetAccountTaskColumnsV2: 'accountTasks',
   };
   Object.entries(resetButtons).forEach(([id, key]) => {
     document.getElementById(id)?.addEventListener('click', () => resetResizableTable(key));
@@ -622,9 +574,6 @@ function initResizableTables() {
 const COLUMN_FILTER_RESET_IDS = {
   jobs: 'btnResetJobFiltersV2',
   accounts: 'btnResetAccountFiltersV2',
-  codex: 'btnResetCodexFiltersV2',
-  outlook: 'btnResetOutlookFiltersV2',
-  accountTasks: 'btnResetAccountTaskFiltersV2',
 };
 
 function columnFilterIcon(type) {
@@ -1168,6 +1117,7 @@ function applyFeatureGates(root=document) {
 async function loadCapabilities() {
   try {
     CAPABILITIES = await apiCached('/api/capabilities', {}, 30000);
+    window.AccountsPage?.setCapabilities?.(CAPABILITIES.features || {});
     applyFeatureGates();
   } catch (_) {}
 }
@@ -1350,10 +1300,14 @@ setInterval(updateTopbarClock, 30000);
 
 function closePageDialogsForNavigation() {
   window.DashboardPage?.closeDialogs?.();
+  window.RegistrationPage?.closeDetail?.();
+  window.ExtractWorkbenchPage?.closeDialogs?.();
+  window.EmailPage?.closeDialogs();
+  window.ProxyTraffic?.closeDetail({restoreFocus:false});
+  window.TaskCenter?.closeDetail();
   // 离开页面时走完整关闭逻辑，清理轮询、焦点状态和滚动锁。
   const dialogs = [
-    ['accountTaskLogPanel', typeof closeAccountTaskLogModal === 'function' ? closeAccountTaskLogModal : null],
-    ['accountDetailDrawer', typeof closeAccountDetail === 'function' ? closeAccountDetail : null],
+    ['accountDetailDrawer', typeof closeAccountDetail === 'function' ? () => closeAccountDetail(false) : null],
     ['emailChangeModal', typeof closeEmailChangeModal === 'function' ? () => closeEmailChangeModal({restoreFocus:false}) : null],
     ['liveLogPanel', typeof closeLiveLogModal === 'function' ? closeLiveLogModal : null],
     ['overviewCustomizer', typeof closeOverviewCustomizer === 'function' ? closeOverviewCustomizer : null],
@@ -1395,32 +1349,36 @@ function activateTab(tab, persist=true, historyMode=persist ? 'push' : 'none') {
   closeMobileSidebar();
   if (persist) localStorage.setItem('gpt_console_active_tab', tab);
   window.DashboardPage?.setVisible(tab === 'overview');
+  window.RegistrationPage?.setVisible(tab === 'register');
+  window.ExtractWorkbenchPage?.setVisible(tab === 'extract-workbench');
+  window.ExtractStatsPage?.setVisible(tab === 'extract-stats');
   if (tab === 'overview' && !window.DashboardPage) ensureViewLoaded('overview', loadDashboard);
   if (tab === 'bulk' && window.BulkTasks) void BulkTasks.activate();
-  else window.BulkTasks?.deactivate?.();
-  if (tab === 'tasks') ensureViewLoaded('account-tasks', loadAccountTasks);
+  window.BulkTasks?.setVisible(tab === 'bulk');
+  window.TaskCenter?.setVisible(tab === 'tasks');
   if (tab === 'accounts') {
     const view = $('#tab-accounts')?.dataset.moduleView || 'active';
-    if (view === 'tasks') ensureViewLoaded('account-tasks', loadAccountTasks);
+    if (window.AccountsPage) window.AccountsPage.setArchived(view === 'archived');
     else ensureViewLoaded(`accounts:${view}`, loadAccounts);
   }
+  window.AccountsPage?.setVisible(tab === 'accounts');
   if (tab === 'codex') {
     const archived = $('#tab-codex')?.dataset.moduleView === 'archived';
-    if (CODEX_SHOW_ARCHIVED !== archived) applyCodexArchivedFilter(archived);
-    else if (!codexLoading) ensureViewLoaded('codex', loadCodex);
+    window.CodexCredentials?.setArchived(archived);
   }
-  if (tab === 'outlook') {
-    const view = $('#tab-outlook')?.dataset.moduleView || 'overview';
-    if (view === 'overview') ensureViewLoaded('outlook:overview', loadMailResources);
-    else if (view === 'list') ensureViewLoaded('outlook:list', loadOutlook);
-  }
-  window.EmailHistory?.setVisible(tab === 'outlook' && currentView === 'derivations');
-  if (tab === 'proxy-traffic') window.ProxyTraffic?.setView(currentView || 'pool');
+  window.CodexCredentials?.setVisible(tab === 'codex');
+  window.EmailPage?.setView($('#tab-outlook')?.dataset.moduleView || 'overview');
+  window.EmailPage?.setVisible(tab === 'outlook');
+  window.ProxyTraffic?.setView($('#tab-proxy-traffic')?.dataset.moduleView || 'pool');
   window.ProxyTraffic?.setVisible(tab === 'proxy-traffic');
+  window.ConfigPage?.setVisible(tab === 'config');
   if (tab === 'config') ensureViewLoaded('config', loadConfig, 30000);
-  if (tab === 'extract-workbench') ensureViewLoaded('extract-workbench', loadExtractWorkbench, 0);
-  window.ExtractStats?.setVisible(tab === 'extract-stats');
-  if (tab === 'register') refreshJobs({coalesce: true});
+  if (tab === 'extract-workbench' && !window.ExtractWorkbenchPage) ensureViewLoaded('extract-workbench', loadExtractWorkbench, 0);
+  if (tab === 'extract-stats' && !window.ExtractStatsPage) ensureViewLoaded('extract-stats', loadExtractStats, 0);
+  if (tab === 'register') {
+    window.RegistrationPage?.setView($('#tab-register')?.dataset.moduleView === 'tasks' ? 'tasks' : 'launch');
+    if (!window.RegistrationPage) refreshJobs({coalesce: true});
+  }
   if (historyMode === 'push') recordNavigationHistory();
   else updateNavigationBackButton();
 }
@@ -1429,6 +1387,7 @@ $$('.sidebar-nav button[data-tab]').forEach(b => b.addEventListener('click', () 
 const MODULE_VIEW_META = {
   register: {
     launch: '配置邮箱来源、批次数量与并发线程',
+    tasks: '查询、筛选和维护注册任务',
   },
   accounts: {
     active: '查询、筛选和批量维护活跃账号',
@@ -1461,18 +1420,22 @@ function setModuleView(module, view, persist=true, historyMode='push') {
   if ($('#topbarDescription')) $('#topbarDescription').textContent = MODULE_VIEW_META[module][view];
   if (module === 'accounts' && view === 'tasks') ensureViewLoaded('account-tasks', loadAccountTasks);
   else if (module === 'accounts' && SHOW_ARCHIVED_ACCOUNTS !== (view === 'archived')) applyAccountsArchivedFilter(view === 'archived');
-  if (module === 'register') refreshJobs({coalesce: true});
+  if (module === 'accounts') window.AccountsPage?.setVisible(ACTIVE_TAB === 'accounts' && view !== 'tasks');
+  if (module === 'register') {
+    window.RegistrationPage?.setView(view === 'tasks' ? 'tasks' : 'launch');
+    if (!window.RegistrationPage) refreshJobs({coalesce: true});
+  }
   if (module === 'codex') {
-    if (CODEX_SHOW_ARCHIVED !== (view === 'archived')) applyCodexArchivedFilter(view === 'archived');
-    else if (!codexLoading) ensureViewLoaded('codex', loadCodex);
+    window.CodexCredentials?.setArchived(view === 'archived');
+    window.CodexCredentials?.setVisible(ACTIVE_TAB === 'codex');
   }
   if (module === 'outlook') {
-    window.EmailHistory?.setVisible(ACTIVE_TAB === 'outlook' && view === 'derivations');
-    if (view === 'overview') ensureViewLoaded('outlook:overview', loadMailResources);
-    else if (view === 'list') ensureViewLoaded('outlook:list', loadOutlook);
+    window.EmailPage?.setView(view);
+    window.EmailPage?.setVisible(ACTIVE_TAB === 'outlook');
   }
   if (module === 'proxy-traffic') {
     window.ProxyTraffic?.setView(view);
+    window.ProxyTraffic?.setVisible(ACTIVE_TAB === 'proxy-traffic');
   }
   closeMobileSidebar();
   if (historyMode === 'push') recordNavigationHistory();
@@ -1510,6 +1473,6 @@ function restoreModuleViewState() {
       btn.classList.toggle('is-active', btn.dataset.view === saved);
     });
     if (module === 'accounts') SHOW_ARCHIVED_ACCOUNTS = saved === 'archived';
-    if (module === 'codex') CODEX_SHOW_ARCHIVED = saved === 'archived';
+    if (module === 'codex') window.CodexCredentials?.setArchived(saved === 'archived');
   });
 }

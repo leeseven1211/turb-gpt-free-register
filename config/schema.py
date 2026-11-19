@@ -2984,7 +2984,7 @@ def build_non_sensitive_snapshot(
     return ConfigSnapshot(values, sources, revision=0)
 
 
-def publish_config_snapshot(candidate: ConfigSnapshot) -> ConfigSnapshot:
+def publish_config_snapshot(candidate: ConfigSnapshot, *, before_publish=None) -> ConfigSnapshot:
     """将已构建候选以一次 reference swap 发布，并绑定 revision。"""
     if not isinstance(candidate, ConfigSnapshot):
         raise TypeError("candidate 必须是 ConfigSnapshot")
@@ -2995,6 +2995,10 @@ def publish_config_snapshot(candidate: ConfigSnapshot) -> ConfigSnapshot:
         # 构建完整不可变对象后只执行一次全局引用替换；读者拿到的对象中
         # values/sources/revision 永远属于同一版本。
         published = ConfigSnapshot(candidate.values, candidate.sources, revision)
+        # Fencing after allocation and under the publication lock prevents a
+        # late observer from briefly exposing a candidate it must roll back.
+        if before_publish is not None:
+            before_publish()
         _PUBLISHED_SNAPSHOT = published
         return published
 

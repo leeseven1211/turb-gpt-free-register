@@ -687,6 +687,8 @@ def _acquire_account_proxy_with_retries(
                 **({"region": region} if region else {}),
                 **({"timeout": remaining} if remaining is not None else {}),
             )
+        except (account_task_store.OperationSettlementPending, account_task_store.OperationSettlementConflict, account_task_store.OperationSettlementFenced):
+            raise
         except Exception as exc:
             if attempt >= retry_limit or not _is_retryable_account_proxy_acquisition_error(exc):
                 raise
@@ -1033,6 +1035,17 @@ def _run_live_check(
         selected_refresh_driver = _resolve_refresh_driver(
             refresh_driver, config_snapshot=config_snapshot,
         ) if force_refresh else None
+        # A possible browser fallback can keep using this route after the
+        # worker process exits; only known protocol-only paths are local.
+        route_actor_scope = "external"
+        if not force_refresh and selected_live_check_driver == "protocol_current":
+            route_actor_scope = "owner_process"
+        elif (
+            force_refresh
+            and selected_refresh_driver in {"protocol_v2", "protocol_v3"}
+            and _snapshot_value(config_snapshot, "roxy_fallback_enabled") is False
+        ):
+            route_actor_scope = "owner_process"
         if selected_refresh_driver == "browser_roxy" and operation_context is not None:
             from config import account as account_config
 
@@ -1084,6 +1097,13 @@ def _run_live_check(
             nonlocal account_route, route, network_open
             begin_network_stage()
             if account_route is not None:
+                from core.accounts.operation_results import AccountRouteCleanup
+                if isinstance(account_route, AccountRouteCleanup):
+                    account_route.record_cleanup_facts({
+                        "operation_stage": "auth_preflight_rotation",
+                        "completed_steps": [], "observed_steps": [],
+                        "unexecuted_steps": ["next_auth_attempt"],
+                    })
                 account_route.release(reason=f"live-check-{account_id}-preflight-rotate")
             account_route = None
             route = {}
@@ -1114,6 +1134,10 @@ def _run_live_check(
                 **({"region": refresh_country} if refresh_country else {}),
                 **({"timeout": max(0, network_recovery_deadline - time.monotonic())}
                    if force_refresh and network_recovery_deadline is not None else {}),
+            )
+            from core.accounts.operation_results import own_account_route
+            account_route = own_account_route(
+                operation_context, account_route, purpose=purpose, actor_scope=route_actor_scope,
             )
             route = account_route.public_dict()
             _append_log(
@@ -1156,6 +1180,11 @@ def _run_live_check(
                         config_snapshot,
                         "refresh_at_proxy_mode" if force_refresh else "live_check_proxy_mode",
                     ),
+                )
+                from core.accounts.operation_results import own_account_route
+                account_route = own_account_route(
+                    operation_context, account_route, purpose="token-refresh" if force_refresh else "live-check",
+                    actor_scope=route_actor_scope,
                 )
                 route = account_route.public_dict()
                 reporter.resource("resource.acquired", "已选择指定账号线路", stage="network", detail=route)
@@ -1262,6 +1291,8 @@ def _run_live_check(
                     {"response_observed": False, "cancelled": True},
                 )
                 raise exc
+            except (account_task_store.OperationSettlementPending, account_task_store.OperationSettlementConflict, account_task_store.OperationSettlementFenced):
+                raise
             except Exception as exc:
                 if refresh_boundary is None:
                     # 适配器未报告阶段就抛错时，保守地按远端结果未知处理。
@@ -1438,6 +1469,8 @@ def _run_live_check(
                     return attempt_result
                 except (OperationCancelled, account_task_store.OperationLeaseLost):
                     raise
+                except (account_task_store.OperationSettlementPending, account_task_store.OperationSettlementConflict, account_task_store.OperationSettlementFenced):
+                    raise
                 except Exception as exc:
                     failure = network_failure(error=exc)
                     if failure is None:
@@ -1473,6 +1506,15 @@ def _run_live_check(
                 })
                 del network_recovery_history[:-24]
                 if account_route is not None:
+                    from core.accounts.operation_results import AccountRouteCleanup
+                    if isinstance(account_route, AccountRouteCleanup):
+                        account_route.record_cleanup_facts({
+                            "operation_stage": "auth_network_rotation",
+                            "completed_steps": [],
+                            "observed_steps": [{"step": "auth_attempt", "ok": bool(attempt_result.get("ok")),
+                                                "local_business_writeback_confirmed": False}],
+                            "unexecuted_steps": ["next_auth_attempt"],
+                        })
                     account_route.release(reason=f"at-network-failure-{account_id}", fault=True)
                     account_route = None
                 if str(proxy or "").strip() or network_route_retries >= retry_limit:
@@ -1796,6 +1838,15 @@ def _run_live_check(
                     # (403/TLS/proxy corruption). Do not send the browser
                     # fallback through that same lease; rotate once while
                     # keeping explicit caller-selected proxies untouched.
+                    from core.accounts.operation_results import AccountRouteCleanup
+                    if isinstance(account_route, AccountRouteCleanup):
+                        account_route.record_cleanup_facts({
+                            "operation_stage": "auth_browser_fallback_rotation",
+                            "completed_steps": [],
+                            "observed_steps": [{"step": "protocol_auth", "ok": bool(result.get("ok")),
+                                                "local_business_writeback_confirmed": False}],
+                            "unexecuted_steps": ["browser_auth_fallback"],
+                        })
                     if _is_proxy_transport_failure(result):
                         account_route.release(
                             reason=f"live-check-{account_id}-roxy-fallback-rotate",
@@ -1857,6 +1908,8 @@ def _run_live_check(
         })
         try:
             writeback_ok = bool(save_result(account_id, result))
+        except (account_task_store.OperationSettlementPending, account_task_store.OperationSettlementConflict, account_task_store.OperationSettlementFenced):
+            raise
         except Exception:
             if refresh_boundary and refresh_boundary.get("pending_confirmation"):
                 _record_refresh_receipt(
@@ -1882,6 +1935,8 @@ def _run_live_check(
             if not refresh_confirmed:
                 try:
                     save_result(account_id, result)
+                except (account_task_store.OperationSettlementPending, account_task_store.OperationSettlementConflict, account_task_store.OperationSettlementFenced):
+                    raise
                 except Exception:
                     logger.exception("[查活] 远端刷新未确认状态写回失败: account_id=%s", account_id)
         if force_refresh:
@@ -2015,6 +2070,8 @@ def _run_live_check(
             })
         try:
             save_result(account_id, result)
+        except (account_task_store.OperationSettlementPending, account_task_store.OperationSettlementConflict, account_task_store.OperationSettlementFenced):
+            raise
         except Exception:
             logger.exception("[查活] 取消状态写回失败: account_id=%s", account_id)
         if preflight_open:
@@ -2031,6 +2088,8 @@ def _run_live_check(
             },
         )
         return result
+    except (account_task_store.OperationSettlementPending, account_task_store.OperationSettlementConflict, account_task_store.OperationSettlementFenced):
+        raise
     except Exception as exc:
         receipt_outcome = str((refresh_boundary or {}).get("receipt_outcome") or "")
         remote_unknown = bool(
@@ -2046,6 +2105,8 @@ def _run_live_check(
                     "unknown",
                     {"response_observed": receipt_outcome == "response_received"},
                 )
+            except (account_task_store.OperationSettlementPending, account_task_store.OperationSettlementConflict, account_task_store.OperationSettlementFenced):
+                raise
             except Exception:
                 logger.exception("[查活] 远端刷新异常回执写入失败: account_id=%s", account_id)
         unknown = bool(force_refresh and (_refresh_exception_is_unknown(exc) or remote_unknown))
@@ -2074,11 +2135,15 @@ def _run_live_check(
         )
         try:
             save_result(account_id, result)
+        except (account_task_store.OperationSettlementPending, account_task_store.OperationSettlementConflict, account_task_store.OperationSettlementFenced):
+            raise
         except Exception:
             logger.exception("[查活] 写入异常状态失败: account_id=%s", account_id)
         logger.exception("[查活] 后台异常: %s", email)
         try:
             _append_log(email, f"[查活] 后台异常：{result['error']}")
+        except (account_task_store.OperationSettlementPending, account_task_store.OperationSettlementConflict, account_task_store.OperationSettlementFenced):
+            raise
         except Exception:
             pass
         if preflight_open:
@@ -2192,7 +2257,7 @@ def _handle_live_operation(context):
     # and token-refresh runs still carry ``openai_interactive`` in their run
     # row; using the frozen run family here keeps the lease fence consistent
     # for both paths.
-    with context.lease(resource_family=context.resource_family):
+    with context.lease(resource_family=context.resource_family, scope_kind="final"):
         if data.get("completion_auth"):
             from core.accounts.completion import active_registration_job
 
@@ -2289,6 +2354,19 @@ def _retry_live_check_operation(task: dict) -> dict:
     return account_task_store.default_operation_retry(task)
 
 
+def register_actions() -> None:
+    """Register deployment-aware retries and durable stops without execution."""
+    for task_type, retry in (
+        ("live_check", _retry_live_check_operation),
+        ("token_refresh", _retry_token_refresh_operation),
+    ):
+        account_task_store.register_operation_actions(
+            task_type, retry_handler=retry,
+            cancel_handler=account_task_store.default_operation_cancel,
+            terminate_handler=account_task_store.default_operation_terminate,
+        )
+
+
 def register_operation_handlers() -> bool:
     """Register maintenance handlers; runtime owns starting the one dispatcher."""
     register = getattr(account_task_store, "register_operation_handler", None)
@@ -2308,6 +2386,7 @@ def register_operation_handlers() -> bool:
         config_allowlist=LIVE_CONFIG_ALLOWLIST,
         retry_handler=_retry_token_refresh_operation,
     )
+    register_actions()
     return True
 
 
@@ -2493,6 +2572,8 @@ def run_account_live_check_inline(
         # converting a lost child heartbeat into a normal inline failure could
         # incorrectly report a remote auth attempt as safely failed.
         raise
+    except (account_task_store.OperationSettlementPending, account_task_store.OperationSettlementConflict, account_task_store.OperationSettlementFenced):
+        raise
     except Exception as exc:
         result = {
             "ok": False, "status": "failed",
@@ -2500,6 +2581,8 @@ def run_account_live_check_inline(
         }
         try:
             result_writer(result) if callable(result_writer) else db.update_account_liveness(account_id, result)
+        except (account_task_store.OperationSettlementPending, account_task_store.OperationSettlementConflict, account_task_store.OperationSettlementFenced):
+            raise
         except Exception:
             logger.exception("[查活] 内联异常状态写回失败: account_id=%s", account_id)
         if not native_inline and task_id:
@@ -2639,4 +2722,4 @@ def queue_settings() -> dict:
 # Registration is side-effect free when the shared helper is not installed yet;
 # once installed it makes restart recovery visible to the existing runtime
 # dispatcher without creating a service-owned consumer thread.
-register_operation_handlers()
+register_actions()

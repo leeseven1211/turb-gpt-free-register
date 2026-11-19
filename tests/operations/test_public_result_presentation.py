@@ -8,6 +8,7 @@ from unittest.mock import patch
 from flask import Flask
 
 from core import account_task_store
+from core.operations import query_service
 from core.operations.presentation import public_progress_snapshot, public_result_status, public_result_status_sql
 from core.storage.operations import store
 from tests.support_pg import PostgresTestCase
@@ -55,9 +56,9 @@ class PublicResultRoutesTests(TestCase):
                "runs": [{"id": 51, "status": "attention_required", "result_summary": {
                    "cause_code": "email_otp_failed", "requested_status": "partial_success"}}]}
         observed = []
-        with patch.object(operations.operation_task_store, "get_task", return_value=raw), \
-                patch.object(operations.svc, "attach_registration_resume_retry_info",
-                             side_effect=lambda rows: observed.append(deepcopy(rows))):
+        with patch.object(query_service.operation_task_store, "get_task", return_value=raw), \
+                patch.object(query_service.svc, "attach_registration_resume_retry_info",
+                             side_effect=lambda rows: observed.append(deepcopy(rows))) as retry_info:
             response = _client().get("/api/operations/41?include_events=0")
         self.assertEqual(200, response.status_code)
         task = response.get_json()["task"]
@@ -67,7 +68,8 @@ class PublicResultRoutesTests(TestCase):
         self.assertEqual("partial_success", task["runs"][0]["status"])
         self.assertEqual("request_unknown", raw["status"])
         self.assertEqual("attention_required", raw["runs"][0]["status"])
-        self.assertEqual([[raw]], observed)
+        retry_info.assert_called_once()
+        self.assertEqual([raw], observed[0])
 
     def test_list_requests_public_sql_and_checks_registration_actions_with_raw_state(self):
         row = {"id": 41, "task_type": "registration", "source_system": "registration_chains",
@@ -78,9 +80,9 @@ class PublicResultRoutesTests(TestCase):
         def attach(tasks):
             observed.append((tasks[0]["status"], tasks[0]["target_status"]))
 
-        with patch.object(operations.operation_task_store, "list_tasks", return_value={
+        with patch.object(query_service.operation_task_store, "list_tasks", return_value={
                 "ok": True, "items": [row], "total": 1}) as listing, \
-                patch.object(operations.svc, "attach_registration_resume_retry_info", side_effect=attach):
+                patch.object(query_service.svc, "attach_registration_resume_retry_info", side_effect=attach):
             response = _client().get("/api/operations?status=failed&include_batches=0&include_facets=0")
         self.assertEqual(200, response.status_code)
         self.assertTrue(listing.call_args.kwargs["public_status"])
@@ -150,7 +152,7 @@ class PublicResultStoreTests(PostgresTestCase):
         self.assertEqual('failed', result['items'][0]['status'])
         self.assertEqual('request_unknown', account_task_store.get_task(task_id)['status'])
         with patch('core.accounts.token_refresh.settings', return_value={}), \
-                patch.object(operations.codex_token_refresh_service, 'settings', return_value={}):
+                patch('core.codex.token_refresh_service.settings', return_value={}):
             response = _client().get('/api/account-tasks?status=failed')
             detail = _client().get(f'/api/account-tasks/{task_id}')
         self.assertEqual('failed', response.get_json()['items'][0]['status'])

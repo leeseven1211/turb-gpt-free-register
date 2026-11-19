@@ -2,6 +2,7 @@ import {mount} from '@vue/test-utils';
 import {describe, expect, it, vi} from 'vitest';
 import BulkReport from './BulkReport.vue';
 import {mountBulkReport} from './mountBulkReport';
+import {duration,resultText,businessGroups,projectTarget} from './bulkDetailPresentation';
 
 describe('报告挂载与既有外壳的接口', () => {
   it('替换回退视图，更新旧报告时保留原生展开状态，失败时提供原有重试动作', () => {
@@ -128,5 +129,17 @@ describe('六种报告的服务端事实展示', () => {
     expect(
       wrapper.findAll('.bulk-report-rail > span').every((x) => !x.attributes('style')?.includes('NaN')),
     ).toBe(true);
+  });
+  it('六种结果、不确定凭证和国家项维持含义，目标/账号/任务ID彼此独立',()=>{
+    expect(resultText({refresh_outcome:'unconfirmed'})).toBe('本轮 AT 刷新失败');
+    expect(resultText({credential_confirmation:'unconfirmed',existing_asset_preserved:true})).toContain('已有可用凭证保留');
+    expect(resultText({confirmation:'confirmed'})).toContain('变更方式未记录');
+    expect(resultText({query_outcome:'success',confirmed_no_offer:true})).toContain('确认无优惠');
+    expect(resultText({required_steps:['password','twofa'],completed_steps:['password'],pending_steps:['twofa']})).toContain('待完成 2FA');
+    expect(duration(null)).toBe('—');expect(duration(0)).toBe('0 秒');
+    expect(businessGroups({'country_query.failed':2})[0]?.items[0]?.unit).toBe('项');
+    expect(projectTarget({canonical_target_id:'9007199254740993',account_id:'9007199254740994',owned_task_id:'9007199254740995',owned_run_id:'9007199254740996',blocker_task_id:'9007199254740997'})).toMatchObject({
+      id:'9007199254740993',accountId:'9007199254740994',taskId:'9007199254740995',runId:'9007199254740996',blockerTaskId:'9007199254740997',
+    });
   });
 });

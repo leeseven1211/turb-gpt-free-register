@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from contextlib import ExitStack
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
 from core.operations import executor as account_operation_executor
-from core import db
+from core import db, account_task_store
 from core.storage import postgres as postgres_store, records as record_store
 from core.accounts.deactivation import mail_scan as deactivation_mail_service
 from core.extract_link import service as extract_link_service
@@ -15,6 +16,7 @@ from core.accounts.plans import service as plan_check_service
 from core.operations import task_gateway
 from core.storage.operations import store as operation
 from tests.support_pg import PostgresTestCase
+from tests.support_settlement import install_native_settlement_fixture
 
 
 class _Route:
@@ -44,10 +46,24 @@ class _ConfigSnapshot:
 
 class MaintenanceDurableGatewayTests(PostgresTestCase):
     def setUp(self):
+        self.schema_patches = ExitStack()
+        self.addCleanup(self._close_test_resources)
+        self.schema_patches.enter_context(patch.object(account_task_store, "_SCHEMA", self.schema))
+        self.schema_patches.enter_context(patch.object(account_task_store, "_READY_KEY", ""))
         task_gateway.init()
         operation.reset_ready()
         operation.init()
+        self.settlement_fixture = install_native_settlement_fixture(self)
         self.assertTrue(live_check_service.register_maintenance_operation_handlers())
+
+    def tearDown(self):
+        self._close_test_resources()
+
+    def _close_test_resources(self):
+        fixture = getattr(self, "settlement_fixture", None)
+        if fixture is not None:
+            fixture.close()
+        self.schema_patches.close()
 
     def _account(self, email: str, **extra) -> int:
         values = {

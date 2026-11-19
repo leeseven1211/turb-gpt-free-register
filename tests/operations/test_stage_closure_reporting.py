@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
+from core.accounts import operation_results, operation_settings
 from core.codex import oauth as codex_oauth, operation_service as codex_operation_service, retry_service as codex_retry_service
 from core.registration import service as registration_service
 from core.operations.runtime import OperationCancelled
@@ -93,26 +94,48 @@ class BrowserRetryNotificationTests(unittest.TestCase):
     def test_recovered_browser_retry_is_notification_in_existing_stage(self):
         route = Mock(provider="fixture", region="fixture", mode="direct", proxy_url=None)
         route.public_dict.return_value = {"network_route": "fixture"}
+        attempt = 0
+
+        def browser_action(_email, **kwargs):
+            nonlocal attempt
+            attempt += 1
+            if attempt == 1:
+                raise RuntimeError("fixture temporary error")
+            # Real browser success invokes the supplied setup action; this
+            # records the required step receipt consumed by finalization.
+            kwargs["action"](Mock(), {})
+
         with ExitStack() as stack:
             stack.enter_context(patch("config.reload_all"))
-            stack.enter_context(patch.object(codex_retry_service.db, "get_account_by_email", return_value={"id": 94}))
+            stack.enter_context(patch.object(codex_retry_service.db, "get_account_by_email", return_value={
+                "id": 94, "extra_json": {"account_password": "fixture-password", "account_password_state": "confirmed"},
+                "access_token": "fixture-at",
+            }))
             stack.enter_context(patch.object(codex_retry_service.account_task_store, "get_task", return_value={}))
             events = stack.enter_context(patch.object(codex_retry_service.account_task_store, "append_event"))
             stack.enter_context(patch.object(codex_retry_service.task_run_log, "TaskRunLogHandler"))
             stack.enter_context(patch.object(codex_retry_service.logging, "getLogger", return_value=Mock()))
             stack.enter_context(patch.object(codex_retry_service, "check_stop_requested"))
             stack.enter_context(patch.object(codex_retry_service, "_attach_auth_projection"))
-            stack.enter_context(patch.object(codex_retry_service, "_build_roxy_account_setup", return_value=Mock()))
+            def setup_action(*args, step_results, **kwargs):
+                def complete(_driver, _session):
+                    step_results["password"] = {
+                        "ok": True, "status": "success", "message": "fixture verified password",
+                        "remote_receipt_state": "confirmed",
+                    }
+                return complete
+            stack.enter_context(patch.object(codex_retry_service, "_build_roxy_account_setup", side_effect=setup_action))
             stack.enter_context(patch.object(codex_retry_service, "_is_retryable_account_setup_error", return_value=True))
             stack.enter_context(patch.object(codex_retry_service, "_account_setup_retry_reason", return_value="fixture_retry"))
             stack.enter_context(patch.object(codex_retry_service.time, "sleep"))
             stack.enter_context(patch("core.proxy.account_routes.acquire_account_proxy", return_value=route))
-            browser = stack.enter_context(patch("core.codex.roxy.oauth.run_roxy_chatgpt_account_action", side_effect=[RuntimeError("fixture temporary error"), None]))
+            browser = stack.enter_context(patch("core.codex.roxy.oauth.run_roxy_chatgpt_account_action", side_effect=browser_action))
             result = codex_retry_service.run_twofa_worker(
                 "fixture@example.test", task_id=95, steps={"password"}, manage_task=False,
                 clear_log=False, target_log_path="/tmp/stage-closure-fixture.log", password_driver_override="roxy",
             )
         self.assertTrue(result["ok"])
+        self.assertEqual("confirmed", result["step_results"]["password"]["remote_receipt_state"])
         self.assertEqual(2, browser.call_count)
         notification = next(call.kwargs for call in events.call_args_list if call.kwargs.get("event_type") == "note.warning")
         self.assertEqual("browser", notification["stage"])
@@ -131,19 +154,28 @@ class CodexCancellationStageTests(unittest.TestCase):
         route = Mock(provider="fixture", region="fixture", mode="direct", proxy_url=None)
         route.public_dict.return_value = {"network_route": "fixture"}
         with ExitStack() as stack:
+            stack.enter_context(patch.object(service.task_gateway, "_operation", return_value=service.operation_task_store))
             stack.enter_context(patch.object(concurrency, "current_execution", return_value=execution))
             stack.enter_context(patch.object(concurrency, "validate_execution", return_value=True))
             stack.enter_context(patch.object(concurrency, "set_execution_state", return_value=True))
             for name, value in (
                 ("claim_run", run), ("get_run", run), ("acquire_account_lease", "fixture-lease"),
-                ("register_resource", {"id": 99}), ("record_remote_intent", {}),
-                ("release_resource", None), ("release_account_lease", None),
+                ("register_resource", {"id": 99, "resource_uuid": "fixture-route-resource"}),
+                ("record_remote_intent", {}), ("is_run_cancel_requested", False),
+                ("heartbeat_run", True), ("release_resource", True), ("release_account_lease", True),
             ):
                 stack.enter_context(patch.object(service.operation_task_store, name, return_value=value))
             events = stack.enter_context(patch.object(service.operation_task_store, "append_runtime_event", return_value={}))
-            finish = stack.enter_context(patch.object(service.operation_task_store, "finish_run"))
+            def committed_finish(run_id, **values):
+                return {"id": run_id, "status": values["status"],
+                        "result_summary": dict(values.get("result_summary") or {}),
+                        "message": values.get("message", ""), "error_message": values.get("error")}
+            finish = stack.enter_context(patch.object(service.operation_task_store, "finish_run", side_effect=committed_finish))
             stack.enter_context(patch.object(service.db, "update_account_codex_operation_state"))
-            stack.enter_context(patch.object(service.task_gateway, "OperationLease", return_value=Mock()))
+            # Keep the real lease/context state machine; this offline fixture
+            # only suppresses the synthetic lease's renewal thread.
+            stack.enter_context(patch("core.operations.task_gateway.threading.Thread.start"))
+            stack.enter_context(patch.object(service.task_gateway.OperationHandlerContext, "register_cleanup"))
             stack.enter_context(patch.object(service, "CancellationToken", return_value=Mock()))
             stack.enter_context(patch.object(service, "_forget_dispatched"))
             stack.enter_context(patch.object(service.task_run_log, "TaskRunLogHandler"))
@@ -153,6 +185,8 @@ class CodexCancellationStageTests(unittest.TestCase):
             oauth = stack.enter_context(patch.object(codex_oauth, "run_codex_oauth"))
             {"preflight": feature, "network": acquire, "browser": oauth}[phase].side_effect = exception_type("fixture cancellation")
             result = service._execute_run(96)
+            self.assertEqual(1, {"preflight": feature, "network": acquire, "browser": oauth}[phase].call_count)
+            finish.assert_called_once()
         return result, [call.kwargs for call in events.call_args_list], finish.call_args.kwargs
 
     def test_safe_cancellation_does_not_fail_preflight_or_network(self):
@@ -205,11 +239,11 @@ class CompatibilityCompletionClosureTests(unittest.TestCase):
             remote_request_receipt=Mock(), finish=Mock(),
         )
         with (
-            patch.object(runtime, "_completion_settings_from_snapshot", return_value={}),
+            patch.object(operation_settings, "completion_settings_from_snapshot", return_value={}),
             patch.object(runtime.codex_retry_service, "run_twofa_worker", return_value={
                 "ok": True, "status": "success",
             }) as worker,
-            patch.object(runtime, "_account_setup_receipt", return_value=("confirmed", {})),
+            patch.object(operation_results, "account_setup_receipt", return_value=("confirmed", {})),
         ):
             result = runtime._handle_native_account_setup(context)
 
@@ -260,10 +294,10 @@ class CompatibilityCompletionClosureTests(unittest.TestCase):
                 remote_request_receipt=Mock(), finish=Mock(),
             )
             with self.subTest(receipt=receipt_state, status=business_status), patch.object(
-                runtime, "_completion_settings_from_snapshot", return_value={}
+                operation_settings, "completion_settings_from_snapshot", return_value={}
             ), patch.object(runtime.codex_retry_service, "run_twofa_worker", return_value={
                 "ok": business_status == "success", "status": business_status,
-            }), patch.object(runtime, "_account_setup_receipt", return_value=(receipt_state, {})):
+            }), patch.object(operation_results, "account_setup_receipt", return_value=(receipt_state, {})):
                 result = runtime._handle_native_account_setup(context)
             success = receipt_state == "confirmed" and business_status == "success"
             failed = receipt_state == "rejected" and business_status == "failed"

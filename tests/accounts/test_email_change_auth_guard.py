@@ -50,12 +50,13 @@ class EmailChangeAuthGuardTests(PostgresTestCase):
             run={"data": {"email_source": "outlook"}, "trigger": "fixture"},
             config_snapshot={"email_change_enabled": True}, lease=lambda **_kwargs: nullcontext(),
             report=Mock(), checkpoint=Mock(), remote_request_started=Mock(), remote_request_receipt=Mock(),
+            register_cleanup=Mock(), add_settlement_obligation=Mock(),
         )
 
     def _run(self, *, current_email=None, fail_wait=False):
         old_email = current_email or self.old
         context = self._context(old_email)
-        route = SimpleNamespace(proxy_url="", public_dict=lambda: {}, release=Mock())
+        route = SimpleNamespace(proxy_url="", provider="synthetic", public_dict=lambda: {}, release=Mock())
         session = Mock()
         observed = []
 
@@ -88,6 +89,10 @@ class EmailChangeAuthGuardTests(PostgresTestCase):
         with ExitStack() as stack:
             mocks = [
                 patch.object(service.db, "get_account", return_value={"email": old_email, "email_source": "outlook", "access_token": "fixture-old-at"}),
+                patch("core.operation_task_store.register_resource", return_value={
+                    "id": 901, "resource_uuid": "fixture-route-resource",
+                }),
+                patch("core.operation_task_store.release_resource", return_value=True),
                 patch("core.browser.traffic.record_unavailable"),
                 patch.object(service.email_provider, "validate_email_source", return_value="outlook"),
                 patch.object(service.db, "claim_account_email_change", return_value=True),

@@ -319,6 +319,9 @@ def _delivery_error(exc, kind):
 
 
 def dispatch_once():
+    from core.runtime.execution_access import execution_support_allowed
+    if not execution_support_allowed():
+        return False
     event = _claim_next()
     if not event:
         return False
@@ -380,7 +383,7 @@ def _return_original_lease(event, client, read_persisted_values):
 
 
 def worker_status():
-    return {'alive': bool(_worker and _worker.is_alive()), 'counts': summary()}
+    return {**worker_runtime_status(), 'counts': summary()}
 
 
 def _run():
@@ -394,6 +397,9 @@ def _run():
 
 
 def start_worker():
+    from core.runtime.execution_access import component_start_allowed
+    if not component_start_allowed():
+        return False
     global _worker
     with _lock:
         if _worker and _worker.is_alive():
@@ -403,3 +409,38 @@ def start_worker():
         _worker = threading.Thread(target=_run, name='email-service-sync', daemon=True)
         _worker.start()
         return True
+
+
+def stop_worker(timeout: float = 3.0) -> bool:
+    from core.runtime.periodic import StopBudget, join_stopped
+    global _worker
+    budget = StopBudget(timeout)
+    _stop.set()
+    if not _lock.acquire(timeout=budget.remaining()):
+        return False
+    try:
+        thread = _worker
+    finally:
+        _lock.release()
+    if not join_stopped(thread, budget):
+        return False
+    if not _lock.acquire(timeout=budget.remaining()):
+        return False
+    try:
+        if _worker is thread:
+            _worker = None
+        return not bool(_worker and _worker.is_alive())
+    finally:
+        _lock.release()
+
+
+def worker_runtime_status() -> dict:
+    """Local lifecycle facts; readiness must not query outbox payloads."""
+    with _lock:
+        thread = _worker
+        alive = bool(thread and thread.is_alive())
+        stopping = alive and _stop.is_set()
+        return {"started": thread is not None, "alive": alive,
+                "running": alive and not stopping, "idle": False,
+                "stopping": stopping,
+                "state": "stopping" if stopping else "running" if alive else "stopped"}

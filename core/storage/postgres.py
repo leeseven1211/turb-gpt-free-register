@@ -17,6 +17,8 @@ import re
 import sys
 import threading
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from copy import deepcopy
 from typing import Any
 
@@ -26,9 +28,14 @@ _SCHEMA_READY_KEY = ""
 _CACHE: dict[str, tuple[float, Any]] = {}
 _CACHE_TTL_SECONDS = 1.0
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_SCOPED_DOMAIN = ContextVar("postgres_captured_domain", default=None)
+_SCOPED_DEADLINE = ContextVar("postgres_settlement_deadline", default=None)
 
 
 def database_url() -> str:
+    domain = _SCOPED_DOMAIN.get()
+    if domain is not None:
+        return str(domain.database_url)
     # 在读取 env 的唯一入口收口加载 .env：`ensure_loaded()` 有 _LOADED 标记，重复
     # 调用几乎无成本。否则每个调用方都得记得"先 import config 再用存储层"。
     try:
@@ -76,6 +83,9 @@ def _guard_production_database(url: str) -> None:
 
 def schema_name() -> str:
     """当前 PostgreSQL schema。测试通过 TURB_DB_SCHEMA 指向临时 schema 做隔离。"""
+    domain = _SCOPED_DOMAIN.get()
+    if domain is not None:
+        return str(domain.permit_schema)
     return str(os.getenv("TURB_DB_SCHEMA") or "public").strip() or "public"
 
 
@@ -153,11 +163,16 @@ def _pool_for(target: str, kwargs: dict):
     return pool
 
 
-def connect(url: str | None = None, **kwargs):
+def connect(url: str | None = None, *, deadline: float | None = None, **kwargs):
     """从连接池借一条连接。用法与 psycopg.connect 相同：`with connect() as conn:`。
 
     退出 with 时连接归还池子而不是关闭。
     """
+    inherited = _SCOPED_DEADLINE.get()
+    if inherited is not None:
+        deadline = min(float(deadline), float(inherited)) if deadline is not None else float(inherited)
+    if deadline is not None and deadline <= time.monotonic():
+        raise TimeoutError("数据库结算截止时间已到")
     try:
         import psycopg  # noqa: F401  确保驱动存在，错误信息更直白
         import psycopg_pool  # noqa: F401
@@ -168,7 +183,106 @@ def connect(url: str | None = None, **kwargs):
         raise RuntimeError("DATABASE_URL 未配置")
     # 挂在唯一的连接出口上：任何代码路径都绕不过这道检查
     _guard_production_database(target)
-    return _pool_for(target, kwargs).connection()
+    pool = _pool_for(target, kwargs)
+    if deadline is None:
+        return pool.connection()
+    return _deadline_connection(pool, deadline)
+
+
+@contextmanager
+def _deadline_connection(pool, deadline: float):
+    """Bound pool checkout and SQL waits without changing pooled connection keys.
+
+    A driver call already in uninterruptible I/O is still owned by its caller.
+    This helper never spawns a detached thread or claims to cancel that call.
+    """
+    remaining = float(deadline) - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("数据库结算截止时间已到")
+    with pool.connection(timeout=remaining) as conn:
+        with conn.cursor() as cur:
+            _apply_deadline(cur, deadline)
+        yield _DeadlineConnection(conn, deadline)
+
+
+class _DeadlineConnection:
+    """Transparent scope wrapper; each SQL command gets the remaining budget."""
+    def __init__(self, connection, deadline):
+        self._connection = connection
+        self._deadline = deadline
+
+    def __getattr__(self, name):
+        return getattr(self._connection, name)
+
+    def cursor(self, *args, **kwargs):
+        return _DeadlineCursor(self, self._connection.cursor(*args, **kwargs), self._deadline)
+
+
+class _DeadlineCursor:
+    def __init__(self, connection, cursor, deadline):
+        self.connection = connection
+        self._cursor = cursor
+        self._deadline = deadline
+
+    def __getattr__(self, name):
+        return getattr(self._cursor, name)
+
+    def __enter__(self):
+        self._cursor.__enter__()
+        return self
+
+    def __exit__(self, *args):
+        return self._cursor.__exit__(*args)
+
+    def __iter__(self):
+        return iter(self._cursor)
+
+    def execute(self, *args, **kwargs):
+        _apply_deadline(self._cursor, self._deadline)
+        self._cursor.execute(*args, **kwargs)
+        return self
+
+    def executemany(self, *args, **kwargs):
+        _apply_deadline(self._cursor, self._deadline)
+        self._cursor.executemany(*args, **kwargs)
+        return self
+
+
+def _apply_deadline(cur, deadline: float) -> None:
+    remaining = float(deadline) - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("数据库结算截止时间已到")
+    milliseconds = max(1, int(remaining * 1000))
+    cur.execute(
+        "SELECT set_config('statement_timeout', %s, true), "
+        "set_config('lock_timeout', %s, true)",
+        (str(milliseconds), str(milliseconds)),
+    )
+
+
+def connect_dedicated(url: str | None = None):
+    """Open an owner-held session; caller closes it, never returns it to a pool.
+
+    Session advisory ownership cannot survive a pooled connection checkout.
+    Preserve the ordinary database/environment guards and the test schema guard;
+    the bounded statement/network settings complement the owner's watchdog.
+    """
+    target = str(url or database_url()).strip()
+    if not target:
+        raise RuntimeError("DATABASE_URL 未配置")
+    _guard_production_database(target)
+    _guard_production_schema()
+    try:
+        import psycopg
+    except ImportError as exc:  # pragma: no cover - incomplete installation
+        raise RuntimeError("缺少 psycopg；请重新安装 requirements.txt") from exc
+    return psycopg.connect(
+        target, autocommit=True, connect_timeout=5,
+        application_name="turb-execution-owner",
+        options="-c statement_timeout=2000 -c idle_in_transaction_session_timeout=2000",
+        keepalives=1, keepalives_idle=5, keepalives_interval=1, keepalives_count=2,
+        tcp_user_timeout=5000,
+    )
 
 
 @atexit.register

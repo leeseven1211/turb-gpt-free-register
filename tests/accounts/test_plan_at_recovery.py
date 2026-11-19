@@ -20,6 +20,7 @@ from core.storage.accounts import plan_refresh
 from core.storage.operations import store as operation
 from tests.accounts.test_plan_country_check import offer_result
 from tests.support_pg import PostgresTestCase
+from tests.support_settlement import install_native_settlement_fixture
 
 
 class PlanAtRecoveryTests(PostgresTestCase):
@@ -36,6 +37,30 @@ class PlanAtRecoveryTests(PostgresTestCase):
         })
         operation.reset_ready()
         operation.init()
+        if self._testMethodName in {
+            "test_second_401_after_refresh_does_not_loop_or_repeat_successful_country",
+            "test_cancelled_recheck_cannot_mark_the_saved_new_at_as_expired_again",
+        }:
+            self.settlement_fixture = install_native_settlement_fixture(self)
+
+    def execute_native(self, callback):
+        task = operation.create_runtime_task(
+            task_type="plan_check", account_id=self.account_id, email=self.email,
+            data={"config_snapshot": {"auto_refresh_at_enabled": True, "network_timeout_seconds": 30}},
+        )
+        run_id = int(task["run"]["id"])
+        admitted = task_gateway.admit_operation_run(operation.get_run(run_id))
+        self.assertTrue(admitted.admitted, admitted.blocked_by)
+
+        def execute():
+            context = task_gateway.OperationHandlerContext(
+                admitted.context.claimed_run, execution_id=admitted.context.execution_id,
+            )
+            with context.lease(scope_kind="final"):
+                callback(context)
+
+        task_gateway.execute_admitted(admitted.context, execute)
+        self.settlement_fixture.wait_for_run_released(run_id)
 
     def make_context(self, *, task=None):
         if task is None:
@@ -146,86 +171,91 @@ class PlanAtRecoveryTests(PostgresTestCase):
         self.assertFalse(PlanAtRecovery.needs_refresh("opaque-at"))
 
     def test_second_401_after_refresh_does_not_loop_or_repeat_successful_country(self):
-        context, _ = self.make_context()
-        recovery = self.recovery(context)
-        queries = []
-        routes = []
-        def route(**kwargs):
-            country = kwargs["region"]
-            item = SimpleNamespace(proxy_url=country, region=country, release=Mock(),
-                public_dict=lambda: {"proxy_region": country, "proxy_provider": "1024proxy"})
-            routes.append(item)
-            return item
-        def query(token, **kwargs):
-            country = kwargs["proxy"]
-            queries.append((country, token))
-            if country == "JP":
-                return offer_result(country)
-            return {"ok": False, "http_status": 401, "error": "AT已过期/失效，请手动查活刷新"}
-        reporter = SimpleNamespace(stage=Mock(), note=Mock(), resource=Mock(), finish=Mock())
-        with (
-            patch("core.proxy.account_routes.acquire_account_proxy", side_effect=route),
-            patch.object(plans, "check_account_plan", side_effect=query),
-            patch.object(plans, "_wait_for_rate_slot"),
-            patch.object(liveness, "run_account_live_check_inline", side_effect=self.saved_result) as refresh,
-        ):
-            result = plans._run_country_plan_checks(
-                account_id=self.account_id, email=self.email, access_token="old-at", trigger="manual",
-                proxy=None, timezone_offset_min="-", countries=["JP", "VN"], reporter=reporter,
-                operation_context=context, config_snapshot={"plan_check_max_attempts": 1, "country_wait_timeout": 5},
-                proxy_source="pool", fence=context.execution_fence, at_recovery=recovery,
-            )
-        self.assertEqual([("JP", "old-at"), ("VN", "old-at"), ("VN", "new-at")], queries)
-        self.assertEqual(1, refresh.call_count)
-        self.assertTrue(result["plan_check_partial"])
-        self.assertEqual(["VN"], result["failed_countries"])
-        self.assertTrue(all(item.release.call_count == 1 for item in routes))
-        self.assertTrue(result["auto_refresh_at"]["ok"])
+        def check(context):
+            recovery = self.recovery(context)
+            queries = []
+            routes = []
+            def route(**kwargs):
+                country = kwargs["region"]
+                item = SimpleNamespace(proxy_url=country, region=country, release=Mock(),
+                    public_dict=lambda: {"proxy_region": country, "proxy_provider": "1024proxy"})
+                routes.append(item)
+                return item
+            def query(token, **kwargs):
+                country = kwargs["proxy"]
+                queries.append((country, token))
+                if country == "JP":
+                    return offer_result(country)
+                return {"ok": False, "http_status": 401, "error": "AT已过期/失效，请手动查活刷新"}
+            reporter = SimpleNamespace(stage=Mock(), note=Mock(), resource=Mock(), finish=Mock())
+            with (
+                patch("core.proxy.account_routes.acquire_account_proxy", side_effect=route),
+                patch.object(plans, "check_account_plan", side_effect=query),
+                patch.object(plans, "_wait_for_rate_slot"),
+                patch.object(liveness, "run_account_live_check_inline", side_effect=self.saved_result) as refresh,
+            ):
+                result = plans._run_country_plan_checks(
+                    account_id=self.account_id, email=self.email, access_token="old-at", trigger="manual",
+                    proxy=None, timezone_offset_min="-", countries=["JP", "VN"], reporter=reporter,
+                    operation_context=context, config_snapshot={"plan_check_max_attempts": 1, "country_wait_timeout": 5},
+                    proxy_source="pool", fence=context.execution_fence, at_recovery=recovery,
+                )
+            self.assertEqual([("JP", "old-at"), ("VN", "old-at"), ("VN", "new-at")], queries)
+            self.assertEqual(1, refresh.call_count)
+            self.assertTrue(result["plan_check_partial"])
+            self.assertEqual(["VN"], result["failed_countries"])
+            self.assertTrue(all(item.release.call_count == 1 for item in routes))
+            self.assertTrue(result["auto_refresh_at"]["ok"])
+            context.finish(status="partial_success", message="国家套餐测试完成", result_summary=result)
+
+        self.execute_native(check)
 
     def test_cancelled_recheck_cannot_mark_the_saved_new_at_as_expired_again(self):
-        context, _ = self.make_context()
-        recovery = self.recovery(context)
-        payload = base64.urlsafe_b64encode(json.dumps({"exp": time.time() + 3600}).encode()).decode().rstrip("=")
-        new_at = f"header.{payload}.signature"
-        def refresh(**kwargs):
-            request_id = f"token-refresh:{context.run_id}:cancel-test"
-            context.remote_request_started("token_refresh", request_id=request_id)
-            result = {"ok": True, "status": "live", "access_token": new_at}
-            self.assertTrue(kwargs["result_writer"](result))
-            self.assertFalse(accounts.get_account(self.account_id)["token_expired"])
-            context.remote_request_receipt(action="token_refresh", request_id=request_id, outcome="confirmed", detail={
-                "remote_result_confirmed": True, "local_business_writeback_confirmed": True,
-                "local_readback_confirmed": True,
-            })
-            return {"accepted": True, "result": result}
-        route = SimpleNamespace(proxy_url="VN", region="VN", release=Mock(),
-            public_dict=lambda: {"proxy_region": "VN", "proxy_provider": "1024proxy"})
-        with (
-            patch("core.proxy.account_routes.acquire_account_proxy",
-                  side_effect=[route, OperationCancelled("补查线路领取前取消")]),
-            patch.object(plans, "check_account_plan", return_value={
-                "ok": False, "http_status": 401, "token_expired": True,
-                "error": "AT已过期/失效，请手动查活刷新",
-            }) as query,
-            patch.object(plans, "_wait_for_rate_slot"),
-            patch.object(liveness, "run_account_live_check_inline", side_effect=refresh),
-        ):
-            result = plans._run_plan_check(
-                account_id=self.account_id, email=self.email, access_token="old-at", trigger="manual",
-                proxy=None, timezone_offset_min="-", operation_context=context,
-                config_snapshot={"plan_check_max_attempts": 1, "country_wait_timeout": 5},
-                countries=["VN"], at_recovery=recovery,
-            )
-        self.assertEqual("cancelled", result["status"])
-        self.assertEqual(1, query.call_count)
-        account = accounts.get_account(self.account_id)
-        self.assertEqual(new_at, account["access_token"])
-        self.assertIsNot(True, account.get("token_expired"))
-        row = account["plan_check_country_results"][0]
-        self.assertEqual("cancelled", row["status"])
-        self.assertIsNone(row.get("http_status"))
-        self.assertNotIn("token_expired", row)
-        self.assertNotIn("token_expires_at", row)
-        self.assertNotIn("token_expired", result)
-        self.assertEqual("cancelled", operation.get_run(context.run_id)["status"])
-        self.assertTrue(operation.get_run(context.run_id)["result_summary"]["auto_refresh_at"]["ok"])
+        def check(context):
+            recovery = self.recovery(context)
+            payload = base64.urlsafe_b64encode(json.dumps({"exp": time.time() + 3600}).encode()).decode().rstrip("=")
+            new_at = f"header.{payload}.signature"
+            def refresh(**kwargs):
+                request_id = f"token-refresh:{context.run_id}:cancel-test"
+                context.remote_request_started("token_refresh", request_id=request_id)
+                result = {"ok": True, "status": "live", "access_token": new_at}
+                self.assertTrue(kwargs["result_writer"](result))
+                self.assertFalse(accounts.get_account(self.account_id)["token_expired"])
+                context.remote_request_receipt(action="token_refresh", request_id=request_id, outcome="confirmed", detail={
+                    "remote_result_confirmed": True, "local_business_writeback_confirmed": True,
+                    "local_readback_confirmed": True,
+                })
+                return {"accepted": True, "result": result}
+            route = SimpleNamespace(proxy_url="VN", region="VN", release=Mock(),
+                public_dict=lambda: {"proxy_region": "VN", "proxy_provider": "1024proxy"})
+            with (
+                patch("core.proxy.account_routes.acquire_account_proxy",
+                      side_effect=[route, OperationCancelled("补查线路领取前取消")]),
+                patch.object(plans, "check_account_plan", return_value={
+                    "ok": False, "http_status": 401, "token_expired": True,
+                    "error": "AT已过期/失效，请手动查活刷新",
+                }) as query,
+                patch.object(plans, "_wait_for_rate_slot"),
+                patch.object(liveness, "run_account_live_check_inline", side_effect=refresh),
+            ):
+                result = plans._run_plan_check(
+                    account_id=self.account_id, email=self.email, access_token="old-at", trigger="manual",
+                    proxy=None, timezone_offset_min="-", operation_context=context,
+                    config_snapshot={"plan_check_max_attempts": 1, "country_wait_timeout": 5},
+                    countries=["VN"], at_recovery=recovery,
+                )
+            self.assertEqual("cancelled", result["status"])
+            self.assertEqual(1, query.call_count)
+            account = accounts.get_account(self.account_id)
+            self.assertEqual(new_at, account["access_token"])
+            self.assertIsNot(True, account.get("token_expired"))
+            row = account["plan_check_country_results"][0]
+            self.assertEqual("cancelled", row["status"])
+            self.assertIsNone(row.get("http_status"))
+            self.assertNotIn("token_expired", row)
+            self.assertNotIn("token_expires_at", row)
+            self.assertNotIn("token_expired", result)
+            self.assertEqual("cancelled", operation.get_run(context.run_id)["status"])
+            self.assertTrue(operation.get_run(context.run_id)["result_summary"]["auto_refresh_at"]["ok"])
+
+        self.execute_native(check)

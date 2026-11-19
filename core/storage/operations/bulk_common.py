@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from core.operations.presentation import public_result_status, public_result_status_sql
 from core.storage.operations import store
@@ -33,6 +35,49 @@ class BulkError(ValueError):
     def __init__(self, code: str, message: str, status: int = 409, detail: dict | None = None):
         super().__init__(message)
         self.code, self.message, self.status, self.detail = code, message, status, detail or {}
+
+
+def batch_created_bounds(filters: dict) -> list[tuple[str, datetime]]:
+    """Validate calendar values before SQL; date-only upper bounds include the whole day."""
+    bounds = []
+    start = None
+    upper = []
+    for field, operation in (("created_from", ">="), ("created_to", "<="), ("created_before", "<")):
+        raw = filters.get(field)
+        if raw in (None, ""):
+            continue
+        try:
+            if not isinstance(raw, str):
+                raise ValueError
+            value = raw.strip()
+            date_only = bool(re.fullmatch(r"\d{4}-\d{2}-\d{2}", value))
+            if not date_only and not re.fullmatch(
+                r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d{1,6})?)?(?:Z|[+-]\d{2}:\d{2})?",
+                value,
+            ):
+                raise ValueError
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            if field == "created_to" and date_only:
+                parsed += timedelta(days=1)
+                operation = "<"
+            parsed = parsed.astimezone(timezone.utc)
+        except (ValueError, OverflowError):
+            error = BulkError("parameter_invalid", "创建日期无效，请使用真实日期或 ISO 时间。", 400, {"field": field})
+            error.field = field
+            raise error from None
+        bounds.append((operation, parsed))
+        if field == "created_from":
+            start = parsed
+        else:
+            upper.append((operation, parsed))
+    if start is not None and any(start > end or (start == end and op == "<") for op, end in upper):
+        error = BulkError("parameter_invalid", "创建日期的开始时间必须早于结束时间。", 400,
+                          {"field": "created_from"})
+        error.field = "created_from"
+        raise error
+    return bounds
 
 
 def dumps(value: Any) -> str:
@@ -209,23 +254,57 @@ def public_reason_target_ids(cur, batch_id: int, reason_codes) -> list[int]:
     return matched
 
 
-def preserve_partial_counts(cur, row: dict, *, round_id=None) -> dict:
-    """旧汇总只存回执状态时，从同次 Run 找回明确的部分成功数量。"""
-    if not int((row.get("counts") or {}).get("attention_required", 0)):
-        return row
-    batch_id = row.get("batch_id") or row.get("id")
-    scope = "tr.round_id=%s" if round_id else "tr.batch_id=%s AND tr.round_id=COALESCE(root.latest_requested_round_id,c.initial_round_id)"
-    cur.execute(f"""SELECT count(*) AS n FROM {table('operation_batch_target_rounds')} tr
+def partial_counts_sql(scope: str, *, by_round: bool = False) -> str:
+    """在调用方限定的批次或轮次集合内，按原目标所属 Run 聚合修正数量。"""
+    identity = "tr.round_id" if by_round else "tr.batch_id"
+    current = "" if by_round else "AND tr.round_id=COALESCE(root.latest_requested_round_id,c.initial_round_id)"
+    # 历史轮不读父表字段；tr 的两个 NOT NULL/RESTRICT 外键已保证父行存在。
+    # 当前批次仍需父表指针，才能选中各目标最近请求的轮次。
+    parents = "" if by_round else f"""
       JOIN {table('operation_selection_targets')} root ON root.id=tr.canonical_target_id
-      JOIN {table('operation_batch_controls')} c ON c.batch_id=tr.batch_id
-      WHERE {scope} AND tr.outcome='attention_required'
-      AND ({source_summary_sql()})->>'requested_status'='partial_success'""", (round_id or batch_id,))
-    partial = int(cur.fetchone()["n"])
+      JOIN {table('operation_batch_controls')} c ON c.batch_id=tr.batch_id"""
+    # 固定候选后再读 Run，防止优化器把证据子查询提前到范围筛选之前。
+    return f"""WITH partial_candidates AS MATERIALIZED (
+      SELECT tr.id,{identity} AS scope_id FROM {table('operation_batch_target_rounds')} tr {parents}
+      WHERE ({scope}) {current} AND tr.outcome='attention_required')
+      SELECT tr.scope_id,count(*) AS n FROM partial_candidates tr
+      WHERE ({source_summary_sql()})->>'requested_status'='partial_success'
+      GROUP BY tr.scope_id"""
+
+
+def _apply_partial_counts(row: dict, partial: int) -> dict:
+    """只复制需修正的计数，避免共享输入被二次扣减。"""
     if partial:
         row = dict(row, counts=dict(row["counts"]))
         row["counts"]["attention_required"] -= partial
         row["counts"]["partial_success"] = row["counts"].get("partial_success", 0) + partial
     return row
+
+
+def preserve_partial_counts_many(cur, rows: list[dict], *, by_round: bool = False) -> list[dict]:
+    """列表中的历史计数最多执行一次集合查询，现代计数无需查 Run。"""
+    identities = [row["id"] if by_round else row.get("batch_id") or row.get("id") for row in rows]
+    wanted = list({identity for identity, row in zip(identities, rows)
+                   if int((row.get("counts") or {}).get("attention_required", 0))})
+    if not wanted:
+        return rows
+    identity = "tr.round_id" if by_round else "tr.batch_id"
+    # 单值等式让 generic plan 保留单范围估计；多值仍用数组，避免展开 IN 抬高 JIT 成本。
+    scope = f"{identity}=%s::bigint" if len(wanted) == 1 else f"{identity}=ANY(%s::bigint[])"
+    params = (wanted[0],) if len(wanted) == 1 else (wanted,)
+    cur.execute(partial_counts_sql(scope, by_round=by_round), params)
+    partials = {row["scope_id"]: int(row["n"]) for row in cur.fetchall()}
+    return [_apply_partial_counts(row, partials.get(identity, 0)) for identity, row in zip(identities, rows)]
+
+
+def preserve_partial_counts(cur, row: dict, *, round_id=None) -> dict:
+    """兼容单行读取：旧汇总从同次 Run 找回明确的部分成功数量。"""
+    if not int((row.get("counts") or {}).get("attention_required", 0)):
+        return row
+    if round_id:
+        scoped = preserve_partial_counts_many(cur, [dict(row, id=round_id)], by_round=True)[0]
+        return dict(row, counts=scoped["counts"]) if scoped["counts"] is not row.get("counts") else row
+    return preserve_partial_counts_many(cur, [row])[0]
 
 
 def public_target_result(value: dict, *, summary=None, message=None, error_code=None) -> dict:

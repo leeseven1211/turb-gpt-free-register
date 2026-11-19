@@ -7,6 +7,7 @@ claim 以及父子推进都由存储层的原子状态转换决定。
 from __future__ import annotations
 
 import logging
+import hashlib
 import os
 import threading
 import time
@@ -17,6 +18,12 @@ from dataclasses import dataclass, field
 from typing import Any, Iterable, Iterator
 
 from core.operations.runtime import CancellationToken, OperationAccountDeactivated, OperationCancelled, operation_context
+from core.operations.settlement_contracts import (
+    OperationSettlementPending, OperationSettlementConflict, OperationSettlementFenced,
+    seal_intent, same_intent, thaw as settlement_thaw,
+)
+
+SETTLEMENT_CONTROL_ERRORS = (OperationSettlementPending, OperationSettlementConflict, OperationSettlementFenced)
 
 
 logger = logging.getLogger(__name__)
@@ -211,81 +218,158 @@ class OperationLeaseUnavailable(RuntimeError):
     """The run was claimed but its account/resource lease is temporarily busy."""
 
 
+class OperationResourceCleanupPending(OperationSettlementPending):
+    """Exact registered local cleanup stopped business before a result existed."""
+
+    def __init__(self, *, cleanup, resource_identity: str, facts: Mapping[str, Any] | None = None):
+        if not resource_identity or not isinstance(resource_identity, str):
+            raise ValueError("cleanup resource identity is required")
+        if facts is not None and not isinstance(facts, Mapping):
+            raise TypeError("cleanup facts must be a mapping")
+        from core.storage.operations.common import _scrub
+        self.cleanup = cleanup
+        self.resource_identity = resource_identity
+        self.facts = seal_intent(kind="terminal", origin={}, payload=_scrub(_thaw(facts or {}))).payload
+        super().__init__("registered_resource_cleanup_pending")
+
+
 class OperationLeaseLost(RuntimeError):
     """The current worker lost its lease fence while remote work was possible."""
 
 
-class OperationLease:
-    """A DB-backed account/resource lease owned by one handler context."""
+def _domain_scope(domain, *, deadline=None):
+    if domain is None:
+        return nullcontext()
+    from core.storage.operations.common import settlement_scope
+    return settlement_scope(domain, deadline=deadline)
 
-    def __init__(
-        self,
-        *,
-        run_id: int,
-        account_id: int,
-        resource_family: str,
-        token: str,
-        ttl_seconds: int = 600,
-    ) -> None:
+
+def _current_settlement_execution(run_id, execution_id):
+    from core.operations import concurrency
+    execution = concurrency.current_execution()
+    if (execution is not None and str(execution.execution_id) == str(execution_id)
+            and int(execution.claimed_run.get("id") or 0) == int(run_id)):
+        return execution
+    return None
+
+
+class OperationLease:
+    """Exact original lease handle; failed DELETE never gives up ownership."""
+
+    def __init__(self, *, run_id: int, account_id: int, resource_family: str,
+                 token: str, ttl_seconds: int = 600, domain=None,
+                 scope_kind: str = "step", scope_id: str | None = None,
+                 generation: int = 1, execution_id: str | None = None) -> None:
+        if scope_kind not in {"step", "final"}:
+            raise ValueError("lease scope_kind must be step or final")
+        if not token:
+            raise ValueError("an exact lease token is required")
         self.run_id = int(run_id)
         self.account_id = int(account_id)
         self.resource_family = str(resource_family)
         self.token = str(token)
+        self.domain = domain
+        self.scope_kind = scope_kind
+        self.scope_id = scope_id or str(uuid.uuid4())
+        self.generation = int(generation)
+        self.execution_id = str(execution_id) if execution_id is not None else None
         self.ttl_seconds = max(60, min(24 * 60 * 60, int(ttl_seconds or 600)))
+        self._state = "held"
         self._released = False
+        self._state_lock = threading.RLock()
         self._heartbeat_lost = False
         self._heartbeat_stop = threading.Event()
         self._heartbeat_interval = max(0.5, min(30.0, self.ttl_seconds / 3.0))
-        self._heartbeat_thread = threading.Thread(
-            target=self._heartbeat_loop,
-            name=f"operation-lease-{self.run_id}",
-            daemon=True,
-        )
+        self._heartbeat_thread = threading.Thread(target=self._heartbeat_loop,
+            name=f"operation-lease-{self.run_id}", daemon=True)
         self._heartbeat_thread.start()
 
     @property
+    def state(self) -> str:
+        with self._state_lock:
+            return self._state
+
+    @property
     def released(self) -> bool:
-        return self._released
+        with self._state_lock:
+            return self._state == "release_confirmed"
 
     @property
     def lost(self) -> bool:
         return self._heartbeat_lost
 
     def heartbeat(self, *, ttl_seconds: int | None = None) -> bool:
-        if self._released or self._heartbeat_lost:
-            return False
-        effective_ttl = max(60, min(24 * 60 * 60, int(ttl_seconds or self.ttl_seconds)))
-        try:
-            alive = bool(
-                _operation().heartbeat_run(
-                    self.run_id, self.token, ttl_seconds=effective_ttl,
-                )
-            )
-        except Exception:
-            # A broken DB connection must not kill the renewal thread while
-            # the handler continues believing it still owns a usable lease.
-            logger.exception("operation lease heartbeat failed: run_id=%s", self.run_id)
-            alive = False
-        if not alive:
-            self._heartbeat_lost = True
-        return alive
+        # Same lock spans the I/O: renewal cannot race after an exact DELETE.
+        with self._state_lock:
+            if self._state != "held" or self._heartbeat_lost:
+                return False
+            ttl = max(60, min(24 * 60 * 60, int(ttl_seconds or self.ttl_seconds)))
+            try:
+                with _domain_scope(self.domain):
+                    alive = bool(_operation().heartbeat_run(self.run_id, self.token, ttl_seconds=ttl))
+            except Exception:
+                logger.error("operation lease heartbeat unavailable: run_id=%s", self.run_id)
+                alive = False
+            if not alive:
+                self._heartbeat_lost = True
+            return alive
 
     def _heartbeat_loop(self) -> None:
         while not self._heartbeat_stop.wait(self._heartbeat_interval):
-            if self._released or not self.heartbeat(ttl_seconds=self.ttl_seconds):
+            if not self.heartbeat(ttl_seconds=self.ttl_seconds):
                 return
 
-    def release(self) -> bool:
-        if self._released:
+    def mark_release_confirmed(self, receipt=None) -> bool:
+        """Called only after exact DELETE commit or authoritative settlement receipt."""
+        with self._state_lock:
+            changed = self._state != "release_confirmed"
+            self._state = "release_confirmed"
+            self._released = True
+            self._heartbeat_stop.set()
+            return changed
+
+    def mark_disposition_confirmed(self, disposition) -> bool:
+        """Accept proved old-token absence, never original terminal success.
+
+        The coordinator first checks the full original intent against this
+        separate administrative disposition. This handle independently checks
+        its exact captured domain, Run, execution and token fingerprint.
+        """
+        if (not isinstance(disposition, Mapping)
+                or disposition.get("disposition_kind") != "live_superseded"
+                or disposition.get("original_intent_committed") is not False
+                or disposition.get("lease_disposition") != "exact_original_token_absent"
+                or int(disposition.get("run_id") or 0) != self.run_id
+                or disposition.get("lease_fingerprint") != hashlib.sha256(self.token.encode()).hexdigest()
+                or (self.domain is not None and disposition.get("domain_id") != self.domain.domain_id)
+                or (self.execution_id is not None and disposition.get("execution_id") != self.execution_id)):
+            raise ValueError("unproved original lease disposition")
+        # This changes only the exact resource fact; no context result/receipt.
+        return self.mark_release_confirmed()
+
+    def join(self, *, deadline=None) -> bool:
+        thread = self._heartbeat_thread
+        if thread is threading.current_thread():
             return False
-        self._released = True
-        self._heartbeat_stop.set()
-        if (
-            self._heartbeat_thread is not threading.current_thread()
-            and self._heartbeat_thread.is_alive()
-        ):
-            self._heartbeat_thread.join(timeout=min(1.0, self._heartbeat_interval))
-        return bool(_operation().release_account_lease(self.run_id, self.token))
+        timeout = max(0.0, deadline - time.monotonic()) if deadline is not None else min(1.0, self._heartbeat_interval)
+        thread.join(timeout=timeout)
+        return not thread.is_alive()
+
+    def release(self, *, deadline=None) -> bool:
+        with self._state_lock:
+            changed = self._state != "release_confirmed"
+            if changed:
+                self._state = "release_pending"
+                self._heartbeat_stop.set()
+                with _domain_scope(self.domain, deadline=deadline):
+                    _operation().release_account_lease(self.run_id, self.token)
+                # Zero rows proves the exact old token absent after confirmed
+                # commit. Unknown ACK keeps pending and retains this handle.
+                self.mark_release_confirmed()
+        # A heartbeat already waiting for the state lock must physically exit;
+        # joining under that lock would deadlock its final state check.
+        joined = self.join(deadline=deadline)
+        return changed and joined
 
     def __enter__(self) -> "OperationLease":
         return self
@@ -346,12 +430,35 @@ class OperationHandlerContext:
         self._token = CancellationToken(
             run_id=self.run_id,
             token=self.cancellation_token,
-            checker=_operation().is_run_cancel_requested,
+            checker=lambda run_id, token: self._call_storage("is_run_cancel_requested", run_id, token),
         )
+        self._execution = _current_settlement_execution(self.run_id, self.execution_id)
+        self._domain = getattr(self._execution, "settlement_domain", None)
         self._lease: OperationLease | None = None
+        self._leases: list[OperationLease] = []
+        self._transition_lock = threading.RLock()
+        self._settlement_intent = None
+        self._settlement_receipt = None
+        self._settlement_control = None
+        self._settlement_origin = None
+        self._step_release_failed: OperationLease | None = None
+        self._settlement_obligations: dict[tuple[str, str], Mapping] = {}
+        self._registered_cleanups: dict[str, Any] = {}
         self._finished = False
         self._deferred_result: dict[str, Any] | None = None
         self._last_result: OperationResult | None = None
+
+    def _call_storage(self, name: str, *args, **kwargs):
+        with _domain_scope(self._domain):
+            return getattr(_operation(), name)(*args, **kwargs)
+
+    @property
+    def settlement_domain(self):
+        """Captured in-memory origin; connection material must never be serialized."""
+        return self._domain
+
+    def storage_scope(self, *, deadline=None):
+        return _domain_scope(self._domain, deadline=deadline)
 
     @property
     def finished(self) -> bool:
@@ -361,38 +468,199 @@ class OperationHandlerContext:
     def deferred(self) -> bool:
         return self._deferred_result is not None
 
-    def defer(
-        self,
-        *,
-        delay_seconds: float,
-        reason: str,
-        data: Mapping[str, Any] | None = None,
-        stage: str = "remote_sync",
-    ) -> dict[str, Any]:
-        """同 Run 持久延期；调用后 handler 应立即返回，不再写入业务结果。"""
-        if self.finished or self.deferred:
-            raise RuntimeError("已结束或已延期的执行不能再次延期")
-        self.checkpoint()
-        lease_token = None
-        if self.account_id is not None:
-            lease_token = self.execution_fence["lease_token"]
-        row = _operation().requeue_claimed_run(
-            self.run_id, execution_id=self.execution_id, lease_token=lease_token,
-            reason=reason, delay_seconds=delay_seconds,
-            data=dict(data) if data is not None else None, stage=stage,
-        )
-        if row is None:
-            if self.is_cancel_requested(force=True):
-                raise OperationCancelled("任务在延期前收到取消请求")
-            raise PermissionError("当前执行已失去延期资格")
-        self._deferred_result = {
-            "status": "deferred", "ok": False, "database_status": "queued",
-            "task_id": self.task_id, "run_id": self.run_id,
-            "source_system": self.source_system, "reason": str(reason),
-        }
-        self.release_lease()
-        notify_dispatch()
-        return dict(self._deferred_result)
+    def _origin(self) -> dict:
+        if self._settlement_origin is not None:
+            return settlement_thaw(self._settlement_origin)
+        ticket = getattr(self._execution, "settlement_ticket", None)
+        origin = _thaw(ticket or {})
+        origin.update(run_id=self.run_id, task_id=self.task_id, execution_id=self.execution_id)
+        active = self._lease if self._lease is not None and not self._lease.released else None
+        # A final scope remains a required original fence even after a caller
+        # physically released its handle. Never downgrade it to no-lease authority.
+        if active is None:
+            active = next((item for item in reversed(self._leases) if item.scope_kind == "final"), None)
+        origin["lease_token"] = active.token if active else None
+        origin["lease_requirement"] = ("final" if active else "steps_confirmed" if self._leases
+                                       else "accountless" if self.account_id is None else "not_acquired")
+        if self._step_release_failed is not None:
+            failed = self._step_release_failed
+            origin.update(lease_requirement="step_release_unconfirmed", lease_token=failed.token,
+                          scope_id=failed.scope_id, scope_kind="step", generation=failed.generation)
+        origin["leases"] = [{"scope_id": lease.scope_id, "scope_kind": lease.scope_kind,
+            "generation": lease.generation, "run_id": lease.run_id, "account_id": lease.account_id,
+            "resource_family": lease.resource_family, "lease_token": lease.token,
+            "state": lease.state} for lease in self._leases]
+        return origin
+
+    def add_settlement_obligation(self, action_kind: str, *, resource_identity: str,
+                                  payload: Mapping[str, Any], blocks_permit: bool = True) -> Mapping:
+        """Declare an audited typed local tail before freezing terminal/defer."""
+        allowed = {"run_log", "dependency_ready", "completion_dependency", "codex_refresh_marker",
+                   "extract_plan_verify", "extract_provider_writeback", "resource_release"}
+        if action_kind not in allowed or not resource_identity or len(str(resource_identity)) > 1000:
+            raise ValueError("unsupported settlement obligation")
+        if not isinstance(payload, Mapping):
+            raise TypeError("settlement obligation payload must be a mapping")
+        with self._transition_lock:
+            if self._settlement_intent is not None:
+                raise OperationSettlementConflict("settlement intent already frozen")
+            from core.storage.operations.common import _scrub
+            safe_payload = _scrub(_thaw(payload))
+            item = settlement_thaw(seal_intent(kind="terminal", origin={}, payload={
+                "action_kind": action_kind, "resource_identity": str(resource_identity),
+                "payload": safe_payload, "blocks_permit": bool(blocks_permit),
+            }).payload)
+            key = (action_kind, str(resource_identity))
+            old = self._settlement_obligations.get(key)
+            if old is not None and old != item:
+                raise OperationSettlementConflict("conflicting settlement obligation")
+            self._settlement_obligations[key] = item
+            return _thaw(item)
+
+    def register_cleanup(self, cleanup, *, key: str, blocking: bool = True,
+                         before_transition: bool = False):
+        """Transfer one exact live local handle, never an arbitrary callback."""
+        if self._execution is None or not getattr(self._execution, "settlement_ticket", None):
+            raise OperationSettlementFenced("local cleanup requires an admission responsibility")
+        from core.operations import settlement
+        registered = settlement.register_cleanup(self._execution, cleanup, key=key, blocking=blocking,
+                                                 before_transition=before_transition)
+        self._registered_cleanups[key] = cleanup
+        return registered
+
+    def finish_cleanup_failure(self, error: OperationResourceCleanupPending) -> dict:
+        """Seal a technical exit only for a precise already-owned local handle."""
+        with self._transition_lock:
+            # A later resource failure cannot replace an original terminal or
+            # deferral, including a confirmed result returned by the database.
+            self.raise_if_settlement_pending()
+            if self.deferred:
+                return _thaw(self._deferred_result)
+            if self.finished and self.last_result is not None:
+                return _operation_handler_result_payload(self, self.last_result)
+            if (not isinstance(error, OperationResourceCleanupPending)
+                    or self._registered_cleanups.get(error.resource_identity) is not error.cleanup):
+                raise OperationSettlementFenced("cleanup signal does not belong to this execution")
+            from core.operations import settlement
+            owner = settlement.responsibility(self._execution)
+            if (owner is None or not any(item.key == error.resource_identity and item.handle is error.cleanup
+                                         for item in owner._cleanups)):
+                raise OperationSettlementFenced("cleanup responsibility is unproved")
+            stored = self.run.get("result_summary")
+            summary = _thaw(stored) if isinstance(stored, Mapping) else {}
+            summary.update(settlement_thaw(error.facts))
+            summary.setdefault("cause_code", "resource_release_unconfirmed")
+            if str(summary.get("outcome") or "").lower() not in {"request_unknown", "attention_required"}:
+                summary["outcome"] = "resource_cleanup_pending"
+            summary["automatic_business_retry"] = False
+            summary["cleanup_resource_identity"] = error.resource_identity
+            self.finish(OperationResult("attention_required", summary,
+                "原资源释放尚未确认，后续业务步骤未执行"))
+            return _operation_handler_result_payload(self, self.last_result)
+
+    register_settlement_obligation = add_settlement_obligation
+
+    def _submit_transition(self, *, kind: str, payload: Mapping[str, Any]) -> dict:
+        with self._transition_lock:
+            origin = self._origin()
+            candidate = seal_intent(kind=kind, origin=origin, payload=_thaw(payload),
+                obligations=tuple(self._settlement_obligations.values()),
+                transition_id=self._settlement_intent.transition_id if self._settlement_intent else None)
+            if self._settlement_intent is not None:
+                if not same_intent(self._settlement_intent, candidate):
+                    raise OperationSettlementConflict("execution already owns a different settlement intent")
+                if self._settlement_receipt is not None:
+                    from core.operations import settlement
+                    responsibility = (settlement.responsibility(self._execution)
+                        if self._execution is not None and getattr(self._execution, "settlement_ticket", None) else None)
+                    if responsibility is None or responsibility._blocked_cleanup is None:
+                        return _thaw(self._settlement_receipt)
+                    # Only explicit confirmation of this exact cached intent
+                    # may rearm its recorded original cleanup. It never
+                    # resubmits the transition or reenters a business callback.
+                    cached = self._settlement_receipt
+                    authoritative = responsibility.receipt or {}
+                    if (not same_intent(responsibility.intent, candidate)
+                            or cached.get("transition_id") != candidate.transition_id
+                            or cached.get("request_digest") != candidate.request_digest
+                            or authoritative != cached
+                            or responsibility._blocked_cleanup.get("receipt_id") != cached.get("receipt_id")):
+                        raise OperationSettlementConflict("cleanup retry cached receipt identity mismatch")
+            else:
+                self._settlement_intent = candidate
+                self._settlement_origin = candidate.origin
+            intent = self._settlement_intent
+
+            def submit(frozen, deadline):
+                if self._execution is not None and getattr(self._execution, "settlement_ticket", None):
+                    from core.storage.operations.settlements import submit_intent
+                    return submit_intent(frozen, domain=self._domain, deadline=deadline)
+                # Nonparticipants keep the native repository contract. Only
+                # these local storage operations can run again on confirmation.
+                values = settlement_thaw(frozen.payload)
+                values.pop("subtype", None)
+                run_id = values.pop("run_id")
+                with _domain_scope(self._domain, deadline=deadline):
+                    row = (_operation().finish_run(run_id, **values) if frozen.kind == "terminal"
+                           else _operation().requeue_claimed_run(run_id, **values))
+                if row is None:
+                    raise OperationSettlementFenced("original execution no longer owns transition")
+                return row
+
+            try:
+                if self._execution is not None and getattr(self._execution, "settlement_ticket", None):
+                    from core.operations import settlement
+                    receipt = settlement.settle(self._execution, intent, submit)
+                else:
+                    receipt = submit(intent, None)
+            except SETTLEMENT_CONTROL_ERRORS as exc:
+                self._settlement_control = exc
+                raise
+            except PermissionError as exc:
+                self._settlement_control = OperationSettlementFenced("original execution transition rejected")
+                raise OperationSettlementFenced("original execution transition rejected") from None
+            except Exception as exc:
+                raise OperationSettlementPending("original settlement awaits local persistence") from None
+            self._settlement_receipt = _thaw(receipt)
+            # Atomic terminal/defer removes only the captured final token. Step
+            # release remains its own confirmed transaction before next action.
+            if self._lease is not None and self._lease.scope_kind == "final":
+                self._lease.mark_release_confirmed(receipt)
+            return _thaw(receipt)
+
+    def raise_if_settlement_pending(self) -> None:
+        if self._settlement_intent is not None and self._settlement_receipt is None:
+            if self._settlement_control is not None:
+                raise self._settlement_control
+            raise OperationSettlementPending("original settlement remains pending")
+
+    def defer(self, *, delay_seconds: float, reason: str,
+              data: Mapping[str, Any] | None = None, stage: str = "remote_sync") -> dict[str, Any]:
+        """Freeze one same-Run deferral; retries only confirm this exact intent."""
+        with self._transition_lock:
+            if self._settlement_intent is None:
+                self.checkpoint()
+            token = self._origin().get("lease_token")
+            receipt = self._submit_transition(kind="defer", payload={
+                "run_id": self.run_id, "execution_id": self.execution_id, "lease_token": token,
+                "reason": str(reason), "delay_seconds": delay_seconds,
+                "data": _thaw(data) if data is not None else None, "stage": stage,
+            })
+            actual = receipt.get("actual_result") or receipt
+            actual_status = str(actual.get("status") or "queued")
+            if actual_status != "queued":
+                summary = actual.get("result_summary") if isinstance(actual.get("result_summary"), Mapping) else {}
+                message = str(actual.get("message") or actual.get("error_message") or "")
+                self._last_result = (OperationResult.request_unknown(message, summary)
+                    if summary.get("outcome") == "request_unknown" else OperationResult(
+                        actual_status, _thaw(summary), message, actual.get("error_message")))
+                self._finished = True
+                return _operation_handler_result_payload(self, self._last_result)
+            self._deferred_result = {"status": "deferred", "ok": False,
+                "database_status": actual.get("status") or "queued", "task_id": self.task_id,
+                "run_id": self.run_id, "source_system": self.source_system, "reason": str(reason)}
+            notify_dispatch()
+            return _thaw(self._deferred_result)
 
     @property
     def cancellation(self) -> CancellationToken:
@@ -402,6 +670,7 @@ class OperationHandlerContext:
         return self.task_reporter.report(**event)
 
     def checkpoint(self, message: str = "任务收到取消请求") -> None:
+        self.raise_if_settlement_pending()
         if self._lease is not None and not self._lease.released:
             if not self._lease.heartbeat():
                 raise OperationLeaseLost("账号 lease 心跳失败，远端结果必须重新核验")
@@ -417,55 +686,99 @@ class OperationHandlerContext:
     def is_cancel_requested(self, *, force: bool = False) -> bool:
         return self._token.requested(force=force)
 
-    def acquire_lease(
-        self,
-        *,
-        resource_family: str | None = None,
-        ttl_seconds: int = 600,
-    ) -> OperationLease:
-        if self.account_id is None:
-            raise ValueError("无 account_id 的操作不能申请账号 lease")
-        family = str(resource_family or self.resource_family)
-        token = _operation().acquire_account_lease(
-            account_id=self.account_id,
-            run_id=self.run_id,
-            resource_family=family,
-            ttl_seconds=ttl_seconds,
-        )
-        if not token:
-            raise OperationLeaseUnavailable(
-                f"账号 lease 不可用：account_id={self.account_id} resource_family={family}"
-            )
-        lease = OperationLease(
-            run_id=self.run_id, account_id=self.account_id,
-            resource_family=family, token=token,
-            ttl_seconds=ttl_seconds,
-        )
-        self._lease = lease
-        return lease
+    def adopt_lease(self, lease: OperationLease, *, scope_kind: str = "final") -> OperationLease:
+        with self._transition_lock:
+            if scope_kind not in {"step", "final"}:
+                raise ValueError("lease scope_kind must be step or final")
+            if (lease.run_id != self.run_id or lease.account_id != self.account_id
+                    or (lease.domain is not None and self._domain is not None and lease.domain != self._domain)):
+                raise OperationSettlementFenced("lease belongs to a different original execution domain")
+            if self._settlement_intent is not None:
+                raise OperationSettlementConflict("cannot acquire after settlement freeze")
+            if any(not item.released or item._heartbeat_thread.is_alive() for item in self._leases):
+                raise OperationSettlementPending("previous lease release is unconfirmed")
+            lease.scope_kind = scope_kind
+            if lease.execution_id is not None and lease.execution_id != self.execution_id:
+                raise OperationSettlementFenced("lease belongs to a different original execution")
+            if lease.domain is None:
+                lease.domain = self._domain
+            lease.execution_id = self.execution_id
+            self._leases.append(lease)
+            self._lease = lease
+            if self._execution is not None and getattr(self._execution, "settlement_ticket", None):
+                from core.operations import settlement
+                settlement.register_lease(self._execution, lease, scope_kind=scope_kind)
+            return lease
+
+    def acquire_lease(self, *, resource_family: str | None = None, ttl_seconds: int = 600,
+                      scope_kind: str = "step") -> OperationLease:
+        with self._transition_lock:
+            if scope_kind not in {"step", "final"}:
+                raise ValueError("lease scope_kind must be step or final")
+            if self.account_id is None:
+                raise ValueError("无 account_id 的操作不能申请账号 lease")
+            if self._settlement_intent is not None:
+                raise OperationSettlementConflict("cannot acquire after settlement freeze")
+            if any(not item.released or item._heartbeat_thread.is_alive() for item in self._leases):
+                raise OperationSettlementPending("previous lease release is unconfirmed")
+            family = str(resource_family or self.resource_family)
+            with _domain_scope(self._domain):
+                token = _operation().acquire_account_lease(account_id=self.account_id,
+                    run_id=self.run_id, resource_family=family, ttl_seconds=ttl_seconds)
+            if not token:
+                raise OperationLeaseUnavailable(
+                    f"账号 lease 不可用：account_id={self.account_id} resource_family={family}")
+            lease = OperationLease(run_id=self.run_id, account_id=self.account_id,
+                resource_family=family, token=token, ttl_seconds=ttl_seconds,
+                domain=self._domain, scope_kind=scope_kind, generation=len(self._leases) + 1,
+                execution_id=self.execution_id)
+            return self.adopt_lease(lease, scope_kind=scope_kind)
 
     @contextmanager
-    def lease(self, *, resource_family: str | None = None, ttl_seconds: int = 600) -> Iterator[OperationLease]:
-        lease = self.acquire_lease(resource_family=resource_family, ttl_seconds=ttl_seconds)
+    def lease(self, *, resource_family: str | None = None, ttl_seconds: int = 600,
+              scope_kind: str = "step") -> Iterator[OperationLease]:
+        lease = self.acquire_lease(resource_family=resource_family,
+                                   ttl_seconds=ttl_seconds, scope_kind=scope_kind)
         try:
             yield lease
         finally:
-            lease.release()
-            if self._lease is lease:
-                self._lease = None
+            if scope_kind == "step":
+                self.release_lease()
 
     def release_lease(self) -> bool:
-        if self._lease is None:
-            return False
-        lease = self._lease
-        self._lease = None
-        return lease.release()
+        with self._transition_lock:
+            if self._lease is None:
+                return False
+            lease = self._lease
+            # Once sealed, the original final token belongs to the transition.
+            # A finally block must never delete it before receipt confirmation.
+            if lease.scope_kind == "final" and self._settlement_intent is not None:
+                return False
+            try:
+                result = lease.release()
+            except SETTLEMENT_CONTROL_ERRORS:
+                raise
+            except Exception as exc:
+                if lease.scope_kind == "step" and self._settlement_intent is None:
+                    self._step_release_failed = lease
+                    # Never resume the next business step after unknown DELETE.
+                    # Preserve completed-step facts separately from remote-result
+                    # uncertainty; this conservative result is storage-fenced.
+                    self.finish(OperationResult("attention_required", {
+                        "reason": "step_lease_release_unconfirmed",
+                        "scope_id": lease.scope_id, "scope_kind": "step",
+                        "completed_steps_preserved": True,
+                    }, "步骤租约释放尚未确认，后续步骤未执行"))
+                raise OperationSettlementPending("original lease release remains unconfirmed") from None
+            if lease.released and not lease._heartbeat_thread.is_alive():
+                self._lease = None
+            return result
 
     def register_resource(self, **kwargs: Any) -> dict:
-        return _operation().register_resource(self.run_id, **kwargs)
+        return self._call_storage("register_resource", self.run_id, **kwargs)
 
     def release_resource(self, resource_id: int, **kwargs: Any) -> bool:
-        return bool(_operation().release_resource(int(resource_id), **kwargs))
+        return bool(self._call_storage("release_resource", int(resource_id), **kwargs))
 
     def remote_request_started(
         self,
@@ -481,7 +794,7 @@ class OperationHandlerContext:
         storage boundary scrubs it and fences the update by this execution and
         its current account lease.
         """
-        return _operation().record_remote_intent(
+        return self._call_storage("record_remote_intent",
             self.run_id,
             execution_id=self.execution_id,
             lease_token=self._lease.token if self._lease and not self._lease.released else None,
@@ -512,7 +825,7 @@ class OperationHandlerContext:
         run still remains reconciliation-required rather than being replayed
         blindly.
         """
-        return _operation().record_remote_receipt(
+        return self._call_storage("record_remote_receipt",
             self.run_id,
             execution_id=self.execution_id,
             lease_token=self._lease.token if self._lease and not self._lease.released else None,
@@ -523,62 +836,36 @@ class OperationHandlerContext:
             detail=dict(detail or {}),
         )
 
-    def finish(
-        self,
-        result: OperationResult | Mapping[str, Any] | None = None,
-        *,
-        status: str | None = None,
-        message: str = "",
-        result_summary: Mapping[str, Any] | None = None,
-        error: str | None = None,
-    ) -> dict:
-        if self.deferred:
-            raise RuntimeError("已延期的执行不能写入终态")
-        normalized = _coerce_operation_result(
-            result, status=status, message=message,
-            result_summary=result_summary, error=error,
-        )
-        db_status = "attention_required" if normalized.status == "request_unknown" else normalized.status
-        summary = dict(normalized.summary)
-        summary.setdefault("execution_id", self.execution_id)
-        summary.setdefault(
-            "lease_owner",
-            self.execution_id if self._lease is not None and not self._lease.released else "released",
-        )
-        if normalized.status == "request_unknown":
-            summary.setdefault("outcome", "request_unknown")
-            summary.setdefault("reconcile_required", True)
-        row = _operation().finish_run(
-            self.run_id,
-            status=db_status,
-            message=normalized.message,
-            result_summary=summary,
-            error=normalized.error,
-            execution_id=self.execution_id,
-            lease_token=(
-                self._lease.token
-                if self._lease is not None and not self._lease.released else None
-            ),
-        )
-        actual_status = str(row.get("status") or db_status)
-        actual_summary = row.get("result_summary") or summary
-        if actual_status != db_status or (
-            actual_status == "attention_required"
-            and actual_summary.get("outcome") == "request_unknown"
-        ):
+    def finish(self, result: OperationResult | Mapping[str, Any] | None = None, *,
+               status: str | None = None, message: str = "",
+               result_summary: Mapping[str, Any] | None = None, error: str | None = None) -> dict:
+        with self._transition_lock:
+            normalized = _coerce_operation_result(result, status=status, message=message,
+                                                  result_summary=result_summary, error=error)
+            db_status = "attention_required" if normalized.status == "request_unknown" else normalized.status
+            summary = _thaw(normalized.summary)
+            summary.setdefault("execution_id", self.execution_id)
+            origin = self._origin()
+            summary.setdefault("lease_owner", self.execution_id if origin.get("lease_token") else "released")
+            if normalized.status == "request_unknown":
+                summary.setdefault("outcome", "request_unknown")
+                summary.setdefault("reconcile_required", True)
+            receipt = self._submit_transition(kind="terminal", payload={
+                "run_id": self.run_id, "status": db_status, "message": normalized.message,
+                "result_summary": summary, "error": normalized.error,
+                "execution_id": self.execution_id, "lease_token": origin.get("lease_token"),
+            })
+            row = receipt.get("actual_result") or receipt.get("result") or receipt
+            actual_status = str(row.get("status") or db_status)
+            actual_summary = _thaw(row.get("result_summary") if isinstance(row.get("result_summary"), Mapping) else summary)
+            actual_message = str(row.get("message") or row.get("error_message") or normalized.message)
+            actual_error = row.get("error_message", row.get("error", normalized.error))
             if actual_summary.get("outcome") == "request_unknown":
-                normalized = OperationResult.request_unknown(
-                    str(row.get("error_message") or "远端请求结果待核验"), actual_summary,
-                )
+                self._last_result = OperationResult.request_unknown(actual_message, actual_summary, error=actual_error)
             else:
-                normalized = OperationResult(
-                    actual_status, actual_summary,
-                    str(row.get("error_message") or normalized.message),
-                    row.get("error_message"),
-                )
-        self._last_result = normalized
-        self._finished = True
-        return row
+                self._last_result = OperationResult(actual_status, actual_summary, actual_message, actual_error)
+            self._finished = True
+            return _thaw(row)
 
     @property
     def last_result(self) -> OperationResult | None:
@@ -1164,7 +1451,7 @@ def _execute_operation_handler(task_type: str, run_id: int) -> dict[str, Any]:
                 if context.resource_family in {"openai_interactive", "registration_completion"} and context.email
                 else nullcontext(None)
             )
-            with operation_context(context.cancellation, reporter=context.report), auth_scope as auth_session:
+            with _domain_scope(context._domain), operation_context(context.cancellation, reporter=context.report), auth_scope as auth_session:
                 context.checkpoint()
                 returned = handler(context)
                 if auth_session is not None and not context.deferred:
@@ -1185,27 +1472,28 @@ def _execute_operation_handler(task_type: str, run_id: int) -> dict[str, Any]:
                 context, result,
                 database_status="attention_required" if result.status == "request_unknown" else result.status,
             )
+        except OperationResourceCleanupPending as exc:
+            return context.finish_cleanup_failure(exc)
+        except SETTLEMENT_CONTROL_ERRORS:
+            raise
         except (OperationLeaseUnavailable, OtpLeaseBusy) as exc:
+            context.raise_if_settlement_pending()
+            if context.deferred:
+                return _thaw(context._deferred_result)
+            if context.finished and context.last_result is not None:
+                return _operation_handler_result_payload(context, context.last_result)
             if context.is_cancel_requested(force=True):
                 result = OperationResult.cancelled("任务在取得账号 lease 前收到取消请求")
                 if not context.finished:
                     context.finish(result)
                 return _operation_handler_result_payload(context, result)
-            requeued = _operation().requeue_claimed_run(
-                context.run_id,
-                execution_id=execution_id,
-                reason=str(exc),
-                delay_seconds=1.0,
-            )
-            if requeued:
-                notify_dispatch()
-            return {
-                "status": "deferred" if requeued else "not_claimed",
-                "run_id": context.run_id,
-                "task_id": context.task_id,
-                "reason": str(exc),
-            }
+            return context.defer(delay_seconds=1.0, reason=str(exc), stage="lease_wait")
         except OperationAccountDeactivated as exc:
+            context.raise_if_settlement_pending()
+            if context.deferred:
+                return _thaw(context._deferred_result)
+            if context.finished and context.last_result is not None:
+                return _operation_handler_result_payload(context, context.last_result)
             result = OperationResult(
                 "deactivated",
                 {
@@ -1221,9 +1509,13 @@ def _execute_operation_handler(task_type: str, run_id: int) -> dict[str, Any]:
                 context.finish(result)
             return _operation_handler_result_payload(context, result)
         except OperationLeaseLost as exc:
+            context.raise_if_settlement_pending()
+            if context.deferred:
+                return _thaw(context._deferred_result)
+            if context.finished and context.last_result is not None:
+                return _operation_handler_result_payload(context, context.last_result)
             # A lost lease can mean that a remote write was accepted. Never
             # requeue this run; preserve the attempt for reconciliation instead.
-            context.release_lease()
             result = OperationResult.request_unknown(
                 "账号 lease 心跳失败，远端结果待核验",
                 {"lease_lost": True, "error": str(exc), "execution_id": execution_id},
@@ -1231,6 +1523,8 @@ def _execute_operation_handler(task_type: str, run_id: int) -> dict[str, Any]:
             try:
                 if not context.finished:
                     context.finish(result)
+            except SETTLEMENT_CONTROL_ERRORS:
+                raise
             except PermissionError:
                 logger.error("写入 lease 丢失的 request_unknown 结果被 fence 拒绝：run_id=%s", run_id)
                 return {
@@ -1241,11 +1535,21 @@ def _execute_operation_handler(task_type: str, run_id: int) -> dict[str, Any]:
                 }
             return _operation_handler_result_payload(context, result)
         except OperationCancelled as exc:
+            context.raise_if_settlement_pending()
+            if context.deferred:
+                return _thaw(context._deferred_result)
+            if context.finished and context.last_result is not None:
+                return _operation_handler_result_payload(context, context.last_result)
             result = OperationResult.cancelled(str(exc) or "任务已在安全检查点取消")
             if not context.finished:
                 context.finish(result)
             return _operation_handler_result_payload(context, result)
         except PermissionError as exc:
+            context.raise_if_settlement_pending()
+            if context.deferred:
+                return _thaw(context._deferred_result)
+            if context.finished and context.last_result is not None:
+                return _operation_handler_result_payload(context, context.last_result)
             # A terminal write can race with lease expiry/recovery.  Keep this
             # worker from reporting a misleading failure or touching a newer
             # execution; the fenced row remains available for reconciliation.
@@ -1260,6 +1564,11 @@ def _execute_operation_handler(task_type: str, run_id: int) -> dict[str, Any]:
                 "reason": str(exc),
             }
         except Exception as exc:
+            context.raise_if_settlement_pending()
+            if context.deferred:
+                return _thaw(context._deferred_result)
+            if context.finished and context.last_result is not None:
+                return _operation_handler_result_payload(context, context.last_result)
             logger.exception("durable operation handler 执行失败：task_type=%s run_id=%s", task_type, run_id)
             if context.deferred:
                 return dict(context._deferred_result)
@@ -1272,7 +1581,11 @@ def _execute_operation_handler(task_type: str, run_id: int) -> dict[str, Any]:
                 concurrency.set_execution_state(execution, "cleaning")
             except Exception:
                 logger.exception("执行清理状态暂未同步，许可继续保留：run_id=%s", run_id)
-            context.release_lease()
+            # Participating final scopes belong to their immutable transition;
+            # the coordinator acts only after callback_exited. Step cleanup is
+            # retained as an exact handle if its DELETE is still unconfirmed.
+            if not _participates(execution):
+                context.release_lease()
 
 def init() -> None:
     return _legacy().init()
@@ -1354,6 +1667,9 @@ def _dependency_handler() -> Callable[[dict], Any] | None:
 
 
 def _dependency_tick() -> int:
+    from core.runtime.execution_access import execution_allowed
+    if not execution_allowed():
+        return 0
     handler = _dependency_handler()
     if handler is None:
         return 0
@@ -1390,6 +1706,9 @@ def _dependency_tick() -> int:
                 continue
             claimed = dict(admission.context.claimed_run)
             claimed["_execution_context"] = admission.context
+            if not execution_allowed():
+                rollback_admission(admission.context, reason="runtime_execution_paused")
+                continue
             claimed_count += 1
             try:
                 # The callback is a non-blocking executor submission boundary.
@@ -1401,18 +1720,11 @@ def _dependency_tick() -> int:
                     "提交父任务依赖续接失败：dependency_id=%s", claimed.get("id"),
                 )
                 try:
-                    _operation().complete_task_dependency(
-                        int(claimed["id"]),
-                        success=False,
-                        error=f"{type(exc).__name__}: {exc}",
-                    )
-                    notify_dependency_ready(claimed)
+                    rollback_admission(admission.context, reason="executor_submit_failed")
                 except Exception:
                     logger.exception(
                         "父任务依赖失败状态写回失败：dependency_id=%s", claimed.get("id"),
                     )
-                finally:
-                    concurrency.release_execution(admission.context, reason="executor_submit_failed")
     except Exception as exc:
         logger.exception("dependency_scheduler_unavailable：父任务依赖调度暂不可用，保留持久队列：error_type=%s", type(exc).__name__)
     return claimed_count
@@ -1433,6 +1745,9 @@ def start_dependency_dispatcher(
     *, interval_seconds: float = 0.5, batch_size: int = 32,
 ) -> bool:
     """Start one persistent ready-queue scanner for completion handoffs."""
+    from core.runtime.execution_access import component_start_allowed
+    if not component_start_allowed():
+        return False
     global _DEPENDENCY_THREAD, _DEPENDENCY_INTERVAL_SECONDS, _DEPENDENCY_BATCH_SIZE
     with _DEPENDENCY_LOCK:
         _DEPENDENCY_INTERVAL_SECONDS = max(0.05, min(30.0, float(interval_seconds)))
@@ -1462,7 +1777,7 @@ def stop_dependency_dispatcher(*, timeout: float = 2.0) -> bool:
     with _DEPENDENCY_LOCK:
         thread = _DEPENDENCY_THREAD
         if thread is None:
-            return False
+            return True
         _DEPENDENCY_STOP.set()
         _DEPENDENCY_WAKE.set()
     thread.join(max(0.0, float(timeout)))
@@ -1697,24 +2012,91 @@ def observe_operation_run(run: Mapping[str, Any], capacity_handler=None):
     return observe_operation_runs([run], handlers)[0]
 
 
-def execute_admitted(execution, callback: Callable[[], Any]):
-    from core.operations import concurrency
+def _participates(execution) -> bool:
+    return bool(getattr(execution, "settlement_ticket", None))
 
+
+def _handoff_execution(execution, *, reason="worker_exit") -> None:
+    if _participates(execution):
+        from core.operations import settlement
+        settlement.request_release(execution, reason=reason)
+    else:
+        from core.operations import concurrency
+        concurrency.release_execution(execution, reason=reason)
+    notify_dispatch()
+
+
+def execute_admitted(execution, callback: Callable[[], Any]):
+    from core.operations import concurrency, settlement
+    from core.runtime.execution_access import execution_allowed
+
+    participant = _participates(execution)
+    callback_started = False
+    rolled_back = False
     try:
         with concurrency.execution_scope(execution):
+            if not execution_allowed():
+                rolled_back = True
+                rollback_admission(execution, reason="runtime_execution_paused")
+                return None
+            if participant:
+                if not settlement.callback_started(execution):
+                    return None
+                callback_started = True
             return callback()
+    except Exception:
+        if participant and not callback_started and not rolled_back:
+            # Scope validation and its first permit heartbeat occur before the
+            # business start barrier. They may fail after durable admission,
+            # so they own the same exact rollback receipt as submit rejection.
+            rolled_back = True
+            rollback_admission(execution, reason="execution_scope_entry_failed")
+        raise
     finally:
-        concurrency.release_execution(execution)
-        notify_dispatch()
+        if participant and callback_started:
+            settlement.callback_exited(execution)
+        if not rolled_back:
+            _handoff_execution(execution)
 
 
 def rollback_admission(execution, *, reason: str = "executor_submit_failed") -> None:
-    """只撤回本代尚未开始的认领；失败不消耗业务重试次数。"""
-    from core.operations import concurrency
+    """Rollback only before callback start; retain original receipt responsibility."""
+    if _participates(execution):
+        from core.operations import settlement
+        frozen = getattr(execution, "_gateway_rollback_intent", None)
+        if frozen is None:
+            claimed = execution.claimed_run
+            origin = _thaw(execution.settlement_ticket)
+            origin.update(lease_requirement="accountless" if not claimed.get("account_id") else "not_acquired",
+                          lease_token=None, leases=[])
+            frozen = seal_intent(kind="defer", origin=origin, payload={
+                "run_id": int(claimed["id"]), "execution_id": execution.execution_id,
+                "lease_token": None, "reason": str(reason), "delay_seconds": 0,
+                "data": None, "stage": "dispatch", "subtype": "unstarted_rollback",
+            })
+            execution._gateway_rollback_intent = frozen
 
+        def submit(intent, deadline):
+            from core.storage.operations.settlements import submit_intent
+            return submit_intent(intent, domain=execution.settlement_domain, deadline=deadline)
+
+        try:
+            settlement.settle(execution, frozen, submit)
+        finally:
+            # settle owns the unstarted/start barrier and the exit fact; a
+            # racing callback must never be marked exited by this caller.
+            settlement.request_release(execution, reason=reason)
+            notify_dispatch()
+        return
+    from core.operations import concurrency
     try:
-        run_id = int(execution.claimed_run.get("id") or 0)
-        if run_id:
+        claimed = execution.claimed_run
+        run_id = int(claimed.get("id") or 0)
+        if str(execution.execution_key).startswith("operation_dependency:"):
+            from core.storage.operations import dependency_handoffs
+            dependency_handoffs.requeue_dependency(run_id, permit_id=execution.permit_id,
+                execution_id=execution.execution_id, attempts=int(claimed.get("attempts") or 0), reason=reason)
+        elif run_id:
             _operation().requeue_claimed_run(run_id, execution_id=execution.execution_id,
                                             reason=reason, delay_seconds=0)
     finally:
@@ -1724,6 +2106,9 @@ def rollback_admission(execution, *, reason: str = "executor_submit_failed") -> 
 
 def dispatch_registered_once(*, limit: int | None = None) -> int:
     """所有类型共享持久公平游标与数据库业务预算，线程承载保留领域隔离。"""
+    from core.runtime.execution_access import execution_allowed
+    if not execution_allowed():
+        return 0
     handlers, capacity_handlers = _run_handler_snapshot()
     if not handlers:
         return 0
@@ -1824,7 +2209,7 @@ def _dispatch_registered_group(handlers, capacity_handlers, pool, *, limit: int 
                 if _completed is not None and _completed.cancelled():
                     rollback_admission(execution, reason="submission_cancelled")
                 else:
-                    concurrency.release_execution(execution)
+                    _handoff_execution(execution, reason="future_completed")
 
             future.add_done_callback(completed)
         except Exception:
@@ -1843,44 +2228,33 @@ def notify_dispatch() -> None:
 
 
 def _reconcile_recovered_projections() -> int:
-    """让维护服务收口通用恢复无法直接理解的业务状态投影。"""
-    try:
-        from core.accounts.deactivation import mail_scan as deactivation_mail_service
+    """兼容旧入口，领域恢复编排由核心 reconciliation 服务拥有。"""
+    from core.operations import reconciliation
 
-        return int(deactivation_mail_service.reconcile_interrupted_scans() or 0)
-    except Exception:
-        logger.exception("恢复中断 Run 的业务状态投影失败")
-        return 0
+    return reconciliation.reconcile_recovered_projections(logger)
 
 
 def _recover_stale_runtime_runs_if_due(*, now: float | None = None) -> int:
-    """周期性收口失去 worker 的 Run，避免只在启动瞬间检查一次。"""
+    """周期性收口失去 worker 的 Run；节流状态仍由唯一 dispatcher 持有。"""
     global _LAST_RUNTIME_RECOVERY_AT
     current = time.monotonic() if now is None else float(now)
     with _RUN_DISPATCH_LOCK:
         if current - _LAST_RUNTIME_RECOVERY_AT < _RUNTIME_RECOVERY_INTERVAL_SECONDS:
             return 0
         _LAST_RUNTIME_RECOVERY_AT = current
-    try:
-        recovered = int(_operation().recover_interrupted_runtime_runs() or 0)
-    except Exception:
-        logger.exception("周期性恢复中断 Run 失败")
-        return 0
-    _reconcile_recovered_projections()
-    try:
-        from core.extract_link import service as extract_link_service
+    from core.operations import reconciliation
 
-        extract_link_service.resume_known_remote_jobs(continuous_only=True)
-    except Exception:
-        logger.exception("恢复中断的提链远端状态同步失败")
-    return recovered
+    return reconciliation.recover_stale_runtime_runs(logger)
 
 
 def _run_dispatch_loop() -> None:
+    from core.runtime.execution_access import execution_allowed
     while not _RUN_DISPATCH_STOP.is_set():
         try:
-            _recover_stale_runtime_runs_if_due()
-            submitted = dispatch_registered_once()
+            submitted = 0
+            if execution_allowed():
+                _recover_stale_runtime_runs_if_due()
+                submitted = dispatch_registered_once()
         except Exception:
             submitted = 0
             logger.exception("scheduler_store_unavailable：本轮暂停新准入，保留持久队列")
@@ -1892,6 +2266,9 @@ def _run_dispatch_loop() -> None:
 
 def start_dispatcher(*, interval_seconds: float = 0.5, batch_size: int = 32) -> bool:
     """Start the shared task-type dispatcher for durable operation runs."""
+    from core.runtime.execution_access import component_start_allowed
+    if not component_start_allowed():
+        return False
     global _RUN_DISPATCH_THREAD, _RUN_DISPATCH_INTERVAL_SECONDS, _RUN_DISPATCH_BATCH_SIZE
     with _RUN_DISPATCH_LOCK:
         _RUN_DISPATCH_INTERVAL_SECONDS = max(0.05, min(30.0, float(interval_seconds)))
@@ -1915,7 +2292,7 @@ def stop_dispatcher(*, timeout: float = 2.0) -> bool:
     with _RUN_DISPATCH_LOCK:
         thread = _RUN_DISPATCH_THREAD
         if thread is None:
-            return False
+            return True
         _RUN_DISPATCH_STOP.set()
         _RUN_DISPATCH_WAKE.set()
     thread.join(max(0.0, float(timeout)))
@@ -1952,7 +2329,9 @@ __all__ = [
     "register_dispatch_handler", "unregister_dispatch_handler", "registered_dispatch_types",
     "reserve_dispatch", "release_dispatch", "dispatch_registered_once",
     "notify_dispatch", "normalize_config_snapshot", "OperationResult",
-    "OperationLeaseUnavailable", "OperationLeaseLost", "OperationLease",
+    "OperationLeaseUnavailable", "OperationLeaseLost", "OperationLease", "OperationResourceCleanupPending",
+    "OperationSettlementPending", "OperationSettlementConflict", "OperationSettlementFenced",
+    "SETTLEMENT_CONTROL_ERRORS",
     "OperationTaskReporter", "OperationHandlerContext", "OperationContext",
     "register_operation_handler", "unregister_operation_handler", "registered_operation_types",
     "register_operation_actions", "operation_action", "operation_requires_reconciliation", "operation_is_deactivated",

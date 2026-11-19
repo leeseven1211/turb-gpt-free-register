@@ -87,7 +87,7 @@ def enqueue(*, registration_run_id: int, account: dict, settings: dict, remainin
 
 def reconcile(cur, parent_run_id: int, *, enqueue_projection: bool = True) -> dict | None:
     """只更新关联代次的投影，不改写原注册认证事实，也不覆盖新的续跑。"""
-    from core.storage.operations import store
+    from core.storage.operations import common, store
 
     cur.execute(f"""SELECT r.*,t.last_run_id,t.task_type,t.account_id AS resolved_account_id,
         t.batch_id AS resolved_batch_id FROM {store._table('operation_runs')} r
@@ -99,7 +99,11 @@ def reconcile(cur, parent_run_id: int, *, enqueue_projection: bool = True) -> di
     handoff = data.get("completion_handoff")
     if not isinstance(handoff, dict) or not handoff.get("task_id"):
         return None
-    job = records.get_row(records.JOBS, int(parent["source_id"]), conn=cur.connection)
+    captured = common.current_settlement_domain() is not None
+    job = (
+        common._settlement_record(cur, records.JOBS, int(parent["source_id"]))
+        if captured else records.get_row(records.JOBS, int(parent["source_id"]), conn=cur.connection)
+    )
     if not job or job.get("status") not in {"success", "partial_success"}:
         return None
     # 与兼容投影写入保持 queue→batch→Run→Task 的锁顺序。
@@ -123,7 +127,10 @@ def reconcile(cur, parent_run_id: int, *, enqueue_projection: bool = True) -> di
         return None
     remaining = str(handoff.get("remaining_error") or "")
     account_id = parent.get("resolved_account_id") or parent.get("account_id")
-    account = records.get_row(records.ACCOUNTS, int(account_id), conn=cur.connection) if account_id else None
+    account = (
+        common._settlement_account(cur, int(account_id)) if captured
+        else records.get_row(records.ACCOUNTS, int(account_id), conn=cur.connection)
+    ) if account_id else None
     waiting = child["status"] in store._ACTIVE_RUN_STATUSES
     complete = child["status"] == "success" and password_is_confirmed(account)
     error = remaining

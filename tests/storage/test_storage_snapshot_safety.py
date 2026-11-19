@@ -305,16 +305,18 @@ class ConcurrentWriteTests(PostgresTestCase):
             "access_token": "token-for-test",
         }
 
-        from tests.support_email_service_facts import confirmed_service_facts
-        with confirmed_service_facts() as acknowledge:
+        with patch("core.email.email_butler.client._request") as remote:
             self.assertEqual(db.import_registered_email_accounts([record, record], "outlook"), (1, 1))
-            self.assertIsNone(rs.get_row_by(rs.ACCOUNTS, "email", record["email"]))
-            acknowledge()
+            self.assertIsNotNone(rs.get_row_by(rs.ACCOUNTS, "email", record["email"]))
+            self.assertEqual(db.import_registered_email_accounts([record], "outlook"), (0, 1))
+        remote.assert_not_called()
         account = rs.get_row_by(rs.ACCOUNTS, "email", record["email"], lower=True)
         pool = rs.get_row_by(rs.OUTLOOK_POOL, "email", record["email"], lower=True)
         self.assertIsNotNone(account)
         self.assertEqual(pool["status"], "used")
         self.assertEqual(pool["registered_account_id"], account["id"])
+        self.assertEqual(pool["service_sync_state"], "local_only")
+        self.assertEqual(pool["service_fact_scope"], "local")
         self.assertEqual(rs.count_rows(rs.ACCOUNTS), 1)
         self.assertEqual(rs.count_rows(rs.OUTLOOK_POOL), 1)
 

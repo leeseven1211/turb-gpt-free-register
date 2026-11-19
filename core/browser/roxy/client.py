@@ -10,12 +10,12 @@ import threading
 import time
 from dataclasses import dataclass
 from collections.abc import Callable
-from pathlib import Path
 from urllib.parse import unquote, urljoin, urlparse
 
 import requests
 
 from config import roxybrowser as _cfg
+from core.runtime.paths import runtime_dir
 
 logger = logging.getLogger('core.roxybrowser_client')
 
@@ -52,7 +52,7 @@ _HTTP_STATUS_RE = re.compile(
 _PROFILE_CREATE_LOCK = threading.Lock()
 _PROFILE_OPEN_LOCK = threading.Lock()
 _PROFILE_REGISTRY_LOCK = threading.RLock()
-_PROFILE_REGISTRY_PATH = Path(__file__).resolve().parents[3] / "logs" / "run" / "roxy_active_profiles.json"
+_PROFILE_REGISTRY_PATH = runtime_dir() / "roxy_active_profiles.json"
 _PROFILE_RELAYS: dict[str, object] = {}
 _PROFILE_RELAYS_LOCK = threading.RLock()
 

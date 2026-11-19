@@ -17,27 +17,36 @@ from core.browser.roxy import client as roxybrowser_client
 
 
 class RegistrationTwofaProxyContextTests(unittest.TestCase):
-    def test_registration_retry_uses_resolved_operation_context_and_restores_parent(self):
+    @staticmethod
+    def _successful_password_action(*_args, step_results, **_kwargs):
+        def action(*_action_args, **_action_kwargs):
+            step_results["password"] = {
+                "ok": True, "status": "success", "password_added": True,
+                "mutation_submitted": True, "remote_receipt_state": "confirmed",
+            }
+        return action
+
+    def test_registration_retry_handoff_preserves_parent_context_without_running_worker(self):
         job = {"id": 31, "root_job_id": 21, "attempt_id": 41, "account_id": 44, "status": "running"}
+        account = {"id": 44, "email": "unit@example.test"}
         observed = []
 
-        def worker(*_args, **_kwargs):
+        def submit(*_args, **_kwargs):
             observed.append((task_run_log.current_context(), protocol_traffic.current_correlation()))
-            return {"ok": True, "status": "success"}
+            return {"ok": True, "operation_task_id": 501, "run_id": 601, "message": "原生账号配置已入队"}
 
         with ExitStack() as stack:
             for name in ("_activate_job", "_deactivate_job", "_ensure_registration_run_context",
                          "_bind_progress_route_context", "_persist_job_progress", "_finish_registration_run"):
                 stack.enter_context(patch.object(registration_service, name))
             stack.enter_context(patch.object(registration_service.db, "get_job", side_effect=lambda _id: dict(job)))
+            stack.enter_context(patch.object(registration_service.db, "get_account", return_value=account))
             stack.enter_context(patch.object(registration_service, "_claim_job_for_worker", return_value=True))
             stack.enter_context(patch.object(registration_service.db, "finish_job_progress"))
             stack.enter_context(patch.object(registration_service.db, "update_job", side_effect=lambda _id, **fields: job.update(fields)))
             stack.enter_context(patch.object(registration_service, "is_stop_requested", return_value=False))
-            resolve = stack.enter_context(patch.object(registration_service, "_registration_proxy_correlation", return_value={
-                "account_id": 44, "operation_task_id": 501, "operation_run_id": 601,
-            }))
-            stack.enter_context(patch.object(codex_retry_service, "run_twofa_worker", side_effect=worker))
+            handoff = stack.enter_context(patch.object(registration_service, "_submit_registration_account_setup", side_effect=submit))
+            worker = stack.enter_context(patch.object(codex_retry_service, "run_twofa_worker"))
             stack.enter_context(patch.object(codex_retry_service, "release"))
             stack.enter_context(patch.object(registration_service.account_task_store, "finish_task"))
             stack.enter_context(task_run_log.stage_context(
@@ -52,14 +61,16 @@ class RegistrationTwofaProxyContextTests(unittest.TestCase):
             self.assertEqual(task_run_log.current_context(), before_log)
             self.assertEqual(protocol_traffic.current_correlation(), before_proxy)
 
-        resolve.assert_called_once()
-        self.assertEqual(resolve.call_args.args[0], 31)
-        self.assertEqual(resolve.call_args.args[1]["id"], 31)
+        handoff.assert_called_once()
+        self.assertEqual(handoff.call_args.args[0]["id"], 31)
+        self.assertEqual(handoff.call_args.args[1], account)
+        worker.assert_not_called()
+        self.assertEqual(job["status"], "partial_success")
+        self.assertEqual(job["registration_account_task_id"], 501)
         self.assertEqual(len(observed), 1)
         log_context, proxy_context = observed[0]
-        self.assertEqual(log_context["identifier_namespace"], "operation")
-        self.assertEqual((log_context["task_id"], log_context["run_id"]), (501, 601))
-        self.assertNotIn("proxy_lease_id", proxy_context)
+        self.assertEqual(log_context, before_log)
+        self.assertEqual(proxy_context, before_proxy)
 
     def test_twofa_browser_retries_bind_current_lease_without_inheriting_registration_lease(self):
         self._check_browser_retry_leases()
@@ -92,6 +103,7 @@ class RegistrationTwofaProxyContextTests(unittest.TestCase):
                 persisted.append(bind.call_args.kwargs if bind.called else {})
             if len(observed) == 1:
                 raise RuntimeError("net::ERR_TUNNEL_CONNECTION_FAILED")
+            _kwargs["action"]()
 
         with tempfile.TemporaryDirectory() as tempdir, ExitStack() as stack:
             stack.enter_context(patch.object(codex_retry_service.db, "get_account_by_email", return_value={"id": 44}))
@@ -101,7 +113,7 @@ class RegistrationTwofaProxyContextTests(unittest.TestCase):
             stack.enter_context(patch("config.reload_all"))
             acquire = stack.enter_context(patch("core.proxy.account_routes.acquire_account_proxy", side_effect=routes))
             stack.enter_context(patch.object(codex_retry_service, "check_stop_requested"))
-            stack.enter_context(patch.object(codex_retry_service, "_build_roxy_account_setup", return_value=Mock()))
+            stack.enter_context(patch.object(codex_retry_service, "_build_roxy_account_setup", side_effect=self._successful_password_action))
             stack.enter_context(patch.object(codex_retry_service.time, "sleep"))
             stack.enter_context(patch.object(codex_retry_service, "_RUNNING_THREADS", {}))
             stack.enter_context(patch.object(codex_retry_service, "_RESERVED_AT", {}))
@@ -124,6 +136,7 @@ class RegistrationTwofaProxyContextTests(unittest.TestCase):
             self.assertEqual(protocol_traffic.current_correlation(), before)
 
         self.assertTrue(result["ok"], result.get("message"))
+        self.assertEqual(result["step_results"]["password"]["remote_receipt_state"], "confirmed")
         self.assertEqual([value["proxy_lease_id"] for value in observed], ["account-lease-1", "account-lease-2"])
         self.assertTrue(all("registration_job_id" not in value for value in observed))
         self.assertEqual([value["lease_id"] for value in persisted], ["account-lease-1", "account-lease-2"])
@@ -150,7 +163,7 @@ class RegistrationTwofaProxyContextTests(unittest.TestCase):
             stack.enter_context(patch.object(codex_retry_service.account_task_store, "append_event"))
             stack.enter_context(patch.object(task_run_log, "TaskRunLogHandler", return_value=logging.NullHandler()))
             stack.enter_context(patch.object(codex_retry_service, "check_stop_requested"))
-            stack.enter_context(patch.object(codex_retry_service, "_build_roxy_account_setup", return_value=Mock()))
+            stack.enter_context(patch.object(codex_retry_service, "_build_roxy_account_setup", side_effect=self._successful_password_action))
             stack.enter_context(patch.object(codex_retry_service, "_run_retry_plan_check", return_value={
                 "ok": True, "status": "success",
             }))
@@ -158,13 +171,15 @@ class RegistrationTwofaProxyContextTests(unittest.TestCase):
             stack.enter_context(patch.object(codex_retry_service, "_RESERVED_AT", {}))
             stack.enter_context(patch.object(codex_retry_service, "_STOP_REQUESTED", set()))
             acquire = stack.enter_context(patch("core.proxy.account_routes.acquire_account_proxy", return_value=route))
-            stack.enter_context(patch("core.codex.roxy.oauth.run_roxy_chatgpt_account_action"))
+            stack.enter_context(patch("core.codex.roxy.oauth.run_roxy_chatgpt_account_action", side_effect=lambda *_args, **kwargs: kwargs["action"]()))
             result = codex_retry_service.run_twofa_worker(
                 "unit@example.test", task_id=81, target_log_path=Path(tempdir) / "twofa.log",
                 clear_log=False, manage_task=False, steps={"password", "plan_check"},
                 password_driver_override="roxy", proxy_country_override="JP",
             )
         self.assertTrue(result["ok"], result.get("message"))
+        self.assertEqual(result["step_results"]["password"]["remote_receipt_state"], "confirmed")
+        self.assertTrue(result["step_results"]["plan_check"]["ok"])
         self.assertEqual([call.kwargs["purpose"] for call in acquire.call_args_list], ["plan-check", "password-setup"])
         self.assertEqual([call.kwargs["region"] for call in acquire.call_args_list], ["JP", "JP"])
 
@@ -184,12 +199,12 @@ class RegistrationTwofaProxyContextTests(unittest.TestCase):
                 stack.enter_context(patch("config.reload_all"))
                 stack.enter_context(patch("core.proxy.account_routes.acquire_account_proxy", return_value=route))
                 stack.enter_context(patch.object(codex_retry_service, "check_stop_requested"))
-                stack.enter_context(patch.object(codex_retry_service, "_build_roxy_account_setup", return_value=Mock()))
+                stack.enter_context(patch.object(codex_retry_service, "_build_roxy_account_setup", side_effect=self._successful_password_action))
                 stack.enter_context(patch.object(codex_retry_service, "_RUNNING_THREADS", {}))
                 stack.enter_context(patch.object(codex_retry_service, "_RESERVED_AT", {}))
                 stack.enter_context(patch.object(codex_retry_service, "_STOP_REQUESTED", set()))
                 stack.enter_context(patch("core.codex.roxy.oauth.run_roxy_chatgpt_account_action", side_effect=lambda *_args, **_kwargs: (
-                    codex_retry_service.logger.warning("账号配置内部日志回归")
+                    codex_retry_service.logger.warning("账号配置内部日志回归"), _kwargs["action"]()
                 )))
                 context = {"task_id": 501, "run_id": 601, "identifier_namespace": "operation"} if native else {}
                 stack.enter_context(task_run_log.stage_context("account_setup", inherit=False, **context))
@@ -200,6 +215,7 @@ class RegistrationTwofaProxyContextTests(unittest.TestCase):
                 rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()] if path.exists() else []
 
             self.assertTrue(result["ok"], result.get("message"))
+            self.assertEqual(result["step_results"]["password"]["remote_receipt_state"], "confirmed")
             internal = [row for row in rows if row["message"] == "账号配置内部日志回归"]
             self.assertEqual(len(internal), 1)
             self.assertEqual(internal[0]["event_type"], "log.record")

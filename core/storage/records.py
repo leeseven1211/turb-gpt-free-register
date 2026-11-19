@@ -1502,17 +1502,19 @@ def patch_rows_where_returning(
     where: str,
     params: Iterable[Any] = (),
     conn=None,
+    id_only: bool = False,
 ) -> list[dict]:
-    """批量部分更新并返回真正命中的业务行。"""
+    """批量部分更新并返回真正命中的业务行；id_only 仅返回 ID 字典。"""
     spec = _resolve(table)
     init()
     sets, args = _build_set_clause(spec, changes, partial=True)
     args.extend(params)
-    sql = f"UPDATE {_qualified(spec)} SET {', '.join(sets)} WHERE {where} RETURNING *"
+    projection = "id" if id_only else "*"
+    sql = f"UPDATE {_qualified(spec)} SET {', '.join(sets)} WHERE {where} RETURNING {projection}"
 
     def _run(cur):
         cur.execute(sql, args)
-        return [_merge(spec, row) for row in cur.fetchall()]
+        return [dict(row) if id_only else _merge(spec, row) for row in cur.fetchall()]
 
     if conn is not None:
         with conn.cursor() as cur:

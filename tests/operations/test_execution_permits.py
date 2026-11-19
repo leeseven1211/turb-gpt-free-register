@@ -11,9 +11,11 @@ from unittest.mock import patch
 
 from cryptography.fernet import Fernet
 
-from core.operations import concurrency, task_gateway
+from core.operations import concurrency, settlement, task_gateway
 from core.storage import postgres, runtime_config
 from core.storage.operations import permits, store
+from core.storage.operations import common as operation_common
+from core.storage.operations import runtime as operation_runtime
 from tests.support_pg import PostgresTestCase
 
 
@@ -43,12 +45,51 @@ class ExecutionPermitTests(PostgresTestCase):
             self.addCleanup(legacy.stop)
         legacy_task_store.init()
         self.contexts = []
+        self.addCleanup(self._stop_settlement)
         self.addCleanup(self._release_all)
         permits.ensure_tables()
+        # PostgresTestCase truncates every table between methods, including
+        # the durable settlement capability marker. Re-run startup migration
+        # after resetting this same-schema readiness cache.
+        store.reset_ready()
+        store.init()
+        self.assertTrue(settlement.start_runtime(domain=permits._settlement_domain()))
 
     def _release_all(self):
         for context in self.contexts:
+            if context.released:
+                continue
+            responsibility = settlement.responsibility(context)
+            if (responsibility is not None and responsibility.intent is None
+                    and not responsibility.callback_active
+                    and not responsibility._callback_started):
+                # Tests that only inspect an admitted native Run must hand the
+                # actual unstarted generation back before the schema is reset.
+                task_gateway.rollback_admission(context, reason="test_unstarted_cleanup")
+                continue
             concurrency.release_execution(context)
+
+    def _stop_settlement(self):
+        deadline = time.monotonic() + 10
+        drained = settlement.drain_runtime(deadline)
+        stopped = settlement.stop_runtime(deadline)
+        legacy_stopped = concurrency.stop_release_runtime(deadline)
+        self.assertTrue(drained, settlement.runtime_status())
+        self.assertTrue(stopped, settlement.runtime_status())
+        self.assertTrue(legacy_stopped, concurrency.release_runtime_status())
+
+    def _await_permit_cleanup(self):
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            release_status = concurrency.release_runtime_status()
+            if (not concurrency.active_execution_keys()
+                    and settlement.active_counts()["registered"] == 0
+                    and not any(release_status.values())):
+                return
+            time.sleep(.01)
+        self.fail({"active_permits": len(concurrency.active_execution_keys()),
+                   "settlement": settlement.runtime_status(),
+                   "release": concurrency.release_runtime_status()})
 
     def policy(self, **updates):
         from config.concurrency import policy_values
@@ -251,6 +292,7 @@ class ExecutionPermitTests(PostgresTestCase):
         self.assertEqual(1, len(calls))
         self.assertEqual(1, claim.call_count)
         self.assertIn("conn", claim.call_args.kwargs)
+        self._await_permit_cleanup()
         self.assertEqual(0, concurrency.get_concurrency_status()["global"]["occupied"])
 
     def test_unknown_task_type_cannot_register_a_handler(self):
@@ -305,12 +347,47 @@ class ExecutionPermitTests(PostgresTestCase):
         self.contexts.append(admitted.context)
         store.request_run_cancel(run["id"])
         self.assertEqual(1, concurrency.get_concurrency_status()["global"]["occupied"])
-        store.finish_run(run["id"], status="cancelled", execution_id=admitted.context.execution_id)
-        self.assertEqual(1, concurrency.get_concurrency_status()["global"]["occupied"])
-        concurrency.set_execution_state(admitted.context, "cleaning")
-        self.assertEqual(1, concurrency.get_concurrency_status()["global"]["cleaning"])
-        self.assertFalse(self.admit("cannot-start-during-cleanup", "plan_check"))
-        concurrency.release_execution(admitted.context)
+        terminal_confirmed, allow_callback_exit, callback_done = threading.Event(), threading.Event(), threading.Event()
+        callback_count = []
+
+        def callback():
+            try:
+                callback_count.append(1)
+                context = task_gateway.OperationHandlerContext(
+                    admitted.context.claimed_run, execution_id=admitted.context.execution_id,
+                )
+                context.finish(status="cancelled")
+                terminal_confirmed.set()
+                self.assertTrue(allow_callback_exit.wait(5))
+            finally:
+                callback_done.set()
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(task_gateway.execute_admitted, admitted.context, callback)
+            try:
+                deadline = time.monotonic() + 5
+                while not terminal_confirmed.is_set() and not callback_done.is_set() and time.monotonic() < deadline:
+                    terminal_confirmed.wait(.01)
+                if callback_done.is_set() and not terminal_confirmed.is_set():
+                    # Preserve the original typed storage fence in the test
+                    # result; a barrier timeout must not hide callback failure.
+                    future.result(timeout=1)
+                self.assertTrue(terminal_confirmed.is_set())
+                self.assertEqual("cancelled", store.get_run(run["id"])["status"])
+                responsibility = settlement.responsibility(admitted.context)
+                self.assertIsNotNone(responsibility.receipt)
+                self.assertTrue(responsibility.callback_active)
+                self.assertEqual(1, concurrency.get_concurrency_status()["global"]["occupied"])
+                concurrency.set_execution_state(admitted.context, "cleaning")
+                self.assertEqual(1, concurrency.get_concurrency_status()["global"]["cleaning"])
+                self.assertFalse(self.admit("cannot-start-during-cleanup", "plan_check"))
+                self.assertFalse(concurrency.release_execution(admitted.context))
+            finally:
+                allow_callback_exit.set()
+            future.result(timeout=5)
+        self.assertEqual([1], callback_count)
+        self._await_permit_cleanup()
+        self.assertTrue(admitted.context.released)
         self.assertTrue(self.admit("cannot-start-during-cleanup", "plan_check"))
 
     def test_old_recovery_does_not_replace_a_live_owner(self):
@@ -333,7 +410,173 @@ class ExecutionPermitTests(PostgresTestCase):
         admitted = task_gateway.admit_operation_run(store.get_run(run_id))
         task_gateway.rollback_admission(admitted.context)
         self.assertEqual("queued", store.get_run(run_id)["status"])
+        self._await_permit_cleanup()
         self.assertEqual(0, concurrency.get_concurrency_status()["global"]["occupied"])
+
+    def test_native_resource_cleanup_then_permit_precommit_failure_and_ack_loss_releases_once(self):
+        from core.storage.operations import settlements
+        self.policy(GLOBAL_TASK_WORKERS=1)
+        created = store.create_runtime_task(task_type="maintenance_check", account_id=None, email="", data={})
+        execution = task_gateway.admit_operation_run(store.get_run(created["run"]["id"])).context
+        self.contexts.append(execution)
+        allow_resource, resource_attempted = threading.Event(), threading.Event()
+        permit_committed = threading.Event()
+        callback_count, permit_attempts = [], []
+        original_release = concurrency.release_permit
+        class Resource:
+            release_confirmed = False
+            def release(resource, *, deadline=None):
+                resource_attempted.set()
+                if not allow_resource.is_set():
+                    return False
+                resource.release_confirmed = True
+                return True
+        resource = Resource()
+        def release_with_faults(*args, **kwargs):
+            permit_attempts.append((args[0], args[1]))
+            if len(permit_attempts) == 1:
+                raise OSError("synthetic permit failure before commit")
+            result = original_release(*args, **kwargs)
+            if len(permit_attempts) == 2:
+                self.assertTrue(result)
+                permit_committed.set()
+                raise OSError("synthetic permit commit ACK lost")
+            return result
+        def callback():
+            callback_count.append(1)
+            context = task_gateway.OperationHandlerContext(execution.claimed_run, execution_id=execution.execution_id)
+            context.register_cleanup(resource, key=f"synthetic-resource:{execution.permit_id}")
+            context.finish(status="success", result_summary={"synthetic_writeback": "confirmed"})
+        try:
+            with patch.object(concurrency, "release_permit", side_effect=release_with_faults):
+                task_gateway.execute_admitted(execution, callback)
+                self.assertTrue(resource_attempted.wait(3))
+                self.assertFalse(execution.released)
+                self.assertEqual([], permit_attempts)
+                self.assertEqual(1, concurrency.get_concurrency_status()["global"]["occupied"])
+                permits.mark_execution_exited(execution.permit_id, execution.execution_id)
+                self.assertFalse(concurrency.release_execution(execution))
+                self.assertEqual(0, concurrency.recover_execution_permits()["released"])
+                allow_resource.set()
+                self.assertTrue(permit_committed.wait(5))
+                self._await_permit_cleanup()
+            responsibility = settlement.responsibility(execution)
+            receipt = settlements.read_receipt(responsibility.intent, domain=execution.settlement_domain)
+            self.assertEqual([1], callback_count)
+            self.assertEqual(3, len(permit_attempts))
+            self.assertEqual({(execution.permit_id, execution.execution_id)}, set(permit_attempts))
+            self.assertEqual("success", receipt["actual_result"]["status"])
+            self.assertTrue(resource.release_confirmed)
+            with postgres.connect() as conn, conn.cursor() as cur:
+                cur.execute(f"SELECT count(*) FROM {operation_common._table('operation_settlement_receipts')} "
+                            "WHERE permit_id=%s AND execution_id=%s", (execution.permit_id, execution.execution_id))
+                self.assertEqual(1, cur.fetchone()[0])
+                cur.execute(f"SELECT count(*) FROM {operation_common._table('operation_events')} "
+                            "WHERE run_id=%s AND event_type='run.success'", (execution.claimed_run["id"],))
+                self.assertEqual(1, cur.fetchone()[0])
+                cur.execute(f"SELECT released_at IS NOT NULL FROM {postgres.qualified('operation_execution_permits')} "
+                            "WHERE permit_id=%s AND execution_id=%s", (execution.permit_id, execution.execution_id))
+                self.assertTrue(cur.fetchone()[0])
+        finally:
+            allow_resource.set()
+            permits.clear_execution_exit(execution.permit_id, execution.execution_id)
+
+    def test_native_cancelled_future_rollback_failure_and_ack_loss_never_starts_callback(self):
+        from concurrent.futures import Future
+        from core.storage.operations import settlements
+        self.policy(GLOBAL_TASK_WORKERS=1)
+        created = store.create_runtime_task(task_type="maintenance_check", account_id=None, email="", data={})
+        row = store.get_run(created["run"]["id"])
+        execution = task_gateway.admit_operation_run(row).context
+        self.contexts.append(execution)
+        future = Future()
+        callback_count, transitions = [], []
+        original_submit = settlements.submit_intent
+        allow_submit = threading.Event()
+        committed = threading.Event()
+        scheduled = []
+        def submit_with_faults(intent, **kwargs):
+            transitions.append(intent)
+            if not allow_submit.is_set():
+                raise OSError("synthetic rollback unavailable before commit")
+            result = original_submit(intent, **kwargs)
+            if not committed.is_set():
+                committed.set()
+                raise OSError("synthetic rollback commit ACK lost")
+            return result
+        class Carrier:
+            def available_slots(self):
+                return 1
+            def try_submit(self, callback, run_id):
+                scheduled.append(lambda: callback(run_id))
+                return future
+        try:
+            with patch.object(task_gateway, "admit_operation_run", return_value=concurrency.AdmissionResult(execution)), \
+                    patch.object(store, "list_dispatchable_runs", return_value=[row]), \
+                    patch.object(settlements, "submit_intent", side_effect=submit_with_faults):
+                submitted = task_gateway._dispatch_registered_group(
+                    {"maintenance_check": (lambda run_id: callback_count.append(run_id), None)}, {}, Carrier(), limit=1,
+                )
+                self.assertEqual(1, submitted)
+                with self.assertLogs("concurrent.futures", level="ERROR"):
+                    self.assertTrue(future.cancel())
+                item = settlement.responsibility(execution)
+                self.assertEqual("unstarted_rollback", item.intent.payload["subtype"])
+                self.assertEqual("submission_cancelled", item.intent.payload["reason"])
+                self.assertFalse(execution.released)
+                self.assertEqual(1, concurrency.get_concurrency_status()["global"]["occupied"])
+                allow_submit.set()
+                self.assertIsNone(scheduled[0]())
+                self.assertTrue(committed.wait(5))
+                self._await_permit_cleanup()
+            self.assertEqual([], callback_count)
+            self.assertEqual(1, len({intent.transition_id for intent in transitions}))
+            self.assertTrue(all(intent is transitions[0] for intent in transitions))
+            self.assertEqual("queued", store.get_run(row["id"])["status"])
+            with postgres.connect() as conn, conn.cursor() as cur:
+                cur.execute(f"SELECT count(*),min(transition_kind) FROM {operation_common._table('operation_settlement_receipts')} "
+                            "WHERE permit_id=%s AND execution_id=%s", (execution.permit_id, execution.execution_id))
+                self.assertEqual((1, "defer"), cur.fetchone())
+                cur.execute(f"SELECT count(*) FROM {operation_common._table('operation_events')} "
+                            "WHERE run_id=%s AND event_type='run.running'", (row["id"],))
+                self.assertEqual(1, cur.fetchone()[0])
+        finally:
+            allow_submit.set()
+            task_gateway.release_dispatch(row["id"])
+
+    def test_native_running_callback_rejects_future_rollback_after_cancel(self):
+        self.policy(GLOBAL_TASK_WORKERS=1)
+        created = store.create_runtime_task(task_type="maintenance_check", account_id=None, email="", data={})
+        execution = task_gateway.admit_operation_run(store.get_run(created["run"]["id"])).context
+        self.contexts.append(execution)
+        entered, finish = threading.Event(), threading.Event()
+        callback_count = []
+        def callback():
+            callback_count.append(1)
+            entered.set()
+            self.assertTrue(finish.wait(5))
+            context = task_gateway.OperationHandlerContext(execution.claimed_run, execution_id=execution.execution_id)
+            context.finish(status="cancelled")
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(task_gateway.execute_admitted, execution, callback)
+            try:
+                self.assertTrue(entered.wait(3))
+                store.request_run_cancel(execution.claimed_run["id"])
+                with self.assertRaises(task_gateway.OperationSettlementConflict):
+                    task_gateway.rollback_admission(execution, reason="submission_cancelled")
+                self.assertEqual(1, concurrency.get_concurrency_status()["global"]["occupied"])
+                self.assertFalse(concurrency.release_execution(execution))
+                self.assertIsNone(settlement.responsibility(execution).intent)
+            finally:
+                finish.set()
+            future.result(timeout=5)
+        self._await_permit_cleanup()
+        self.assertEqual([1], callback_count)
+        self.assertEqual("cancelled", store.get_run(execution.claimed_run["id"])["status"])
+        with postgres.connect() as conn, conn.cursor() as cur:
+            cur.execute(f"SELECT count(*),min(transition_kind) FROM {operation_common._table('operation_settlement_receipts')} "
+                        "WHERE permit_id=%s AND execution_id=%s", (execution.permit_id, execution.execution_id))
+            self.assertEqual((1, "terminal"), cur.fetchone())
 
     def test_delayed_runs_are_separate_from_ready_queue_and_unknown_types_are_visible(self):
         self.policy(GLOBAL_TASK_WORKERS=1)
@@ -444,11 +687,15 @@ class ExecutionPermitTests(PostgresTestCase):
                 stack.enter_context(patch.object(manual_sync, "_handle", side_effect=handler))
                 for target in stop_targets:
                     stack.enter_context(patch(target, return_value={}))
+                service_sync_worker = stack.enter_context(
+                    patch("core.email.email_butler.service_facts.start_worker")
+                )
                 stack.enter_context(patch.object(runtime.sms_provider, "start_cancel_worker"))
                 stack.enter_context(patch.object(runtime.operation_task_store, "start_projection_worker"))
                 stack.enter_context(patch.object(runtime.account_task_store, "start_dependency_dispatcher"))
                 stack.enter_context(patch.object(runtime.codex_operation_service, "resume_queued", return_value=0))
                 self.assertTrue(runtime.start_runtime())
+                service_sync_worker.assert_called_once_with()
                 deadline = time.monotonic() + 8
                 while time.monotonic() < deadline:
                     states = [store.get_run(task["run"]["id"])["status"] for task in tasks]
@@ -591,6 +838,7 @@ class ExecutionPermitTests(PostgresTestCase):
         submit.assert_not_called()
         self.assertEqual(["fixture-codex@example.test"], seen)
         self.assertEqual("success", db.get_job(job["id"])["status"])
+        self._await_permit_cleanup()
         self.assertEqual(0, concurrency.get_concurrency_status()["global"]["occupied"])
 
     def test_inline_codex_cannot_use_another_accounts_execution_permit(self):
@@ -622,7 +870,7 @@ class ExecutionPermitTests(PostgresTestCase):
                 conn.execute("SET application_name TO 'permit-dependency-lock-test'")
                 yield conn
 
-        with ThreadPoolExecutor(max_workers=1) as pool, patch.object(store, "_connect", callback_connection):
+        with ThreadPoolExecutor(max_workers=1) as pool, patch.object(operation_common, "_connect", callback_connection):
             with postgres.connect() as conn, conn.cursor() as cur:
                 cur.execute(f"SELECT id FROM {postgres.qualified('operation_runs')} WHERE id=%s FOR UPDATE", (run_id,))
                 result = pool.submit(store.apply_task_dependency_result,
@@ -661,13 +909,13 @@ class ExecutionPermitTests(PostgresTestCase):
         children = [store.create_runtime_task(task_type="token_refresh", account_id=None, email="", data={},
                                              parent_task_id=parent["id"]) for _ in range(2)]
         barrier = threading.Barrier(2)
-        original = store._reconcile_parent_task_cur
+        original = operation_runtime._reconcile_parent_task_cur
 
         def together(cur, parent_task_id, **kwargs):
             barrier.wait(timeout=5)
             return original(cur, parent_task_id, **kwargs)
 
-        with patch.object(store, "_reconcile_parent_task_cur", side_effect=together), ThreadPoolExecutor(max_workers=2) as pool:
+        with patch.object(operation_runtime, "_reconcile_parent_task_cur", side_effect=together), ThreadPoolExecutor(max_workers=2) as pool:
             results = [pool.submit(store.finish_run, child["run"]["id"], status="success") for child in children]
             for result in results:
                 result.result(timeout=10)

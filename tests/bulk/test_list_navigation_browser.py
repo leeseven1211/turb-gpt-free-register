@@ -39,8 +39,8 @@ def blocked_report_asset(request):
 @pytest.fixture
 def bulk_browser(request, release_delayed_response, blocked_report_asset):
     api = pytest.importorskip('playwright.sync_api')
-    for asset in ('bulk.js', 'bulk.css'):
-        assert (WEBUI / 'static' / 'bulk' / asset).is_file(), f'缺少批次列表构建产物 {asset}'
+    for asset in ('bulk.js', 'task-center.css'):
+        assert (WEBUI / 'static' / 'task-center' / asset).is_file(), f'缺少批次页面构建产物 {asset}'
     app = Flask(__name__, static_folder=str(WEBUI / 'static'), template_folder=str(WEBUI / 'templates'))
     calls = []
     unexpected = []
@@ -126,6 +126,17 @@ def bulk_browser(request, release_delayed_response, blocked_report_asset):
             page = context.new_page()
             page.set_default_timeout(5000)
             page.clock.install()
+            # API 客户端挂载时会捕获 fetch，因此在入口加载前安装迟到响应替身。
+            page.add_init_script("""(() => {
+                const originalFetch = window.fetch;
+                window.fetch = (url, options) => {
+                    const target = new URL(url, location.href);
+                    if (target.pathname === '/api/bulk/batches' && target.searchParams.get('q') === '滞后响应') {
+                        return originalFetch(url, {...options, signal: undefined});
+                    }
+                    return originalFetch(url, options);
+                };
+            })();""")
             page.on('pageerror', lambda error: unexpected.append(('pageerror', str(error))))
 
             def check_asset(response):
@@ -166,7 +177,7 @@ def list_query(page):
 @pytest.mark.parametrize('bulk_browser', [f'#bulk/detail?batch_id={BATCH_ID}'], indirect=True)
 @pytest.mark.parametrize('blocked_report_asset', [
     pytest.param('/static/js/pages/bulk/report.js', id='vue-without-legacy-renderer'),
-    pytest.param('/static/bulk/bulk.js', id='legacy-after-module-import-fails'),
+    pytest.param('/static/task-center/bulk.js', id='readonly-after-module-import-fails'),
 ], indirect=True)
 def test_direct_detail_report_with_each_renderer(bulk_browser, blocked_report_asset):
     page, expect, calls = bulk_browser
@@ -216,7 +227,7 @@ def test_column_filters_and_cursor_navigation(bulk_browser):
     expect(listing.get_by_role('button', name=SECOND_NAME)).to_be_visible()
     filtered = {
         'page_size': ['20'], 'q': ['合成'], 'operation_key[]': ['plan_check'], 'control_state[]': ['ended'],
-        'created_from': ['2026-01-01T00:00:00.000Z'], 'created_to': ['2026-01-31T23:59:59.000Z'],
+        'created_from': ['2026-01-01T00:00:00.000Z'], 'created_before': ['2026-02-01T00:00:00.000Z'],
     }
     assert ('bulk/batches', dict(filtered, cursor=[CURSOR])) in calls
     assert list_query(page)['cursor'] == [CURSOR]
@@ -238,14 +249,16 @@ def test_legacy_routes_history_and_tab_visibility(bulk_browser):
     row = listing.locator(f'tr[data-bulk-row="{BATCH_ID}"]')
     search(page, '合成')
     row.get_by_role('button', name=FIRST_NAME).click()
-    expect(page.locator('[data-bulk-title]')).to_have_text(FIRST_NAME)
+    expect(page.locator('.bulk-detail-page-heading h2')).to_have_text(FIRST_NAME)
     assert urlsplit(page.url).fragment == f'bulk/detail?batch_id={BATCH_ID}'
     page.go_back()
     expect(row).to_be_visible()
     assert list_query(page)['q'] == ['合成']
     row.get_by_role('button', name='失败 1').click()
-    failed = page.locator('[data-bulk-stat="failed"]')
-    expect(failed).to_have_attribute('aria-pressed', 'true')
+    expect(page.locator('[data-bulk-target-count-row] .list-filter-summary')).to_contain_text('失败')
+    page.get_by_role('button', name='筛选结果状态').click()
+    expect(page.get_by_role('radio', name='失败 1', exact=True)).to_be_checked()
+    page.keyboard.press('Escape')
     expect(page.locator('[data-bulk-plan-report] h3')).to_have_text('查套餐完成报告')
     assert (f'bulk/batches/{BATCH_ID}/targets',
             {'view': ['current'], 'page_size': ['50'], 'state[]': ['failed']}) in calls
@@ -289,17 +302,7 @@ def test_direct_link_and_late_response_after_navigation(bulk_browser, release_de
     first = listing.get_by_role('button', name=FIRST_NAME)
     expect(first).to_be_visible()
     assert list_query(page) == {'q': ['合成']}
-    # Let just this synthetic response finish after navigation, even when the caller aborts.
-    page.evaluate("""() => {
-        const originalFetch = window.fetch;
-        window.fetch = (url, options) => {
-            const target = new URL(url, location.href);
-            if (target.pathname === '/api/bulk/batches' && target.searchParams.get('q') === '滞后响应') {
-                return originalFetch(url, {...options, signal: undefined});
-            }
-            return originalFetch(url, options);
-        };
-    }""")
+    # 入口前安装的替身仅让合成慢响应在取消后继续完成。
     with page.expect_request(lambda req: parse_qs(urlsplit(req.url).query).get('q') == ['滞后响应']):
         search(page, '滞后响应')
     expect(listing).to_have_attribute('aria-busy', 'true')

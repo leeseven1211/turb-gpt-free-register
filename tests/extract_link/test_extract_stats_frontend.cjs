@@ -1,78 +1,67 @@
-const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
-const test = require('node:test');
-const vm = require('node:vm');
-const {createVueHarness} = require('../frontend_vue_loader.cjs');
-
-const harness = createVueHarness();
-const stats = harness.load('src/features/extractStats/statistics.ts');
-const Page = harness.load('src/features/extractStats/ExtractStatsPage.vue').default;
-const root = path.join(__dirname, '../..');
-test.after(() => harness.close());
-
-test('统计的零值、空分母和缺失耗时分别显示', () => {
-  for (const value of [null, undefined, '', -1, 2, '无结果']) assert.equal(stats.rate(value), '—');
-  assert.equal(stats.rate(0), '0.0%');
-  assert.equal(stats.rate(1 / 3), '33.3%');
-  assert.equal(stats.duration(null), '—');
-  assert.equal(stats.duration(0), '0 秒');
-  assert.equal(stats.duration(125), '2 分 5 秒');
-  assert.equal(stats.duration(3720), '1 小时 2 分');
-  assert.equal(stats.updatedAt('无时间'), '统计已更新');
+// Baseline scenarios now run the real Vue analytics page/owner; no legacy string renderer is loaded.
+const assert=require('node:assert/strict');
+const test=require('node:test');
+const {createVueHarness}=require('../frontend_vue_loader.cjs');
+const harness=createVueHarness();
+const Page=harness.load('src/features/extract/ExtractStats.vue').default;
+const {createExtractStats}=harness.load('src/features/extract/useExtractStats.ts');
+const {rate,duration}=harness.load('src/features/extract/presentation.ts');
+const owners=[];
+test.afterEach(()=>{owners.splice(0).forEach(x=>x.destroy());harness.cleanup();});
+test.after(()=>harness.close());
+const flush=async()=>{await new Promise(r=>setImmediate(r));await harness.nextTick();};
+function deferred(){let resolve,reject;const promise=new Promise((a,b)=>{resolve=a;reject=b;});return{resolve,reject,promise};}
+function fixture(overrides={}){return {ok:true,date_from:'2026-10-14',date_to:'2026-11-12',totals:{total:100,extracted:60,paid:30,plus_confirmed:25,failed:15,processing:25,awaiting_payment:12,needs_review:3,extraction_failed:10,payment_failed:5,extraction_rate:60/70,payment_rate:30/35,avg_seconds:125},daily:[{date:'2026-11-11',total:60,extracted:40,paid:20,plus_confirmed:18},{date:'2026-11-12',total:40,extracted:20,paid:10,plus_confirmed:7}],providers:[{provider_id:'anguang',total:100,extracted:60,paid:30,plus_confirmed:25,failed:15,processing:25,extraction_failed:10,payment_failed:5,extraction_rate:60/70,payment_rate:30/35,avg_seconds:125}],failures:[{code:'payment_timeout',label:'支付超时',count:5},{code:'preflight_failed',label:'预检失败',count:10}],modes:[{mode:'auto_payment',total:100,extracted:60,paid:30,plus_confirmed:25,failed:15}],current:{processing:35,awaiting_payment:15,needs_review:4},generated_at:'2026-11-12T04:20:00Z',...overrides};}
+function page(value=fixture()){return harness.mount(Page,{props:{deps:{visible:true,api:{analytics:async()=>value}}}});}
+function owner(analytics){const value=createExtractStats({api:{analytics},visible:true});owners.push(value);return value;}
+test('空分母和缺失耗时显示破折号，零成功率保持为0.0%',()=>{for(const value of [null,undefined,'',-1,2,'无结果'])assert.equal(rate(value),'—');assert.equal(rate(0),'0.0%');assert.equal(rate(1/3),'33.3%');assert.equal(duration(null),'—');assert.equal(duration(0),'0 秒');assert.equal(duration(125),'2 分 5 秒');});
+test('成功率明确阶段分母，支付成功与Plus确认以及当前全部日期分别展示',async()=>{const w=page();await flush();for(const text of ['已出链 /（已出链 + 提链失败）','已支付 /（已支付 + 支付失败）','出链 60 · 失败 10','支付 30 · 失败 5','当前全部平台，全部日期','Plus 已确认','最新成功运行的总耗时','今日任务按北京时间创建日归属'])assert.ok(w.text().includes(text),text);assert.deepEqual(w.findAll('.es-today dd').map(x=>x.text()),['20','7','15','4']);});
+test('空区间的今日与当前指标保持为零',async()=>{const w=page(fixture({daily:[],current:{}}));await flush();assert.deepEqual(w.findAll('.es-today dd').map(x=>x.text()),['0','0','0','0']);});
+test('趋势含可访问说明及全部每日数据，空区间不渲染无意义曲线',async()=>{const w=page();await flush();assert.ok(w.get('svg[role="img"]').attributes('aria-label'));assert.match(w.get('[aria-label="每日趋势数据"]').text(),/2026-11-12/);assert.match(w.text(),/Plus 已确认/);assert.doesNotMatch(w.html(),/NaN|Infinity/);const empty=page(fixture({daily:[]}));await flush();assert.equal(empty.find('svg').exists(),false);assert.match(empty.text(),/没有提链任务/);});
+test('错误分类按数量排序并转义平台、日期、模式和错误内容',async()=>{const w=page(fixture({failures:[{code:'<script>x</script>',label:'<img src=x onerror=alert(1)>',count:2},{code:'first',label:'最多',count:8}],modes:[{mode:'<svg onload=x>',total:1}]}));await flush();assert.match(w.findAll('.es-failures li')[0].text(),/最多/);assert.equal(w.find('script').exists(),false);assert.equal(w.find('img').exists(),false);assert.match(w.text(),/<img src=x onerror/);});
+test('初次加载显示反馈，过滤平台进入请求且完成后更新控件',async()=>{const pending=deferred(),calls=[];const w=harness.mount(Page,{props:{deps:{visible:true,api:{analytics:(...args)=>(calls.push(args),pending.promise)}}}});await harness.nextTick();assert.match(w.text(),/正在汇总/);pending.resolve(fixture());await flush();await w.get('[data-extract-stats-provider]').setValue('anguang');await w.get('[data-extract-stats-days="7"]').trigger('click');await flush();assert.equal(calls.at(-1)[0],7);assert.equal(calls.at(-1)[1],'anguang');assert.equal(w.get('[data-extract-stats-days="7"]').attributes('aria-pressed'),'true');});
+test('较晚返回的旧时间范围响应不覆盖当前结果或结束当前加载',async()=>{const old=deferred(),next=deferred();let n=0;const s=owner(()=>n++?next.promise:old.promise);const a=s.load();s.state.days=7;const b=s.load();old.resolve(fixture({totals:{total:30}}));await a;assert.equal(s.state.data,null);assert.equal(s.state.loading,true);next.resolve(fixture({totals:{total:7}}));await b;assert.equal(s.state.data.totals.total,7);});
+test('同范围刷新失败保留上次数据，换范围失败不会显示旧数据，重试可恢复',async()=>{let fail=false;const s=owner(async()=>{if(fail)throw Error('offline');return fixture();});await s.load();fail=true;await s.load();assert.equal(s.state.data.totals.total,100);s.state.days=7;await s.load();assert.equal(s.state.data,null);assert.equal(s.state.error,'offline');fail=false;await s.load();assert.equal(s.state.data.totals.total,100);});
+test('不完整或显式失败的响应进入可重试错误状态',async()=>{const {createExtractApi}=harness.load('src/api/extract.ts');for(const value of [{ok:false,error:'unavailable'},{ok:true,totals:{},daily:null}]){const api=createExtractApi({statsDataSource:async()=>value});await assert.rejects(()=>api.analytics(30,''));}const w=harness.mount(Page,{props:{deps:{visible:true,api:{analytics:async()=>{throw Error('unavailable');}}}}});await flush();assert.match(w.text(),/未取得所选范围/);assert.equal(w.get('[data-extract-stats-retry]').text(),'重试');});
+test('筛选失败后切回上一次成功范围可恢复快照，平台和模式名称始终为纯文本', async () => {
+  let reads = 0;
+  const value = fixture({date_from:'<img src=x>',providers:[{provider_id:'<svg onload=x>',total:3},{provider_id:'lumen',total:0}],modes:[{mode:'<script>x</script>',total:3}]});
+  const w = harness.mount(Page,{props:{deps:{visible:true,api:{analytics:async () => {if (reads++) throw Error('<合成错误>'); return value;}}}}});
+  await flush();
+  assert.equal(w.find('script,img,svg[onload]').exists(), false);
+  assert.match(w.text(), /<svg onload=x>/);
+  assert.match(w.text(), /<script>x<\/script>/);
+  await w.get('[data-extract-stats-days="7"]').trigger('click'); await flush();
+  assert.equal(w.find('.es-scope').exists(), false);
+  await w.get('[data-extract-stats-days="30"]').trigger('click'); await flush();
+  assert.match(w.get('.es-scope').text(), /<img src=x>/);
+  assert.match(w.text(), /<合成错误>/);
+  assert.equal(duration(3720), '1 小时 2 分');
 });
-
-test('筛选失败后切回上一次成功范围可恢复快照，平台和模式名称始终为纯文本', async t => {
-  const snapshot = {ok:true, totals:{total:3}, daily:[], date_from:'<img src=x>',
-    providers:[{provider_id:'<svg onload=x>', total:3},{provider_id:'lumen'}], modes:[{mode:'<script>x</script>', total:3}]};
-  const reads = [];
-  t.mock.method(globalThis, 'fetch', async url => {
-    reads.push(url);
-    return reads.length === 1 ? Response.json(snapshot) : Response.json({ok:false, error:'<合成错误>'}, {status:503});
-  });
-  Object.defineProperty(harness.document,'hidden',{configurable:true,value:false});
-  const wrapper = harness.mount(Page, {props:{deps:{visible:false}}});
-  t.after(() => harness.cleanup());
-  wrapper.vm.setVisible(true);
-  await wrapper.vm.load();
-  assert.equal(wrapper.get('.es-provider-table tbody th').text(), '<svg onload=x>');
-  assert.equal(wrapper.get('.es-modes h3').text(), '<script>x</script>');
-  assert.equal(wrapper.get('.es-scope span').text(), '<img src=x> — —');
-  assert.equal(wrapper.find('script,img,svg[onload]').exists(), false);
-  assert.equal(wrapper.findAll('[data-extract-stats-provider] option').filter(n=>n.text()==='Lumen Flow').length, 1);
-  await wrapper.get('[data-extract-stats-days="7"]').trigger('click');
-  await wrapper.vm.load();
-  assert.equal(wrapper.find('.es-scope').exists(), false);
-  await wrapper.get('[data-extract-stats-days="30"]').trigger('click');
-  await wrapper.vm.load();
-  assert.match(wrapper.get('[role=alert]').text(), /保留上次统计。<合成错误>/);
-  assert.match(wrapper.get('.es-scope').text(), /<img src=x>/);
-  assert.deepEqual(reads, [30,7,30].map(days => `/api/extract-workbench/analytics?days=${days}`));
-});
-
 test('侧栏桥接仅在统计页可见时挂载新版资源，并按需加载更新', async () => {
+  const fs = require('node:fs'), path = require('node:path'), vm = require('node:vm');
+  const root = path.join(__dirname, '../..');
   const template = fs.readFileSync(path.join(root, 'webui/templates/partials/extract_stats.html'), 'utf8');
-  assert.match(template, /filename='extractStats\/extractStats.js', v=asset_version/);
-  assert.match(template, /filename='extractStats\/extractStats.css', v=asset_version/);
-  const urls = {moduleUrl:'/static/extractStats/extractStats.js?v=fixture',styleUrl:'/static/extractStats/extractStats.css?v=fixture'};
+  assert.match(template, /filename='task-center\/extract\.js', v=asset_version/);
+  assert.match(template, /filename='task-center\/task-center\.css', v=asset_version/);
+  const urls = {moduleUrl:'/static/task-center/extract.js?v=fixture',styleUrl:'/static/task-center/task-center.css?v=fixture'};
   let hidden = true;
-  const node = {dataset:urls}, styles = [], calls = [], imports = [];
-  const context = {document:{getElementById: id => id === 'extractStatsRoot' ? node : id === 'tab-extract-stats' ? {classList:{contains:()=>hidden}} : null,
-    head:{append:el=>styles.push(el.href)}, createElement:()=>({})}, markViewReady: tab=>calls.push(tab), showToast: msg=>assert.fail(msg),
-    loadModule:async url => {imports.push(url); return {mountExtractStats(el, deps){
-      assert.equal(el, node); assert.equal(deps.visible, false);
-      deps.onReady(); return {setVisible:v=>calls.push(v),load:()=>calls.push('load')};
+  const node = {dataset:urls}, styles = [], calls = [], imports = [], elements = new Map();
+  const context = {document:{getElementById:id => id === 'extractStatsRoot' ? node : id === 'tab-extract-stats' ? {classList:{contains:()=>hidden}} : elements.get(id),
+    head:{append:el=>{styles.push(el.href);elements.set(el.id,el);}},createElement:()=>({})},
+    markViewReady:tab=>calls.push(tab),showToast:msg=>assert.fail(msg),
+    loadModule:async url=>{imports.push(url);return {mountExtractStats(el,deps){
+      assert.equal(el,node);assert.equal(deps.visible,false);deps.onReady();
+      return {setVisible:v=>calls.push(v),load:()=>calls.push('load')};
     }};}};
   context.window = context;
   const js = path.join(root,'webui/static/js');
   vm.runInNewContext(fs.readFileSync(path.join(js,'shared/page-bridge.js'),'utf8').replace('import(node.dataset.moduleUrl)','loadModule(node.dataset.moduleUrl)'),context);
   vm.runInNewContext(fs.readFileSync(path.join(js,'pages/extract_link/stats.js'),'utf8'),context);
-  const bridge = context.ExtractStats;
-  await bridge.setVisible(false);
-  await context.loadExtractStats();
-  assert.deepEqual(imports, []);
-  hidden=false; await bridge.setVisible(true); await context.loadExtractStats();
-  hidden=true; await bridge.setVisible(false); await context.loadExtractStats();
-  assert.deepEqual(imports,[urls.moduleUrl]); assert.deepEqual(styles,[urls.styleUrl]);
+  const bridge = context.ExtractStatsPage;
+  await bridge.setVisible(false);await context.loadExtractStats();assert.deepEqual(imports,[]);
+  hidden=false;await bridge.setVisible(true);await context.loadExtractStats();
+  hidden=true;await bridge.setVisible(false);await context.loadExtractStats();
+  assert.deepEqual(imports,[urls.moduleUrl]);assert.deepEqual(styles,[urls.styleUrl]);
   assert.deepEqual(calls,['extract-stats',true,'load',false]);
 });

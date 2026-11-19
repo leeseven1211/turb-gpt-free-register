@@ -42,14 +42,14 @@ class EmailDerivationAvailabilityTests(PostgresTestCase):
     def seed_stock(self, count=3, request_id="availability-stock", **kwargs):
         return seed_legacy_inventory("icloud_hide", count, request_id, inbox_profile_id=self.profile["id"], **kwargs)
 
-    def test_bridge_readiness_uses_butler_even_without_original_or_child_stock(self):
+    def test_bridge_readiness_requires_imported_local_stock(self):
         with patch.multiple(cfg, ICLOUD_HME_BUTLER_BRIDGE_ENABLED=True,
             EMAIL_BUTLER_API_BASE="https://butler.example.test/v1", EMAIL_BUTLER_API_KEY="fixture-key",
             ICLOUD_HME_API_BASE="", ICLOUD_HME_FORWARD_IMAP_EMAIL="", ICLOUD_HME_FORWARD_IMAP_PASSWORD=""), patch(
             "core.db.icloud_hide_email_pool_summary", side_effect=AssertionError("桥接不读本地库存")
         ), patch("core.email.icloud_hide.client.sync_aliases", side_effect=AssertionError("桥接不访问sidecar")):
             readiness = feature_availability.email_source_availability()["icloud_hide"]
-        self.assertTrue(readiness["enabled"], readiness)
+        self.assertFalse(readiness["enabled"], readiness)
         self.assertEqual(store.list_allocations(), [])
 
     def test_fixed_history_route_restores_when_current_sidecar_and_global_imap_are_empty(self):
@@ -178,8 +178,8 @@ class EmailDerivationAvailabilityTests(PostgresTestCase):
                 ICLOUD_HME_BUTLER_BRIDGE_ENABLED=True, ICLOUD_HME_API_BASE="",
                 EMAIL_BUTLER_API_BASE="https://butler.example.test/v1", EMAIL_BUTLER_API_KEY="fixture-key"):
                 readiness = feature_availability.email_source_availability()
-                self.assertTrue(readiness["email_butler"]["enabled"])
-                self.assertTrue(readiness["icloud_hide"]["enabled"])
+                self.assertFalse(readiness["email_butler"]["enabled"])
+                self.assertFalse(readiness["icloud_hide"]["enabled"])
                 with self.assertRaisesRegex(service.EmailDerivationError, "Butler"):
                     service.acquire_address("outlook", owner_kind="registration_root", owner_id="new", acquisition_id="new")
 
@@ -214,7 +214,7 @@ class EmailDerivationAvailabilityTests(PostgresTestCase):
         self.assertEqual(list_rows.call_args.kwargs["limit"], 2)
         self.assertEqual(service.list_allocations("icloud_hide", page=4, page_size=2)["items"], [])
 
-    def test_jobs_bridge_submission_has_no_local_capacity_or_sidecar_dependency(self):
+    def test_jobs_bridge_submission_warns_on_missing_local_inventory_without_sidecar(self):
         from webui.app import create_app
         self.seed_stock()
         client = create_app(auth_code="test-auth").test_client()
@@ -229,5 +229,5 @@ class EmailDerivationAvailabilityTests(PostgresTestCase):
                     response = client.post("/api/jobs", headers={"X-Auth-Code": "test-auth"},
                         json={"count": count, "workers": 1, "email_source": "icloud_hide"})
                     self.assertEqual(response.status_code, 200, response.get_json())
-                    self.assertEqual(response.get_json()["warning"], "")
+                    self.assertIn(f"本地可用邮箱仅 0 个，少于任务数 {count}", response.get_json()["warning"])
                     submit.assert_called_with(count=count, email_source="icloud_hide", workers=1)

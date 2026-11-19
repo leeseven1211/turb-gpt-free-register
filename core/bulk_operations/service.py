@@ -246,24 +246,52 @@ def wake():
     _WAKE.set()
 
 
+def _settle_controls(store) -> int:
+    from core.runtime.execution_access import execution_owner_valid
+    if not execution_owner_valid():
+        return 0
+    work = 0
+    for item in store.claim_work("control", _OWNER, limit=1):
+        if not execution_owner_valid():
+            break
+        store.settle_control(item["id"], owner_id=item.get("owner_id"), fence=item.get("fence"))
+        work += 1
+    return work
+
+
 def run_once(kind: str) -> int:
     """单轮有界协调，测试/恢复均可调用，不发出任何领域网络请求。"""
+    from core.runtime.execution_access import execution_allowed, execution_owner_valid
+    if not execution_owner_valid():
+        return 0
+    if kind == "expand" and not execution_allowed():
+        return 0
     store = _store()
     work = 0
     if kind == "selection":
+        if not execution_allowed():
+            return _settle_controls(store)
         from core.bulk_operations.execution import repair_pending_handoffs
         work += repair_pending_handoffs(limit=50)
+        if not execution_allowed():
+            return work + _settle_controls(store)
         for item in store.claim_work("selection", _OWNER, limit=1):
+            if not execution_allowed():
+                break
             try:
                 saved = item.get("query_spec") or {}
                 spec = saved.get("query", saved) if "source" in saved else saved
                 where, params = compile_query(spec) if spec else ("TRUE", [])
-                from core.bulk_operations import adapters
-                settings = item.get("config_snapshot") or {}
-                def preflight(targets, conn):
-                    return adapters.preflight_many(targets, operation_key=item["action_key"], settings=settings, conn=conn)
+                if item["action_key"] == "plan_check":
+                    preflight_options = {"preflight_policy": "plan_check_db_v1"}
+                else:
+                    from core.bulk_operations import adapters
+                    settings = item.get("config_snapshot") or {}
+                    def preflight(targets, conn):
+                        return adapters.preflight_many(targets, operation_key=item["action_key"], settings=settings, conn=conn)
+                    preflight_options = {"preflight": preflight, "preflight_identity_only": True}
                 store.freeze_selection(item["id"], where_sql=where, params=params,
-                                       owner_id=item.get("owner_id"), fence=item.get("fence"), preflight=preflight)
+                                       owner_id=item.get("owner_id"), fence=item.get("fence"), **preflight_options)
             except AccountQueryError:
                 store.fail_selection(item["id"], error_code="query_invalid", owner_id=item.get("owner_id"), fence=item.get("fence"))
                 raise
@@ -272,7 +300,11 @@ def run_once(kind: str) -> int:
                     store.fail_selection(item["id"], error_code=exc.code, owner_id=item.get("owner_id"), fence=item.get("fence"))
                 raise
             work += 1
+        if not execution_allowed():
+            return work + _settle_controls(store)
         for item in store.claim_work("round", _OWNER, limit=1):
+            if not execution_allowed():
+                break
             try:
                 store.freeze_round(item["id"], owner_id=item.get("owner_id"), fence=item.get("fence"))
             except store.BulkError as exc:
@@ -280,16 +312,16 @@ def run_once(kind: str) -> int:
                     store.fail_round(item["id"], error_code=exc.code, owner_id=item.get("owner_id"), fence=item.get("fence"))
                 raise
             work += 1
-        for item in store.claim_work("control", _OWNER, limit=1):
-            store.settle_control(item["id"], owner_id=item.get("owner_id"), fence=item.get("fence"))
-            work += 1
+        work += _settle_controls(store)
         global _LAST_MAINTENANCE
-        if time.monotonic() - _LAST_MAINTENANCE > 30:
+        if execution_allowed() and time.monotonic() - _LAST_MAINTENANCE > 30:
             store.expire_selections(limit=100)
             _LAST_MAINTENANCE = time.monotonic()
     elif kind == "expand":
         from core.bulk_operations.adapters import submit_chunk
         for batch in store.list_active_batches(limit=20):
+            if not execution_allowed():
+                break
             result = store.process_batch(batch.get("batch_id", batch.get("id")), submit_chunk, limit=100)
             work += sum(int(result.get(key, 0)) for key in ("submitted", "not_executed", "materialized"))
     elif kind == "project":
@@ -319,6 +351,9 @@ def _loop(kind: str):
 
 
 def start_workers() -> bool:
+    from core.runtime.execution_access import component_start_allowed
+    if not component_start_allowed():
+        return False
     with _LOCK:
         _store().init()
         _STOP.clear()
@@ -333,12 +368,17 @@ def start_workers() -> bool:
     return started
 
 
-def stop_workers(timeout: float = 3.0):
-    _STOP.set()
-    _WAKE.set()
-    deadline = time.monotonic() + timeout
-    for thread in tuple(_THREADS.values()):
-        thread.join(max(0, deadline - time.monotonic()))
+def stop_workers(timeout: float = 3.0) -> bool:
+    deadline = time.monotonic() + max(0.0, float(timeout))
+    with _LOCK:
+        _STOP.set()
+        _WAKE.set()
+        threads = tuple(_THREADS.values())
+    for thread in threads:
+        if thread is not threading.current_thread():
+            thread.join(max(0.0, deadline - time.monotonic()))
+    with _LOCK:
+        return not any(thread.is_alive() for thread in _THREADS.values())
 
 
 def worker_status() -> dict:

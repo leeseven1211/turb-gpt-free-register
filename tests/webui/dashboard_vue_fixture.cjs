@@ -1,6 +1,7 @@
 const {createVueHarness}=require('../frontend_vue_loader.cjs');
 const h=createVueHarness();
 const Dashboard=h.load('src/features/dashboard/DashboardPage.vue').default;
+const Registration=h.load('src/features/registration/RegistrationPage.vue').default;
 const model=h.load('src/features/dashboard/useDashboard.ts');
 const settle=async()=>{for(let i=0;i<12;i++)await Promise.resolve();await h.nextTick();};
 const supply=()=>({scope:'local_pool',status:'known',total:20,available:12,used:6,failed:2,sources:['outlook','generic_api','cloudflare_domain','icloud_hide','email_butler'].map((source,index)=>({source,label:source,kind:'local_pool',status:'known',enabled:false,total:index===3?20:0,available:index===3?12:0,used:index===3?6:0,failed:index===3?2:0}))});
@@ -18,4 +19,8 @@ async function mountDashboard(data=dashboard(),capabilities={},preferences){
  const wrapper=h.mount(Dashboard,{props:{api,deps:{visible:true,onReady:()=>ready.push('overview'),notify:value=>toasts.push(value),onNavigate:value=>navigations.push(value),onConfig:value=>configs.push(value)}}});
  await settle();return {wrapper,calls,navigations,configs,ready,toasts,api};
 }
-module.exports={h,model,settle,supply,dashboard,mountDashboard};
+async function mountRegistration(value={accounts:24,email_supply:supply()}){
+ prepare();const calls=[];const api={metadata:async()=>({sources:[],registration_drivers:[]}),summary:async()=>{calls.push('/api/summary');if(value instanceof Error)throw value;return value;},jobs:async()=>({items:[],total:0}),create:async()=>({}),action:async()=>({}),log:async()=>({}),debug:async()=>({}),diagnostics:async()=>({}),compare:async()=>({})};
+ const wrapper=h.mount(Registration,{props:{deps:{api,visible:false}}});wrapper.vm.setVisible(true);await settle();return {wrapper,calls,api};
+}
+module.exports={h,model,settle,supply,dashboard,mountDashboard,mountRegistration};

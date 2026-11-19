@@ -58,7 +58,25 @@ SECRET_ENV_KEYS: dict[str, str] = {
 
 
 def env_path() -> Path:
-    return _ENV_PATH
+    """外置 bootstrap 只认显式绝对路径，锁内始终使用同一文件。"""
+    locked_path = getattr(_ENV_WRITE_DEPTH, "path", None)
+    if locked_path is not None:
+        return locked_path
+    raw = str(os.environ.get("TURB_BOOTSTRAP_ENV_FILE") or "").strip()
+    if not raw:
+        return _ENV_PATH
+    path = Path(raw)
+    if not path.is_absolute():
+        raise ValueError("bootstrap_env_file_absolute_required")
+    path = path.resolve()
+    if not path.is_file():
+        raise ValueError("bootstrap_env_file_missing")
+    try:
+        with path.open("rb"):
+            pass
+    except OSError:
+        raise ValueError("bootstrap_env_file_unreadable") from None
+    return path
 
 
 def dotenv_loading_disabled() -> bool:
@@ -71,13 +89,18 @@ def dotenv_loading_disabled() -> bool:
 def load_env(*, override: bool = False) -> Path:
     """先加载 bootstrap，再延迟读取数据库；激活后不加载文件运行值。"""
     global _LOADED
+    path = env_path()
     from config import runtime
+    if runtime.has_pinned_values():
+        # Observer reload must preserve the process's startup identity and key.
+        runtime.load_values(force=True)
+        return path
     # 测试 launcher 会显式设置此标志，必须在 python-dotenv 导入和内置
     # parser 分支之前短路，确保任何依赖版本下都不会读入工作区 .env。
     if dotenv_loading_disabled():
         _LOADED = True
         runtime.load_values(force=override)
-        return _ENV_PATH
+        return path
 
     # 连接数据库前仅准备启动身份，防止旧运行文件进入激活后的进程环境。
     for key, value in read_env_file(override=override).items():
@@ -86,7 +109,7 @@ def load_env(*, override: bool = False) -> Path:
     _LOADED = True  # 仓库连接会调用 ensure_loaded，避免递归初始化。
     try:
         if runtime.load_values(force=override) is not None:
-            return _ENV_PATH
+            return path
     except BaseException:
         _LOADED = False
         raise
@@ -94,20 +117,20 @@ def load_env(*, override: bool = False) -> Path:
     try:
         from dotenv import load_dotenv
     except ImportError:  # pragma: no cover
-        if _ENV_PATH.exists():
+        if path.exists():
             for key, value in read_env_file().items():
                 if override or key not in os.environ:
                     os.environ[key] = value
         _LOADED = True
-        return _ENV_PATH
+        return path
 
-    if _ENV_PATH.exists():
-        load_dotenv(dotenv_path=_ENV_PATH, override=override)
+    if path.exists():
+        load_dotenv(dotenv_path=path, override=override)
     else:
         # 仍然允许系统环境变量生效
         load_dotenv(override=override)
     _LOADED = True
-    return _ENV_PATH
+    return path
 
 
 def ensure_loaded() -> None:
@@ -137,7 +160,8 @@ def _escape_env_value(value: str) -> str:
 
 def read_env_file(*, override: bool = False) -> dict[str, str]:
     """使用与 load_dotenv 相同的引号、插值和注释规则解析物理文件。"""
-    if not _ENV_PATH.exists():
+    path = env_path()
+    if not path.exists():
         return {}
     try:
         from dotenv.main import DotEnv
@@ -145,10 +169,10 @@ def read_env_file(*, override: bool = False) -> dict[str, str]:
         pass
     else:
         return {key: value for key, value in DotEnv(
-            dotenv_path=_ENV_PATH, encoding="utf-8", interpolate=True, override=override,
+            dotenv_path=path, encoding="utf-8", interpolate=True, override=override,
         ).dict().items() if value is not None}
     out: dict[str, str] = {}
-    for raw in _ENV_PATH.read_text(encoding="utf-8").splitlines():
+    for raw in path.read_text(encoding="utf-8").splitlines():
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
@@ -200,7 +224,8 @@ def env_file_lock():
             finally:
                 _ENV_WRITE_DEPTH.value = depth
             return
-        lock_path = _ENV_PATH.with_name(_ENV_PATH.name + ".lock")
+        path = env_path()
+        lock_path = path.with_name(path.name + ".lock")
         descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
         try:
             try:
@@ -209,11 +234,13 @@ def env_file_lock():
                 fcntl = None
             if fcntl is not None:
                 fcntl.flock(descriptor, fcntl.LOCK_EX)
+            _ENV_WRITE_DEPTH.path = path
             _ENV_WRITE_DEPTH.value = 1
             try:
                 yield
             finally:
                 _ENV_WRITE_DEPTH.value = 0
+                _ENV_WRITE_DEPTH.path = None
                 if fcntl is not None:
                     fcntl.flock(descriptor, fcntl.LOCK_UN)
         finally:
@@ -233,9 +260,10 @@ def _write_env_values_locked(updates: dict[str, str]) -> list[str]:
     if not updates:
         return []
 
+    path = env_path()
     existing_lines: list[str] = []
-    if _ENV_PATH.exists():
-        existing_lines = _ENV_PATH.read_text(encoding="utf-8").splitlines()
+    if path.exists():
+        existing_lines = path.read_text(encoding="utf-8").splitlines()
 
     remaining = {str(k): ("" if v is None else str(v)) for k, v in updates.items()}
     written: list[str] = []
@@ -263,13 +291,13 @@ def _write_env_values_locked(updates: dict[str, str]) -> list[str]:
             written.append(key)
 
     text = "\n".join(out_lines).rstrip() + "\n"
-    tmp = _ENV_PATH.with_suffix(".env.tmp")
+    tmp = path.with_name(path.name + ".tmp")
     descriptor = os.open(tmp, os.O_CREAT | os.O_TRUNC | os.O_WRONLY, 0o600)
     with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
         if hasattr(os, "fchmod"):
             os.fchmod(stream.fileno(), 0o600)
         stream.write(text)
-    tmp.replace(_ENV_PATH)
+    tmp.replace(path)
 
     # 让当前进程立刻看到新值
     load_env(override=True)

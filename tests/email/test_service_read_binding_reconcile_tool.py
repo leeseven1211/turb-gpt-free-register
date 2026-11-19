@@ -75,6 +75,7 @@ class ReadBindingApplyTests(unittest.TestCase):
             return {'code': 200, 'results': [{'address': item['address'], 'binding_id': item['binding_id'], 'code': 200} for item in payload['items']]}
         with TemporaryDirectory() as tmp, ExitStack() as stack:
             stack.enter_context(patch.object(tool, 'dotenv_values', return_value={'DATABASE_URL': 'test-db'}))
+            stack.enter_context(patch.object(tool, 'require_source_owner', return_value=lambda: None))
             stack.enter_context(patch.object(tool.psycopg, 'connect'))
             stack.enter_context(patch.object(tool, 'collect_bindings', side_effect=collect))
             stack.enter_context(patch.object(tool, 'decrypt_routes', return_value={'KEY': 'synthetic-key'}))

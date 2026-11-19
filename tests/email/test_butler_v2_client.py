@@ -205,8 +205,14 @@ class ButlerV2ClientTests(unittest.TestCase):
         self.resolve.assert_called_once_with(ADDRESS, api_base=BASE, api_key=KEY,
             acquisition_id='acquisition-original', lease_id='lse_original', credential_ref='',
             client_id='', for_release=True)
-        release.assert_called_once_with('lse_original', api_base=BASE, api_key=KEY, reason='Turb 显式删除未使用邮箱')
-        self.assertEqual(save.call_args.kwargs['client_id'], 'client-original')
+        release.assert_called_once_with('lse_original', api_base=BASE, api_key=KEY,
+                                        reason='Turb 显式删除未确认注册成功的邮箱')
+        save.assert_called_once_with(result, api_base=BASE, credential_ref='credential-original',
+                                     client_id='client-original', acquisition_id='acquisition-original')
+        self.assertEqual(response['email'], ADDRESS)
+        self.assertEqual(response['service'], 'openai')
+        self.assertEqual(response['lease_id'], 'lse_original')
+        self.assertTrue(response['released'])
         self.assertNotIn(KEY, repr(response))
 
     def test_return_from_fixed_context_checks_original_handoff_client(self):

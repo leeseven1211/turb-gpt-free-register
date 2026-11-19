@@ -34,6 +34,7 @@ _DIRTY: set[str] = set()
 _DEADLINE: float = 0.0
 _WORKER: threading.Thread | None = None
 _STOPPING = False
+_RUNTIME_FINISHED = False
 _DEFAULT_DEBOUNCE = 5.0
 _RUN_LOCK = threading.RLock()
 
@@ -64,22 +65,30 @@ def schedule(kind: str) -> None:
     current = mode()
     if current == "off":
         return
-    if current == "sync":
-        _run_one(kind)
-        return
     global _DEADLINE
     with _CV:
         if kind not in _EXPORTERS:
             logger.warning("[兼容导出] 未登记的种类：%s", kind)
             return
-        _DIRTY.add(kind)
-        _DEADLINE = time.monotonic() + debounce_seconds()
-        _ensure_worker_locked()
-        _CV.notify_all()
+        if _STOPPING or _RUNTIME_FINISHED:
+            # A late caller cannot revive a thread after the runtime released
+            # ownership. Preserve the intent so finish/status stays truthful.
+            _DIRTY.add(kind)
+            _CV.notify_all()
+            return
+        if current != "sync":
+            _DIRTY.add(kind)
+            _DEADLINE = time.monotonic() + debounce_seconds()
+            _ensure_worker_locked()
+            _CV.notify_all()
+            return
+    _run_one(kind)
 
 
 def _ensure_worker_locked() -> None:
     global _WORKER
+    if _RUNTIME_FINISHED:
+        return
     if _WORKER is not None and _WORKER.is_alive():
         return
     _WORKER = threading.Thread(target=_loop, name="compat-export", daemon=True)
@@ -95,6 +104,10 @@ def _run_one(kind: str) -> None:
         # sync 模式和 flush/后台线程可能同时到达；文件导出必须串行，否则两个
         # 渲染器会争抢同一个临时文件。业务数据库写入不受这把锁影响。
         with _RUN_LOCK:
+            with _CV:
+                if _RUNTIME_FINISHED:
+                    _DIRTY.add(kind)
+                    return
             exporter()
     except Exception:
         # 兼容文件不是事实来源，导出失败不该影响业务写入；但必须留下完整堆栈，
@@ -136,9 +149,49 @@ def pending() -> list[str]:
         return sorted(_DIRTY)
 
 
+def finish_runtime(timeout: float = 3.0) -> bool:
+    """Drain the real export thread within the runtime's shared stop budget."""
+    global _STOPPING, _WORKER, _RUNTIME_FINISHED
+    deadline = time.monotonic() + max(0.0, float(timeout))
+    if not _CV.acquire(timeout=max(0.0, deadline - time.monotonic())):
+        return False
+    try:
+        _STOPPING = True
+        if _DIRTY and not _RUNTIME_FINISHED:
+            _ensure_worker_locked()
+        thread = _WORKER
+        _CV.notify_all()
+    finally:
+        _CV.release()
+    if thread is threading.current_thread():
+        return False
+    if thread is not None:
+        thread.join(max(0.0, deadline - time.monotonic()))
+        if thread.is_alive():
+            return False
+    # Sync exporters can own this lock without a background thread.
+    if not _RUN_LOCK.acquire(timeout=max(0.0, deadline - time.monotonic())):
+        return False
+    try:
+        with _CV:
+            if _DIRTY or (_WORKER is not thread and _WORKER and _WORKER.is_alive()):
+                return False
+            if _WORKER is thread:
+                _WORKER = None
+            _RUNTIME_FINISHED = True
+            return True
+    finally:
+        _RUN_LOCK.release()
+
+
 def shutdown() -> None:
     """进程退出时把没写完的导出补上，避免文件停留在旧内容。"""
     global _STOPPING
+    from core.runtime.process import get_runtime_context
+    if get_runtime_context() is not None:
+        # Managed teardown owns this work and its deadline. Re-entering a
+        # synchronous exporter from atexit can hang after a truthful timeout.
+        return
     flush()
     with _CV:
         _STOPPING = True

@@ -1,0 +1,5485 @@
+[
+  {
+    "key": "GLOBAL_TASK_WORKERS",
+    "file": "concurrency.py",
+    "type": "int",
+    "group": "并发控制",
+    "label": "全局业务并发上限",
+    "help": "同一部署全部受管业务执行的合计上限；不限制调度、心跳、代理供给等支撑线程。填写不小于 1 的整数，无固定上限。",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "并发控制",
+      "menu": "系统与维护",
+      "section": ""
+    }
+  },
+  {
+    "key": "REGISTRATION_ROXY_WORKERS",
+    "file": "concurrency.py",
+    "type": "int",
+    "group": "并发控制",
+    "label": "Roxy 注册",
+    "help": "Roxy 完整注册与原身份续跑共用此类型上限；另受注册批次上限约束。",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "并发控制",
+      "menu": "系统与维护",
+      "section": ""
+    }
+  },
+  {
+    "key": "REGISTRATION_PROTO2_WORKERS",
+    "file": "concurrency.py",
+    "type": "int",
+    "group": "并发控制",
+    "label": "Proto2 注册",
+    "help": "protocol_oss_2 完整注册与原身份续跑共用此类型上限；另受注册批次上限约束。",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "并发控制",
+      "menu": "系统与维护",
+      "section": ""
+    }
+  },
+  {
+    "key": "ACCOUNT_LIVE_CHECK_WORKERS",
+    "file": "concurrency.py",
+    "type": "int",
+    "group": "并发控制",
+    "label": "查活",
+    "help": "独立查活任务上限。",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "并发控制",
+      "menu": "系统与维护",
+      "section": ""
+    }
+  },
+  {
+    "key": "ACCOUNT_TOKEN_REFRESH_WORKERS",
+    "file": "concurrency.py",
+    "type": "int",
+    "group": "并发控制",
+    "label": "刷新 AT",
+    "help": "独立刷新 AT 任务上限；巡检、提链和注册内部同步刷新归属其父任务。",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "并发控制",
+      "menu": "系统与维护",
+      "section": ""
+    }
+  },
+  {
+    "key": "ACCOUNT_PLAN_CHECK_WORKERS",
+    "file": "concurrency.py",
+    "type": "int",
+    "group": "并发控制",
+    "label": "查套餐",
+    "help": "独立查套餐任务上限；巡检、提链和注册内部同步查询归属其父任务。",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "并发控制",
+      "menu": "系统与维护",
+      "section": ""
+    }
+  },
+  {
+    "key": "ACCOUNT_DEACTIVATION_MAIL_WORKERS",
+    "file": "concurrency.py",
+    "type": "int",
+    "group": "并发控制",
+    "label": "查封号邮件",
+    "help": "独立封号邮件扫描上限；HME 合并扫描按一个扫描 Run 计数，覆盖账号数单独展示。",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "并发控制",
+      "menu": "系统与维护",
+      "section": ""
+    }
+  },
+  {
+    "key": "ACCOUNT_PASSWORD_SETUP_WORKERS",
+    "file": "concurrency.py",
+    "type": "int",
+    "group": "并发控制",
+    "label": "补密码",
+    "help": "独立补密码任务上限。",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "并发控制",
+      "menu": "系统与维护",
+      "section": ""
+    }
+  },
+  {
+    "key": "ACCOUNT_PASSWORD_CHANGE_WORKERS",
+    "file": "concurrency.py",
+    "type": "int",
+    "group": "并发控制",
+    "label": "改密码",
+    "help": "独立改密码任务上限。",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "并发控制",
+      "menu": "系统与维护",
+      "section": ""
+    }
+  },
+  {
+    "key": "ACCOUNT_TWOFA_SETUP_WORKERS",
+    "file": "concurrency.py",
+    "type": "int",
+    "group": "并发控制",
+    "label": "补 2FA",
+    "help": "仅执行补 2FA 的独立任务归属此类型；包含补密码、套餐和 2FA 的历史注册补跑归多步骤账号配置。",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "并发控制",
+      "menu": "系统与维护",
+      "section": ""
+    }
+  },
+  {
+    "key": "ACCOUNT_TWOFA_CHANGE_WORKERS",
+    "file": "concurrency.py",
+    "type": "int",
+    "group": "并发控制",
+    "label": "改 2FA",
+    "help": "独立改 2FA 任务上限。",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "并发控制",
+      "menu": "系统与维护",
+      "section": ""
+    }
+  },
+  {
+    "key": "ACCOUNT_SETUP_WORKERS",
+    "file": "concurrency.py",
+    "type": "int",
+    "group": "并发控制",
+    "label": "多步骤账号配置",
+    "help": "尚在直接执行业务的账号配置占用此类型；独立子任务分别按实际动作计数，父流程等待时不重复计数。",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "并发控制",
+      "menu": "系统与维护",
+      "section": ""
+    }
+  },
+  {
+    "key": "ACCOUNT_EMAIL_CHANGE_WORKERS",
+    "file": "concurrency.py",
+    "type": "int",
+    "group": "并发控制",
+    "label": "换绑邮箱",
+    "help": "独立换绑邮箱任务上限；挂起后创建的独立 AT 子任务另行排队。",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "并发控制",
+      "menu": "系统与维护",
+      "section": ""
+    }
+  },
+  {
+    "key": "ACCOUNT_INSPECTION_WORKERS",
+    "file": "concurrency.py",
+    "type": "int",
+    "group": "并发控制",
+    "label": "一键巡检",
+    "help": "按单账号巡检 Run 计数；内部同步查活、刷新和查套餐复用巡检许可，每轮账号数限制继续生效。",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "并发控制",
+      "menu": "系统与维护",
+      "section": ""
+    }
+  },
+  {
+    "key": "CODEX_OAUTH_WORKERS",
+    "file": "concurrency.py",
+    "type": "int",
+    "group": "并发控制",
+    "label": "Codex 授权",
+    "help": "独立 Codex OAuth 任务上限；注册页仅补 Codex 也归属此类型。",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "并发控制",
+      "menu": "系统与维护",
+      "section": ""
+    }
+  },
+  {
+    "key": "CODEX_TOKEN_REFRESH_WORKERS",
+    "file": "concurrency.py",
+    "type": "int",
+    "group": "并发控制",
+    "label": "刷新 Codex Token",
+    "help": "独立 Codex Token 刷新任务上限。",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "并发控制",
+      "menu": "系统与维护",
+      "section": ""
+    }
+  },
+  {
+    "key": "SUB2API_SYNC_WORKERS",
+    "file": "concurrency.py",
+    "type": "int",
+    "group": "并发控制",
+    "label": "Sub2API 上传与同步",
+    "help": "Turb 本地上传与同步执行上限；与上传到远端账号的调度属性 SUB2API_UPLOAD_CONCURRENCY 分开。",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "并发控制",
+      "menu": "系统与维护",
+      "section": ""
+    }
+  },
+  {
+    "key": "C2A_SYNC_WORKERS",
+    "file": "concurrency.py",
+    "type": "int",
+    "group": "并发控制",
+    "label": "C2A 重新导入",
+    "help": "本地 AT 原位更新 C2A 既有账号的执行上限；只处理唯一同邮箱远端账号。",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "并发控制",
+      "menu": "系统与维护",
+      "section": ""
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_WORKERS",
+    "file": "concurrency.py",
+    "type": "int",
+    "group": "并发控制",
+    "label": "提链任务",
+    "help": "提链及同 Run 支付阶段的执行上限；同时受批次、平台和未结束远端订单名额约束。",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "并发控制",
+      "menu": "系统与维护",
+      "section": ""
+    }
+  },
+  {
+    "key": "EMAIL_IMPORT_WORKERS",
+    "file": "concurrency.py",
+    "type": "int",
+    "group": "并发控制",
+    "label": "邮箱导入",
+    "help": "按实际远端交接调用计数；一次最多 25 地址的批量交接算一份执行，兼容并行调用分别计数。",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "并发控制",
+      "menu": "系统与维护",
+      "section": ""
+    }
+  },
+  {
+    "key": "SUB2API_SCAN_WORKERS",
+    "file": "concurrency.py",
+    "type": "int",
+    "group": "并发控制",
+    "label": "Sub2API 异常扫描",
+    "help": "独立远端扫描执行上限；扫描发现的修复任务另行排队。",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "并发控制",
+      "menu": "系统与维护",
+      "section": ""
+    }
+  },
+  {
+    "key": "MAINTENANCE_CHECK_WORKERS",
+    "file": "concurrency.py",
+    "type": "int",
+    "group": "并发控制",
+    "label": "手动维护检查",
+    "help": "用户主动发起的 Sentinel 等外部维护检查上限。",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "并发控制",
+      "menu": "系统与维护",
+      "section": ""
+    }
+  },
+  {
+    "key": "CONCURRENCY_POLICY_REVISION",
+    "file": "concurrency.py",
+    "type": "int",
+    "group": "并发控制",
+    "label": "并发策略版本",
+    "help": "完整保存迁移策略时一并落地；用于识别已确认的新策略，不代表历史全局并发。",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "并发控制",
+      "menu": "系统与维护",
+      "section": ""
+    }
+  },
+  {
+    "key": "ACCOUNT_BATCH_WORKERS",
+    "file": "codex.py",
+    "type": "int",
+    "group": "通用配置",
+    "label": "旧账号操作并发数（迁移参考）",
+    "help": "只读保留历史账号池上限，供迁移预览参考；新策略使用全局与独立任务类型上限，此值不再构成账号公共预算。",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "通用配置",
+      "menu": "系统与维护",
+      "section": ""
+    }
+  },
+  {
+    "key": "EMAIL_BUTLER_RISK_SCAN_ENABLED",
+    "file": "email.py",
+    "type": "bool",
+    "group": "定时任务",
+    "label": "自动查封号邮件",
+    "help": "周期扫描支持的邮箱来源，识别 OpenAI 封号通知；关闭后仍可在账号页手动触发",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "定时任务",
+      "menu": "系统与维护",
+      "section": ""
+    }
+  },
+  {
+    "key": "EMAIL_BUTLER_RISK_SCAN_INTERVAL_SECONDS",
+    "file": "email.py",
+    "type": "int",
+    "group": "定时任务",
+    "label": "查封号邮件间隔（秒）",
+    "help": "两轮扫描之间的最短间隔，范围 900-604800；默认 21600（6 小时）",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "定时任务",
+      "menu": "系统与维护",
+      "section": ""
+    }
+  },
+  {
+    "key": "EMAIL_BUTLER_RISK_SCAN_INITIAL_DELAY_SECONDS",
+    "file": "email.py",
+    "type": "int",
+    "group": "定时任务",
+    "label": "封号扫描首次延迟（秒）",
+    "help": "服务启动后首次扫描封号邮件的等待时间；修改后重启调度线程生效，范围 5-3600",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "定时任务",
+      "menu": "系统与维护",
+      "section": ""
+    }
+  },
+  {
+    "key": "EMAIL_BUTLER_RISK_SCAN_LOOKBACK_DAYS",
+    "file": "email.py",
+    "type": "int",
+    "group": "定时任务",
+    "label": "封号邮件回看天数",
+    "help": "扫描封号信号时向邮箱服务查询的历史天数，范围 1-365",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "定时任务",
+      "menu": "系统与维护",
+      "section": ""
+    }
+  },
+  {
+    "key": "AT_AUTO_REFRESH_ENABLED",
+    "file": "codex.py",
+    "type": "bool",
+    "group": "定时任务",
+    "label": "自动刷新账号 AT",
+    "help": "临近过期时自动刷新 ChatGPT accessToken；关闭后仍可在账号页手动刷新",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "刷新 AT",
+      "menu": "注册与账号",
+      "section": "刷新 AT"
+    }
+  },
+  {
+    "key": "AT_REFRESH_SCAN_INTERVAL_SECONDS",
+    "file": "codex.py",
+    "type": "int",
+    "group": "定时任务",
+    "label": "刷新账号 AT 间隔（秒）",
+    "help": "两轮扫描之间的最短间隔，范围 300-86400；默认 3600（1 小时）",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "刷新 AT",
+      "menu": "注册与账号",
+      "section": "刷新 AT"
+    }
+  },
+  {
+    "key": "AT_REFRESH_BEFORE_HOURS",
+    "file": "codex.py",
+    "type": "int",
+    "group": "定时任务",
+    "label": "AT 提前刷新窗口（小时）",
+    "help": "ChatGPT access token 距离过期进入此窗口后才入队刷新，范围 1-168",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "刷新 AT",
+      "menu": "注册与账号",
+      "section": "刷新 AT"
+    }
+  },
+  {
+    "key": "AT_REFRESH_INITIAL_DELAY_SECONDS",
+    "file": "codex.py",
+    "type": "int",
+    "group": "定时任务",
+    "label": "AT 启动后首次巡检（秒）",
+    "help": "服务启动后首次扫描 AT 的等待时间；修改后重启调度线程生效，范围 10-3600",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "刷新 AT",
+      "menu": "注册与账号",
+      "section": "刷新 AT"
+    }
+  },
+  {
+    "key": "AT_REFRESH_MAX_PER_CYCLE",
+    "file": "codex.py",
+    "type": "int",
+    "group": "定时任务",
+    "label": "AT 单轮最多刷新数",
+    "help": "每轮最多加入刷新队列的账号数，范围 1-200",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "刷新 AT",
+      "menu": "注册与账号",
+      "section": "刷新 AT"
+    }
+  },
+  {
+    "key": "WEBUI_AUTH_CODE",
+    "file": "codex.py",
+    "type": "str",
+    "group": "WebUI 授权",
+    "label": "WebUI 授权码",
+    "help": "仅保存在 .env（WEBUI_AUTH_CODE），避免出现在进程命令行中；保存后重启 WebUI 生效",
+    "storage": "env",
+    "secret": true,
+    "value": "",
+    "legacyNavigation": {
+      "domain": "WebUI 授权",
+      "menu": "系统与维护",
+      "section": ""
+    }
+  },
+  {
+    "key": "WEBUI_SESSION_SECRET",
+    "file": "codex.py",
+    "type": "str",
+    "group": "WebUI 授权",
+    "label": "Session 签名密钥",
+    "help": "可选，保存在 .env（WEBUI_SESSION_SECRET）；不填则从固定授权码派生，修改授权码会使已有登录失效",
+    "storage": "env",
+    "secret": true,
+    "value": "",
+    "legacyNavigation": {
+      "domain": "WebUI 授权",
+      "menu": "系统与维护",
+      "section": ""
+    }
+  },
+  {
+    "key": "OPENAI_CF_PREFLIGHT_ENABLED",
+    "file": "openai_protocol.py",
+    "type": "bool",
+    "group": "注册主链路",
+    "label": "协议登录预检挑战恢复（实验）",
+    "help": "默认关闭；仅处理提交邮箱前的匿名登录页，每会话最多一次。缺少依赖或隔离环境时保留原预检结果，不重放密码或验证码。",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "注册主链路",
+      "menu": "注册与账号",
+      "section": ""
+    }
+  },
+  {
+    "key": "ENABLE_CODEX_AUTO",
+    "file": "codex.py",
+    "type": "bool",
+    "group": "注册主链路",
+    "label": "启用 Codex OAuth",
+    "help": "注册成功后自动跑 Codex 授权，凭证保存到数据库；手机验证按接码开关处理",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "注册主链路",
+      "menu": "注册与账号",
+      "section": ""
+    }
+  },
+  {
+    "key": "ACCOUNT_AT_REFRESH_DRIVER",
+    "file": "account.py",
+    "type": "str",
+    "group": "账号补全",
+    "label": "刷新 AT 驱动",
+    "help": "protocol 使用所选协议版本刷新；browser_roxy 直接使用 Roxy 指纹浏览器重新登录并保存最新 AT。普通查活保持独立。",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "刷新 AT",
+      "menu": "注册与账号",
+      "section": "刷新 AT"
+    }
+  },
+  {
+    "key": "ACCOUNT_AT_REFRESH_COUNTRY",
+    "file": "account.py",
+    "type": "str",
+    "group": "账号补全",
+    "label": "刷新 AT 国家",
+    "help": "留空跟随账号注册国家；也可指定本次刷新使用的国家。协议与 Roxy 刷新共用，任务入队后固定本次策略，登录开始前选定国家和线路；普通查活及注册使用各自国家策略。",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "刷新 AT",
+      "menu": "注册与账号",
+      "section": "刷新 AT"
+    }
+  },
+  {
+    "key": "ACCOUNT_AT_REFRESH_NETWORK_RETRIES",
+    "file": "account.py",
+    "type": "int",
+    "group": "账号补全",
+    "label": "AT 网络故障换线次数",
+    "help": "明确网络故障先尽可能沿原线路恢复一次，仍失败时换线重新登录；默认最多换线 2 次。0 表示仅原线路恢复。收件超时、验签失败、凭据拒绝及 403/429 限制不触发换线。",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "刷新 AT",
+      "menu": "注册与账号",
+      "section": "刷新 AT"
+    }
+  },
+  {
+    "key": "ACCOUNT_AT_REFRESH_NETWORK_TIMEOUT_SECONDS",
+    "file": "account.py",
+    "type": "int",
+    "group": "账号补全",
+    "label": "AT 网络恢复总时限（秒）",
+    "help": "首次 AT 登录及自动恢复共用的时间预算，默认 900 秒；包含原线路恢复、换线等待和重新登录。达到时限后保留具体错误及全部尝试记录，可继续手动重跑。",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "刷新 AT",
+      "menu": "注册与账号",
+      "section": "刷新 AT"
+    }
+  },
+  {
+    "key": "OPENAI_PROTOCOL_VERSION",
+    "file": "openai_protocol.py",
+    "type": "str",
+    "group": "账号补全",
+    "label": "刷新 AT 协议版本",
+    "help": "v1 使用邮箱认证；v2 支持密码和 MFA；v3 优先复用已验证会话并增强 MFA、工作区兼容。仅影响协议刷新 AT；Roxy、注册、2FA、套餐和普通查活不读取此配置。",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "刷新 AT",
+      "menu": "注册与账号",
+      "section": "刷新 AT"
+    }
+  },
+  {
+    "key": "ACCOUNT_AT_REFRESH_ROXY_DEBUG_ENABLED",
+    "file": "account.py",
+    "type": "bool",
+    "group": "账号补全",
+    "label": "Roxy 刷新调试",
+    "help": "实际使用 Roxy 刷新 AT 时，以有头浏览器全程抓包；失败保留窗口，可从任务日志查看现场并下载 HAR。网络恢复或总时限耗尽时会关闭本次窗口。仅影响 Roxy 刷新，默认关闭。",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "刷新 AT",
+      "menu": "注册与账号",
+      "section": "刷新 AT"
+    }
+  },
+  {
+    "key": "REGISTRATION_DRIVER",
+    "file": "roxybrowser.py",
+    "type": "str",
+    "group": "注册主链路",
+    "label": "注册主流程驱动",
+    "help": "选择注册实现：roxy=本地 Roxy，protocol_oss_2=开源protocol-2；历史驱动自动映射到现行实现",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "注册主链路",
+      "menu": "注册与账号",
+      "section": ""
+    }
+  },
+  {
+    "key": "REGISTRATION_COUNTRY",
+    "file": "register.py",
+    "type": "str",
+    "group": "注册主链路",
+    "label": "注册国家",
+    "help": "新注册按此国家向统一代理池申请线路，与代理池默认国家独立；任务入队后固定本次国家，缺少此配置时兼容迁移原有效默认国家",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "注册主链路",
+      "menu": "注册与账号",
+      "section": ""
+    }
+  },
+  {
+    "key": "REGISTRATION_AUTH_MODE",
+    "file": "register.py",
+    "type": "str",
+    "group": "注册主链路",
+    "label": "注册密码策略",
+    "help": "当前页面提供登录或创建密码入口时优先使用；没有密码入口时继续邮箱验证码。取得匹配邮箱的 Token 且有本轮密码证据后才确认密码生效",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "注册主链路",
+      "menu": "注册与账号",
+      "section": ""
+    }
+  },
+  {
+    "key": "REGISTRATION_PASSWORD_TRANSITION_TIMEOUT_SECONDS",
+    "file": "register.py",
+    "type": "int",
+    "group": "注册主链路",
+    "label": "密码提交跳转等待(秒)",
+    "help": "从点击创建密码页的继续按钮后独立计时；默认 60 秒，避免慢代理下页面迟到进入邮箱验证码页却被提前判失败",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "注册主链路",
+      "menu": "注册与账号",
+      "section": ""
+    }
+  },
+  {
+    "key": "REGISTRATION_PLAN_CHECK_ENABLED",
+    "file": "register.py",
+    "type": "bool",
+    "group": "注册主链路",
+    "label": "注册后自动查套餐",
+    "help": "注册核心保存后独立查询套餐；关闭后不影响账号落库，之后可在账号管理中手动查询或补全",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "注册主链路",
+      "menu": "注册与账号",
+      "section": ""
+    }
+  },
+  {
+    "key": "ACCOUNT_COMPLETION_PASSWORD_ENABLED",
+    "file": "account.py",
+    "type": "bool",
+    "group": "账号补全",
+    "label": "补全账号密码",
+    "help": "“补全账号”发现账号缺少登录密码时补充；关闭后不会处理密码",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "账号补全",
+      "menu": "注册与账号",
+      "section": ""
+    }
+  },
+  {
+    "key": "ACCOUNT_COMPLETION_PLAN_CHECK_ENABLED",
+    "file": "account.py",
+    "type": "bool",
+    "group": "账号补全",
+    "label": "补全套餐状态",
+    "help": "“补全账号”发现套餐未成功确认时补查；关闭后不会处理套餐",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "账号补全",
+      "menu": "注册与账号",
+      "section": ""
+    }
+  },
+  {
+    "key": "ACCOUNT_COMPLETION_2FA_ENABLED",
+    "file": "account.py",
+    "type": "bool",
+    "group": "账号补全",
+    "label": "补全 Authenticator 2FA",
+    "help": "“补全账号”发现账号缺少 Authenticator 2FA 时启用；关闭后不会处理 2FA",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "账号补全",
+      "menu": "注册与账号",
+      "section": ""
+    }
+  },
+  {
+    "key": "ACCOUNT_COMPLETION_CODEX_ENABLED",
+    "file": "account.py",
+    "type": "bool",
+    "group": "账号补全",
+    "label": "补全 Codex",
+    "help": "“补全账号”发现 Codex 未完成时提交 Codex OAuth；关闭后不会处理 Codex",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "账号补全",
+      "menu": "注册与账号",
+      "section": ""
+    }
+  },
+  {
+    "key": "ACCOUNT_COMPLETION_REFRESH_AT_ENABLED",
+    "file": "account.py",
+    "type": "bool",
+    "group": "账号补全",
+    "label": "补全时允许刷新 AT",
+    "help": "默认关闭。开启后仅对已完成注册但缺少/无法使用 AT 的账号允许刷新；注册尚未完成的账号会优先继续原注册任务，不会刷新 AT",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "账号补全",
+      "menu": "注册与账号",
+      "section": ""
+    }
+  },
+  {
+    "key": "ACCOUNT_PASSWORD_RESET_ENABLED",
+    "file": "account.py",
+    "type": "bool",
+    "group": "账号补全",
+    "label": "允许邮箱重置账号密码",
+    "help": "默认关闭。开启后，账号补全登录时若本地没有 OpenAI 密码，会点击忘记密码、读取邮箱验证码并设置新密码；只影响账号补全，不影响注册、查活和刷新 AT",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "补密码",
+      "menu": "注册与账号",
+      "section": "补密码"
+    }
+  },
+  {
+    "key": "ACCOUNT_PASSWORD_DRIVER",
+    "file": "account.py",
+    "type": "str",
+    "group": "账号补全",
+    "label": "密码补全驱动",
+    "help": "roxy=RoxyBrowser（默认）；protocol=纯协议登录后添加密码，无需浏览器。只处理缺少密码的账号；修改密码仍使用 Roxy，不受此选项影响",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "补密码",
+      "menu": "注册与账号",
+      "section": "补密码"
+    }
+  },
+  {
+    "key": "ACCOUNT_EMAIL_CHANGE_ENABLED",
+    "file": "account.py",
+    "type": "bool",
+    "group": "账号补全",
+    "label": "启用协议邮箱换绑",
+    "help": "只通过 BrowserSession HTTP 协议执行邮箱换绑；远端结果不确定时不会自动打开浏览器兜底",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "邮箱换绑",
+      "menu": "注册与账号",
+      "section": "邮箱换绑"
+    }
+  },
+  {
+    "key": "ACCOUNT_EMAIL_CHANGE_MIN_ACCOUNT_AGE_HOURS",
+    "file": "account.py",
+    "type": "int",
+    "group": "账号补全",
+    "label": "邮箱换绑最小账号年龄（小时）",
+    "help": "默认 24。低于该账号年龄时在提交前拒绝，避免租用邮箱后被远端以账号过新拒绝；设为 0 可关闭门槛。",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "邮箱换绑",
+      "menu": "注册与账号",
+      "section": "邮箱换绑"
+    }
+  },
+  {
+    "key": "ACCOUNT_PLAN_CHECK_DRIVER",
+    "file": "account.py",
+    "type": "str",
+    "group": "账号补全",
+    "label": "套餐补全驱动",
+    "help": "当前唯一实现为纯协议，暂不可切换",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "注册与账号",
+      "menu": "注册与账号",
+      "section": "注册与账号"
+    }
+  },
+  {
+    "key": "ACCOUNT_PASSWORD_PROXY_MODE",
+    "file": "account.py",
+    "type": "str",
+    "group": "代理与网络",
+    "label": "补密码代理来源",
+    "help": "仅保留旧配置兼容读取；新领取统一使用代理池当前来源，此值不再决定业务线路。",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "代理与网络",
+      "menu": "代理与网络",
+      "section": "高级兼容"
+    }
+  },
+  {
+    "key": "ACCOUNT_2FA_PROXY_MODE",
+    "file": "account.py",
+    "type": "str",
+    "group": "代理与网络",
+    "label": "补 2FA 代理来源",
+    "help": "仅保留旧配置兼容读取；新领取统一使用代理池当前来源，此值不再决定业务线路。",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "代理与网络",
+      "menu": "代理与网络",
+      "section": "高级兼容"
+    }
+  },
+  {
+    "key": "ACCOUNT_PLAN_CHECK_PROXY_MODE",
+    "file": "account.py",
+    "type": "str",
+    "group": "代理与网络",
+    "label": "查套餐代理来源",
+    "help": "仅保留旧配置兼容读取；新领取统一使用代理池当前来源，此值不再决定业务线路。",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "代理与网络",
+      "menu": "代理与网络",
+      "section": "高级兼容"
+    }
+  },
+  {
+    "key": "PLAN_CHECK_PROXY_ALLOW_REUSE",
+    "file": "proxy.py",
+    "type": "bool",
+    "group": "代理与网络",
+    "label": "查询套餐允许复用 IP",
+    "help": "仅影响使用代理池的查套餐；开启后允许复用已检测 IP，各供应商及手动地址仍验证出口国家和健康状态。关闭后查套餐恢复严格独占和冷却，注册及认证任务继续使用独占租约。",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "代理与网络",
+      "menu": "代理与网络",
+      "section": "库存策略"
+    }
+  },
+  {
+    "key": "PLAN_CHECK_PROXY_REUSE_LIMIT",
+    "file": "proxy.py",
+    "type": "int",
+    "group": "代理与网络",
+    "label": "查询套餐同一 IP 租用次数上限",
+    "help": "仅影响使用代理池的查套餐；按实际出口 IP 在租约有效期内累计，包含首次租用。释放或进程重启不会清零，达到上限后换线；各供应商及手动地址仍验证出口国家和健康状态。仅在允许复用 IP 开启时生效。",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "代理与网络",
+      "menu": "代理与网络",
+      "section": "库存策略"
+    }
+  },
+  {
+    "key": "PLAN_CHECK_AUTO_REFRESH_AT_ENABLED",
+    "file": "proxy.py",
+    "type": "bool",
+    "group": "代理与网络",
+    "label": "AT 失效时自动刷新",
+    "help": "默认开启。独立查套餐遇到 AT 缺失、本地过期或接口返回 HTTP 401 时，按“刷新 AT”配置自动刷新一次，保存成功后补查失败国家；成功国家保留结果。每次执行最多自动刷新一次，失败仍可手动重跑；不影响注册查套餐。新任务保存配置快照，缺少此项的历史任务重跑时读取当前开关。",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "注册与账号",
+      "menu": "注册与账号",
+      "section": "注册与账号"
+    }
+  },
+  {
+    "key": "PLAN_CHECK_PAYMENT_METHODS_ENABLED",
+    "file": "proxy.py",
+    "type": "bool",
+    "group": "代理与网络",
+    "label": "查询支付方式",
+    "help": "默认关闭。开启后独立查套餐会额外预检 Plus 活动的应付金额、结账会话和可用支付方式，耗时更长且可能因网络失败。关闭时只查套餐和优惠，不创建结账会话；不影响注册查套餐。新任务入队时生效，重跑沿用原任务设置。",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "注册与账号",
+      "menu": "注册与账号",
+      "section": "注册与账号"
+    }
+  },
+  {
+    "key": "PLAN_CHECK_COUNTRIES",
+    "file": "proxy.py",
+    "type": "list_str_multiline",
+    "group": "代理与网络",
+    "label": "独立查套餐国家列表",
+    "help": "账号页独立查套餐按此顺序查询；支持换行、逗号或空格分隔，自动大写去重。留空沿用账号注册国家的单次查询路径；不影响注册查套餐。",
+    "value": [],
+    "legacyNavigation": {
+      "domain": "注册与账号",
+      "menu": "注册与账号",
+      "section": "注册与账号"
+    }
+  },
+  {
+    "key": "PLAN_CHECK_COUNTRY_WAIT_TIMEOUT",
+    "file": "proxy.py",
+    "type": "int",
+    "group": "代理与网络",
+    "label": "查套餐单国线路等待（秒）",
+    "help": "独立查套餐每个国家领取已验证线路的最长等待时间，范围 5-300 秒；某国缺货超时后继续后续国家。",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "注册与账号",
+      "menu": "注册与账号",
+      "section": "注册与账号"
+    }
+  },
+  {
+    "key": "ACCOUNT_LIVE_CHECK_PROXY_MODE",
+    "file": "account.py",
+    "type": "str",
+    "group": "代理与网络",
+    "label": "查活代理来源",
+    "help": "仅保留旧配置兼容读取；新领取统一使用代理池当前来源，此值不再决定业务线路。",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "代理与网络",
+      "menu": "代理与网络",
+      "section": "高级兼容"
+    }
+  },
+  {
+    "key": "ACCOUNT_REFRESH_AT_PROXY_MODE",
+    "file": "account.py",
+    "type": "str",
+    "group": "代理与网络",
+    "label": "刷新 AT 代理来源",
+    "help": "仅保留旧配置兼容读取；新领取统一使用代理池当前来源，此值不再决定业务线路。",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "代理与网络",
+      "menu": "代理与网络",
+      "section": "高级兼容"
+    }
+  },
+  {
+    "key": "ACCOUNT_CODEX_PROXY_MODE",
+    "file": "account.py",
+    "type": "str",
+    "group": "代理与网络",
+    "label": "Codex OAuth 代理来源",
+    "help": "仅保留旧配置兼容读取；新领取统一使用代理池当前来源，此值不再决定业务线路。",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "代理与网络",
+      "menu": "代理与网络",
+      "section": "高级兼容"
+    }
+  },
+  {
+    "key": "ACCOUNT_EMAIL_CHANGE_PROXY_MODE",
+    "file": "account.py",
+    "type": "str",
+    "group": "代理与网络",
+    "label": "邮箱换绑代理来源",
+    "help": "仅保留旧配置兼容读取；新领取统一使用代理池当前来源，此值不再决定业务线路。",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "代理与网络",
+      "menu": "代理与网络",
+      "section": "高级兼容"
+    }
+  },
+  {
+    "key": "ACCOUNT_LIVE_CHECK_DRIVER",
+    "file": "account.py",
+    "type": "str",
+    "group": "账号补全",
+    "label": "普通查活驱动",
+    "help": "可选 protocol_current 或 browser_roxy；browser_roxy 只验证已有 AT，不登录、不发 OTP、不刷新 AT；全局协议版本设置不影响普通查活",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "查活",
+      "menu": "注册与账号",
+      "section": "查活"
+    }
+  },
+  {
+    "key": "ACCOUNT_LIVE_CHECK_BROWSER_ENABLED",
+    "file": "account.py",
+    "type": "bool",
+    "group": "账号补全",
+    "label": "开放 Roxy 普通查活",
+    "help": "灰度开关，默认关闭；开启后才允许将普通查活驱动设为 browser_roxy，且仍只验证已有 AT",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "查活",
+      "menu": "注册与账号",
+      "section": "查活"
+    }
+  },
+  {
+    "key": "ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK",
+    "file": "account.py",
+    "type": "bool",
+    "group": "账号补全",
+    "label": "密码错误后邮箱兜底",
+    "help": "默认关闭；开启后仅在新认证会话由远端明确进入邮箱验证码 challenge 时继续，不从密码页盲发 OTP；结果仍保留 password_rejected，不重试密码",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "刷新 AT",
+      "menu": "注册与账号",
+      "section": "刷新 AT"
+    }
+  },
+  {
+    "key": "ACCOUNT_AUTH_PROFILE_MODE",
+    "file": "account.py",
+    "type": "str",
+    "group": "账号补全",
+    "label": "Protocol 设备画像",
+    "help": "current 为新会话生成设备画像；account_stable 在 v2/v3 协议刷新时按账号创建稳定画像。v3 复用已验证会话时保留该会话画像，不影响注册、普通查活和 v1。",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "刷新 AT",
+      "menu": "注册与账号",
+      "section": "刷新 AT"
+    }
+  },
+  {
+    "key": "ACCOUNT_AUTH_RAW_CONTEXT_ENABLED",
+    "file": "account.py",
+    "type": "bool",
+    "group": "账号补全",
+    "label": "保存认证原始上下文",
+    "help": "默认关闭；开启后为支持的 v2/v3 或 Roxy 认证运行按白名单保存设备 ID、session 标识和代理上下文到私有表。v3 的加密会话缓存独立于此诊断开关。",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "账号补全",
+      "menu": "注册与账号",
+      "section": ""
+    }
+  },
+  {
+    "key": "ACCOUNT_AUTH_RAW_CONTEXT_RETENTION_DAYS",
+    "file": "account.py",
+    "type": "int",
+    "group": "账号补全",
+    "label": "认证上下文保留天数",
+    "help": "原始认证上下文的自动清理周期，默认 30 天；设置为 0 表示不自动清理，仍可手工逐行清理",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "账号补全",
+      "menu": "注册与账号",
+      "section": ""
+    }
+  },
+  {
+    "key": "TASK_CENTER_RETENTION_DAYS",
+    "file": "operations.py",
+    "type": "int",
+    "group": "任务中心",
+    "label": "任务历史保留天数",
+    "help": "每天自动归档并清理超过此天数的终态任务；默认 7 天，设置为 0 关闭自动清理",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "任务中心",
+      "menu": "系统与维护",
+      "section": ""
+    }
+  },
+  {
+    "key": "TASK_CENTER_ARCHIVE_RETENTION_DAYS",
+    "file": "operations.py",
+    "type": "int",
+    "group": "任务中心",
+    "label": "清理归档保留天数",
+    "help": "清理前生成的脱敏本地归档保留天数；默认 30 天，设置为 0 表示永久保留归档",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "任务中心",
+      "menu": "系统与维护",
+      "section": ""
+    }
+  },
+  {
+    "key": "LIVE_CHECK_ROXY_FALLBACK_ENABLED",
+    "file": "proxy.py",
+    "type": "bool",
+    "group": "账号补全",
+    "label": "刷新 Roxy 兜底",
+    "help": "控制协议刷新 AT 失败后是否使用 Roxy 登录兜底，v2/v3 明确无新验证码邮件时也会尝试一次；来源验签、收件地址不匹配及凭据拒绝保留原错误。直接选择 Roxy 刷新时不读取此开关，普通查活不登录、不发码。",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "刷新 AT",
+      "menu": "注册与账号",
+      "section": "刷新 AT"
+    }
+  },
+  {
+    "key": "ACCOUNT_2FA_DRIVER",
+    "file": "account.py",
+    "type": "str",
+    "group": "账号补全",
+    "label": "2FA 补全驱动",
+    "help": "auto=自动选择（优先复用有效 AT，需要时协议重认证；组合补密码时复用对应驱动取得的新 AT）；protocol=协议开通并按配置回退浏览器；browser=直接浏览器",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "补 2FA",
+      "menu": "注册与账号",
+      "section": "补 2FA"
+    }
+  },
+  {
+    "key": "ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED",
+    "file": "account.py",
+    "type": "bool",
+    "group": "账号补全",
+    "label": "2FA 协议失败后浏览器兜底",
+    "help": "仅用于账号补全；auto/protocol 失败后是否允许打开 Roxy 安全设置页面，默认开启",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "补 2FA",
+      "menu": "注册与账号",
+      "section": "补 2FA"
+    }
+  },
+  {
+    "key": "ACCOUNT_2FA_PROTOCOL_REAUTH_ENABLED",
+    "file": "account.py",
+    "type": "bool",
+    "group": "账号补全",
+    "label": "2FA 需要时协议重认证",
+    "help": "仅用于 auto/protocol；没有可复用 AT 或旧 AT 被 MFA 接口要求近期认证时，先走协议邮箱 OTP 换新 AT，再继续开通；默认开启",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "补 2FA",
+      "menu": "注册与账号",
+      "section": "补 2FA"
+    }
+  },
+  {
+    "key": "ACCOUNT_CODEX_DRIVER",
+    "file": "account.py",
+    "type": "str",
+    "group": "账号补全",
+    "label": "Codex 补全驱动",
+    "help": "可选纯协议、RoxyBrowser 或跟随注册主流程；三种路由都由 Codex OAuth 执行器处理",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "账号补全",
+      "menu": "注册与账号",
+      "section": ""
+    }
+  },
+  {
+    "key": "REGISTRATION_DEBUG_HOLD_TIMEOUT_SECONDS",
+    "file": "registration_debug.py",
+    "type": "int",
+    "group": "注册调试",
+    "label": "失败现场保留（秒）",
+    "help": "调试任务最终失败后保留浏览器和代理的最长时间；默认 1800（30 分钟）",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "注册调试",
+      "menu": "系统与维护",
+      "section": ""
+    }
+  },
+  {
+    "key": "REGISTRATION_FAILURE_DIAGNOSTICS_ENABLED",
+    "file": "registration_debug.py",
+    "type": "bool",
+    "group": "注册调试",
+    "label": "普通模式失败诊断",
+    "help": "普通注册失败时保存脱敏页面现场、失败请求元数据和浏览器错误；不会抓取成功请求或暂停浏览器",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "注册调试",
+      "menu": "系统与维护",
+      "section": ""
+    }
+  },
+  {
+    "key": "REGISTRATION_FAILURE_DIAGNOSTICS_RESOURCE_LIMIT",
+    "file": "registration_debug.py",
+    "type": "int",
+    "group": "注册调试",
+    "label": "失败资源记录上限",
+    "help": "普通模式失败现场最多保存的资源时序条数；默认 80",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "注册调试",
+      "menu": "系统与维护",
+      "section": ""
+    }
+  },
+  {
+    "key": "REGISTRATION_FAILURE_DIAGNOSTICS_TEXT_MAX_KB",
+    "file": "registration_debug.py",
+    "type": "int",
+    "group": "注册调试",
+    "label": "失败页面文本上限（KB）",
+    "help": "普通模式失败现场最多保存的页面可见文本大小；默认 32",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "注册调试",
+      "menu": "系统与维护",
+      "section": ""
+    }
+  },
+  {
+    "key": "REGISTRATION_DEBUG_MAX_HELD_SESSIONS",
+    "file": "registration_debug.py",
+    "type": "int",
+    "group": "注册调试",
+    "label": "最大保留现场数",
+    "help": "允许同时暂停保留的失败浏览器数量；超出后仍保存抓包但自动关闭现场",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "注册调试",
+      "menu": "系统与维护",
+      "section": ""
+    }
+  },
+  {
+    "key": "REGISTRATION_DEBUG_BODY_MAX_KB",
+    "file": "registration_debug.py",
+    "type": "int",
+    "group": "注册调试",
+    "label": "单正文上限（KB）",
+    "help": "单个文本、HTML 或 JSON 请求/响应正文的最大保存大小",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "注册调试",
+      "menu": "系统与维护",
+      "section": ""
+    }
+  },
+  {
+    "key": "REGISTRATION_DEBUG_BODY_BUDGET_MB",
+    "file": "registration_debug.py",
+    "type": "int",
+    "group": "注册调试",
+    "label": "单任务正文预算（MB）",
+    "help": "达到预算后继续记录全部请求元数据，但不再保存正文",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "注册调试",
+      "menu": "系统与维护",
+      "section": ""
+    }
+  },
+  {
+    "key": "REGISTRATION_DEBUG_GLOBAL_BUDGET_MB",
+    "file": "registration_debug.py",
+    "type": "int",
+    "group": "注册调试",
+    "label": "抓包总预算（MB）",
+    "help": "调试目录超过软上限后，新任务自动降级为只记录请求元数据",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "注册调试",
+      "menu": "系统与维护",
+      "section": ""
+    }
+  },
+  {
+    "key": "REGISTRATION_DEBUG_RETENTION_DAYS",
+    "file": "registration_debug.py",
+    "type": "int",
+    "group": "注册调试",
+    "label": "抓包保留天数",
+    "help": "WebUI 启动时逐文件清理超过此天数的调试产物",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "注册调试",
+      "menu": "系统与维护",
+      "section": ""
+    }
+  },
+  {
+    "key": "REGISTRATION_DEBUG_QUEUE_SIZE",
+    "file": "registration_debug.py",
+    "type": "int",
+    "group": "注册调试",
+    "label": "单任务事件队列",
+    "help": "默认 20000；队列满时丢弃后续抓包事件并计数，不阻塞注册线程",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "注册调试",
+      "menu": "系统与维护",
+      "section": ""
+    }
+  },
+  {
+    "key": "ROXY_API_BASE",
+    "file": "roxybrowser.py",
+    "type": "str",
+    "group": "RoxyBrowser",
+    "label": "Roxy API 地址",
+    "help": "默认 http://127.0.0.1:50100；需在 Roxy 应用 API 配置中开启",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "RoxyBrowser",
+      "menu": "浏览器",
+      "section": ""
+    }
+  },
+  {
+    "key": "ROXY_API_TOKEN",
+    "file": "roxybrowser.py",
+    "type": "str",
+    "group": "RoxyBrowser",
+    "label": "Roxy API Key",
+    "help": "保存在 .env（ROXY_API_TOKEN），不写回 config/*.py",
+    "storage": "env",
+    "secret": true,
+    "value": "",
+    "legacyNavigation": {
+      "domain": "RoxyBrowser",
+      "menu": "浏览器",
+      "section": ""
+    }
+  },
+  {
+    "key": "ROXY_PROFILE_ID",
+    "file": "roxybrowser.py",
+    "type": "str",
+    "group": "RoxyBrowser",
+    "label": "Roxy 环境ID",
+    "help": "指定要打开的 Roxy 浏览器环境/Profile ID；留空则尝试创建临时环境",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "RoxyBrowser",
+      "menu": "浏览器",
+      "section": ""
+    }
+  },
+  {
+    "key": "ROXY_WORKSPACE_ID",
+    "file": "roxybrowser.py",
+    "type": "str",
+    "group": "RoxyBrowser",
+    "label": "Roxy 工作区ID",
+    "help": "创建一号一环境时必填，会作为 workspaceId 提交给 Roxy 创建 Profile 接口",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "RoxyBrowser",
+      "menu": "浏览器",
+      "section": ""
+    }
+  },
+  {
+    "key": "ROXY_PROJECT_ID",
+    "file": "roxybrowser.py",
+    "type": "str",
+    "group": "RoxyBrowser",
+    "label": "Roxy 项目ID",
+    "help": "从 /browser/workspace 的 project_details.projectId 获取；创建 Profile 时会作为 projectId 提交",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "RoxyBrowser",
+      "menu": "浏览器",
+      "section": ""
+    }
+  },
+  {
+    "key": "ROXY_WORKSPACE_LIST_PATH",
+    "file": "roxybrowser.py",
+    "type": "str",
+    "group": "RoxyBrowser",
+    "label": "获取团队接口",
+    "help": "默认 /browser/workspace；点击获取团队/项目时会先试此路径，再自动尝试常见兼容路径",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "RoxyBrowser",
+      "menu": "浏览器",
+      "section": ""
+    }
+  },
+  {
+    "key": "ROXY_OPEN_PATH",
+    "file": "roxybrowser.py",
+    "type": "str",
+    "group": "RoxyBrowser",
+    "label": "打开接口路径",
+    "help": "默认 /browser/open；如 Roxy 版本不同可在此调整",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "RoxyBrowser",
+      "menu": "浏览器",
+      "section": ""
+    }
+  },
+  {
+    "key": "ROXY_CREATE_INTERVAL",
+    "file": "roxybrowser.py",
+    "type": "float",
+    "group": "RoxyBrowser",
+    "label": "创建环境间隔",
+    "help": "多线程时相邻 /browser/create 请求的最小间隔，默认 1.5 秒；设为 0 可关闭",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "RoxyBrowser",
+      "menu": "浏览器",
+      "section": ""
+    }
+  },
+  {
+    "key": "ROXY_OPEN_HEADLESS",
+    "file": "roxybrowser.py",
+    "type": "bool",
+    "group": "RoxyBrowser",
+    "label": "无头启动窗口",
+    "help": "打开 Roxy 环境时向 /browser/open 传 headless；False=显示窗口，True=无头启动",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "RoxyBrowser",
+      "menu": "浏览器",
+      "section": ""
+    }
+  },
+  {
+    "key": "ROXY_CODEX_OPEN_HEADLESS",
+    "file": "roxybrowser.py",
+    "type": "bool",
+    "group": "RoxyBrowser",
+    "label": "Codex OAuth 无头启动",
+    "help": "Codex OAuth 单独控制窗口渲染；默认 False=显示窗口，避免授权确认页在无头模式下无法完成",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "RoxyBrowser",
+      "menu": "浏览器",
+      "section": ""
+    }
+  },
+  {
+    "key": "ROXY_CLOSE_PATH",
+    "file": "roxybrowser.py",
+    "type": "str",
+    "group": "RoxyBrowser",
+    "label": "关闭接口路径",
+    "help": "默认 /browser/close",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "RoxyBrowser",
+      "menu": "浏览器",
+      "section": ""
+    }
+  },
+  {
+    "key": "ROXY_KEEP_BROWSER_OPEN",
+    "file": "roxybrowser.py",
+    "type": "bool",
+    "group": "RoxyBrowser",
+    "label": "保留浏览器",
+    "help": "调试时可开启，任务结束后不自动关闭 Roxy 环境",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "RoxyBrowser",
+      "menu": "浏览器",
+      "section": ""
+    }
+  },
+  {
+    "key": "ROXY_WINDOW_WAIT_TIMEOUT",
+    "file": "roxybrowser.py",
+    "type": "int",
+    "group": "RoxyBrowser",
+    "label": "窗口忙等待上限(秒)",
+    "help": "仅在 /browser/open 因窗口忙暂时无法打开时等待；/browser/create 的 Profile 总额度不足会立即失败。默认 900 秒",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "RoxyBrowser",
+      "menu": "浏览器",
+      "section": ""
+    }
+  },
+  {
+    "key": "ROXY_WINDOW_WAIT_INTERVAL",
+    "file": "roxybrowser.py",
+    "type": "int",
+    "group": "RoxyBrowser",
+    "label": "窗口忙重试间隔(秒)",
+    "help": "等待 /browser/open 的临时窗口忙状态时重新尝试打开的间隔；默认 10 秒",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "RoxyBrowser",
+      "menu": "浏览器",
+      "section": ""
+    }
+  },
+  {
+    "key": "ROXY_ONE_PROFILE_PER_ACCOUNT",
+    "file": "roxybrowser.py",
+    "type": "bool",
+    "group": "RoxyBrowser",
+    "label": "一号一环境",
+    "help": "每个账号最多绑定一个 Roxy Profile；没有绑定时才创建新环境",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "RoxyBrowser",
+      "menu": "浏览器",
+      "section": ""
+    }
+  },
+  {
+    "key": "ROXY_REUSE_ACCOUNT_PROFILE",
+    "file": "roxybrowser.py",
+    "type": "bool",
+    "group": "RoxyBrowser",
+    "label": "复用账号环境",
+    "help": "注册续跑和账号级浏览器操作优先打开账号已绑定的 Roxy Profile",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "RoxyBrowser",
+      "menu": "浏览器",
+      "section": ""
+    }
+  },
+  {
+    "key": "ROXY_DELETE_PROFILE_AFTER_RUN",
+    "file": "roxybrowser.py",
+    "type": "bool",
+    "group": "RoxyBrowser",
+    "label": "结束后删除环境",
+    "help": "高风险开关；默认关闭。开启后删除本轮新建的 Roxy Profile，即使已绑定账号",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "RoxyBrowser",
+      "menu": "浏览器",
+      "section": ""
+    }
+  },
+  {
+    "key": "ROXY_RANDOM_OS_ON_CREATE",
+    "file": "roxybrowser.py",
+    "type": "bool",
+    "group": "RoxyBrowser",
+    "label": "创建环境随机OS",
+    "help": "创建 Roxy 环境时每次在 Windows / macOS 中随机，不固定 macOS",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "RoxyBrowser",
+      "menu": "浏览器",
+      "section": ""
+    }
+  },
+  {
+    "key": "ROXY_RANDOM_OS_CHOICES",
+    "file": "roxybrowser.py",
+    "type": "str",
+    "group": "RoxyBrowser",
+    "label": "随机OS范围",
+    "help": "逗号分隔，默认 Windows,macOS；Roxy 支持 Windows / macOS / Linux / IOS / Android",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "RoxyBrowser",
+      "menu": "浏览器",
+      "section": ""
+    }
+  },
+  {
+    "key": "ROXY_RANDOM_PROFILE_NAME_ON_CREATE",
+    "file": "roxybrowser.py",
+    "type": "bool",
+    "group": "RoxyBrowser",
+    "label": "创建环境随机名称",
+    "help": "创建 Roxy 环境时自动生成不同名称，避免固定 gpt-free-register",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "RoxyBrowser",
+      "menu": "浏览器",
+      "section": ""
+    }
+  },
+  {
+    "key": "ROXY_PROFILE_NAME_PREFIX",
+    "file": "roxybrowser.py",
+    "type": "str",
+    "group": "RoxyBrowser",
+    "label": "随机名称前缀",
+    "help": "默认 rb；实际名称格式类似 rb-时间戳-随机码",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "RoxyBrowser",
+      "menu": "浏览器",
+      "section": ""
+    }
+  },
+  {
+    "key": "ROXY_CREATE_USE_PROXY_POOL",
+    "file": "roxybrowser.py",
+    "type": "bool",
+    "group": "RoxyBrowser",
+    "label": "创建环境使用代理池",
+    "help": "仅用于手动代理地址来源；选择 API 供应商时会自动把每个任务的独立租约写入 Roxy proxyInfo，且优先于此开关",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "RoxyBrowser",
+      "menu": "浏览器",
+      "section": ""
+    }
+  },
+  {
+    "key": "ROXY_PROXY_CHECK_CHANNEL",
+    "file": "roxybrowser.py",
+    "type": "str",
+    "group": "RoxyBrowser",
+    "label": "代理检测通道",
+    "help": "写入 Roxy proxyInfo.checkChannel；留空则不传，默认 IPRust.io",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "RoxyBrowser",
+      "menu": "浏览器",
+      "section": ""
+    }
+  },
+  {
+    "key": "ROXY_DELETE_PATH",
+    "file": "roxybrowser.py",
+    "type": "str",
+    "group": "RoxyBrowser",
+    "label": "删除接口路径",
+    "help": "默认 /browser/delete；如 Roxy 版本不同可调整",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "RoxyBrowser",
+      "menu": "浏览器",
+      "section": ""
+    }
+  },
+  {
+    "key": "CODEX_OAUTH_DRIVER",
+    "file": "codex.py",
+    "type": "str",
+    "group": "注册主链路",
+    "label": "Codex 授权驱动",
+    "help": "选择 Codex OAuth 所用的自动化方式：protocol=纯协议，roxy=浏览器，same_as_registration=跟随注册主流程驱动",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "注册主链路",
+      "menu": "注册与账号",
+      "section": ""
+    }
+  },
+  {
+    "key": "CODEX_TOKEN_AUTO_REFRESH_ENABLED",
+    "file": "codex.py",
+    "type": "bool",
+    "group": "定时任务",
+    "label": "自动刷新 OAuth Token",
+    "help": "进入到期窗口后使用 refresh_token 换新 access token；不重新登录，不收邮箱或短信验证码",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "定时任务",
+      "menu": "系统与维护",
+      "section": ""
+    }
+  },
+  {
+    "key": "CODEX_TOKEN_REFRESH_BEFORE_HOURS",
+    "file": "codex.py",
+    "type": "int",
+    "group": "定时任务",
+    "label": "提前刷新(小时)",
+    "help": "Codex access token 距离过期多少小时开始自动刷新，默认 24",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "定时任务",
+      "menu": "系统与维护",
+      "section": ""
+    }
+  },
+  {
+    "key": "CODEX_TOKEN_REFRESH_SCAN_INTERVAL_SECONDS",
+    "file": "codex.py",
+    "type": "int",
+    "group": "定时任务",
+    "label": "刷新巡检间隔(秒)",
+    "help": "后台检查 Codex OAuth 到期状态的间隔，默认 86400 秒（每天一次），最小按 300 秒执行",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "定时任务",
+      "menu": "系统与维护",
+      "section": ""
+    }
+  },
+  {
+    "key": "CODEX_TOKEN_REFRESH_INITIAL_DELAY_SECONDS",
+    "file": "codex.py",
+    "type": "int",
+    "group": "定时任务",
+    "label": "启动后首次巡检(秒)",
+    "help": "WebUI 启动后等待多久执行第一次 Codex OAuth 到期巡检",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "定时任务",
+      "menu": "系统与维护",
+      "section": ""
+    }
+  },
+  {
+    "key": "CODEX_TOKEN_REFRESH_MAX_PER_CYCLE",
+    "file": "codex.py",
+    "type": "int",
+    "group": "定时任务",
+    "label": "单轮最多刷新",
+    "help": "每轮自动巡检最多加入队列的 Codex 凭证数量",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "定时任务",
+      "menu": "系统与维护",
+      "section": ""
+    }
+  },
+  {
+    "key": "CODEX_TOKEN_AUTO_SYNC_SUB2API",
+    "file": "codex.py",
+    "type": "bool",
+    "group": "定时任务",
+    "label": "刷新后同步 sub2api",
+    "help": "仅对曾由当前页面成功上传过 sub2api 的凭证自动更新，避免 refresh_token 轮换后 sub2api 仍使用旧值",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "定时任务",
+      "menu": "系统与维护",
+      "section": ""
+    }
+  },
+  {
+    "key": "ROXY_CODEX_CALLBACK_TIMEOUT",
+    "file": "roxybrowser.py",
+    "type": "int",
+    "group": "RoxyBrowser",
+    "label": "Codex回调超时",
+    "help": "Roxy Codex OAuth 等待 localhost:1455 callback 的最长秒数",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "RoxyBrowser",
+      "menu": "浏览器",
+      "section": ""
+    }
+  },
+  {
+    "key": "ENABLE_2FA",
+    "file": "twofa.py",
+    "type": "bool",
+    "group": "注册主链路",
+    "label": "启用 2FA(TOTP)",
+    "help": "注册完成后自动设置动态口令（会多收一封 OTP 邮件）",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "注册主链路",
+      "menu": "注册与账号",
+      "section": ""
+    }
+  },
+  {
+    "key": "TWOFA_DRIVER",
+    "file": "twofa.py",
+    "type": "str",
+    "group": "注册主链路",
+    "label": "2FA 开通方式",
+    "help": "auto=自动选择（协议优先）；protocol=协议开通并按现有流程回退；browser=直接用 RoxyBrowser 安全设置页面",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "注册主链路",
+      "menu": "注册与账号",
+      "section": ""
+    }
+  },
+  {
+    "key": "TWOFA_REAUTH_MAX_ATTEMPTS",
+    "file": "twofa.py",
+    "type": "int",
+    "group": "账号补全",
+    "label": "2FA 重认证尝试次数",
+    "help": "重认证临时故障的总尝试次数；OTP 仅重试无业务拒绝、无交互挑战的 403/429，复用原会话和验证码",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "补 2FA",
+      "menu": "注册与账号",
+      "section": "补 2FA"
+    }
+  },
+  {
+    "key": "TWOFA_REAUTH_RETRY_DELAY",
+    "file": "twofa.py",
+    "type": "float",
+    "group": "账号补全",
+    "label": "2FA 重认证退避基数",
+    "help": "首次重试等待秒数，后续指数退避；OTP 同时尊重服务端 120 秒以内的 Retry-After",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "补 2FA",
+      "menu": "注册与账号",
+      "section": "补 2FA"
+    }
+  },
+  {
+    "key": "ENABLE_FLOW_TRIGGER",
+    "file": "flow_trigger.py",
+    "type": "bool",
+    "group": "注册主链路",
+    "label": "启用 Flow 触发",
+    "help": "注册成功后自动调用内部 Flow 接口（不影响注册结果）",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "注册主链路",
+      "menu": "注册与账号",
+      "section": ""
+    }
+  },
+  {
+    "key": "ENABLE_HUMANIZE_DELAY",
+    "file": "humanize.py",
+    "type": "bool",
+    "group": "人工节奏",
+    "label": "启用随机停顿",
+    "help": "在注册、OTP、授权等步骤之间加入随机等待，更接近人工操作节奏",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "人工节奏",
+      "menu": "浏览器",
+      "section": ""
+    }
+  },
+  {
+    "key": "HUMANIZE_DELAY_FACTOR",
+    "file": "humanize.py",
+    "type": "float",
+    "group": "人工节奏",
+    "label": "停顿倍率",
+    "help": "随机停顿整体倍率；1.0=默认，0.5=减半，2.0=加倍",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "人工节奏",
+      "menu": "浏览器",
+      "section": ""
+    }
+  },
+  {
+    "key": "ENABLE_HUMANIZE_BROWSER_ACTIONS",
+    "file": "humanize.py",
+    "type": "bool",
+    "group": "人工节奏",
+    "label": "浏览器动作随机化",
+    "help": "Roxy 点击、输入、页面观察使用随机鼠标落点和逐字输入，降低机械操作痕迹",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "人工节奏",
+      "menu": "浏览器",
+      "section": ""
+    }
+  },
+  {
+    "key": "USE_EMAIL_SERVICE",
+    "file": "email.py",
+    "type": "bool",
+    "group": "邮箱 / OTP",
+    "label": "自动取邮箱+收码",
+    "help": "True=从邮箱池自动领邮箱并自动收 OTP；False=手动模式：用 REGISTER_EMAIL，OTP 在任务页手填",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "通用邮箱 / OTP"
+    }
+  },
+  {
+    "key": "REGISTER_EMAIL",
+    "file": "register.py",
+    "type": "str",
+    "group": "邮箱 / OTP",
+    "label": "手动注册邮箱",
+    "help": "USE_EMAIL_SERVICE=False 时必填。例如你的 outlook.com 地址；OTP 去网页邮箱看，再回任务页提交",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "通用邮箱 / OTP"
+    }
+  },
+  {
+    "key": "REGISTER_NAME",
+    "file": "register.py",
+    "type": "str",
+    "group": "注册主链路",
+    "label": "显示名称",
+    "help": "留空则自动生成英文名",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "注册主链路",
+      "menu": "注册与账号",
+      "section": ""
+    }
+  },
+  {
+    "key": "OTP_MAX_WAIT",
+    "file": "email.py",
+    "type": "int",
+    "group": "邮箱 / OTP",
+    "label": "OTP 最长等待(秒)",
+    "help": "单轮等待验证码邮件的最长秒数；Email Butler/iCloud 转发建议 240，避免过早重发制造多枚验证码",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "通用邮箱 / OTP"
+    }
+  },
+  {
+    "key": "OTP_POLL_INTERVAL",
+    "file": "email.py",
+    "type": "int",
+    "group": "邮箱 / OTP",
+    "label": "OTP 轮询间隔(秒)",
+    "help": "每隔多少秒查一次新邮件",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "通用邮箱 / OTP"
+    }
+  },
+  {
+    "key": "EMAIL_SOURCE",
+    "file": "email.py",
+    "type": "str",
+    "group": "邮箱 / OTP",
+    "label": "CLI 默认本地邮箱顺序",
+    "help": "仅 CLI 未指定来源时按此顺序领取本地库存；WebUI 注册需明确选择本地池。历史收码连接独立保留，不受此列表控制",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "通用邮箱 / OTP"
+    }
+  },
+  {
+    "key": "EMAIL_DERIVATION_ENABLED",
+    "file": "email.py",
+    "type": "bool",
+    "group": "邮箱 / OTP",
+    "label": "历史子地址领取开关",
+    "help": "仅兼容历史环境和任务快照；子邮箱现由 Email Butler 管理",
+    "editable": false,
+    "value": false,
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "其他邮箱配置"
+    }
+  },
+  {
+    "key": "EMAIL_DERIVATION_SOURCES",
+    "file": "email.py",
+    "type": "str",
+    "group": "邮箱 / OTP",
+    "label": "历史子地址来源",
+    "help": "仅兼容历史环境和任务快照；子邮箱现由 Email Butler 管理",
+    "editable": false,
+    "value": "",
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "其他邮箱配置"
+    }
+  },
+  {
+    "key": "EMAIL_DERIVATION_MAX_CHILDREN",
+    "file": "email.py",
+    "type": "int",
+    "group": "邮箱 / OTP",
+    "label": "历史子地址额度",
+    "help": "仅兼容历史环境和任务快照；新生成额度在 Email Butler 管理",
+    "editable": false,
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "其他邮箱配置"
+    }
+  },
+  {
+    "key": "EMAIL_DERIVATION_TAG_LENGTH",
+    "file": "email.py",
+    "type": "int",
+    "group": "邮箱 / OTP",
+    "label": "历史子地址后缀长度",
+    "help": "仅兼容历史环境和任务快照；新子地址后缀在 Email Butler 管理",
+    "editable": false,
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "其他邮箱配置"
+    }
+  },
+  {
+    "key": "EMAIL_BUTLER_API_BASE",
+    "file": "email.py",
+    "type": "str",
+    "group": "邮箱 / OTP",
+    "label": "Email Butler API 地址",
+    "help": "v2 租约 API 根地址，例如 https://email-butler.leeseven.com/v2；历史固定连接会规范到 v2",
+    "storage": "env",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "Email Butler"
+    }
+  },
+  {
+    "key": "EMAIL_BUTLER_API_KEY",
+    "file": "email.py",
+    "type": "str",
+    "group": "邮箱 / OTP",
+    "label": "Email Butler API Key",
+    "help": "客户端需授权 openai；读取需要 leases.read/codes.read，导入长租需要 leases.create/leases.long_term，退租需要 leases.release；密钥加密保存",
+    "storage": "env",
+    "secret": true,
+    "value": "",
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "Email Butler"
+    }
+  },
+  {
+    "key": "EMAIL_BUTLER_REQUEST_TIMEOUT",
+    "file": "email.py",
+    "type": "int",
+    "group": "邮箱 / OTP",
+    "label": "Email Butler 请求超时(秒)",
+    "help": "单次 HTTP 请求超时，默认 20 秒",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "Email Butler"
+    }
+  },
+  {
+    "key": "GPTMAIL_API_KEY",
+    "file": "email.py",
+    "type": "str",
+    "group": "邮箱 / OTP",
+    "label": "GPTMail API Key",
+    "help": "选择 gptmail 邮箱来源时必填；保存在 .env，不会写入 config 源码",
+    "storage": "env",
+    "secret": true,
+    "value": "",
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "GPTMail"
+    }
+  },
+  {
+    "key": "CLOUDFLARE_API_BASE",
+    "file": "email.py",
+    "type": "str",
+    "group": "邮箱 / OTP",
+    "label": "Cloudflare API 地址",
+    "help": "Worker 临时邮箱 API 根地址，如 https://mail.example.com；选择 cloudflare 时必填",
+    "storage": "env",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "Cloudflare 临时邮箱"
+    }
+  },
+  {
+    "key": "CLOUDFLARE_API_KEY",
+    "file": "email.py",
+    "type": "str",
+    "group": "邮箱 / OTP",
+    "label": "Cloudflare API Key",
+    "help": "匿名可空；admin 模式填 ADMIN_PASSWORD；保存在 .env",
+    "storage": "env",
+    "secret": true,
+    "value": "",
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "Cloudflare 临时邮箱"
+    }
+  },
+  {
+    "key": "CLOUDFLARE_SIGNAL_API_KEY",
+    "file": "email.py",
+    "type": "str",
+    "group": "邮箱 / OTP",
+    "label": "Cloudflare 封号信号 Key",
+    "help": "仅用于查询封号邮件信号，不返回邮件正文；建议使用独立 Key",
+    "storage": "env",
+    "secret": true,
+    "value": "",
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "Cloudflare 临时邮箱"
+    }
+  },
+  {
+    "key": "CLOUDFLARE_SIGNAL_PATH",
+    "file": "email.py",
+    "type": "str",
+    "group": "邮箱 / OTP",
+    "label": "Cloudflare 封号信号路径",
+    "help": "默认 /signals/scan",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "Cloudflare 临时邮箱"
+    }
+  },
+  {
+    "key": "CLOUDFLARE_AUTH_MODE",
+    "file": "email.py",
+    "type": "str",
+    "group": "邮箱 / OTP",
+    "label": "Cloudflare 鉴权模式",
+    "help": "none / bearer / x-api-key / x-admin-auth / query-key",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "Cloudflare 临时邮箱"
+    }
+  },
+  {
+    "key": "CLOUDFLARE_CUSTOM_AUTH",
+    "file": "email.py",
+    "type": "str",
+    "group": "邮箱 / OTP",
+    "label": "Cloudflare 全局密码",
+    "help": "Worker PASSWORDS，注入 x-custom-auth；保存在 .env",
+    "storage": "env",
+    "secret": true,
+    "value": "",
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "Cloudflare 临时邮箱"
+    }
+  },
+  {
+    "key": "CLOUDFLARE_PATH_ACCOUNTS",
+    "file": "email.py",
+    "type": "str",
+    "group": "邮箱 / OTP",
+    "label": "Cloudflare 创建路径",
+    "help": "默认 /api/new_address；admin 常用 /admin/new_address",
+    "editable": false,
+    "value": "",
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "Cloudflare 临时邮箱"
+    }
+  },
+  {
+    "key": "CLOUDFLARE_PATH_MESSAGES",
+    "file": "email.py",
+    "type": "str",
+    "group": "邮箱 / OTP",
+    "label": "Cloudflare 邮件路径",
+    "help": "默认 /api/mails",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "Cloudflare 临时邮箱"
+    }
+  },
+  {
+    "key": "CLOUDFLARE_DEFAULT_DOMAINS",
+    "file": "email.py",
+    "type": "list_str_multiline",
+    "group": "邮箱 / OTP",
+    "label": "Cloudflare 默认域名",
+    "help": "收信域名，每行一个或逗号分隔；创建时轮询使用，可留空",
+    "editable": false,
+    "value": [],
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "Cloudflare 临时邮箱"
+    }
+  },
+  {
+    "key": "CLOUDFLARE_REQUEST_TIMEOUT",
+    "file": "email.py",
+    "type": "int",
+    "group": "邮箱 / OTP",
+    "label": "Cloudflare 请求超时(秒)",
+    "help": "HTTP 请求超时，默认 20",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "Cloudflare 临时邮箱"
+    }
+  },
+  {
+    "key": "CLOUDFLARE_NAME_LENGTH",
+    "file": "email.py",
+    "type": "int",
+    "group": "邮箱 / OTP",
+    "label": "Cloudflare 随机名前缀长度",
+    "help": "admin 创建时 local-part 长度，默认 10",
+    "editable": false,
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "Cloudflare 临时邮箱"
+    }
+  },
+  {
+    "key": "OUTLOOK_FETCH_MODE",
+    "file": "email.py",
+    "type": "str",
+    "group": "邮箱 / OTP",
+    "label": "Outlook取件模式",
+    "help": "auto=远端优先，远端 402/DEPLOYMENT_DISABLED 自动切 Graph 直连；direct=只用 Microsoft Graph 直连；remote=只用远端服务",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "Outlook 邮箱池"
+    }
+  },
+  {
+    "key": "OUTLOOK_API_BASE",
+    "file": "email.py",
+    "type": "str",
+    "group": "邮箱 / OTP",
+    "label": "Outlook 远端取件地址",
+    "help": "OUTLOOK_FETCH_MODE=remote/auto 时使用的 mail.chatai.codes API 根地址；改为自建兼容服务时填写完整地址",
+    "storage": "env",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "Outlook 邮箱池"
+    }
+  },
+  {
+    "key": "EMAIL_DOMAIN",
+    "file": "email.py",
+    "type": "str",
+    "group": "邮箱 / OTP",
+    "label": "转发域名(cloudflare_domain)",
+    "help": "仅 cloudflare_domain 使用：Email Routing 的域名，如 mydomain.com；与 EMAIL_SOURCE=cloudflare 无关",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "Cloudflare 域名邮箱"
+    }
+  },
+  {
+    "key": "QQ_EMAIL",
+    "file": "email.py",
+    "type": "str",
+    "group": "邮箱 / OTP",
+    "label": "QQ 邮箱地址",
+    "help": "仅 cloudflare_domain：接收 Email Routing 转发的 QQ 邮箱，如 123456@qq.com",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "Cloudflare 域名邮箱"
+    }
+  },
+  {
+    "key": "QQ_IMAP_PASSWORD",
+    "file": "email.py",
+    "type": "str",
+    "group": "邮箱 / OTP",
+    "label": "QQ 邮箱 IMAP 授权码",
+    "help": "仅 cloudflare_domain：QQ IMAP 授权码，保存在 .env，不写回 config/*.py",
+    "storage": "env",
+    "secret": true,
+    "value": "",
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "Cloudflare 域名邮箱"
+    }
+  },
+  {
+    "key": "MAIL_NEST_API_KEY",
+    "file": "email.py",
+    "type": "str",
+    "group": "邮箱 / OTP",
+    "label": "MailNest API Key",
+    "help": "选择 mailnest 邮箱来源时必填；保存在 .env，不会写入 config 源码",
+    "storage": "env",
+    "secret": true,
+    "value": "",
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "MailNest"
+    }
+  },
+  {
+    "key": "MAIL_NEST_PROJECT_CODE",
+    "file": "email.py",
+    "type": "str",
+    "group": "邮箱 / OTP",
+    "label": "MailNest 项目代码",
+    "help": "项目代码 默认 chatgpt001 获取页面 mailnest.top/buy-email",
+    "editable": false,
+    "value": "",
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "MailNest"
+    }
+  },
+  {
+    "key": "MAILCODE_API_KEY",
+    "file": "email.py",
+    "type": "str",
+    "group": "邮箱 / OTP",
+    "label": "MailCode API Key",
+    "help": "官网创建的购买及读取密钥，仅保存在 .env；服务地址固定为官网",
+    "storage": "env",
+    "secret": true,
+    "external_url": "https://mailcode.bzb.qzz.io",
+    "external_label": "打开官网",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "域名邮箱 MailCode"
+    }
+  },
+  {
+    "key": "MAILCODE_PRODUCT_ID",
+    "file": "email.py",
+    "type": "str",
+    "group": "邮箱 / OTP",
+    "label": "MailCode 商品 ID",
+    "help": "每个任务购买一个指定商品；重跑沿用 PostgreSQL 原订单和幂等键，不切换商品",
+    "editable": false,
+    "value": "",
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "域名邮箱 MailCode"
+    }
+  },
+  {
+    "key": "MAILCODE_REQUEST_TIMEOUT",
+    "file": "email.py",
+    "type": "int",
+    "group": "邮箱 / OTP",
+    "label": "MailCode 请求超时(秒)",
+    "help": "单次 API 请求超时，默认 20 秒",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "域名邮箱 MailCode"
+    }
+  },
+  {
+    "key": "MAILCODE_CHANNEL_WAIT_SECONDS",
+    "file": "email.py",
+    "type": "int",
+    "group": "邮箱 / OTP",
+    "label": "MailCode 通道准备超时(秒)",
+    "help": "购买后等待通道 READY 再注册；失败保留原订单，默认 60 秒",
+    "editable": false,
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "域名邮箱 MailCode"
+    }
+  },
+  {
+    "key": "XIGUA_API_BASE",
+    "file": "email.py",
+    "type": "str",
+    "group": "邮箱 / OTP",
+    "label": "西瓜 API 地址",
+    "help": "默认 https://xigua.dasiqo.com",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "西瓜邮箱"
+    }
+  },
+  {
+    "key": "XIGUA_API_KEY",
+    "file": "email.py",
+    "type": "str",
+    "group": "邮箱 / OTP",
+    "label": "西瓜 API Key",
+    "help": "西瓜控制台密钥，仅保存在 .env",
+    "storage": "env",
+    "secret": true,
+    "external_url": "https://xigua.dasiqo.com",
+    "external_label": "打开官网",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "西瓜邮箱"
+    }
+  },
+  {
+    "key": "XIGUA_PROJECT_SLUG",
+    "file": "email.py",
+    "type": "str",
+    "group": "邮箱 / OTP",
+    "label": "西瓜项目标识",
+    "help": "项目说明标识，默认 chatgpt；实际下单只使用指定的 Offer ID",
+    "editable": false,
+    "value": "",
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "西瓜邮箱"
+    }
+  },
+  {
+    "key": "XIGUA_OFFER_ID",
+    "file": "email.py",
+    "type": "str",
+    "group": "邮箱 / OTP",
+    "label": "西瓜 Offer ID",
+    "help": "固定领取此方案，不自动选择其他方案；重跑沿用原订单，不自动取消",
+    "editable": false,
+    "value": "",
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "西瓜邮箱"
+    }
+  },
+  {
+    "key": "XIGUA_REQUEST_TIMEOUT",
+    "file": "email.py",
+    "type": "int",
+    "group": "邮箱 / OTP",
+    "label": "西瓜请求超时(秒)",
+    "help": "单次 API 请求超时，默认 20 秒",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "西瓜邮箱"
+    }
+  },
+  {
+    "key": "XIGUA_POLL_ATTEMPTS",
+    "file": "email.py",
+    "type": "int",
+    "group": "邮箱 / OTP",
+    "label": "西瓜取码轮询次数",
+    "help": "最多读取原订单的次数；验证码至少连续确认两次",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "西瓜邮箱"
+    }
+  },
+  {
+    "key": "XIGUA_POLL_INTERVAL",
+    "file": "email.py",
+    "type": "int",
+    "group": "邮箱 / OTP",
+    "label": "西瓜取码间隔(秒)",
+    "help": "轮询默认间隔 5 秒；受 OTP 总等待时间和阶段预算限制",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "西瓜邮箱"
+    }
+  },
+  {
+    "key": "REMAIL_API_BASE",
+    "file": "email.py",
+    "type": "str",
+    "group": "邮箱 / OTP",
+    "label": "Remail API 地址",
+    "help": "开放 API 根地址，默认 https://remail.aishop6.com",
+    "storage": "env",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "Remail"
+    }
+  },
+  {
+    "key": "REMAIL_API_KEY",
+    "file": "email.py",
+    "type": "str",
+    "group": "邮箱 / OTP",
+    "label": "Remail API Key",
+    "help": "选择 remail 邮箱来源时必填；控制台生成的 API Key，只保存在 .env",
+    "storage": "env",
+    "secret": true,
+    "value": "",
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "Remail"
+    }
+  },
+  {
+    "key": "REMAIL_PROJECT_ID",
+    "file": "email.py",
+    "type": "int",
+    "group": "邮箱 / OTP",
+    "label": "Remail 项目 ID",
+    "help": "用于 ChatGPT/OpenAI 验证码的项目 ID，默认 2；以平台项目列表为准",
+    "editable": false,
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "Remail"
+    }
+  },
+  {
+    "key": "REMAIL_EMAIL_SUFFIX",
+    "file": "email.py",
+    "type": "str",
+    "group": "邮箱 / OTP",
+    "label": "Remail 邮箱后缀",
+    "help": "项目下单使用的邮箱后缀，默认 outlook.com",
+    "editable": false,
+    "value": "",
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "Remail"
+    }
+  },
+  {
+    "key": "REMAIL_SERVICE_MODE",
+    "file": "email.py",
+    "type": "str",
+    "group": "邮箱 / OTP",
+    "label": "Remail 服务模式",
+    "help": "purchase 为可重复收件的长效购买；code 为短效接码，后续登录收码受服务有效期限制",
+    "editable": false,
+    "value": "",
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "Remail"
+    }
+  },
+  {
+    "key": "REMAIL_SUPPLY_POLICY",
+    "file": "email.py",
+    "type": "str",
+    "group": "邮箱 / OTP",
+    "label": "Remail 库存策略",
+    "help": "public_only 只使用公开库存；private_first 优先使用自己的库存",
+    "editable": false,
+    "value": "",
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "Remail"
+    }
+  },
+  {
+    "key": "REMAIL_ORDER_WAIT_SECONDS",
+    "file": "email.py",
+    "type": "int",
+    "group": "邮箱 / OTP",
+    "label": "Remail 订单等待(秒)",
+    "help": "订单未立即返回收件凭证时，等待订单详情补齐凭证的最长时间，默认 30 秒",
+    "editable": false,
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "Remail"
+    }
+  },
+  {
+    "key": "REMAIL_REQUEST_TIMEOUT",
+    "file": "email.py",
+    "type": "int",
+    "group": "邮箱 / OTP",
+    "label": "Remail 请求超时(秒)",
+    "help": "单次 HTTP 请求超时，默认 20 秒",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "Remail"
+    }
+  },
+  {
+    "key": "CLOUDMAIL_API_BASE",
+    "file": "email.py",
+    "type": "str",
+    "group": "邮箱 / OTP",
+    "label": "CloudMail API 地址",
+    "help": "Cloud Mail Worker/API 地址，例如 https://mail.example.com",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "CloudMail"
+    }
+  },
+  {
+    "key": "CLOUDMAIL_ADMIN_EMAIL",
+    "file": "email.py",
+    "type": "str",
+    "group": "邮箱 / OTP",
+    "label": "CloudMail管理员邮箱",
+    "help": "用于生成 Token；域名被平台隐藏时也会用它登录读取域名",
+    "storage": "env",
+    "editable": false,
+    "value": "",
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "CloudMail"
+    }
+  },
+  {
+    "key": "CLOUDMAIL_PASSWORD",
+    "file": "email.py",
+    "type": "str",
+    "group": "邮箱 / OTP",
+    "label": "CloudMail 密码",
+    "help": "用于自动获取 Token；保存在 .env",
+    "storage": "env",
+    "secret": true,
+    "editable": false,
+    "value": "",
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "CloudMail"
+    }
+  },
+  {
+    "key": "CLOUDMAIL_TOKEN_PATH",
+    "file": "email.py",
+    "type": "str",
+    "group": "邮箱 / OTP",
+    "label": "CloudMail Token路径",
+    "help": "固定使用 /api/public/genToken；如部署版本不同可修改",
+    "editable": false,
+    "value": "",
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "CloudMail"
+    }
+  },
+  {
+    "key": "CLOUDMAIL_AUTH_TOKEN",
+    "file": "email.py",
+    "type": "str",
+    "group": "邮箱 / OTP",
+    "label": "CloudMail Token",
+    "help": "CloudMail/Cloud Mail API Authorization Token；保存在 .env",
+    "storage": "env",
+    "secret": true,
+    "value": "",
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "CloudMail"
+    }
+  },
+  {
+    "key": "CLOUDMAIL_DOMAINS",
+    "file": "email.py",
+    "type": "list_str_multiline",
+    "group": "邮箱 / OTP",
+    "label": "CloudMail 域名列表",
+    "help": "可留空；运行时会自动从平台获取。也可点“获取 CloudMail 域名”缓存到这里",
+    "editable": false,
+    "value": [],
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "CloudMail"
+    }
+  },
+  {
+    "key": "CLOUDMAIL_AUTO_ADD_USER",
+    "file": "email.py",
+    "type": "bool",
+    "group": "邮箱 / OTP",
+    "label": "CloudMail自动创建用户",
+    "help": "生成随机邮箱后调用 /api/public/addUser 创建用户",
+    "editable": false,
+    "value": false,
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "CloudMail"
+    }
+  },
+  {
+    "key": "CLOUDMAIL_RANDOM_LOCAL_LENGTH",
+    "file": "email.py",
+    "type": "int",
+    "group": "邮箱 / OTP",
+    "label": "CloudMail随机名前缀长度",
+    "help": "生成邮箱 local-part 的长度，建议 10-16",
+    "editable": false,
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "CloudMail"
+    }
+  },
+  {
+    "key": "ICLOUD_HME_API_BASE",
+    "file": "email.py",
+    "type": "str",
+    "group": "邮箱 / OTP",
+    "label": "iCloud HME 服务地址",
+    "help": "本机 icloud-hme sidecar 地址，默认 http://127.0.0.1:8081",
+    "storage": "env",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "iCloud 隐藏邮箱"
+    }
+  },
+  {
+    "key": "ICLOUD_HME_ACCOUNT_ID",
+    "file": "email.py",
+    "type": "str",
+    "group": "邮箱 / OTP",
+    "label": "iCloud 固定账号 ID",
+    "help": "sidecar 中的固定账号 ID；留空自动发现并同步全部 active 账号",
+    "storage": "env",
+    "editable": false,
+    "value": "",
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "iCloud 隐藏邮箱"
+    }
+  },
+  {
+    "key": "ICLOUD_HME_API_TOKEN",
+    "file": "email.py",
+    "type": "str",
+    "group": "邮箱 / OTP",
+    "label": "iCloud HME API Token",
+    "help": "本地服务启用鉴权时填写；仅监听 127.0.0.1 时可留空",
+    "storage": "env",
+    "secret": true,
+    "value": "",
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "iCloud 隐藏邮箱"
+    }
+  },
+  {
+    "key": "ICLOUD_HME_REQUEST_TIMEOUT",
+    "file": "email.py",
+    "type": "int",
+    "group": "邮箱 / OTP",
+    "label": "iCloud 收件请求超时(秒)",
+    "help": "历史邮箱通过固定收件连接拉信的单次请求超时，默认 35",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "iCloud 隐藏邮箱"
+    }
+  },
+  {
+    "key": "ICLOUD_HME_SYNC_TTL",
+    "file": "email.py",
+    "type": "int",
+    "group": "邮箱 / OTP",
+    "label": "iCloud 同步缓存(秒)",
+    "help": "别名池自动同步的缓存时长，默认 300；连接测试会强制同步",
+    "editable": false,
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "iCloud 隐藏邮箱"
+    }
+  },
+  {
+    "key": "ICLOUD_HME_INBOX_MODE",
+    "file": "email.py",
+    "type": "str",
+    "group": "邮箱 / OTP",
+    "label": "隐藏邮箱收件模式",
+    "help": "sidecar=iCloud IMAP；forward_imap=本机直接读取 Gmail；forward_butler=Oracle 接收 Gmail 并从 Email Butler PG 缓存取码",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "iCloud 隐藏邮箱"
+    }
+  },
+  {
+    "key": "ICLOUD_HME_BUTLER_BRIDGE_ENABLED",
+    "file": "email.py",
+    "type": "bool",
+    "group": "邮箱 / OTP",
+    "label": "历史隐藏邮箱桥接 Butler",
+    "help": "显式启用后，历史 icloud_hide 地址通过 Butler 严格取码和上报结果；保留原完整地址及归属，不申请新租约。启用前先导入历史身份并迁移收件 profile；回滚须同时恢复原 profile",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "iCloud 隐藏邮箱"
+    }
+  },
+  {
+    "key": "ICLOUD_HME_FORWARD_IMAP_SERVER",
+    "file": "email.py",
+    "type": "str",
+    "group": "邮箱 / OTP",
+    "label": "转发 IMAP 服务器",
+    "help": "Gmail 填 imap.gmail.com",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "iCloud 隐藏邮箱"
+    }
+  },
+  {
+    "key": "ICLOUD_HME_FORWARD_IMAP_PORT",
+    "file": "email.py",
+    "type": "int",
+    "group": "邮箱 / OTP",
+    "label": "转发 IMAP 端口",
+    "help": "SSL IMAP 默认 993",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "iCloud 隐藏邮箱"
+    }
+  },
+  {
+    "key": "ICLOUD_HME_FORWARD_IMAP_EMAIL",
+    "file": "email.py",
+    "type": "str",
+    "group": "邮箱 / OTP",
+    "label": "隐藏邮箱最终收件箱",
+    "help": "实际接收隐藏邮箱邮件的最终 Gmail；允许 Apple 先转发到中转邮箱，Butler 严格核对最终投递证据",
+    "storage": "env",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "iCloud 隐藏邮箱"
+    }
+  },
+  {
+    "key": "ICLOUD_HME_FORWARD_IMAP_PASSWORD",
+    "file": "email.py",
+    "type": "str",
+    "group": "邮箱 / OTP",
+    "label": "Gmail IMAP 应用密码",
+    "help": "forward_imap 模式用于本机直接读取 Gmail；请填写 Gmail 应用专用密码",
+    "storage": "env",
+    "secret": true,
+    "value": "",
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "iCloud 隐藏邮箱"
+    }
+  },
+  {
+    "key": "ICLOUD_HME_AUTO_CREATE",
+    "file": "email.py",
+    "type": "bool",
+    "group": "邮箱 / OTP",
+    "label": "库存为空自动创建",
+    "help": "关闭时仅使用已同步别名；开启后池为空会向 Apple 申请一个新隐藏邮箱",
+    "editable": false,
+    "value": false,
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "iCloud 隐藏邮箱"
+    }
+  },
+  {
+    "key": "ICLOUD_HME_CREATE_LABEL_PREFIX",
+    "file": "email.py",
+    "type": "str",
+    "group": "邮箱 / OTP",
+    "label": "新别名标签前缀",
+    "help": "自动创建新隐藏邮箱时使用的标签前缀，默认 turb",
+    "editable": false,
+    "value": "",
+    "legacyNavigation": {
+      "domain": "邮箱 / OTP",
+      "menu": "邮箱与验证码",
+      "section": "iCloud 隐藏邮箱"
+    }
+  },
+  {
+    "key": "BROWSER_LOCALE_PROFILE",
+    "file": "browser.py",
+    "type": "str",
+    "group": "浏览器画像",
+    "label": "地区画像",
+    "help": "GeoIP 自动画像关闭或检测失败时使用的兜底地区；可选 jp/cn/us/sg/vn，应尽量与代理出口地区一致",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "浏览器画像",
+      "menu": "浏览器",
+      "section": ""
+    }
+  },
+  {
+    "key": "AUTO_BROWSER_LOCALE_FROM_IP",
+    "file": "browser.py",
+    "type": "bool",
+    "group": "浏览器画像",
+    "label": "按出口IP自动画像",
+    "help": "开启后每个 BrowserSession 会用当前代理出口 IP 自动选择语言/时区；失败时回退到地区画像",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "浏览器画像",
+      "menu": "浏览器",
+      "section": ""
+    }
+  },
+  {
+    "key": "IP_GEO_TIMEOUT",
+    "file": "browser.py",
+    "type": "float",
+    "group": "浏览器画像",
+    "label": "IP定位超时(秒)",
+    "help": "出口 IP 地理信息接口的单次请求超时；接口失败会自动回退，不影响注册",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "浏览器画像",
+      "menu": "浏览器",
+      "section": ""
+    }
+  },
+  {
+    "key": "BROWSER_DATA_SAVER_MODE",
+    "file": "browser.py",
+    "type": "bool",
+    "group": "浏览器画像",
+    "label": "Roxy 本地浏览器省流量模式",
+    "help": "注册核验并保存会话后使用轻量页面，跳过完整首页；需要浏览器设置 2FA 时恢复页面资源。登录认证期间只拦截可选资源和遥测，保留脚本、认证接口及 WebSocket",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "浏览器画像",
+      "menu": "浏览器",
+      "section": ""
+    }
+  },
+  {
+    "key": "BROWSER_DATA_SAVER_AUTH_FLOWS",
+    "file": "browser.py",
+    "type": "list_str_multiline",
+    "group": "浏览器画像",
+    "label": "认证流程省流量范围",
+    "help": "每行一个流程；默认 token_refresh、live_check、codex_oauth、account_action。注册流程始终跟随总开关",
+    "value": [],
+    "legacyNavigation": {
+      "domain": "浏览器画像",
+      "menu": "浏览器",
+      "section": ""
+    }
+  },
+  {
+    "key": "BROWSER_DATA_SAVER_BLOCKED_RESOURCE_TYPES",
+    "file": "browser.py",
+    "type": "list_str_multiline",
+    "group": "浏览器画像",
+    "label": "省流量拦截类型",
+    "help": "每行一种，默认 image、media；font 需单独验证页面稳定性；登录所需 script、stylesheet 自动放行；填 [] 可关闭类型拦截",
+    "value": [],
+    "legacyNavigation": {
+      "domain": "浏览器画像",
+      "menu": "浏览器",
+      "section": ""
+    }
+  },
+  {
+    "key": "BROWSER_DATA_SAVER_BLOCKED_URL_PATTERNS",
+    "file": "browser.py",
+    "type": "list_str_multiline",
+    "group": "浏览器画像",
+    "label": "省流量 URL 规则",
+    "help": "每行一个 URL glob；内置规则仅含遥测/广告，旧配置中的登录脚本/样式拦截自动忽略；不要加入 session、sentinel 或注册接口；填 [] 可关闭 URL 规则",
+    "value": [],
+    "legacyNavigation": {
+      "domain": "浏览器画像",
+      "menu": "浏览器",
+      "section": ""
+    }
+  },
+  {
+    "key": "BROWSER_PUBLIC_ASSET_CACHE_MODE",
+    "file": "browser.py",
+    "type": "str",
+    "group": "浏览器画像",
+    "label": "公共静态资源缓存",
+    "help": "off=关闭；observe=仅统计候选、不下载或回放；enabled=跨环境复用公开 JS/CSS。AT 刷新允许符合公共缓存响应规则的版本资源携带 Cookie，其他流程保持严格准入；认证接口和账号状态不缓存",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "浏览器画像",
+      "menu": "浏览器",
+      "section": ""
+    }
+  },
+  {
+    "key": "BROWSER_PUBLIC_ASSET_CACHE_MAX_MB",
+    "file": "browser.py",
+    "type": "int",
+    "group": "浏览器画像",
+    "label": "公共静态缓存上限(MiB)",
+    "help": "注册及账号认证流程共享的公共 JS/CSS 磁盘缓存上限，默认 256 MiB；达到上限后淘汰较少使用的资源",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "浏览器画像",
+      "menu": "浏览器",
+      "section": ""
+    }
+  },
+  {
+    "key": "BROWSER_DATA_SAVER_BLOCKED_PROXY_HOSTS",
+    "file": "browser.py",
+    "type": "list_str_multiline",
+    "group": "浏览器画像",
+    "label": "省流量代理域名屏蔽",
+    "help": "仅 Roxy 已领取线路的本机中继生效；连接供应商前拦截指定域名及子域名，默认 dl.google.com、gvt1.com；填 [] 关闭，不估算节省字节",
+    "value": [],
+    "legacyNavigation": {
+      "domain": "浏览器画像",
+      "menu": "浏览器",
+      "section": ""
+    }
+  },
+  {
+    "key": "BROWSER_TRAFFIC_DETAIL_LOG",
+    "file": "browser.py",
+    "type": "bool",
+    "group": "浏览器画像",
+    "label": "资源流量明细日志",
+    "help": "默认关闭；仅记录脱敏资源路径、类型和可观测字节，不保存请求头、正文或查询参数",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "浏览器画像",
+      "menu": "浏览器",
+      "section": ""
+    }
+  },
+  {
+    "key": "BROWSER_TRAFFIC_DETAIL_MAX_ENTRIES",
+    "file": "browser.py",
+    "type": "int",
+    "group": "浏览器画像",
+    "label": "资源流量明细上限",
+    "help": "每个浏览器任务保留并输出的资源明细上限，默认 2000",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "浏览器画像",
+      "menu": "浏览器",
+      "section": ""
+    }
+  },
+  {
+    "key": "BROWSER_JS_COVERAGE_LOG",
+    "file": "browser.py",
+    "type": "bool",
+    "group": "浏览器画像",
+    "label": "JS 执行覆盖率",
+    "help": "默认关闭；通过现有 Roxy CDP 连接采集各 target 的函数计数及代码范围，不读取源码、参数或返回值；未观察到执行不能证明脚本可安全拦截",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "浏览器画像",
+      "menu": "浏览器",
+      "section": ""
+    }
+  },
+  {
+    "key": "BROWSER_JS_COVERAGE_MAX_ENTRIES",
+    "file": "browser.py",
+    "type": "int",
+    "group": "浏览器画像",
+    "label": "JS 覆盖率明细上限",
+    "help": "每个浏览器任务的函数诊断记录上限，默认 1000；不支持 Profiler 时继续业务",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "浏览器画像",
+      "menu": "浏览器",
+      "section": ""
+    }
+  },
+  {
+    "key": "PROXY_POOL_SOURCE",
+    "file": "proxy.py",
+    "type": "str",
+    "group": "代理与网络",
+    "label": "代理来源",
+    "help": "注册和账号动作统一从代理池领取；在此选择 1024Proxy、711Proxy 或手动地址。切换只影响后续领取，已发放租约保持到本轮结束",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "代理与网络",
+      "menu": "代理与网络",
+      "section": "代理来源"
+    }
+  },
+  {
+    "key": "PROXY_POOL_DEFAULT_COUNTRY",
+    "file": "proxy.py",
+    "type": "str",
+    "group": "代理与网络",
+    "label": "默认国家",
+    "help": "未指定国家的代理池请求及缺少历史国家的账号动作使用此国家；有历史国家的账号优先沿用，多国套餐查询按查询国家领取。新注册使用注册主链路的注册国家，手动地址也必须通过实际出口国家检测",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "代理与网络",
+      "menu": "代理与网络",
+      "section": "代理来源"
+    }
+  },
+  {
+    "key": "REGISTRATION_PROXY_MODE",
+    "file": "proxy.py",
+    "type": "str",
+    "group": "代理与网络",
+    "label": "注册代理来源",
+    "help": "仅在新来源字段缺席时迁移旧 pool/1024 配置；新任务统一向代理池领取，不支持直连。",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "代理与网络",
+      "menu": "代理与网络",
+      "section": "高级兼容"
+    }
+  },
+  {
+    "key": "PROXY_1024_API_URL",
+    "file": "proxy.py",
+    "type": "str",
+    "group": "代理与网络",
+    "label": "1024Proxy 供给 API",
+    "help": "粘贴白名单 API 完整 URL；代理池按固定 region、time、num 参数补货，任务只领取已检测租约；time 不保证每次领取都是新会话或新 IP；仅保存到 .env",
+    "storage": "env",
+    "secret": true,
+    "value": "",
+    "legacyNavigation": {
+      "domain": "代理与网络",
+      "menu": "代理与网络",
+      "section": "代理来源"
+    }
+  },
+  {
+    "key": "PROXY_1024_REGION",
+    "file": "proxy.py",
+    "type": "str",
+    "group": "代理与网络",
+    "label": "家宽国家 / 地区",
+    "help": "仅在新国家字段缺席时迁移旧有效国家；新任务按各自业务国家向代理池申请，不再使用随机国家。",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "代理与网络",
+      "menu": "代理与网络",
+      "section": "高级兼容"
+    }
+  },
+  {
+    "key": "PROXY_1024_PROTOCOL",
+    "file": "proxy.py",
+    "type": "str",
+    "group": "代理与网络",
+    "label": "返回代理协议",
+    "help": "通常填 http；也支持 https、socks5、socks5h，必须与 1024Proxy 生成接口时选择的协议一致",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "代理与网络",
+      "menu": "代理与网络",
+      "section": "代理来源"
+    }
+  },
+  {
+    "key": "PROXY_1024_SESSION_MINUTES",
+    "file": "proxy.py",
+    "type": "int",
+    "group": "代理与网络",
+    "label": "粘性时长(分钟)",
+    "help": "默认 30，允许 1~120；延长时间本身不增加按 GB 套餐流量，作为预估的粘性会话窗口，实际可用期仍由供应商决定",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "代理与网络",
+      "menu": "代理与网络",
+      "section": "代理来源"
+    }
+  },
+  {
+    "key": "PROXY_1024_ROTATE_SESSION_TIME",
+    "file": "proxy.py",
+    "type": "bool",
+    "group": "代理与网络",
+    "label": "兼容旧会话参数",
+    "help": "仅保留旧配置兼容性；独立代理池使用固定供给参数，不能据此保证新会话或新 IP，线路复用由租约生命周期和供应商行为决定",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "代理与网络",
+      "menu": "代理与网络",
+      "section": "高级兼容"
+    }
+  },
+  {
+    "key": "PROXY_1024_API_TIMEOUT",
+    "file": "proxy.py",
+    "type": "float",
+    "group": "代理与网络",
+    "label": "API/检测超时(秒)",
+    "help": "提取 API 和出口 IP 检测的单次超时，建议 10~20 秒",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "代理与网络",
+      "menu": "代理与网络",
+      "section": "代理来源"
+    }
+  },
+  {
+    "key": "PROXY_1024_MAX_ATTEMPTS",
+    "file": "proxy.py",
+    "type": "int",
+    "group": "代理与网络",
+    "label": "旧提取失败次数",
+    "help": "仅用于供应商配置诊断的旧提取器；独立代理池每轮提取一次，由后台退避补货",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "代理与网络",
+      "menu": "代理与网络",
+      "section": "高级兼容"
+    }
+  },
+  {
+    "key": "PROXY_1024_ACQUIRE_TIMEOUT",
+    "file": "proxy.py",
+    "type": "float",
+    "group": "代理与网络",
+    "label": "后台补货预算(秒)",
+    "help": "锁等待、节流、提取和出口检测共享的预算；在途网络请求受底层超时约束，任务领取等待另行设置",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "代理与网络",
+      "menu": "代理与网络",
+      "section": "代理来源"
+    }
+  },
+  {
+    "key": "REGISTRATION_PROXY_RETRIES",
+    "file": "proxy.py",
+    "type": "int",
+    "group": "代理与网络",
+    "label": "注册代理换线重试次数",
+    "help": "只对隧道、连接重置等明确代理传输错误换线重试；不改变并发数，也不重试密码入口缺失",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "注册主链路",
+      "menu": "注册与账号",
+      "section": "注册主链路"
+    }
+  },
+  {
+    "key": "REGISTRATION_PROXY_RETRY_DELAY",
+    "file": "proxy.py",
+    "type": "float",
+    "group": "代理与网络",
+    "label": "注册换线重试间隔(秒)",
+    "help": "换线前的短暂间隔，避免连续请求同一代理平台窗口",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "注册主链路",
+      "menu": "注册与账号",
+      "section": "注册主链路"
+    }
+  },
+  {
+    "key": "ACCOUNT_ACTION_PROXY_RETRIES",
+    "file": "proxy.py",
+    "type": "int",
+    "group": "代理与网络",
+    "label": "查活/刷新 AT 换线次数",
+    "help": "查活或刷新 AT 在申请代理阶段遇到重复租约时的额外换线次数；不重跑已提交的认证步骤",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "账号补全",
+      "menu": "注册与账号",
+      "section": "账号补全"
+    }
+  },
+  {
+    "key": "ACCOUNT_ACTION_PROXY_RETRY_DELAY",
+    "file": "proxy.py",
+    "type": "float",
+    "group": "代理与网络",
+    "label": "查活/刷新 AT 换线间隔(秒)",
+    "help": "查活或刷新 AT 申请新代理前等待的秒数，避免连续命中同一粘性代理窗口",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "账号补全",
+      "menu": "注册与账号",
+      "section": "账号补全"
+    }
+  },
+  {
+    "key": "PROXY_1024_VALIDATE",
+    "file": "proxy.py",
+    "type": "bool",
+    "group": "代理与网络",
+    "label": "旧提取出口检测",
+    "help": "旧供应商诊断入口的检测开关；独立代理池始终检测候选及出口地区，仅向任务发放合格库存",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "代理与网络",
+      "menu": "代理与网络",
+      "section": "高级兼容"
+    }
+  },
+  {
+    "key": "PROXY_1024_VALIDATE_ATTEMPTS",
+    "file": "proxy.py",
+    "type": "int",
+    "group": "代理与网络",
+    "label": "同端点检测次数",
+    "help": "出口检测遇到超时、连接或 SSL 瞬时错误时，先重试同一代理；建议 2",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "代理与网络",
+      "menu": "代理与网络",
+      "section": "代理来源"
+    }
+  },
+  {
+    "key": "PROXY_1024_RECENT_TTL",
+    "file": "proxy.py",
+    "type": "int",
+    "group": "代理与网络",
+    "label": "最近 IP 隔离(秒)",
+    "help": "任务释放后多久内拒绝重复分配同一 IP；默认 1800，与 30 分钟粘性时间一致",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "代理与网络",
+      "menu": "代理与网络",
+      "section": "代理来源"
+    }
+  },
+  {
+    "key": "PROXY_1024_ACQUIRE_INTERVAL",
+    "file": "proxy.py",
+    "type": "float",
+    "group": "代理与网络",
+    "label": "提取最小间隔(秒)",
+    "help": "单个进程后台调用提取 API 的最小间隔，默认 0.6 秒，避免瞬间突发",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "代理与网络",
+      "menu": "代理与网络",
+      "section": "代理来源"
+    }
+  },
+  {
+    "key": "PROXY_711_API_URL",
+    "file": "proxy.py",
+    "type": "str",
+    "group": "代理与网络",
+    "label": "711Proxy 供给 API",
+    "help": "粘贴动态住宅按流量套餐的提取 API 完整 URL；代理池固定使用粘性会话并关闭提前换 IP，按目标国家提取并检测；仅保存到 .env",
+    "storage": "env",
+    "secret": true,
+    "value": "",
+    "legacyNavigation": {
+      "domain": "代理与网络",
+      "menu": "代理与网络",
+      "section": "代理来源"
+    }
+  },
+  {
+    "key": "PROXY_711_PROTOCOL",
+    "file": "proxy.py",
+    "type": "str",
+    "group": "代理与网络",
+    "label": "返回代理协议",
+    "help": "支持 http、socks5、socks5h；http 支持 HTTPS 目标访问，必须与 711Proxy 生成提取 API 时选择的协议一致",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "代理与网络",
+      "menu": "代理与网络",
+      "section": "代理来源"
+    }
+  },
+  {
+    "key": "PROXY_711_SESSION_MINUTES",
+    "file": "proxy.py",
+    "type": "int",
+    "group": "代理与网络",
+    "label": "粘性时长(分钟)",
+    "help": "默认 30，允许 1~180；代理池固定使用粘性会话并关闭提前换 IP，实际可用期仍由供应商决定",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "代理与网络",
+      "menu": "代理与网络",
+      "section": "代理来源"
+    }
+  },
+  {
+    "key": "PROXY_711_API_TIMEOUT",
+    "file": "proxy.py",
+    "type": "float",
+    "group": "代理与网络",
+    "label": "API/检测超时(秒)",
+    "help": "提取 API 和出口 IP 检测的单次超时，建议 10~20 秒",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "代理与网络",
+      "menu": "代理与网络",
+      "section": "代理来源"
+    }
+  },
+  {
+    "key": "PROXY_711_ACQUIRE_TIMEOUT",
+    "file": "proxy.py",
+    "type": "float",
+    "group": "代理与网络",
+    "label": "后台补货预算(秒)",
+    "help": "锁等待、节流、提取和出口检测共享的预算；在途网络请求受底层超时约束，任务领取等待另行设置",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "代理与网络",
+      "menu": "代理与网络",
+      "section": "代理来源"
+    }
+  },
+  {
+    "key": "PROXY_711_VALIDATE_ATTEMPTS",
+    "file": "proxy.py",
+    "type": "int",
+    "group": "代理与网络",
+    "label": "同端点检测次数",
+    "help": "出口检测遇到超时、连接或 SSL 瞬时错误时，先重试同一代理；建议 2",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "代理与网络",
+      "menu": "代理与网络",
+      "section": "代理来源"
+    }
+  },
+  {
+    "key": "PROXY_711_RECENT_TTL",
+    "file": "proxy.py",
+    "type": "int",
+    "group": "代理与网络",
+    "label": "最近 IP 隔离(秒)",
+    "help": "任务释放后多久内拒绝重复分配同一 IP；默认 1800，与 30 分钟粘性时间一致",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "代理与网络",
+      "menu": "代理与网络",
+      "section": "代理来源"
+    }
+  },
+  {
+    "key": "PROXY_711_ACQUIRE_INTERVAL",
+    "file": "proxy.py",
+    "type": "float",
+    "group": "代理与网络",
+    "label": "提取最小间隔(秒)",
+    "help": "单个进程后台调用提取 API 的最小间隔，默认 0.6 秒，避免瞬间突发",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "代理与网络",
+      "menu": "代理与网络",
+      "section": "代理来源"
+    }
+  },
+  {
+    "key": "PROXY_POOL",
+    "file": "proxy.py",
+    "type": "list_str_multiline",
+    "group": "代理与网络",
+    "label": "手动代理地址",
+    "help": "每行一个完整代理 URL，支持 http、https、socks5、socks5h；地址进入代理池后统一检测国家和健康状态，列表为空时不能发放租约",
+    "storage": "env",
+    "secret": true,
+    "value": [],
+    "legacyNavigation": {
+      "domain": "代理与网络",
+      "menu": "代理与网络",
+      "section": "代理来源"
+    }
+  },
+  {
+    "key": "PROXY_POOL_COUNTRIES",
+    "file": "proxy.py",
+    "type": "list_str_multiline",
+    "group": "代理与网络",
+    "label": "代理池预热国家",
+    "help": "已启用代理来源按此列表额外备货；支持换行、逗号或空格分隔 ISO 两位国家代码。留空不额外预热，不改变注册国家或独立查套餐国家；各国共享全池容量",
+    "value": [],
+    "legacyNavigation": {
+      "domain": "代理与网络",
+      "menu": "代理与网络",
+      "section": "库存策略"
+    }
+  },
+  {
+    "key": "PROXY_POOL_MIN_READY",
+    "file": "proxy.py",
+    "type": "int",
+    "group": "代理与网络",
+    "label": "代理池最小可用库存",
+    "help": "每个活跃来源/地区预留的空闲线路底数；设为 5 时，后台补足等待任务所需线路后仍以 5 条可立即领取的线路为目标。占用、提取中和复检中不计入可用库存；受供应商可用性和全池容量限制",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "代理与网络",
+      "menu": "代理与网络",
+      "section": "库存策略"
+    }
+  },
+  {
+    "key": "PROXY_POOL_MAX_SIZE",
+    "file": "proxy.py",
+    "type": "int",
+    "group": "代理与网络",
+    "label": "代理池最大容量",
+    "help": "全池提取、检测、可用、使用中及等待轮换的总容量上限；容量不足时优先回收无任务占用的等待轮换线路，冷却和历史状态不占容量",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "代理与网络",
+      "menu": "代理与网络",
+      "section": "库存策略"
+    }
+  },
+  {
+    "key": "PROXY_POOL_WAIT_TIMEOUT",
+    "file": "proxy.py",
+    "type": "int",
+    "group": "代理与网络",
+    "label": "领取最长等待(秒)",
+    "help": "默认 0：代理不足时持续等待补货或线路释放，可手动停止任务；设为正数时才在到期后返回等待超时",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "代理与网络",
+      "menu": "代理与网络",
+      "section": "库存策略"
+    }
+  },
+  {
+    "key": "PROXY_POOL_MIN_TTL",
+    "file": "proxy.py",
+    "type": "int",
+    "group": "代理与网络",
+    "label": "领取最低剩余寿命(秒)",
+    "help": "只有剩余寿命达到该值的库存才允许分配给任务",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "代理与网络",
+      "menu": "代理与网络",
+      "section": "库存策略"
+    }
+  },
+  {
+    "key": "PROXY_POOL_CHECK_INTERVAL",
+    "file": "proxy.py",
+    "type": "int",
+    "group": "代理与网络",
+    "label": "库存复检间隔(秒)",
+    "help": "后台对空闲库存及等待轮换线路复检的间隔；新出口国家匹配后换代，连续失败三次或剩余寿命不足时退役",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "代理与网络",
+      "menu": "代理与网络",
+      "section": "库存策略"
+    }
+  },
+  {
+    "key": "PROXY_POOL_MAX_IDLE",
+    "file": "proxy.py",
+    "type": "int",
+    "group": "代理与网络",
+    "label": "空闲库存回收时间(秒)",
+    "help": "没有等待任务时，来源/地区 profile 长时间未使用后停止继续补充库存",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "代理与网络",
+      "menu": "代理与网络",
+      "section": "库存策略"
+    }
+  },
+  {
+    "key": "PROXY_POOL_WORKERS",
+    "file": "proxy.py",
+    "type": "int",
+    "group": "代理与网络",
+    "label": "代理池后台 worker 数",
+    "help": "单进程后台总预算；补货保留至少一半向上取整，复检最多一半向下取整。一个 worker 时交替处理；热加载后当前维护结束再调整",
+    "restart": true,
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "代理与网络",
+      "menu": "代理与网络",
+      "section": "库存策略"
+    }
+  },
+  {
+    "key": "PLAN_CHECK_PROXY_MODE",
+    "file": "proxy.py",
+    "type": "str",
+    "group": "代理与网络",
+    "label": "旧版套餐网络模式",
+    "help": "仅保留旧配置兼容读取；新领取统一使用代理池当前来源，此值不再决定业务线路。",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "代理与网络",
+      "menu": "代理与网络",
+      "section": "高级兼容"
+    }
+  },
+  {
+    "key": "PLAN_CHECK_PROXY",
+    "file": "proxy.py",
+    "type": "str",
+    "group": "代理与网络",
+    "label": "旧版套餐专用代理",
+    "help": "仅保留旧配置兼容读取；新领取统一使用代理池当前来源，此值不再决定业务线路。",
+    "storage": "env",
+    "secret": true,
+    "value": "",
+    "legacyNavigation": {
+      "domain": "代理与网络",
+      "menu": "代理与网络",
+      "section": "高级兼容"
+    }
+  },
+  {
+    "key": "ACCOUNT_ACTION_PROXY_MODE",
+    "file": "proxy.py",
+    "type": "str",
+    "group": "代理与网络",
+    "label": "账号功能代理来源",
+    "help": "仅保留旧配置兼容读取；新领取统一使用代理池当前来源，此值不再决定业务线路。",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "代理与网络",
+      "menu": "代理与网络",
+      "section": "高级兼容"
+    }
+  },
+  {
+    "key": "ACCOUNT_ACTION_PROXY",
+    "file": "proxy.py",
+    "type": "str",
+    "group": "代理与网络",
+    "label": "账号功能固定代理",
+    "help": "仅保留旧配置兼容读取；新领取统一使用代理池当前来源，此值不再决定业务线路。",
+    "storage": "env",
+    "secret": true,
+    "value": "",
+    "legacyNavigation": {
+      "domain": "代理与网络",
+      "menu": "代理与网络",
+      "section": "高级兼容"
+    }
+  },
+  {
+    "key": "PLAN_CHECK_TIMEOUT",
+    "file": "proxy.py",
+    "type": "float",
+    "group": "代理与网络",
+    "label": "套餐查询超时(秒)",
+    "help": "查套餐的单次请求超时，建议 10-20 秒；独立于注册请求超时",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "注册与账号",
+      "menu": "注册与账号",
+      "section": "注册与账号"
+    }
+  },
+  {
+    "key": "PLAN_CHECK_MAX_ATTEMPTS",
+    "file": "proxy.py",
+    "type": "int",
+    "group": "代理与网络",
+    "label": "套餐查询最大尝试次数",
+    "help": "查套餐遇到网络错误、429、5xx 等临时错误时的重试次数，建议 2 次",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "注册与账号",
+      "menu": "注册与账号",
+      "section": "注册与账号"
+    }
+  },
+  {
+    "key": "PLAN_CHECK_RETRY_DELAY",
+    "file": "proxy.py",
+    "type": "float",
+    "group": "代理与网络",
+    "label": "套餐查询重试间隔(秒)",
+    "help": "查套餐的重试间隔，按尝试次数递增；服务端 Retry-After 优先",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "注册与账号",
+      "menu": "注册与账号",
+      "section": "注册与账号"
+    }
+  },
+  {
+    "key": "PLAN_CHECK_REGISTRATION_RECHECK_DELAY",
+    "file": "proxy.py",
+    "type": "float",
+    "group": "代理与网络",
+    "label": "新账号资格复查延迟(秒)",
+    "help": "新注册 free 账号未发现试用资格或首次查询失败时复查一次；0 表示关闭",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "注册与账号",
+      "menu": "注册与账号",
+      "section": "注册与账号"
+    }
+  },
+  {
+    "key": "PLAN_CHECK_MIN_INTERVAL",
+    "file": "proxy.py",
+    "type": "float",
+    "group": "代理与网络",
+    "label": "套餐请求最小间隔(秒)",
+    "help": "限制查套餐请求的启动频率，降低 429 风险",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "注册与账号",
+      "menu": "注册与账号",
+      "section": "注册与账号"
+    }
+  },
+  {
+    "key": "PLAN_CHECK_JITTER",
+    "file": "proxy.py",
+    "type": "float",
+    "group": "代理与网络",
+    "label": "套餐请求随机抖动(秒)",
+    "help": "在查套餐请求的最小间隔上增加随机延迟，避免请求过于规律",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "注册与账号",
+      "menu": "注册与账号",
+      "section": "注册与账号"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_API_BASE",
+    "file": "extract_link.py",
+    "type": "str",
+    "group": "提链",
+    "label": "虾扯蛋链 API 地址",
+    "help": "填写虾扯蛋链服务的 API 地址",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_CDK",
+    "file": "extract_link.py",
+    "type": "str",
+    "group": "提链",
+    "label": "提链 CDK",
+    "help": "创建提链任务和监听任务事件使用；成功提链扣 1 次",
+    "storage": "env",
+    "secret": true,
+    "value": "",
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_TYPE",
+    "file": "extract_link.py",
+    "type": "str",
+    "group": "提链",
+    "label": "提链类型",
+    "help": "从提链网站读取当前启用类型；接口不可用时保留备用选项，默认 PIX",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_QUEUE_LIMIT",
+    "file": "extract_link.py",
+    "type": "int",
+    "group": "提链",
+    "label": "提链队列上限",
+    "help": "提链并发队列容量；修改后需要重启进程，范围 1-5000",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_POLL_ACTIVE_SECONDS",
+    "file": "extract_link.py",
+    "type": "int",
+    "group": "提链",
+    "label": "在动轮询间隔（秒）",
+    "help": "有任务在跑时的刷新间隔，默认 3 秒，范围 1-60",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_POLL_IDLE_SECONDS",
+    "file": "extract_link.py",
+    "type": "int",
+    "group": "提链",
+    "label": "静止轮询间隔（秒）",
+    "help": "只剩待支付、没有任务在动时的刷新间隔，默认 15 秒，范围 2-300；待核对和已结束不自动刷",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_POLL_BACKOFF_MAX_SECONDS",
+    "file": "extract_link.py",
+    "type": "int",
+    "group": "提链",
+    "label": "失败退避封顶（秒）",
+    "help": "连续读取失败时按 5×2ⁿ 退避，封顶值默认 300 秒，范围 30-1800",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_REQUEST_TIMEOUT",
+    "file": "extract_link.py",
+    "type": "int",
+    "group": "提链",
+    "label": "提链请求超时（秒）",
+    "help": "创建任务和查询余额等 HTTP 请求超时，范围 5-300",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_EVENT_TIMEOUT",
+    "file": "extract_link.py",
+    "type": "int",
+    "group": "提链",
+    "label": "提链事件等待超时（秒）",
+    "help": "等待提链任务事件的最长时间，范围 30-900",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_ENABLED",
+    "file": "extract_link.py",
+    "type": "bool",
+    "group": "提链",
+    "label": "启用提链工作台",
+    "help": "关闭后禁止新的提链与后续动作",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_DEFAULT_PROVIDER",
+    "file": "extract_link.py",
+    "type": "str",
+    "group": "提链",
+    "label": "默认提链平台",
+    "help": "未指定平台时使用的提链服务",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_DEFAULT_MODE",
+    "file": "extract_link.py",
+    "type": "str",
+    "group": "提链",
+    "label": "默认执行模式",
+    "help": "默认只提取链接；支付及后续检查需分别显式开启",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_BATCH_WORKERS",
+    "file": "extract_link.py",
+    "type": "int",
+    "group": "提链",
+    "label": "提链批次默认并发",
+    "help": "新批次默认同时运行账号数，范围 1-50；每批可覆盖，实际并发还受平台并发限制",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_EXTRACT_ENABLED",
+    "file": "extract_link.py",
+    "type": "bool",
+    "group": "提链",
+    "label": "允许提取链接",
+    "help": "全局提取能力开关，与平台开关共同生效",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_PREFLIGHT_ENABLED",
+    "file": "extract_link.py",
+    "type": "bool",
+    "group": "提链",
+    "label": "提链前预检",
+    "help": "提链前检查账号与 AT 状态；默认开启，关闭后直接使用库中保存的 AT",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_PREFLIGHT_REFRESH_AT_ENABLED",
+    "file": "extract_link.py",
+    "type": "bool",
+    "group": "提链",
+    "label": "预检失败时刷新 AT",
+    "help": "需同时开启提链前预检；仅当预检确认 AT 失效时刷新，默认开启",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_MANUAL_PAYMENT_ENABLED",
+    "file": "extract_link.py",
+    "type": "bool",
+    "group": "提链",
+    "label": "允许手动支付",
+    "help": "全局手动支付能力开关，与平台开关共同生效",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_AUTO_PAYMENT_ENABLED",
+    "file": "extract_link.py",
+    "type": "bool",
+    "group": "提链",
+    "label": "允许自动支付",
+    "help": "高风险能力，默认关闭；与平台开关共同生效",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_POST_PAYMENT_CHECK_ENABLED",
+    "file": "extract_link.py",
+    "type": "bool",
+    "group": "提链",
+    "label": "支付后检查",
+    "help": "支付后执行账号资格检查；默认关闭",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_POST_PAYMENT_REFRESH_AT_ENABLED",
+    "file": "extract_link.py",
+    "type": "bool",
+    "group": "提链",
+    "label": "支付后刷新 AT",
+    "help": "需同时开启支付后检查；仅当检查确认 AT 失效时刷新，默认关闭",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_POST_PAYMENT_PLAN_CHECK_ENABLED",
+    "file": "extract_link.py",
+    "type": "bool",
+    "group": "提链",
+    "label": "支付后查询套餐",
+    "help": "支付后执行套餐查询；默认关闭",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_LEGACY_ENABLED",
+    "file": "extract_link.py",
+    "type": "bool",
+    "group": "提链",
+    "label": "启用虾扯蛋链",
+    "help": "虾扯蛋链平台的启用开关",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_LEGACY_EXTRACT_ENABLED",
+    "file": "extract_link.py",
+    "type": "bool",
+    "group": "提链",
+    "label": "虾扯蛋链提链",
+    "help": "虾扯蛋链平台的提取开关",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_LEGACY_MANUAL_PAYMENT_ENABLED",
+    "file": "extract_link.py",
+    "type": "bool",
+    "group": "提链",
+    "label": "虾扯蛋链手动支付",
+    "help": "虾扯蛋链平台的手动支付开关",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_LEGACY_AUTO_PAYMENT_ENABLED",
+    "file": "extract_link.py",
+    "type": "bool",
+    "group": "提链",
+    "label": "虾扯蛋链自动支付",
+    "help": "高风险能力，默认关闭",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_LEGACY_AUTO_PAYMENT_SOURCE",
+    "file": "extract_link.py",
+    "type": "str",
+    "group": "提链",
+    "label": "自动支付来源",
+    "help": "平台自带或独立 XXSYUN；与自动支付开关共同生效，新任务保存当前来源，历史任务来源保持不变",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_LEGACY_PAYMENT_CDK",
+    "file": "extract_link.py",
+    "type": "str",
+    "group": "提链",
+    "label": "虾扯蛋链支付扫码 CDK",
+    "help": "仅自动支付来源为平台自带时使用；独立 XXSYUN 不使用此 CDK；与 EXTRACT_LINK_CDK 提链 CDK 分开，加密保存",
+    "secret": true,
+    "value": "",
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_LEGACY_CONCURRENCY",
+    "file": "extract_link.py",
+    "type": "int",
+    "group": "提链",
+    "label": "虾扯蛋链并发",
+    "help": "虾扯蛋链平台最大并发数，范围 1-50",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_LUMEN_FLOW_ENABLED",
+    "file": "extract_link.py",
+    "type": "bool",
+    "group": "提链",
+    "label": "启用 lumen_flow 平台",
+    "help": "新平台默认关闭",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_LUMEN_FLOW_EXTRACT_ENABLED",
+    "file": "extract_link.py",
+    "type": "bool",
+    "group": "提链",
+    "label": "lumen_flow 提链",
+    "help": "lumen_flow 平台的提取开关",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_LUMEN_FLOW_MANUAL_PAYMENT_ENABLED",
+    "file": "extract_link.py",
+    "type": "bool",
+    "group": "提链",
+    "label": "lumen_flow 手动支付",
+    "help": "lumen_flow 平台的手动支付开关",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_LUMEN_FLOW_AUTO_PAYMENT_ENABLED",
+    "file": "extract_link.py",
+    "type": "bool",
+    "group": "提链",
+    "label": "lumen_flow 自动支付",
+    "help": "高风险能力，默认关闭",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_LUMEN_FLOW_AUTO_PAYMENT_SOURCE",
+    "file": "extract_link.py",
+    "type": "str",
+    "group": "提链",
+    "label": "自动支付来源",
+    "help": "平台自带或独立 XXSYUN；与自动支付开关共同生效，新任务保存当前来源，历史任务来源保持不变",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_LUMEN_FLOW_CONCURRENCY",
+    "file": "extract_link.py",
+    "type": "int",
+    "group": "提链",
+    "label": "lumen_flow 并发",
+    "help": "lumen_flow 平台最大并发数，范围 1-50",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_LUMEN_FLOW_DEFAULT_TYPE",
+    "file": "extract_link.py",
+    "type": "str",
+    "group": "提链",
+    "label": "lumen_flow 提链类型",
+    "help": "该平台默认提链类型",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_LUMEN_FLOW_API_BASE",
+    "file": "extract_link.py",
+    "type": "str",
+    "group": "提链",
+    "label": "lumen_flow API 地址",
+    "help": "lumen_flow 服务 API 地址",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_LUMEN_FLOW_CDK",
+    "file": "extract_link.py",
+    "type": "str",
+    "group": "提链",
+    "label": "lumen_flow CDK",
+    "help": "提链和平台自带支付共用的 CDK；选择独立 XXSYUN 时仍需用于提链；加密保存",
+    "secret": true,
+    "value": "",
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_LUMEN_FLOW_REQUEST_TIMEOUT",
+    "file": "extract_link.py",
+    "type": "int",
+    "group": "提链",
+    "label": "lumen_flow 请求超时（秒）",
+    "help": "HTTP 请求超时，范围 5-300",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_LUMEN_FLOW_POLL_INTERVAL",
+    "file": "extract_link.py",
+    "type": "int",
+    "group": "提链",
+    "label": "lumen_flow 轮询间隔（秒）",
+    "help": "任务状态轮询间隔，范围 1-60",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_LUMEN_FLOW_EVENT_TIMEOUT",
+    "file": "extract_link.py",
+    "type": "int",
+    "group": "提链",
+    "label": "lumen_flow 监控等待（秒）",
+    "help": "本次持续查询的预算，范围 30-900；到期保留远端任务，可继续同步，不代表远端失败",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_HUANGUANG_ENABLED",
+    "file": "extract_link.py",
+    "type": "bool",
+    "group": "提链",
+    "label": "启用 huanguang 平台",
+    "help": "新平台默认关闭",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_HUANGUANG_EXTRACT_ENABLED",
+    "file": "extract_link.py",
+    "type": "bool",
+    "group": "提链",
+    "label": "huanguang 提链",
+    "help": "huanguang 平台的提取开关",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_HUANGUANG_MANUAL_PAYMENT_ENABLED",
+    "file": "extract_link.py",
+    "type": "bool",
+    "group": "提链",
+    "label": "huanguang 手动支付",
+    "help": "huanguang 平台的手动支付开关",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_HUANGUANG_AUTO_PAYMENT_ENABLED",
+    "file": "extract_link.py",
+    "type": "bool",
+    "group": "提链",
+    "label": "huanguang 自动支付",
+    "help": "高风险能力，默认关闭",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_HUANGUANG_AUTO_PAYMENT_SOURCE",
+    "file": "extract_link.py",
+    "type": "str",
+    "group": "提链",
+    "label": "自动支付来源",
+    "help": "平台自带或独立 XXSYUN；与自动支付开关共同生效，新任务保存当前来源，历史任务来源保持不变",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_HUANGUANG_CONCURRENCY",
+    "file": "extract_link.py",
+    "type": "int",
+    "group": "提链",
+    "label": "huanguang 并发",
+    "help": "huanguang 平台最大并发数，范围 1-50",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_HUANGUANG_DEFAULT_TYPE",
+    "file": "extract_link.py",
+    "type": "str",
+    "group": "提链",
+    "label": "huanguang 提链类型",
+    "help": "当前平台仅开放 upi；每侧代理池留空时从统一代理池领取 IN 线路",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_HUANGUANG_API_BASE",
+    "file": "extract_link.py",
+    "type": "str",
+    "group": "提链",
+    "label": "huanguang API 地址",
+    "help": "huanguang 服务 API 地址",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_HUANGUANG_CDK",
+    "file": "extract_link.py",
+    "type": "str",
+    "group": "提链",
+    "label": "幻光提链 CDK",
+    "help": "创建提链任务使用，与支付扫码 CDK 分开；仅保存到 .env",
+    "secret": true,
+    "value": "",
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_HUANGUANG_PAYMENT_CDK",
+    "file": "extract_link.py",
+    "type": "str",
+    "group": "提链",
+    "label": "幻光支付扫码 CDK",
+    "help": "仅自动支付来源为平台自带时使用，对应平台 chongyun_cdk；独立 XXSYUN 不使用此 CDK；与提链 CDK 分开，加密保存",
+    "secret": true,
+    "value": "",
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_HUANGUANG_XXSYUN_API_KEY",
+    "file": "extract_link.py",
+    "type": "str",
+    "group": "提链",
+    "label": "XXSYUN API Key",
+    "help": "仅平台自带支付路径的幻光后台超时转单使用；独立 XXSYUN 使用“独立支付”分类中的公共 Key；缺少此 Key 时不启用后台转单，不影响幻光扫码；加密保存",
+    "secret": true,
+    "value": "",
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_HUANGUANG_SCAN_FALLBACK_ENABLED",
+    "file": "extract_link.py",
+    "type": "bool",
+    "group": "提链",
+    "label": "幻光超时后转 XXSYUN",
+    "help": "仅对来源为平台自带的新建自动支付任务生效；独立 XXSYUN 不走此后台转单；提交时交由平台后台执行：90 秒未接单后取消并确认退次才转 XXSYUN；缺少后台转单 Key 时不启用转单，不影响幻光扫码",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_HUANGUANG_ENTRY_PROXIES",
+    "file": "extract_link.py",
+    "type": "list_str_multiline",
+    "group": "提链",
+    "label": "幻光入口代理池",
+    "help": "每行一条完整代理 URL，支持 http、https、socks5、socks5h 及认证信息，去重后最多 500 条；填写后发送完整候选列表，留空才从统一代理池领取 IN 线路；仅保存到 .env",
+    "secret": true,
+    "value": [],
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_HUANGUANG_EXIT_PROXIES",
+    "file": "extract_link.py",
+    "type": "list_str_multiline",
+    "group": "提链",
+    "label": "幻光出口代理池",
+    "help": "每行一条完整代理 URL，支持 http、https、socks5、socks5h 及认证信息，去重后最多 500 条；填写后发送完整候选列表，留空才从统一代理池领取 IN 线路；仅保存到 .env",
+    "secret": true,
+    "value": [],
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_HUANGUANG_REQUEST_TIMEOUT",
+    "file": "extract_link.py",
+    "type": "int",
+    "group": "提链",
+    "label": "huanguang 请求超时（秒）",
+    "help": "HTTP 请求超时，范围 5-300",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_HUANGUANG_POLL_INTERVAL",
+    "file": "extract_link.py",
+    "type": "int",
+    "group": "提链",
+    "label": "huanguang 轮询间隔（秒）",
+    "help": "任务状态轮询间隔，范围 1-60",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_HUANGUANG_EVENT_TIMEOUT",
+    "file": "extract_link.py",
+    "type": "int",
+    "group": "提链",
+    "label": "huanguang 首轮监控等待（秒）",
+    "help": "首次持续查询的预算，范围 30-900；到期后释放执行槽并定时续查原单，不重复提交提链或支付",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_HUANGUANG_RECONCILE_TIMEOUT",
+    "file": "extract_link.py",
+    "type": "int",
+    "group": "提链",
+    "label": "幻光自动续查总时限（秒）",
+    "help": "原单从首次监控起的自动查询总预算，含首轮监控，范围 60-86400；不含创建原单前等待 CDK 的时间。超时转待核验并保留原单与付款材料",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_HUANGUANG_NO_PROGRESS_TIMEOUT",
+    "file": "extract_link.py",
+    "type": "int",
+    "group": "提链",
+    "label": "幻光无进展等待（秒）",
+    "help": "连续没有有效状态变化时停止自动查询，范围 60-86400；重复旧进度或查询失败不会刷新进展时间，停止后可手动同步原单",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_HUANGUANG_MAX_QUERY_FAILURES",
+    "file": "extract_link.py",
+    "type": "int",
+    "group": "提链",
+    "label": "幻光连续查询失败上限",
+    "help": "连续查询失败达到上限后转待核验，范围 3-100；连续 3 次 HTTP 404 会提前停止。成功读取会清零失败次数，不影响手动同步或重跑",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_ANGUANG_ENABLED",
+    "file": "extract_link.py",
+    "type": "bool",
+    "group": "提链",
+    "label": "启用暗光（XXSYUN 一条龙）",
+    "help": "默认关闭；仅支持 UPI 自动支付，平台必自动扫码，不能关闭",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_ANGUANG_AUTO_PAYMENT_ENABLED",
+    "file": "extract_link.py",
+    "type": "bool",
+    "group": "提链",
+    "label": "暗光自动支付",
+    "help": "默认关闭；还需开启全局自动支付及暗光平台；平台自动扫码，不能用于纯提链或手动支付",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_ANGUANG_API_BASE",
+    "file": "extract_link.py",
+    "type": "str",
+    "group": "提链",
+    "label": "暗光一条龙 API 地址",
+    "help": "一条龙专用入口 https://ytc.xxsyun.xyz/openapi/v1；与普通扫码 API 地址分开",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_ANGUANG_API_KEY",
+    "file": "extract_link.py",
+    "type": "str",
+    "group": "提链",
+    "label": "暗光一条虫 Key",
+    "help": "必须单独配置一条虫 Key；普通扫码 Key 不受理，不迁移或复制普通扫码配置；加密保存",
+    "secret": true,
+    "value": "",
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_ANGUANG_CONCURRENCY",
+    "file": "extract_link.py",
+    "type": "int",
+    "group": "提链",
+    "label": "暗光并发",
+    "help": "暗光平台最大并发数，范围 1-50",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_ANGUANG_REQUEST_TIMEOUT",
+    "file": "extract_link.py",
+    "type": "int",
+    "group": "提链",
+    "label": "暗光请求超时（秒）",
+    "help": "HTTP 请求超时，范围 5-300",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_ANGUANG_POLL_INTERVAL",
+    "file": "extract_link.py",
+    "type": "int",
+    "group": "提链",
+    "label": "暗光轮询间隔（秒）",
+    "help": "原单查询间隔，范围 10-300，不低于 10 秒",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_ANGUANG_PROCESSING_MODE",
+    "file": "extract_link.py",
+    "type": "str",
+    "group": "提链",
+    "label": "暗光处理模式",
+    "help": "STANDARD 使用流光，STRICT 使用 sea；任务创建时固定本次模式",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_ANGUANG_PLAN_NAME",
+    "file": "extract_link.py",
+    "type": "str",
+    "group": "提链",
+    "label": "暗光目标套餐",
+    "help": "首版仅接入 ChatGPT Plus（chatgptplusplan），由本地独立核验到账；价格及可用性以平台实际为准",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_ANGUANG_AUTO_RETRY",
+    "file": "extract_link.py",
+    "type": "bool",
+    "group": "提链",
+    "label": "暗光平台自动重试",
+    "help": "默认关闭；是否允许平台在同一任务内自动重试，任务创建时固定本次选择",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "通用配置"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_PAYMENT_XXSYUN_API_BASE",
+    "file": "extract_link.py",
+    "type": "str",
+    "group": "提链",
+    "label": "XXSYUN API 地址",
+    "help": "独立支付平台的 API 根地址；与幻光平台后台备用转单分开配置",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "独立支付"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_PAYMENT_XXSYUN_API_KEY",
+    "file": "extract_link.py",
+    "type": "str",
+    "group": "提链",
+    "label": "XXSYUN API Key",
+    "help": "独立支付使用的 API Key；加密保存，查询积分可使用当前草稿且不会自动保存",
+    "secret": true,
+    "value": "",
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "独立支付"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_PAYMENT_XXSYUN_REQUEST_TIMEOUT",
+    "file": "extract_link.py",
+    "type": "int",
+    "group": "提链",
+    "label": "XXSYUN 请求超时（秒）",
+    "help": "HTTP 请求超时，范围 5-300",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "独立支付"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_PAYMENT_XXSYUN_POLL_INTERVAL",
+    "file": "extract_link.py",
+    "type": "int",
+    "group": "提链",
+    "label": "XXSYUN 轮询间隔（秒）",
+    "help": "独立订单查询间隔，范围 10-300；不低于官方建议的 10 秒",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "独立支付"
+    }
+  },
+  {
+    "key": "EXTRACT_LINK_PAYMENT_XXSYUN_CONCURRENCY",
+    "file": "extract_link.py",
+    "type": "int",
+    "group": "提链",
+    "label": "XXSYUN 共享订单并发",
+    "help": "三个提链平台共用的未结束独立支付订单上限，范围 1-50；等待查询仍占用名额",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "提链",
+      "menu": "提链",
+      "section": "独立支付"
+    }
+  },
+  {
+    "key": "CODEX_OAUTH_AUTO_UPLOAD_SUB2API",
+    "file": "codex.py",
+    "type": "bool",
+    "group": "Codex",
+    "label": "授权后自动上传并启用 sub2api",
+    "help": "新建 Codex OAuth 任务成功确认真实凭证后，自动上传并覆盖同账号、重置错误状态、开启调度；提交任务时固定开关，不主动扫描或发起重授权，不影响 Token 刷新后的同步设置",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "Codex",
+      "menu": "服务集成",
+      "section": "sub2api"
+    }
+  },
+  {
+    "key": "SUB2API_API_BASE",
+    "file": "sub2api.py",
+    "type": "str",
+    "group": "Codex",
+    "label": "sub2 API基址",
+    "help": "sub2api 服务地址；用于 Codex OAuth 授权和凭证上传，例如 http://127.0.0.1:8080",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "Codex",
+      "menu": "服务集成",
+      "section": "sub2api"
+    }
+  },
+  {
+    "key": "SUB2API_API_KEY",
+    "file": "sub2api.py",
+    "type": "str",
+    "group": "Codex",
+    "label": "sub2 API Key",
+    "help": "sub2api 管理接口 API Key；请求头使用 x-api-key；为空则不带鉴权头",
+    "storage": "env",
+    "secret": true,
+    "value": "",
+    "legacyNavigation": {
+      "domain": "Codex",
+      "menu": "服务集成",
+      "section": "sub2api"
+    }
+  },
+  {
+    "key": "SUB2API_API_TIMEOUT",
+    "file": "sub2api.py",
+    "type": "int",
+    "group": "Codex",
+    "label": "sub2 超时",
+    "help": "sub2api 请求超时秒数",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "Codex",
+      "menu": "服务集成",
+      "section": "sub2api"
+    }
+  },
+  {
+    "key": "C2A_API_BASE",
+    "file": "c2a.py",
+    "type": "str",
+    "group": "C2A",
+    "label": "C2A API 基址",
+    "help": "ChatGPT2API/C2A 管理服务地址，例如 https://c2a.example.com；仅用于定位同邮箱既有账号并更新 AT。C2A 会按自身规则处理凭据错误，异常账号可能恢复正常；更新前要求已关闭自动移除异常/限流账号。",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "C2A",
+      "menu": "服务集成",
+      "section": ""
+    }
+  },
+  {
+    "key": "C2A_API_KEY",
+    "file": "c2a.py",
+    "type": "str",
+    "group": "C2A",
+    "label": "C2A 管理员 Key",
+    "help": "C2A 管理接口管理员 Key；仅保存在 .env（C2A_API_KEY），请求头使用 Authorization: Bearer <key>。",
+    "storage": "env",
+    "secret": true,
+    "value": "",
+    "legacyNavigation": {
+      "domain": "C2A",
+      "menu": "服务集成",
+      "section": ""
+    }
+  },
+  {
+    "key": "C2A_API_TIMEOUT",
+    "file": "c2a.py",
+    "type": "int",
+    "group": "C2A",
+    "label": "C2A 超时",
+    "help": "C2A 查询账号及更新 AT 的单次 HTTP 超时秒数。",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "C2A",
+      "menu": "服务集成",
+      "section": ""
+    }
+  },
+  {
+    "key": "SUB2API_UPLOAD_GROUP_IDS",
+    "file": "sub2api.py",
+    "type": "str",
+    "group": "Codex",
+    "label": "目标分组 ID",
+    "help": "多个分组用逗号分隔；留空保留远端分组；异常巡检分组另行配置",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "Codex",
+      "menu": "服务集成",
+      "section": "sub2api"
+    }
+  },
+  {
+    "key": "SUB2API_UPLOAD_PROXY_ID",
+    "file": "sub2api.py",
+    "type": "str",
+    "group": "Codex",
+    "label": "上传账号代理 ID",
+    "help": "填写 Sub2API 中的代理 ID；留空保留原代理",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "Codex",
+      "menu": "服务集成",
+      "section": "sub2api"
+    }
+  },
+  {
+    "key": "SUB2API_UPLOAD_CONCURRENCY",
+    "file": "sub2api.py",
+    "type": "str",
+    "group": "Codex",
+    "label": "远端账号调度并发属性",
+    "help": "这是上传到 Sub2API 账号的远端调度属性，不控制 Turb 本地上传 worker；本地上传上限在并发控制的 Sub2API 上传与同步中维护。正整数；留空保留已有账号配置，新账号采用后端默认值。",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "Codex",
+      "menu": "服务集成",
+      "section": "sub2api"
+    }
+  },
+  {
+    "key": "SUB2API_UPLOAD_PRIORITY",
+    "file": "sub2api.py",
+    "type": "str",
+    "group": "Codex",
+    "label": "上传账号优先级",
+    "help": "不小于 0 的整数；留空保留原配置",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "Codex",
+      "menu": "服务集成",
+      "section": "sub2api"
+    }
+  },
+  {
+    "key": "SUB2API_UPLOAD_LOAD_FACTOR",
+    "file": "sub2api.py",
+    "type": "str",
+    "group": "Codex",
+    "label": "上传账号负载因子",
+    "help": "大于 0 的整数；留空保留原配置",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "Codex",
+      "menu": "服务集成",
+      "section": "sub2api"
+    }
+  },
+  {
+    "key": "SUB2API_UPLOAD_MODELS",
+    "file": "sub2api.py",
+    "type": "str",
+    "group": "Codex",
+    "label": "上传账号允许模型",
+    "help": "每行一个或逗号分隔；填写后更新模型映射，留空保留原映射",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "Codex",
+      "menu": "服务集成",
+      "section": "sub2api"
+    }
+  },
+  {
+    "key": "SUB2API_SYNC_RETRY_ENABLED",
+    "file": "sub2api.py",
+    "type": "bool",
+    "group": "定时任务",
+    "label": "自动补传 sub2api 凭据",
+    "help": "默认关闭；同步失败后仅重传已保存凭据、清错并恢复调度，不重复登录",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "定时任务",
+      "menu": "系统与维护",
+      "section": ""
+    }
+  },
+  {
+    "key": "SUB2API_MONITOR_ENABLED",
+    "file": "sub2api.py",
+    "type": "bool",
+    "group": "定时任务",
+    "label": "自动巡检 sub2api 异常账号",
+    "help": "默认关闭；先补传，再按明确认证错误刷新或调用现有 Codex 重授权；不会创建注册任务",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "定时任务",
+      "menu": "系统与维护",
+      "section": ""
+    }
+  },
+  {
+    "key": "SUB2API_MONITOR_GROUP_IDS",
+    "file": "sub2api.py",
+    "type": "str",
+    "group": "定时任务",
+    "label": "sub2api 巡检分组",
+    "help": "留空扫描全部账号；可查询分组后选择，或填写多个逗号分隔的分组 ID。只影响异常扫描范围",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "定时任务",
+      "menu": "系统与维护",
+      "section": ""
+    }
+  },
+  {
+    "key": "SUB2API_MONITOR_INTERVAL_SECONDS",
+    "file": "sub2api.py",
+    "type": "int",
+    "group": "定时任务",
+    "label": "sub2api 巡检间隔（秒）",
+    "help": "两轮检查的最短间隔，默认 300 秒",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "定时任务",
+      "menu": "系统与维护",
+      "section": ""
+    }
+  },
+  {
+    "key": "SUB2API_MONITOR_COOLDOWN_SECONDS",
+    "file": "sub2api.py",
+    "type": "int",
+    "group": "定时任务",
+    "label": "sub2api 修复冷却（秒）",
+    "help": "同账号两次自动修复之间的最短间隔，默认 300 秒",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "定时任务",
+      "menu": "系统与维护",
+      "section": ""
+    }
+  },
+  {
+    "key": "SUB2API_MONITOR_MAX_PER_CYCLE",
+    "file": "sub2api.py",
+    "type": "int",
+    "group": "定时任务",
+    "label": "sub2api 每轮修复账号数",
+    "help": "每轮最多调度的账号数量，默认 20",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "定时任务",
+      "menu": "系统与维护",
+      "section": ""
+    }
+  },
+  {
+    "key": "CODEX_AUTH_URL_SOURCE",
+    "file": "codex.py",
+    "type": "str",
+    "group": "Codex",
+    "label": "授权地址来源",
+    "help": "cpa=CPA生成并上传CPA；sub2=sub2生成并上传sub2；local=本地PKCE",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "Codex",
+      "menu": "服务集成",
+      "section": "基础配置"
+    }
+  },
+  {
+    "key": "CPA_MANAGEMENT_URL",
+    "file": "codex.py",
+    "type": "str",
+    "group": "Codex",
+    "label": "CPA 管理地址",
+    "help": "例如 http://localhost:8317/admin/oauth；程序会取 origin 调用 /v0/management/*",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "Codex",
+      "menu": "服务集成",
+      "section": "CPA配置"
+    }
+  },
+  {
+    "key": "CPA_MANAGEMENT_KEY",
+    "file": "codex.py",
+    "type": "str",
+    "group": "Codex",
+    "label": "管理密钥",
+    "help": "保存在 .env（CPA_MANAGEMENT_KEY），不写回 config/*.py",
+    "storage": "env",
+    "secret": true,
+    "value": "",
+    "legacyNavigation": {
+      "domain": "Codex",
+      "menu": "服务集成",
+      "section": "CPA配置"
+    }
+  },
+  {
+    "key": "CPA_REQUEST_TIMEOUT",
+    "file": "codex.py",
+    "type": "int",
+    "group": "Codex",
+    "label": "CPA 超时(秒)",
+    "help": "请求 CPA 管理接口的超时时间",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "Codex",
+      "menu": "服务集成",
+      "section": "CPA配置"
+    }
+  },
+  {
+    "key": "CPA_CREDENTIAL_CONFIRM_TIMEOUT",
+    "file": "codex.py",
+    "type": "int",
+    "group": "Codex",
+    "label": "CPA 凭证确认等待(秒)",
+    "help": "Callback 接收后等待 CPA 生成真实 auth JSON 的最长时间；超时则标记待确认。",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "Codex",
+      "menu": "服务集成",
+      "section": "CPA配置"
+    }
+  },
+  {
+    "key": "CPA_SAVE_CALLBACK_RECEIPT",
+    "file": "codex.py",
+    "type": "bool",
+    "group": "Codex",
+    "label": "保存CPA回执",
+    "help": "CPA/sub2 未返回完整授权文件时，在数据库单独保存 callback 回执，不作为可用凭证",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "Codex",
+      "menu": "服务集成",
+      "section": "CPA配置"
+    }
+  },
+  {
+    "key": "CODEX_PHONE_ENABLED",
+    "file": "codex.py",
+    "type": "bool",
+    "group": "接码平台",
+    "label": "启用手机接码",
+    "help": "默认开启；关闭后仍可启动 Codex OAuth，遇到手机号或手机短信验证时明确报错退出，不取号、不等短信。接码配置只在开启且实际需要手机验证时检查",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "接码平台",
+      "menu": "邮箱与验证码",
+      "section": "通用接码"
+    }
+  },
+  {
+    "key": "SMS_PROVIDER",
+    "file": "codex.py",
+    "type": "str",
+    "group": "接码平台",
+    "label": "接码通道",
+    "help": "grizzly / l / h；l 的接口约定见 README“本地 L 接码服务”，h 使用 H_API.md 定义的本地取号服务",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "接码平台",
+      "menu": "邮箱与验证码",
+      "section": "通用接码"
+    }
+  },
+  {
+    "key": "SMS_COUNTRY",
+    "file": "codex.py",
+    "type": "str",
+    "group": "接码平台",
+    "label": "国家代码",
+    "help": "传给接码平台的 country；GrizzlySMS 可用逗号填写有序备用列表（如 117,2,148），无号/超价时自动切换；H/L 通道填写单个国家",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "接码平台",
+      "menu": "邮箱与验证码",
+      "section": "通用接码"
+    }
+  },
+  {
+    "key": "SMS_SERVICE",
+    "file": "codex.py",
+    "type": "str",
+    "group": "接码平台",
+    "label": "服务/项目代码",
+    "help": "GrizzlySMS/L 作为 service；H 通道作为 H_API.md 的 projectId",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "接码平台",
+      "menu": "邮箱与验证码",
+      "section": "通用接码"
+    }
+  },
+  {
+    "key": "SMS_MAX_PRICE",
+    "file": "codex.py",
+    "type": "str",
+    "group": "接码平台",
+    "label": "最高价格上限",
+    "help": "这是允许购买的单号价格上限，不是固定成交价；留空表示不限，实际价格以平台返回为准",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "接码平台",
+      "menu": "邮箱与验证码",
+      "section": "通用接码"
+    }
+  },
+  {
+    "key": "SMS_AUTO_SELECT_COUNTRY",
+    "file": "codex.py",
+    "type": "bool",
+    "group": "接码平台",
+    "label": "按成功率选国家",
+    "help": "GrizzlySMS 每批次首次接码前，在价格上限内按短信成功率自动选国；同批次后续任务优先沿用",
+    "value": false,
+    "legacyNavigation": {
+      "domain": "接码平台",
+      "menu": "邮箱与验证码",
+      "section": "通用接码"
+    }
+  },
+  {
+    "key": "SMS_AUTO_COUNTRY_MIN_RATIO",
+    "file": "codex.py",
+    "type": "int",
+    "group": "接码平台",
+    "label": "成功率最低统计量",
+    "help": "过滤成功率看似很高但统计量太少的国家；建议保持 25 或更高",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "接码平台",
+      "menu": "邮箱与验证码",
+      "section": "通用接码"
+    }
+  },
+  {
+    "key": "SMS_MAX_RETRIES",
+    "file": "codex.py",
+    "type": "int",
+    "group": "接码平台",
+    "label": "换号重试次数",
+    "help": "一个号收不到短信/被OpenAI拒时换下一个号，最多重试几次",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "接码平台",
+      "menu": "邮箱与验证码",
+      "section": "通用接码"
+    }
+  },
+  {
+    "key": "SMS_CODE_WAIT",
+    "file": "codex.py",
+    "type": "int",
+    "group": "接码平台",
+    "label": "单号等短信上限(秒)",
+    "help": "单个号码等待短信的硬上限；超时后后台取消，不再阻塞注册线程",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "接码平台",
+      "menu": "邮箱与验证码",
+      "section": "通用接码"
+    }
+  },
+  {
+    "key": "CODEX_PHONE_TOTAL_TIMEOUT",
+    "file": "codex.py",
+    "type": "int",
+    "group": "接码平台",
+    "label": "手机验证总预算(秒)",
+    "help": "整段手机验证的硬上限，包含取号、页面操作、等待短信和换号；建议 300",
+    "value": 0,
+    "legacyNavigation": {
+      "domain": "接码平台",
+      "menu": "邮箱与验证码",
+      "section": "通用接码"
+    }
+  },
+  {
+    "key": "SMS_API_KEY",
+    "file": "codex.py",
+    "type": "str",
+    "group": "接码平台",
+    "label": "GrizzlySMS API密钥",
+    "help": "GrizzlySMS 平台 API Key，保存在 .env（SMS_API_KEY），不写回 config/*.py",
+    "storage": "env",
+    "secret": true,
+    "value": "",
+    "legacyNavigation": {
+      "domain": "接码平台",
+      "menu": "邮箱与验证码",
+      "section": "GrizzlySMS"
+    }
+  },
+  {
+    "key": "H_API_BASE",
+    "file": "codex.py",
+    "type": "str",
+    "group": "接码平台",
+    "label": "H API 地址",
+    "help": "H 取号服务基础地址，例如 http://localhost:8788",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "接码平台",
+      "menu": "邮箱与验证码",
+      "section": "H 接码"
+    }
+  },
+  {
+    "key": "H_ADMIN_AUTH_CODE",
+    "file": "codex.py",
+    "type": "str",
+    "group": "接码平台",
+    "label": "H 授权码",
+    "help": "保存在 .env（H_ADMIN_AUTH_CODE），不写回 config/*.py",
+    "storage": "env",
+    "secret": true,
+    "value": "",
+    "legacyNavigation": {
+      "domain": "接码平台",
+      "menu": "邮箱与验证码",
+      "section": "H 接码"
+    }
+  },
+  {
+    "key": "H_PHONE_PREFIX",
+    "file": "codex.py",
+    "type": "str",
+    "group": "接码平台",
+    "label": "H 号码前缀",
+    "help": "H 返回号码不含国家码时填写，例如美国 10 位本地号填 1；留空则不补",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "接码平台",
+      "menu": "邮箱与验证码",
+      "section": "H 接码"
+    }
+  },
+  {
+    "key": "H_PHONE_ACQUIRE_MODE",
+    "file": "codex.py",
+    "type": "str",
+    "group": "接码平台",
+    "label": "H 取号方式",
+    "help": "reusable=优先复用历史可用号码；new=每次都取一个新号码",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "接码平台",
+      "menu": "邮箱与验证码",
+      "section": "H 接码"
+    }
+  },
+  {
+    "key": "L_API_BASE",
+    "file": "codex.py",
+    "type": "str",
+    "group": "接码平台",
+    "label": "L API 地址",
+    "help": "L 取号服务基础地址，例如 http://localhost:8788",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "接码平台",
+      "menu": "邮箱与验证码",
+      "section": "L 接码"
+    }
+  },
+  {
+    "key": "L_ADMIN_AUTH_CODE",
+    "file": "codex.py",
+    "type": "str",
+    "group": "接码平台",
+    "label": "L 授权码",
+    "help": "保存在 .env（L_ADMIN_AUTH_CODE），不写回 config/*.py",
+    "storage": "env",
+    "secret": true,
+    "value": "",
+    "legacyNavigation": {
+      "domain": "接码平台",
+      "menu": "邮箱与验证码",
+      "section": "L 接码"
+    }
+  },
+  {
+    "key": "L_PHONE_PREFIX",
+    "file": "codex.py",
+    "type": "str",
+    "group": "接码平台",
+    "label": "L 号码前缀",
+    "help": "L 返回号码不含国家码时填写，例如美国 10 位本地号填 1；留空则不补",
+    "value": "",
+    "legacyNavigation": {
+      "domain": "接码平台",
+      "menu": "邮箱与验证码",
+      "section": "L 接码"
+    }
+  }
+]

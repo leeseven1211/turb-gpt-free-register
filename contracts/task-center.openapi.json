@@ -1,0 +1,2619 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Turb 任务中心 API",
+    "version": "1.0.0",
+    "description": "任务中心当前接口契约。公开状态仅用于展示，内部回执和现有动作语义保持原样。省略事件游标读取最新页时 has_more 表示还有更早事件，不能把 next_after_id 当成向前翻页游标。领域扩展字段保留开放 JSON。"
+  },
+  "paths": {
+    "/api/operations": {
+      "get": {
+        "operationId": "listOperations",
+        "summary": "分页查询任务；默认返回筛选计数与最近批次",
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "description": "页码，从 1 开始",
+            "schema": {
+              "type": "integer",
+              "default": 1
+            }
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "required": false,
+            "description": "每页数量",
+            "schema": {
+              "type": "integer",
+              "default": 50,
+              "minimum": 1,
+              "maximum": 200
+            }
+          },
+          {
+            "name": "type",
+            "in": "query",
+            "required": false,
+            "description": "任务类型，可用逗号组合",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "description": "公开执行状态，仅支持单个状态值，不支持逗号组合",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "source",
+            "in": "query",
+            "required": false,
+            "description": "任务来源",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "description": "全文搜索",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "task_id",
+            "in": "query",
+            "required": false,
+            "description": "任务编号筛选",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "target",
+            "in": "query",
+            "required": false,
+            "description": "目标邮箱或标识",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "target_status",
+            "in": "query",
+            "required": false,
+            "description": "公开目标状态",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "batch",
+            "in": "query",
+            "required": false,
+            "description": "批次标题或标识",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "run_count",
+            "in": "query",
+            "required": false,
+            "description": "运行次数，可用 4+",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "stage",
+            "in": "query",
+            "required": false,
+            "description": "执行阶段",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "created_from",
+            "in": "query",
+            "required": false,
+            "description": "创建日期起点",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "created_to",
+            "in": "query",
+            "required": false,
+            "description": "创建日期终点",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "result",
+            "in": "query",
+            "required": false,
+            "description": "结果文本",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "batch_id",
+            "in": "query",
+            "required": false,
+            "description": "指定批次 ID",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "include_facets",
+            "in": "query",
+            "required": false,
+            "description": "0/false/no 表示省略筛选计数；轮询使用 0",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            }
+          },
+          {
+            "name": "include_batches",
+            "in": "query",
+            "required": false,
+            "description": "0/false/no 表示省略最近批次；轮询使用 0",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperationList"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "任务或执行实例不存在",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/operations/{task_id}": {
+      "get": {
+        "operationId": "getOperation",
+        "summary": "查询任务及运行历史",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "description": "任务 ID",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "include_events",
+            "in": "query",
+            "required": false,
+            "description": "0/false/no/off 省略全历史事件；新前端显式传 0",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperationDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "任务或执行实例不存在",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/operations/{task_id}/runs/{run_id}/progress": {
+      "get": {
+        "operationId": "getOperationProgress",
+        "summary": "查询选定运行的完整进度",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "description": "任务 ID",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "description": "执行实例 ID",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProgressResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "任务或执行实例不存在",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/operations/{task_id}/runs/{run_id}/events": {
+      "get": {
+        "operationId": "getOperationEvents",
+        "summary": "分页读取运行事件",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "description": "任务 ID",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "description": "执行实例 ID",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "after_id",
+            "in": "query",
+            "required": false,
+            "description": "省略读取最新一页；0 从头读取；其余值读取更大的事件 ID",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "单页上限",
+            "schema": {
+              "type": "integer",
+              "default": 200,
+              "maximum": 1000
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EventsResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "任务或执行实例不存在",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "description": "沿用既有行为：任务不存在返回 404；Run 不属于任务或不存在时返回空页，不暴露其他任务的事件。"
+      }
+    },
+    "/api/operations/{task_id}/runs/{run_id}/logs": {
+      "get": {
+        "operationId": "getOperationLogs",
+        "summary": "增量读取运行日志",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "description": "任务 ID",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "description": "执行实例 ID",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "description": "日志字节游标；省略读尾部，0 从头读取",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "单页行数上限",
+            "schema": {
+              "type": "integer",
+              "default": 500,
+              "maximum": 2000
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LogsResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "任务或执行实例不存在",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/operations/{task_id}/retry": {
+      "post": {
+        "operationId": "retryOperation",
+        "summary": "重跑任务，复用现有动作边界",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "description": "任务 ID",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActionResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "任务或执行实例不存在",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "已受理",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "参数无效",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "当前任务状态不支持操作",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "执行入口暂不可用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "driver": {
+                    "type": "string",
+                    "enum": [
+                      "roxy",
+                      "protocol"
+                    ]
+                  }
+                },
+                "required": [],
+                "additionalProperties": true
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/operations/{task_id}/cancel": {
+      "post": {
+        "operationId": "cancelOperation",
+        "summary": "取消任务，复用现有动作边界",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "description": "任务 ID",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActionResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "任务或执行实例不存在",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "已受理",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "参数无效",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "当前任务状态不支持操作",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "执行入口暂不可用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/operations/{task_id}/terminate": {
+      "post": {
+        "operationId": "terminateOperation",
+        "summary": "终止任务，复用现有动作边界",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "description": "任务 ID",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActionResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "任务或执行实例不存在",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "已受理",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "参数无效",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "当前任务状态不支持操作",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "执行入口暂不可用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/operations/{task_id}/delete": {
+      "post": {
+        "operationId": "deleteOperation",
+        "summary": "隐藏任务，复用现有动作边界",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "description": "任务 ID",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActionResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "任务或执行实例不存在",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "已受理",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "参数无效",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "当前任务状态不支持操作",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "执行入口暂不可用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/operations/bulk": {
+      "post": {
+        "operationId": "bulkOperations",
+        "summary": "批量执行现有任务操作",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActionResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "任务或执行实例不存在",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "参数无效",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "action": {
+                    "type": "string",
+                    "enum": [
+                      "retry",
+                      "cancel",
+                      "terminate",
+                      "delete"
+                    ]
+                  },
+                  "task_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "minItems": 1,
+                    "maxItems": 100
+                  }
+                },
+                "required": [
+                  "action",
+                  "task_ids"
+                ],
+                "additionalProperties": true
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ErrorInfo": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "display_code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "summary": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "cause_code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "cause_display_code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "cause_summary": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "category": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "stage": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "detail": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "suggestion": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [],
+        "additionalProperties": true
+      },
+      "NextAction": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "source_job_id": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "additionalProperties": true
+      },
+      "AdmissionReason": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "limit": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "used": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [],
+        "additionalProperties": true
+      },
+      "DebugArtifacts": {
+        "type": "object",
+        "properties": {
+          "available": {
+            "type": "boolean"
+          },
+          "page_state_available": {
+            "type": "boolean"
+          },
+          "screenshot_available": {
+            "type": "boolean"
+          },
+          "har_url": {
+            "type": "string"
+          },
+          "page_state_url": {
+            "type": "string"
+          },
+          "screenshot_url": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "additionalProperties": true
+      },
+      "OperationRun": {
+        "type": "object",
+        "properties": {
+          "source_system": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "internal_status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error_message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error_code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error_category": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "failure_stage": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "failure_stage_label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "updated_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "started_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "completed_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "current_stage": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "progress_stage": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "admission_wait_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "integer"
+          },
+          "result_summary": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": true
+          },
+          "data": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": true
+          },
+          "error_info": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ErrorInfo"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "duration_ms": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "admission_wait_reasons": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdmissionReason"
+            }
+          },
+          "task_id": {
+            "type": "integer"
+          },
+          "run_uuid": {
+            "type": "string"
+          },
+          "run_no": {
+            "type": "integer"
+          },
+          "trigger": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "config_snapshot": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "debug_artifacts": {
+            "$ref": "#/components/schemas/DebugArtifacts"
+          },
+          "execution_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "log_file": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "bulk_context": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "debug_pause": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": true
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": true
+      },
+      "OperationEvent": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "task_id": {
+            "type": "integer"
+          },
+          "run_id": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "run_no": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "event_uuid": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "event_type": {
+            "type": "string"
+          },
+          "level": {
+            "type": "string"
+          },
+          "stage": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "main_step_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "step_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "stage_label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "detail": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "fields": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "source_system": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": true
+      },
+      "OperationLog": {
+        "type": "object",
+        "properties": {
+          "ts": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "task_id": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "run_id": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "event_id": {
+            "type": [
+              "integer",
+              "string",
+              "null"
+            ]
+          },
+          "event_uuid": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "event_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "level": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "stage": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "stage_label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "main_step_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "fields": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "required": [],
+        "additionalProperties": true
+      },
+      "OperationTask": {
+        "type": "object",
+        "properties": {
+          "source_system": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "internal_status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error_message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error_code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error_category": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "failure_stage": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "failure_stage_label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "updated_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "started_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "completed_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "current_stage": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "progress_stage": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "admission_wait_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "integer"
+          },
+          "result_summary": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": true
+          },
+          "data": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": true
+          },
+          "error_info": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ErrorInfo"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "duration_ms": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "admission_wait_reasons": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdmissionReason"
+            }
+          },
+          "task_uuid": {
+            "type": "string"
+          },
+          "task_type": {
+            "type": "string"
+          },
+          "target_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "target_id": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "account_id": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "target_status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "internal_target_status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "batch_id": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "batch_uuid": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "batch_title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "batch_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "parent_task_id": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "attempt_id": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "retry_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "next_actions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NextAction"
+            }
+          },
+          "current_run_id": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "last_run_id": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "last_run_no": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "run_count": {
+            "type": "integer"
+          },
+          "runs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OperationRun"
+            }
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OperationEvent"
+            }
+          },
+          "resources": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "attempt": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": true
+          },
+          "parent": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OperationTask"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "flow": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "bulk_context": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "latest_legacy_job_id": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "debug_pause": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": true
+          },
+          "email_snapshot": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "trigger": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "current_stage_label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "bulk_batch_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "bulk_round_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "task_type"
+        ],
+        "additionalProperties": true
+      },
+      "FacetOption": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "string"
+          },
+          "count": {
+            "type": "integer"
+          },
+          "label": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "value",
+          "count"
+        ],
+        "additionalProperties": true
+      },
+      "OperationBatch": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "batch_uuid": {
+            "type": "string"
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "batch_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": true
+      },
+      "OperationList": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OperationTask"
+            }
+          },
+          "total": {
+            "type": "integer"
+          },
+          "page": {
+            "type": "integer"
+          },
+          "page_size": {
+            "type": "integer"
+          },
+          "revision": {
+            "type": "string"
+          },
+          "facets": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/FacetOption"
+              }
+            }
+          },
+          "batches": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OperationBatch"
+            }
+          }
+        },
+        "required": [
+          "ok",
+          "items",
+          "total",
+          "page",
+          "page_size",
+          "revision"
+        ],
+        "additionalProperties": true
+      },
+      "OperationDetail": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "task": {
+            "$ref": "#/components/schemas/OperationTask"
+          }
+        },
+        "required": [
+          "ok",
+          "task"
+        ],
+        "additionalProperties": true
+      },
+      "ProgressStep": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "step_id": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "display_status": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "started_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "completed_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "duration_ms": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "observed_order": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "本 Run/所选线路内按已记录开始时间与首条阶段证据得到的观察排序，不能据此推断严格先后或并行。"
+          },
+          "raw_stages": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "attempts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "children": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProgressStep"
+            }
+          },
+          "evidence": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "object",
+                "additionalProperties": true
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "group": {
+            "type": "string"
+          },
+          "depends_on": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "execution": {
+            "$ref": "#/components/schemas/ProgressExecution"
+          },
+          "step_instances": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "state"
+        ],
+        "additionalProperties": true
+      },
+      "ProgressFailure": {
+        "type": "object",
+        "properties": {
+          "step_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "stage": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "event_id": {
+            "type": [
+              "integer",
+              "string",
+              "null"
+            ]
+          },
+          "error_info": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ErrorInfo"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "inferred": {
+            "type": "boolean"
+          },
+          "reconcile_required": {
+            "type": "boolean"
+          },
+          "country_failures": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "evidence": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "object",
+                "additionalProperties": true
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [],
+        "additionalProperties": true
+      },
+      "ProgressOutcome": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string"
+          },
+          "internal_status": {
+            "type": "string"
+          },
+          "message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "child_tasks": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "task_id": {
+                  "type": [
+                    "integer",
+                    "string"
+                  ]
+                },
+                "run_id": {
+                  "type": [
+                    "integer",
+                    "string",
+                    "null"
+                  ]
+                },
+                "task_type": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "status": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "error_message": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "task_id"
+              ],
+              "additionalProperties": true
+            }
+          }
+        },
+        "required": [],
+        "additionalProperties": true
+      },
+      "OperationProgress": {
+        "type": "object",
+        "properties": {
+          "task_id": {
+            "type": "integer"
+          },
+          "run_id": {
+            "type": "integer"
+          },
+          "revision": {
+            "type": "string"
+          },
+          "flow_version": {
+            "type": "integer"
+          },
+          "source": {
+            "type": "string"
+          },
+          "main_steps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProgressStep"
+            }
+          },
+          "current": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": true
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/ProgressOutcome"
+          },
+          "failure": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProgressFailure"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "history_unknown": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "route_attempts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "structure": {
+            "$ref": "#/components/schemas/ProgressStructure"
+          }
+        },
+        "required": [
+          "task_id",
+          "run_id",
+          "revision",
+          "main_steps",
+          "outcome"
+        ],
+        "additionalProperties": true
+      },
+      "ProgressResponse": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "progress": {
+            "$ref": "#/components/schemas/OperationProgress"
+          }
+        },
+        "required": [
+          "ok",
+          "progress"
+        ],
+        "additionalProperties": true
+      },
+      "EventsResponse": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OperationEvent"
+            }
+          },
+          "next_after_id": {
+            "type": "integer"
+          },
+          "has_more": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok",
+          "items",
+          "next_after_id",
+          "has_more"
+        ],
+        "additionalProperties": true
+      },
+      "LogsResponse": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OperationLog"
+            }
+          },
+          "next_cursor": {
+            "type": "integer"
+          },
+          "has_more": {
+            "type": "boolean"
+          },
+          "available": {
+            "type": "boolean"
+          },
+          "size": {
+            "type": "integer"
+          },
+          "run_terminal": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok",
+          "items",
+          "next_cursor",
+          "has_more",
+          "available",
+          "run_terminal"
+        ],
+        "additionalProperties": true
+      },
+      "ApiError": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "const": false
+          },
+          "error": {
+            "type": "string"
+          },
+          "error_code": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ok",
+          "error"
+        ],
+        "additionalProperties": true
+      },
+      "ActionResult": {
+        "type": "object",
+        "properties": {
+          "task_id": {
+            "type": "integer"
+          },
+          "run_id": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "state": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error_code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "result": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "required": [
+          "task_id"
+        ],
+        "additionalProperties": true
+      },
+      "ActionResponse": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "accepted": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/ActionResult"
+                }
+              }
+            ]
+          },
+          "accepted_count": {
+            "type": "integer"
+          },
+          "skipped": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ActionResult"
+            }
+          },
+          "skipped_count": {
+            "type": "integer"
+          },
+          "deleted": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "type": "integer"
+                }
+              }
+            ]
+          },
+          "deleted_count": {
+            "type": "integer"
+          },
+          "task_id": {
+            "type": "integer"
+          },
+          "run_id": {
+            "type": "integer"
+          },
+          "action": {
+            "type": "string"
+          },
+          "state": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error_code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "busy": {
+            "type": "boolean"
+          },
+          "reused": {
+            "type": "boolean"
+          },
+          "status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [],
+        "additionalProperties": true
+      },
+      "ProgressCondition": {
+        "type": "object",
+        "properties": {
+          "label": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "met",
+              "not_met",
+              "unknown"
+            ]
+          },
+          "evidence": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "label",
+          "state",
+          "evidence"
+        ],
+        "additionalProperties": true
+      },
+      "ProgressWaitTarget": {
+        "type": "object",
+        "properties": {
+          "task_id": {
+            "type": [
+              "integer",
+              "string",
+              "null"
+            ]
+          },
+          "run_id": {
+            "type": [
+              "integer",
+              "string",
+              "null"
+            ]
+          },
+          "task_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "evidence": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "evidence"
+        ],
+        "additionalProperties": true
+      },
+      "ProgressRetry": {
+        "type": "object",
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "observed",
+              "recovered",
+              "unknown"
+            ]
+          },
+          "attempt_count": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "event_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "state",
+          "attempt_count",
+          "event_ids"
+        ],
+        "additionalProperties": true
+      },
+      "ProgressExecution": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "stage",
+              "conditional",
+              "child_task",
+              "result",
+              "unknown"
+            ]
+          },
+          "condition": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProgressCondition"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "dependency_state": {
+            "type": "string",
+            "enum": [
+              "waiting",
+              "blocked",
+              "satisfied",
+              "unknown"
+            ]
+          },
+          "waits_for": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProgressWaitTarget"
+            }
+          },
+          "parallel_group": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "retry": {
+            "$ref": "#/components/schemas/ProgressRetry"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "runtime_contract",
+              "event",
+              "unknown"
+            ]
+          }
+        },
+        "required": [
+          "kind",
+          "condition",
+          "dependency_state",
+          "waits_for",
+          "parallel_group",
+          "retry",
+          "source"
+        ],
+        "additionalProperties": true,
+        "description": "只读展示语义。runtime_contract 仅表示已有展示定义，不代表实际执行证据；依赖、条件、子任务等待和重试分别表达。"
+      },
+      "ProgressStructure": {
+        "type": "object",
+        "properties": {
+          "version": {
+            "type": "integer"
+          },
+          "order_basis": {
+            "type": "string",
+            "enum": [
+              "observed_events"
+            ]
+          },
+          "parallelism": {
+            "type": "string",
+            "enum": [
+              "explicit",
+              "unknown"
+            ]
+          },
+          "note": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "order_basis",
+          "parallelism",
+          "note"
+        ],
+        "additionalProperties": true,
+        "description": "观察顺序不是严格执行顺序；未提供明确并行组时不得从排列或时间重叠推断并行。"
+      }
+    }
+  }
+}

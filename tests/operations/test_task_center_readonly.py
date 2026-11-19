@@ -10,6 +10,7 @@ from psycopg.conninfo import make_conninfo
 from core import account_task_store, operation_task_store
 from core.operations import query_service
 from core.storage import postgres, records, registration
+from core.storage.operations import schema as operation_schema
 from core.storage.task_query_context import _readonly_connection
 from tests.support_pg import PostgresTestCase, temporary_schema_name
 from webui.routes.operations import create_operations_blueprint
@@ -54,7 +55,7 @@ class TaskCenterReadonlyTests(PostgresTestCase):
             statements.append(str(statement).strip().lower())
             return execute(cursor, statement, *args, **kwargs)
 
-        ready = operation_task_store._READY_KEY, account_task_store._READY_KEY, records._READY_KEY
+        ready = operation_schema._READY_KEY, account_task_store._READY_KEY, records._READY_KEY
         with patch.dict(os.environ, DATABASE_URL=self.reader), patch.object(psycopg.Cursor, "execute", trace):
             for (path, project), data in zip(routes, expected):
                 with self.subTest(path=path):
@@ -63,7 +64,7 @@ class TaskCenterReadonlyTests(PostgresTestCase):
                     self.assertEqual(data, project(response.get_json()))
         self.assertTrue(statements)
         self.assertEqual([], [s.split()[0] for s in statements if s.split()[0] not in {"select", "with", "show"}])
-        self.assertEqual(ready, (operation_task_store._READY_KEY, account_task_store._READY_KEY, records._READY_KEY))
+        self.assertEqual(ready, (operation_schema._READY_KEY, account_task_store._READY_KEY, records._READY_KEY))
 
     def test_failed_registration_keeps_verified_retry_reason_on_cold_reader(self):
         operation_task_store.init()

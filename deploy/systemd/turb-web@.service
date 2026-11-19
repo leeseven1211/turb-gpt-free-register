@@ -1,0 +1,26 @@
+[Unit]
+Description=Turb HTTP role (%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=turb
+Group=turb
+WorkingDirectory=/srv/turb/%i/current
+EnvironmentFile=/etc/turb/%i/bootstrap.env
+Environment=PYTHONUNBUFFERED=1
+Environment=TURB_RUNTIME_MODE=web
+Environment=TURB_RUNTIME_MANAGER=systemd
+Environment=TURB_INSTANCE_ID=%i
+Environment=TURB_RUNTIME_DIR=/var/lib/turb/%i/runtime
+Environment=TASK_RUN_LOG_ROOT=/var/log/turb/%i/tasks
+ExecStart=/srv/turb/%i/current/.venv/bin/python /srv/turb/%i/current/web.py --mode web --server waitress --host 127.0.0.1 --port 8000 --http-threads 4 --http-drain-timeout 20
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=90
+KillMode=control-group
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

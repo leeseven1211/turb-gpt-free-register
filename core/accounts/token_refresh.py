@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 
 from core import db
 from core.runtime import scheduler_state
+from core.runtime.periodic import PeriodicThread
 from core.accounts.plans.client import token_claims
 
 logger = logging.getLogger('core.token_refresh_service')
@@ -30,7 +31,7 @@ _SCAN_INTERVAL_SECONDS = _env_int("AT_REFRESH_SCAN_INTERVAL_SECONDS", 3600, 300,
 _INITIAL_DELAY_SECONDS = _env_int("AT_REFRESH_INITIAL_DELAY_SECONDS", 120, 10, 3600)
 _MAX_PER_CYCLE = _env_int("AT_REFRESH_MAX_PER_CYCLE", 20, 1, 200)
 _LOCK = threading.RLock()
-_SCHEDULER_STARTED = False
+_SCHEDULER = PeriodicThread("at-refresh-scheduler")
 
 
 def _expires_in_seconds(access_token: str) -> tuple[float | None, dict]:
@@ -117,29 +118,28 @@ def _scheduler_loop() -> None:
         enabled=scheduler_enabled,
         interval_seconds=scheduler_interval_seconds,
         initial_delay_seconds=_INITIAL_DELAY_SECONDS,
+        stop=_SCHEDULER.stop_event,
+        lifecycle=_SCHEDULER,
     )
 
 
 def start_periodic_refresher() -> bool:
-    """启动唯一调度线程；关闭时休眠，后续由周期循环读取最新开关。"""
-    global _SCHEDULER_STARTED
-    with _LOCK:
-        if _SCHEDULER_STARTED:
-            return False
-        try:
-            threading.Thread(target=_scheduler_loop, name="at-refresh-scheduler", daemon=True).start()
-        except Exception:
-            logger.exception("[AT Refresh] 调度线程启动失败，可再次启动")
-            return False
-        _SCHEDULER_STARTED = True
-    logger.info(
-        "[AT Refresh] 调度器已启动 enabled=%s interval=%ss before=%sh max_per_cycle=%s",
-        scheduler_enabled(),
-        scheduler_interval_seconds(),
-        _REFRESH_BEFORE_HOURS,
-        _MAX_PER_CYCLE,
-    )
-    return True
+    """Start one observable producer; work remains behind runtime admission."""
+    try:
+        started = _SCHEDULER.start(_scheduler_loop)
+    except Exception:
+        logger.exception("Periodic scheduler start failed; it may be retried")
+        return False
+
+    return started
+
+
+def stop_periodic_refresher(timeout: float = 2.0) -> bool:
+    return _SCHEDULER.stop(timeout)
+
+
+def scheduler_status() -> dict:
+    return _SCHEDULER.status(enabled=scheduler_enabled())
 
 
 def settings() -> dict:

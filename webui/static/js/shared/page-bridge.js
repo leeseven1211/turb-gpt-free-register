@@ -72,6 +72,8 @@ window.createPageBridge = function createPageBridge(options) {
   function closeDialogs() {epoch++; instance?.closeDialogs?.(); instance?.closeDetail?.(); instance?.closeCustomizer?.();}
   return {
     setVisible, read, invoke, closeDialogs,
+    load(recordView = null) {return read('load', recordView);},
+    closeDetail(options = {restoreFocus:false}) {epoch++; instance?.closeDetail?.(options);},
     setView(value) {if (view !== value) epoch++; view = value; sync();},
     destroy() {epoch++; disposed = true; visible = false; instance?.destroy?.(); instance = null; loading = null;},
   };

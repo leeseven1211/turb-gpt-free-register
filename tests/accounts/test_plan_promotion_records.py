@@ -13,6 +13,7 @@ from core.accounts.plans.client import parse_accounts_check
 from core.operations import task_gateway
 from core.storage.operations import store as operation
 from tests.support_pg import PostgresTestCase
+from tests.support_settlement import install_native_settlement_fixture
 
 
 class PlanPromotionRecordsTests(PostgresTestCase):
@@ -29,6 +30,7 @@ class PlanPromotionRecordsTests(PostgresTestCase):
         task_gateway.init()
         operation.reset_ready()
         operation.init()
+        self.settlement_fixture = install_native_settlement_fixture(self)
         plan_check_service.register_operation_handlers()
         self.account_id = record_store.insert_row(record_store.ACCOUNTS, {
             "email": "promotion-records@example.test", "access_token": "synthetic-token",
@@ -56,6 +58,7 @@ class PlanPromotionRecordsTests(PostgresTestCase):
             patch.object(plan_check_service, "_query_account_plan", return_value=result),
         ):
             outcome = task_gateway._execute_operation_handler("plan_check", int(task["id"]))
+            self.settlement_fixture.wait_for_run_released(int(task["run"]["id"]))
         self.assertEqual(outcome["status"], "success")
         return operation.get_run(int(task["run"]["id"]))
 

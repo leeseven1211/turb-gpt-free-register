@@ -51,10 +51,20 @@ class C2AReimportError(ValueError):
         super().__init__(message)
 
 
+def register_actions() -> None:
+    task_gateway.register_operation_actions(
+        TASK_TYPE,
+        retry_handler=task_gateway.default_operation_retry,
+        cancel_handler=task_gateway.default_operation_cancel,
+        terminate_handler=task_gateway.default_operation_terminate,
+    )
+
+
 def register_handler() -> None:
     """登记持久化处理器；多次调用保持幂等。"""
     concurrency.register_admission_alias(TASK_TYPE, "c2a_sync")
     task_gateway.register_operation_handler(TASK_TYPE, _handle, config_allowlist=())
+    register_actions()
 
 
 def _normalized_email(value: Any, *, code: str, message: str) -> str:
@@ -255,7 +265,7 @@ def _handle(context):
     remote_completed = False
     remote_import_confirmed = False
     action = "update"
-    with context.lease(resource_family=RESOURCE_FAMILY):
+    with context.lease(resource_family=RESOURCE_FAMILY, scope_kind="final"):
         try:
             context.checkpoint()
             backend = str(data.get("backend_identity") or "")

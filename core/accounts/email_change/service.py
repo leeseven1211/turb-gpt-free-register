@@ -7,7 +7,7 @@ import logging
 import re
 import time
 import uuid
-from contextlib import ExitStack
+from contextlib import ExitStack, nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Mapping
@@ -398,6 +398,8 @@ class EmailChangeProtocol:
             )
         try:
             result = response.json()
+        except (task_gateway.OperationSettlementPending, task_gateway.OperationSettlementConflict, task_gateway.OperationSettlementFenced):
+            raise
         except Exception as exc:
             raise RemoteRequestUnknown(
                 f"{path} 返回不是 JSON，远端结果待确认",
@@ -539,6 +541,8 @@ def _record_begin_success_receipt(context, *, request_id: str | None) -> None:
                 "phase_complete": True,
             },
         )
+    except (task_gateway.OperationSettlementPending, task_gateway.OperationSettlementConflict, task_gateway.OperationSettlementFenced):
+        raise
     except Exception as exc:
         raise RemoteRequestUnknown("begin 已成功但本地回执未确认") from exc
 
@@ -552,6 +556,7 @@ def begin_change_with_optional_reauth(
     new_email: str,
     access_token: str,
     context=None,
+    session_observer=None,
 ) -> BeginChangeResult:
     """Try begin once, then perform one explicit Recent Login if required."""
     protocol = EmailChangeProtocol()
@@ -568,6 +573,8 @@ def begin_change_with_optional_reauth(
     try:
         protocol.begin(session, token, new_email, prepared=first_prepared)
     except task_gateway.OperationLeaseLost:
+        raise
+    except (task_gateway.OperationSettlementPending, task_gateway.OperationSettlementConflict, task_gateway.OperationSettlementFenced):
         raise
     except Exception as exc:
         if not _is_reauth_required(exc):
@@ -612,6 +619,8 @@ def begin_change_with_optional_reauth(
             )
         except (task_gateway.OperationLeaseLost, OperationCancelled):
             raise
+        except (task_gateway.OperationSettlementPending, task_gateway.OperationSettlementConflict, task_gateway.OperationSettlementFenced):
+            raise
         except Exception as recent_exc:
             if context is not None:
                 context.report(stage="login_password", state="failed", message="Recent Login 验证失败")
@@ -620,12 +629,14 @@ def begin_change_with_optional_reauth(
             raise RemoteRequestRejected(
                 f"Recent Login 失败: {type(recent_exc).__name__}"
             ) from recent_exc
+        recent_session = recent.get("protocol_session") if isinstance(recent, Mapping) else None
+        if recent_session is not None and callable(session_observer):
+            session_observer(recent_session)
         token = _access_token(recent)
         if not token:
             if context is not None:
                 context.report(stage="login_password", state="failed", message="Recent Login 未返回新的 access_token")
             raise RemoteRequestRejected("Recent Login 未返回新的 access_token")
-        recent_session = recent.get("protocol_session") if isinstance(recent, Mapping) else None
         if recent_session is None:
             if context is not None:
                 context.report(stage="login_password", state="failed", message="Recent Login 未返回新的协议会话")
@@ -658,6 +669,8 @@ def begin_change_with_optional_reauth(
                         **_safe_remote_error_detail(second_exc),
                     },
                 )
+            raise
+        except (task_gateway.OperationSettlementPending, task_gateway.OperationSettlementConflict, task_gateway.OperationSettlementFenced):
             raise
         except Exception as second_exc:
             if context is not None:
@@ -803,6 +816,8 @@ def _acquire_email_change_target(
                 source=source,
                 note=f"本地账号 #{owner_id} 已使用该邮箱",
             )
+        except (task_gateway.OperationSettlementPending, task_gateway.OperationSettlementConflict, task_gateway.OperationSettlementFenced):
+            raise
         except Exception as exc:
             logger.warning(
                 "Email Butler 已登记邮箱标记为已使用失败: account_id=%s owner_id=%s error_type=%s",
@@ -872,13 +887,111 @@ def _finalize_consumed_email(email: str, account_id: int, source: str) -> dict[s
 def _close_protocol_session(session: BrowserSession | None) -> None:
     if session is None:
         return
-    try:
-        transport = getattr(session, "session", None)
-        close = getattr(transport, "close", None)
-        if callable(close):
-            close()
-    except Exception:
-        logger.debug("关闭邮箱换绑协议会话失败", exc_info=True)
+    transport = getattr(session, "session", None)
+    close = getattr(transport, "close", None)
+    if callable(close):
+        close()
+
+
+class _EmailChangeCleanup:
+    """Own the original actor handles until their closure is confirmed."""
+
+    before_transition = True
+
+    def __init__(self, *, domain=None) -> None:
+        self.domain = domain
+        self.session = None
+        self.route = None
+        self.auth_stack = None
+        self.target_auth = None
+        self.writeback_confirmed = False
+        self._session_closed = False
+        self._route_released = False
+        self._auth_closed = False
+        self._auth_result_set = False
+        self._auth_stack_unwound = False
+        self._sessions = []
+        self._closed_sessions: set[int] = set()
+        self.release_confirmed = False
+
+    def observe_session(self, session) -> None:
+        if session is not None and all(existing is not session for existing in self._sessions):
+            self._sessions.append(session)
+            self._session_closed = False
+            self.release_confirmed = False
+
+    def release(self, deadline=None) -> bool:
+        from core.storage.operations.common import settlement_scope
+
+        scope = settlement_scope(self.domain, deadline=deadline) if self.domain is not None else nullcontext()
+        with scope:
+            return self._release_handles(deadline=deadline)
+
+    def _release_handles(self, deadline=None) -> bool:
+        # Handle operations use their existing bounded transport contracts.
+        # A failed close stays owned; the settlement carrier never runs the
+        # business flow or submits the post-change child.
+        complete = True
+        for stage in ("session", "route", "auth"):
+            try:
+                if stage == "session" and not self._session_closed:
+                    self.observe_session(self.session)
+                    for session in self._sessions:
+                        if id(session) in self._closed_sessions:
+                            continue
+                        try:
+                            _close_protocol_session(session)
+                            self._closed_sessions.add(id(session))
+                        except (task_gateway.OperationSettlementPending, task_gateway.OperationSettlementConflict, task_gateway.OperationSettlementFenced):
+                            raise
+                        except Exception:
+                            complete = False
+                            logger.warning("邮箱换绑协议会话关闭未确认", exc_info=True)
+                    self._session_closed = len(self._closed_sessions) == len(self._sessions)
+                elif stage == "route" and not self._route_released:
+                    if self.route is not None:
+                        from core.accounts.operation_results import AccountRouteCleanup
+                        if not isinstance(self.route, AccountRouteCleanup):
+                            self.route = AccountRouteCleanup(self.route, run_id=0, domain=self.domain)
+                        if self.route.release(reason="email-change-completed", deadline=deadline) is False:
+                            complete = False
+                            continue
+                    self._route_released = True
+                elif stage == "auth" and not self._auth_closed:
+                    if self.target_auth is not None and self.writeback_confirmed and not self._auth_result_set:
+                        self.target_auth.set_result({"ok": True})
+                        self._auth_result_set = True
+                    if not self._auth_stack_unwound:
+                        # ContextVar tokens belong to the business thread.
+                        # ExitStack consumes its callbacks even when closing
+                        # raises, so retry the retained actor itself later.
+                        self._auth_stack_unwound = True
+                        if self.auth_stack is not None:
+                            self.auth_stack.close()
+                    elif self.target_auth is not None:
+                        self.target_auth.close()
+                    if self.target_auth is not None:
+                        thread = getattr(self.target_auth, "heartbeat_thread", None)
+                        if thread is not None and thread.is_alive():
+                            complete = False
+                            continue
+                        row = getattr(self.target_auth, "row", None)
+                        if isinstance(row, Mapping) and row and row.get("state") not in {"confirmed", "cancelled"}:
+                            # EmailAuthSession.close preserves an active row
+                            # on transport failure. Its None return is not a
+                            # physical close receipt.
+                            complete = False
+                            continue
+                    self._auth_closed = True
+            except task_gateway.OperationSettlementPending:
+                complete = False
+            except (task_gateway.OperationSettlementConflict, task_gateway.OperationSettlementFenced):
+                raise
+            except Exception:
+                complete = False
+                logger.warning("邮箱换绑资源关闭未确认: resource=%s", stage, exc_info=True)
+        self.release_confirmed = complete and self._session_closed and self._route_released and self._auth_closed
+        return self.release_confirmed
 
 
 def _enqueue_live_check_child(context, account_id: int, email: str) -> dict[str, Any]:
@@ -892,8 +1005,8 @@ def _enqueue_live_check_child(context, account_id: int, email: str) -> dict[str,
         idempotency_key=f"email-change-live:{int(context.task_id)}",
         # The child handler acquires the normal openai_interactive account
         # lease. Its durable run uses a distinct family so it can be created
-        # before the parent attempt is terminalized; the parent lease is
-        # already released when this function is called.
+        # before the parent attempt is terminalized. The original actor is
+        # already quiescent; the final parent lease stays owned by settlement.
         resource_family=EMAIL_CHANGE_LIVE_RESOURCE_FAMILY,
     )
     if result.get("accepted") and result.get("task_id"):
@@ -911,6 +1024,8 @@ def _enqueue_live_check_child(context, account_id: int, email: str) -> dict[str,
                     payload={"account_id": int(account_id), "purpose": "post_email_change_at"},
                 )
                 result["dependency_registered"] = True
+            except (task_gateway.OperationSettlementPending, task_gateway.OperationSettlementConflict, task_gateway.OperationSettlementFenced):
+                raise
             except Exception as exc:
                 # The child is already durable and has its own account lease;
                 # preserve the confirmed parent while surfacing the handoff
@@ -955,6 +1070,8 @@ def _handle_email_change(context):
             operation_task_id=int(context.task_id),
             operation_run_id=int(context.run_id),
         )
+    except (task_gateway.OperationSettlementPending, task_gateway.OperationSettlementConflict, task_gateway.OperationSettlementFenced):
+        raise
     except Exception:
         logger.exception("邮箱换绑协议流量标记写入失败；业务流程继续: account_id=%s", account_id)
     new_email = ""
@@ -966,10 +1083,14 @@ def _handle_email_change(context):
     email_closeout: dict[str, str] | None = None
     target_auth_stack = ExitStack()
     target_auth = None
+    actor_cleanup = _EmailChangeCleanup(domain=getattr(context, "settlement_domain", None))
+    actor_cleanup.auth_stack = target_auth_stack
+    context.register_cleanup(actor_cleanup, key=f"email-change-actor:{context.run_id}", blocking=True)
+    actor_quiescent = False
     active_stage = "email"
     context.report(stage="email", state="running", message="准备新邮箱")
     try:
-        with context.lease(resource_family=EMAIL_CHANGE_RESOURCE_FAMILY):
+        with context.lease(resource_family=EMAIL_CHANGE_RESOURCE_FAMILY, scope_kind="final"):
             context.checkpoint()
             if not db.claim_account_email_change(account_id, source, str(context.run.get("trigger") or "manual")):
                 context.report(stage="email", state="failed", message="账号已有邮箱换绑状态")
@@ -1012,6 +1133,8 @@ def _handle_email_change(context):
                     or ""
                 ).strip() or None,
             )
+            from core.accounts.operation_results import own_account_route
+            route = own_account_route(context, route, purpose="email-change", actor_scope="owner_process")
             identity = _account_stable_identity(account_id)
             from core.auth.protocol.session import BrowserSession
 
@@ -1019,6 +1142,7 @@ def _handle_email_change(context):
                 proxy=route.proxy_url,
                 identity=identity.session_payload(),
             )
+            actor_cleanup.observe_session(session)
             context.report(stage="network", state="success", message="邮箱换绑线路已就绪", detail=route.public_dict())
             context.checkpoint()
             active_stage = "submit_email"
@@ -1032,8 +1156,10 @@ def _handle_email_change(context):
                 new_email=new_email,
                 access_token=token,
                 context=context,
+                session_observer=actor_cleanup.observe_session,
             )
             session = begin.session
+            actor_cleanup.observe_session(session)
             token = begin.access_token
             remote_accepted = True
             if not begin.reauthenticated:
@@ -1049,6 +1175,8 @@ def _handle_email_change(context):
                     force_service=True,
                 )
             except (task_gateway.OperationLeaseLost, OperationCancelled):
+                raise
+            except (task_gateway.OperationSettlementPending, task_gateway.OperationSettlementConflict, task_gateway.OperationSettlementFenced):
                 raise
             except Exception as exc:
                 context.report(
@@ -1102,6 +1230,8 @@ def _handle_email_change(context):
                 _release_unconsumed(new_email, account_id, str(exc))
                 context.report(stage="submit_email", state="failed", message="新邮箱验证码未通过", detail=_safe_remote_error_detail(exc))
                 return task_gateway.OperationResult.failed("新邮箱验证码未通过", {"error_code": "email_otp_rejected"})
+            except (task_gateway.OperationSettlementPending, task_gateway.OperationSettlementConflict, task_gateway.OperationSettlementFenced):
+                raise
             except Exception as exc:
                 context.remote_request_receipt(
                     outcome="unknown",
@@ -1195,6 +1325,8 @@ def _handle_email_change(context):
                         error=str(exc) or "账号 lease 丢失，远端换绑结果待核验",
                         outcome="request_unknown",
                     )
+                except (task_gateway.OperationSettlementPending, task_gateway.OperationSettlementConflict, task_gateway.OperationSettlementFenced):
+                    raise
                 except Exception:
                     logger.exception("lease 丢失后的邮箱换绑待核验状态写回失败: account_id=%s", account_id)
             else:
@@ -1208,6 +1340,8 @@ def _handle_email_change(context):
                         source=source,
                         error=str(exc) or "账号 lease 丢失，邮箱换绑未完成",
                     )
+                except (task_gateway.OperationSettlementPending, task_gateway.OperationSettlementConflict, task_gateway.OperationSettlementFenced):
+                    raise
                 except Exception:
                     logger.exception("lease 丢失后的邮箱换绑失败状态写回失败: account_id=%s", account_id)
         raise
@@ -1279,6 +1413,8 @@ def _handle_email_change(context):
             error=str(exc),
         )
         return task_gateway.OperationResult.failed(str(exc))
+    except (task_gateway.OperationSettlementPending, task_gateway.OperationSettlementConflict, task_gateway.OperationSettlementFenced):
+        raise
     except Exception as exc:
         local_error = _safe_local_failure_message(
             "邮箱准备失败" if not new_email else "邮箱换绑失败",
@@ -1311,19 +1447,31 @@ def _handle_email_change(context):
         )
         return task_gateway.OperationResult.failed(local_error)
     finally:
-        _close_protocol_session(session)
+        actor_cleanup.session = session
+        # Physical actor quiescence precedes transition; the registered route
+        # remains a separate post-transition resource obligation.
+        actor_cleanup.route = None
+        actor_cleanup.target_auth = target_auth
+        actor_cleanup.writeback_confirmed = writeback_confirmed
+        actor_quiescent = actor_cleanup.release()
         if route is not None:
             try:
                 route.release(reason="email-change-completed")
-            except Exception:
-                logger.exception("邮箱换绑线路释放失败: account_id=%s", account_id)
-        if target_auth is not None and writeback_confirmed:
-            # 只有远端验证、本地写回和读回均已确认，才确认目标邮箱认证会话。
-            target_auth.set_result({"ok": True})
-        target_auth_stack.close()
+            except task_gateway.OperationSettlementPending:
+                # The exact registered route holder retains this responsibility;
+                # a confirmed email change remains the original business result.
+                logger.warning("邮箱换绑线路释放待确认: account_id=%s", account_id)
 
     try:
-        child = _enqueue_live_check_child(context, account_id, new_email)
+        child = (
+            _enqueue_live_check_child(context, account_id, new_email)
+            if actor_quiescent else {
+                "accepted": False,
+                "error": "原邮箱换绑会话关闭待确认",
+            }
+        )
+    except (task_gateway.OperationSettlementPending, task_gateway.OperationSettlementConflict, task_gateway.OperationSettlementFenced):
+        raise
     except Exception as exc:
         # The remote email change and local account writeback are already
         # confirmed. A local child-queue outage must not rewrite that parent
@@ -1337,6 +1485,8 @@ def _handle_email_change(context):
         "email_change_confirmed": True,
         "new_email": new_email,
         "email_closeout": email_closeout or {"status": "not_attempted"},
+        "actor_quiescent": actor_quiescent,
+        "cleanup_pending": not actor_quiescent or not bool(getattr(route, "release_confirmed", True)),
         "post_change_live_check": {
             "accepted": bool(child.get("accepted")),
             "task_id": child.get("task_id"),
@@ -1362,6 +1512,16 @@ def _handle_email_change(context):
     )
 
 
+def register_actions() -> None:
+    task_gateway.register_operation_actions(
+        EMAIL_CHANGE_TASK_TYPE,
+        retry_handler=task_gateway.default_operation_retry,
+        cancel_handler=task_gateway.default_operation_cancel,
+        terminate_handler=task_gateway.default_operation_terminate,
+        source_systems=(EMAIL_CHANGE_SOURCE_SYSTEM,),
+    )
+
+
 def register_operation_handlers() -> bool:
     register = getattr(task_gateway, "register_operation_handler", None)
     if not callable(register):
@@ -1372,6 +1532,7 @@ def register_operation_handlers() -> bool:
         source_systems=(EMAIL_CHANGE_SOURCE_SYSTEM,),
         config_allowlist=EMAIL_CHANGE_CONFIG_ALLOWLIST,
     )
+    register_actions()
     return True
 
 
@@ -1511,4 +1672,4 @@ def submit_email_change_bulk(
     }
 
 
-register_operation_handlers()
+register_actions()

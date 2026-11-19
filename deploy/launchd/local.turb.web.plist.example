@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>local.turb.INSTANCE.web</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/ABSOLUTE/PROJECT/.venv/bin/python</string>
+		<string>/ABSOLUTE/PROJECT/web.py</string>
+		<string>--mode</string>
+		<string>web</string>
+		<string>--server</string>
+		<string>waitress</string>
+		<string>--host</string>
+		<string>127.0.0.1</string>
+		<string>--port</string>
+		<string>8000</string>
+		<string>--http-threads</string>
+		<string>4</string>
+		<string>--http-drain-timeout</string>
+		<string>20</string>
+		<string>--shutdown-timeout</string>
+		<string>55</string>
+	</array>
+	<key>WorkingDirectory</key>
+	<string>/ABSOLUTE/PROJECT</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PYTHONUNBUFFERED</key>
+		<string>1</string>
+		<key>TURB_RUNTIME_MODE</key>
+		<string>web</string>
+		<key>TURB_RUNTIME_MANAGER</key>
+		<string>launchd</string>
+		<key>TURB_INSTANCE_ID</key>
+		<string>INSTANCE</string>
+		<key>TURB_RUNTIME_DIR</key>
+		<string>/ABSOLUTE/RUNTIME</string>
+		<key>TASK_RUN_LOG_ROOT</key>
+		<string>/ABSOLUTE/TASK_LOGS</string>
+	</dict>
+	<key>StandardOutPath</key>
+	<string>/ABSOLUTE/LOGS/web.stdout.log</string>
+	<key>StandardErrorPath</key>
+	<string>/ABSOLUTE/LOGS/web.stderr.log</string>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
+	<key>ThrottleInterval</key>
+	<integer>5</integer>
+	<key>ExitTimeOut</key>
+	<integer>60</integer>
+	<key>Umask</key>
+	<integer>63</integer>
+</dict>
+</plist>

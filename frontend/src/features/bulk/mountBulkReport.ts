@@ -6,6 +6,7 @@ export interface BulkReportState {
   operationKey: string;
   report: BulkRecord | null;
   error?: string;
+  loading?: boolean;
   formatDateTime: (value: unknown) => string;
   onRetry: () => void;
 }

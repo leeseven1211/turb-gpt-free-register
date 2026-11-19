@@ -4,12 +4,13 @@ import unittest
 from pathlib import Path
 
 from webui.app import create_app
-from tests.frontend_script_sources import read_account_script
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
+# 任务中心的动作资格、状态展示和请求生命周期由 frontend 的 Vitest 直接 import 验证；
+# 此处继续验证尚未迁移的页面和 Flask 资源策略，避免重复启动前端测试。
 class UiPerformanceContractTests(unittest.TestCase):
     def setUp(self):
         self.app = create_app(auth_code="test-auth-code")
@@ -27,7 +28,9 @@ class UiPerformanceContractTests(unittest.TestCase):
             {"account_batch_workers", "global_task_workers", "account_live_check_driver", "config_revision"},
         )
         self.assertIsInstance(body["account_batch_workers"], int)
-        self.assertEqual(body["account_batch_workers"], body["global_task_workers"])
+        # 4e99e9d 已提供统一预算字段，旧字段仅为同值兼容别名。
+        self.assertIsInstance(body["global_task_workers"], int)
+        self.assertEqual(body["global_task_workers"], body["account_batch_workers"])
         self.assertNotIn("WEBUI_AUTH_CODE", body)
         self.assertLess(len(json.dumps(body)), 1000)
 
@@ -104,126 +107,16 @@ if (result.status !== 0) {
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_registration_batch_selector_distinguishes_running_from_waiting(self):
-        harness = r'''
-const fs = require('fs');
-const path = require('path');
-
-const projectRoot = process.argv[1];
-const source = fs.readFileSync(
-  path.join(projectRoot, 'webui/static/js/pages/registration/page.js'),
-  'utf8',
-);
-const start = source.indexOf('function registrationBatchStateLabel(');
-const end = source.indexOf('\nfunction ', start + 1);
-if (start < 0 || end < 0) throw new Error('registration batch state helper missing');
-eval(source.slice(start, end));
-
-const label = registrationBatchStateLabel({
-  active: 12,
-  running: 2,
-  stopping: 0,
-  pending: 10,
-});
-if (label !== '未完成 12（运行 2 / 等待 10）') {
-  throw new Error(`unexpected batch state label: ${label}`);
-}
-'''
         result = subprocess.run(
-            ["node", "--input-type=commonjs", "-e", harness, str(PROJECT_ROOT)],
+            ["node", "tests/registration/vue_migration_contracts.cjs", "batch_counts"],
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
             check=False,
+            timeout=20,
         )
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-
-    def test_task_center_hides_retry_for_deactivated_tasks_but_allows_unknown_results(self):
-        harness = r'''
-const fs = require('fs');
-const path = require('path');
-
-const projectRoot = process.argv[1];
-const source = fs.readFileSync(
-  path.join(projectRoot, 'webui/static/js/pages/operations/page.js'),
-  'utf8',
-);
-const start = source.indexOf('function accountTaskCanRetry(');
-const end = source.indexOf('\nfunction ', start + 1);
-if (start < 0 || end < 0) throw new Error('account task retry helper missing');
-eval(source.slice(start, end));
-
-if (accountTaskCanRetry({
-  status: 'deactivated',
-  target_status: 'account_deactivated',
-  next_actions: [{action: 'retry'}],
-})) {
-  throw new Error('deactivated task must not expose retry');
-}
-if (!accountTaskCanRetry({
-  status: 'attention_required',
-  target_status: 'attention_required',
-  next_actions: [{action: 'reconcile'}],
-})) {
-  throw new Error('unknown remote result must allow a fresh retry run');
-}
-if (accountTaskCanRetry({
-  status: 'attention_required',
-  target_status: 'attention_required',
-  result_summary: {requested_status: 'deactivated'},
-  next_actions: [{action: 'retry'}],
-})) {
-  throw new Error('deactivated result summary must not expose retry');
-}
-'''
-        result = subprocess.run(
-            ["node", "--input-type=commonjs", "-e", harness, str(PROJECT_ROOT)],
-            cwd=PROJECT_ROOT,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-
-    def test_task_center_uses_cancel_for_queued_and_terminate_for_running_tasks(self):
-        source = read_account_script('account-tasks.js')
-        self.assertIn("data-account-task-terminate", source)
-        self.assertIn("/terminate", source)
-        self.assertIn("status === 'queued' ? '取消' : '终止'", source)
-        self.assertIn("window.confirm", source)
-
-    def test_task_center_exposes_single_and_bulk_delete(self):
-        template = (PROJECT_ROOT / 'webui/templates/index.html').read_text(encoding='utf-8')
-        source = read_account_script('account-tasks.js')
-        self.assertIn('id="btnDeleteSelectedAccountTasksV2"', template)
-        self.assertIn('data-account-task-delete', source)
-        self.assertIn('/api/operations/bulk', source)
-
-    def test_task_center_uses_public_failure_label_for_an_unconfirmed_result(self):
-        source = (PROJECT_ROOT / 'webui/static/js/shared/common.js').read_text(encoding='utf-8')
-        css = (PROJECT_ROOT / 'webui/static/css/shell.css').read_text(encoding='utf-8')
-        harness = r'''
-const {createRequire} = require('node:module');
-const {resolve} = require('node:path');
-const {JSDOM} = createRequire(resolve('frontend/package.json'))('jsdom');
-const dom = new JSDOM('', {runScripts: 'outside-only', url: 'http://localhost/'});
-try {
-  dom.window.eval(require('node:fs').readFileSync('webui/static/js/shared/common.js', 'utf8'));
-  const panel = dom.window.document.body;
-  panel.innerHTML = dom.window.pillV2('request_unknown');
-  const badge = panel.querySelector('.jobs-v2-pill--failed');
-  require('node:assert/strict').equal(badge?.textContent, '失败');
-} finally {
-  dom.window.close();
-}
-'''
-        result = subprocess.run(["node", "-e", harness], cwd=PROJECT_ROOT,
-                                capture_output=True, text=True)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('data-filter-status', source)
-        self.assertIn('.account-tasks-table { width:100%; min-width:100%; table-layout:fixed; }', css)
-
     def test_account_ui_hides_actions_for_all_deactivation_projections(self):
         harness = r'''
 const fs = require('fs');
@@ -256,8 +149,12 @@ if (accountIsDeactivated({account_status: 'active', codex_status: 'failed'})) {
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_config_writes_invalidate_the_cached_config(self):
-        source = (PROJECT_ROOT / "webui/static/js/pages/config/page.js").read_text(encoding="utf-8")
-        self.assertIn("invalidateApiCache('/api/config');", source)
+        result = subprocess.run(
+            ["node", "--test", "--test-name-pattern", "配置保存使 schema 缓存失效",
+             "tests/config/test_config_save_migrated_regressions.cjs"],
+            cwd=PROJECT_ROOT, capture_output=True, text=True, check=False, timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
 if __name__ == "__main__":

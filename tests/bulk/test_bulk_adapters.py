@@ -3,11 +3,13 @@ from contextlib import ExitStack
 from unittest import TestCase
 from unittest.mock import patch
 
+from core.accounts import operation_settings
 from core.bulk_operations import adapters, catalog, results
 from core.operations import task_gateway
 from core.storage import records
 from core.storage.operations import store
 from tests.support_pg import PostgresTestCase
+from tests.support_settlement import install_native_settlement_fixture
 
 
 class BulkResultTests(TestCase):
@@ -104,7 +106,7 @@ class BulkAdapterStoreTests(PostgresTestCase):
         self.stack = ExitStack()
         self.addCleanup(self.stack.close)
         self.stack.enter_context(patch("core.runtime.capabilities.account_setup_unavailable", return_value=None))
-        self.stack.enter_context(patch("core.accounts.operation_coordinator._completion_deployment_unavailable", return_value=None))
+        self.stack.enter_context(patch("core.accounts.operation_settings.completion_deployment_unavailable", return_value=None))
         self.stack.enter_context(patch("core.codex.operation_service._deployment_unavailable", return_value=None))
         self.stack.enter_context(patch("core.codex.operation_service._feature_ready", return_value=(True, "")))
         self.stack.enter_context(patch("core.accounts.liveness.service.deployment_unavailable", return_value=None))
@@ -121,17 +123,53 @@ class BulkAdapterStoreTests(PostgresTestCase):
         return [{"target_round_id": index + 1000, "canonical_target_id": index, "account_id": index, "ordinal": index} for index in ids]
 
     def test_operations_create_exact_owned_queue_without_dispatch(self):
+        from psycopg import Cursor
+        original = Cursor.execute
+
         for index, key in enumerate(catalog.OPERATIONS, 1):
             with self.subTest(operation=key), store._connect() as conn:
-                receipt = adapters.submit_chunk(conn, self.targets([index]), self.context(key))[0]
+                claim_queries = []
+
+                def observed(cursor, query, params=None, **kwargs):
+                    result = original(cursor, query, params, **kwargs)
+                    statement = str(query)
+                    if statement.startswith(f"UPDATE {records._qualified(records.ACCOUNTS)} ") and " RETURNING " in statement:
+                        claim_queries.append((statement, [column.name for column in cursor.description]))
+                    return result
+
+                with patch.object(Cursor, "execute", observed):
+                    receipt = adapters.submit_chunk(conn, self.targets([index]), self.context(key))[0]
                 self.assertEqual(receipt["disposition"], "created")
                 with conn.cursor() as cur:
-                    cur.execute(f"SELECT t.task_type,t.source_system,r.data,r.status FROM {store._table('operation_tasks')} t JOIN {store._table('operation_runs')} r ON r.task_id=t.id WHERE r.id=%s", (receipt["run_id"],))
+                    cur.execute(f"SELECT t.id AS task_id,t.task_type,t.source_system,t.status AS task_status,"
+                                f"t.last_run_id,r.account_id,r.data,r.status FROM {store._table('operation_tasks')} t "
+                                f"JOIN {store._table('operation_runs')} r ON r.task_id=t.id WHERE r.id=%s", (receipt["run_id"],))
                     row = cur.fetchone()
+                self.assertEqual(row["task_id"], receipt["task_id"])
+                self.assertEqual(row["last_run_id"], receipt["run_id"])
+                self.assertEqual(row["account_id"], index)
                 self.assertEqual(row["task_type"], key)
+                self.assertEqual(row["task_status"], "queued")
                 self.assertEqual(row["status"], "queued")
                 self.assertEqual(row["data"]["bulk_target_round_id"], index + 1000)
                 self.assertEqual(row["data"]["config_snapshot"]["config_snapshot_revision"], 12)
+                if key in {"plan_check", "token_refresh"}:
+                    stage = "plan_check" if key == "plan_check" else "live_check"
+                    account = records.get_row(records.ACCOUNTS, index, conn=conn)
+                    self.assertEqual(account[f"{stage}_status"], "queued")
+                    self.assertFalse(account[f"{stage}_ok"])
+                    self.assertEqual(account[f"{stage}_trigger"], "manual_bulk")
+                    self.assertTrue(account[f"{stage}_queued_at"])
+                    self.assertIsNone(account[f"{stage}_started_at"])
+                    self.assertIsNone(account[f"{stage}_error"])
+                    self.assertEqual(account["access_token"], "isolated-test-value")
+                    if key == "token_refresh":
+                        self.assertTrue(row["data"]["force_refresh"])
+                        self.assertEqual(row["data"]["live_check_queued_at"], account["live_check_queued_at"])
+                    self.assertEqual(len(claim_queries), 1)
+                    statement, returned_columns = claim_queries[0]
+                    self.assertNotIn("RETURNING *", statement)
+                    self.assertEqual(returned_columns, ["id"])
                 if key == "plan_check":
                     self.assertEqual(row["data"]["timezone_offset_min"], "-")
                 if key == "password_setup":
@@ -327,8 +365,10 @@ class ManagedAdapterTests(BulkAdapterStoreTests):
             self.stack.enter_context(patch.dict(getattr(task_gateway, registry), {}))
         task_gateway.register_operation_handler("account_completion", runtime._handle_native_account_completion,
             source_systems=("webui_runtime",), config_allowlist=runtime._RUNTIME_CONFIG_ALLOWLIST)
-        with patch.object(runtime, "_completion_deployment_unavailable", return_value=None):
+        fixture = install_native_settlement_fixture(self)
+        with patch.object(operation_settings, "completion_deployment_unavailable", return_value=None):
             outcome = task_gateway._execute_operation_handler("account_completion", original["id"])
+            fixture.wait_for_run_released(int(original["id"]))
         self.assertEqual(outcome["status"], "partial_success")
         with store._connect() as conn, conn.cursor() as cur:
             cur.execute(f"SELECT l.*,r.data FROM {store._table('operation_batch_run_links')} l JOIN {store._table('operation_runs')} r ON r.id=l.run_id ORDER BY l.execution_generation")
@@ -346,8 +386,9 @@ class ManagedAdapterTests(BulkAdapterStoreTests):
         runtime._handle_ready_completion_dependency(dependency)
         parent = store.get_task(original["task_id"], include_events=False)
         self.assertNotEqual(parent["last_run_id"], original["id"])
-        with patch.object(runtime, "_completion_deployment_unavailable", return_value=None):
+        with patch.object(operation_settings, "completion_deployment_unavailable", return_value=None):
             outcome = task_gateway._execute_operation_handler("account_completion", int(parent["last_run_id"]))
+            fixture.wait_for_run_released(int(parent["last_run_id"]))
         self.assertEqual(outcome["status"], "success")
         bulk.project_pending()
         self.assertEqual(bulk.get_batch(batch["id"])["counts"]["success"], 1)
@@ -369,11 +410,15 @@ class ManagedAdapterTests(BulkAdapterStoreTests):
             run_ids = [row["id"] for row in cur.fetchall()]
         policy = policy_values({})
         policy.update(GLOBAL_TASK_WORKERS=3, ACCOUNT_PLAN_CHECK_WORKERS=3)
+        fixture = install_native_settlement_fixture(self)
         with patch.object(concurrency, "_policy", return_value=(policy, 12, False)):
             first = task_gateway.admit_operation_run(store.get_run(run_ids[0]))
             self.assertTrue(first.admitted)
-            self.addCleanup(concurrency.release_execution, first.context)
-            second = task_gateway.admit_operation_run(store.get_run(run_ids[1]))
-        self.assertFalse(second.admitted)
-        self.assertIn("batch_capacity", second.blocked_by)
-        self.assertEqual(store.get_run(run_ids[1])["status"], "queued")
+            try:
+                second = task_gateway.admit_operation_run(store.get_run(run_ids[1]))
+                self.assertFalse(second.admitted)
+                self.assertIn("batch_capacity", second.blocked_by)
+                self.assertEqual(store.get_run(run_ids[1])["status"], "queued")
+            finally:
+                task_gateway.rollback_admission(first.context, reason="fixture_capacity_probe_complete")
+                fixture.wait_for_execution_released(first.context)

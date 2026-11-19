@@ -13,6 +13,7 @@ class PlanCheckBackgroundTests(unittest.TestCase):
         return SimpleNamespace(
             task_id=101, run_id=201, checkpoint=Mock(side_effect=checkpoints),
             report=Mock(return_value={}), finish=Mock(),
+            register_cleanup=Mock(), add_settlement_obligation=Mock(),
         )
 
     def run_query(self, context, acquire):
@@ -23,6 +24,9 @@ class PlanCheckBackgroundTests(unittest.TestCase):
             patch.object(plan_check_service, "_query_account_plan", return_value={"ok": True}) as query,
             patch.object(plan_check_service, "_record_promotion_queries"),
             patch.object(plan_check_service, "_log_plan_result"),
+            patch("core.accounts.operation_results.operation_task_store.register_resource",
+                  return_value={"id": 301, "resource_uuid": "offline-plan-route"}),
+            patch("core.accounts.operation_results.operation_task_store.release_resource", return_value=True),
         ):
             result = plan_check_service._run_plan_check(
                 account_id=1, email="plan-wait@example.test", access_token="synthetic-token",
@@ -75,4 +79,4 @@ class PlanCheckBackgroundTests(unittest.TestCase):
             and "state" not in event
             for event in events
         ))
-        route.release.assert_called_once_with(reason="plan-check-1")
+        route.release.assert_called_once_with(reason="plan-check-1", fault=False)

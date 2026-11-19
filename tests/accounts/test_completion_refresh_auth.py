@@ -108,6 +108,7 @@ class CompletionRefreshFallbackTests(unittest.TestCase):
             config_snapshot={
                 "auth_raw_context_enabled": False,
                 "auth_profile_mode": "current",
+                "refresh_at_country": "US",
                 "roxy_fallback_enabled": fallback_enabled,
             },
             run={"data": {
@@ -118,6 +119,8 @@ class CompletionRefreshFallbackTests(unittest.TestCase):
             lease=lambda **_kwargs: nullcontext(),
             remote_request_started=Mock(),
             remote_request_receipt=Mock(),
+            register_cleanup=Mock(),
+            add_settlement_obligation=Mock(),
         )
 
         def protocol(_email, **kwargs):
@@ -147,6 +150,12 @@ class CompletionRefreshFallbackTests(unittest.TestCase):
             patch.object(live_check_service.db, "get_account", side_effect=lambda *_args: dict(account)),
             patch.object(live_check_service.db, "mark_account_live_check_running", return_value=True),
             patch.object(live_check_service.db, "update_account_liveness", side_effect=save_result),
+            patch("core.accounts.operation_results.operation_task_store.register_resource", return_value={
+                "id": 901, "resource_uuid": "completion-refresh-fixture-resource",
+            }) as register_resource,
+            patch("core.accounts.operation_results.operation_task_store.release_resource", return_value=True) as release_resource,
+            patch("core.storage.postgres.connect", side_effect=AssertionError("offline completion fixture database access")),
+            patch("core.storage.postgres.connect_dedicated", side_effect=AssertionError("offline completion fixture database access")),
             patch.object(account_completion_service, "active_registration_job", return_value=None),
             patch.object(live_check_service, "_reporter"),
             patch.object(live_check_service, "_append_log"),
@@ -159,6 +168,31 @@ class CompletionRefreshFallbackTests(unittest.TestCase):
             patch("core.accounts.liveness.roxy.flow.refresh_access_token", side_effect=browser),
         ):
             live_check_service._handle_live_operation(context)
+            cleanups = context.register_cleanup.call_args_list
+            self.assertEqual(len(cleanups), register_resource.call_count)
+            self.assertEqual(len(cleanups), context.add_settlement_obligation.call_count)
+            self.assertEqual(len(cleanups), release_resource.call_count)
+            for call in cleanups:
+                cleanup = call.args[0]
+                self.assertIs(cleanup.route, route)
+                self.assertTrue(cleanup.release_confirmed)
+                self.assertEqual(call.kwargs, {"key": cleanup.resource_identity, "blocking": True})
+                register_resource.assert_any_call(
+                    43, resource_type="proxy_lease", provider="",
+                    external_id=cleanup.resource_identity,
+                    detail={"execution_id": "", "purpose": "token-refresh"},
+                )
+                context.add_settlement_obligation.assert_any_call(
+                    "resource_release",
+                    resource_identity="operation-resource:completion-refresh-fixture-resource",
+                    payload={
+                        "resource_id": 901, "resource_uuid": "completion-refresh-fixture-resource",
+                        "run_id": 43, "execution_id": "", "external_id": cleanup.resource_identity,
+                    },
+                    blocks_permit=True,
+                )
+                release_resource.assert_any_call(901, state="released")
+            self.assertEqual(route.release.call_count, len(cleanups))
         return written_results[-1], execution, context
 
     def test_completion_without_at_can_use_configured_browser_fallback_after_safe_rejection(self):

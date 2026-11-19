@@ -36,7 +36,13 @@ class OrdinaryEmailAuthGuardTests(unittest.TestCase):
 
     def test_unknown_plus_address_retains_legacy_auth_path(self):
         wrapped = guard.serialize_email_auth(lambda email: {"ok": True})
-        with patch("core.email.derivation.find_binding", return_value=None), patch.object(store, "acquire_otp_request") as acquire:
+        with (
+            patch("core.email.derivation.find_binding", return_value=None),
+            patch("core.email.email_butler.client.restore_local_account", return_value=None),
+            patch("core.email.email_butler.client._restore_hme_context", return_value=None),
+            patch("core.db.get_account_by_email", return_value=None),
+            patch.object(store, "acquire_otp_request") as acquire,
+        ):
             self.assertEqual(wrapped("ordinary+tag@example.test"), {"ok": True})
         acquire.assert_not_called()
 
@@ -71,18 +77,28 @@ class OrdinaryEmailAuthGuardTests(unittest.TestCase):
 
 
     def test_operation_gateway_guards_only_interactive_handlers_with_email(self):
-        from core.operations import task_gateway
+        from core.operations import concurrency, task_gateway
 
         for family, email, expected in (("openai_interactive", "derived+abc123@example.test", True), ("completion_coordinator", "derived+abc123@example.test", False), ("maintenance", "derived+abc123@example.test", False), ("openai_interactive", "", False)):
             with self.subTest(family=family, email=bool(email)):
                 result = task_gateway.OperationResult.success()
-                context = SimpleNamespace(
-                    email=email, resource_family=family, cancellation=None, report=Mock(), checkpoint=Mock(),
-                    finished=True, deferred=False, last_result=result, release_lease=Mock(),
-                )
+                execution = SimpleNamespace(claimed_run={"id": 1}, execution_id="guard-execution")
+                with patch.object(concurrency, "current_execution", return_value=execution):
+                    context = task_gateway.OperationHandlerContext({
+                        "id": 1, "task_id": 2, "email_snapshot": email, "resource_family": family,
+                    }, execution_id=execution.execution_id)
+                context._finished = True
+                context._last_result = result
+                context.checkpoint = Mock()
+                context.release_lease = Mock()
                 session = SimpleNamespace(set_result=Mock())
                 handler = Mock(return_value=result)
+                # 此处验证已准入 worker 的邮箱保护；真实许可的抢占与 fence
+                # 另由 execution_permits 集成测试覆盖。
                 with (
+                    patch.object(concurrency, "current_execution", return_value=execution),
+                    patch.object(concurrency, "validate_execution", return_value=True) as validate,
+                    patch.object(concurrency, "set_execution_state") as state,
                     patch.dict(task_gateway._OPERATION_HANDLERS, {"guard_test": handler}),
                     patch.object(task_gateway, "_operation", return_value=SimpleNamespace(claim_run=Mock(return_value={"id": 1}))),
                     patch.object(task_gateway, "OperationHandlerContext", return_value=context),
@@ -92,6 +108,8 @@ class OrdinaryEmailAuthGuardTests(unittest.TestCase):
                     patch.object(guard, "email_auth_session", return_value=nullcontext(session)) as scope,
                 ):
                     self.assertEqual(task_gateway._execute_operation_handler("guard_test", 1), {"ok": True})
+                validate.assert_called_once_with(execution)
+                state.assert_called_once_with(execution, "cleaning")
                 if expected:
                     scope.assert_called_once_with(email)
                     session.set_result.assert_called_once_with(result)
@@ -103,21 +121,31 @@ class OrdinaryEmailAuthGuardTests(unittest.TestCase):
 
 
     def test_gateway_defers_busy_email_without_failing_or_starting_remote_handler(self):
-        from core.operations import task_gateway
+        from core.operations import concurrency, task_gateway
 
         @contextmanager
         def busy(_email):
             raise store.OtpLeaseBusy("该完整邮箱已有活跃认证执行")
             yield
 
-        context = SimpleNamespace(
-            email="derived+abc123@example.test", resource_family="openai_interactive", cancellation=None,
-            report=Mock(), checkpoint=Mock(), finished=False, last_result=None, release_lease=Mock(),
-            is_cancel_requested=Mock(return_value=False), run_id=11, task_id=12,
+        execution = SimpleNamespace(claimed_run={"id": 11}, execution_id="busy-guard-execution")
+        with patch.object(concurrency, "current_execution", return_value=execution):
+            context = task_gateway.OperationHandlerContext({
+                "id": 11, "task_id": 12, "email_snapshot": "derived+abc123@example.test",
+                "resource_family": "openai_interactive",
+            }, execution_id=execution.execution_id)
+        context.checkpoint = Mock()
+        context.release_lease = Mock()
+        context.is_cancel_requested = Mock(return_value=False)
+        repository = SimpleNamespace(
+            claim_run=Mock(return_value={"id": 11}),
+            requeue_claimed_run=Mock(return_value={"status": "queued"}),
         )
-        repository = SimpleNamespace(claim_run=Mock(return_value={"id": 11}), requeue_claimed_run=Mock(return_value=True))
         handler = Mock()
         with (
+            patch.object(concurrency, "current_execution", return_value=execution),
+            patch.object(concurrency, "validate_execution", return_value=True) as validate,
+            patch.object(concurrency, "set_execution_state") as state,
             patch.dict(task_gateway._OPERATION_HANDLERS, {"guard_busy_test": handler}),
             patch.object(task_gateway, "_operation", return_value=repository),
             patch.object(task_gateway, "OperationHandlerContext", return_value=context),
@@ -128,8 +156,11 @@ class OrdinaryEmailAuthGuardTests(unittest.TestCase):
         ):
             result = task_gateway._execute_operation_handler("guard_busy_test", 11)
         self.assertEqual(result["status"], "deferred")
+        validate.assert_called_once_with(execution)
+        state.assert_called_once_with(execution, "cleaning")
         self.assertEqual(result["task_id"], 12)
         self.assertEqual(repository.requeue_claimed_run.call_args.kwargs["delay_seconds"], 1.0)
+        self.assertEqual(repository.requeue_claimed_run.call_args.kwargs["execution_id"], execution.execution_id)
         handler.assert_not_called()
         context.release_lease.assert_called_once()
         notify.assert_called_once()

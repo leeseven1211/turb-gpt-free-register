@@ -22,6 +22,7 @@ from tools.release import (
     rollback_release,
     switch_release,
 )
+from core.runtime.bootstrap import RuntimeBootstrap
 from tools.benchmarks.test_performance import run_benchmark
 from tools.test_isolated import TestEnvironmentError as IsolatedEnvironmentError
 from tools.test_isolated import parse_conninfo, validate_test_database_url
@@ -518,3 +519,290 @@ def test_check_pre_dashboard_release_verifies_original_package(tmp_path):
     manifest_path.write_text(json.dumps(manifest))
     with pytest.raises(ReleaseError):
         check_release(release)
+def test_prepare_release_keeps_frontend_accounts_source_closure(tmp_path):
+    """固定 release 需要保留 accounts 页面可重建的 TS/Vue/CSS 源码。"""
+    source = _git_source(tmp_path)
+    files = {
+        "frontend/src/features/accounts/AccountsList.vue": "<style src='./accounts.css' />\n",
+        "frontend/src/features/accounts/accounts.css": ".accounts { display: block; }\n",
+        "frontend/src/features/accounts/account-actions.ts": "export const action = true;\n",
+        "frontend/src/features/accounts/private.json": '{"secret": true}\n',
+        "frontend/src/features/accounts/logs/private.ts": "export const privateValue = true;\n",
+        "frontend/src/features/accounts/.env": "PRIVATE=1\n",
+    }
+    for relative, content in files.items():
+        path = source / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=source, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=release-test",
+            "-c",
+            "user.email=release-test@example.invalid",
+            "commit",
+            "-qm",
+            "test: 保留 accounts 页面源码闭包",
+        ],
+        cwd=source,
+        check=True,
+    )
+
+    release = prepare_release(source, tmp_path / "releases", "frontend-accounts")
+
+    assert check_release(release)["ok"] is True
+    for relative in (
+        "frontend/src/features/accounts/AccountsList.vue",
+        "frontend/src/features/accounts/accounts.css",
+        "frontend/src/features/accounts/account-actions.ts",
+    ):
+        assert (release / relative).is_file()
+    for relative in (
+        "frontend/src/features/accounts/private.json",
+        "frontend/src/features/accounts/logs/private.ts",
+        "frontend/src/features/accounts/.env",
+    ):
+        assert not (release / relative).exists()
+
+
+def test_runtime_bootstrap_uses_validated_release_manifest_without_git(tmp_path, monkeypatch):
+    """离开 Git 的真实 release 只能以已校验 manifest 作为运行身份。"""
+    source = _git_source(tmp_path)
+    release = prepare_release(source, tmp_path / "releases", "manifest-runtime")
+    runtime_dir = tmp_path / "runtime"
+    expected_release = subprocess.run(
+        ["git", "-C", str(source), "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+    def fail_if_git(*_args, **_kwargs):
+        raise AssertionError("固定 release 不应回退调用 Git")
+
+    monkeypatch.setattr("core.runtime.bootstrap.subprocess.run", fail_if_git)
+    bootstrap = RuntimeBootstrap.from_environment(
+        project_root=release,
+        environment={
+            "TURB_RUNTIME_MODE": "worker",
+            "TURB_INSTANCE_ID": "release-test",
+            "TURB_RUNTIME_DIR": str(runtime_dir),
+        },
+    )
+
+    assert bootstrap.release == expected_release
+    assert bootstrap.legacy_paths is False
+    assert not runtime_dir.exists()
+
+
+def test_runtime_bootstrap_fails_closed_on_manifest_without_git_fallback(tmp_path, monkeypatch):
+    """损坏的 manifest 不得被祖先 Git 或环境变量伪造身份掩盖。"""
+    source = _git_source(tmp_path)
+    release = prepare_release(source, tmp_path / "releases", "manifest-broken")
+    manifest = release / "release-manifest.json"
+    manifest.write_text("{\n  \"source_commit\": \"short\"\n}\n", encoding="utf-8")
+    git_called = False
+
+    def fail_if_git(*_args, **_kwargs):
+        nonlocal git_called
+        git_called = True
+        raise AssertionError("损坏的固定 release 不应回退调用 Git")
+
+    monkeypatch.setattr("core.runtime.bootstrap.subprocess.run", fail_if_git)
+    with pytest.raises(ValueError, match="runtime_release_manifest_invalid"):
+        RuntimeBootstrap.from_environment(
+            project_root=release,
+            environment={
+                "TURB_RUNTIME_MODE": "worker",
+                "TURB_RUNTIME_DIR": str(tmp_path / "runtime"),
+                "TURB_RELEASE": "a" * 40,
+            },
+        )
+    assert git_called is False
+
+
+def test_runtime_bootstrap_fails_closed_on_manifest_marker_directory(tmp_path, monkeypatch):
+    """manifest 标记路径被占用为目录时也不得退回祖先 Git。"""
+    root = tmp_path / "release"
+    root.mkdir()
+    (root / "release-manifest.json").mkdir()
+    git_called = False
+
+    def fail_if_git(*_args, **_kwargs):
+        nonlocal git_called
+        git_called = True
+        raise AssertionError("固定 release 标记异常时不应回退调用 Git")
+
+    monkeypatch.setattr("core.runtime.bootstrap.subprocess.run", fail_if_git)
+    with pytest.raises(ValueError, match="runtime_release_manifest_invalid"):
+        RuntimeBootstrap.from_environment(
+            project_root=root,
+            environment={
+                "TURB_RUNTIME_MODE": "worker",
+                "TURB_RUNTIME_DIR": str(tmp_path / "runtime"),
+            },
+        )
+    assert git_called is False
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "bad_json", "wrong_schema", "wrong_release_id", "short_commit",
+        "changed_file", "missing_file", "extra_file", "private_file",
+        "file_symlink", "broken_manifest_symlink", "wrong_lock",
+    ],
+)
+def test_runtime_bootstrap_rejects_damaged_release_before_git(tmp_path, monkeypatch, damage):
+    source = _git_source(tmp_path)
+    release = prepare_release(source, tmp_path / "releases", "integrity")
+    marker = release / "release-manifest.json"
+    if damage in {"wrong_schema", "wrong_release_id", "short_commit", "wrong_lock"}:
+        manifest = json.loads(marker.read_text(encoding="utf-8"))
+        if damage == "wrong_schema":
+            manifest["schema_version"] = 999
+        elif damage == "wrong_release_id":
+            manifest["release_id"] = "other"
+        elif damage == "short_commit":
+            manifest["source_commit"] = "a" * 7
+        else:
+            manifest["locks"]["requirements.txt"] = "a" * 64
+        marker.write_text(json.dumps(manifest), encoding="utf-8")
+    elif damage == "bad_json":
+        marker.write_text("{", encoding="utf-8")
+    elif damage == "changed_file":
+        (release / "app.py").write_text("changed\n", encoding="utf-8")
+    elif damage == "missing_file":
+        (release / "app.py").unlink()
+    elif damage == "extra_file":
+        (release / "extra.py").write_text("EXTRA=True\n", encoding="utf-8")
+    elif damage == "private_file":
+        (release / ".env").write_text("PRIVATE=synthetic\n", encoding="utf-8")
+    elif damage == "file_symlink":
+        (release / "app.py").unlink()
+        (release / "app.py").symlink_to(source / "app.py")
+    elif damage == "broken_manifest_symlink":
+        marker.unlink()
+        marker.symlink_to(tmp_path / "absent.json")
+
+    def fail_if_git(*_args, **_kwargs):
+        raise AssertionError("damaged release must never fall back to Git")
+
+    monkeypatch.setattr("core.runtime.bootstrap.subprocess.run", fail_if_git)
+    with pytest.raises(ValueError, match="runtime_release_manifest_invalid"):
+        RuntimeBootstrap.from_environment(
+            project_root=release,
+            environment={"TURB_RUNTIME_MODE": "worker", "TURB_RUNTIME_DIR": str(tmp_path / "runtime")},
+        )
+    assert not (tmp_path / "runtime").exists()
+
+
+def test_runtime_bootstrap_accepts_checkout_but_rejects_git_subdirectory(tmp_path):
+    source = _git_source(tmp_path)
+    bootstrap = RuntimeBootstrap.from_environment(project_root=source, environment={})
+    assert len(bootstrap.release) == 40
+    nested = source / "nested"
+    nested.mkdir()
+    with pytest.raises(ValueError, match="runtime_release_unavailable"):
+        RuntimeBootstrap.from_environment(project_root=nested, environment={})
+
+
+def _manifest_only_release_fixture(root: Path, *, nested_manifest=False) -> Path:
+    """Pure file fixture: no Git, database or application process."""
+    import hashlib
+
+    root.mkdir()
+    contents = {
+        "app.py": "VALUE = 1\n",
+        "requirements.txt": "example-runtime==1.0\n",
+        "requirements-dev.txt": "example-development==1.0\n",
+    }
+    if nested_manifest:
+        contents["docs/release-manifest.json"] = '{"document": true}\n'
+    entries = []
+    for name, content in contents.items():
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        entries.append({"path": name, "size": len(path.read_bytes()),
+                        "sha256": hashlib.sha256(path.read_bytes()).hexdigest()})
+    manifest = {
+        "schema_version": 1, "release_id": root.name, "source_commit": "a" * 40,
+        "python_requires": ">=3.10", "files": entries,
+        "locks": {name: hashlib.sha256((root / name).read_bytes()).hexdigest()
+                  for name in ("requirements.txt", "requirements-dev.txt")},
+    }
+    (root / "release-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    return root
+
+
+@pytest.mark.parametrize("damage", ["missing", "directory", "broken_symlink"])
+def test_release_cli_explicit_release_dir_never_downgrades_to_source_check(
+    tmp_path, monkeypatch, capsys, damage,
+):
+    from tools import release as release_tool
+
+    release = _manifest_only_release_fixture(tmp_path / "explicit")
+    marker = release / "release-manifest.json"
+    marker.unlink()
+    if damage == "directory":
+        marker.mkdir()
+    elif damage == "broken_symlink":
+        marker.symlink_to(tmp_path / "absent-manifest.json")
+    monkeypatch.setattr(release_tool, "_validate_project_files", lambda _root: {"source_only": 1})
+    assert release_tool.main([
+        "check", "--release-dir", str(release), "--release-id", "explicit", "--json",
+    ]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "release check failed" in captured.err
+
+
+@pytest.mark.parametrize("damage", ["directory", "broken_symlink"])
+def test_release_cli_root_marker_never_downgrades_to_source_check(
+    tmp_path, monkeypatch, capsys, damage,
+):
+    from tools import release as release_tool
+
+    source = tmp_path / "source"
+    source.mkdir()
+    marker = source / "release-manifest.json"
+    if damage == "directory":
+        marker.mkdir()
+    else:
+        marker.symlink_to(tmp_path / "absent-manifest.json")
+    monkeypatch.setattr(release_tool, "_validate_project_files", lambda _root: {"source_only": 1})
+    assert release_tool.main(["check", "--root", str(source), "--json"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "release check failed" in captured.err
+
+
+def test_release_cli_unmarked_source_check_remains_available(tmp_path, monkeypatch, capsys):
+    from tools import release as release_tool
+
+    source = tmp_path / "source"
+    source.mkdir()
+    monkeypatch.setattr(release_tool, "_validate_project_files", lambda _root: {"source_only": 1})
+    assert release_tool.main(["check", "--root", str(source), "--json"]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report == {"ok": True, "source": str(source.resolve()), "locks": {"source_only": 1}}
+
+
+def test_release_checker_rejects_unrecorded_nested_manifest_name(tmp_path):
+    release = _manifest_only_release_fixture(tmp_path / "nested-extra")
+    nested = release / "docs" / "release-manifest.json"
+    nested.parent.mkdir()
+    nested.write_text('{"unrecorded": true}\n', encoding="utf-8")
+    with pytest.raises(ReleaseError, match="文件清单不一致"):
+        check_release(release, validate_project=False)
+
+
+def test_release_checker_hashes_recorded_nested_manifest_name(tmp_path):
+    release = _manifest_only_release_fixture(tmp_path / "nested-recorded", nested_manifest=True)
+    assert check_release(release, validate_project=False)["files"] == 4
+    (release / "docs" / "release-manifest.json").write_text("tampered\n", encoding="utf-8")
+    with pytest.raises(ReleaseError, match="文件校验失败"):
+        check_release(release, validate_project=False)

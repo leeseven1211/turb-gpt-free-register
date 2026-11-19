@@ -1,4 +1,4 @@
-"""任务中心只读查询的应用层参数。"""
+"""任务查询的应用层输入；HTTP 响应契约见 contracts/task-center.openapi.json。"""
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass
 
 @dataclass(frozen=True)
 class OperationQuery:
-    """沿用任务列表的筛选语义，仓储负责分页归一化。"""
+    """沿用任务列表的筛选语义，不在应用层重复仓储的分页归一化。"""
 
     page: int = 1
     page_size: int = 50
@@ -28,7 +28,7 @@ class OperationQuery:
     include_batches: bool = True
 
     def store_arguments(self) -> dict:
-        """批次导航由查询服务另外读取。"""
+        """批次导航属于查询编排，其余字段直接交给已有仓储。"""
         values = asdict(self)
         values.pop("include_batches")
         return values

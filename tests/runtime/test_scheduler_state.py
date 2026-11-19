@@ -11,6 +11,8 @@ from datetime import datetime, timedelta
 from unittest.mock import patch
 
 from core.runtime import scheduler_state
+from core.runtime.periodic import PeriodicThread
+from tests.runtime.test_periodic_lifecycle import FakeThread, ScriptedStop
 from tests.support_pg import PostgresTestCase
 
 
@@ -155,15 +157,16 @@ class SchedulerHotReloadTests(unittest.TestCase):
         )
 
     def _isolate_startup(self, stack, service, config_module, enabled_key):
-        stack.enter_context(patch.object(service, "_SCHEDULER_STARTED", False))
+        owner = PeriodicThread(service._SCHEDULER.name)
+        stack.enter_context(patch.object(service, "_SCHEDULER", owner))
+        stack.enter_context(patch("core.runtime.process.get_runtime_context", return_value=None))
         stack.enter_context(patch.object(config_module, enabled_key, False))
         stack.enter_context(patch("config.account.ACCOUNT_AUTH_RAW_CONTEXT_RETENTION_DAYS", 30))
         if hasattr(service, "_register_worker"):
             stack.enter_context(patch.object(service, "_register_worker"))
-        return stack.enter_context(patch.object(service.threading, "Thread"))
+        return stack.enter_context(patch.object(service.threading, "Thread", side_effect=FakeThread))
 
     def test_disabled_start_can_enable_and_disable_without_another_thread(self):
-        """用可控等待驱动真实循环，不启动线程，也不访问调度数据库。"""
         for service, start_name, work_name, config_module, enabled_key in self._service_cases():
             with self.subTest(service=service.__name__), ExitStack() as stack:
                 thread = self._isolate_startup(stack, service, config_module, enabled_key)
@@ -174,31 +177,29 @@ class SchedulerHotReloadTests(unittest.TestCase):
                 self.assertTrue(start())
                 self.assertFalse(start())
                 thread.assert_called_once()
-                thread.return_value.start.assert_called_once_with()
+                self.assertTrue(service.scheduler_status()["alive"])
+                self.assertFalse(service.scheduler_status()["running"])
                 work.assert_not_called()
                 due.assert_not_called()
-
-                waits = []
                 before_enable = []
 
-                def wait(seconds):
-                    waits.append(seconds)
-                    if len(waits) == 2:
+                def wait(event, count):
+                    if count == 2:
                         before_enable.append((work.call_count, due.call_count))
                         setattr(config_module, enabled_key, True)
-                    return len(waits) >= 3
+                    if count >= 3:
+                        event.set()
 
                 def finish_work():
                     setattr(config_module, enabled_key, False)
                     return {"ok": True}
 
                 work.side_effect = finish_work
-                event = stack.enter_context(patch.object(scheduler_state.threading, "Event"))
-                event.return_value.wait.side_effect = wait
-                thread.call_args.kwargs["target"]()
-
-                self.assertEqual(before_enable, [(0, 0)], "关闭时不读取调度数据或执行业务")
-                self.assertEqual(waits[1:], [60.0, 60.0], "开关仍按最多60秒轮询")
+                event = ScriptedStop(wait)
+                service._SCHEDULER.stop_event = event
+                service._SCHEDULER._thread.target()
+                self.assertEqual(before_enable, [(0, 0)])
+                self.assertEqual(event.waits[1:], [60.0, 60.0])
                 work.assert_called_once_with()
                 due.assert_called_once_with(service.SCHEDULER_TASK, service.scheduler_interval_seconds())
                 mark_ran.assert_called_once_with(service.SCHEDULER_TASK)
@@ -209,13 +210,12 @@ class SchedulerHotReloadTests(unittest.TestCase):
             with self.subTest(service=service.__name__), ExitStack() as stack:
                 thread = self._isolate_startup(stack, service, config_module, enabled_key)
                 stack.enter_context(patch.object(service.logger, "exception"))
-                thread.return_value.start.side_effect = [RuntimeError("线程资源暂不可用"), None]
+                thread.side_effect = [RuntimeError("线程资源暂不可用"), FakeThread()]
                 start = getattr(service, start_name)
-
                 self.assertFalse(start())
-                self.assertFalse(service._SCHEDULER_STARTED)
+                self.assertFalse(service.scheduler_status()["started"])
                 self.assertTrue(start())
-                self.assertTrue(service._SCHEDULER_STARTED)
+                self.assertTrue(service.scheduler_status()["alive"])
                 self.assertFalse(start())
                 self.assertEqual(thread.call_count, 2)
 
@@ -233,16 +233,16 @@ class SchedulerHotReloadTests(unittest.TestCase):
 
     def test_codex_handler_registration_failure_can_be_retried(self):
         from core.codex import token_refresh_service as service
-
-        with patch.object(service, "_SCHEDULER_STARTED", False), \
+        with patch.object(service, "_SCHEDULER", PeriodicThread("test-codex")), \
+             patch("core.runtime.process.get_runtime_context", return_value=None), \
              patch.object(service, "_register_worker", side_effect=[RuntimeError("handler暂不可用"), None]), \
-             patch.object(service.threading, "Thread") as thread, \
+             patch.object(service.threading, "Thread", side_effect=FakeThread) as thread, \
              patch.object(service.logger, "exception"):
             self.assertFalse(service.start_periodic_refresher())
-            self.assertFalse(service._SCHEDULER_STARTED)
+            self.assertFalse(service.scheduler_status()["started"])
             thread.assert_not_called()
             self.assertTrue(service.start_periodic_refresher())
-            thread.return_value.start.assert_called_once_with()
+            self.assertTrue(service.scheduler_status()["alive"])
 
     def test_deactivation_scan_and_status_use_current_interval(self):
         from config import email
@@ -252,7 +252,7 @@ class SchedulerHotReloadTests(unittest.TestCase):
         with patch.object(email, "EMAIL_BUTLER_RISK_SCAN_ENABLED", True), \
              patch.object(email, "EMAIL_BUTLER_RISK_SCAN_INTERVAL_SECONDS", 900), \
              patch.object(service.db, "list_accounts", return_value=[{
-                 "id": 101, "email_source": "email_butler", "deactivation_mail_checked_at": checked_at,
+                 "id": 101, "email_source": "cloudflare", "deactivation_mail_checked_at": checked_at,
              }]), \
              patch.object(service, "enqueue_bulk", return_value={
                  "started": [101], "busy": [], "skipped": [],

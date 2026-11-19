@@ -37,12 +37,14 @@ def public_result_status_sql(expression: str, summary_expression: str | None = N
 
 
 def public_progress_snapshot(value):
-    """公开进度副本只转换执行状态，原始回执、证据枚举和恢复字段保持原样。"""
+    """公开进度副本只转换任务状态；条件/重试的 unknown 属于关系证据。"""
     if isinstance(value, Mapping):
         summary = value.get("result_summary")
         summary = summary if isinstance(summary, Mapping) else value
         result = {
-            key: (deepcopy(item) if key in {
+            key: ({field: deepcopy(detail) if field in {"condition", "retry"} else public_progress_snapshot(detail)
+                   for field, detail in item.items()} if key == "execution" and isinstance(item, Mapping)
+                  else deepcopy(item) if key in {
                 "result_summary", "data", "remote_raw", "remote_intent", "remote_receipt",
                 "auth_diagnostics", "cause_diagnostics",
             } else public_result_status(item, summary)

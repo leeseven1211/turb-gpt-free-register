@@ -6,9 +6,8 @@ const vm = require('node:vm');
 
 const root = path.join(__dirname, '..', '..');
 const commonSource = fs.readFileSync(path.join(root, 'webui/static/js/shared/common.js'), 'utf8');
-const jobsSource = fs.readFileSync(path.join(root, 'webui/static/js/pages/registration/page.js'), 'utf8');
+const modalSource = fs.readFileSync(path.join(root, 'webui/static/js/shared/modal-compat.js'), 'utf8');
 const accountsSource = require('../frontend_script_sources.cjs').readAccountScripts();
-const pageBridgeSource = fs.readFileSync(path.join(root, 'webui/static/js/shared/page-bridge.js'), 'utf8');
 
 function extractFunction(source, name, nextMarker) {
   const start = source.indexOf(`function ${name}(`);
@@ -21,12 +20,8 @@ const functions = [
   extractFunction(commonSource, 'closePageDialogsForNavigation', '\nfunction activateTab('),
   extractFunction(commonSource, 'activateTab', "\n$$('.sidebar-nav button[data-tab]').forEach"),
   extractFunction(commonSource, 'setModuleView', "\n$$('[data-module-subnav]').forEach"),
-  extractFunction(jobsSource, 'updateModalScrollLock', '\nfunction closeLogModal('),
-  extractFunction(jobsSource, 'closeLiveLogModal', '\nfunction closeAccountTaskLogModal('),
-  extractFunction(jobsSource, 'closeAccountTaskLogModal', '\nfunction openQrModal('),
-  extractFunction(accountsSource, 'closeAccountTaskStepDialog', '\nfunction scrollAccountTaskDialogFromWheel('),
-  extractFunction(accountsSource, 'closeAccountDetail', "\n$('#btnCloseAccountDetail')"),
-  extractFunction(accountsSource, 'closeEmailChangeModal', '\nfunction trapEmailChangeFocus('),
+  extractFunction(accountsSource, 'closeAccountDetail', '\nfunction closeAccountsV2MoreMenus('),
+  accountsSource.match(/^function closeEmailChangeModal[^\n]+/m)[0],
 ].join('\n');
 
 function element(classes = [], parentElement = null) {
@@ -46,7 +41,7 @@ function element(classes = [], parentElement = null) {
       }
     },
     closest(selector) {
-      assert.equal(selector, '.hidden, [hidden]', '滚动锁应检查当前元素及隐藏祖先');
+      assert.equal(selector.replace(/\s/g, ''), '.hidden,[hidden]', '滚动锁应检查当前元素及隐藏祖先');
       for (let node = this; node; node = node.parentElement) {
         if (node.classList.contains('hidden') || node.hidden || node.getAttribute('hidden') !== null) return node;
       }
@@ -80,7 +75,7 @@ function createView({activeTab = 'register', taskOpen = true, stepOpen = false, 
   const open = new Set(openDialogs);
   if (taskOpen) open.add('accountTaskLogPanel');
   if (otherModal) open.add(otherModal);
-  for (const id of ['logPanel', 'liveLogPanel', 'accountTaskLogPanel', 'qrPanel', 'outlookImportModal', 'accountDetailDrawer', 'emailChangeModal', 'overviewCustomizer']) {
+  for (const id of ['logPanel', 'liveLogPanel', 'accountTaskLogPanel', 'qrPanel', 'accountDetailDrawer', 'emailChangeModal', 'overviewCustomizer']) {
     const parent = ['liveLogPanel', 'accountDetailDrawer', 'emailChangeModal'].includes(id)
       ? nodes.get('#tab-accounts')
       : id === 'overviewCustomizer' ? nodes.get('#tab-overview') : body;
@@ -117,8 +112,10 @@ function createView({activeTab = 'register', taskOpen = true, stepOpen = false, 
       documentElement,
       getElementById: id => nodes.get(`#${id}`) || null,
       querySelectorAll: () => [],
+      querySelector: () => null,
+      addEventListener() {},
     },
-    window: {scrollY: 420, scrollTo: (x, y) => scrollRestores.push([x, y])},
+    window: {scrollY: 420, scrollTo: (x, y) => scrollRestores.push([x, y]), TaskCenter: {closeDetail() { sandbox.taskCloseCalls++; nodes.get('#accountTaskLogPanel').classList.add('hidden'); }, setVisible() {}}},
     localStorage: {setItem: noop},
     clearInterval: id => clearedTimers.push(id),
     NAV_ALLOWED_TABS: [...tabs, 'tasks'],
@@ -135,6 +132,8 @@ function createView({activeTab = 'register', taskOpen = true, stepOpen = false, 
     loadAccountTasks: noop,
     loadAccounts: noop,
     loadExtractWorkbench: noop,
+    loadExtractStats: noop,
+    taskCloseCalls: 0,
     loadCodex: noop,
     loadMailResources: noop,
     loadOutlook: noop,
@@ -163,40 +162,50 @@ function createView({activeTab = 'register', taskOpen = true, stepOpen = false, 
     accountTaskStepDetailReturnFocus: stepOpen ? returnFocus : null,
     accountTaskStepDetailInert: inertState,
   };
-  vm.runInNewContext(`let modalScrollY = 0;\n${functions}`, sandbox);
+  Object.assign(sandbox, sandbox.window);
+  sandbox.window = sandbox;
+  const dashboardCalls = [];
+  sandbox.DashboardPage = {
+    closeDialogs() {dashboardCalls.push('close');},
+    setVisible(value) {dashboardCalls.push(['visible', value]);},
+  };
+  // Only owner boundaries are synthetic. Navigation, legacy modal lifetime
+  // and account compatibility wrappers execute their actual source.
+  // Native Dashboard/Registration rendering has mounted Vue coverage.
+  sandbox.window.AccountsPage = {
+    closeEmailChange({restoreFocus=true}={}) {
+      // The real wrapper forwards focus options; Vue's direct component suite owns rendering.
+      const modal=nodes.get('#emailChangeModal');modal.classList.add('hidden');modal.setAttribute('aria-hidden','true');
+      modal.dataset.accountId='';modal.dataset.accountIds='';
+      if(restoreFocus)sandbox.emailChangeReturnFocus?.focus({preventScroll:true});sandbox.emailChangeReturnFocus=null;
+      sandbox.updateModalScrollLock();
+    },
+    closeDetail(restoreFocus) {
+      assert.equal(restoreFocus, false, '导航不得把焦点恢复到正在离开的页面');
+      nodes.get('#accountDetailDrawer').classList.add('hidden');
+      nodes.get('#accountDetailBackdrop').classList.add('hidden');
+      nodes.get('#accountDetailBackdrop').setAttribute('aria-hidden', 'true');
+      nodes.get('#accountDetailDrawer').removeAttribute('data-account-id');
+      sandbox.updateModalScrollLock();
+    },
+    setVisible() {}, setArchived() {},
+  };
+  vm.runInNewContext(`${modalSource}\n${functions}`, sandbox);
   sandbox.updateModalScrollLock();
-  return {sandbox, nodes, body, documentElement, overlay, inertState, previouslyInteractive, previouslyInert, clearedTimers, scrollRestores, focused, returnFocus};
+  return {sandbox, nodes, body, documentElement, overlay, inertState, previouslyInteractive, previouslyInert, clearedTimers, scrollRestores, focused, returnFocus, dashboardCalls};
 }
 
-test('从注册切到账号、任务或配置时关闭任务详情并恢复页面滚动', () => {
+test('切换页面通过任务模块关闭详情，重激活当前页不关闭', () => {
   for (const tab of ['accounts', 'tasks', 'config']) {
     const view = createView();
     view.sandbox.activateTab(tab);
-    assert.equal(view.nodes.get('#accountTaskLogPanel').classList.contains('hidden'), true, `${tab} 切页应关闭详情`);
-    assert.equal(view.sandbox.activeAccountTaskId, null);
-    assert.equal(view.sandbox.activeAccountTaskRunId, null);
-    assert.equal(view.sandbox.accountTaskSnapshot, null);
-    assert.equal(view.sandbox.accountTaskRequestId, 8, '关闭应使旧请求失效');
-    assert.deepEqual(view.clearedTimers, [91]);
-    assert.equal(view.body.classList.contains('modal-open'), false);
-    assert.equal(view.body.style.top, '');
-    assert.equal(view.documentElement.style.overflow, '');
-    assert.deepEqual(view.scrollRestores, [[0, 420]]);
+    assert.equal(view.sandbox.taskCloseCalls, 1);
+    assert.equal(view.nodes.get('#accountTaskLogPanel').classList.contains('hidden'), true);
+    assert.equal(view.body.classList.contains('modal-open'), false, 'Vue 任务详情不使用旧页面滚动锁');
   }
-});
-
-test('重激活当前页签保留已打开任务详情和滚动锁', () => {
-  for (const activeTab of ['register', 'tasks']) {
-    const view = createView({activeTab});
-    view.sandbox.activateTab(activeTab);
-    assert.equal(view.nodes.get('#accountTaskLogPanel').classList.contains('hidden'), false);
-    assert.equal(view.sandbox.activeAccountTaskId, 17);
-    assert.equal(view.sandbox.accountTaskRequestId, 7);
-    assert.deepEqual(view.clearedTimers, []);
-    assert.equal(view.body.classList.contains('modal-open'), true);
-    assert.equal(view.documentElement.style.overflow, 'hidden');
-    assert.deepEqual(view.scrollRestores, []);
-  }
+  const view = createView({activeTab: 'tasks'});
+  view.sandbox.activateTab('tasks');
+  assert.equal(view.sandbox.taskCloseCalls, 0);
 });
 
 test('从账号页返回注册页关闭账号详情、换绑邮箱或查活日志并释放滚动锁', () => {
@@ -227,20 +236,12 @@ test('从账号页返回注册页关闭账号详情、换绑邮箱或查活日�
   }
 });
 
-test('同时关闭页面弹窗时清理轮询、请求及步骤状态且只恢复一次滚动', () => {
-  const view = createView({
-    activeTab: 'accounts', stepOpen: true,
-    openDialogs: ['accountDetailDrawer', 'emailChangeModal', 'liveLogPanel'],
-  });
+test('同时关闭页面弹窗时保留账号清理语义，任务模块接收关闭', () => {
+  const view = createView({activeTab: 'accounts', openDialogs: ['accountDetailDrawer', 'emailChangeModal', 'liveLogPanel']});
   view.sandbox.activateTab('register');
-  assert.deepEqual(view.clearedTimers, [91, 92]);
-  assert.equal(view.sandbox.accountTaskRequestId, 8);
-  assert.equal(view.sandbox.accountTaskEventCache.length, 0);
-  assert.equal(view.sandbox.accountTaskRunLogLines.length, 0);
-  assert.equal(view.sandbox.accountTaskStepDetailReturnFocus, null);
+  assert.equal(view.sandbox.taskCloseCalls, 1);
+  assert.deepEqual(view.clearedTimers, [92]);
   assert.equal(view.sandbox.emailChangeReturnFocus, null);
-  assert.equal(view.previouslyInteractive.inert, false);
-  assert.equal(view.previouslyInert.inert, true);
   assert.deepEqual(view.focused, []);
   assert.deepEqual(view.scrollRestores, [[0, 420]]);
 });
@@ -262,7 +263,7 @@ test('重激活账号页保留账号弹窗和轮询，普通关闭换绑弹窗�
 });
 
 test('账号子视图切换关闭页面弹窗并解锁，重复选择当前子视图保留弹窗', () => {
-  for (const id of ['accountTaskLogPanel', 'accountDetailDrawer', 'emailChangeModal', 'liveLogPanel']) {
+  for (const id of ['accountDetailDrawer', 'emailChangeModal', 'liveLogPanel']) {
     const view = createView({activeTab: 'accounts', taskOpen: false, otherModal: id});
     view.sandbox.setModuleView('accounts', 'active');
     assert.equal(view.nodes.get(`#${id}`).classList.contains('hidden'), false, `${id} 当前子视图应保留`);
@@ -306,20 +307,8 @@ test('账号页隐藏后遗留的局部弹窗不会在注册页重新加锁', ()
   assert.deepEqual(view.scrollRestores, []);
 });
 
-test('父任务详情关闭时收起步骤弹窗并恢复原有 inert 状态', () => {
-  const view = createView({stepOpen: true});
-  view.sandbox.closeAccountTaskLogModal();
-  assert.equal(view.overlay.classList.contains('hidden'), true);
-  assert.equal(view.sandbox.accountTaskStepDetailState, null);
-  assert.equal(view.sandbox.accountTaskStepDetailSignature, '');
-  assert.equal(view.inertState.size, 0);
-  assert.equal(view.previouslyInteractive.inert, false);
-  assert.equal(view.previouslyInert.inert, true);
-  assert.equal(view.body.classList.contains('modal-open'), false);
-});
-
 test('切页关闭任务详情时保留全局弹窗及其滚动锁', () => {
-  for (const id of ['qrPanel', 'logPanel', 'outlookImportModal']) {
+  for (const id of ['qrPanel']) {
     const view = createView({otherModal: id});
     view.sandbox.activateTab('accounts');
     assert.equal(view.nodes.get('#accountTaskLogPanel').classList.contains('hidden'), true);
@@ -330,10 +319,24 @@ test('切页关闭任务详情时保留全局弹窗及其滚动锁', () => {
   }
 });
 
+test('邮箱原生导入弹窗由页面owner在导航时关闭，交付最终可见性', () => {
+  const view = createView({activeTab:'outlook',taskOpen:false});
+  const calls = [];
+  view.sandbox.window.EmailPage = {
+    closeDialogs() {calls.push('close');},
+    setView(value) {calls.push(['view', value]);},
+    setVisible(value) {calls.push(['visible', value]);},
+  };
+  view.sandbox.activateTab('accounts');
+  assert.equal(calls[0], 'close');
+  assert.deepEqual(calls.at(-1), ['visible', false]);
+  assert.equal(view.body.classList.contains('modal-open'), false);
+});
+
 test('任务详情未打开时切页不触发任务关闭或误关其它弹窗', () => {
   const view = createView({taskOpen: false, otherModal: 'qrPanel'});
   view.sandbox.activateTab('config');
-  assert.equal(view.sandbox.accountTaskRequestId, 7);
+  assert.equal(view.sandbox.taskCloseCalls, 1, '关闭空详情仍使待加载请求失效');
   assert.deepEqual(view.clearedTimers, []);
   assert.equal(view.nodes.get('#qrPanel').classList.contains('hidden'), false);
   assert.equal(view.body.classList.contains('modal-open'), true);
@@ -343,25 +346,10 @@ test('任务详情未打开时切页不触发任务关闭或误关其它弹窗',
   assert.deepEqual(view.focused, [], '未打开的总览面板不执行关闭逻辑');
 });
 
-test('离开总览经真实页面桥接关闭 Vue 自定义面板并停止页面读取', async () => {
+test('离开总览由唯一Vue owner关闭原生自定义面板并停止读取', () => {
   const view = createView({activeTab: 'overview', taskOpen: false});
-  const calls = [];
-  // Vue 拥有 native dialog 和滚动锁；这里验证旧导航将关闭与可见性送达同一 owner。
-  // 实际 dialog 锁的获取/释放由 DashboardPage 和 useNativeDialog 组件测试覆盖。
-  view.nodes.delete('#overviewCustomizer');
-  view.nodes.delete('#overviewCustomizerBackdrop');
-  view.nodes.set('#dashboard-page-root', {dataset:{moduleUrl:'/dashboard/dashboard.js'}});
-  vm.runInNewContext(pageBridgeSource, view.sandbox);
-  view.sandbox.window.DashboardPage = view.sandbox.window.createPageBridge({
-    rootId:'dashboard-page-root',tabId:'tab-overview',mount:'mountDashboard',
-    loadModule:async()=>({mountDashboard:()=>({
-      setVisible:value=>calls.push(['visible',value]),
-      closeCustomizer:()=>calls.push(['close']),
-    })}),
-  });
-  await view.sandbox.window.DashboardPage.setVisible(true);
   assert.equal(view.body.classList.contains('modal-open'), false);
   view.sandbox.activateTab('register');
-  assert.deepEqual(calls,[['visible',true],['close'],['visible',false]]);
+  assert.deepEqual(view.dashboardCalls, ['close', ['visible', false]]);
   assert.equal(view.body.classList.contains('modal-open'), false);
 });

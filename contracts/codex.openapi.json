@@ -1,0 +1,1294 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Turb Codex 凭证 API",
+    "version": "1.0.0",
+    "description": "当前凭证列表与动作边界。filename 是不透明选择键；OAuth account_id 不可作为本地账号 ID。202 仅表示受理；只按明确 filename 回执修改选择。"
+  },
+  "paths": {
+    "/api/codex": {
+      "get": {
+        "operationId": "listCodex",
+        "description": "分页查询。plan/status/oauth_status 为单值；account_id 是 OAuth 字符串。facets 是全局计数，summary 是未归档全局计数。",
+        "parameters": [
+          {
+            "name": "paged",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 500
+            }
+          },
+          {
+            "name": "archived",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "plan",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "oauth_status",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "account_id",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sub2api_id",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "date_from",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "date_to",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "expired_date",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CodexListResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/codex/archive": {
+      "post": {
+        "operationId": "archiveCodex",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "filename": {
+                    "type": "string"
+                  },
+                  "archived": {
+                    "type": "boolean",
+                    "default": true
+                  }
+                },
+                "required": [
+                  "filename"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CodexActionResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "业务错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CodexError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/codex/archive-bulk": {
+      "post": {
+        "operationId": "archiveBulkCodex",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "filenames": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "minItems": 1,
+                    "maxItems": 1000
+                  },
+                  "archived": {
+                    "type": "boolean",
+                    "default": true
+                  }
+                },
+                "required": [
+                  "filenames"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CodexActionResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "业务错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CodexError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/codex/delete": {
+      "post": {
+        "operationId": "deleteCodex",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "filename": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "filename"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CodexActionResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "业务错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CodexError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/codex/delete-bulk": {
+      "post": {
+        "operationId": "deleteBulkCodex",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "filenames": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "minItems": 1,
+                    "maxItems": 1000
+                  }
+                },
+                "required": [
+                  "filenames"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CodexActionResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "业务错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CodexError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/codex/reset-export": {
+      "post": {
+        "operationId": "resetExportCodex",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "filename": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "filename"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CodexActionResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "业务错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CodexError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/codex/refresh-token-bulk": {
+      "post": {
+        "operationId": "refreshTokenBulkCodex",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "filenames": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "minItems": 1,
+                    "maxItems": 500
+                  }
+                },
+                "required": [
+                  "filenames"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CodexActionResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "业务错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CodexError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/codex/retry-bulk": {
+      "post": {
+        "operationId": "retryBulkCodex",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "filenames": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "minItems": 1,
+                    "maxItems": 500
+                  },
+                  "account_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "integer"
+                    },
+                    "minItems": 1,
+                    "maxItems": 500
+                  },
+                  "ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "integer"
+                    },
+                    "minItems": 1,
+                    "maxItems": 500
+                  }
+                },
+                "required": [],
+                "additionalProperties": false,
+                "anyOf": [
+                  {
+                    "required": [
+                      "filenames"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "account_ids"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "ids"
+                    ]
+                  }
+                ],
+                "description": "现有服务支持 filenames 或本地 account_ids/ids；合计最多500。Codex凭证页仅发送filenames，不把OAuth account_id当本地ID。"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CodexActionResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "业务错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CodexError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/codex/upload-sub2-bulk": {
+      "post": {
+        "operationId": "uploadSub2BulkCodex",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "filenames": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "minItems": 1,
+                    "maxItems": 500
+                  }
+                },
+                "required": [
+                  "filenames"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CodexActionResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "业务错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CodexError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/codex/download-bulk": {
+      "post": {
+        "operationId": "downloadBulkCodex",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "filenames": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "minItems": 1,
+                    "maxItems": 1000
+                  }
+                },
+                "required": [
+                  "filenames"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CodexBulkDownload"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "业务错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CodexError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/codex/download-bulk-from-cpa": {
+      "post": {
+        "operationId": "downloadBulkFromCpaCodex",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "filenames": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "minItems": 1,
+                    "maxItems": 1000
+                  }
+                },
+                "required": [
+                  "filenames"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "ZIP attachment；部分失败见 manifest.json，无逐文件外层回执",
+            "content": {
+              "application/zip": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "业务错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CodexError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/codex/download/{filename}": {
+      "get": {
+        "operationId": "downloadCodex",
+        "description": "显式下载会增加导出计数；不得预取或自动重试。成功为 JSON attachment。",
+        "parameters": [
+          {
+            "name": "filename",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "敏感凭证附件，仅供下载，不进入列表状态",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "业务错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CodexError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/codex/download-from-cpa/{filename}": {
+      "get": {
+        "operationId": "downloadfromcpaCodex",
+        "description": "显式下载会增加导出计数；不得预取或自动重试。成功为 JSON attachment。",
+        "parameters": [
+          {
+            "name": "filename",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "敏感凭证附件，仅供下载，不进入列表状态",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "业务错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CodexError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "CodexRow": {
+        "type": "object",
+        "properties": {
+          "filename": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "plan": {
+            "type": "string"
+          },
+          "account_id": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "last_refresh": {
+            "type": "string"
+          },
+          "expired": {
+            "type": "string"
+          },
+          "oauth_status": {
+            "type": "string"
+          },
+          "oauth_expires_at": {
+            "type": "string"
+          },
+          "mtime": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "exported_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sub2_uploaded_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sub2_sync_error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sub2api_status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "oauth_refresh_attempted_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "oauth_refresh_error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "oauth_account_status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "oauth_account_status_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "oauth_account_status_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "archived_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "size": {
+            "type": "integer"
+          },
+          "exported_count": {
+            "type": "integer"
+          },
+          "sub2_uploaded_count": {
+            "type": "integer"
+          },
+          "exported": {
+            "type": "boolean"
+          },
+          "archived": {
+            "type": "boolean"
+          },
+          "oauth_refreshable": {
+            "type": "boolean"
+          },
+          "oauth_auto_refresh": {
+            "type": "boolean"
+          },
+          "oauth_reauth_required": {
+            "type": "boolean"
+          },
+          "sub2api_account_id": {
+            "type": [
+              "integer",
+              "string",
+              "null"
+            ]
+          },
+          "sub2api_http_status": {
+            "type": [
+              "integer",
+              "string",
+              "null"
+            ]
+          },
+          "oauth_seconds_left": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "access_token_preview": {
+            "type": "string",
+            "enum": [
+              "已保存",
+              ""
+            ]
+          }
+        },
+        "required": [
+          "filename"
+        ],
+        "additionalProperties": false
+      },
+      "CodexFacet": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "count": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "value",
+          "count"
+        ],
+        "additionalProperties": false
+      },
+      "CodexFacets": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "array",
+          "items": {
+            "$ref": "#/components/schemas/CodexFacet"
+          }
+        }
+      },
+      "CodexListResponse": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "accounts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CodexRow"
+            }
+          },
+          "total": {
+            "type": "integer"
+          },
+          "page": {
+            "type": "integer"
+          },
+          "page_size": {
+            "type": "integer"
+          },
+          "offset": {
+            "type": "integer"
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "revision": {
+            "type": "string"
+          },
+          "facets": {
+            "$ref": "#/components/schemas/CodexFacets"
+          },
+          "summary": {
+            "type": "object",
+            "properties": {
+              "total": {
+                "type": "integer"
+              },
+              "exported": {
+                "type": "integer"
+              },
+              "pending": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "total",
+              "exported",
+              "pending"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "accounts",
+          "total",
+          "page",
+          "page_size",
+          "facets"
+        ],
+        "additionalProperties": false
+      },
+      "CodexTaskReference": {
+        "type": "object",
+        "properties": {
+          "filename": {
+            "type": "string"
+          },
+          "accepted": {
+            "type": "boolean"
+          },
+          "task_id": {
+            "type": "integer"
+          },
+          "run_id": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "account_id": {
+            "type": [
+              "integer",
+              "string",
+              "null"
+            ]
+          },
+          "email": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "busy": {
+            "type": "boolean"
+          },
+          "reused": {
+            "type": "boolean"
+          },
+          "source_system": {
+            "type": "string"
+          },
+          "source_id": {
+            "type": [
+              "integer",
+              "string"
+            ]
+          },
+          "trigger": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "additionalProperties": true
+      },
+      "CodexSkipped": {
+        "type": "object",
+        "properties": {
+          "filename": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "error_code": {
+            "type": "string"
+          },
+          "task_id": {
+            "type": "integer"
+          },
+          "run_id": {
+            "type": "integer"
+          }
+        },
+        "required": [],
+        "additionalProperties": true
+      },
+      "CodexActionResponse": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "filename": {
+            "type": "string"
+          },
+          "archived": {
+            "type": "boolean"
+          },
+          "record": {
+            "type": "object",
+            "properties": {
+              "archived": {
+                "type": "boolean"
+              },
+              "archived_at": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          },
+          "deleted": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            ]
+          },
+          "deleted_count": {
+            "type": "integer"
+          },
+          "updated": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "filename": {
+                  "type": "string"
+                },
+                "archived": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "filename"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "updated_count": {
+            "type": "integer"
+          },
+          "message": {
+            "type": "string"
+          },
+          "accepted": {
+            "type": "boolean"
+          },
+          "status": {
+            "type": "string"
+          },
+          "batch_id": {
+            "type": [
+              "integer",
+              "string",
+              "null"
+            ]
+          },
+          "batch_uuid": {
+            "type": "string"
+          },
+          "workers": {
+            "type": "integer"
+          },
+          "started": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CodexTaskReference"
+            }
+          },
+          "started_count": {
+            "type": "integer"
+          },
+          "queued": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CodexTaskReference"
+            }
+          },
+          "queued_count": {
+            "type": "integer"
+          },
+          "uploaded": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CodexTaskReference"
+            }
+          },
+          "uploaded_count": {
+            "type": "integer"
+          },
+          "failed": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CodexSkipped"
+            }
+          },
+          "failed_count": {
+            "type": "integer"
+          },
+          "skipped": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CodexSkipped"
+            }
+          },
+          "skipped_count": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "additionalProperties": false
+      },
+      "CodexError": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "const": false
+          },
+          "error": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "message": {
+                    "type": "string"
+                  },
+                  "code": {
+                    "type": "string"
+                  }
+                },
+                "required": [],
+                "additionalProperties": false
+              }
+            ]
+          },
+          "error_code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "errors": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CodexSkipped"
+            }
+          },
+          "skipped": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CodexSkipped"
+            }
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "additionalProperties": true
+      },
+      "CodexBulkDownload": {
+        "type": "object",
+        "properties": {
+          "exported_at": {
+            "type": "string"
+          },
+          "count": {
+            "type": "integer"
+          },
+          "credentials": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "filename": {
+                  "type": "string"
+                },
+                "data": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              },
+              "required": [
+                "filename",
+                "data"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "errors": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CodexSkipped"
+            }
+          }
+        },
+        "required": [
+          "exported_at",
+          "count",
+          "credentials"
+        ],
+        "additionalProperties": false
+      }
+    }
+  }
+}

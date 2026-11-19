@@ -6,6 +6,8 @@ import os
 import tempfile
 import time
 import unittest
+from core.runtime.periodic import PeriodicThread
+from tests.runtime.test_periodic_lifecycle import FakeThread
 from pathlib import Path
 from unittest.mock import patch
 
@@ -151,35 +153,26 @@ class TaskCenterRetentionArchiveTests(unittest.TestCase):
 
     def test_periodic_cleanup_starts_at_most_one_worker(self):
         retention = importlib.import_module("core.operations.retention")
-        retention.reset_for_tests()
-        try:
-            with patch("config.operations.TASK_CENTER_RETENTION_DAYS", 7), patch.object(
-                retention.threading, "Thread",
-            ) as thread:
-                self.assertTrue(retention.start_periodic_cleanup())
-                self.assertFalse(retention.start_periodic_cleanup())
-
-            thread.assert_called_once_with(
-                target=retention._scheduler_loop,
-                name="task-center-retention",
-                daemon=True,
-            )
-            thread.return_value.start.assert_called_once_with()
-        finally:
-            retention.reset_for_tests()
+        with patch.object(retention, "_SCHEDULER", PeriodicThread("test-retention")), \
+             patch("core.runtime.process.get_runtime_context", return_value=None), \
+             patch("config.operations.TASK_CENTER_RETENTION_DAYS", 7), \
+             patch.object(retention.threading, "Thread", side_effect=FakeThread) as thread:
+            self.assertTrue(retention.start_periodic_cleanup())
+            self.assertFalse(retention.start_periodic_cleanup())
+            thread.assert_called_once()
+            self.assertTrue(retention.scheduler_status()["alive"])
 
     def test_disabled_policy_still_starts_idle_worker_for_hot_reload(self):
         retention = importlib.import_module("core.operations.retention")
-        retention.reset_for_tests()
-        try:
-            with patch("config.operations.TASK_CENTER_RETENTION_DAYS", 0), patch.object(
-                retention.threading, "Thread",
-            ) as thread:
-                self.assertTrue(retention.start_periodic_cleanup())
-
-            thread.return_value.start.assert_called_once_with()
-        finally:
-            retention.reset_for_tests()
+        with patch.object(retention, "_SCHEDULER", PeriodicThread("test-retention")), \
+             patch("core.runtime.process.get_runtime_context", return_value=None), \
+             patch("config.operations.TASK_CENTER_RETENTION_DAYS", 0), \
+             patch.object(retention.threading, "Thread", side_effect=FakeThread):
+            self.assertTrue(retention.start_periodic_cleanup())
+            status = retention.scheduler_status()
+            self.assertTrue(status["alive"])
+            self.assertFalse(status["running"])
+            self.assertTrue(status["disabled"])
 
     def test_native_log_cleanup_is_confined_to_managed_run_logs(self):
         retention = importlib.import_module("core.operations.retention")

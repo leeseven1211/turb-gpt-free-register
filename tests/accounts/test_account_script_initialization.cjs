@@ -2,13 +2,13 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const vm = require('node:vm');
 const {loadedFiles, readAccountScript} = require('../frontend_script_sources.cjs');
+const {mountToolbarFixture,ACCOUNT_TOOLBAR_BUTTONS} = require('./toolbar_fixture.cjs');
 
-test('账号脚本按模板顺序初始化且关键事件只绑定一次', () => {
+test('账号脚本按模板顺序初始化且关键事件只绑定一次', async () => {
   const listeners = new Map();
   const captureKeydowns = [];
   const node = id => ({
-    id, value: '', classList: {contains: () => true},
-    querySelectorAll: () => [],
+    id, value: '', classList: {contains: () => true}, querySelectorAll: () => [],
     addEventListener(name, listener) {
       const key = `${id}:${name}`;
       listeners.set(key, [...(listeners.get(key) || []), listener]);
@@ -39,43 +39,34 @@ test('账号脚本按模板顺序初始化且关键事件只绑定一次', () =>
   });
 
   assert.deepEqual(loadedFiles, [
-    'accounts.js', 'task-list-display.js', 'account-tasks.js', 'account-email-change.js', 'account-inspection.js',
+    'accounts.js', 'account-tasks.js', 'account-email-change.js', 'account-inspection.js',
   ]);
   for (const file of loadedFiles) {
     vm.runInContext(readAccountScript(file), context, {filename: file});
   }
-  assert.equal(listeners.get('emailChangeForm:submit')?.length, 1);
-  assert.equal(listeners.get('accountTaskLogPanel:wheel')?.length, 1);
-  assert.equal(listeners.get('accountInspectionHistory:close')?.length, 1);
+  assert.equal(listeners.has('emailChangeForm:submit'), false, '换邮表单由 Vue 单独绑定');
+  assert.equal(listeners.has('accountTaskLogPanel:wheel'), false, '旧任务详情不再绑定监听');
+  assert.equal(listeners.has('accountInspectionHistory:close'), false, '巡检生命周期由 Vue 单独绑定');
+  for(const button of ACCOUNT_TOOLBAR_BUTTONS)assert.equal(listeners.has(`${button.id}:click`),false,`${button.id} 仅由 Vue 绑定`);
+  assert.equal(listeners.has('accountsToolbarV2:click'),false,'旧使用次数 capture listener 已退出');
 
-  let backgroundFocuses = 0;
-  const background = {
-    closest: () => ({}),
-    focus() { backgroundFocuses++; },
-    removeAttribute() {},
-    setAttribute() {},
+  const calls = [];
+  context.window.TaskCenter = {
+    openDetail: (...args) => calls.push(['detail', ...args]),
+    refresh: options => calls.push(['refresh', options.metadata]),
+    track: (...args) => calls.push(['track', ...args]),
   };
-  const tooltip = {classList: {remove() {}}, contains: () => true};
-  document.activeElement = tooltip;
-  context.stepCloseCalls = 0;
-  context.background = background;
-  context.tooltip = tooltip;
-  vm.runInContext(`
-    accountTaskStepDetailState = {stepId: 'test-step'};
-    closeAccountTaskStepDialog = () => { globalThis.stepCloseCalls++; };
-    _accountsTooltipTarget = background;
-    _accountsTooltipNode = tooltip;
-  `, context);
-  const event = {
-    key: 'Escape',
-    stopped: false,
-    preventDefault() {},
-    stopImmediatePropagation() { this.stopped = true; },
-  };
-  for (const listener of captureKeydowns) {
-    listener(event);
-    if (event.stopped) break;
+  vm.runInContext("openAccountTaskLog(17, 8, 'authenticate'); loadAccountTasks({forceMetadata:true});", context);
+  assert.deepEqual(calls, [['detail', 17, 8, 'authenticate'], ['refresh', true]]);
+
+  const toolbar=mountToolbarFixture();await toolbar.ready;
+  for(const button of ACCOUNT_TOOLBAR_BUTTONS){
+    assert.equal(toolbar.document.querySelectorAll(`#${button.id}`).length,1);
+    assert.equal(toolbar.get(button.id).getAttribute('onclick'),null);
+    await toolbar.click(button.id);
   }
-  assert.equal(context.stepCloseCalls, 1, '步骤详情先处理 Escape');
-  assert.equal(backgroundFocuses, 0, '提示不把焦点移回背景');
+  assert.equal(toolbar.calls.length,34,'所有工具栏入口一次点击只调用一次边界');
+  assert.deepEqual(toolbar.calls.map(([descriptor])=>descriptor),ACCOUNT_TOOLBAR_BUTTONS.map(button=>button.action));
+  const usage=JSON.parse(toolbar.storage.value);
+  for(const button of ACCOUNT_TOOLBAR_BUTTONS)assert.equal(usage[button.id],1,'只由同一个 Vue handler 计数一次');
 });

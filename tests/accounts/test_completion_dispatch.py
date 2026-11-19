@@ -12,6 +12,7 @@ from core.operations import run_log as task_run_log
 from core.operations import task_gateway
 from core.storage.operations import store as operation
 from tests.support_pg import PostgresTestCase
+from tests.support_settlement import install_native_settlement_fixture
 from webui import runtime
 
 
@@ -45,6 +46,10 @@ class CompletionDispatchTests(PostgresTestCase):
             source_systems=("webui_runtime",),
             config_allowlist=runtime._RUNTIME_CONFIG_ALLOWLIST,
         )
+        self.settlement_fixture = install_native_settlement_fixture(self, timeout=10)
+
+    def tearDown(self):
+        self.settlement_fixture.close()
 
     def test_native_setup_passes_valid_country_and_real_execution_fence(self):
         email = "country-fence@example.test"
@@ -148,6 +153,7 @@ class CompletionDispatchTests(PostgresTestCase):
         result = task_gateway._execute_operation_handler(
             "account_completion", int(queued["run_id"]),
         )
+        self.settlement_fixture.wait_for_run_released(int(queued["run_id"]))
 
         self.assertEqual("partial_success", result["status"])
         parent = operation.get_run(int(queued["run_id"]))
@@ -235,6 +241,160 @@ class CompletionDispatchTests(PostgresTestCase):
             )
             self.assertEqual(0, cur.fetchone()[0])
 
+    def _complete_setup_behind_native_blocker(self, *, finish_before=None, legacy_collision=False):
+        """真实约束冲突、依赖和 Run 续接；远端写入只用明确的合成完成事实。"""
+        email = "completion-blocker@example.test"
+        account_id = record_store.insert_row(record_store.ACCOUNTS, {
+            "email": email, "access_token": "synthetic-at", "plan_check_status": "failed",
+        })
+        snapshot = {
+            "password_enabled": False, "password_reset_enabled": False,
+            "plan_check_enabled": True, "twofa_enabled": False,
+            "codex_enabled": False, "refresh_at_enabled": False,
+        }
+        blocker = task_gateway.submit_durable_operation(
+            task_type="token_refresh", account_id=account_id, email=email,
+            source_system="native_operations", source_id="unrelated-native-blocker",
+            resource_family="openai_interactive", dispatch=False,
+        )
+        self.assertTrue(blocker["accepted"])
+        if legacy_collision:
+            # 直接构造旧记录，避免旧 create_task 的自动 native 投影污染此模型碰撞用例。
+            with postgres_store.connect() as conn, conn.cursor() as cur:
+                cur.execute(
+                    f"INSERT INTO {postgres_store.qualified('account_action_tasks')} "
+                    "(id, task_uuid, task_type, email_snapshot, trigger, status, queued_at) "
+                    "VALUES (%s, %s, 'codex_retry', 'different-legacy@example.test', 'manual', 'failed', %s)",
+                    (blocker["task_id"], "legacy-id-collision", "2026-11-15T00:00:00+00:00"),
+                )
+            legacy = account_task_store.get_task(int(blocker["task_id"]))
+            self.assertEqual("codex_retry", legacy["task_type"])
+            self.assertEqual("failed", legacy["status"])
+        parent = task_gateway.submit_durable_operation(
+            task_type="account_completion", account_id=account_id, email=email,
+            source_system="webui_runtime", source_id="completion-behind-native-blocker",
+            resource_family="completion_coordinator", data={"planned_steps": ["plan_check"]},
+            config_snapshot=snapshot, config_allowlist=tuple(runtime._RUNTIME_CONFIG_ALLOWLIST),
+            dispatch=False,
+        )
+        self.assertTrue(parent["accepted"])
+        original_submit = task_gateway.submit_durable_operation
+        original_read = operation.get_task
+        original_register = operation.register_task_dependency
+        submissions = []
+        finished_early = False
+
+        def observe_real_submit(**kwargs):
+            result = original_submit(**kwargs)
+            submissions.append(dict(result))
+            return result
+
+        def finish_blocker_once():
+            nonlocal finished_early
+            if not finished_early:
+                operation.finish_run(int(blocker["run_id"]), status="success", result_summary={"ok": True})
+                finished_early = True
+
+        def read_with_race(task_id, *, include_events=True):
+            if finish_before == "lookup" and task_id == blocker["task_id"] and submissions:
+                finish_blocker_once()
+            return original_read(task_id, include_events=include_events)
+
+        def register_with_race(**kwargs):
+            if finish_before == "dependency":
+                finish_blocker_once()
+            return original_register(**kwargs)
+
+        with (
+            patch.object(task_gateway, "submit_durable_operation", side_effect=observe_real_submit),
+            patch.object(operation, "get_task", autospec=True, side_effect=read_with_race),
+            patch.object(operation, "register_task_dependency", side_effect=register_with_race),
+            patch.object(task_gateway, "get_task", autospec=True,
+                         side_effect=AssertionError("native IDs must not read the legacy table")),
+            patch.object(task_gateway, "notify_dependency_ready"),
+        ):
+            result = task_gateway._execute_operation_handler("account_completion", int(parent["run_id"]))
+            self.settlement_fixture.wait_for_run_released(int(parent["run_id"]))
+
+        # 真正 create_runtime_task 的唯一约束冲突必须产生缺 source 的 busy 回执。
+        self.assertEqual(1, len(submissions))
+        self.assertFalse(submissions[0]["accepted"])
+        self.assertTrue(submissions[0]["busy"])
+        self.assertEqual(blocker["task_id"], submissions[0]["task_id"])
+        self.assertNotIn("source_id", submissions[0])
+        self.assertEqual("partial_success", result["status"])
+        first_run = operation.get_run(int(parent["run_id"]))
+        self.assertEqual(["plan_check"], first_run["result_summary"]["continuation_steps"])
+        self.assertEqual(blocker["task_id"], first_run["result_summary"]["account_setup"]["task_id"])
+        self.setup_worker.assert_not_called()
+        with postgres_store.connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"SELECT child_source_system, child_source_id, status, payload "
+                f"FROM {postgres_store.qualified('operation_task_dependencies')} "
+                "WHERE parent_source_system='webui_runtime' AND parent_source_id=%s",
+                (str(parent["task_id"]),),
+            )
+            edges = cur.fetchall()
+        self.assertEqual(1, len(edges))
+        system, child_id, state, payload = edges[0]
+        self.assertEqual(("native_operations", str(blocker["task_id"])), (system, child_id))
+        self.assertEqual("ready" if finish_before else "waiting", state)
+        self.assertEqual(["plan_check"], payload["remaining_steps"])
+        self.assertEqual(parent["run_id"], payload["parent_run_id"])
+        if finish_before:
+            self.assertTrue(finished_early)
+        else:
+            finish_blocker_once()
+
+        ready = operation.list_ready_task_dependencies()
+        self.assertEqual(1, len(ready))
+        runtime._handle_ready_completion_dependency(operation.claim_task_dependency(ready[0]["id"]))
+        resumed = operation.get_task(int(parent["task_id"]), include_events=False)
+        self.assertEqual(2, len(resumed["runs"]))
+        self.assertNotEqual(parent["run_id"], resumed["last_run_id"])
+        setup_result = task_gateway._execute_operation_handler("account_completion", int(resumed["last_run_id"]))
+        self.settlement_fixture.wait_for_run_released(int(resumed["last_run_id"]))
+        self.assertEqual("partial_success", setup_result["status"])
+        setup_id = operation.get_run(int(resumed["last_run_id"]))["result_summary"]["account_setup"]["task_id"]
+        self.assertNotEqual(blocker["task_id"], setup_id)
+        setup = operation.get_task(int(setup_id), include_events=False)
+        setup_run = operation.get_run(int(setup["last_run_id"]))
+        self.assertEqual("account_setup_retry", setup["task_type"])
+        self.assertEqual(["plan_check"], setup_run["data"]["steps"])
+        self.assertEqual("openai_interactive", setup_run["resource_family"])
+
+        record_store.patch_row(record_store.ACCOUNTS, account_id, {"plan_check_status": "success"})
+        operation.finish_run(int(setup["last_run_id"]), status="success", result_summary={"ok": True})
+        ready = operation.list_ready_task_dependencies()
+        self.assertEqual(1, len(ready))
+        runtime._handle_ready_completion_dependency(operation.claim_task_dependency(ready[0]["id"]))
+        closing = operation.get_task(int(parent["task_id"]), include_events=False)
+        self.assertEqual(3, len(closing["runs"]))
+        final = task_gateway._execute_operation_handler("account_completion", int(closing["last_run_id"]))
+        self.assertEqual("success", final["status"])
+        completed = operation.get_task(int(parent["task_id"]), include_events=False)
+        self.assertEqual("success", completed["status"])
+        self.assertFalse(completed["result_summary"].get("awaiting_steps"))
+        self.assertEqual([], completed["result_summary"]["pending_steps"])
+        self.assertEqual([], operation.list_ready_task_dependencies())
+        self.setup_worker.assert_not_called()
+        with postgres_store.connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"SELECT COUNT(*) FROM {postgres_store.qualified('operation_tasks')} "
+                "WHERE account_id=%s AND task_type='account_setup_retry'",
+                (account_id,),
+            )
+            self.assertEqual(1, cur.fetchone()[0])
+
+    def test_native_setup_family_conflict_ignores_colliding_legacy_id_and_resumes_to_success(self):
+        self._complete_setup_behind_native_blocker(legacy_collision=True)
+
+    def test_native_setup_blocker_finishing_before_lookup_still_resumes_to_success(self):
+        self._complete_setup_behind_native_blocker(finish_before="lookup")
+
+    def test_native_setup_blocker_finishing_before_dependency_still_resumes_to_success(self):
+        self._complete_setup_behind_native_blocker(finish_before="dependency")
+
     def test_setup_child_finishing_before_handoff_still_wakes_parent(self):
         email = "completion-fast@example.test"
         account_id = record_store.insert_row(record_store.ACCOUNTS, {"email": email, "access_token": "synthetic-at"})
@@ -253,6 +413,7 @@ class CompletionDispatchTests(PostgresTestCase):
 
         with patch.object(runtime.account_task_store, "submit_durable_operation", side_effect=fast_setup):
             result = task_gateway._execute_operation_handler("account_completion", int(parent["run_id"]))
+            self.settlement_fixture.wait_for_run_released(int(parent["run_id"]))
         self.assertEqual("partial_success", result["status"])
         with postgres_store.connect() as conn, conn.cursor() as cur:
             cur.execute(
@@ -307,6 +468,7 @@ class CompletionDispatchTests(PostgresTestCase):
             result = task_gateway._execute_operation_handler(
                 "account_completion", int(queued["run_id"]),
             )
+            self.settlement_fixture.wait_for_run_released(int(queued["run_id"]))
 
         self.assertEqual("partial_success", result["status"])
         parent = operation.get_run(int(queued["run_id"]))
@@ -354,6 +516,7 @@ class CompletionDispatchTests(PostgresTestCase):
         runtime._handle_ready_completion_dependency(operation.claim_task_dependency(refresh_dependency["id"]))
         resumed = operation.get_task(int(queued["task_id"]), include_events=False)
         setup_result = task_gateway._execute_operation_handler("account_completion", int(resumed["last_run_id"]))
+        self.settlement_fixture.wait_for_run_released(int(resumed["last_run_id"]))
         self.assertEqual("partial_success", setup_result["status"])
         setup_id = int(operation.get_run(int(resumed["last_run_id"]))["result_summary"]["account_setup"]["task_id"])
         setup = operation.get_task(setup_id, include_events=False)

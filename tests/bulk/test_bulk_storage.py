@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from unittest.mock import patch
 from tests.support_pg import PostgresTestCase
 from core.storage import records
-from core.storage.operations import bulk, bulk_common as common, store
+from core.storage.operations import bulk, bulk_common as common, bulk_selections, store
 
 
 class BulkStorageTests(PostgresTestCase):
@@ -169,9 +170,19 @@ class BulkStorageTests(PostgresTestCase):
     def test_paused_batch_can_still_cancel_and_upgrade_old_schema(self):
         batch = self.batch(1)
         with common.connect() as conn, conn.cursor() as cur:
+            # Exercise an old process that has already prepared this row shape.
+            cur.execute(
+                f"SELECT * FROM {common.table('operation_batch_controls')} WHERE batch_id=%s FOR UPDATE",
+                (batch["id"],), prepare=True,
+            )
+            self.assertIsNotNone(cur.fetchone())
             cur.execute(f"ALTER TABLE {common.table('operation_batch_controls')} DROP COLUMN is_paused")
             cur.execute(f"ALTER TABLE {common.table('operation_batch_control_commands')} DROP CONSTRAINT ck_bulk_control_command_action_v2")
             cur.execute(f"ALTER TABLE {common.table('operation_batch_control_commands')} ADD CONSTRAINT operation_batch_control_commands_action_check CHECK (action IN ('cancel_not_started','request_stop'))")
+        # Schema upgrade runs at process startup: the prior process's prepared
+        # statements must not survive this simulated restart.
+        from core.storage import postgres
+        postgres.close_pools()
         bulk.reset_ready()
         bulk.init()
         self.assertFalse(bulk.get_batch(batch["id"])["is_paused"])
@@ -374,18 +385,160 @@ class BulkStorageTests(PostgresTestCase):
             )
         self.assertEqual("selection_parameters_changed", error.exception.code)
 
-    def test_large_preflight_is_bounded_without_one_hundred_account_query_loops(self):
-        ids = self.accounts(1100)
+    def test_plan_baseline_treats_missing_and_non_array_collections_as_null(self):
+        cases = [
+            ("sql_null", None), ("json_null", "null"), ("scalar_bool", "true"),
+            ("scalar_number", "42"), ("scalar_text", '"unexpected"'), ("root_array", "[1,null]"),
+            ("missing", "{}"),
+            ("null_arrays", '{"plan_check_country_results":null,"account_promotions":null}'),
+            ("empty_arrays", '{"plan_check_country_results":[],"account_promotions":[]}'),
+            ("wrong_types", '{"plan_check_country_results":{},"account_promotions":"unexpected"}'),
+        ]
+        query = f"""WITH a AS (SELECT 'synthetic@example.test'::text AS email,'2026-10-15'::text AS created_at,
+          'none'::text AS account_promotion_value,'free'::text AS plan_type,'free'::text AS current_plan_type,
+          false AS deactivated,false AS archived,false AS account_has_password,false AS account_totp_enabled,
+          false AS account_has_access_token,NULL::text AS codex_credential_state,'success'::text AS plan_check_status,
+          true AS plan_check_ok,NULL::text AS plan_last_success_at,'none'::text AS plus_promo_kind,%s::jsonb AS data)
+          SELECT {bulk_selections._account_select(plan_baseline=True)} FROM a"""
+        with common.connect() as conn, conn.cursor() as cur:
+            for label, payload in cases:
+                with self.subTest(case=label):
+                    cur.execute(query, (payload,))
+                    plan = cur.fetchone()["plan_comparison"]
+                    self.assertIsNone(plan["country_results"])
+                    self.assertIsNone(plan["promotions"])
+
+    def test_frozen_plan_baseline_preserves_array_order_nulls_and_nested_json_types(self):
+        account_id = self.accounts(1)[0]
+        payload = {
+            "plan_check_countries": ["JP", "US"], "plan_check_partial": False,
+            "plan_check_stale": {"reason": [1, None]}, "plan_checked_at": "fallback-time",
+            "plan_check_country_results": [
+                {"country": "JP", "status": "success", "checked_at": "first", "result": {"ok": True, "private": "omit"}, "stale": False},
+                None, 5, [],
+                {"country": ["US"], "status": {"nested": 1}, "checked_at": False,
+                 "result": {"ok": {"value": None}}, "stale": 12},
+                {"country": "GB", "result": "unexpected"},
+            ],
+            "account_promotions": [
+                {"plan": "plus", "kind": "first", "stale": False, "expired": None, "expires_at": "later", "private": "omit"},
+                None, "unexpected",
+                {"plan": ["plus"], "kind": {"value": 2}, "stale": 0, "expired": "false", "expires_at": 20},
+            ],
+        }
+        with common.connect() as conn, conn.cursor() as cur:
+            cur.execute(f"""UPDATE {records._qualified(records.ACCOUNTS)} SET data=%s::jsonb,
+              plan_check_status='success',plan_check_ok=true,plan_last_success_at='stored-success-time',plus_promo_kind='none'
+              WHERE id=%s""", (common.dumps(payload), account_id))
+        frozen = self.selection([account_id])
+        plan = bulk.get_selection(frozen["id"])["targets"][0]["baseline"]["plan_check"]
+        self.assertEqual(frozen["selected_at"], datetime.fromisoformat(plan.pop("frozen_at")))
+        self.assertEqual({
+            "product": "plus", "status": "success", "ok": True, "countries": ["JP", "US"],
+            "partial": False, "checked_at": "stored-success-time", "plus_offer_kind": "none",
+            "stale": {"reason": [1, None]},
+            "country_results": [
+                {"country": "JP", "status": "success", "checked_at": "first", "ok": True, "stale": False},
+                {"country": None, "status": None, "checked_at": None, "ok": None, "stale": None},
+                {"country": None, "status": None, "checked_at": None, "ok": None, "stale": None},
+                {"country": None, "status": None, "checked_at": None, "ok": None, "stale": None},
+                {"country": ["US"], "status": {"nested": 1}, "checked_at": False, "ok": {"value": None}, "stale": 12},
+                {"country": "GB", "status": None, "checked_at": None, "ok": None, "stale": None},
+            ],
+            "promotions": [
+                {"plan": "plus", "kind": "first", "stale": False, "expired": None, "expires_at": "later"},
+                {"plan": None, "kind": None, "stale": None, "expired": None, "expires_at": None},
+                {"plan": None, "kind": None, "stale": None, "expired": None, "expires_at": None},
+                {"plan": ["plus"], "kind": {"value": 2}, "stale": 0, "expired": "false", "expires_at": 20},
+            ],
+        }, plan)
+
+    def test_identity_preflight_crosses_chunks_and_preserves_complete_evidence(self):
+        records.init()
+        with common.connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""INSERT INTO {records._qualified(records.ACCOUNTS)}
+                (email,created_at,updated_at,plan_type,current_plan_type,plan_check_status,plan_check_ok,
+                 plus_promo_kind,data)
+                SELECT 'preflight-'||n||'@example.test','2026-10-15T10:00:00','2026-10-15T10:00:00',
+                  'free','free','success',true,'none','{{"access_token":"synthetic"}}'::jsonb
+                FROM generate_series(1,5001) n RETURNING id,email"""
+            )
+            emails = {row["id"]: row["email"] for row in cur.fetchall()}
+        ids = sorted(emails, reverse=True)
         selected = bulk.create_selection(request_key="preflight-bounded-page", source={"kind": "ids", "ids": ids},
             operation_key="plan_check", parameters={}, config_revision="test-v1")
         sizes = []
+        seen = []
+        receipts = {}
+
         def check(targets, conn):
             sizes.append(len(targets))
-            return [{"target_id": item["id"], "status": "ready"} for item in targets]
-        frozen = bulk.freeze_selection(selected["id"], preflight=check)
-        self.assertEqual(1100, frozen["target_count"])
-        self.assertEqual([1100], sizes)
-        self.assertEqual(1100, frozen["preflight_summary"]["ready"])
+            for item in targets:
+                self.assertEqual({"id", "target_id", "account_id", "ordinal"}, set(item))
+                seen.append((item["target_id"], item["account_id"], item["ordinal"]))
+                receipts[item["id"]] = {"target_id": item["id"], "status": "ready"}
+            return [receipts[item["id"]] for item in targets]
+
+        frozen = bulk.freeze_selection(selected["id"], preflight=check, preflight_identity_only=True)
+        self.assertEqual(5001, frozen["target_count"])
+        self.assertEqual([5000, 1], sizes)
+        self.assertEqual([(account_id, account_id, ordinal) for ordinal, account_id in enumerate(ids, 1)], seen)
+        self.assertEqual({"ready": 5001, "waiting_account": 0, "not_executable": 0}, frozen["preflight_summary"])
+        with common.connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"SELECT * FROM {common.table('operation_selection_targets')} WHERE selection_id=%s ORDER BY ordinal",
+                (selected["id"],),
+            )
+            persisted = cur.fetchall()
+        self.assertEqual(5001, len(persisted))
+        for ordinal, target in enumerate(persisted, 1):
+            self.assertEqual(ids[ordinal - 1], target["target_id"])
+            self.assertEqual(ordinal, target["ordinal"])
+            self.assertEqual({"email": emails[ids[ordinal - 1]], "created_at": "2026-10-15T10:00:00"},
+                             target["display_snapshot"])
+            self.assertEqual({"created_at": "2026-10-15T10:00:00", "promotion": "none", "reason_code": None,
+                              "preflight": receipts[target["id"]]}, target["match_evidence"])
+            self.assertEqual(frozen["selected_at"], datetime.fromisoformat(target["baseline"]["plan_check"].pop("frozen_at")))
+            self.assertEqual({"plan_type": "free", "current_plan_type": "free", "promotion": "none",
+                              "has_password": False, "totp_enabled": False, "has_access_token": True,
+                              "codex_credential_state": None, "plan_check": {
+                                  "product": "plus", "status": "success", "ok": True, "countries": None,
+                                  "partial": None, "checked_at": None, "plus_offer_kind": "none", "stale": None,
+                                  "country_results": None, "promotions": None}}, target["baseline"])
+
+    def test_invalid_second_preflight_chunk_rolls_back_selection_and_callback_writes(self):
+        account_id = self.accounts(1)[0]
+        before = records.get_row(records.ACCOUNTS, account_id)
+        for identity_only in (False, True):
+            with self.subTest(identity_only=identity_only):
+                selected = bulk.create_selection(
+                    request_key=f"invalid-preflight-{identity_only}",
+                    source={"kind": "ids", "ids": [account_id, *range(10000, 15000)]},
+                    operation_key="plan_check", config_revision="test-v1",
+                )
+                sizes = []
+
+                def invalid_second_chunk(targets, conn):
+                    sizes.append(len(targets))
+                    if len(sizes) == 2:
+                        return []
+                    records.patch_row(records.ACCOUNTS, account_id, {"email": "rollback@example.test"}, conn=conn)
+                    return [{"target_id": item["id"], "status": "ready"} for item in targets]
+
+                with self.assertRaises(common.BulkError) as error:
+                    bulk.freeze_selection(selected["id"], preflight=invalid_second_chunk,
+                                          preflight_identity_only=identity_only)
+                self.assertEqual("invalid_preflight_receipts", error.exception.code)
+                self.assertEqual([5000, 1], sizes)
+                restored = bulk.get_selection(selected["id"])
+                self.assertEqual("preparing", restored["state"])
+                self.assertIsNone(restored["target_count"])
+                self.assertEqual([], restored["targets"])
+                self.assertEqual({}, restored["preflight_summary"])
+                self.assertIsNone(restored["preflight_at"])
+                self.assertIsNone(restored["selected_at"])
+                self.assertEqual(before, records.get_row(records.ACCOUNTS, account_id))
 
     def test_preflight_and_same_members_new_batch(self):
         ids = self.accounts(3)
@@ -396,11 +549,23 @@ class BulkStorageTests(PostgresTestCase):
             config_revision="test-v1",
         )
 
+        snapshots = []
+
         def preflight(targets, conn):
+            for target in targets:
+                self.assertEqual({"id", "target_id", "account_id", "ordinal", "display_snapshot", "baseline", "match_evidence"},
+                                 set(target))
+                self.assertEqual(target["target_id"], target["account_id"])
+            snapshots.extend(targets)
             return [{"target_id": item["id"], "status": "ready", "reason_code": None} for item in targets]
 
         frozen = bulk.freeze_selection(selected["id"], preflight=preflight)
         self.assertEqual(3, frozen["preflight_summary"]["ready"])
+        for callback_target, persisted in zip(snapshots, bulk.get_selection(selected["id"])["targets"], strict=True):
+            self.assertEqual(callback_target["display_snapshot"], persisted["display_snapshot"])
+            self.assertEqual(callback_target["baseline"], persisted["baseline"])
+            self.assertEqual(callback_target["match_evidence"],
+                             {key: value for key, value in persisted["match_evidence"].items() if key != "preflight"})
         first = self.consume(frozen)
         new = bulk.create_selection(
             request_key="new-batch-from-old",

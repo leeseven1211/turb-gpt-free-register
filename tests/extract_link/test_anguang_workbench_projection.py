@@ -40,15 +40,24 @@ class AnguangWorkbenchProjectionTests(TestCase):
         self.assertTrue(workbench_status_matches(item, "payment_succeeded"))
         self.assertFalse(workbench_status_matches(item, "plus_confirmed"))
 
-    def test_fresh_independent_plus_confirmation_does_not_rewrite_scan_result(self):
+    def test_fresh_independent_plus_does_not_confirm_an_unpaid_order(self):
         item = workbench_task_item(self.row(), account={
             "plan_check_status": "success", "current_plan_type": "plus",
             "plan_checked_at": "2026-11-02T08:01:00Z",
         })
-        self.assertEqual("confirmed", item["plus_status"])
+        self.assertEqual("unknown", item["plus_status"])
         self.assertEqual("pending_payment", item["payment_status"])
-        self.assertTrue(workbench_status_matches(item, "plus_confirmed"))
+        self.assertFalse(workbench_status_matches(item, "plus_confirmed"))
         self.assertFalse(workbench_status_matches(item, "payment_succeeded"))
+
+    def test_fresh_independent_plus_confirms_a_paid_order(self):
+        item = workbench_task_item(self.row(payment_state="succeeded"), account={
+            "plan_check_status": "success", "current_plan_type": "plus",
+            "plan_checked_at": "2026-11-02T08:01:00Z",
+        })
+        self.assertEqual("confirmed", item["plus_status"])
+        self.assertEqual("paid", item["payment_status"])
+        self.assertTrue(workbench_status_matches(item, "plus_confirmed"))
 
     def test_task_and_batch_show_frozen_native_source_and_omit_payment_material(self):
         item = workbench_task_item(self.row())

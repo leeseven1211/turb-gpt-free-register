@@ -24,6 +24,7 @@ function fixture(data: BulkPageData, initial: Partial<BulkNavigation> = {}) {
     navigate: vi.fn(),
     updateNavigation: vi.fn(),
     notify: vi.fn(),
+    openTask: vi.fn(),
     formatDateTime: (value) => String(value || '—'),
   };
   const wrapper = mount(BulkList, {

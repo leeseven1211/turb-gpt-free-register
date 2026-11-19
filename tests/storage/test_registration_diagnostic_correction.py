@@ -6,6 +6,7 @@ from copy import deepcopy
 from unittest.mock import patch
 
 from core.storage import postgres as pg, records, registration
+from core.storage.operations import projection as operation_projection
 from tests.support_pg import PostgresTestCase
 
 
@@ -212,15 +213,13 @@ class RegistrationDiagnosticCorrectionTests(PostgresTestCase):
     def test_projection_failure_rolls_back_diagnostic_and_audit_together(self):
         ids = self._fixture()
         before = self._snapshot(*ids)
-        from core.storage.operations import store as operation
-
-        original = operation._correct_registration_failure_projection
+        original = operation_projection._correct_registration_failure_projection
 
         def fail_after_write(*args, **kwargs):
             original(*args, **kwargs)
             raise RuntimeError("模拟投影写入后失败")
 
-        with patch.object(operation, "_correct_registration_failure_projection", side_effect=fail_after_write):
+        with patch.object(operation_projection, "_correct_registration_failure_projection", side_effect=fail_after_write):
             with self.assertRaisesRegex(RuntimeError, "模拟投影"):
                 self._correct(ids[2])
         self.assertEqual(before, self._snapshot(*ids))

@@ -34,6 +34,9 @@ PORT=8000 ./webui.sh stop
 - `GET /login` 及授权后的相关页面正常。WebUI 资源变更后强制刷新，核对资源版本、请求和浏览器控制台。
 - 业务状态需另按 PostgreSQL 中的任务、run、事件和远端回执核对；健康检查通过不代表真实注册、收码或提链已经成功。
 
+Codex 列表的账号邮箱表达式索引应在已有大表上先在线预建并采集统计，见
+[索引发布与失败恢复](codex-email-index.md)。不要将 `CREATE INDEX CONCURRENTLY` 放入初始化事务。
+
 ## 配置备份与迁移
 
 运行配置保存在 PostgreSQL 的加密配置表中，`.env` 保留数据库连接、WebUI 授权、稳定部署身份和加密主密钥。备份必须成套保留数据库、`.env`、`TURB_CONFIG_ENCRYPTION_KEY` 以及迁移前的原 `.env` 备份。保留原 `TURB_MAIL_CONSUMER_ID`，不能通过重建消费者改变既有邮箱归属。

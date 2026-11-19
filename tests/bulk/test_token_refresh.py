@@ -3,6 +3,7 @@ from contextlib import ExitStack
 from types import SimpleNamespace
 from unittest import TestCase
 from unittest.mock import Mock, patch
+import threading
 import uuid
 
 from core.accounts.liveness import service as live_service
@@ -11,6 +12,7 @@ from core.operations import task_gateway
 from core.storage import records
 from core.storage.operations import bulk, store
 from tests.support_pg import PostgresTestCase
+from tests.support_settlement import install_native_settlement_fixture
 
 
 class TokenRefreshResultTests(TestCase):
@@ -90,6 +92,9 @@ class TokenRefreshStoreTests(PostgresTestCase):
         self.stack.enter_context(patch.object(legacy_task_store, "_SCHEMA", self.schema))
         self.stack.enter_context(patch.object(legacy_task_store, "_READY_KEY", ""))
         legacy_task_store.init()
+        # TRUNCATE removes the capability marker but retains startup readiness.
+        store.reset_ready()
+        store.init()
         bulk.reset_ready()
         bulk.init()
         task_gateway.init()
@@ -105,6 +110,10 @@ class TokenRefreshStoreTests(PostgresTestCase):
         self.stack.enter_context(patch("core.bulk_operations.catalog.capture_settings", return_value={
             "config_revision": "71", "config_snapshot": self.snapshot, "effective_settings": self.snapshot,
             "parameters": {}, "availability": {"available": True}}))
+        self.settlement_fixture = install_native_settlement_fixture(self, timeout=10)
+
+    def tearDown(self):
+        self.settlement_fixture.close()
 
     def make_batch(self, ids=None):
         selected = bulk.create_selection(request_key=uuid.uuid4().hex, source={"kind": "ids", "ids": ids or self.ids[:1]},
@@ -162,8 +171,10 @@ class TokenRefreshStoreTests(PostgresTestCase):
         targets = [{"target_round_id": 1000 + index, "account_id": account_id} for index, account_id in enumerate(ids)]
         statements = []
         execute = Cursor.execute
+        observer_thread = threading.get_ident()
         def measured(cursor, query, params=None, **kwargs):
-            statements.append(str(query))
+            if threading.get_ident() == observer_thread:
+                statements.append(str(query))
             return execute(cursor, query, params, **kwargs)
         with patch.object(Cursor, "execute", measured), store._connect() as conn:
             receipts = adapters.submit_chunk(conn, targets, {"operation_key": "token_refresh", "batch_id": 900,

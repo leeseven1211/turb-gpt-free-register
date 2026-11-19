@@ -10,6 +10,7 @@ import logging
 import threading
 
 from core.runtime import scheduler_state
+from core.runtime.periodic import PeriodicThread
 
 logger = logging.getLogger('core.account_auth_context_service')
 
@@ -17,7 +18,7 @@ SCHEDULER_TASK = "account_auth_context_cleanup"
 _INTERVAL_SECONDS = 24 * 60 * 60
 _INITIAL_DELAY_SECONDS = 60
 _LOCK = threading.RLock()
-_SCHEDULER_STARTED = False
+_SCHEDULER = PeriodicThread("account-auth-context-cleanup")
 
 
 def scheduler_enabled() -> bool:
@@ -43,50 +44,56 @@ def cleanup_once(*, limit: int = 500) -> int:
 
 
 def _scheduler_loop() -> None:
+    from core.runtime.process import get_runtime_context
+    initial = _INITIAL_DELAY_SECONDS
+    if get_runtime_context() is not None and scheduler_enabled():
+        initial = 0
     scheduler_state.run_periodic(
         task=SCHEDULER_TASK,
         label="AccountAuthContext",
         work=cleanup_once,
         enabled=scheduler_enabled,
         interval_seconds=scheduler_interval_seconds,
-        initial_delay_seconds=_INITIAL_DELAY_SECONDS,
+        initial_delay_seconds=initial,
+        stop=_SCHEDULER.stop_event,
+        lifecycle=_SCHEDULER,
     )
+
+
+def _startup_cleanup() -> None:
+    # Preserve the unmanaged CLI's synchronous startup contract. Managed
+    # startup delegates all cleanup to the gated persisted scheduler.
+    from core.runtime.process import get_runtime_context
+    if get_runtime_context() is not None or not scheduler_enabled():
+        return
+    try:
+        cleanup_once()
+    except Exception:
+        logger.exception("[AccountAuthContext] startup cleanup failed")
 
 
 def start_periodic_cleanup() -> bool:
-    """启动唯一调度线程，仅在已启用时执行启动清理。"""
-    global _SCHEDULER_STARTED
-    with _LOCK:
-        if _SCHEDULER_STARTED:
-            return False
-        if scheduler_enabled():
-            try:
-                removed = cleanup_once()
-                if removed:
-                    logger.info("[AccountAuthContext] 启动清理完成 removed=%s", removed)
-            except Exception:
-                logger.exception("[AccountAuthContext] 启动清理失败，后续按周期重试")
-        try:
-            threading.Thread(
-                target=_scheduler_loop,
-                name="account-auth-context-cleanup",
-                daemon=True,
-            ).start()
-        except Exception:
-            logger.exception("[AccountAuthContext] 调度线程启动失败，可再次启动")
-            return False
-        _SCHEDULER_STARTED = True
-    logger.info(
-        "[AccountAuthContext] 调度器已启动 enabled=%s interval=%ss",
-        scheduler_enabled(), _INTERVAL_SECONDS,
-    )
-    return True
+    """Start one observable producer; work remains behind runtime admission."""
+    try:
+        started = _SCHEDULER.start(_scheduler_loop, before_start=_startup_cleanup)
+    except Exception:
+        logger.exception("Periodic scheduler start failed; it may be retried")
+        return False
+
+    return started
+
+
+def stop_periodic_cleanup(timeout: float = 2.0) -> bool:
+    return _SCHEDULER.stop(timeout)
+
+
+def scheduler_status() -> dict:
+    return _SCHEDULER.status(enabled=scheduler_enabled())
 
 
 def reset_for_tests() -> None:
-    global _SCHEDULER_STARTED
-    with _LOCK:
-        _SCHEDULER_STARTED = False
+    if not stop_periodic_cleanup(timeout=2.0):
+        raise RuntimeError("periodic_scheduler_still_running")
 
 
 __all__ = [
@@ -96,4 +103,6 @@ __all__ = [
     "scheduler_enabled",
     "scheduler_interval_seconds",
     "start_periodic_cleanup",
+    "stop_periodic_cleanup",
+    "scheduler_status",
 ]

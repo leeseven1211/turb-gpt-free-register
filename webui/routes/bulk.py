@@ -236,7 +236,8 @@ def create_bulk_blueprint(_context):
         data = store.list_batches(limit=_size(20), after_id=_after() or None,
             operation_key=request.args.getlist("operation_key[]") or request.args.get("operation_key"),
             control_state=request.args.getlist("control_state[]") or request.args.get("control_state"),
-            q=request.args.get("q", ""), created_from=request.args.get("created_from"), created_to=request.args.get("created_to"))
+            q=request.args.get("q", ""), created_from=request.args.get("created_from"),
+            created_to=request.args.get("created_to"), created_before=request.args.get("created_before"))
         data["items"] = [_batch(item) for item in data["items"]]
         return _json(_page(data))
 

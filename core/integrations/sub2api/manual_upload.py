@@ -31,9 +31,19 @@ class ManualUploadError(ValueError):
         super().__init__(message)
 
 
+def register_actions() -> None:
+    task_gateway.register_operation_actions(
+        TASK_TYPE,
+        retry_handler=task_gateway.default_operation_retry,
+        cancel_handler=task_gateway.default_operation_cancel,
+        terminate_handler=task_gateway.default_operation_terminate,
+    )
+
+
 def register_handler() -> None:
     concurrency.register_admission_alias(TASK_TYPE, "sub2api_sync")
     task_gateway.register_operation_handler(TASK_TYPE, _handle, config_allowlist=())
+    register_actions()
 
 
 def _read(filename: str) -> tuple[dict, str, dict | None, dict | None]:
@@ -140,7 +150,7 @@ def _commit_upload(context, data: dict) -> str:
 
 def _handle(context):
     data = context.run.get("data") or {}
-    scope = context.lease(resource_family=RESOURCE_FAMILY) if context.account_id else nullcontext()
+    scope = context.lease(resource_family=RESOURCE_FAMILY, scope_kind="final") if context.account_id else nullcontext()
     with scope:
         stage = "read_credential"
         remote_started = False

@@ -13,7 +13,7 @@ from datetime import datetime
 from typing import Any, Iterable
 
 from core.operations.run_log import redact_text
-from core.operations.stages import REGISTRATION_AUTH_STAGES, STAGES, flow_for, is_task_lifecycle_stage, normalize_stage, normalize_step_state, resolve_step, stage_label
+from core.operations.stages import REGISTRATION_AUTH_STAGES, STAGES, flow_for, is_task_lifecycle_stage, normalize_stage, normalize_step_state, resolve_step, stage_label, stage_presentation_for
 
 
 _CHILD_LABELS = {
@@ -218,7 +218,7 @@ def _record(item: dict[str, Any], event: dict[str, Any], state: str, *, raw: str
         attempt["started_at"] = str(detail["started_at"])
     if observed and detail.get("completed_at") is not None:
         attempt["completed_at"] = str(detail["completed_at"])
-    for key in ("duration_ms", "wait_reason", "error_code", "state_before", "state_after", "transition_id", "child_task_id", "child_run_id", "child_task_type", "failure_stage", "failure_event_id", "failure_message", "route_attempt_no", "step_instance_id", "execution_id"):
+    for key in ("duration_ms", "wait_reason", "error_code", "state_before", "state_after", "transition_id", "child_task_id", "child_run_id", "child_task_type", "failure_stage", "failure_event_id", "failure_message", "route_attempt_no", "step_instance_id", "execution_id", "parallel_group", "country"):
         if key == "duration_ms" and not observed:
             continue
         if detail.get(key) is not None:
@@ -328,7 +328,7 @@ def _child_tasks(summary: dict[str, Any]) -> list[dict[str, Any]]:
     values = summary.get("child_tasks") or []
     values = list(values.values()) if isinstance(values, dict) else values if isinstance(values, list) else []
     children = [dict(value) if isinstance(value, dict) else {"task_id": value} for value in values if isinstance(value, (dict, int, str))]
-    for key, task_type in (("refresh_token", "token_refresh"), ("account_setup", "account_setup_retry"), ("codex", "codex_retry")):
+    for key, task_type in (("refresh_token", "token_refresh"), ("refresh_at", "token_refresh"), ("account_setup", "account_setup_retry"), ("codex", "codex_retry")):
         child = summary.get(key)
         if isinstance(child, dict) and child.get("task_id") and not any(str(value.get("task_id")) == str(child["task_id"]) for value in children):
             children.append({"task_type": task_type, **child})
@@ -341,6 +341,171 @@ def _child_tasks(summary: dict[str, Any]) -> list[dict[str, Any]]:
         else:
             found.update(payload)
     return children
+
+
+def _retry_evidence(attempts: list[dict[str, Any]]) -> dict[str, Any]:
+    """同一 raw/子阶段重复进入才是重试；多个正常子阶段不计为尝试次数。"""
+    grouped: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+    for attempt in attempts:
+        if attempt.get("evidence") in {"not_executed", "unobserved", "inferred"} or attempt.get("late_terminal_running"):
+            continue
+        key = (str(attempt.get("child_step_id") or ""), normalize_stage(attempt.get("raw_stage")), str(attempt.get("country") or ""))
+        grouped.setdefault(key, []).append(attempt)
+    count = 1
+    recovered = False
+    evidence_ids: list[str] = []
+    for values in grouped.values():
+        group_count = 1
+        failed = False
+        failed_instance = None
+        repeated = False
+        for value in values:
+            state = value.get("state")
+            distinct_instance = failed_instance and value.get("step_instance_id") and failed_instance != value["step_instance_id"]
+            if failed and (state == "running" or (state == "success" and distinct_instance)):
+                group_count += 1
+                repeated = True
+                failed = False
+            if state == "failed":
+                failed = True
+                failed_instance = value.get("step_instance_id")
+            elif state == "success":
+                recovered = recovered or repeated
+                failed = False
+        if group_count > 1 or repeated:
+            for value in values:
+                if value.get("event_id") is not None:
+                    _append_unique(evidence_ids, str(value["event_id"]))
+        count = max(count, group_count)
+    # 后续回退成功可能使用另一个 raw stage；沿用既有恢复判据，且必须
+    # 真有失败与后续成功，不能把多个 running 状态或多个子阶段当作重试。
+    failures = [value for value in attempts if value.get("state") == "failed" and value.get("evidence") == "explicit"]
+    unresolved = _unrecovered_failures(attempts)
+    security_recovery = any(value.get("main_step_id") in {"set_password", "set_twofa"} for value in failures)
+    if security_recovery and not unresolved and any(value.get("state") == "success" for value in attempts):
+        recovered = True
+        count = max(count, 2)
+        for value in attempts:
+            if value.get("event_id") is not None and value.get("state") in {"failed", "success"}:
+                _append_unique(evidence_ids, str(value["event_id"]))
+    return {"state": "recovered" if recovered and not unresolved else "observed" if count > 1 else "unknown",
+            "attempt_count": count if count > 1 else None, "event_ids": evidence_ids}
+
+
+def _child_dispatch_step(task_type: str | None) -> str | None:
+    if task_type in {"token_refresh", "refresh_token", "live_check"}:
+        return "refresh_dispatch"
+    if task_type in {"account_setup", "account_setup_retry", "password_setup", "password_change", "twofa_setup", "twofa_change", "twofa_retry"}:
+        return "account_setup_dispatch"
+    if task_type == "codex_retry":
+        return "codex_dispatch"
+    return None
+
+
+def _project_execution(steps: list[dict[str, Any]], task_type: str, run: dict[str, Any],
+                       attempts: list[dict[str, Any]]) -> dict[str, Any]:
+    """只读阶段关系。计划、依赖、观察顺序和实际并行证据互不替代。"""
+    summary = run.get("result_summary") if isinstance(run.get("result_summary"), dict) else {}
+    data = run.get("data") if isinstance(run.get("data"), dict) else {}
+    config_value = run.get("config_snapshot") or data.get("config_snapshot")
+    config = config_value if isinstance(config_value, dict) else {}
+    plan_value = summary.get("planned_steps")
+    planned = set(plan_value) if isinstance(plan_value, list) else None
+    awaiting = set(summary.get("awaiting_steps") or [])
+    continuation = set(summary.get("continuation_steps") or summary.get("deferred_steps") or [])
+    child_targets: dict[str, list[dict[str, Any]]] = {}
+    awaited_ids = {"refresh_at": "refresh_dispatch", "refresh_token": "refresh_dispatch",
+                   "account_setup": "account_setup_dispatch", "codex": "codex_dispatch"}
+    for child in _child_tasks(summary):
+        step_id = str(child.get("step_id") or child.get("main_step_id") or _child_dispatch_step(child.get("task_type")) or "result")
+        if task_type != "account_completion":
+            step_id = "result"
+        target = {key: child.get(key) for key in ("task_id", "run_id", "task_type", "status")}
+        target["evidence"] = "result_summary"
+        target["_awaiting"] = any(awaited_ids.get(key) == step_id for key in awaiting)
+        child_targets.setdefault(step_id, []).append(target)
+    if task_type == "account_completion":
+        for key in awaiting:
+            step_id = awaited_ids.get(key)
+            if step_id and step_id not in child_targets:
+                child_targets[step_id] = [{"task_id": None, "run_id": None, "task_type": None,
+                                           "status": None, "evidence": "awaiting_steps", "_awaiting": True}]
+    all_targets = [value for values in child_targets.values() for value in values]
+    by_id = {item["id"]: item for item in steps}
+    by_step: dict[str, list[dict[str, Any]]] = {}
+    for attempt in attempts:
+        by_step.setdefault(str(attempt.get("main_step_id") or ""), []).append(attempt)
+    parallel_members: dict[str, set[str]] = {}
+    for item in steps:
+        metadata = stage_presentation_for(task_type, item["id"])
+        observed = by_step.get(item["id"], [])
+        condition = None
+        if metadata["condition_label"]:
+            state, evidence = "unknown", "unobserved"
+            config_key = metadata["condition_config"]
+            if config_key and type(config.get(config_key)) is bool:
+                state, evidence = ("met" if config[config_key] else "not_met"), "config_snapshot"
+            elif planned is not None and metadata["condition_plan"]:
+                state = "met" if planned.intersection(metadata["condition_plan"]) else "not_met"
+                evidence = "planned_steps"
+            if metadata["kind"] == "child_task" and any(
+                target.get("task_id") or target.get("run_id")
+                for target in child_targets.get(item["id"], [])
+            ):
+                # 真实 child 引用证明该分派分支已经触发，即使旧计划漏项。
+                # 只更正条件，不补造阶段事件、观察顺序或执行时间。
+                state, evidence = "met", "result_summary"
+            entered = next((value for value in reversed(observed)
+                            if value.get("state") in {"running", "success", "failed"}
+                            and value.get("evidence") not in {"unobserved", "not_executed", "inferred"}), None)
+            if entered:
+                state, evidence = "met", str(entered.get("evidence") or "explicit")
+            condition = {"label": metadata["condition_label"], "state": state, "evidence": evidence}
+        targets = list(child_targets.get(item["id"], []))
+        if item["id"] == "result":
+            targets = all_targets
+        elif task_type == "account_completion" and continuation.intersection(metadata["condition_plan"]) and not observed:
+            targets = [value for value in all_targets if value["_awaiting"]]
+        parent_open = str(run.get("status") or "").lower() in _ACTIVE_PROGRESS_STATUSES | {"partial_success"}
+        child_states = {str(value.get("status") or "").lower() for value in targets}
+        child_wait = parent_open and any(
+            (value["_awaiting"] or str(run.get("status") or "").lower() == "waiting")
+            and (str(value.get("status") or "").lower() in _ACTIVE_PROGRESS_STATUSES or not value.get("status"))
+            for value in targets)
+        dependencies = [by_id[value] for value in item.get("depends_on") or [] if value in by_id]
+        if child_wait:
+            dependency_state = "waiting"
+        elif child_states.intersection({"failed", "deactivated", "attention_required", "request_unknown", "stopped", "cancelled"}):
+            dependency_state = "blocked"
+        elif targets and child_states <= {"success"}:
+            dependency_state = "satisfied"
+        elif not observed and dependencies and any(value.get("state") == "failed" for value in dependencies):
+            dependency_state = "blocked"
+        elif dependencies and len(dependencies) == len(item.get("depends_on") or []) and all(value.get("state") == "success" for value in dependencies):
+            dependency_state = "satisfied"
+        else:
+            dependency_state = "unknown"
+        # 只有事件显式提供并行组才输出；时间重叠、模板邻接和无依赖均不够。
+        groups = {str(value["parallel_group"]) for value in observed
+                  if value.get("evidence") not in {"unobserved", "not_executed", "inferred"}
+                  and isinstance(value.get("parallel_group"), str) and value["parallel_group"]}
+        group = next(iter(groups)) if len(groups) == 1 else None
+        if group:
+            parallel_members.setdefault(group, set()).add(item["id"])
+        item["execution"] = {
+            "kind": metadata["kind"], "condition": condition,
+            "dependency_state": dependency_state,
+            "waits_for": [{key: value for key, value in target.items() if not key.startswith("_")} for target in targets],
+            "parallel_group": group, "retry": _retry_evidence(observed),
+            "source": metadata["source"] if metadata["source"] != "unknown" else "event" if observed else "unknown",
+        }
+    for item in steps:
+        group = item["execution"]["parallel_group"]
+        if group and len(parallel_members[group]) < 2:
+            item["execution"]["parallel_group"] = None
+    return {"version": 1, "order_basis": "observed_events",
+            "parallelism": "explicit" if any(len(values) > 1 for values in parallel_members.values()) else "unknown",
+            "note": "阶段按已记录的发生顺序展示；条件、等待和重试分别标注，未确认的先后与并行关系保持未知。"}
 
 
 def _result(steps: list[dict[str, Any]], run: dict[str, Any], observations: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
@@ -1056,6 +1221,14 @@ def build_progress_snapshot(
     run_value = dict(run or {})
     task_key = str(task_type or "").strip().lower()
     steps = _template(task_key, run_value)
+    # 计划过滤不能丢掉真实的子任务引用；只补回已经有引用的稳定阶段。
+    if task_key == "account_completion":
+        for child in _child_tasks(run_value.get("result_summary") or {}):
+            dispatch_id = _child_dispatch_step(child.get("task_type"))
+            if dispatch_id and not _find_step(steps, dispatch_id):
+                definition = next((value for value in flow_for(task_key) if value["id"] == dispatch_id), None)
+                if definition:
+                    steps.insert(max(0, len(steps) - 1), _step(definition))
     template_order = {item["id"]: index for index, item in enumerate(steps)}
     by_id = {item["id"]: item for item in steps}
     observations: dict[str, list[dict[str, Any]]] = {}
@@ -1115,6 +1288,14 @@ def build_progress_snapshot(
                 explicit = explicit or bool(_event_id(event))
             continue
         recorded_id = _raw_to_main(task_key, raw, detail, steps)
+        if recorded_id is None and state is not None and task_key == "account_completion":
+            # native child 分派可能不在旧计划列表中；仍复用已定义的分派 ID。
+            stable_id = resolve_step(task_key, raw, detail)
+            definition = next((value for value in flow_for(task_key) if value["id"] == stable_id
+                               and stable_id in {"refresh_dispatch", "account_setup_dispatch", "codex_dispatch"}), None)
+            if definition and not _find_step(steps, stable_id):
+                steps.insert(max(0, len(steps) - 1), _step(definition))
+                recorded_id = stable_id
         boundary_id = _remote_boundary_step(task_key, event, steps, attempts) if recorded_id is None else None
         if boundary_id:
             recorded_id = boundary_id
@@ -1240,6 +1421,7 @@ def build_progress_snapshot(
                            message=failure["error_info"]["summary"])
     current = _current(ordered, current_activity, str(run_value.get("status") or ""))
     debug_pause = _project_debug_pause(ordered, run_value, current)
+    structure = _project_execution(ordered, task_key, run_value, attempts)
     payload = {"flow_version": 3 if route_numbers else 2, "selected_route_attempt_no": selected_route, "steps": ordered, "run": {"id": run_value.get("id"), "status": run_value.get("status"), "progress_stage": run_value.get("progress_stage"), "result_summary": run_value.get("result_summary") or {}}, "events": attempts, "failure": failure, "history_unknown": [{"event_id": _event_id(value), "reason": value.get("unknown_reason")} for value in unknown_events]}
     payload["debug_pause"] = debug_pause
     payload["task_lifecycle"] = list(task_lifecycle.values())
@@ -1248,6 +1430,7 @@ def build_progress_snapshot(
         "task_id": int(task_id), "run_id": int(run_id), "flow_version": 3 if route_numbers else 2,
         "revision": revision, "source": source, "main_steps": ordered,
         "current": current,
+        "structure": structure,
         "outcome": outcome, "failure": failure,
         "task_lifecycle": list(task_lifecycle.values()),
         "selected_route_attempt_no": selected_route,

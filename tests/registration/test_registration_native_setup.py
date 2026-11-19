@@ -1,26 +1,38 @@
 """原注册缺项使用真实原生 Run 和账号租约，禁止把其它活动操作当作补全成功。"""
+import tempfile
 from contextlib import ExitStack
+from pathlib import Path
 from unittest.mock import patch
 
 from core import db, account_task_store
 from core.registration import service
-from core.operations import task_gateway
+from core.accounts import operation_handlers
+from core.operations import run_log as task_run_log, task_gateway
 from core.storage import records
 from core.storage.operations import store
 from tests.support_pg import PostgresTestCase
+from tests.support_settlement import install_native_settlement_fixture
 from webui import runtime
 
 
 class RegistrationNativeSetupTests(PostgresTestCase):
     def setUp(self):
         self.stack = ExitStack()
-        self.addCleanup(self.stack.close)
+        self.addCleanup(self._close_test_resources)
+        log_root = Path(self.stack.enter_context(tempfile.TemporaryDirectory()))
+        self.stack.enter_context(patch.object(task_run_log, "_LOG_ROOT", log_root))
+        self.stack.enter_context(patch.object(task_run_log, "_TASK_LOG_ROOT", log_root / "tasks"))
+        self.stack.enter_context(patch.dict("os.environ", {"OPERATION_TASK_DB_SCHEMA": self.schema}))
         self.stack.enter_context(patch.object(task_gateway, "notify_dispatch"))
         self.stack.enter_context(patch("config.account.ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED", False))
         self.stack.enter_context(patch.dict("os.environ", {"TURB_BROWSER_ENABLED": "false"}))
         self.stack.enter_context(patch.object(account_task_store, "_SCHEMA", self.schema))
         self.stack.enter_context(patch.object(account_task_store, "_READY_KEY", ""))
         account_task_store.init()
+        # TRUNCATE removes the capability marker but retains startup readiness.
+        store.reset_ready()
+        store.init()
+        install_native_settlement_fixture(self)
         self.account_id = records.insert_row(records.ACCOUNTS, {
             "email": "required-password@example.test", "access_token": "fixture-at",
             "totp_secret": "fixture-totp", "plan_check_status": "success",
@@ -28,8 +40,17 @@ class RegistrationNativeSetupTests(PostgresTestCase):
         self.source = {"id": 91, "attempt_id": 11, "email": "required-password@example.test"}
         self.snapshot = {"registration_driver": "protocol_oss_2", "password_enabled": True,
                          "twofa_enabled": True, "twofa_driver": "protocol", "plan_check_enabled": True}
-        with patch.object(runtime, "_RUNTIME_HANDLERS_REGISTERED", False):
+        with patch.object(operation_handlers, "_RUNTIME_HANDLERS_REGISTERED", False):
             runtime._register_runtime_handlers()
+
+    def tearDown(self):
+        self._close_test_resources()
+
+    def _close_test_resources(self):
+        fixture = getattr(self, "settlement_fixture", None)
+        if fixture is not None:
+            fixture.close()
+        self.stack.close()
 
     def submit(self, snapshot=None):
         return service._submit_registration_account_setup(

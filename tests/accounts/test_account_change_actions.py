@@ -9,6 +9,7 @@ from unittest.mock import Mock, patch
 
 from flask import Flask
 
+from core.accounts import operation_results, operation_settings
 from core.codex.roxy import oauth as roxy_codex_oauth
 from core.codex import retry_service
 from core.operations import progress as task_progress
@@ -20,20 +21,26 @@ class AccountChangeActionTests(unittest.TestCase):
     def test_manual_worker_reuses_private_session_and_requires_confirmation(self):
         from core.auth.browser import password_recovery
 
-        for confirmed in (False, True):
-            with self.subTest(confirmed=confirmed):
+        for confirmed, saved in ((False, False), (True, False), (True, True)):
+            with self.subTest(confirmed=confirmed, saved=saved):
                 session = SimpleNamespace(resume=Mock(return_value=True), checkpoint=SimpleNamespace(state="unknown"))
+                account = {"id": 17, "email": "account@example.com", "extra_json": {"account_password": "original-password"}}
                 route = Mock(proxy_url="http://proxy.example", provider="unit", region="JP", mode="pool")
                 route.public_dict.return_value = {"network_route": "proxy"}
                 def browser_action(_email, **kwargs):
                     self.assertIs(session, kwargs["password_recovery"])
                     if confirmed:
                         session.checkpoint = SimpleNamespace(state="confirmed", password="private-candidate")
+                    if saved:
+                        account.update(access_token="fixture-at", extra_json={
+                            "account_password": "private-candidate", "account_password_state": "confirmed",
+                        })
+                    # The real browser invokes the setup action after login;
+                    # a checkpoint alone is not a completed password step.
+                    kwargs["action"](Mock(), {})
                 with (
                     tempfile.TemporaryDirectory() as directory,
-                    patch.object(retry_service.db, "get_account_by_email", return_value={
-                        "id": 17, "email": "account@example.com", "extra_json": {"account_password": "original-password"},
-                    }),
+                    patch.object(retry_service.db, "get_account_by_email", return_value=account),
                     patch.object(retry_service.db, "update_account_login_password") as legacy_write,
                     patch.object(retry_service.account_task_store, "get_task", return_value={}),
                     patch.object(retry_service.account_task_store, "append_event"),
@@ -48,7 +55,8 @@ class AccountChangeActionTests(unittest.TestCase):
                         steps={"password"}, manage_task=False, clear_log=False, force_password_reset=True,
                         execution_fence={"run_id": 702, "execution_id": "current-worker", "lease_token": "current-lease"},
                     )
-                self.assertEqual(confirmed, result["ok"])
+                self.assertEqual(confirmed and saved, result["ok"])
+                self.assertEqual(confirmed and saved, result["step_results"]["password"]["ok"])
                 self.assertEqual("current-lease", factory.call_args.kwargs["operation_lease_token"])
                 session.resume.assert_called_once()
                 legacy_write.assert_not_called()
@@ -77,11 +85,11 @@ class AccountChangeActionTests(unittest.TestCase):
             remote_request_receipt=Mock(), finish=Mock(),
         )
         with (
-            patch.object(runtime, "_completion_settings_from_snapshot", return_value={}),
+            patch.object(operation_settings, "completion_settings_from_snapshot", return_value={}),
             patch.object(runtime.codex_retry_service, "run_twofa_worker", return_value={
                 "ok": True, "status": "success",
             }) as worker,
-            patch.object(runtime, "_account_setup_receipt", return_value=("confirmed", {})),
+            patch.object(operation_results, "account_setup_receipt", return_value=("confirmed", {})),
         ):
             result = runtime._handle_native_account_setup(context)
         self.assertEqual("success", result.status)

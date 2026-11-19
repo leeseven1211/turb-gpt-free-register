@@ -1,8 +1,9 @@
+import type { TaskId } from '../../api/taskIds';
 export type ProxyModuleView = 'pool' | 'records';
 export type ProxyRecordView = 'current' | 'history' | 'traffic';
 /** Public fixed-field backend projection; components render explicit allowlists. */
 export interface ProxyRow {
-  id?: string | number;
+  id?: TaskId;
   [key: string]: unknown;
 }
 export interface ProxyQuery {
@@ -56,6 +57,7 @@ export interface ProxyTrafficDeps {
   facetLabel?(group: string, value: string): string;
   notify?(message: string): void;
   onReady?(): void;
+  openTask?(taskId: TaskId, runId?: TaskId | null): void;
 }
 export interface ProxyTrafficHandle {
   load(view?: ProxyRecordView | null): Promise<void>;

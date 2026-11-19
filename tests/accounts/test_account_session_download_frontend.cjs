@@ -3,20 +3,18 @@ const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
+const {createActionsFixture, legacySelectionSnapshot} = require('./actions_fixture.cjs');
+const {mountToolbarFixture} = require('./toolbar_fixture.cjs');
+const {flushPromises} = require('../../frontend/node_modules/@vue/test-utils');
 
 const source = require('../frontend_script_sources.cjs').readAccountScripts();
 
-function setup({selected = [7, 8], request} = {}) {
+async function setup({selected = [7, 8], request} = {}) {
   const calls = {requests: [], toasts: [], downloads: []};
-  const button = {
-    disabled: true, textContent: '下载 Session', listeners: {},
-    addEventListener(name, listener) { this.listeners[name] = listener; },
-  };
   const selectedIds = new Set(selected);
-  const elements = new Map([
-    ['btnDownloadSelectedSessionsV2', button],
-    ['btnCloseLiveLog', {addEventListener() {}}],
-  ]);
+  let toolbar,inFlight;
+  const elements = new Map([['btnCloseLiveLog', {addEventListener() {}}]]);
+  const get=id=>toolbar?.get(id)||elements.get(id)||null;
   const context = vm.createContext({
     LIST_FACET_LABELS: {task_type: {}, stage: {}, target_status: {}},
     ACCOUNT_SELECTED: selectedIds,
@@ -26,7 +24,7 @@ function setup({selected = [7, 8], request} = {}) {
     browserTimeZoneName: () => 'Asia/Shanghai',
     closeLiveLogModal() {},
     document: {
-      getElementById: id => elements.get(id) || null,
+      getElementById: get,
       querySelector: () => null, querySelectorAll: () => [], addEventListener() {},
       body: {appendChild() {}},
       createElement: tag => {
@@ -34,7 +32,7 @@ function setup({selected = [7, 8], request} = {}) {
         return {click() { calls.downloads.push({href: this.href, download: this.download}); }, remove() {}};
       },
     },
-    $: selector => elements.get(selector.slice(1)) || null,
+    $: selector => get(selector.slice(1)),
     window: {addEventListener() {}},
     setInterval() {}, setTimeout: callback => { callback(); return 1; }, clearTimeout() {},
     showToast: message => calls.toasts.push(message),
@@ -50,13 +48,20 @@ function setup({selected = [7, 8], request} = {}) {
     },
   });
   vm.runInContext(source, context);
-  const click = async () => button.listeners.click?.({currentTarget: button});
+  const owner = {isReady: () => true, getActionContext: () => legacySelectionSnapshot(context)};
+  createActionsFixture(context, owner); context.window.AccountsPage = owner;
+  toolbar=mountToolbarFixture({state:{selectedCount:selectedIds.size,archived:false},getContext:()=>owner.getActionContext(),
+    invoke:(descriptor,snapshot,trigger)=>{inFlight=owner.invokeAction(descriptor,snapshot,trigger);return inFlight;},notify:context.showToast});
+  owner.syncToolbarPending=()=>toolbar.setState({selectedCount:selectedIds.size,archived:false,pending:{downloadSelectedAccountSessions:owner.isActionPending('downloadSelectedAccountSessions')}});
+  await toolbar.ready;
+  const button=toolbar.get('btnDownloadSelectedSessionsV2');
+  const click = () => {button.click();return Promise.resolve(inFlight).then(()=>flushPromises());};
   return {context, button, calls, selectedIds, click};
 }
 
 test('跨页选择全部提交并通过服务端地址下载 ZIP，提示成功和跳过清单', async () => {
-  const {context, calls, button, click} = setup();
-  context.updateAccountSelectionUi();
+  const {context, calls, button, click} = await setup();
+  await context.updateAccountSelectionUi();
   assert.equal(button.disabled, false);
   await click();
   assert.equal(calls.requests.length, 1);
@@ -72,7 +77,7 @@ test('跨页选择全部提交并通过服务端地址下载 ZIP，提示成功�
 });
 
 test('全部账号缺失、无效或读取失败时仍下载结果 ZIP，并说明后续处理', async () => {
-  const {button, calls, click} = setup({
+  const {button, calls, click} = await setup({
     selected: [7, 8, 9],
     request: async () => ({
       ok: true, prepared: true, download_url: '/api/downloads/session-manifest',
@@ -98,9 +103,10 @@ test('全部账号缺失、无效或读取失败时仍下载结果 ZIP，并说�
 });
 
 test('无选择时保持禁用且直接调用也不会请求或下载', async () => {
-  const {context, button, calls, click} = setup({selected: []});
-  context.updateAccountSelectionUi();
+  const {context, button, calls, click} = await setup({selected: []});
+  await context.updateAccountSelectionUi();
   await click();
+  await context.downloadSelectedAccountSessions();
   assert.equal(button.disabled, true);
   assert.equal(calls.requests.length, 0);
   assert.equal(calls.downloads.length, 0);
@@ -109,15 +115,17 @@ test('无选择时保持禁用且直接调用也不会请求或下载', async ()
 
 test('打包中禁用并拒绝重复请求，选择变化不会提前恢复按钮', async () => {
   let finish;
-  const {context, button, calls, selectedIds, click} = setup({request: () => new Promise(resolve => { finish = resolve; })});
+  const {context, button, calls, selectedIds, click} = await setup({request: () => new Promise(resolve => { finish = resolve; })});
   const pending = click();
+  await flushPromises();
   assert.equal(button.disabled, true);
   assert.match(button.textContent, /打包中/);
   selectedIds.clear();
   selectedIds.add(9);
-  context.updateAccountSelectionUi();
+  await context.updateAccountSelectionUi();
   assert.equal(button.disabled, true);
-  await click();
+  button.click();
+  await flushPromises();
   assert.equal(calls.requests.length, 1);
   finish({ok: true, prepared: true, download_url: '/api/downloads/ready', filename: 'ready.zip', added_count: 2, skipped_count: 0, skipped: []});
   await pending;
@@ -128,11 +136,12 @@ test('打包中禁用并拒绝重复请求，选择变化不会提前恢复按�
 
 test('打包期间清空选择，完成后仍保持禁用', async () => {
   let finish;
-  const {context, button, selectedIds, click} = setup({request: () => new Promise(resolve => { finish = resolve; })});
+  const {context, button, selectedIds, click} = await setup({request: () => new Promise(resolve => { finish = resolve; })});
   const pending = click();
+  await flushPromises();
   assert.match(button.textContent, /打包中/);
   selectedIds.clear();
-  context.updateAccountSelectionUi();
+  await context.updateAccountSelectionUi();
   finish({ok: true, prepared: true, download_url: '/api/downloads/ready', added_count: 2, skipped_count: 0, skipped: []});
   await pending;
   assert.equal(button.disabled, true);
@@ -140,7 +149,7 @@ test('打包期间清空选择，完成后仍保持禁用', async () => {
 });
 
 test('服务端报错时显示具体原因且恢复按钮，可再次下载', async () => {
-  const {button, calls, click} = setup({request: async () => { throw new Error('Session 打包服务暂时不可用，请重试'); }});
+  const {button, calls, click} = await setup({request: async () => { throw new Error('Session 打包服务暂时不可用，请重试'); }});
   await click();
   assert.equal(calls.requests.length, 1);
   assert.equal(calls.downloads.length, 0);
@@ -152,7 +161,7 @@ test('服务端报错时显示具体原因且恢复按钮，可再次下载', as
 });
 
 test('缺少下载地址时反馈明确错误并恢复，避免空链接下载', async () => {
-  const {button, calls, click} = setup({request: async () => ({ok: true, prepared: true, added_count: 2, skipped_count: 0, skipped: []})});
+  const {button, calls, click} = await setup({request: async () => ({ok: true, prepared: true, added_count: 2, skipped_count: 0, skipped: []})});
   await click();
   assert.equal(calls.downloads.length, 0);
   assert.match(calls.toasts.join(''), /未返回下载地址/);

@@ -6,133 +6,49 @@ import uuid
 from collections.abc import Mapping
 from typing import Any
 from core import db
-from core.codex import operation_service as codex_operation_service
-from core.accounts.liveness import service as live_check_service
-from core.operations import task_gateway
+from core.accounts import operation_settings
 from core.operations import task_gateway as account_task_store
 logger = logging.getLogger(__name__)
 
-_RUNTIME_SOURCE_SYSTEM = "webui_runtime"
-_COMPLETION_RESOURCE_FAMILY = "completion_coordinator"
+RUNTIME_SOURCE_SYSTEM = "webui_runtime"
+COMPLETION_RESOURCE_FAMILY = "completion_coordinator"
 
-# This is an execution allowlist, not a second configuration definition.  C
-# owns the immutable snapshot and its uppercase schema keys; runtime stores
-# only the choices needed by the setup/completion handlers.
-_RUNTIME_CONFIG_ALLOWLIST = {
-    "password_enabled": "ACCOUNT_COMPLETION_PASSWORD_ENABLED",
-    "password_reset_enabled": "ACCOUNT_PASSWORD_RESET_ENABLED",
-    "plan_check_enabled": "ACCOUNT_COMPLETION_PLAN_CHECK_ENABLED",
-    "twofa_enabled": "ACCOUNT_COMPLETION_2FA_ENABLED",
-    "codex_enabled": "ACCOUNT_COMPLETION_CODEX_ENABLED",
-    "refresh_at_enabled": "ACCOUNT_COMPLETION_REFRESH_AT_ENABLED",
-    "password_driver": "ACCOUNT_PASSWORD_DRIVER",
-    "plan_check_driver": "ACCOUNT_PLAN_CHECK_DRIVER",
-    "password_proxy_mode": "ACCOUNT_PASSWORD_PROXY_MODE",
-    "twofa_proxy_mode": "ACCOUNT_2FA_PROXY_MODE",
-    "plan_check_proxy_mode": "ACCOUNT_PLAN_CHECK_PROXY_MODE",
-    "live_check_proxy_mode": "ACCOUNT_LIVE_CHECK_PROXY_MODE",
-    "refresh_at_proxy_mode": "ACCOUNT_REFRESH_AT_PROXY_MODE",
-    "codex_proxy_mode": "ACCOUNT_CODEX_PROXY_MODE",
-    "twofa_driver": "ACCOUNT_2FA_DRIVER",
-    "twofa_browser_fallback_enabled": "ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED",
-    "twofa_protocol_reauth_enabled": "ACCOUNT_2FA_PROTOCOL_REAUTH_ENABLED",
-    "codex_driver": "ACCOUNT_CODEX_DRIVER",
-    "protocol_version": "OPENAI_PROTOCOL_VERSION",
-}
+# 保留旧私有名称兼容，持久身份与资源族仅在此定义。
+_RUNTIME_SOURCE_SYSTEM = RUNTIME_SOURCE_SYSTEM
+_COMPLETION_RESOURCE_FAMILY = COMPLETION_RESOURCE_FAMILY
+
+# 兼容既有调用方；执行字段白名单仅由账号核心模块维护。
+_RUNTIME_CONFIG_ALLOWLIST = operation_settings.RUNTIME_CONFIG_ALLOWLIST
 
 def _runtime_config_snapshot() -> Any | None:
-    """Get C's atomic snapshot without defining or caching configuration."""
-    try:
-        from config import schema
-    except ImportError:
-        return None
-    provider = getattr(schema, "non_sensitive_snapshot", None)
-    return provider() if callable(provider) else None
+    """兼容旧入口，配置快照由账号核心模块提供。"""
+    return operation_settings.runtime_config_snapshot()
 
 def _legacy_runtime_snapshot(settings: Mapping[str, Any]) -> dict[str, Any]:
-    """Compatibility snapshot used only when C's provider is unavailable."""
-    result = dict(settings)
-    result["config_snapshot_revision"] = "legacy"
-    return result
+    """兼容旧入口，沿用账号核心模块的旧格式快照。"""
+    return operation_settings.legacy_runtime_snapshot(settings)
 
 def _completion_settings_from_snapshot(
     snapshot: Mapping[str, Any] | None,
     *,
     fallback: Mapping[str, Any] | None = None,
 ) -> dict[str, object]:
-    """Project the already-captured execution shape into completion settings."""
-    from config.account import completion_settings
-
-    values = dict(fallback or completion_settings())
-    if isinstance(snapshot, Mapping):
-        values.update({
-            str(key): value for key, value in snapshot.items()
-            if str(key) != "config_snapshot_revision"
-        })
-    bool_keys = {
-        "password_enabled", "password_reset_enabled", "plan_check_enabled",
-        "twofa_enabled", "codex_enabled", "refresh_at_enabled",
-        "twofa_browser_fallback_enabled", "twofa_protocol_reauth_enabled",
-        "auth_raw_context_enabled",
-    }
-    for key in bool_keys:
-        if key in values and isinstance(values[key], str):
-            values[key] = values[key].strip().lower() in {"1", "true", "yes", "on"}
-    for key in (
-        "password_driver", "plan_check_driver", "password_proxy_mode",
-        "twofa_proxy_mode", "plan_check_proxy_mode", "live_check_proxy_mode",
-        "refresh_at_proxy_mode", "codex_proxy_mode", "twofa_driver", "codex_driver",
-        "protocol_version",
-    ):
-        if key in values and values[key] is not None:
-            values[key] = str(values[key]).strip().lower()
-    return values
+    """兼容旧入口，由账号核心模块投影补全设置。"""
+    return operation_settings.completion_settings_from_snapshot(snapshot, fallback=fallback)
 
 def _runtime_submission_snapshot(settings: Mapping[str, Any]) -> tuple[Any, Mapping[str, str]]:
-    snapshot = _runtime_config_snapshot()
-    if snapshot is not None:
-        return snapshot, _RUNTIME_CONFIG_ALLOWLIST
-    return _legacy_runtime_snapshot(settings), tuple(_RUNTIME_CONFIG_ALLOWLIST)
+    """兼容旧入口，由账号核心模块捕获提交快照。"""
+    return operation_settings.runtime_submission_snapshot(settings)
 
 def _runtime_execution_settings(
     settings: Mapping[str, Any],
 ) -> tuple[Any, Mapping[str, str], dict[str, object]]:
-    """Capture C's snapshot and project only runtime execution settings."""
-    snapshot, allowlist = _runtime_submission_snapshot(settings)
-    try:
-        projected = task_gateway.normalize_config_snapshot(
-            snapshot, allowlist=allowlist,
-        )
-    except (TypeError, ValueError):
-        # The legacy fallback is intentionally narrow. If a rolling provider
-        # is malformed, keep the caller's already-loaded settings for the
-        # current request but do not persist an unfiltered object.
-        logger.exception("读取账号操作 config snapshot 失败，使用当前执行设置")
-        projected = dict(settings)
-    return snapshot, allowlist, _completion_settings_from_snapshot(
-        projected, fallback=settings,
-    )
+    """兼容旧入口，保留配置捕获时机与本入口日志。"""
+    return operation_settings.runtime_execution_settings(settings, operation_logger=logger)
 
 def _completion_deployment_unavailable(steps: set[str], settings: dict) -> dict | None:
-    """补全只检查实际缺项，套餐与账号配置由协调器分别执行。"""
-    from core.runtime.capabilities import account_setup_unavailable, browser_operation_unavailable
-
-    unavailable = account_setup_unavailable(steps & {"password", "twofa"}, settings)
-    if unavailable:
-        return unavailable
-    if "codex" in steps:
-        children = settings.get("child_execution") or {}
-        frozen = children.get("codex") if isinstance(children, Mapping) else None
-        snapshot = dict(frozen) if isinstance(frozen, Mapping) else codex_operation_service._config_snapshot(driver_override=str(settings.get("codex_driver") or "same_as_registration"))
-        unavailable = browser_operation_unavailable(snapshot.get("oauth_driver"))
-        if unavailable:
-            return unavailable
-    if "refresh_at" in steps:
-        children = settings.get("child_execution") or {}
-        frozen = children.get("refresh_at") if isinstance(children, Mapping) else None
-        return live_check_service.deployment_unavailable(force_refresh=True,
-            **({"config_snapshot": dict(frozen)} if isinstance(frozen, Mapping) else {}))
-    return None
+    """兼容旧入口，补全能力组合由账号核心模块判断。"""
+    return operation_settings.completion_deployment_unavailable(steps, settings)
 
 def enqueue_account_setup(
     account_id: int,

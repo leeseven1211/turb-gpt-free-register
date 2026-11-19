@@ -1,180 +1,93 @@
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
 const test = require('node:test');
-const vm = require('node:vm');
-
-const source = fs.readFileSync(path.join(__dirname, '../../webui/static/js/pages/config/page.js'), 'utf8');
+const {field, createConfigView, cleanup, flush} = require('./vue_fixture.cjs');
 const key = 'SUB2API_MONITOR_GROUP_IDS';
+test.afterEach(cleanup);
 
-function createView(value = '') {
-  const listeners = {};
-  const root = {addEventListener(name, callback) { (listeners[name] ||= []).push(callback); }};
-  const status = {textContent: ''};
-  const options = {
-    dataset: {}, checkboxes: [], writes: 0,
-    get innerHTML() { return this.markup || ''; },
-    set innerHTML(markup) {
-      this.markup = markup;
-      this.writes += 1;
-      this.checkboxes = [...markup.matchAll(/data-sub2api-monitor-group-id="(.*?)"([^>]*)>/g)].map(([, id, attributes]) => ({
-        dataset: {sub2apiMonitorGroupId: id}, checked: attributes.includes('checked'),
-        closest() { return {classList: {toggle() {}}}; },
-      }));
-    },
-    querySelectorAll() { return this.checkboxes; },
-  };
-  const attributes = {};
-  const button = {disabled: false, textContent: '查询分组', setAttribute(name, value) { attributes[name] = value; }};
-  const input = {
-    value, dataset: {key}, type: 'text',
-    closest(selector) {
-      if (selector === '[data-key], [data-wait-seconds-key], [data-price-key]') return this;
-      if (selector === '#tab-config') return root;
-      return null;
-    },
-    dispatchEvent(event) { for (const callback of listeners[event.type] || []) callback({target: this}); },
-  };
-  const control = {
-    setAttribute(name, value) { attributes[name] = value; },
-    querySelector(selector) {
-      if (selector.includes('data-sub2api-monitor-group-options')) return options;
-      if (selector.includes('data-sub2api-monitor-groups-status')) return status;
-      if (selector.includes('data-query-sub2api-groups')) return button;
-      if (selector.includes('data-key') || selector.includes('cfg-')) return input;
-      return null;
-    },
-  };
-  const escape = value => String(value ?? '').replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
-  const context = {
-    CONFIG: [{key, type: 'str', group: '定时任务', label: '异常巡检分组 ID', value}],
-    Event: class { constructor(type) { this.type = type; } },
-    document: {
-      getElementById(id) { return id === `cfg-${key}` ? input : null; },
-      querySelector() { return null; },
-      querySelectorAll(selector) { return selector === '#tab-config [data-sub2api-monitor-groups]' ? [control] : []; },
-    },
-    $(selector) { return selector === '#tab-config' ? root : null; },
-    window: {addEventListener() {}},
-    esc: escape, attrEsc: escape, isPlaceholderEmpty: value => value == null || value === '',
-    showToast() {},
-  };
-  vm.createContext(context);
-  vm.runInContext(`${source}
-    globalThis.view = {
-      render: () => renderScheduledConfigSectionV2(CONFIG),
-      query: () => querySub2ApiGroupsV2(),
-      pending: CONFIG_PENDING_UPDATES,
-      setPending: setPendingConfigValue,
-      automation: querySub2ApiAutomationV2,
-    };
-  `, context);
-  return {
-    view: context.view, context, input, button, options, status, attributes,
-    changeGroup(id, checked) {
-      const checkbox = {dataset: {sub2apiMonitorGroupId: String(id)}, checked, closest(selector) { return selector === '[data-sub2api-monitor-group-id]' ? this : null; }};
-      for (const callback of listeners.change || []) callback({target: checkbox});
-    },
+async function createView(value = '', request = async () => ({ok:true,groups:[]})) {
+  const behavior = {request};
+  const ui = createConfigView([
+    field(key,'定时任务',{label:'异常巡检分组 ID',value}),
+    field('SUB2API_API_BASE','Codex',{value:'https://saved.example.test'}),
+    field('SUB2API_API_KEY','Codex',{secret:true,configured:true}),
+  ],{request:(url,options)=>url==='/api/extract-link/types'?{items:[{type:'plus',label:'Plus'}]}:behavior.request(url,options)});
+  await ui.search(key); await flush();
+  return {...ui,behavior,
+    input:()=>ui.control(key),
+    button:()=>ui.wrapper.get('[data-query-sub2api-groups]'),
+    options:()=>ui.wrapper.get('[data-sub2api-monitor-group-options]'),
+    status:()=>ui.wrapper.get('[data-sub2api-monitor-groups-status]'),
+    async query(){await this.button().trigger('click');await flush();},
+    async changeGroup(id,checked){await this.options().get(`[data-sub2api-monitor-group-id="${id}"]`).setValue(checked);await flush();},
   };
 }
 
-test('定时任务仅有一个分组配置入口并提供查询及空选全部说明', () => {
-  const {view} = createView('17');
-  const markup = view.render();
-  assert.equal((markup.match(/data-key="SUB2API_MONITOR_GROUP_IDS"/g) || []).length, 1);
-  assert.match(markup, /id="cfg-SUB2API_MONITOR_GROUP_IDS"/);
-  assert.match(markup, /data-query-sub2api-groups/);
-  assert.match(markup, /使用已保存/);
-  assert.match(markup, /不选.*全部/);
-  assert.match(markup, /role="status" aria-live="polite"/);
+test('定时任务仅有一个分组配置入口并提供查询及空选全部说明',async()=>{
+  const ui=await createView('17');
+  assert.equal(ui.wrapper.findAll(`[data-key="${key}"]`).length,1);
+  assert.equal(ui.input().attributes('id'),`config-field-${key}`);
+  assert.equal(ui.button().text(),'查询分组');
+  assert.match(ui.wrapper.text(),/使用已保存/);assert.match(ui.wrapper.text(),/不选.*全部/);
+  assert.equal(ui.status().attributes('role'),'status');assert.equal(ui.status().attributes('aria-live'),'polite');
 });
 
-test('查询只用已保存连接，显示名称和ID并保留未保存分组及旧ID', async () => {
-  const ui = createView('17,99');
-  ui.view.setPending('SUB2API_API_BASE', 'https://draft.example.test');
-  ui.context.api = async (url, options) => {
-    assert.equal(url, '/api/sub2api/groups');
-    assert.equal(options, undefined);
-    assert.equal(ui.button.disabled, true);
-    assert.equal(ui.attributes['aria-busy'], 'true');
-    return {ok: true, groups: [{id: 17, name: 'Plus'}, {id: 18, name: '<Free>'}]};
+test('查询只用已保存连接，显示名称和ID并保留未保存分组及旧ID',async()=>{
+  const ui=await createView('17,99');
+  ui.owner.setField('SUB2API_API_BASE','https://draft.example.test');
+  ui.owner.setSecret('SUB2API_API_KEY',{mode:'set',value:'draft-private'});
+  ui.behavior.request=async(url,options)=>{
+    assert.equal(url,'/api/sub2api/groups');assert.equal(options.method,'GET');assert.equal(Object.hasOwn(options,'body'),false);
+    await flush();assert.equal(ui.button().element.disabled,true);assert.equal(ui.wrapper.get('[data-sub2api-monitor-groups]').attributes('aria-busy'),'true');
+    return {ok:true,groups:[{id:17,name:'Plus'},{id:18,name:'<Free>'}]};
   };
-  await ui.view.query();
-  assert.match(ui.options.innerHTML, /Plus（ID 17）/);
-  assert.match(ui.options.innerHTML, /&lt;Free&gt;（ID 18）/);
-  assert.match(ui.options.innerHTML, /data-sub2api-monitor-group-id="17"[^>]*checked/);
-  assert.match(ui.options.innerHTML, /data-sub2api-monitor-group-id="99"[^>]*checked/);
-  assert.equal(ui.input.value, '17,99');
-  assert.equal(ui.button.disabled, false);
-  assert.equal(ui.attributes['aria-busy'], 'false');
-  assert.equal(ui.view.pending.SUB2API_API_BASE, 'https://draft.example.test');
-  assert.equal(Object.hasOwn(ui.view.pending, key), false);
+  await ui.query();
+  assert.match(ui.options().text(),/Plus（ID 17）/);assert.match(ui.options().text(),/<Free>（ID 18）/);assert.equal(ui.options().find('free').exists(),false);
+  for(const id of ['17','99'])assert.equal(ui.options().get(`[data-sub2api-monitor-group-id="${id}"]`).element.checked,true);
+  assert.equal(ui.input().element.value,'17,99');assert.equal(ui.button().element.disabled,false);
+  assert.equal(ui.wrapper.get('[data-sub2api-monitor-groups]').attributes('aria-busy'),'false');
+  assert.equal(ui.owner.readField('SUB2API_API_BASE'),'https://draft.example.test');assert.equal(ui.owner.isDirty(key),false);
+  assert.equal(ui.saves.length,0);assert.equal(JSON.stringify(ui.actions.states).includes('draft-private'),false);
 });
 
-test('多选与手填共享唯一配置值并沿现有草稿保存，清空表示全部', async () => {
-  const ui = createView('17');
-  ui.context.api = async () => ({ok: true, groups: [{id: 17, name: 'Plus'}, {id: 18, name: 'Free'}]});
-  await ui.view.query();
-  const previousWrites = ui.options.writes;
-  ui.changeGroup(18, true);
-  assert.equal(ui.input.value, '17,18');
-  assert.equal(ui.view.pending[key], '17,18');
-  assert.equal(ui.options.checkboxes.find(checkbox => checkbox.dataset.sub2apiMonitorGroupId === '18').checked, true);
-  assert.equal(ui.options.writes, previousWrites, '勾选已知分组时保留原复选框节点及焦点');
-  ui.input.value = '18,99';
-  ui.input.dispatchEvent(new ui.context.Event('input'));
-  assert.equal(ui.view.pending[key], '18,99');
-  assert.match(ui.options.innerHTML, /data-sub2api-monitor-group-id="99"[^>]*checked/);
-  ui.changeGroup(18, false);
-  ui.changeGroup(99, false);
-  assert.equal(ui.input.value, '');
-  assert.equal(ui.view.pending[key], '');
-  assert.match(ui.status.textContent, /全部/);
+test('多选与手填共享唯一配置值并沿现有草稿保存，清空表示全部',async()=>{
+  const ui=await createView('17',async()=>({ok:true,groups:[{id:17,name:'Plus'},{id:18,name:'Free'}]}));await ui.query();
+  const checkbox=ui.options().get('[data-sub2api-monitor-group-id="18"]').element;checkbox.focus();
+  await ui.changeGroup(18,true);assert.equal(ui.input().element.value,'17,18');assert.equal(ui.owner.readField(key),'17,18');
+  assert.equal(ui.options().get('[data-sub2api-monitor-group-id="18"]').element,checkbox,'勾选已知分组时保留原复选框节点');
+  assert.equal(document.activeElement,checkbox,'保留复选框焦点');
+  await ui.input().setValue('18,99');assert.equal(ui.owner.readField(key),'18,99');
+  assert.equal(ui.options().get('[data-sub2api-monitor-group-id="99"]').element.checked,true);
+  await ui.changeGroup(18,false);await ui.changeGroup(99,false);
+  assert.equal(ui.input().element.value,'');assert.equal(ui.owner.readField(key),'');assert.match(ui.status().text(),/全部/);
+  assert.equal(ui.saves.length,0);await ui.owner.saveAll();assert.deepEqual(ui.saves[0],{[key]:''});
 });
 
-test('查询失败保留已查询选项及分组草稿，恢复查询按钮', async () => {
-  const ui = createView('17');
-  ui.context.api = async () => ({ok: true, groups: [{id: 17, name: 'Plus'}]});
-  await ui.view.query();
-  ui.input.value = '17,99';
-  ui.input.dispatchEvent(new ui.context.Event('input'));
-  ui.context.api = async () => { throw new Error('Sub2API 连接超时'); };
-  await ui.view.query();
-  assert.equal(ui.input.value, '17,99');
-  assert.equal(ui.view.pending[key], '17,99');
-  assert.match(ui.options.innerHTML, /Plus（ID 17）/);
-  assert.match(ui.options.innerHTML, /data-sub2api-monitor-group-id="99"[^>]*checked/);
-  assert.match(ui.status.textContent, /查询分组失败.*Sub2API 连接超时/);
-  assert.equal(ui.button.disabled, false);
+test('查询失败保留已查询选项及分组草稿，恢复查询按钮',async()=>{
+  const ui=await createView('17',async()=>({ok:true,groups:[{id:17,name:'Plus'}]}));await ui.query();
+  await ui.input().setValue('17,99');ui.behavior.request=async()=>{throw new Error('Sub2API 连接超时');};await ui.query();
+  assert.equal(ui.input().element.value,'17,99');assert.equal(ui.owner.readField(key),'17,99');
+  assert.match(ui.options().text(),/Plus（ID 17）/);assert.equal(ui.options().get('[data-sub2api-monitor-group-id="99"]').element.checked,true);
+  assert.match(ui.status().text(),/查询分组失败.*Sub2API 连接超时/);assert.equal(ui.button().element.disabled,false);
 });
 
-test('中文逗号或空白分隔草稿可查询勾选并彻底取消指定分组', async () => {
-  for (const value of ['17，18', '17 18', '17\n18', ' 17 ， 18\t17 ']) {
-    const ui = createView();
-    ui.input.value = value;
-    ui.input.dispatchEvent(new ui.context.Event('input'));
-    ui.context.api = async () => ({ok: true, groups: [{id: 17, name: 'Plus'}, {id: 18, name: 'Free'}]});
-    await ui.view.query();
-    assert.deepEqual(ui.options.checkboxes.filter(checkbox => checkbox.checked).map(checkbox => checkbox.dataset.sub2apiMonitorGroupId), ['17', '18'], value);
-    assert.equal(ui.options.checkboxes.length, 2, '不生成整串未知分组 ID');
-    ui.changeGroup(17, false);
-    assert.equal(ui.input.value, '18', value);
-    assert.equal(ui.view.pending[key], '18', value);
-    ui.changeGroup(17, true);
-    ui.changeGroup(17, false);
-    assert.equal(ui.view.pending[key], '18', '重新勾选再取消后不保留旧分组');
+test('中文逗号或空白分隔草稿可查询勾选并彻底取消指定分组',async()=>{
+  for(const value of ['17，18','17 18','17\n18',' 17 ， 18\t17 ']){
+    const ui=await createView(value,async()=>({ok:true,groups:[{id:17,name:'Plus'},{id:18,name:'Free'}]}));await ui.query();
+    assert.deepEqual(ui.options().findAll('input:checked').map(input=>input.attributes('data-sub2api-monitor-group-id')),['17','18'],value);
+    assert.equal(ui.options().findAll('input').length,2,'不生成整串未知分组 ID');
+    await ui.changeGroup(17,false);assert.equal(ui.input().element.value,'18');assert.equal(ui.owner.readField(key),'18');
+    await ui.changeGroup(17,true);await ui.changeGroup(17,false);assert.equal(ui.owner.readField(key),'18');
+    cleanup();
   }
 });
 
-test('服务集成查看状态展示已保存巡检分组或全部范围', async () => {
-  const {view, context} = createView();
-  const status = {textContent: ''};
-  const panel = {querySelector() { return status; }, querySelectorAll() { return []; }};
-  const button = {dataset: {sub2apiAutomation: 'status'}, closest() { return panel; }};
-  context.api = async () => ({ok: true, monitor: {enabled: true, group_ids: [17, 18]}});
-  await view.automation(button);
-  assert.match(status.textContent, /巡检范围.*17.*18/);
-  context.api = async () => ({ok: true, monitor: {enabled: true, group_ids: []}});
-  await view.automation(button);
-  assert.match(status.textContent, /巡检范围.*全部分组/);
+test('服务集成查看状态展示已保存巡检分组或全部范围',async()=>{
+  const ui=await createView('',async()=>({ok:true,monitor:{enabled:true,group_ids:[17,18]}}));
+  await ui.search('SUB2API_API_BASE');await flush();
+  const panel=ui.wrapper.get('[data-config-tool="sub2api"]');
+  await panel.findAll('button').find(button=>button.text()==='查看状态').trigger('click');await flush();
+  assert.match(panel.get('.config-action-status').text(),/巡检范围.*17.*18/);
+  ui.behavior.request=async()=>({ok:true,monitor:{enabled:true,group_ids:[]}});
+  await panel.findAll('button').find(button=>button.text()==='查看状态').trigger('click');await flush();
+  assert.match(panel.get('.config-action-status').text(),/巡检范围.*全部分组/);
 });

@@ -9,6 +9,8 @@
 这两点都不会让测试变红，只会让页面变慢，所以用查询计数把它们钉住。
 """
 import unittest
+import uuid
+from contextlib import ExitStack
 
 from core import db
 from core.storage import postgres as postgres_store, records as rs
@@ -100,11 +102,41 @@ class ConnectionPoolTests(PostgresTestCase):
 
         建连接约 38ms、查询约 2.4ms；不池化的话，列表页每渲染一行都要重新握手。
         """
-        seen = set()
-        for _ in range(8):
-            with postgres_store.connect() as conn:
-                seen.add(id(conn))
-        self.assertLess(len(seen), 8, "每次都拿到新连接对象，说明没有复用")
+        # A process-wide pool may already contain >= 8 live connections after
+        # earlier concurrency tests. FIFO circulation is reuse, even if the
+        # first eight borrowed Python objects are all different.
+        kwargs = {"application_name": "test_pool_reuse_" + uuid.uuid4().hex}
+        pool = postgres_store._pool_for(postgres_store.database_url(), kwargs)
+
+        def close_owned_pool():
+            with postgres_store._POOL_LOCK:
+                for key, value in list(postgres_store._POOLS.items()):
+                    if value is pool:
+                        del postgres_store._POOLS[key]
+            pool.close()
+
+        self.addCleanup(close_owned_pool)
+        width = min(8, pool.max_size)
+        pool.resize(min_size=width, max_size=width)
+        pool.wait(timeout=10.0)
+        with ExitStack() as stack:
+            warm = [stack.enter_context(postgres_store.connect(**kwargs)) for _ in range(width)]
+            warm_pids = {conn.execute("SELECT pg_backend_pid()").fetchone()[0] for conn in warm}
+            self.assertEqual(len(warm_pids), width)
+        before = pool.get_stats()
+        self.assertEqual(before["pool_available"], width)
+        self.assertEqual(before["pool_size"], width)
+        seen_pids = set()
+        for _ in range(width * 2 + 1):
+            with postgres_store.connect(**kwargs) as conn:
+                seen_pids.add(conn.execute("SELECT pg_backend_pid()").fetchone()[0])
+            self.assertFalse(conn.closed, "归还连接不应关闭真实数据库连接")
+        after = pool.get_stats()
+        self.assertEqual(seen_pids, warm_pids, "借还必须复用预热的数据库会话")
+        self.assertEqual(after.get("connections_num", 0), before.get("connections_num", 0),
+                         "预热后的借还不应触发新数据库握手")
+        self.assertEqual(after["pool_available"], width, "所有借出的连接必须归还")
+        self.assertEqual(after.get("requests_waiting", 0), 0)
 
 
 if __name__ == "__main__":

@@ -182,18 +182,20 @@ class EmailAddressAllocationTests(PostgresTestCase):
     def test_deletion_and_first_derivation_cannot_leave_orphaned_child(self):
         from core import db
         before_delete, release_delete, allocation_done = threading.Event(), threading.Event(), threading.Event()
-        original_delete = record_store.delete_rows_where_returning
-        def paused_delete(*args, **kwargs):
+        original_patch = record_store.patch_row
+        def paused_delete(spec, row_id, changes, **kwargs):
+            if spec is not record_store.ICLOUD_HIDE_POOL or row_id != self.parent_id or changes.get("status") != "tombstone":
+                return original_patch(spec, row_id, changes, **kwargs)
             before_delete.set()
             if not release_delete.wait(5):
                 raise RuntimeError("测试删除等待超时")
-            return original_delete(*args, **kwargs)
+            return original_patch(spec, row_id, changes, **kwargs)
         def allocate_while_deleting():
             try:
                 return self.allocate("racing-delete")
             finally:
                 allocation_done.set()
-        with patch.object(record_store, "delete_rows_where_returning", side_effect=paused_delete), ThreadPoolExecutor(max_workers=2) as executor:
+        with patch.object(record_store, "patch_row", side_effect=paused_delete), ThreadPoolExecutor(max_workers=2) as executor:
             deleting = executor.submit(db.delete_icloud_hide_email, "parent@icloud.test")
             self.assertTrue(before_delete.wait(5))
             allocating = executor.submit(allocate_while_deleting)
@@ -203,7 +205,8 @@ class EmailAddressAllocationTests(PostgresTestCase):
                 release_delete.set()
             self.assertTrue(deleting.result(timeout=5))
             self.assertIsNone(allocating.result(timeout=5))
-        self.assertIsNone(allocations.get_parent("icloud_hide", self.parent_id))
+        self.assertEqual(allocations.get_parent("icloud_hide", self.parent_id)["status"], "tombstone")
+        self.assertTrue(allocations.get_parent("icloud_hide", self.parent_id)["pool_deleted_at"])
         self.assertEqual(allocations.allocation_summary()["total"], 0)
 
     def test_deleting_case_duplicate_parents_preserves_only_referenced_recovery(self):
@@ -213,7 +216,8 @@ class EmailAddressAllocationTests(PostgresTestCase):
         })
         child = self.allocate("case-duplicate", parent_id=duplicate_id)
         self.assertTrue(db.delete_icloud_hide_email("parent@icloud.test"))
-        self.assertIsNone(allocations.get_parent("icloud_hide", self.parent_id))
+        self.assertEqual(allocations.get_parent("icloud_hide", self.parent_id)["status"], "tombstone")
+        self.assertTrue(allocations.get_parent("icloud_hide", self.parent_id)["pool_deleted_at"])
         preserved = allocations.get_parent("icloud_hide", duplicate_id)
         self.assertTrue(preserved["archived"])
         self.assertEqual(allocations.get_allocation(child["id"])["parent_id"], duplicate_id)

@@ -13,6 +13,7 @@ import {
 const wrappers: ReturnType<typeof mount>[] = [];
 function setup(view: 'pool' | 'records' = 'pool') {
   const api = fixtureApi(),
+    openTask = vi.fn(),
     notify = vi.fn();
   const wrapper = mount(ProxyTrafficPage, {
     attachTo: document.body,
@@ -21,13 +22,14 @@ function setup(view: 'pool' | 'records' = 'pool') {
         api,
         visible: true,
         view,
+        openTask,
         notify,
         facetLabel: (group, value) => (group === 'task_type' && value === 'plan_check' ? '查套餐' : value),
       },
     },
   });
   wrappers.push(wrapper);
-  return { wrapper, api, notify };
+  return { wrapper, api, openTask, notify };
 }
 beforeEach(() => {
   Object.defineProperty(document, 'hidden', { configurable: true, value: false });
@@ -83,7 +85,7 @@ describe('complete proxy Vue page', () => {
     expect(wrapper.findAll('[data-proxy-view]')).toHaveLength(3);
   });
   it('renders all original records columns and plain task associations with global zero summary', async () => {
-    const { wrapper } = setup('records');
+    const { wrapper, openTask } = setup('records');
     await flushPromises();
     expect(wrapper.get('[data-proxy-summary="todayRequestCount"]').text()).toBe('0');
     expect(wrapper.get('[data-proxy-table="current"]').text()).toContain('lease-public-17');
@@ -94,6 +96,7 @@ describe('complete proxy Vue page', () => {
     for (const text of ['protocol_http', 'POST', '46 B', '9 / 2 / 1 / 3', '查套餐', '9007199254740995'])
       expect(table.text()).toContain(text);
     expect(table.findAll('a')).toHaveLength(0);
+    expect(openTask).not.toHaveBeenCalled();
     expect(table.find('details').exists()).toBe(false);
     expect(wrapper.get('[data-proxy-summary="totalBytes"]').text()).toBe('2.00 KB');
     expect(wrapper.findAll('.list-pagination').length).toBeGreaterThan(0);

@@ -21,13 +21,14 @@ from typing import Any, Callable, Iterable, Mapping
 from core.storage import compat_export, postgres as postgres_store, records as record_store
 from core.operations import run_log as task_run_log
 from core.accounts.plans.promotion import DISCOUNT, ELIGIBLE_PROMO_KINDS, FREE_TRIAL, promotion_kind_from_record
+from core.runtime.paths import compatibility_data_root, task_log_root
 
 logger = logging.getLogger(__name__)
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
-_DATA_DIR = _PROJECT_ROOT
+_DATA_DIR = compatibility_data_root(_PROJECT_ROOT)
 _LEGACY_DATA_DIR = _PROJECT_ROOT / "data"
-_LOG_DIR = _PROJECT_ROOT / "logs"
+_LOG_DIR = task_log_root(legacy_default=_PROJECT_ROOT / "logs")
 _PLAN_CHECK_STALE_SECONDS = 120
 _PLAN_CHECK_QUEUE_STALE_SECONDS = 1800
 
@@ -35,8 +36,8 @@ _PLAN_CHECK_QUEUE_STALE_SECONDS = 1800
 class SnapshotConflictError(RuntimeError):
     """旧兼容快照试图覆盖已被其他事务修改的行。"""
 
-_GENERIC_API_EMAIL_JSON = _PROJECT_ROOT / "用于注册的API邮箱.json"
-_GENERIC_API_EMAIL_TXT = _PROJECT_ROOT / "用于注册的API邮箱.txt"
+_GENERIC_API_EMAIL_JSON = _DATA_DIR / "用于注册的API邮箱.json"
+_GENERIC_API_EMAIL_TXT = _DATA_DIR / "用于注册的API邮箱.txt"
 # 历史路径仅保留给兼容返回字段和隔离测试，不再自动生成或清理文件。
 _CODEX_DIR = _PROJECT_ROOT / "codex_accounts"
 _CODEX_EXPORT_STATE = _PROJECT_ROOT / "codex_导出状态.json"
@@ -4451,7 +4452,7 @@ def storage_paths() -> dict:
 # Domain email pool（Cloudflare 域名邮箱跟踪）
 # ============================================================
 
-_DOMAIN_EMAIL_JSON = _PROJECT_ROOT / "用于注册的域名邮箱.json"
+_DOMAIN_EMAIL_JSON = _DATA_DIR / "用于注册的域名邮箱.json"
 
 
 def _load_domain_pool() -> list[dict]:

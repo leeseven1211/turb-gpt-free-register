@@ -34,7 +34,8 @@ class RemailRegistrationReconciliationTests(unittest.TestCase):
             stack.enter_context(patch.object(service, "is_stop_requested", return_value=stopped))
             stack.enter_context(patch.object(service.db, "get_job", return_value=job))
             stack.enter_context(patch.object(service.db, "update_job", side_effect=update_job))
-            stack.enter_context(patch.object(service.db, "claim_job_for_execution", return_value=True))
+            # This unit test isolates exception mapping after admission; permit integration has separate coverage.
+            stack.enter_context(patch.object(service, "_claim_job_for_worker", return_value=True))
             stack.enter_context(patch.object(service.db, "update_job_progress"))
             stack.enter_context(patch.object(service.db, "finish_job_progress"))
             stack.enter_context(patch("core.proxy.provider.release_proxy"))

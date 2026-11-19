@@ -34,7 +34,8 @@ class PlanProxyConfigTests(unittest.TestCase):
         self.assertIn("含首次", fields[LIMIT_KEY]["help"])
         self.assertIn("实际出口 IP", fields[LIMIT_KEY]["help"])
         self.assertIn("有效期", fields[LIMIT_KEY]["help"])
-        self.assertIn("静态代理池", fields[LIMIT_KEY]["help"])
+        self.assertIn("各供应商及手动地址", fields[LIMIT_KEY]["help"])
+        self.assertIn("出口国家和健康状态", fields[LIMIT_KEY]["help"])
 
     def test_reuse_switch_has_safe_editable_metadata(self):
         field = schema.CONFIG_SCHEMA[KEY]
@@ -48,9 +49,10 @@ class PlanProxyConfigTests(unittest.TestCase):
         self.assertNotIn(KEY, config_editor.RESTART_REQUIRED_KEYS)
         fields = {item["key"]: item for item in config_editor.EDITABLE_FIELDS}
         self.assertIn(KEY, fields)
-        self.assertIn("1024", fields[KEY]["help"])
+        self.assertIn("各供应商及手动地址", fields[KEY]["help"])
         self.assertIn("出口国家", fields[KEY]["help"])
-        self.assertIn("静态代理池", fields[KEY]["help"])
+        self.assertIn("健康状态", fields[KEY]["help"])
+        self.assertIn("注册及认证任务继续使用独占租约", fields[KEY]["help"])
 
     def test_env_bool_override_hot_reloads_module_package_and_snapshot(self):
         fd, raw_path = tempfile.mkstemp(prefix="turb-plan-proxy-config-")

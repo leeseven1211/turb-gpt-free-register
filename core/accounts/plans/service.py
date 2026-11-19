@@ -500,6 +500,10 @@ def _run_country_plan_checks(
                         cancel=lambda: _checkpoint(operation_context, "等待国家代理时检查取消状态"),
                         progress_callback=report_wait,
                     )
+                    from core.accounts.operation_results import own_account_route
+                    route = own_account_route(
+                        operation_context, route, purpose="plan-check", actor_scope="owner_process",
+                    )
                 except TimeoutError:
                     rows, progress = plan_countries.update_country_progress(
                         account_id, country, progress, action="wait_timeout", fence=fence,
@@ -541,10 +545,29 @@ def _run_country_plan_checks(
                 answer.update({key: value for key, value in route_info.items() if key not in {"proxy_used", "proxy_url"}})
             except (account_task_store.OperationLeaseLost, OperationCancelled):
                 raise
+            except (account_task_store.OperationSettlementPending, account_task_store.OperationSettlementConflict, account_task_store.OperationSettlementFenced):
+                raise
             except Exception as exc:
                 answer = {"ok": False, "checked_at": now_iso(), "error": sanitize_promotion_text(f"{type(exc).__name__}: {exc}")}
             finally:
                 if route is not None:
+                    from core.accounts.operation_results import AccountRouteCleanup
+                    if isinstance(route, AccountRouteCleanup):
+                        route.record_cleanup_facts({
+                            "operation_stage": "plan_country",
+                            "completed_steps": [
+                                code for code, state in progress["countries"].items() if not state["pending"]
+                            ],
+                            "observed_steps": [{
+                                "country": country, "ok": bool(answer.get("ok")),
+                                "http_status": answer.get("http_status"),
+                                "local_business_writeback_confirmed": False,
+                            }] if isinstance(answer, dict) else [],
+                            "unexecuted_steps": [
+                                code for code, state in progress["countries"].items()
+                                if state["pending"] and (code != country or answer is None)
+                            ],
+                        })
                     route.release(reason=f"plan-check-{account_id}-{country}", **(
                         {"fault": True} if answer and answer.get("proxy_transport_failure") is True else {}
                     ))
@@ -737,6 +760,10 @@ def _run_plan_check(
         failure_stage = "network"
         reporter.stage("network", "running", "正在申请套餐查询线路")
         account_route = acquire_account_proxy(**route_kwargs)
+        from core.accounts.operation_results import own_account_route
+        account_route = own_account_route(
+            operation_context, account_route, purpose="plan-check", actor_scope="owner_process",
+        )
         reporter.resource(
             "resource.acquired",
             message="已选择套餐查询线路",
@@ -770,6 +797,16 @@ def _run_plan_check(
         _record_promotion_queries(reporter, result)
         if (at_recovery is not None and result.get("http_status") == 401
                 and not at_recovery.summary.get("attempted")):
+            from core.accounts.operation_results import AccountRouteCleanup
+            if isinstance(account_route, AccountRouteCleanup):
+                account_route.record_cleanup_facts({
+                    "operation_stage": "plan_before_at_refresh",
+                    "completed_steps": [],
+                    "observed_steps": [{"step": "plan_check", "ok": bool(result.get("ok")),
+                                        "http_status": result.get("http_status"),
+                                        "local_business_writeback_confirmed": False}],
+                    "unexecuted_steps": ["at_refresh", "plan_recheck"],
+                })
             account_route.release(reason=f"plan-check-before-refresh-{account_id}")
             account_route = None
             refreshed = at_recovery.refresh(access_token, reason="token_http_401")
@@ -777,6 +814,9 @@ def _run_plan_check(
                 _checkpoint(operation_context)
                 reporter.stage("network", "running", "AT 已刷新，重新申请套餐查询线路")
                 account_route = acquire_account_proxy(**route_kwargs)
+                account_route = own_account_route(
+                    operation_context, account_route, purpose="plan-check", actor_scope="owner_process",
+                )
                 reporter.resource("resource.acquired", message="已领取 AT 刷新后的套餐查询线路", detail=account_route.public_dict())
                 reporter.stage("network", "success", "套餐补查线路已就绪")
                 reporter.stage("plan_check", "running", "使用新 AT 补查套餐")
@@ -841,12 +881,16 @@ def _run_plan_check(
                 db.update_account_plan_check(acc_id=account_id, result=result)
         except account_task_store.OperationLeaseLost:
             raise
+        except (account_task_store.OperationSettlementPending, account_task_store.OperationSettlementConflict, account_task_store.OperationSettlementFenced):
+            raise
         except Exception:
             logger.exception("[Plan] 取消状态写回失败: account_id=%s", account_id)
         if preflight_open:
             reporter.note("套餐查询在预检完成前取消", stage="preflight", level="WARNING", detail={"cancelled": True})
         reporter.finish(status="cancelled", message="套餐查询任务已取消", error=result["error"], result_summary=_plan_result_summary(result))
         return result
+    except (account_task_store.OperationSettlementPending, account_task_store.OperationSettlementConflict, account_task_store.OperationSettlementFenced):
+        raise
     except Exception as exc:
         result = {
             "ok": False,
@@ -863,6 +907,8 @@ def _run_plan_check(
             else:
                 db.update_account_plan_check(acc_id=account_id, result=result)
         except account_task_store.OperationLeaseLost:
+            raise
+        except (account_task_store.OperationSettlementPending, account_task_store.OperationSettlementConflict, account_task_store.OperationSettlementFenced):
             raise
         except Exception:
             logger.exception("[Plan] 写入后台查询异常状态失败: account_id=%s", account_id)
@@ -883,6 +929,14 @@ def _run_plan_check(
         return result
     finally:
         if account_route is not None:
+            from core.accounts.operation_results import AccountRouteCleanup
+            if isinstance(account_route, AccountRouteCleanup) and not account_route._cleanup_facts:
+                account_route.record_cleanup_facts({
+                    "operation_stage": "plan_check_cleanup",
+                    "completed_steps": ["plan_check"] if result is not None else [],
+                    "observed_steps": [],
+                    "unexecuted_steps": ["plan_check"] if result is None else [],
+                })
             if result and result.get("proxy_transport_failure") is True:
                 account_route.release(reason=f"plan-check-{account_id}", fault=True)
             else:
@@ -1086,7 +1140,7 @@ def _handle_plan_operation(context):
         )
         context.finish(status="failed", message=error, error=error)
         return None
-    with context.lease(resource_family="openai_interactive"):
+    with context.lease(resource_family="openai_interactive", scope_kind="final"):
         with operation_log_context(context, stage="preflight"):
             recovery = None
             if auto_refresh:
@@ -1146,6 +1200,15 @@ def _retry_plan_operation(task):
             "run_id": run["id"], "account_id": task.get("account_id"), "status": "queued"}
 
 
+def register_actions() -> None:
+    """Keep plan snapshot retry semantics available to a fresh Web process."""
+    account_task_store.register_operation_actions(
+        "plan_check", retry_handler=_retry_plan_operation,
+        cancel_handler=account_task_store.default_operation_cancel,
+        terminate_handler=account_task_store.default_operation_terminate,
+    )
+
+
 def register_operation_handlers() -> bool:
     register = getattr(account_task_store, "register_operation_handler", None)
     if not callable(register):
@@ -1156,7 +1219,7 @@ def register_operation_handlers() -> bool:
         source_systems=("native_operations",),
         config_allowlist=PLAN_CONFIG_ALLOWLIST,
     )
-    account_task_store.register_operation_actions("plan_check", retry_handler=_retry_plan_operation)
+    register_actions()
     return True
 
 
@@ -1296,4 +1359,4 @@ def queue_settings() -> dict:
     }
 
 
-register_operation_handlers()
+register_actions()

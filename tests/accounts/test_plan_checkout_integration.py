@@ -7,7 +7,9 @@ from core.accounts.plans import client as chatgpt_plan, service as plan_check_se
 from core.storage import records as record_store
 from core.operations.runtime import OperationCancelled
 from core.storage import accounts as db
+from tests.support_account_route_fixture import AccountRouteContext, account_route_resources
 from tests.support_pg import PostgresTestCase
+from tests.support_settlement import install_native_settlement_fixture
 from tests.accounts.test_plan_country_check import offer_result
 
 
@@ -135,7 +137,8 @@ class PlanCheckoutCountryIntegrationTests(PostgresTestCase):
         self.account_id = record_store.insert_row(record_store.ACCOUNTS, {
             'email': 'checkout-integration@example.test', 'access_token': 'synthetic-token',
             'plan_check_status': 'queued', 'current_plan_type': 'free'})
-        self.context = SimpleNamespace(checkpoint=Mock(), report=Mock(return_value={}), finish=Mock())
+        self.context = AccountRouteContext(run_id=801, execution_id="fixture-checkout",
+            checkpoint=Mock(), report=Mock(return_value={}), finish=Mock())
 
     def test_default_disabled_single_and_multi_country_queries_never_probe_payment(self):
         for countries in (None, ['JP', 'VN']):
@@ -156,6 +159,9 @@ class PlanCheckoutCountryIntegrationTests(PostgresTestCase):
         from core.operations import task_gateway
         from core.storage.operations import store as operation
         task_gateway.init()
+        operation.reset_ready()
+        operation.init()
+        fixture = install_native_settlement_fixture(self)
         plan_check_service.register_operation_handlers()
         submit = task_gateway.submit_durable_operation
         def submit_without_dispatch(**kwargs):
@@ -184,9 +190,11 @@ class PlanCheckoutCountryIntegrationTests(PostgresTestCase):
                      patch.object(plan_check_service, '_wait_for_rate_slot'), \
                      patch.object(plan_check_service, 'check_account_plan', return_value=offer_result('JP', 100)) as query:
                     first = task_gateway._execute_operation_handler('plan_check', run_id)
+                    fixture.wait_for_run_released(run_id)
                     retry = operation.retry_runtime_task(task_id)
                     self.assertIs(enabled, retry['data']['config_snapshot']['payment_methods_enabled'])
                     second = task_gateway._execute_operation_handler('plan_check', int(retry['id']))
+                    fixture.wait_for_run_released(int(retry['id']))
                 self.assertEqual('success', first['status'])
                 self.assertEqual('success', second['status'])
                 self.assertEqual([enabled, enabled], [call.kwargs['include_checkout'] for call in query.call_args_list])
@@ -198,10 +206,13 @@ class PlanCheckoutCountryIntegrationTests(PostgresTestCase):
             'access_token': 'synthetic-token', 'plan_check_status': 'queued',
         })
         request_tests = PlanCheckoutRequestTests()
+        routes = []
         def acquire(**kwargs):
             country = kwargs.get('region') or 'JP'
-            return SimpleNamespace(proxy_url=country, region=country, release=Mock(),
+            route = SimpleNamespace(proxy_url=country, region=country, release=Mock(),
                 public_dict=lambda: {'proxy_region': country, 'proxy_provider': '1024proxy'})
+            routes.append(route)
+            return route
         def query(token, **kwargs):
             return chatgpt_plan.check_account_plan(token, session=request_tests.env(), **kwargs)
         with patch('core.proxy.account_routes.acquire_account_proxy', side_effect=acquire), \
@@ -209,7 +220,8 @@ class PlanCheckoutCountryIntegrationTests(PostgresTestCase):
              patch.object(plan_check_service, 'check_account_plan', side_effect=query), \
              patch.object(plan_check_service, '_wait_for_rate_slot'), \
              patch.object(chatgpt_plan, '_query_account_quota', return_value={}), \
-             patch('core.accounts.plans.checkout_probe.query_checkout_details', side_effect=lambda token, **kw: checkout_answer(kw['country'])) as probe:
+             patch('core.accounts.plans.checkout_probe.query_checkout_details', side_effect=lambda token, **kw: checkout_answer(kw['country'])) as probe, \
+             account_route_resources(self, self.context, routes=routes):
             result = plan_check_service._run_plan_check(account_id=account_id,
                 email='payment-choice@example.test', access_token='synthetic-token', trigger='manual',
                 proxy=None, timezone_offset_min='-', countries=countries,
@@ -244,7 +256,8 @@ class PlanCheckoutCountryIntegrationTests(PostgresTestCase):
             return result
         with patch('core.proxy.account_routes.acquire_account_proxy', side_effect=acquire), \
              patch.object(plan_check_service, 'check_account_plan', side_effect=query), \
-             patch.object(plan_check_service, '_wait_for_rate_slot'):
+             patch.object(plan_check_service, '_wait_for_rate_slot'), \
+             account_route_resources(self, self.context, routes=routes):
             result = plan_check_service._run_plan_check(account_id=self.account_id,
                 email='checkout-integration@example.test', access_token='synthetic-token', trigger='manual_bulk',
                 proxy=None, timezone_offset_min='-', countries=['JP', 'VN', 'IN'], operation_context=self.context,
@@ -262,9 +275,9 @@ class PlanCheckoutCountryIntegrationTests(PostgresTestCase):
         self.assertEqual(1, summary['checkout_success_count'])
         self.assertIn('支付预检 1/2 成功', self.context.finish.call_args.kwargs['message'])
         self.assertTrue(all(route.release.call_count == 1 for route in routes))
-        routes[0].release.assert_called_once_with(reason=f'plan-check-{self.account_id}-JP')
+        routes[0].release.assert_called_once_with(reason=f'plan-check-{self.account_id}-JP', fault=False)
         routes[1].release.assert_called_once_with(reason=f'plan-check-{self.account_id}-VN', fault=True)
-        routes[2].release.assert_called_once_with(reason=f'plan-check-{self.account_id}-IN')
+        routes[2].release.assert_called_once_with(reason=f'plan-check-{self.account_id}-IN', fault=False)
         self.assertNotIn('proxy_transport_failure', str(account['plan_check_country_results']))
 
     def test_single_country_checkout_transport_failure_faults_route_and_keeps_offer(self):
@@ -274,7 +287,8 @@ class PlanCheckoutCountryIntegrationTests(PostgresTestCase):
         route = SimpleNamespace(proxy_url='JP', region='JP', release=Mock(),
             public_dict=lambda: {'proxy_region': 'JP', 'proxy_provider': '1024proxy'})
         with patch('core.proxy.account_routes.acquire_account_proxy', return_value=route), \
-             patch.object(plan_check_service, '_query_account_plan', return_value=answer):
+             patch.object(plan_check_service, '_query_account_plan', return_value=answer), \
+             account_route_resources(self, self.context, routes=[route]):
             result = plan_check_service._run_plan_check(account_id=self.account_id,
                 email='checkout-integration@example.test', access_token='synthetic-token', trigger='manual',
                 proxy=None, timezone_offset_min='-', operation_context=self.context)

@@ -26,6 +26,7 @@ const title = computed(() => `${operationNames[props.operationKey]}报告`);
         type="button"
         class="jobs-tb-btn"
         data-bulk-action="report-refresh"
+        :disabled="loading"
         @click.stop="onRetry()"
       >
         重新读取报告

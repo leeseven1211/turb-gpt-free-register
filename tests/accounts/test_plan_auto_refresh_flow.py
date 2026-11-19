@@ -5,7 +5,6 @@ import base64
 import json
 import tempfile
 import time
-import uuid
 from contextlib import ExitStack
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,6 +17,7 @@ from core.storage import accounts, records
 from core.storage.operations import store as operation
 from tests.accounts.test_plan_country_check import offer_result
 from tests.support_pg import PostgresTestCase
+from tests.support_settlement import install_native_settlement_fixture
 
 
 class PlanAutoRefreshFlowTests(PostgresTestCase):
@@ -34,6 +34,7 @@ class PlanAutoRefreshFlowTests(PostgresTestCase):
         })
         operation.reset_ready()
         operation.init()
+        self.settlement_fixture = install_native_settlement_fixture(self)
         self.events = []
         self.routes = []
         self.refresh_contexts = []
@@ -50,11 +51,31 @@ class PlanAutoRefreshFlowTests(PostgresTestCase):
             data={"countries": ["JP", "VN"] if countries is None else countries,
                   "proxy_source": "pool", "config_snapshot": settings},
         )
-        execution_id = f"plan-flow-{uuid.uuid4().hex}"
-        claimed = operation.claim_run(task["run"]["id"], execution_id=execution_id, worker_pid=102)
-        context = task_gateway.OperationHandlerContext(claimed, execution_id=execution_id)
-        self.addCleanup(context.release_lease)
-        return context, task
+        return task
+
+    def run_admitted(self, task, callback):
+        run_id = int(task["run"]["id"])
+        admitted = task_gateway.admit_operation_run(operation.get_run(run_id))
+        self.assertTrue(admitted.admitted, admitted.blocked_by)
+
+        def execute():
+            context = task_gateway.OperationHandlerContext(
+                admitted.context.claimed_run, execution_id=admitted.context.execution_id,
+            )
+            callback(context)
+            return context
+
+        context = task_gateway.execute_admitted(admitted.context, execute)
+        self.settlement_fixture.wait_for_run_released(run_id)
+        return context
+
+    def finish(self, task, **kwargs):
+        def terminal(context):
+            with context.lease(
+                resource_family=context.resource_family, ttl_seconds=600, scope_kind="final",
+            ):
+                context.finish(**kwargs)
+        return self.run_admitted(task, terminal)
 
     def acquire(self, **kwargs):
         country = kwargs.get("region") or "JP"
@@ -82,7 +103,7 @@ class PlanAutoRefreshFlowTests(PostgresTestCase):
         self.assertTrue(kwargs["result_writer"](result))
         return result
 
-    def execute(self, context, query, *, refresh=None):
+    def execute(self, task, query, *, refresh=None):
         with ExitStack() as stack:
             stack.enter_context(patch("core.proxy.account_routes.acquire_account_proxy", side_effect=self.acquire))
             stack.enter_context(patch.object(plans, "check_account_plan", side_effect=query))
@@ -90,11 +111,11 @@ class PlanAutoRefreshFlowTests(PostgresTestCase):
             stack.enter_context(patch.object(plans, "_log_plan_result"))
             stack.enter_context(patch.object(plans, "_reconcile_extract_payment_after_plan"))
             auth = stack.enter_context(patch.object(liveness, "_run_live_check", side_effect=refresh or self.refresh))
-            plans._handle_plan_operation(context)
-        return operation.get_run(context.run_id), auth
+            context = self.run_admitted(task, plans._handle_plan_operation)
+        return operation.get_run(context.run_id), auth, context
 
     def test_multi_country_401_refreshes_once_and_keeps_successful_country(self):
-        context, task = self.context()
+        task = self.context()
         queries = []
 
         def query(token, **kwargs):
@@ -105,7 +126,7 @@ class PlanAutoRefreshFlowTests(PostgresTestCase):
                 return {"ok": False, "http_status": 401, "error": "AT已过期/失效，请手动查活刷新"}
             return offer_result(country)
 
-        run, auth = self.execute(context, query)
+        run, auth, context = self.execute(task, query)
         self.assertEqual([("JP", "old-at"), ("VN", "old-at"), ("VN", "new-at")], queries)
         self.assertEqual("success", run["status"])
         self.assertTrue(run["result_summary"]["auto_refresh_at"]["ok"])
@@ -118,14 +139,14 @@ class PlanAutoRefreshFlowTests(PostgresTestCase):
             self.assertEqual(1, cur.fetchone()["n"])
 
     def test_second_401_after_refresh_stays_retryable_without_an_automatic_loop(self):
-        context, _ = self.context(countries=["JP"])
+        task = self.context(countries=["JP"])
         tokens = []
 
         def query(token, **kwargs):
             tokens.append(token)
             return {"ok": False, "http_status": 401, "error": "AT已过期/失效，请手动查活刷新"}
 
-        run, auth = self.execute(context, query)
+        run, auth, context = self.execute(task, query)
         self.assertEqual(["old-at", "new-at"], tokens)
         self.assertEqual(1, auth.call_count)
         self.assertEqual("failed", run["status"])
@@ -134,21 +155,21 @@ class PlanAutoRefreshFlowTests(PostgresTestCase):
         self.assertEqual("queued", retry["status"])
 
     def test_disabled_switch_does_not_refresh_on_401(self):
-        context, _ = self.context(countries=["JP"], enabled=False)
-        run, auth = self.execute(context, lambda token, **kw: {"ok": False, "http_status": 401, "error": "HTTP 401"})
+        task = self.context(countries=["JP"], enabled=False)
+        run, auth, context = self.execute(task, lambda token, **kw: {"ok": False, "http_status": 401, "error": "HTTP 401"})
         auth.assert_not_called()
         self.assertEqual("failed", run["status"])
         self.assertNotIn("plan_auto_refresh_at", run["data"])
 
     def test_registration_trigger_never_uses_plan_auto_refresh(self):
-        context, _ = self.context(countries=["JP", "VN"], trigger="registration_retry_plan_check")
+        task = self.context(countries=["JP", "VN"], trigger="registration_retry_plan_check")
         queries = []
 
         def query(token, **kwargs):
             queries.append(token)
             return {"ok": False, "http_status": 401, "error": "HTTP 401"}
 
-        run, auth = self.execute(context, query)
+        run, auth, context = self.execute(task, query)
         auth.assert_not_called()
         self.assertEqual(["old-at"], queries)
         self.assertNotIn("plan_auto_refresh_at", run["data"])
@@ -156,14 +177,14 @@ class PlanAutoRefreshFlowTests(PostgresTestCase):
 
     def test_missing_at_refreshes_before_any_country_request(self):
         records.patch_row(records.ACCOUNTS, self.account_id, {"access_token": ""})
-        context, _ = self.context(countries=["JP"])
+        task = self.context(countries=["JP"])
 
         def query(token, **kwargs):
             self.assertEqual("new-at", token)
             self.assertEqual("refresh", self.events[0][0])
             return offer_result("JP")
 
-        run, auth = self.execute(context, query)
+        run, auth, context = self.execute(task, query)
         self.assertEqual("success", run["status"])
         self.assertEqual(1, auth.call_count)
         self.assertEqual("token_missing", run["data"]["plan_auto_refresh_at"]["reason"])
@@ -171,21 +192,21 @@ class PlanAutoRefreshFlowTests(PostgresTestCase):
     def test_locally_expired_at_refreshes_before_single_country_request(self):
         payload = base64.urlsafe_b64encode(json.dumps({"exp": time.time() - 60}).encode()).decode().rstrip("=")
         records.patch_row(records.ACCOUNTS, self.account_id, {"access_token": f"header.{payload}.signature"})
-        context, _ = self.context(countries=[])
+        task = self.context(countries=[])
 
         def query(token, **kwargs):
             self.assertEqual("new-at", token)
             self.assertEqual("refresh", self.events[0][0])
             return offer_result("JP")
 
-        run, auth = self.execute(context, query)
+        run, auth, context = self.execute(task, query)
         self.assertEqual("success", run["status"])
         self.assertEqual(1, auth.call_count)
         self.assertEqual("token_local_expired", run["data"]["plan_auto_refresh_at"]["reason"])
 
     def test_failed_refresh_preserves_the_specific_cause_in_task_summary(self):
         records.patch_row(records.ACCOUNTS, self.account_id, {"access_token": ""})
-        context, _ = self.context(countries=["JP"])
+        task = self.context(countries=["JP"])
         query = Mock(side_effect=AssertionError("刷新失败后不应发送套餐请求"))
 
         def failed_refresh(**kwargs):
@@ -193,7 +214,7 @@ class PlanAutoRefreshFlowTests(PostgresTestCase):
             self.assertTrue(kwargs["result_writer"](result))
             return result
 
-        run, auth = self.execute(context, query, refresh=failed_refresh)
+        run, auth, context = self.execute(task, query, refresh=failed_refresh)
         query.assert_not_called()
         self.assertEqual(1, auth.call_count)
         self.assertEqual("failed", run["status"])
@@ -204,7 +225,7 @@ class PlanAutoRefreshFlowTests(PostgresTestCase):
         self.assertIn("邮箱验证码等待超时", json.dumps(run["result_summary"], ensure_ascii=False))
 
     def test_single_country_releases_old_route_before_refresh_and_reacquires_afterward(self):
-        context, _ = self.context(countries=[])
+        task = self.context(countries=[])
         tokens = []
 
         def query(token, **kwargs):
@@ -212,7 +233,7 @@ class PlanAutoRefreshFlowTests(PostgresTestCase):
             return ({"ok": False, "http_status": 401, "error": "HTTP 401"}
                     if token == "old-at" else offer_result("JP"))
 
-        run, auth = self.execute(context, query)
+        run, auth, context = self.execute(task, query)
         self.assertEqual(["old-at", "new-at"], tokens)
         self.assertEqual([("acquire", "JP", 1), ("release", "JP", 1), ("refresh",),
                           ("acquire", "JP", 2), ("release", "JP", 2)], self.events)
@@ -223,8 +244,8 @@ class PlanAutoRefreshFlowTests(PostgresTestCase):
     def test_old_manual_retry_adds_refresh_config_without_overwriting_frozen_plan_options(self):
         frozen = {"payment_methods_enabled": False, "plan_check_timeout": 7,
                   "plan_check_max_attempts": 1, "country_wait_timeout": 9}
-        context, task = self.context(countries=["VN", "JP"], snapshot=frozen)
-        context.finish(status="failed", message="历史套餐任务失败", error="全部国家查询失败：VN、JP")
+        task = self.context(countries=["VN", "JP"], snapshot=frozen)
+        context = self.finish(task, status="failed", message="历史套餐任务失败", error="全部国家查询失败：VN、JP")
         current = {
             "PLAN_CHECK_AUTO_REFRESH_AT_ENABLED": True, "ACCOUNT_AT_REFRESH_DRIVER": "protocol",
             "OPENAI_PROTOCOL_VERSION": "v3", "ACCOUNT_AT_REFRESH_NETWORK_TIMEOUT_SECONDS": 60,
@@ -248,8 +269,8 @@ class PlanAutoRefreshFlowTests(PostgresTestCase):
     def test_manual_retry_preserves_an_existing_disabled_switch_and_refresh_driver(self):
         frozen = {"auto_refresh_at_enabled": False, "refresh_driver": "browser_roxy",
                   "refresh_protocol_version": "v1", "plan_check_timeout": 7}
-        context, task = self.context(countries=["VN"], snapshot=frozen)
-        context.finish(status="failed", message="套餐查询失败", error="HTTP 401")
+        task = self.context(countries=["VN"], snapshot=frozen)
+        context = self.finish(task, status="failed", message="套餐查询失败", error="HTTP 401")
         with (patch.object(plans, "get_config_snapshot") as current,
               patch.object(task_gateway, "notify_dispatch")):
             retried = plans._retry_plan_operation({**task, "status": "failed", "last_run_id": context.run_id})

@@ -69,7 +69,7 @@ export function railWidth(value: unknown, max: number) {
 }
 export interface BusinessGroup {
   title: string;
-  items: {title: string; value: number}[];
+  items: {title: string; value: number; unit: '项' | '个'}[];
 }
 const names: Record<string, string> = {
   'account.confirmed_no_offer': '本次确认无优惠',
@@ -173,7 +173,7 @@ export function businessGroups(value: unknown): BusinessGroup[] {
                   ? '补全项目'
                   : '执行结果';
         if (!groups.has(group)) groups.set(group, {title: group, items: []});
-        groups.get(group)!.items.push({title, value: item});
+        groups.get(group)!.items.push({title, value: item, unit: group === '国家查询项' ? '项' : '个'});
       } else if (item && typeof item === 'object') walk(object(item), title, depth + 1);
     }
   }

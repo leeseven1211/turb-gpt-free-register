@@ -98,6 +98,8 @@ class RoxyRefreshDriverTests(unittest.TestCase):
                 patch.object(service, "_checkpoint"),
                 patch.object(service, "token_claims", return_value={}),
                 patch("core.proxy.account_routes.acquire_account_proxy", return_value=route),
+                patch("core.accounts.operation_results.own_account_route",
+                      side_effect=lambda _context, original_route, **_kwargs: original_route),
             ):
                 stack.enter_context(item)
             refresh = stack.enter_context(patch.object(roxy_liveness, "refresh_access_token", side_effect=browser))
@@ -155,6 +157,8 @@ class RoxyRefreshDriverTests(unittest.TestCase):
                             patch.object(service, "_checkpoint"),
                             patch.object(service, "token_claims", return_value={}),
                             patch("core.proxy.account_routes.acquire_account_proxy", return_value=route),
+                            patch("core.accounts.operation_results.own_account_route",
+                                  side_effect=lambda _context, original_route, **_kwargs: original_route),
                             patch.object(roxy_liveness, "refresh_access_token", side_effect=browser),
                         ):
                             stack.enter_context(item)

@@ -1,7 +1,7 @@
 """幻光原单续查的服务行为回归。"""
 from contextlib import contextmanager
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 from core.extract_link import service as service
 from core.extract_link.contracts import ProviderJob
@@ -133,11 +133,51 @@ class ExtractReconcileFlowTests(unittest.TestCase):
             prior = service._provider_job_for_sync.return_value
             prior["private_data"]["huanguang_proxy_leases"] = [{"lease_id": "original-pool-lease", "provider": "static",
                 "resource_id": 123, "pool_resource_id": "original-pool-resource", "pool_anchor_id": "original-anchor"}]
-            with patch("core.proxy.provider.release_proxy") as release:
+            from core.storage.operations import common
+            from core.storage import postgres
+
+            connection = MagicMock()
+            cursor = connection.__enter__.return_value.cursor.return_value.__enter__.return_value
+            original_resource = {"run_id": case.context.run_id,
+                "resource_uuid": "original-resource-uuid", "external_id": "original-pool-lease"}
+            cursor.fetchone.return_value = original_resource
+            expected_sql = (
+                f"SELECT run_id,resource_uuid,external_id FROM {common._table('operation_resources')} WHERE id=%s"
+            )
+
+            def exact_original_read(sql, params):
+                self.assertEqual(expected_sql, sql)
+                self.assertEqual((123,), params)
+
+            cursor.execute.side_effect = exact_original_read
+            case.context.register_cleanup = Mock()
+            case.context.add_settlement_obligation = Mock()
+            with (
+                patch("core.proxy.provider.release_proxy") as release,
+                patch.object(common, "_connect", return_value=connection) as connect,
+                patch.object(postgres, "connect", side_effect=AssertionError("offline extract fixture cannot connect")),
+                patch.object(postgres, "connect_dedicated", side_effect=AssertionError("offline extract fixture cannot connect")),
+            ):
                 service._handle_provider_operation(case.context)
         self.assertEqual("original-pool-lease", release.call_args.args[0].lease_id)
         self.assertEqual("original-pool-resource", release.call_args.args[0].metadata["pool_resource_id"])
         case.context.release_resource.assert_called_once_with(123, state="released")
+        connect.assert_called_once_with()
+        cursor.execute.assert_called_once_with(expected_sql, (123,))
+        release.assert_called_once()
+        cleanup = case.context.register_cleanup.call_args.args[0]
+        self.assertIs(cleanup.lease, release.call_args.args[0])
+        self.assertEqual("original-resource-uuid", cleanup.resource_uuid)
+        self.assertTrue(cleanup.identity_confirmed)
+        self.assertTrue(cleanup.release_confirmed)
+        case.context.register_cleanup.assert_called_once_with(
+            cleanup, key="extract-proxy:original-pool-lease:123", blocking=True,
+        )
+        case.context.add_settlement_obligation.assert_called_once_with(
+            "resource_release", resource_identity="original-resource-uuid", blocks_permit=True,
+            payload={"resource_id": 123, "resource_uuid": "original-resource-uuid",
+                "external_id": "original-pool-lease"},
+        )
 
     def test_crash_between_job_save_and_receipt_confirmation_can_repair_checkpoint(self):
         job = ProviderJob(job_id="fixture-job", extraction_state="failed", summary={"remote_terminal_failure": True})

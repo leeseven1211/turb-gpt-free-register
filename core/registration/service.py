@@ -1702,6 +1702,8 @@ def _registration_worker_capacity() -> int:
 
 def get_executor(max_workers: int | None = None) -> AccountOperationExecutor:
     """返回按需承载已获准任务的执行器；批次 workers 不再重建业务预算。"""
+    from core.runtime.execution_access import require_execution_component
+    require_execution_component()
     global _executor, _executor_workers
     with _executor_lock:
         if max_workers is not None:
@@ -1713,10 +1715,36 @@ def get_executor(max_workers: int | None = None) -> AccountOperationExecutor:
     return _executor
 
 
+def configure_submission_workers(max_workers: int | None = None) -> int:
+    """Freeze requested batch concurrency without creating an execution carrier."""
+    global _executor_workers
+    with _executor_lock:
+        if max_workers is not None:
+            _executor_workers = _normalize_workers(max_workers)
+        return _executor_workers
+
+
 def get_executor_workers() -> int:
     """新批次请求的默认并发数；实际执行仍受共享许可限制。"""
     with _executor_lock:
         return _executor_workers
+
+
+def registration_executor_status() -> dict:
+    """Local counters only; status cannot create the lazy executor or read DB."""
+    with _executor_lock:
+        executor = _executor
+    if executor is None:
+        return {"accepted": 0, "active": 0, "generation": 0,
+                "retired_pools": 0, "current_pool_workers": None}
+    return executor.runtime_status()
+
+
+def dispatcher_status() -> dict:
+    with _DISPATCH_LOCK:
+        return {"started": _DISPATCH_THREAD is not None,
+                "alive": bool(_DISPATCH_THREAD and _DISPATCH_THREAD.is_alive()),
+                "stopping": _DISPATCH_STOP.is_set(), "in_flight": len(_DISPATCHING_JOBS)}
 
 
 def shutdown_executor(wait: bool = True) -> None:
@@ -1726,6 +1754,22 @@ def shutdown_executor(wait: bool = True) -> None:
         executor, _executor = _executor, None
     if executor is not None:
         executor.shutdown(wait=wait)
+
+
+def close_runtime_executor(timeout: float = 3.0) -> bool:
+    """Retain a managed executor until its real thread teardown succeeds."""
+    global _executor
+    with _executor_lock:
+        executor = _executor
+    if executor is None:
+        return True
+    if not executor.close_runtime(timeout=timeout):
+        return False
+    with _executor_lock:
+        if _executor is not executor:
+            return False
+        _executor = None
+    return True
 
 
 def _claim_job_for_worker(job_id: int) -> bool:
@@ -1758,6 +1802,9 @@ def dispatch_pending_once() -> int:
     """先只读筛选剩余业务容量，再提交候选；原子认领仍在 worker 内完成。"""
     from core.registration.admission import dispatch_candidates, pending_jobs
 
+    from core.runtime.execution_access import execution_allowed
+    if not execution_allowed():
+        return 0
     if not _DISPATCH_PASS_LOCK.acquire(blocking=False):
         return 0
     try:
@@ -1818,6 +1865,9 @@ def _enqueue_job(job_id: int, *, account_task_id: int | None = None) -> None:
 
 def start_dispatcher(*, interval_seconds: float = 0.5) -> bool:
     """恢复阶段结束后启动扫描；不为历史 interrupted 任务创建新注册。"""
+    from core.runtime.execution_access import component_start_allowed
+    if not component_start_allowed():
+        return False
     global _DISPATCH_THREAD, _DISPATCH_INTERVAL
     with _DISPATCH_LOCK:
         if _DISPATCH_THREAD is not None and _DISPATCH_THREAD.is_alive():
@@ -3060,6 +3110,19 @@ def _run_twofa_retry_job(
         account = db.get_account(account_id)
         if not account:
             raise LookupError("原注册账号不存在，无法补齐配置")
+        # 校验旧队列的冻结许可，不能先由当前配置补齐缺失国家。
+        retry_snapshot = current.get("config_snapshot")
+        if not isinstance(retry_snapshot, dict):
+            retry_data = current.get("data")
+            retry_snapshot = retry_data.get("config_snapshot") if isinstance(retry_data, dict) else None
+        if isinstance(retry_snapshot, dict) and retry_snapshot.get("registration_driver") == "roxy":
+            override = retry_snapshot.get("retry_proxy_country_override")
+            if override is not None:
+                from config.countries import ISO_3166_ALPHA2
+
+                if (not isinstance(override, str) or override not in ISO_3166_ALPHA2
+                        or override != _normalize_registration_country(retry_snapshot.get("proxy_country"))):
+                    raise ValueError("重跑代理国家覆盖与本轮线路配置不一致")
         result = _submit_registration_account_setup(
             current, account, registration_options_for_job(current),
             debug_enabled=bool(current.get("debug_enabled")),
@@ -3135,8 +3198,7 @@ def submit_registration(
         if selected_driver is not None:
             _apply_registration_driver_snapshot(registration_snapshot, selected_driver)
         require_registration_deployment(registration_snapshot)
-        get_executor(max_workers=workers)
-        effective_workers = get_executor_workers()
+        effective_workers = configure_submission_workers(workers)
         batch_id = f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
         jobs = []
         for index in range(count):
@@ -4360,7 +4422,7 @@ def retry_job(
             )
         if action == "codex":
             db.update_account_codex_status(email, "retrying", None)
-        get_executor(max_workers=workers)
+        configure_submission_workers(workers)
         _enqueue_job(int(job["id"]), account_task_id=account_task_id)
     except Exception as exc:
         if reserved_account_action:

@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
+const {createReadFixture,row,list,deferred} = require('./read_owner_fixture.cjs');
 
 const common = fs.readFileSync(path.join(__dirname, '../../webui/static/js/shared/common.js'), 'utf8');
 const accounts = require('../frontend_script_sources.cjs').readAccountScripts();
@@ -38,7 +39,7 @@ function harness() {
   const labelsStart = common.indexOf('const LIST_FACET_LABELS =');
   vm.runInContext(common.slice(labelsStart, common.indexOf('\n};', labelsStart) + 3), view);
   vm.runInContext(common.slice(common.indexOf('function facetLabel('), common.indexOf('// ---------- 分页状态 ----------')), view);
-  vm.runInContext([functionSource(common, 'columnFilterDisplayValue'), functionSource(accounts, 'getAccountsQuery'), functionSource(accounts, 'accountListQueryParams'), functionSource(accounts, 'accountRegistrationDriverLabel')].join('\n'), view);
+  vm.runInContext([functionSource(common, 'columnFilterDisplayValue'), functionSource(accounts, 'accountRegistrationDriverLabel')].join('\n'), view);
   return {view, controls};
 }
 
@@ -84,34 +85,11 @@ test('账号联动统计保留零匹配的已选项，恢复匹配后更新数�
   assert.deepEqual(control.options.map(option => option.textContent), ['全部', 'Free · 3', 'Plus · 2']);
 });
 
-test('账号组合筛选零结果时保留条件，不因同步选项重新加载', async () => {
-  const {view, controls} = harness();
-  for (const [id, value] of [['accountSourceFilterV2', 'outlook'], ['accountPlanFilterV2', 'plus']]) {
-    const control = select();
-    controls.set(id, control);
-    view.syncFacetSelect(id, [{value, count: 1}]);
-    view.setColumnFilterValue(control, value);
-  }
-  const body = {innerHTML: ''};
-  let requests = 0;
-  let renders = 0;
-  Object.assign(view, {
-    $: () => body, accountsLoading: false, accountsReloadQueued: false, accountsRenderedQuery: '',
-    PAGERS: {accounts: {page: 1, size: 20}},
-    api: async () => { requests += 1; return {items: [], total: 0, facets: {source: [], plan: []}}; },
-    setListBusy() {}, showAccountSearchError() {}, renderAccountSearchTerms() {},
-    renderAccounts() { renders += 1; }, markViewReady() {},
-    showToast(message) { throw Error(message); }, renderTableStateRow: () => '',
-  });
-  vm.runInContext(functionSource(accounts, 'showAccountsLoadingState'), view);
-  vm.runInContext(`async ${functionSource(accounts, 'loadAccounts')}`, view);
-  const query = view.accountListQueryParams().toString();
-  await view.loadAccounts();
-  await new Promise(resolve => setImmediate(resolve));
-  assert.equal(view.accountListQueryParams().toString(), query);
-  assert.equal(view.ACCOUNTS_TOTAL, 0);
-  assert.equal(requests, 1);
-  assert.equal(renders, 1);
+test('账号组合筛选零结果时保留条件，不因同步选项重新加载', async t => {
+  const h=createReadFixture(t,{handlers:{list:async()=>list([],{facets:{source:[],plan:[]}})}});await h.ready;h.requests.length=0;
+  h.owner.updateQuery({plan:['plus'],filters:{source:['outlook']}});await h.settle();
+  assert.equal(h.params().get('plan'),'plus');assert.equal(h.params().get('source'),'outlook');assert.equal(h.owner.total.value,0);assert.equal(h.requests.length,1);
+  assert.deepEqual(h.plain(h.owner.facets.value.plan),[{value:'plus',count:0}]);assert.deepEqual(h.plain(h.owner.facets.value.source),[{value:'outlook',count:0}]);
 });
 
 test('全部清除所有选项，条件标签回显全部所选值', () => {
@@ -127,22 +105,11 @@ test('全部清除所有选项，条件标签回显全部所选值', () => {
   assert.equal(control.selectedOptions[0].value, '');
 });
 
-test('列表与轮询共用的查询参数包含每列全部选中值和分页条件', () => {
-  const {view, controls} = harness();
-  for (const [id, values] of [['accountPlanFilterV2', ['free', 'unqueried']], ['accountSourceFilterV2', ['outlook', 'icloud_hide']], ['accountRegistrationDriverFilterV2', ['roxy', 'protocol_oss']], ['accountCodexFilterV2', ['success', 'failed']]]) {
-    const control = select();
-    controls.set(id, control);
-    view.syncFacetSelect(id, values.map(value => ({value, count: 1})));
-    view.setColumnFilterValue(control, values.join(','));
-  }
-  controls.set('qAccountsV2', {value: 'example.test'});
-  const params = view.accountListQueryParams();
-  assert.equal(params.get('plan'), 'free,unqueried');
-  assert.equal(params.get('source'), 'icloud_hide,outlook');
-  assert.equal(params.get('registration_driver'), 'protocol_oss,roxy');
-  assert.equal(params.get('codex'), 'failed,success');
-  assert.equal(params.get('email'), 'example.test');
-  assert.equal(params.get('page'), '2');
+test('列表与轮询共用的查询参数包含每列全部选中值和分页条件', async t => {
+  const h=createReadFixture(t,{handlers:{list:async()=>list([row()],{total:60})}});await h.ready;
+  h.owner.updateQuery({plan:['unqueried','free'],filters:{source:['outlook','icloud_hide'],registration_driver:['roxy','protocol_oss'],codex:['success','failed'],email:'example.test'}});await h.settle();h.owner.setPage(2);await h.settle();
+  const params=h.params();assert.equal(params.get('plan'),'free,unqueried');assert.equal(params.get('source'),'icloud_hide,outlook');assert.equal(params.get('registration_driver'),'protocol_oss,roxy');assert.equal(params.get('codex'),'failed,success');assert.equal(params.get('email'),'example.test');assert.equal(params.get('page'),'2');
+  await h.owner.pollStatuses();assert.deepEqual(h.statusRequests[0].spec,h.requests.at(-1).spec);assert.equal(h.statusRequests[0].page,2);
 });
 
 test('注册驱动选项与显示名一致，包含未记录，多选回显且同步后保留条件', () => {
@@ -159,40 +126,13 @@ test('注册驱动选项与显示名一致，包含未记录，多选回显且�
   assert.equal(view.columnFilterValue(control), 'cloakbrowser,protocol_oss,unknown');
 });
 
-test('切换注册驱动筛选后，接口返回前不继续展示上一次的行', async () => {
-  const {view} = harness();
-  const body = {innerHTML: '<tr><td>proto-sso</td></tr>'};
-  let resolveApi;
-  view.$ = () => body;
-  view.accountListQueryParams = () => new URLSearchParams('registration_driver=unknown');
-  view.PAGERS = {accounts: {page: 1, size: 20}};
-  view.accountsLoading = false;
-  view.accountsReloadQueued = false;
-  view.accountsRenderedQuery = 'registration_driver=protocol_oss_2';
-  view.api = () => new Promise(resolve => { resolveApi = resolve; });
-  view.setListBusy = () => {};
-  view.showAccountSearchError = () => {};
-  view.renderAccountSearchTerms = () => {};
-  view.syncFacetSelect = () => {};
-  view.renderAccounts = () => {};
-  view.markViewReady = () => {};
-  view.renderTableStateRow = (_columns, title) => title;
-  vm.runInContext(functionSource(accounts, 'showAccountsLoadingState'), view);
-  vm.runInContext(`async ${functionSource(accounts, 'loadAccounts')}`, view);
-
-  const pending = view.loadAccounts();
-  const bodyWhileLoading = body.innerHTML;
-  resolveApi({items: [], total: 0, facets: {}});
-  await pending;
-
-  assert.equal(bodyWhileLoading, '正在加载筛选结果…');
-
-  body.innerHTML = '<tr><td>未记录结果</td></tr>';
-  view.api = () => Promise.resolve({items: [], total: 0, facets: {}});
-  const refresh = view.loadAccounts();
-  const bodyWhileRefreshing = body.innerHTML;
-  await refresh;
-  assert.equal(bodyWhileRefreshing, '<tr><td>未记录结果</td></tr>');
+test('切换注册驱动筛选后先显示加载行，同条件刷新保留当前行', async t => {
+  const h=createReadFixture(t,{mounted:true,handlers:{list:async()=>list([row(1,{registration_driver:'protocol_oss_2'})])}});await h.ready;
+  const pending=deferred();h.behavior.list=()=>pending.promise;h.owner.updateFilters({registration_driver:['unknown']});await h.settle();
+  assert.equal(h.wrapper.get('table').attributes('data-stale'),'true');assert.equal(h.wrapper.find('[data-account-row]').exists(),false);assert.match(h.wrapper.get('.ac-empty').text(),/加载/);
+  pending.resolve(list([row(2,{registration_driver:'unknown'})]));await h.settle();assert.equal(h.wrapper.get('[data-account-row]').attributes('data-account-row'),'2');
+  const same=deferred();h.behavior.list=()=>same.promise;const refresh=h.owner.refresh();await h.settle();assert.equal(h.wrapper.get('[data-account-row]').attributes('data-account-row'),'2');assert.equal(h.wrapper.get('table').attributes('data-stale'),undefined);
+  same.resolve(list([row(2)]));await refresh;
 });
 
 test('套餐为空时与筛选统一显示未查询，有旧套餐时沿用旧值', () => {

@@ -3,65 +3,46 @@ const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
-
-const root = path.join(__dirname, '../..');
-const configSource = fs.readFileSync(path.join(root, 'webui/static/js/pages/config/page.js'), 'utf8');
-const commonSource = fs.readFileSync(path.join(root, 'webui/static/js/shared/common.js'), 'utf8');
-
-function configContext(fields = []) {
-  const context = vm.createContext({
-    CONFIG: fields, document: {addEventListener() {}, querySelectorAll: () => []},
-    window: {addEventListener() {}}, $: () => ({addEventListener() {}}),
-    esc: String, attrEsc: String, isPlaceholderEmpty: value => value == null || value === '',
-  });
-  vm.runInContext(configSource, context);
-  return context;
-}
+const {field, createConfigView, cleanup, harness, navigation} = require('./vue_fixture.cjs');
+const commonSource = fs.readFileSync(path.join(__dirname, '../../webui/static/js/shared/common.js'), 'utf8');
+test.afterEach(cleanup);
 
 test('配置选项保留禁用原因并呈现不可选的浏览器驱动', () => {
-  const field = {key: 'REGISTRATION_DRIVER', label: '注册驱动', type: 'str', value: 'protocol_oss_2', options: [
-    {value: 'protocol_oss_2', label: '协议 2'},
-    {value: 'roxy', label: 'Roxy', disabled: true, reason: '当前部署未提供浏览器'},
-  ]};
-  const context = configContext([field]);
-  const options = context.configSchemaOptions(field);
-  assert.equal(options[1].disabled, true);
-  assert.equal(options[1].reason, '当前部署未提供浏览器');
-  const html = context.renderConfigControlMarkupV2(field);
-  assert.match(html, /<option value="roxy"[^>]*disabled[^>]*>Roxy/);
-  assert.match(html, /当前部署未提供浏览器/);
-  assert.match(html, /<option value="protocol_oss_2" selected>协议 2<\/option>/);
-  assert.doesNotMatch(html, /<select[^>]* disabled/);
+  const f = field('REGISTRATION_DRIVER', '注册主链路', {value: 'protocol_oss_2', options: [
+    {value: 'protocol_oss_2', label: '协议 2'}, {value: 'roxy', label: 'Roxy', disabled: true, reason: '当前部署未提供浏览器'},
+  ]});
+  const view = createConfigView([f]);
+  assert.equal(navigation.schemaOptions(f)[1].disabled, true);
+  const select = view.control(f.key);
+  assert.equal(select.element.value, 'protocol_oss_2');
+  assert.equal(select.element.disabled, false);
+  assert.equal(select.get('option[value="roxy"]').element.disabled, true);
+  assert.match(select.text(), /当前部署未提供浏览器/);
 });
 
-test('纯浏览器配置置灰并显示原因，历史开启的兜底仍可关闭', () => {
-  const context = configContext();
-  for (const field of [
-    {key: 'ROXY_API_BASE', type: 'str', value: 'http://127.0.0.1:50100', readonly: true},
-    {key: 'ROXY_OPEN_HEADLESS', type: 'bool', value: false, readonly: true},
-    {key: 'LIVE_CHECK_ROXY_FALLBACK_ENABLED', type: 'bool', value: false, disable_enable: true},
-  ]) {
-    const html = context.renderConfigControlMarkupV2({...field, label: '浏览器配置', reason: '当前部署未提供浏览器'});
-    assert.match(html, /<fieldset[^>]*disabled/);
-    assert.match(html, /当前部署未提供浏览器/);
+test('纯浏览器配置置灰并显示原因，历史开启的兜底仍可关闭', async () => {
+  const fields = [field('ROXY_API_BASE', 'RoxyBrowser', {readonly: true}), field('ROXY_OPEN_HEADLESS', 'RoxyBrowser', {type: 'bool', value: false, readonly: true}), field('LIVE_CHECK_ROXY_FALLBACK_ENABLED', '刷新 AT', {type: 'bool', value: true, disable_enable: true})].map(f => ({...f, reason: '当前部署未提供浏览器'}));
+  const view = createConfigView(fields);
+  for (const key of ['ROXY_API_BASE', 'ROXY_OPEN_HEADLESS']) {
+    const control = view.mountField(key);
+    assert.equal(control.get('fieldset').element.disabled, true);
+    assert.match(control.text(), /当前部署未提供浏览器/);
   }
-  const enabled = context.renderConfigControlMarkupV2({
-    key: 'LIVE_CHECK_ROXY_FALLBACK_ENABLED', type: 'bool', value: true, disable_enable: true, reason: '当前部署未提供浏览器',
-  });
-  assert.doesNotMatch(enabled, /<fieldset[^>]*disabled/);
-  assert.match(enabled, /当前部署未提供浏览器/);
+  const fallback = view.mountField('LIVE_CHECK_ROXY_FALLBACK_ENABLED');
+  assert.equal(fallback.get('fieldset').element.disabled, false);
+  await fallback.get('input').setValue(false);
+  assert.equal(view.owner.readField('LIVE_CHECK_ROXY_FALLBACK_ENABLED'), false);
+  assert.equal(fallback.get('fieldset').element.disabled, true);
 });
 
 test('关闭普通浏览器查活 gate 时仍显示部署禁用选项及原因', () => {
-  const context = configContext([
-    {key: 'ACCOUNT_LIVE_CHECK_DRIVER', options: [
-      {value: 'protocol_current', label: '协议'},
-      {value: 'browser_roxy', label: 'Roxy', disabled: true, reason: '当前部署未提供浏览器'},
-    ]},
-    {key: 'ACCOUNT_LIVE_CHECK_BROWSER_ENABLED', value: false},
-  ]);
-  assert.equal(context.liveCheckDriverChoices().length, 2);
-  assert.equal(context.liveCheckDriverChoices()[1].disabled, true);
+  const view = createConfigView([field('ACCOUNT_LIVE_CHECK_DRIVER', '查活', {value: 'protocol_current', options: [
+    {value: 'protocol_current', label: '协议'}, {value: 'browser_roxy', label: 'Roxy', disabled: true, reason: '当前部署未提供浏览器'},
+  ]}), field('ACCOUNT_LIVE_CHECK_BROWSER_ENABLED', '查活', {type: 'bool', value: false})]);
+  const select = view.control('ACCOUNT_LIVE_CHECK_DRIVER');
+  assert.equal(select.findAll('option').length, 2);
+  assert.equal(select.get('option[value="browser_roxy"]').element.disabled, true);
+  assert.match(select.text(), /当前部署未提供浏览器/);
 });
 
 test('查活与刷新 AT 独立置灰，浏览器动作不会误禁协议 2FA 或补全', () => {

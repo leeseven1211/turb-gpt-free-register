@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 import time
 import tempfile
+from contextlib import ExitStack
 from pathlib import Path
 from types import MappingProxyType
 from unittest.mock import patch
@@ -11,9 +12,10 @@ from core import account_task_store, db
 from core.storage import records as record_store
 from core.operations import run_log as task_run_log
 from core.operations.runtime import OperationAccountDeactivated
-from core.operations import task_gateway
+from core.operations import reconciliation, task_gateway
 from core.storage.operations import store as operation
 from tests.support_pg import PostgresTestCase
+from tests.support_settlement import install_native_settlement_fixture
 
 
 class _ConfigSnapshot:
@@ -30,33 +32,40 @@ class _ConfigSnapshot:
 
 class DurableOperationGatewayPhase2Tests(PostgresTestCase):
     def setUp(self):
+        self.resource_patches = ExitStack()
+        self.addCleanup(self._close_test_resources)
         self.task_log_tempdir = tempfile.TemporaryDirectory()
+        self.resource_patches.callback(self.task_log_tempdir.cleanup)
         self.task_log_root_patch = patch.object(
             task_run_log, "_LOG_ROOT", Path(self.task_log_tempdir.name),
         )
         self.task_log_tasks_patch = patch.object(
             task_run_log, "_TASK_LOG_ROOT", Path(self.task_log_tempdir.name) / "tasks",
         )
-        self.task_log_root_patch.start()
-        self.task_log_tasks_patch.start()
+        self.resource_patches.enter_context(self.task_log_root_patch)
+        self.resource_patches.enter_context(self.task_log_tasks_patch)
         self.schema_patch = patch.object(account_task_store, "_SCHEMA", self.schema)
         self.ready_patch = patch.object(account_task_store, "_READY_KEY", "")
-        self.schema_patch.start()
-        self.ready_patch.start()
+        self.resource_patches.enter_context(self.schema_patch)
+        self.resource_patches.enter_context(self.ready_patch)
         account_task_store.init()
         operation.reset_ready()
         operation.init()
         self.handler_types: set[str] = set()
+        self.settlement_fixture = install_native_settlement_fixture(self)
 
     def tearDown(self):
+        self.settlement_fixture.close()
         for task_type in self.handler_types:
             task_gateway.unregister_operation_handler(task_type)
         task_gateway.stop_dispatcher()
-        self.ready_patch.stop()
-        self.schema_patch.stop()
-        self.task_log_tasks_patch.stop()
-        self.task_log_root_patch.stop()
-        self.task_log_tempdir.cleanup()
+        self._close_test_resources()
+
+    def _close_test_resources(self):
+        fixture = getattr(self, "settlement_fixture", None)
+        if fixture is not None:
+            fixture.close()
+        self.resource_patches.close()
 
     def _register(self, task_type, handler, **kwargs):
         from core.operations.concurrency import register_admission_alias, resolve_admission_class, ConcurrencyPolicyError
@@ -225,6 +234,7 @@ class DurableOperationGatewayPhase2Tests(PostgresTestCase):
                 self.assertEqual("success", result["status"])
                 self.assertEqual("success", result["database_status"])
                 self.assertEqual("success", operation.get_run(submission["run_id"])["status"])
+                self.settlement_fixture.wait_for_run_released(submission["run_id"])
 
     def test_mapping_result_normalization_has_safe_optional_defaults(self):
         result = task_gateway._coerce_operation_result(
@@ -771,6 +781,7 @@ class DurableOperationGatewayPhase2Tests(PostgresTestCase):
                 retry = operation.retry_runtime_task(submitted["task_id"])
                 self.assertEqual(2, retry["run_no"])
                 self.assertEqual(2, len(operation.get_task(submitted["task_id"])["runs"]))
+                self.settlement_fixture.wait_for_run_released(submitted["run_id"])
 
     def test_direct_terminal_write_preserves_unknown_and_allows_a_new_run(self):
         account_id = self._runtime_account("direct-pending@example.test")
@@ -1069,17 +1080,17 @@ class DurableOperationGatewayPhase2Tests(PostgresTestCase):
         task_gateway._LAST_RUNTIME_RECOVERY_AT = 0.0
         try:
             with (
-                patch.object(task_gateway, "_operation") as operation_module,
-                patch.object(task_gateway, "_reconcile_recovered_projections") as reconcile,
+                patch.object(reconciliation, "operation_task_store") as operation_module,
+                patch.object(reconciliation, "reconcile_recovered_projections") as reconcile,
                 patch("core.extract_link.service.resume_known_remote_jobs") as resume_extract,
             ):
-                operation_module.return_value.recover_interrupted_runtime_runs.return_value = 1
+                operation_module.recover_interrupted_runtime_runs.return_value = 1
                 self.assertEqual(1, task_gateway._recover_stale_runtime_runs_if_due(now=60.0))
                 self.assertEqual(0, task_gateway._recover_stale_runtime_runs_if_due(now=90.0))
                 self.assertEqual(1, task_gateway._recover_stale_runtime_runs_if_due(now=121.0))
                 self.assertEqual(2, reconcile.call_count)
                 self.assertEqual(2, resume_extract.call_count)
-                operation_module.return_value.recover_interrupted_runtime_runs.return_value = 0
+                operation_module.recover_interrupted_runtime_runs.return_value = 0
                 self.assertEqual(0, task_gateway._recover_stale_runtime_runs_if_due(now=182.0))
                 self.assertEqual(3, resume_extract.call_count)
                 self.assertTrue(all(call.kwargs == {"continuous_only": True} for call in resume_extract.call_args_list))

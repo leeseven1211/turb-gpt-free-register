@@ -34,7 +34,13 @@ function createVueHarness() {
     if (filename.endsWith('.vue')) {
       const {descriptor, errors} = parse(source, {filename});
       if (errors.length) throw errors[0];
-      source = compileScript(descriptor, {id: filename, inlineTemplate: true}).content;
+      source = compileScript(descriptor, {
+        id: filename, inlineTemplate: true,
+        fs: {
+          fileExists: candidate => fs.existsSync(candidate),
+          readFile: candidate => fs.readFileSync(candidate, 'utf8'),
+        },
+      }).content;
     }
     const output = ts.transpileModule(source, {fileName: filename, reportDiagnostics: true,
       compilerOptions: {target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS, esModuleInterop: true, resolveJsonModule: true}});

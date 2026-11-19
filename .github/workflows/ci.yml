@@ -53,29 +53,33 @@ jobs:
           python tools/test_isolated.py --profile all --
           tests/tools/test_release_checks.py tests/webui/test_page_assets.py
           tests/accounts/test_account_grouped_facets.py -q
+      - name: Validate task query contracts
+        run: python tools/test_isolated.py --profile all -- tests/operations/test_task_center_queries.py tests/architecture/test_task_center_boundaries.py -q
 
   frontend:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - run: npm --prefix frontend ci
+      - name: Verify registered error labels
+        run: python3 -m unittest tests.operations.test_task_error_labels
       - run: npm --prefix frontend run check
-      - run: >-
-          node --test tests/webui/test_dashboard_vue_bridge.cjs
-          tests/webui/test_dashboard_vue_contracts.cjs tests/email/test_email_supply_frontend.cjs
-          tests/operations/test_task_dialog_lifecycle.cjs tests/proxy/test_proxy_traffic_frontend.cjs
-          tests/extract_link/test_extract_stats_frontend.cjs tests/registration/test_registration_refresh_frontend.cjs
-          tests/email/test_email_derivation_frontend.cjs tests/webui/test_offset_pager.cjs tests/accounts/test_account_row_actions_frontend.cjs
-          tests/accounts/test_account_promotions_frontend.cjs tests/accounts/test_account_script_initialization.cjs
+      - name: Verify legacy frontend behavior and page bridges
+        run: node --test tests/*/test_*.cjs
       - run: npm --prefix frontend run build
       - name: Verify checked-in page assets
         run: |
-          pages=(webui/static/dashboard/ webui/static/proxy/ webui/static/extractStats/ webui/static/emailHistory/)
+          pages=(webui/static/dashboard/ webui/static/proxy/ webui/static/extractStats/ webui/static/emailHistory/ webui/static/bulk/ webui/static/task-center/)
           git diff --exit-code -- "${pages[@]}"
           test -z "$(git ls-files --others --exclude-standard -- "${pages[@]}")"
+      - name: Verify generated assets match source
+        run: git diff --exit-code -- frontend/src/api/schema.d.ts frontend/src/api/codex-schema.d.ts frontend/src/generated/task-error-labels.json

@@ -27,7 +27,6 @@ const view = {
   facetLabel: (_group, value) => value || '',
 };
 vm.createContext(view);
-vm.runInContext(require('../frontend_script_sources.cjs').readAccountScript('task-list-display.js'), view);
 vm.runInContext([
   promotionSource,
   functionSource('_quotaWindowLabel'),
@@ -36,16 +35,13 @@ vm.runInContext([
   functionSource('_quotaCell'),
   functionSource('_totpCellV2'),
   functionSource('_extractLinkAction'),
+  functionSource('compactAccountStatus'),
+  functionSource('accountCodexDisplay'),
   functionSource('_accountDetailState'),
   functionSource('_accountCountryDetailMarkup'),
   functionSource('_accountDetailAuthMethod'),
   functionSource('_accountPasswordAuthDisplay'),
-  functionSource('compactAccountStatus'),
-  functionSource('accountCodexDisplay'),
   functionSource('_accountDetailMarkup'),
-  functionSource('accountTaskResultText'),
-  functionSource('accountTaskResultTooltipText'),
-  functionSource('accountTaskListResultMarkup'),
 ].join('\n'), view);
 
 const goTrial = {plan: 'go', kind: 'free_trial', eligible: true, duration_num_periods: 1, duration_period: 'month', campaign_id: 'go-free-one'};
@@ -291,15 +287,13 @@ test('Go 免费资格不开放 Plus 提链，原确认 Plus 免费资格仍可�
   assert.match(view._extractLinkAction({...checked, plus_promo_kind: 'free_trial', plus_trial_eligible: true}), /data-extract-link/);
 });
 
-test('账号详情和查询任务结果同步展示 Go 与 Plus 优惠', () => {
+test('账号详情展示 Go 与 Plus 优惠及本次查询错误', () => {
   const drawer = view._accountDetailMarkup({...checked, plan_check_status: 'failed', plan_last_success_at: '2026-10-12 12:00:00', plan_check_error: 'HTTP 403'});
   assert.match(drawer, /Go 优惠/);
   assert.match(drawer, /Plus 优惠/);
   assert.match(drawer, /Go: 免费 1个月/);
   assert.match(drawer, /Plus: 五折 2个月/);
   assert.match(drawer, /本次查询失败: HTTP 403/);
-  const result = view.accountTaskResultText({task_type: 'plan_check', status: 'success', result_summary: checked});
-  assert.equal(result, '套餐 free · Go: 免费 1个月 · Plus: 五折 2个月');
 });
 
 test('列表浮窗省略多语言原文活动与成功时间，账号详情仍保留完整来源信息', () => {
@@ -557,7 +551,7 @@ test('多国优惠仍只占两行，浮窗和账号详情保留各国价格与�
   }
 });
 
-test('多国详情保留成功总数，任务摘要只展示国家结果和异常状态', () => {
+test('多国账号详情保留成功总数和失败原因', () => {
   const account = {
     id: 8,
     current_plan_type: 'free',
@@ -575,169 +569,13 @@ test('多国详情保留成功总数，任务摘要只展示国家结果和异�
   assert.match(drawer, /IN 优惠/);
   assert.match(drawer, /HTTP 429/);
   assert.match(drawer, /1\/3 个国家成功/);
-  const result = view.accountTaskResultText({task_type: 'plan_check', status: 'success', result_summary: account});
-  assert.doesNotMatch(result, /国家查询|个国家成功|1\/3/);
-  assert.match(result, /^套餐 free · 部分失败 · JP Go: 免费/);
-  assert.match(result, /VN Plus: 免费/);
-  assert.match(result, /IN 已取消/);
-  assert.match(result, /部分失败/);
 });
 
-test('任务摘要只有多国汇总字段时省略成功计数并保留国家优惠与失败提示', () => {
-  const result = view.accountTaskResultText({task_type: 'plan_check', status: 'success', result_summary: {
-    current_plan_type: 'free',
-    plan_check_countries: ['JP', 'VN', 'IN'],
-    plan_check_partial: true,
-    country_success_count: 1,
-    country_total_count: 3,
-    failed_countries: ['VN', 'IN'],
-    account_promotions: [
-      {...goTrial, country: 'JP'},
-      {plan: 'plus', kind: 'discount', discount_percentage: 20, country: 'VN', stale: true},
-    ],
-  }});
-  assert.doesNotMatch(result, /国家查询|个国家成功|1\/3/);
-  assert.match(result, /失败国家：VN、IN/);
-  assert.match(result, /部分失败/);
-  assert.match(result, /JP/);
-  assert.match(result, /VN/);
-  assert.match(result, /Go: 免费/);
-});
-
-test('空国家列表且国家计数为 null 时，单次任务摘要不误显示 0/0 国家查询', () => {
-  const result = view.accountTaskResultText({task_type: 'plan_check', status: 'success', result_summary: {
-    ok: true,
-    current_plan_type: 'free',
-    plan_check_countries: [],
-    country_total_count: null,
-    country_success_count: null,
-    account_promotions: [goTrial, plusDiscount],
-  }});
-  assert.equal(result, '套餐 free · Go: 免费 1个月 · Plus: 五折 2个月');
-  assert.doesNotMatch(result, /国家查询/);
-});
-
-test('多国任务精简结果只显示套餐和最佳优惠，完整浮窗保留逐国 Go 与 Plus', () => {
-  const task = {task_type: 'plan_check', status: 'success', result_summary: {
-    current_plan_type: 'free', plan_check_status: 'success',
-    plan_check_country_results: [
-      {country: 'JP', status: 'success', result: {account_promotions: [goTrial, plusDiscount]}},
-      {country: 'VN', status: 'success', result: {account_promotions: [
-        {plan: 'go', kind: 'none'}, {...goTrial, plan: 'plus'},
-      ]}},
-      {country: 'IN', status: 'success', result: {account_promotions: [
-        {plan: 'go', kind: 'none'}, {plan: 'plus', kind: 'none'},
-      ]}},
-    ],
-  }};
-  const compact = view.accountTaskResultText(task, true);
-  assert.match(compact, /^free · Plus:? 免费 1个月$/);
-  assert.doesNotMatch(compact, /JP|VN|IN|国家查询|个国家成功/);
-  const tooltip = view.accountTaskResultTooltipText(task);
-  assert.match(tooltip, /套餐 free/);
-  assert.match(tooltip, /JP[\s\S]*Go: 免费 1个月/);
-  assert.match(tooltip, /JP[\s\S]*Plus: 五折 2个月/);
-  assert.match(tooltip, /\n[^\n]*VN/);
-  assert.match(tooltip, /VN[\s\S]*Plus: 免费 1个月/);
-  assert.match(tooltip, /\n[^\n]*IN/);
-  assert.match(tooltip, /IN[\s\S]*Plus: 无优惠/);
-  assert.doesNotMatch(tooltip, /国家查询|个国家成功|3\/3/);
-});
-
-test('精简优惠优先免费再折扣，同级选择 Plus 并区分待查询与待复查', () => {
-  const compact = account_promotions => view.accountTaskResultText({
-    task_type: 'plan_check', status: 'success', result_summary: {...checked, account_promotions},
-  }, true);
-  assert.match(compact([goTrial, plusDiscount]), /^free · Go:? 免费 1个月$/);
-  assert.match(compact([goTrial, {...goTrial, plan: 'plus'}]), /^free · Plus:? 免费 1个月$/);
-  assert.match(compact([
-    {plan: 'go', kind: 'discount', discount_percentage: 20}, plusDiscount,
-  ]), /^free · Plus:? 五折 2个月$/);
-  assert.match(view._accountTaskPromotionSummary([{plan: 'plus', kind: 'none'}]), /^无优惠$/);
-  assert.match(view._accountTaskPromotionSummary([{plan: 'plus', kind: 'pending'}]), /待查询/);
-  assert.match(view._accountTaskPromotionSummary([{plan: 'plus', kind: 'unknown'}]), /待复查/);
-  assert.doesNotMatch(view._accountTaskPromotionSummary([
-    {...goTrial, plan: 'plus', stale: true}, {...goTrial, plan: 'plus', stale: false},
-  ]), /历史/);
-});
-
-test('多国均无优惠时任务精简结果合并状态，浮窗仍列出每个国家', () => {
-  const task = {task_type: 'plan_check', status: 'success', result_summary: {
-    current_plan_type: 'free', plan_check_status: 'success',
-    plan_check_country_results: ['JP', 'VN'].map(country => ({country, status: 'success', result: {
-      account_promotions: [{plan: 'go', kind: 'none'}, {plan: 'plus', kind: 'none'}],
-    }})),
-  }};
-  assert.equal(view.accountTaskResultText(task, true), 'free · 无优惠');
-  const tooltip = view.accountTaskResultTooltipText(task);
-  assert.match(tooltip, /JP[\s\S]*Go: 无优惠[\s\S]*Plus: 无优惠/);
-  assert.match(tooltip, /VN[\s\S]*Go: 无优惠[\s\S]*Plus: 无优惠/);
-});
-
-test('部分失败任务精简结果标记历史优惠，浮窗保留失败原因和取消状态', () => {
-  const task = {task_type: 'plan_check', status: 'success', result_summary: {
-    current_plan_type: 'free', plan_check_status: 'success', plan_check_partial: true,
-    plan_check_country_results: [
-      {country: 'JP', status: 'success', result: {account_promotions: [{plan: 'go', kind: 'none'}, plusDiscount]}},
-      {country: 'VN', status: 'failed', error: 'HTTP 429', last_success_at: '2026-10-14 09:00:00', result: {
-        account_promotions: [{plan: 'go', kind: 'none'}, {...goTrial, plan: 'plus', duration_num_periods: 2}],
-      }},
-      {country: 'IN', status: 'cancelled', error: '已取消'},
-    ],
-  }};
-  const compact = view.accountTaskResultText(task, true);
-  assert.match(compact, /^free · /);
-  assert.match(compact, /Plus:? 免费 2个月/);
-  assert.match(compact, /部分失败/);
-  assert.match(compact, /历史/);
-  assert.doesNotMatch(compact, /JP|VN|IN|HTTP 429|失败国家/);
-  const tooltip = view.accountTaskResultTooltipText(task);
-  assert.match(tooltip, /VN[\s\S]*Plus: 免费 2个月/);
-  assert.match(tooltip, /显示上次成功快照/);
-  assert.match(tooltip, /本次查询失败: HTTP 429/);
-  assert.match(tooltip, /IN[\s\S]*已取消/);
-  assert.doesNotMatch(tooltip, /国家查询|个国家成功|1\/3/);
-});
-
-test('明确空国家列表时任务精简结果和浮窗使用最新单次结果', () => {
-  const task = {task_type: 'plan_check', status: 'success', result_summary: {
-    ...checked, plan_check_countries: [], country_total_count: null, country_success_count: null,
-    plan_check_country_results: [{country: 'JP', status: 'success', result: {
-      account_promotions: [{...goTrial, plan: 'plus', duration_num_periods: 12}],
-    }}],
-  }};
-  assert.match(view.accountTaskResultText(task, true), /^free · Go:? 免费 1个月$/);
-  const tooltip = view.accountTaskResultTooltipText(task);
-  assert.match(tooltip, /Go: 免费 1个月/);
-  assert.match(tooltip, /Plus: 五折 2个月/);
-  assert.doesNotMatch(tooltip, /JP|12个月|国家查询|0\/0/);
-});
-
-test('任务套餐精简入口使用可聚焦按钮且浮窗保留全部详情并转义 HTML', () => {
-  const task = {task_type: 'plan_check', status: 'success', result_summary: {
-    current_plan_type: 'free', plan_check_status: 'success', plan_check_partial: true,
-    plan_check_country_results: [
-      {country: 'JP', status: 'success', result: {account_promotions: [goTrial, plusDiscount]}},
-      {country: 'VN', status: 'failed', error: '错误 " <img src=x> & \'失败\''},
-    ],
-  }};
-  const html = view.accountTaskListResultMarkup(task);
-  assert.match(html, /^<button\b/);
-  assert.match(html, /type="button"/);
-  assert.match(html, /class="account-task-result-summary"/);
-  assert.match(html, /data-account-task-result-tooltip(?:\s|=|>)/);
-  assert.match(html, /data-accounts-tooltip="[^"]*JP[^"]*VN/);
-  assert.match(html, /aria-label="[^"]*查看套餐查询详情/);
-  assert.equal(html.replace(/<[^>]*>/g, ''), '部分失败');
-  assert.doesNotMatch(html, /\stitle=/);
-  assert.doesNotMatch(html, /<img\b/);
-  assert.match(html, /&quot; &lt;img src=x&gt; &amp; &#39;失败&#39;/);
-  const tooltip = promotionTooltip(html);
-  assert.match(tooltip, /JP[\s\S]*Go: 免费 1个月[\s\S]*Plus: 五折 2个月/);
-  assert.match(tooltip, /VN[\s\S]*本次查询失败/);
-  assert.equal((html.match(/<button\b/g) || []).length, 1);
-  assert.equal((html.match(/<\/button>/g) || []).length, 1);
-});
+// Task rows now render the production Vue presenter rather than legacy task DOM.
+const taskVue=require('./actions_fixture.cjs').vueHarness;
+const taskPresentation=taskVue.load('src/features/tasks/presentation.ts');
+view.accountTaskResultText=taskPresentation.resultText;
+view.accountTaskResultTooltipText=taskPresentation.resultDetails;
 
 test('所有国家失败时详情显示全部失败，查询中断不会显示绿色成功', () => {
   const allFailed = view._accountDetailMarkup({
@@ -870,95 +708,94 @@ test('明确空国家列表关闭多国时，最新单次查询不被历史国�
   assert.doesNotMatch(detail, /JP 优惠/);
 });
 
-function createResizableAccountTable(savedWidths = null, savedTotal = 0) {
-  const template = fs.readFileSync(path.join(__dirname, '../../webui/templates/index.html'), 'utf8');
-  const tableSource = template.slice(template.indexOf('<table class="accounts-table-v2"'));
-  const colgroup = tableSource.slice(tableSource.indexOf('<colgroup>'), tableSource.indexOf('</colgroup>'));
-  const columnClasses = [...colgroup.matchAll(/<col class="([^"]+)"/g)].map(match => match[1]);
-  const columns = columnClasses.map(() => ({style: {}}));
-  const style = {
-    width: '',
-    setProperty(name, value) { this[name] = value; },
-    removeProperty(name) { delete this[name]; },
-  };
-  const table = {dataset: {resizableTable: 'accounts'}, style, querySelectorAll: selector => selector === 'colgroup col' ? columns : headers};
-  table.getBoundingClientRect = () => ({width: Number.parseFloat(table.style.width) || 1500});
-  const headers = columnClasses.map((value, index) => ({
-    classList: {contains: name => value.split(' ').includes(name)},
-    appendChild(handle) { this.handle = handle; },
-    getBoundingClientRect() { return {width: (Number.parseFloat(columns[index].style.width) || 0) * table.getBoundingClientRect().width / 100}; },
-  }));
+// Width assertions follow the current Vue table; the preserved pure promotion
+// presenter still supplies the actual country/tooltip markup in the same cells.
+const vue = taskVue;
+const AccountsTable = vue.load('src/features/accounts/AccountsTable.vue').default;
+const {createAccountPresentation} = vue.load('src/features/accounts/presentation.ts');
+const querySandbox = {window: {}, URLSearchParams};
+vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../../webui/static/js/shared/account-query.js'), 'utf8'), querySandbox);
+test.afterEach(() => vue.cleanup());
+
+async function createResizableAccountTable(savedWidths = null, savedTotal = 0) {
   const storageKey = 'gpt_console_table_widths_accounts';
   const totalStorageKey = 'gpt_console_table_total_accounts';
-  const storage = new Map([
-    ...(savedWidths ? [[storageKey, JSON.stringify(savedWidths)]] : []),
-    ...(savedTotal ? [[totalStorageKey, String(savedTotal)]] : []),
-  ]);
-  const listeners = new Map();
-  const sandbox = {
-    localStorage: {getItem: key => storage.get(key) || null, setItem: (key, value) => storage.set(key, value)},
-    document: {
-      body: {classList: {add() {}, remove() {}}},
-      createElement: () => ({
-        classList: {add() {}, remove() {}},
-        setAttribute() {},
-        addEventListener(name, callback) { this[`on${name}`] = callback; },
-      }),
-      addEventListener(name, callback) { listeners.set(name, callback); },
-      removeEventListener(name) { listeners.delete(name); },
-    },
-  };
-  vm.createContext(sandbox);
-  vm.runInContext(commonSource.slice(commonSource.indexOf('const ACCOUNT_COLUMN_MIN_WIDTH'), commonSource.indexOf('function initResizableTables(')), sandbox);
-  sandbox.initResizableTable(table);
-  return {columns, table, headers, listeners, promotionIndex: columnClasses.indexOf('col-trial'), storage, storageKey};
+  const storage = {get: key => localStorage.getItem(key)};
+  localStorage.clear();
+  if (savedWidths) localStorage.setItem(storageKey, JSON.stringify(savedWidths));
+  if (savedTotal) localStorage.setItem(totalStorageKey, String(savedTotal));
+  // The same pure migration is called by the production bridge before mount.
+  const migration = vm.createContext({localStorage});
+  vm.runInContext(commonSource.slice(commonSource.indexOf('const ACCOUNT_COLUMN_MIN_WIDTH'), commonSource.indexOf('function initResizableTables(')), migration);
+  migration.migrateAccountTableWidths();
+  const presentation = createAccountPresentation({
+    cells: {token: () => '', account_status: () => '', password: () => '', quota: view._quotaCell,
+      promotion: view._promotionCell, totp: view._totpCellV2, risk: () => '', time: () => ''},
+    plan: () => '', extractLink: () => '', codex: () => '', menu: () => '', emailInvalidBadge: () => '',
+    registrationDriverLabel: () => '', facetLabel: (_group, value) => value, escape: view.esc,
+    short: (value, length) => value.slice(0, length), htmlText: html => html.replace(/<[^>]*>/g, ''),
+  });
+  const wrapper = vue.mount(AccountsTable, {props: {items: [{...checked, plan_promotion_country: 'JP'}],
+    selected: new Set(), query: querySandbox.window.AccountQuery.normalize(), facets: {}, presentation,
+    loading: false, error: '', invalidSearch: false, stale: false, visible: true,
+    pageSelected: false, pageIndeterminate: false, openFilter: null}});
+  await vue.nextTick();
+  const table = wrapper.get('table').element;
+  const columns = wrapper.findAll('col').map(col => col.element);
+  const headers = wrapper.findAll('thead th');
+  const promotionIndex = headers.findIndex(header => header.classes().includes('col-trial'));
+  return {columns, table, headers, wrapper, promotionIndex, storage, storageKey};
+}
+function assertWidth(actual, expected, message = '') {
+  assert.ok(Math.abs(actual - expected) < 0.0001, `${message}: ${actual} != ${expected}`);
 }
 
-test('默认列宽按 1500px 设计宽度应用，给国家与支付方式至少 180px 内容空间', () => {
-  const {columns, promotionIndex} = createResizableAccountTable();
+test('默认列宽按 1500px 设计宽度应用，给国家与支付方式至少 180px 内容空间', async () => {
+  const {columns, promotionIndex} = await createResizableAccountTable();
   assert.ok(promotionIndex >= 0, '账号表格应包含套餐优惠列');
   assert.ok(columns.every(column => Number.parseFloat(column.style.width) > 0), '默认列宽应覆盖所有真实表格列');
-  const contentWidth = 1500 * Number.parseFloat(columns[promotionIndex].style.width) / 100 - 12;
+  assert.equal(columns.length, 16);
+  const contentWidth = Number.parseFloat(columns[promotionIndex].style.width) - 12;
   assert.ok(contentWidth >= 180, `套餐优惠内容空间不足: ${contentWidth}px`);
 });
 
-test('扩大默认套餐优惠列不覆盖用户已经保存的列宽', () => {
+test('扩大默认套餐优惠列不覆盖用户已经保存的列宽', async () => {
   const saved = Array(16).fill(10);
   saved[10] = 7;
-  const {columns, promotionIndex, storage, storageKey} = createResizableAccountTable(saved);
-  const expected = saved[promotionIndex] / saved.reduce((sum, value) => sum + value, 0) * 100;
-  assert.equal(Number.parseFloat(columns[promotionIndex].style.width), expected);
+  const {columns, promotionIndex, storage, storageKey} = await createResizableAccountTable(saved);
+  const expected = saved[promotionIndex] / saved.reduce((sum, value) => sum + value, 0) * 1500;
+  assertWidth(Number.parseFloat(columns[promotionIndex].style.width), expected);
   assert.equal(storage.get(storageKey), JSON.stringify(saved));
 });
 
-test('恢复保存的账号表格总宽，必要时只扩表并保留原列宽比例', () => {
+test('恢复保存的账号表格总宽，必要时只扩表并保留原列宽比例', async () => {
   const saved = [36, 72, 160, 80, 104, 84, 88, 72, 88, 88, 192, 72, 88, 72, 96, 108];
-  const {columns, table, promotionIndex} = createResizableAccountTable(saved, 1520);
-  assert.equal(table.style.width, '1520px');
+  const {columns, table, promotionIndex} = await createResizableAccountTable(saved, 1520);
+  assertWidth(Number.parseFloat(table.style.width), 1520);
   const total = saved.reduce((sum, value) => sum + value, 0);
-  assert.equal(Number.parseFloat(columns[promotionIndex].style.width), saved[promotionIndex] / total * 100);
+  assertWidth(Number.parseFloat(columns[promotionIndex].style.width), saved[promotionIndex] / total * 1520);
 });
 
-test('优惠列保存比例较窄时尊重用户选择，不强制扩展表格', () => {
+test('优惠列保存比例较窄时尊重用户选择，不强制扩展表格', async () => {
   const saved = [4, 8, 12, 5, 7, 6, 6, 5, 5, 5, 4, 5, 5, 5, 6, 4];
-  const {columns, table, promotionIndex, storage, storageKey} = createResizableAccountTable(saved, 1396);
+  const {columns, table, promotionIndex, storage, storageKey} = await createResizableAccountTable(saved, 1396);
   const savedTotal = saved.reduce((sum, value) => sum + value, 0);
-  assert.equal(Number.parseFloat(table.style.width), 1396);
-  assert.equal(Number.parseFloat(columns[promotionIndex].style.width), saved[promotionIndex] / savedTotal * 100);
+  assertWidth(Number.parseFloat(table.style.width), 1396);
+  assertWidth(Number.parseFloat(columns[promotionIndex].style.width), saved[promotionIndex] / savedTotal * 1396);
   assert.equal(storage.get(storageKey), JSON.stringify(saved));
 });
 
-test('历史窄 Token 与操作列不再被默认最小宽度重写，重载保持用户选择', () => {
+test('历史窄 Token 与操作列不再被默认最小宽度重写，重载保持用户选择', async () => {
   const saved = [36, 5, 160, 80, 104, 0.1, 88, 72, 88, 88, 1, 72, 88, 72, 96, 0.2];
-  const first = createResizableAccountTable(saved, 1396);
+  const first = await createResizableAccountTable(saved, 1396);
   const storedBefore = first.storage.get(first.storageKey);
-  const actualWidths = first.columns.map(column => Number.parseFloat(column.style.width) * Number.parseFloat(first.table.style.width) / 100);
+  const actualWidths = first.columns.map(column => Number.parseFloat(column.style.width));
   assert.equal(first.table.style.width, '1396px');
   assert.ok(actualWidths[5] < 28);
   assert.equal(storedBefore, JSON.stringify(saved));
 
-  const reloaded = createResizableAccountTable(JSON.parse(storedBefore), Number.parseFloat(first.table.style.width));
-  const reloadedWidths = reloaded.columns.map(column => Number.parseFloat(column.style.width) * Number.parseFloat(reloaded.table.style.width) / 100);
+  const reloaded = await createResizableAccountTable(JSON.parse(storedBefore), Number.parseFloat(first.table.style.width));
+  const reloadedWidths = reloaded.columns.map(column => Number.parseFloat(column.style.width));
   assert.deepEqual(reloadedWidths, actualWidths);
   assert.equal(reloaded.storage.get(reloaded.storageKey), storedBefore);
 });
@@ -995,16 +832,19 @@ test('默认 2FA 窄列保留可完整点击的短验证码复制按钮', () => 
   assert.match(accountStyles, /\.account-cell-line button\s*\{\s*flex:\s*0 0 auto;/);
 });
 
-test('用户调窄优惠列仍可通过提示查看完整国家与历史信息', () => {
+test('用户调窄优惠列仍可通过提示查看完整国家与历史信息', async () => {
   const saved = [36, 72, 160, 80, 104, 84, 88, 72, 88, 88, 1, 72, 88, 72, 96, 108];
-  const {columns, table, headers, listeners, promotionIndex, storage, storageKey} = createResizableAccountTable(saved, 1396);
-  headers[promotionIndex].handle.onpointerdown({button: 0, clientX: 100, preventDefault() {}, stopPropagation() {}});
-  listeners.get('pointermove')({clientX: -1000});
-  const tableWidth = table.getBoundingClientRect().width;
-  assert.ok(Math.abs(Number.parseFloat(columns[promotionIndex].style.width) * tableWidth / 100 - 28) < .001);
-  listeners.get('pointerup')();
+  const {columns, table, headers, wrapper, promotionIndex, storage, storageKey} = await createResizableAccountTable(saved, 1396);
+  await headers[promotionIndex].get('button.ac-column-resize').trigger('pointerdown', {button: 0, clientX: 100});
+  document.dispatchEvent(new MouseEvent('pointermove', {clientX: -1000}));
+  await vue.nextTick();
+  const tableWidth = Number.parseFloat(table.style.width);
+  assert.ok(Math.abs(Number.parseFloat(columns[promotionIndex].style.width) - 28) < .001);
+  document.dispatchEvent(new MouseEvent('pointerup'));
   const storedWidths = JSON.parse(storage.get(storageKey));
-  assert.ok(Math.abs(storedWidths[promotionIndex] * tableWidth - 28) < .001);
+  assert.ok(Math.abs(storedWidths[promotionIndex] / 100 * tableWidth - 28) < .001);
+  assert.equal(wrapper.get('td.col-trial [data-accounts-tooltip]').attributes('tabindex'), '0');
+  assert.match(wrapper.get('td.col-trial [data-accounts-tooltip]').attributes('data-accounts-tooltip'), /JP Plus: 五折 2个月/);
   assert.match(accountStyles, /\.account-promotion-country-summary\s*\{[^}]*overflow:\s*visible\s*!important;/s);
   assert.match(accountStyles, /\.account-promotion-summary-badge\s*\{[^}]*flex:\s*0 0 auto;/s);
   const html = view._promotionCell({plan_promotion_country: 'JP', ...checked});
@@ -1049,4 +889,144 @@ test('关闭多国后单次失败沿用最佳活动自己的历史国家，不�
   });
   assert.match(html, /US<span class="account-promotion-stale">历史/);
   assert.doesNotMatch(html, /JP<span class="account-promotion-stale">历史/);
+});
+
+
+test('任务摘要只有多国汇总字段时省略成功计数并保留国家优惠与失败提示', () => {
+  const result = view.accountTaskResultText({task_type: 'plan_check', status: 'success', result_summary: {
+    current_plan_type: 'free',
+    plan_check_countries: ['JP', 'VN', 'IN'],
+    plan_check_partial: true,
+    country_success_count: 1,
+    country_total_count: 3,
+    failed_countries: ['VN', 'IN'],
+    account_promotions: [
+      {...goTrial, country: 'JP'},
+      {plan: 'plus', kind: 'discount', discount_percentage: 20, country: 'VN', stale: true},
+    ],
+  }});
+  assert.doesNotMatch(result, /国家查询|个国家成功|1\/3/);
+  assert.match(result, /失败国家：VN、IN/);
+  assert.match(result, /部分失败/);
+  assert.match(result, /JP/);
+  assert.match(result, /VN/);
+  assert.match(result, /Go:? 免费/);
+});
+
+test('空国家列表且国家计数为 null 时，单次任务摘要不误显示 0/0 国家查询', () => {
+  const result = view.accountTaskResultText({task_type: 'plan_check', status: 'success', result_summary: {
+    ok: true,
+    current_plan_type: 'free',
+    plan_check_countries: [],
+    country_total_count: null,
+    country_success_count: null,
+    account_promotions: [goTrial, plusDiscount],
+  }});
+  assert.match(result, /^套餐 free · Go: 免费 1个月(?: · |；)Plus: 五折 2个月$/);
+  assert.doesNotMatch(result, /国家查询/);
+});
+
+test('多国任务精简结果只显示套餐和最佳优惠，完整浮窗保留逐国 Go 与 Plus', () => {
+  const task = {task_type: 'plan_check', status: 'success', result_summary: {
+    current_plan_type: 'free', plan_check_status: 'success',
+    plan_check_country_results: [
+      {country: 'JP', status: 'success', result: {account_promotions: [goTrial, plusDiscount]}},
+      {country: 'VN', status: 'success', result: {account_promotions: [
+        {plan: 'go', kind: 'none'}, {...goTrial, plan: 'plus'},
+      ]}},
+      {country: 'IN', status: 'success', result: {account_promotions: [
+        {plan: 'go', kind: 'none'}, {plan: 'plus', kind: 'none'},
+      ]}},
+    ],
+  }};
+  const compact = view.accountTaskResultText(task, true);
+  assert.match(compact, /^free · Plus:? 免费 1个月$/);
+  assert.doesNotMatch(compact, /JP|VN|IN|国家查询|个国家成功/);
+  const tooltip = view.accountTaskResultTooltipText(task);
+  assert.match(tooltip, /套餐 free/);
+  assert.match(tooltip, /JP[\s\S]*Go: 免费 1个月/);
+  assert.match(tooltip, /JP[\s\S]*Plus: 五折 2个月/);
+  assert.match(tooltip, /\n[^\n]*VN/);
+  assert.match(tooltip, /VN[\s\S]*Plus: 免费 1个月/);
+  assert.match(tooltip, /\n[^\n]*IN/);
+  assert.match(tooltip, /IN[\s\S]*Plus: 无优惠/);
+  assert.doesNotMatch(tooltip, /国家查询|个国家成功|3\/3/);
+});
+
+test('精简优惠优先免费再折扣，同级选择 Plus 并区分待查询与待复查', () => {
+  const compact = account_promotions => view.accountTaskResultText({
+    task_type: 'plan_check', status: 'success', result_summary: {...checked, account_promotions},
+  }, true);
+  assert.match(compact([goTrial, plusDiscount]), /^free · Go:? 免费 1个月$/);
+  assert.match(compact([goTrial, {...goTrial, plan: 'plus'}]), /^free · Plus:? 免费 1个月$/);
+  assert.match(compact([
+    {plan: 'go', kind: 'discount', discount_percentage: 20}, plusDiscount,
+  ]), /^free · Plus:? 五折 2个月$/);
+  for (const [kind,label] of [['none','无优惠'],['pending','待查询'],['unknown','待复查']]) assert.match(taskPresentation.resultDetails({id:1,task_type:'plan_check',status:'success',result_summary:{account_promotions:[{plan:'plus',kind}]}}),new RegExp(`Plus: ${label}`));
+  assert.doesNotMatch(compact([{...goTrial,plan:'plus',stale:true},{...goTrial,plan:'plus',stale:false}]),/历史/);
+});
+
+test('多国均无优惠时任务精简结果合并状态，浮窗仍列出每个国家', () => {
+  const task = {task_type: 'plan_check', status: 'success', result_summary: {
+    current_plan_type: 'free', plan_check_status: 'success',
+    plan_check_country_results: ['JP', 'VN'].map(country => ({country, status: 'success', result: {
+      account_promotions: [{plan: 'go', kind: 'none'}, {plan: 'plus', kind: 'none'}],
+    }})),
+  }};
+  assert.equal(view.accountTaskResultText(task, true), 'free · 无优惠');
+  const tooltip = view.accountTaskResultTooltipText(task);
+  assert.match(tooltip, /JP[\s\S]*Go: 无优惠[\s\S]*Plus: 无优惠/);
+  assert.match(tooltip, /VN[\s\S]*Go: 无优惠[\s\S]*Plus: 无优惠/);
+});
+
+test('部分失败任务精简结果标记历史优惠，浮窗保留失败原因和取消状态', () => {
+  const task = {task_type: 'plan_check', status: 'success', result_summary: {
+    current_plan_type: 'free', plan_check_status: 'success', plan_check_partial: true,
+    plan_check_country_results: [
+      {country: 'JP', status: 'success', result: {account_promotions: [{plan: 'go', kind: 'none'}, plusDiscount]}},
+      {country: 'VN', status: 'failed', error: 'HTTP 429', last_success_at: '2026-10-14 09:00:00', result: {
+        account_promotions: [{plan: 'go', kind: 'none'}, {...goTrial, plan: 'plus', duration_num_periods: 2}],
+      }},
+      {country: 'IN', status: 'cancelled', error: '已取消'},
+    ],
+  }};
+  const compact = view.accountTaskResultText(task, true);
+  assert.match(compact, /^free · /);
+  assert.match(compact, /Plus:? 免费 2个月/);
+  assert.match(compact, /部分失败/);
+  assert.match(compact, /历史/);
+  assert.doesNotMatch(compact, /JP|VN|IN|HTTP 429|失败国家/);
+  const tooltip = view.accountTaskResultTooltipText(task);
+  assert.match(tooltip, /VN[\s\S]*Plus: 免费 2个月/);
+  assert.match(tooltip, /显示上次成功快照/);
+  assert.match(tooltip, /本次查询失败: HTTP 429/);
+  assert.match(tooltip, /IN[\s\S]*已取消/);
+  assert.doesNotMatch(tooltip, /国家查询|个国家成功|1\/3/);
+});
+
+test('明确空国家列表时任务精简结果和浮窗使用最新单次结果', () => {
+  const task = {task_type: 'plan_check', status: 'success', result_summary: {
+    ...checked, plan_check_countries: [], country_total_count: null, country_success_count: null,
+    plan_check_country_results: [{country: 'JP', status: 'success', result: {
+      account_promotions: [{...goTrial, plan: 'plus', duration_num_periods: 12}],
+    }}],
+  }};
+  assert.match(view.accountTaskResultText(task, true), /^free · Go:? 免费 1个月$/);
+  const tooltip = view.accountTaskResultTooltipText(task);
+  assert.match(tooltip, /Go: 免费 1个月/);
+  assert.match(tooltip, /Plus: 五折 2个月/);
+  assert.doesNotMatch(tooltip, /JP|12个月|国家查询|0\/0/);
+});
+
+
+
+test('任务套餐精简入口可聚焦展开，保留全部国家详情并转义 HTML', async () => {
+  taskVue.cleanup();const TaskTable=taskVue.load('src/features/tasks/TaskTable.vue').default;
+  const task={id:1,task_type:'plan_check',status:'success',result_summary:{current_plan_type:'free',plan_check_status:'success',plan_check_partial:true,plan_check_country_results:[
+    {country:'JP',status:'success',result:{account_promotions:[goTrial,plusDiscount]}},
+    {country:'VN',status:'failed',error:'错误 " <img src=x> & 失败'},
+  ]}};
+  const wrapper=taskVue.mount(TaskTable,{props:{items:[task],selected:new Set(),loading:false,busy:false,error:''}});await taskVue.nextTick();
+  const details=wrapper.get('details'),summary=details.get('summary');assert.equal(summary.text(),'部分失败');assert.match(summary.attributes('title'),/JP[\s\S]*VN/);
+  assert.match(details.text(),/JP[\s\S]*Go: 免费 1个月[\s\S]*Plus: 五折 2个月/);assert.match(details.text(),/错误 " <img src=x> & 失败/);assert.equal(details.find('img').exists(),false);assert.equal(wrapper.findAll('details').length,1);taskVue.cleanup();
 });

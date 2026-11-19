@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import logging
-import json
+import atexit
 import os
-import re
 import threading
 import time
 import uuid
@@ -17,73 +16,44 @@ from flask import Flask
 
 from core.codex import operation_service as codex_operation_service, retry_service as codex_retry_service, token_refresh_service as codex_token_refresh_service
 from core import db
+from core.accounts import (
+    completion_dependencies,
+    completion_execution,
+    operation_results,
+    operation_handlers,
+    operation_settings,
+    setup_execution,
+)
+from core.accounts.operation_coordinator import COMPLETION_RESOURCE_FAMILY, RUNTIME_SOURCE_SYSTEM
 from core.accounts.deactivation import mail_scan as deactivation_mail_service
 from core.extract_link import service as extract_link_service
 from core.accounts.liveness import service as live_check_service
 from core import operation_task_store
 from core.accounts.plans import service as plan_check_service
 from core.sms import provider as sms_provider
-from core.operations import task_gateway
+from core.operations import action_service, reconciliation, task_gateway
 from core.operations import task_gateway as account_task_store
 from core.operations.executor import executor as _ACCOUNT_EXECUTOR
 
 logger = logging.getLogger(__name__)
 
-_RUNTIME_SOURCE_SYSTEM = "webui_runtime"
-_COMPLETION_RESOURCE_FAMILY = "completion_coordinator"
+_RUNTIME_SOURCE_SYSTEM = RUNTIME_SOURCE_SYSTEM
+_COMPLETION_RESOURCE_FAMILY = COMPLETION_RESOURCE_FAMILY
 
-# This is an execution allowlist, not a second configuration definition.  C
-# owns the immutable snapshot and its uppercase schema keys; runtime stores
-# only the choices needed by the setup/completion handlers.
-_RUNTIME_CONFIG_ALLOWLIST = {
-    "password_enabled": "ACCOUNT_COMPLETION_PASSWORD_ENABLED",
-    "password_reset_enabled": "ACCOUNT_PASSWORD_RESET_ENABLED",
-    "plan_check_enabled": "ACCOUNT_COMPLETION_PLAN_CHECK_ENABLED",
-    "twofa_enabled": "ACCOUNT_COMPLETION_2FA_ENABLED",
-    "codex_enabled": "ACCOUNT_COMPLETION_CODEX_ENABLED",
-    "refresh_at_enabled": "ACCOUNT_COMPLETION_REFRESH_AT_ENABLED",
-    "password_driver": "ACCOUNT_PASSWORD_DRIVER",
-    "plan_check_driver": "ACCOUNT_PLAN_CHECK_DRIVER",
-    "password_proxy_mode": "ACCOUNT_PASSWORD_PROXY_MODE",
-    "twofa_proxy_mode": "ACCOUNT_2FA_PROXY_MODE",
-    "plan_check_proxy_mode": "ACCOUNT_PLAN_CHECK_PROXY_MODE",
-    "live_check_proxy_mode": "ACCOUNT_LIVE_CHECK_PROXY_MODE",
-    "refresh_at_proxy_mode": "ACCOUNT_REFRESH_AT_PROXY_MODE",
-    "codex_proxy_mode": "ACCOUNT_CODEX_PROXY_MODE",
-    "twofa_driver": "ACCOUNT_2FA_DRIVER",
-    "twofa_browser_fallback_enabled": "ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED",
-    "twofa_protocol_reauth_enabled": "ACCOUNT_2FA_PROTOCOL_REAUTH_ENABLED",
-    "codex_driver": "ACCOUNT_CODEX_DRIVER",
-    "protocol_version": "OPENAI_PROTOCOL_VERSION",
-}
-_RUNTIME_HANDLER_TYPES = frozenset({
-    "account_setup_retry", "password_setup", "password_change",
-    "twofa_setup", "twofa_change", "account_completion", "registration_resume",
-})
-_LEGACY_DURABLE_TASK_TYPES = frozenset({
-    *_RUNTIME_HANDLER_TYPES,
-    "live_check", "token_refresh", "plan_check", "deactivation_mail",
-    "extract_link", "codex_token_refresh", "codex_retry",
-})
-_RUNTIME_HANDLER_LOCK = threading.RLock()
-_RUNTIME_HANDLERS_REGISTERED = False
+# 兼容既有调用方；执行字段白名单仅由账号核心模块维护。
+_RUNTIME_CONFIG_ALLOWLIST = operation_settings.RUNTIME_CONFIG_ALLOWLIST
+_RUNTIME_HANDLER_TYPES = operation_handlers.RUNTIME_HANDLER_TYPES
+_LEGACY_DURABLE_TASK_TYPES = reconciliation.LEGACY_DURABLE_TASK_TYPES
 
 
 def _runtime_config_snapshot() -> Any | None:
-    """Get C's atomic snapshot without defining or caching configuration."""
-    try:
-        from config import schema
-    except ImportError:
-        return None
-    provider = getattr(schema, "non_sensitive_snapshot", None)
-    return provider() if callable(provider) else None
+    """兼容旧入口，配置快照由账号核心模块提供。"""
+    return operation_settings.runtime_config_snapshot()
 
 
 def _legacy_runtime_snapshot(settings: Mapping[str, Any]) -> dict[str, Any]:
-    """Compatibility snapshot used only when C's provider is unavailable."""
-    result = dict(settings)
-    result["config_snapshot_revision"] = "legacy"
-    return result
+    """兼容旧入口，沿用账号核心模块的旧格式快照。"""
+    return operation_settings.legacy_runtime_snapshot(settings)
 
 
 def _completion_settings_from_snapshot(
@@ -91,60 +61,20 @@ def _completion_settings_from_snapshot(
     *,
     fallback: Mapping[str, Any] | None = None,
 ) -> dict[str, object]:
-    """Project the already-captured execution shape into completion settings."""
-    from config.account import completion_settings
-
-    values = dict(fallback or completion_settings())
-    if isinstance(snapshot, Mapping):
-        values.update({
-            str(key): value for key, value in snapshot.items()
-            if str(key) != "config_snapshot_revision"
-        })
-    bool_keys = {
-        "password_enabled", "password_reset_enabled", "plan_check_enabled",
-        "twofa_enabled", "codex_enabled", "refresh_at_enabled",
-        "twofa_browser_fallback_enabled", "twofa_protocol_reauth_enabled",
-        "auth_raw_context_enabled",
-    }
-    for key in bool_keys:
-        if key in values and isinstance(values[key], str):
-            values[key] = values[key].strip().lower() in {"1", "true", "yes", "on"}
-    for key in (
-        "password_driver", "plan_check_driver", "password_proxy_mode",
-        "twofa_proxy_mode", "plan_check_proxy_mode", "live_check_proxy_mode",
-        "refresh_at_proxy_mode", "codex_proxy_mode", "twofa_driver", "codex_driver",
-        "protocol_version",
-    ):
-        if key in values and values[key] is not None:
-            values[key] = str(values[key]).strip().lower()
-    return values
+    """兼容旧入口，由账号核心模块投影补全设置。"""
+    return operation_settings.completion_settings_from_snapshot(snapshot, fallback=fallback)
 
 
 def _runtime_submission_snapshot(settings: Mapping[str, Any]) -> tuple[Any, Mapping[str, str]]:
-    snapshot = _runtime_config_snapshot()
-    if snapshot is not None:
-        return snapshot, _RUNTIME_CONFIG_ALLOWLIST
-    return _legacy_runtime_snapshot(settings), tuple(_RUNTIME_CONFIG_ALLOWLIST)
+    """兼容旧入口，由账号核心模块捕获提交快照。"""
+    return operation_settings.runtime_submission_snapshot(settings)
 
 
 def _runtime_execution_settings(
     settings: Mapping[str, Any],
 ) -> tuple[Any, Mapping[str, str], dict[str, object]]:
-    """Capture C's snapshot and project only runtime execution settings."""
-    snapshot, allowlist = _runtime_submission_snapshot(settings)
-    try:
-        projected = task_gateway.normalize_config_snapshot(
-            snapshot, allowlist=allowlist,
-        )
-    except (TypeError, ValueError):
-        # The legacy fallback is intentionally narrow. If a rolling provider
-        # is malformed, keep the caller's already-loaded settings for the
-        # current request but do not persist an unfiltered object.
-        logger.exception("读取账号操作 config snapshot 失败，使用当前执行设置")
-        projected = dict(settings)
-    return snapshot, allowlist, _completion_settings_from_snapshot(
-        projected, fallback=settings,
-    )
+    """兼容旧入口，保留配置捕获时机与本入口日志。"""
+    return operation_settings.runtime_execution_settings(settings, operation_logger=logger)
 
 
 def _account_setup_readback(
@@ -153,30 +83,13 @@ def _account_setup_readback(
     steps: set[str],
     result: Mapping[str, Any],
 ) -> tuple[bool, dict[str, bool]]:
-    """Verify local business persistence before publishing remote confirmed."""
-    account = db.get_account(int(account_id)) or db.get_account_by_email(email) or {}
-    raw_extra = account.get("extra_json") or {}
-    if isinstance(raw_extra, str):
-        try:
-            raw_extra = json.loads(raw_extra)
-        except (TypeError, ValueError, json.JSONDecodeError):
-            raw_extra = {}
-    extra = raw_extra if isinstance(raw_extra, Mapping) else {}
-    checks: dict[str, bool] = {}
-    if "password" in steps:
-        from core.accounts.password_evidence import password_is_confirmed
-
-        checks["password"] = password_is_confirmed(account)
-    if "twofa" in steps:
-        checks["twofa"] = bool(str(account.get("totp_secret") or "").strip()) and not bool(
-            extra.get("totp_setup_pending")
-        )
-    if "plan_check" in steps:
-        checks["plan_check"] = str(account.get("plan_check_status") or "").strip().lower() == "success"
-    status = str(result.get("status") or "").strip().lower()
-    if status == "deactivated":
-        checks["account_status"] = str(account.get("account_status") or "").strip().lower() == "deactivated"
-    return bool(checks) and all(checks.values()), checks
+    """兼容旧入口，委托账号核心模块的唯一实现。"""
+    return operation_results.account_setup_readback(
+        account_id,
+        email,
+        steps,
+        result,
+    )
 
 
 def _account_setup_receipt(
@@ -185,64 +98,13 @@ def _account_setup_receipt(
     steps: set[str],
     result: Mapping[str, Any],
 ) -> tuple[str, dict[str, Any]]:
-    """Map an adapter result to the common remote receipt safety states."""
-    status = str(result.get("status") or "").strip().lower()
-    detail: dict[str, Any] = {
-        "remote_response_received": True,
-        "remote_result_confirmed": status in {"success", "completed", "deactivated"}
-        or bool(result.get("ok")),
-    }
-    if result.get("password_driver") == "protocol" or isinstance(result.get("step_results"), Mapping):
-        completed = set()
-        rejected = False
-        evidence = []
-        for step in sorted(steps):
-            value = (result.get("step_results") or {}).get(step) or result.get(
-                {"password": "password_setup", "twofa": "twofa_setup", "plan_check": "plan_check"}.get(step, "")
-            )
-            outcome = value if isinstance(value, Mapping) else {}
-            receipt_state = outcome.get("remote_receipt_state")
-            if step == "plan_check":
-                receipt_state = "confirmed" if outcome.get("ok") else "not_submitted"
-            elif receipt_state in {None, "none", "not_submitted"} and outcome.get("mutation_submitted") is False:
-                receipt_state = "not_submitted"
-            elif receipt_state is None and outcome.get("ok"):
-                receipt_state = "confirmed"
-            evidence.append({"step": step, "ok": bool(outcome.get("ok")), "receipt_state": receipt_state or "unknown"})
-            detail["setup_step_receipts"] = evidence
-            if receipt_state == "rejected":
-                rejected = True
-            elif receipt_state == "not_submitted":
-                continue
-            elif receipt_state == "confirmed" and outcome.get("ok"):
-                completed.add(step)
-            else:
-                return "unknown", detail
-        if not completed:
-            if rejected:
-                return "rejected", detail
-            return "not_submitted", {**detail, "mutation_submitted": False, "action_dispatched": False}
-        local_confirmed, checks = _account_setup_readback(account_id, email, completed, result)
-        detail.update({
-            "remote_result_confirmed": True,
-            "local_business_writeback_confirmed": local_confirmed,
-            "local_readback_confirmed": local_confirmed,
-            "local_readback_checks": checks,
-        })
-        return ("confirmed" if local_confirmed else "local_commit_required"), detail
-    if status == "unsupported":
-        return "rejected", detail
-    if status not in {"success", "completed", "deactivated"} and not result.get("ok"):
-        return "unknown", detail
-    local_confirmed, checks = _account_setup_readback(
-        account_id, email, steps, result,
+    """兼容旧入口，委托账号核心模块的唯一实现。"""
+    return operation_results.account_setup_receipt(
+        account_id,
+        email,
+        steps,
+        result,
     )
-    detail.update({
-        "local_business_writeback_confirmed": local_confirmed,
-        "local_readback_confirmed": local_confirmed,
-        "local_readback_checks": checks,
-    })
-    return ("confirmed" if local_confirmed else "local_commit_required"), detail
 
 
 def _submit_native_account_setup_child(
@@ -251,60 +113,12 @@ def _submit_native_account_setup_child(
     steps: set[str],
     task_trigger: str,
 ) -> dict[str, Any]:
-    """Persist setup writes as a child before the coordinator becomes partial.
-
-    A completion coordinator may have to wait for an AT/Codex child.  It must
-    not also perform a password/MFA remote write in that coordinator Run: the
-    shared terminal guard quite correctly treats a later partial/failure as a
-    follow-up boundary.  The setup child owns that remote intent and its
-    confirmed receipt; the parent only resumes with the steps that remain
-    after the child has durably succeeded.
-    """
-    source_id = f"account-completion-setup:{context.task_id}:{context.run_id}"
-    snapshot = context.config_snapshot
-    allowlist: tuple[str, ...] | None = None
-    if isinstance(snapshot, Mapping):
-        # The context already contains the lower-case execution projection.
-        # Re-projecting with the uppercase C schema mapping would silently
-        # drop it, so use the projected names as the child input contract.
-        allowlist = (*_RUNTIME_CONFIG_ALLOWLIST, "child_execution", "bulk_execution_frozen")
-    queued = account_task_store.submit_durable_operation(
-        task_type="account_setup_retry",
-        account_id=int(context.account_id or 0) or None,
-        email=context.email,
-        trigger=f"{task_trigger}_account_setup",
-        source_system=_RUNTIME_SOURCE_SYSTEM,
-        source_id=source_id,
-        idempotency_key=source_id,
-        resource_family="openai_interactive",
-        data={
-            "steps": sorted(steps),
-            "completion_auth": True,
-            "task_trigger": f"{task_trigger}_account_setup",
-            "force_password_reset": "password" in steps and "change" in task_trigger.lower(),
-            "force_twofa_change": "twofa" in steps and "change" in task_trigger.lower(),
-        },
-        config_snapshot=snapshot if isinstance(snapshot, Mapping) else None,
-        config_allowlist=allowlist,
+    """兼容旧入口，委托账号核心模块的唯一实现。"""
+    return setup_execution.submit_native_account_setup_child(
+        context,
+        steps=steps,
+        task_trigger=task_trigger,
     )
-    # A resource-family conflict can return only the active task/run ids.  A
-    # dependency is keyed by source namespace/id, so resolve that read model
-    # before making a parent partial; otherwise the parent would wait on a
-    # numeric id that the dependency scanner cannot resolve.
-    if queued.get("busy") and not queued.get("source_id") and queued.get("task_id"):
-        try:
-            existing = account_task_store.get_task(int(queued["task_id"]), include_events=False)
-        except (LookupError, TypeError, ValueError):
-            existing = None
-        if isinstance(existing, Mapping):
-            queued = {
-                **queued,
-                "source_system": existing.get("source_system"),
-                "source_id": existing.get("source_id"),
-                "task_type": existing.get("task_type"),
-            }
-    queued["_setup_child_source_id"] = source_id
-    return queued
 
 
 def _safe_operation_result(
@@ -312,104 +126,14 @@ def _safe_operation_result(
     *,
     default_message: str = "账号操作未完成",
 ) -> task_gateway.OperationResult:
-    """保留具体失败原因，仅将无凭据的诊断字段写入任务摘要。"""
-    if isinstance(value, task_gateway.OperationResult):
-        return value
-    result = dict(value) if isinstance(value, Mapping) else {}
-    status = str(result.get("status") or "").strip().lower()
-    message = str(result.get("message") or default_message)
-    error = str(result.get("error") or "") or None
-    summary = {
-        key: result.get(key)
-        for key in (
-            "status", "ok", "message", "plan_check", "twofa_driver", "auth_source",
-            "browser_opened", "account_status_persisted", "proxy_provider",
-            "proxy_region", "proxy_mode", "credential_confirmed",
-            "mutation_submitted", "action_dispatched", "reconcile_required", "manual_reconcile",
-            "password_setup", "password_driver", "twofa_setup", "remote_receipt_state",
-            "stop_requested", "step_results", "setup_step_results", "requested_steps",
-        )
-        if key in result and result.get(key) is not None
-    }
-    cause_code = str(result.get("cause_code") or result.get("error_code") or "")
-    if re.fullmatch(r"[a-z][a-z0-9_]{0,79}", cause_code):
-        summary["cause_code"] = cause_code
-    for key in ("auth_diagnostics", "cause_diagnostics"):
-        diagnostics = live_check_service._safe_refresh_auth_diagnostics(result.get(key))
-        if diagnostics:
-            summary[key] = diagnostics
-    if (
-        status in {"unknown", "request_unknown", "pending_confirmation", "attention_required"}
-        or summary.get("reconcile_required") is True or summary.get("manual_reconcile") is True
-    ):
-        return task_gateway.OperationResult.request_unknown(message, summary, error=error)
-    if status in {"success", "completed"} or bool(result.get("ok")):
-        return task_gateway.OperationResult.success(summary, message=message)
-    if status in {"cancelled", "stopped"}:
-        return task_gateway.OperationResult.cancelled(message)
-    if status == "deactivated":
-        return task_gateway.OperationResult("deactivated", summary, message, message)
-    if status == "unsupported":
-        return task_gateway.OperationResult("unsupported", summary, message, message)
-    if status == "partial_success":
-        return task_gateway.OperationResult("partial_success", summary, message, error or message)
-    return task_gateway.OperationResult("failed", summary, message, error or message)
+    """兼容旧入口，委托账号核心模块的唯一实现。"""
+    return operation_results.safe_operation_result(
+        value,
+        default_message=default_message,
+    )
 
 
-class _NativeTaskLifecycle:
-    """Legacy-service-shaped reporter backed by one durable Run context."""
-
-    def __init__(self, context: task_gateway.OperationHandlerContext) -> None:
-        self.context = context
-
-    def start_task(self, _task_id: int | None, *, message: str = "开始执行") -> None:
-        self.context.report(stage="plan", state="running", message=message)
-
-    def append_event(self, _task_id: int | None, **event: Any) -> None:
-        payload = dict(event)
-        stage = str(payload.pop("stage", "event") or "event")
-        message = str(payload.pop("message") or "处理中")
-        state = payload.pop("state", None)
-        level = str(payload.pop("level", None) or "INFO")
-        event_type = payload.pop("event_type", None)
-        detail = payload.pop("detail", None)
-        if payload:
-            detail = {**(dict(detail) if isinstance(detail, Mapping) else {}), **payload}
-        self.context.report(
-            stage=stage, message=message, level=level,
-            state=state, event_type=event_type, detail=detail,
-        )
-
-    def finish_task(self, _task_id: int | None, **kwargs: Any) -> dict:
-        status = str(kwargs.get("status") or "failed").strip().lower()
-        summary = kwargs.get("result_summary")
-        summary = dict(summary) if isinstance(summary, Mapping) else {}
-        if str(summary.get("outcome") or "").lower() == "request_unknown":
-            result = task_gateway.OperationResult.request_unknown(
-                str(kwargs.get("message") or "当前步骤未保存完整回执"), summary,
-                error=str(kwargs.get("error") or "") or None,
-            )
-        elif status == "cancelled":
-            result = task_gateway.OperationResult.cancelled(
-                str(kwargs.get("message") or "任务已取消"),
-            )
-        elif status == "attention_required":
-            summary.update({"outcome": "request_unknown", "reconcile_required": True})
-            result = task_gateway.OperationResult.request_unknown(
-                str(kwargs.get("message") or "当前步骤未保存完整回执"), summary,
-                error=str(kwargs.get("error") or "") or None,
-            )
-        else:
-            result = task_gateway.OperationResult(
-                status,
-                summary,
-                str(kwargs.get("message") or ""),
-                str(kwargs.get("error") or "") or None,
-            )
-        return self.context.finish(result)
-
-    def register_task_dependency(self, **kwargs: Any) -> dict:
-        return operation_task_store.register_task_dependency(**kwargs)
+_NativeTaskLifecycle = operation_results.NativeTaskLifecycle
 
 
 def _run_codex_retry_worker(
@@ -462,963 +186,75 @@ def _run_account_completion_worker(
     context: task_gateway.OperationHandlerContext | None = None,
     reservation_held: bool | None = None,
 ) -> task_gateway.OperationResult | None:
-    """Execute a config-driven completion plan and record one coordinator task."""
-    from core.accounts.completion import STEP_LABELS, completion_plan
-
-    started = False
-    result_summary: dict[str, Any] = dict(initial_result_summary or {})
-    result_summary["planned_steps"] = list(planned_steps)
-    configured = result_summary.setdefault("configured_steps", [
-        step for step in STEP_LABELS if bool(settings.get(f"{step}_enabled", step in planned_steps))
-    ])
-    result_summary.setdefault("required_steps", list(dict.fromkeys([*configured, *planned_steps])))
-    result_summary.setdefault("blocked", [])
-    task_store = _NativeTaskLifecycle(context) if context is not None else account_task_store
-    reservation_held = (context is None) if reservation_held is None else bool(reservation_held)
-    remote_write_started = False
-    remote_receipt_state: str | None = None
-
-    def child_config(step: str) -> dict:
-        if context is None or not _native_task_data(context).get("bulk_target_round_id"):
-            return {}
-        children = (context.config_snapshot or {}).get("child_execution") or {}
-        frozen = children.get(step) if isinstance(children, Mapping) else None
-        return {"config_snapshot": dict(frozen)} if isinstance(frozen, Mapping) else {}
-
-    def save_handoff(*, child_source_system: str, child_source_id: object, payload: dict) -> None:
-        if context is not None and _native_task_data(context).get("bulk_target_round_id"):
-            result_summary["completion_handoff"] = {
-                "child_source_system": child_source_system,
-                "child_source_id": str(child_source_id or ""),
-                "remaining_steps": list(payload.get("remaining_steps") or []),
-            }
-
-    def refresh_completion_state() -> None:
-        """终态按完整原始要求读回，续接剩余步骤不能丢掉已阻塞的缺项。"""
-        account = db.get_account(int(account_id)) or {}
-        current = completion_plan(account, settings)
-        required = list(result_summary.get("required_steps") or [])
-        current_blocked = [dict(item) for item in current.get("blocked") or [] if isinstance(item, Mapping)]
-        missing = set(current.get("missing_steps") or []) | {item.get("step") for item in current_blocked}
-        retained = [dict(item) for item in result_summary.get("blocked") or []
-                    if isinstance(item, Mapping) and item.get("step") in missing]
-        blocked = {str(item.get("step")): item for item in [*retained, *current_blocked]}
-        result_summary["blocked"] = list(blocked.values())
-        result_summary["pending_steps"] = [step for step in required if step in missing]
-        result_summary["completed_steps"] = [step for step in required if step not in missing]
-        result_summary["ready"] = not result_summary["pending_steps"] and not blocked
-
-    def release_parent_reservation() -> None:
-        nonlocal reservation_held
-        if reservation_held:
-            # Compatibility callers may still hold the old process-local
-            # reservation; native handlers never reserve it at enqueue time.
-            codex_retry_service.release(email)
-            reservation_held = False
-        if context is not None:
-            # A coordinator must release its DB lease before handing control
-            # to a child that uses the openai_interactive resource family.
-            context.release_lease()
-
-    def register_child_dependency(
-        *, child_source_system: str, child_source_id: object, payload: dict[str, Any],
-    ) -> None:
-        if not child_source_id:
-            return
-        try:
-            dependency = operation_task_store.register_task_dependency(
-                parent_source_system=(
-                    getattr(context, "source_system", _RUNTIME_SOURCE_SYSTEM)
-                    if context is not None else "account_action_tasks"
-                ),
-                parent_source_id=str(int(task_id)),
-                child_source_system=child_source_system,
-                child_source_id=str(child_source_id),
-                dependency_type="account_completion",
-                payload={**payload, **({"parent_run_id": context.run_id} if context is not None else {})},
-            )
-            if dependency.get("status") == "ready":
-                task_gateway.notify_dependency_ready(dependency)
-            elif (
-                dependency.get("status") == "waiting"
-                and child_source_system in {"native_operations", _RUNTIME_SOURCE_SYSTEM}
-                and str(child_source_id).isdigit()
-            ):
-                # 完成通知使用逻辑任务 ID；补读已结束的快速子任务，覆盖登记前完成的竞态。
-                child = operation_task_store.get_task(int(child_source_id), include_events=False) or {}
-                ready = operation_task_store.mark_task_dependency_ready(
-                    child_source_system=child_source_system,
-                    child_source_id=str(child_source_id),
-                    child_status=str(child.get("status") or ""),
-                    child_result=child.get("result_summary") or {},
-                )
-                for item in ready:
-                    task_gateway.notify_dependency_ready(item)
-        except Exception:
-            # The child remains independently durable.  Keep the parent
-            # partial result visible and let the next reconciliation pass
-            # recreate/repair the handoff rather than duplicating the child.
-            logger.exception(
-                "补全父子依赖写入失败：parent_task_id=%s child=%s:%s",
-                task_id, child_source_system, child_source_id,
-            )
-
-    try:
-        task_store.start_task(
-            task_id,
-            message=f"开始补全账号：{'、'.join(STEP_LABELS.get(step, step) for step in planned_steps)}",
-        )
-        started = True
-        task_store.append_event(
-            task_id,
-            stage="plan",
-            message="已按当前配置生成账号补全计划",
-            detail={"steps": list(planned_steps)},
-            state="success",
-        )
-        remaining = set(planned_steps)
-
-        if "refresh_at" in remaining:
-            account = db.get_account(int(account_id)) or {}
-            # 按本次任务冻结的配置执行，历史注册检查点不取消补全计划。
-            current_plan = completion_plan(account, settings)
-            if "refresh_at" not in current_plan["missing_steps"]:
-                stale_message = "补全时刷新 AT 已关闭，旧补全计划已失效，请重新点击补全账号"
-                result_summary["stale_plan"] = True
-                task_store.finish_task(
-                    task_id,
-                    status="cancelled",
-                    message=stale_message,
-                    result_summary=result_summary,
-                    validation_method="account_completion_plan",
-                )
-                return
-            queued = live_check_service.enqueue_account_live_check(
-                account_id=int(account_id),
-                email=str(account.get("email") or email),
-                trigger=f"{task_trigger}_refresh_at",
-                proxy=None,
-                force_refresh=True,
-                allow_missing_token=True,
-                **child_config("refresh_at"),
-            )
-            if queued.get("busy") and not (queued.get("source_id") or queued.get("task_id")):
-                # 占用尚未对应到持久子任务时退队等待，避免生成无法续接的父任务。
-                raise task_gateway.OperationLeaseUnavailable(
-                    queued.get("error") or "刷新 AT 暂时被占用，等待下一轮派发"
-                )
-            result_summary["refresh_at"] = {
-                "accepted": bool(queued.get("accepted")),
-                "busy": bool(queued.get("busy")),
-                "task_id": queued.get("task_id"),
-                "message": queued.get("error") or "刷新 AT 已入队",
-            }
-            task_store.append_event(
-                task_id,
-                stage="refresh_token",
-                message="补全计划中的刷新 AT 已作为独立操作入队",
-                detail={"accepted": bool(queued.get("accepted")), "busy": bool(queued.get("busy"))},
-                state="success" if queued.get("accepted") or queued.get("busy") else "failed",
-            )
-            remaining.discard("refresh_at")
-            if not queued.get("accepted") and not queued.get("busy"):
-                raise RuntimeError(queued.get("error") or "刷新 AT 入队失败")
-            if remaining:
-                result_summary["deferred_steps"] = [step for step in planned_steps if step in remaining]
-                task_store.append_event(
-                    task_id,
-                    stage="plan",
-                    message="等待刷新 AT 完成后再执行其余补全步骤，请在刷新完成后重新点击补全账号",
-                    detail={"deferred_steps": result_summary["deferred_steps"]},
-                    state="skipped",
-                )
-            result_summary["awaiting_steps"] = ["refresh_at"]
-            result_summary["continuation_steps"] = [
-                step for step in planned_steps if step in remaining
-            ]
-            dependency_payload = {
-                "account_id": int(account_id),
-                "email": str(account.get("email") or email),
-                "task_trigger": task_trigger,
-                "remaining_steps": [step for step in planned_steps if step in remaining],
-                "settings": dict(settings or {}),
-                "result_summary": result_summary,
-            }
-            save_handoff(child_source_system=str(queued.get("source_system") or "account_action_tasks"),
-                         child_source_id=queued.get("task_id") or queued.get("source_id"), payload=dependency_payload)
-            release_parent_reservation()
-            task_store.finish_task(
-                task_id,
-                status="partial_success",
-                message="刷新 AT 已提交，成功后系统将自动继续补全步骤",
-                result_summary=result_summary,
-                validation_method="account_completion_plan",
-            )
-            # Persist the parent partial state before making a fast child
-            # eligible for the continuation scanner.  Otherwise a child that
-            # completes during enqueue could race the parent's final write.
-            register_child_dependency(
-                child_source_system=str(
-                    queued.get("source_system") or "account_action_tasks"
-                ),
-                child_source_id=queued.get("task_id") or queued.get("source_id"),
-                payload=dependency_payload,
-            )
-            return context.last_result if context is not None else None
-
-        setup_steps = remaining & {"password", "plan_check", "twofa"}
-        if setup_steps:
-            if context is not None:
-                queued_setup = _submit_native_account_setup_child(
-                    context,
-                    steps=set(setup_steps),
-                    task_trigger=task_trigger,
-                )
-                result_summary["account_setup"] = {
-                    "accepted": bool(queued_setup.get("accepted")),
-                    "busy": bool(queued_setup.get("busy")),
-                    "task_id": queued_setup.get("task_id"),
-                    "run_id": queued_setup.get("run_id"),
-                    "message": queued_setup.get("error") or "账号配置已入队",
-                }
-                if not queued_setup.get("accepted") and not queued_setup.get("busy"):
-                    raise RuntimeError(queued_setup.get("error") or "账号配置入队失败")
-                child_source_id = str(queued_setup.get("source_id") or "")
-                setup_child_matches = child_source_id == str(
-                    queued_setup.get("_setup_child_source_id") or ""
-                )
-                if queued_setup.get("busy") and not child_source_id:
-                    # No durable blocker could be resolved. Requeue the
-                    # coordinator attempt; do not publish a partial state that
-                    # has no recoverable dependency edge.
-                    raise task_gateway.OperationLeaseUnavailable(
-                        "账号配置 child 暂时被占用，等待下一轮 durable dispatcher"
-                    )
-                if setup_child_matches:
-                    remaining -= setup_steps
-                result_summary["awaiting_steps"] = ["account_setup"]
-                result_summary["continuation_steps"] = [
-                    step for step in planned_steps if step in remaining
-                ]
-                task_store.append_event(
-                    task_id,
-                    stage="account_setup",
-                    message=(
-                        "账号密码/2FA 已作为独立 durable child 入队，成功后自动继续"
-                    ),
-                    detail={
-                        "accepted": bool(queued_setup.get("accepted")),
-                        "busy": bool(queued_setup.get("busy")),
-                        "task_id": queued_setup.get("task_id"),
-                        "blocked_by_existing": not setup_child_matches,
-                    },
-                    state="success" if queued_setup.get("accepted") or queued_setup.get("busy") else "failed",
-                )
-                dependency_payload = {
-                    "account_id": int(account_id),
-                    "email": email,
-                    "task_trigger": task_trigger,
-                    "remaining_steps": [step for step in planned_steps if step in remaining],
-                    "settings": dict(settings or {}),
-                    "result_summary": result_summary,
-                }
-                save_handoff(child_source_system=str(queued_setup.get("source_system") or _RUNTIME_SOURCE_SYSTEM),
-                             child_source_id=queued_setup.get("task_id") or child_source_id, payload=dependency_payload)
-                release_parent_reservation()
-                task_store.finish_task(
-                    task_id,
-                    status="partial_success",
-                    message="账号配置已提交，成功后系统将自动继续补全步骤",
-                    result_summary=result_summary,
-                    validation_method="account_completion_plan",
-                )
-                register_child_dependency(
-                    child_source_system=str(
-                        queued_setup.get("source_system") or _RUNTIME_SOURCE_SYSTEM
-                    ),
-                    child_source_id=queued_setup.get("task_id") or child_source_id,
-                    payload=dependency_payload,
-                )
-                return context.last_result
-            task_store.append_event(
-                task_id,
-                stage="account_setup",
-                message=f"开始执行账号配置步骤：{'、'.join(STEP_LABELS[step] for step in planned_steps if step in setup_steps)}",
-                detail={"steps": sorted(setup_steps)},
-                state="running",
-            )
-            if context is not None:
-                remote_write_started = True
-                context.remote_request_started(
-                    "account_setup",
-                    intent_kind="remote_write",
-                    request_id=f"account-setup:{context.run_id}",
-                    detail={"steps": sorted(setup_steps), "checkpoint": "setup_dispatch"},
-                )
-            try:
-                setup_result = codex_retry_service.run_twofa_worker(
-                    email,
-                    clear_log=False,
-                    # The service remains a business adapter. ``0`` prevents
-                    # its legacy task/event writer from creating a second
-                    # logical task; the durable context owns lifecycle data.
-                    task_id=0 if context is not None else task_id,
-                    task_trigger=task_trigger,
-                    steps=setup_steps,
-                    manage_task=False,
-                    twofa_driver_override=str(settings.get("twofa_driver") or "auto"),
-                    password_driver_override=str(settings.get("password_driver") or "roxy"),
-                    plan_driver_override=str(settings.get("plan_check_driver") or "protocol"),
-                    **({"execution_fence": context.execution_fence} if context is not None else {}),
-                )
-            except Exception:
-                if context is not None and remote_write_started and remote_receipt_state is None:
-                    try:
-                        context.remote_request_receipt(
-                            outcome="unknown",
-                            action="account_setup",
-                            request_id=f"account-setup:{context.run_id}",
-                            detail={"remote_response_received": False},
-                        )
-                        remote_receipt_state = "unknown"
-                    except Exception:
-                        logger.exception(
-                            "账号配置 remote intent 未能写入 unknown：run_id=%s",
-                            context.run_id,
-                        )
-                raise
-            if context is not None and remote_write_started:
-                remote_receipt_state, receipt_detail = _account_setup_receipt(
-                    int(account_id), email, set(setup_steps), setup_result,
-                )
-                context.remote_request_receipt(
-                    outcome=remote_receipt_state,
-                    action="account_setup",
-                    request_id=f"account-setup:{context.run_id}",
-                    detail=receipt_detail,
-                )
-                if remote_receipt_state not in {"confirmed", "rejected", "not_submitted"}:
-                    result_summary.update({
-                        "outcome": "request_unknown",
-                        "reconcile_required": True,
-                        "remote_receipt_state": remote_receipt_state,
-                        "local_readback_checks": receipt_detail.get("local_readback_checks") or {},
-                    })
-                    task_store.finish_task(
-                        task_id,
-                        status="attention_required",
-                        message="账号配置本地写回仍待确认，禁止自动重做",
-                        error="remote_write receipt 未达到 confirmed",
-                        result_summary=result_summary,
-                        validation_method="account_completion_plan",
-                    )
-                    return context.last_result if context is not None else None
-            result_summary["account_setup"] = {
-                "ok": bool(setup_result.get("ok")),
-                "status": setup_result.get("status"),
-                "message": setup_result.get("message"),
-                "plan_check": setup_result.get("plan_check"),
-                "password_setup": setup_result.get("password_setup"),
-                "password_driver": setup_result.get("password_driver"),
-                "twofa_setup": setup_result.get("twofa_setup"),
-                "step_results": setup_result.get("step_results"),
-                "setup_step_results": setup_result.get("setup_step_results"),
-                "twofa_driver": setup_result.get("twofa_driver"),
-                "auth_source": setup_result.get("auth_source"),
-                "browser_opened": setup_result.get("browser_opened"),
-                "account_status_persisted": setup_result.get("account_status_persisted"),
-            }
-            setup_status = str(setup_result.get("status") or "").lower()
-            if setup_status == "deactivated":
-                refresh_completion_state()
-                task_store.finish_task(
-                    task_id,
-                    status="deactivated",
-                    message="账号已废号，已停止补全",
-                    error=str(setup_result.get("message") or "account_deactivated"),
-                    result_summary=result_summary,
-                    validation_method="account_completion_plan",
-                )
-                return
-            if setup_status == "unsupported":
-                refresh_completion_state()
-                task_store.finish_task(
-                    task_id,
-                    status="unsupported",
-                    message="账号配置包含当前不支持的步骤",
-                    error=str(setup_result.get("message") or "账号配置步骤当前不支持"),
-                    result_summary=result_summary,
-                    validation_method="account_completion_plan",
-                )
-                return
-            if not setup_result.get("ok"):
-                raise RuntimeError(setup_result.get("message") or "账号配置步骤未完成")
-            task_store.append_event(
-                task_id,
-                stage="account_setup",
-                message="账号配置实际执行已确认完成",
-                detail={"steps": sorted(setup_steps)},
-                state="success",
-            )
-            plan_outcome = setup_result.get("plan_check") or {}
-            remaining -= setup_steps
-            if "plan_check" in setup_steps and not bool(plan_outcome.get("ok")):
-                # 套餐查询依赖独立的 AT/接口状态；它失败时不应把已经完成
-                # 的密码或 2FA 重新标成整任务失败。保留待处理步骤，供后续
-                # 单独重试套餐查询。
-                result_summary["pending_steps"] = ["plan_check"]
-                result_summary["plan_check_error"] = plan_outcome.get("message") or "套餐补全未完成"
-                task_store.append_event(
-                    task_id,
-                    stage="plan_check",
-                    message="密码/2FA 已完成，套餐查询待后续单独重试",
-                    level="WARNING",
-                    detail={"error": result_summary["plan_check_error"]},
-                    state="skipped",
-                )
-
-        codex_dependency_payload: dict[str, Any] | None = None
-        codex_child_task_id: object | None = None
-        if "codex" in remaining:
-            task_store.append_event(
-                task_id,
-                stage="codex",
-                message="开始提交 Codex OAuth 独立操作",
-                state="running",
-            )
-            queued = codex_operation_service.submit(
-                email,
-                trigger=f"{task_trigger}_codex",
-                driver=str(settings.get("codex_driver") or "same_as_registration"),
-                completion_auth=True,
-                **child_config("codex"),
-            )
-            result_summary["codex"] = {
-                "accepted": bool(queued.get("accepted")),
-                "busy": bool(queued.get("busy")),
-                "task_id": queued.get("task_id"),
-                "run_id": queued.get("run_id"),
-                "message": queued.get("error") or "Codex OAuth 已入队",
-            }
-            task_store.append_event(
-                task_id,
-                stage="codex",
-                message="Codex OAuth 已作为独立操作入队" if queued.get("accepted") or queued.get("busy") else "Codex OAuth 入队失败",
-                detail={"accepted": bool(queued.get("accepted")), "busy": bool(queued.get("busy"))},
-                state="success" if queued.get("accepted") or queued.get("busy") else "failed",
-            )
-            if not queued.get("accepted") and not queued.get("busy"):
-                raise RuntimeError(queued.get("error") or "Codex OAuth 入队失败")
-            remaining.discard("codex")
-            result_summary["awaiting_steps"] = ["codex"]
-            result_summary["continuation_steps"] = [
-                step for step in planned_steps if step in remaining
-            ]
-            codex_child_task_id = queued.get("task_id")
-            codex_dependency_payload = {
-                "account_id": int(account_id),
-                "email": email,
-                "task_trigger": task_trigger,
-                "remaining_steps": [step for step in planned_steps if step in remaining],
-                "settings": dict(settings or {}),
-                "result_summary": result_summary,
-            }
-            save_handoff(child_source_system=str(queued.get("source_system") or "native_operations"),
-                         child_source_id=queued.get("task_id") or queued.get("source_id"), payload=codex_dependency_payload)
-            release_parent_reservation()
-
-        refresh_completion_state()
-        task_status = "partial_success" if (
-            result_summary.get("pending_steps") or result_summary.get("blocked") or result_summary.get("awaiting_steps")
-        ) else "success"
-        task_store.finish_task(
-            task_id,
-            status=task_status,
-            message=(
-                "补全步骤已完成，等待子任务成功后系统自动继续"
-                if result_summary.get("awaiting_steps")
-                else "已保存成功步骤，账号仍有未完成或受阻步骤，可重跑补齐"
-                if task_status == "partial_success"
-                else "补全计划已提交，独立操作将在任务中心继续执行"
-            ),
-            result_summary=result_summary,
-            validation_method="account_completion_plan",
-        )
-        if codex_dependency_payload is not None:
-            # As with refresh_at, the parent partial result is durable before
-            # a terminal child can wake and execute the continuation.
-            register_child_dependency(
-                child_source_system=str(queued.get("source_system") or "native_operations"),
-                child_source_id=queued.get("task_id") or codex_child_task_id or queued.get("source_id"),
-                payload=codex_dependency_payload,
-            )
-        return context.last_result if context is not None else None
-    except task_gateway.OperationLeaseUnavailable:
-        raise
-    except Exception as exc:
-        result_summary["error"] = f"{type(exc).__name__}: {str(exc)[:220]}"
-        refresh_completion_state()
-        if (
-            context is not None
-            and remote_write_started
-            and remote_receipt_state != "rejected"
-        ):
-            result_summary.update({
-                "outcome": "request_unknown",
-                "reconcile_required": True,
-            })
-            task_store.finish_task(
-                task_id,
-                status="attention_required",
-                message="账号配置远端结果待核验，禁止自动重做",
-                error=result_summary["error"],
-                result_summary=result_summary,
-                validation_method="account_completion_plan",
-            )
-            logger.exception("账号补全远端写入结果待核验：email=%s", email)
-            return context.last_result if context is not None else None
-        task_store.finish_task(
-            task_id,
-            status="partial_success" if result_summary.get("completed_steps") else "failed",
-            message="账号补全计划执行失败",
-            error=result_summary["error"],
-            result_summary=result_summary,
-            validation_method="account_completion_plan",
-        )
-        logger.exception("账号补全失败：email=%s", email)
-        return context.last_result if context is not None else None
-    finally:
-        # 账号配置子步骤在 manage_task=False 时会保留租约，直到这里完成；
-        # handoff 分支已经在提交 child 前释放，避免父任务占住 semaphore。
-        release_parent_reservation()
+    """兼容旧入口，委托账号核心模块的唯一实现。"""
+    return completion_execution.run_account_completion_worker(
+        email,
+        account_id=account_id,
+        task_id=task_id,
+        task_trigger=task_trigger,
+        planned_steps=planned_steps,
+        settings=settings,
+        initial_result_summary=initial_result_summary,
+        context=context,
+        reservation_held=reservation_held,
+    )
 
 
 def _native_task_data(context: task_gateway.OperationHandlerContext) -> dict[str, Any]:
-    data = context.run.get("data")
-    return dict(data) if isinstance(data, Mapping) else {}
+    """兼容旧入口，委托账号核心模块的唯一实现。"""
+    return operation_results.native_task_data(
+        context,
+    )
 
 
 def _finish_native_context(
     context: task_gateway.OperationHandlerContext,
     result: task_gateway.OperationResult,
 ) -> task_gateway.OperationResult:
-    if not context.finished:
-        context.finish(result)
-    return context.last_result or result
+    """兼容旧入口，委托账号核心模块的唯一实现。"""
+    return operation_results.finish_native_context(
+        context,
+        result,
+    )
 
 
 def _handle_native_account_setup(context: task_gateway.OperationHandlerContext) -> task_gateway.OperationResult:
-    data = _native_task_data(context)
-    steps = {
-        str(item or "").strip().lower()
-        for item in data.get("steps") or []
-    } & {"password", "plan_check", "twofa"}
-    if not steps:
-        steps = {
-            "password", "plan_check", "twofa",
-        }
-    if data.get("registration_completion"):
-        from core.storage import registration
-
-        source_run = registration.get_run(int(data.get("registration_run_id") or 0)) or {}
-        source_job = db.get_job(int(source_run.get("job_id") or 0)) if source_run.get("job_id") else {}
-        if (str(source_run.get("status") or "") in {"stopped", "cancelled"}
-                or str((source_job or {}).get("status") or "") in {"stopping", "stopped", "cancelled"}):
-            return _finish_native_context(context, task_gateway.OperationResult.cancelled(
-                "原注册续跑已停止，取消尚未执行的自动补密码",
-            ))
-    settings = _completion_settings_from_snapshot(context.config_snapshot)
-    task_trigger = str(data.get("task_trigger") or context.run.get("trigger") or "manual_account_setup")
-    # 持久化脱敏会移除含 password 的键；改密任务仍须保留其明确操作意图。
-    force_password_reset = context.task_type == "password_change" or bool(data.get("force_password_reset"))
-    force_twofa_change = bool(data.get("force_twofa_change"))
-    country = data.get("proxy_country_override")
-    if country is not None:
-        from config.countries import ISO_3166_ALPHA2
-
-        if not isinstance(country, str) or country not in ISO_3166_ALPHA2:
-            return _finish_native_context(context, task_gateway.OperationResult.failed("重跑代理国家覆盖无效"))
-    from core.runtime.capabilities import account_setup_unavailable
-
-    unavailable = account_setup_unavailable(
-        steps, settings, force_twofa_change=force_twofa_change, force_password_reset=force_password_reset,
+    """兼容旧入口，委托账号核心模块的唯一实现。"""
+    return setup_execution.handle_native_account_setup(
+        context,
     )
-    if unavailable:
-        return _finish_native_context(context, task_gateway.OperationResult.failed(unavailable["error"], unavailable))
-    context.report(
-        stage="account_setup", state="running",
-        message=f"开始执行账号配置步骤：{ '、'.join(sorted(steps)) }",
-        detail={"steps": sorted(steps)},
-    )
-    request_id = f"account-setup:{context.run_id}"
-    with context.lease(resource_family="openai_interactive"):
-        if data.get("registration_completion") and steps == {"password"}:
-            from core.accounts.password_evidence import password_is_confirmed
-
-            if password_is_confirmed(db.get_account(int(context.account_id or 0))):
-                return _finish_native_context(context, task_gateway.OperationResult.success(
-                    {"already_confirmed": True}, message="账号密码已确认，自动补密码任务完成",
-                ))
-        if data.get("completion_auth"):
-            from core.accounts.completion import active_registration_job
-
-            if active_registration_job(int(context.account_id or 0), context.email):
-                raise task_gateway.OperationLeaseUnavailable(
-                    "该账号仍有注册任务正在执行，等待注册结束后补全账号"
-                )
-        context.remote_request_started(
-            "account_setup",
-            intent_kind="remote_write",
-            request_id=request_id,
-            detail={"steps": sorted(steps), "checkpoint": "setup_dispatch"},
-        )
-        try:
-            result = codex_retry_service.run_twofa_worker(
-                context.email,
-                clear_log=False,
-                target_log_path=context.run.get("log_file"),
-                task_id=0,
-                task_trigger=task_trigger,
-                steps=steps,
-                manage_task=False,
-                twofa_driver_override=str(settings.get("twofa_driver") or "auto"),
-                password_driver_override=str(settings.get("password_driver") or "roxy"),
-                plan_driver_override=str(settings.get("plan_check_driver") or "protocol"),
-                force_password_reset=force_password_reset,
-                force_twofa_change=force_twofa_change,
-                execution_fence=context.execution_fence,
-                **({"execution_settings": dict(settings)}
-                   if data.get("bulk_target_round_id") or data.get("registration_completion") else {}),
-                **({"proxy_country_override": country} if country is not None else {}),
-            )
-        except Exception as exc:
-            try:
-                context.remote_request_receipt(
-                    outcome="unknown", action="account_setup", request_id=request_id,
-                    detail={"remote_response_received": False},
-                )
-            except Exception:
-                logger.exception("账号配置 remote receipt 写入失败：run_id=%s", context.run_id)
-            return _finish_native_context(
-                context,
-                task_gateway.OperationResult.request_unknown(
-                    f"账号配置执行异常，远端结果待核验：{type(exc).__name__}",
-                    {"error_type": type(exc).__name__},
-                ),
-            )
-        normalized = _safe_operation_result(result, default_message="账号配置未完成")
-        receipt_state, receipt_detail = _account_setup_receipt(
-            int(context.account_id or 0), context.email, steps, result,
-        )
-        context.remote_request_receipt(
-            outcome=receipt_state,
-            action="account_setup",
-            request_id=request_id,
-            detail=receipt_detail,
-        )
-        if receipt_detail.get("setup_step_receipts"):
-            normalized.summary["setup_step_receipts"] = receipt_detail["setup_step_receipts"]
-        if receipt_state not in {"confirmed", "rejected", "not_submitted"}:
-            pending_summary = dict(normalized.summary)
-            pending_error = normalized.error
-            pending_message = normalized.message
-            if receipt_state == "local_commit_required" and not pending_error:
-                pending_error = "account_setup_local_commit_failed"
-                pending_summary["cause_code"] = pending_error
-                pending_message = "账号配置本地写回或读回未完成"
-            normalized = task_gateway.OperationResult.request_unknown(
-                pending_message or "账号配置步骤未保存完整回执",
-                {
-                    **pending_summary,
-                    "status": str((result or {}).get("status") or "failed"),
-                    "remote_receipt_state": receipt_state,
-                    "local_readback_checks": receipt_detail.get("local_readback_checks") or {},
-                },
-                error=pending_error,
-            )
-        elif receipt_state == "confirmed" and normalized.status == "success":
-            context.report(
-                stage="account_setup", state="success",
-                message="账号配置实际执行与本地写回已确认完成",
-                detail={"steps": sorted(steps), "local_readback_confirmed": True},
-            )
-        elif receipt_state == "rejected" and normalized.status == "failed":
-            context.report(
-                stage="account_setup", state="failed", level="ERROR",
-                message="账号配置已明确失败",
-                detail={"steps": sorted(steps), "remote_result_state": "rejected"},
-            )
-        return _finish_native_context(context, normalized)
 
 
 def _handle_native_account_completion(context: task_gateway.OperationHandlerContext) -> task_gateway.OperationResult:
-    from core.accounts.completion import active_registration_job
-
-    if active_registration_job(int(context.account_id or 0), context.email):
-        raise task_gateway.OperationLeaseUnavailable(
-            "该账号仍有注册任务正在执行，等待注册结束后补全账号"
-        )
-    data = _native_task_data(context)
-    continuation = data.get("continuation_payload")
-    continuation = dict(continuation) if isinstance(continuation, Mapping) else {}
-    has_saved_plan = "remaining_steps" in continuation or "planned_steps" in data
-    saved_steps = (
-        continuation.get("remaining_steps")
-        if "remaining_steps" in continuation
-        else data.get("planned_steps")
-    )
-    planned_steps = [
-        str(step or "").strip().lower()
-        for step in saved_steps or []
-        if str(step or "").strip()
-    ]
-    settings = _completion_settings_from_snapshot(
-        context.config_snapshot,
-        fallback=continuation.get("settings") if isinstance(continuation.get("settings"), Mapping) else None,
-    )
-    # 空剩余计划表示子任务已全部消费，只有缺失计划字段的历史任务才重算。
-    if not has_saved_plan:
-        account = db.get_account(int(context.account_id or 0)) or {}
-        from core.accounts.completion import completion_plan
-
-        planned_steps = list(completion_plan(account, settings).get("missing_steps") or [])
-    unavailable = _completion_deployment_unavailable(set(planned_steps), settings)
-    if unavailable:
-        return _finish_native_context(context, task_gateway.OperationResult.failed(unavailable["error"], unavailable))
-    initial_summary = continuation.get("result_summary")
-    initial_summary = dict(initial_summary) if isinstance(initial_summary, Mapping) else {}
-    for key in ("configured_steps", "required_steps", "blocked"):
-        if key not in initial_summary and key in data:
-            initial_summary[key] = data[key]
-    if initial_summary is not None:
-        # 已成功完成依赖的等待状态不应带入下一轮，保留各子任务的执行证据。
-        for key in ("awaiting_steps", "deferred_steps", "continuation_steps", "completion_handoff"):
-            initial_summary.pop(key, None)
-    worker_kwargs = {
-        "email": context.email,
-        "account_id": int(context.account_id or 0),
-        "task_id": context.task_id,
-        "task_trigger": str(data.get("task_trigger") or context.run.get("trigger") or "manual_account_completion"),
-        "planned_steps": planned_steps,
-        "settings": settings,
-        "initial_result_summary": initial_summary,
-        "context": context,
-        "reservation_held": False,
-    }
-    # 父任务只编排补全计划，账号交互租约由执行远端操作的独立子任务持有。
-    _run_account_completion_worker(**worker_kwargs)
-    if context.last_result is not None:
-        return context.last_result
-    return _finish_native_context(
+    """兼容旧入口，委托账号核心模块的唯一实现。"""
+    return completion_execution.handle_native_account_completion(
         context,
-        task_gateway.OperationResult.failed("账号补全 handler 未报告终态"),
     )
 
 
 def _handle_native_registration_resume(context: task_gateway.OperationHandlerContext) -> task_gateway.OperationResult:
-    data = _native_task_data(context)
-    source_job_id = int(data.get("source_job_id") or 0)
-    if not source_job_id:
-        return _finish_native_context(
-            context,
-            task_gateway.OperationResult.failed("缺少可继续的原注册任务"),
-        )
-    context.report(
-        stage="preflight", state="running",
-        message="准备继续原注册任务",
-        detail={"source_job_id": source_job_id},
-    )
-    try:
-        from core.registration import service as registration_service
-
-        resumed = registration_service.retry_job(source_job_id)
-    except Exception as exc:
-        return _finish_native_context(
-            context,
-            task_gateway.OperationResult.failed(
-                f"继续注册任务入队异常：{type(exc).__name__}",
-                {"source_job_id": source_job_id},
-            ),
-        )
-    if not resumed.get("ok"):
-        return _finish_native_context(
-            context,
-            task_gateway.OperationResult.failed(
-                str(resumed.get("error") or "继续注册任务未能入队"),
-                {"source_job_id": source_job_id},
-            ),
-        )
-    job = resumed.get("job") if isinstance(resumed.get("job"), Mapping) else {}
-    # This handler is retained only for registration_resume wrappers that were
-    # persisted before account completion began dispatching the real retry job
-    # directly.  Queuing a child is not the same as that child succeeding, so
-    # never leave a misleading green terminal state on the compatibility task.
-    result = task_gateway.OperationResult(
-        "partial_success",
-        {
-            "source_job_id": source_job_id,
-            "job_id": job.get("id"),
-            "created": bool(resumed.get("created")),
-            "reused": bool(resumed.get("reused")),
-            "child_result_authoritative": True,
-        },
-        message=(
-            f"已转交给真实注册续跑任务 #{job.get('id')}，"
-            "请以该任务的最终状态为准"
-        ),
-    )
-    return _finish_native_context(context, result)
+    """兼容旧入口，历史注册续跑 handler 由账号核心模块持有。"""
+    return operation_handlers.handle_native_registration_resume(context)
 
 
 def _completion_deployment_unavailable(steps: set[str], settings: dict) -> dict | None:
-    """补全只检查实际缺项，套餐与账号配置由协调器分别执行。"""
-    from core.runtime.capabilities import account_setup_unavailable, browser_operation_unavailable
-
-    unavailable = account_setup_unavailable(steps & {"password", "twofa"}, settings)
-    if unavailable:
-        return unavailable
-    if "codex" in steps:
-        children = settings.get("child_execution") or {}
-        frozen = children.get("codex") if isinstance(children, Mapping) else None
-        snapshot = dict(frozen) if isinstance(frozen, Mapping) else codex_operation_service._config_snapshot(driver_override=str(settings.get("codex_driver") or "same_as_registration"))
-        unavailable = browser_operation_unavailable(snapshot.get("oauth_driver"))
-        if unavailable:
-            return unavailable
-    if "refresh_at" in steps:
-        children = settings.get("child_execution") or {}
-        frozen = children.get("refresh_at") if isinstance(children, Mapping) else None
-        return live_check_service.deployment_unavailable(force_refresh=True,
-            **({"config_snapshot": dict(frozen)} if isinstance(frozen, Mapping) else {}))
-    return None
+    """兼容旧入口，补全能力组合由账号核心模块判断。"""
+    return operation_settings.completion_deployment_unavailable(steps, settings)
 
 
 def _retry_native_runtime_task(task: Mapping[str, Any]) -> dict[str, Any]:
-    from core.bulk_operations.execution import retry_managed
-    managed_retry = retry_managed(task)
-    if managed_retry is not None:
-        return managed_retry
-    if str(task.get("source_system") or "") != _RUNTIME_SOURCE_SYSTEM:
-        return {"accepted": False, "busy": False, "error": "任务来源不属于 WebUI runtime"}
-    if task_gateway.operation_is_deactivated(task):
-        return {
-            "accepted": False,
-            "busy": False,
-            "deactivated": True,
-            "error": "账号已废号，不能重跑",
-        }
-    account_id = int(task.get("account_id") or 0)
-    if account_id and db.account_is_deactivated(db.get_account(account_id)):
-        return {
-            "accepted": False,
-            "busy": False,
-            "deactivated": True,
-            "error": "账号已废号，不能重跑",
-        }
-    if str(task.get("status") or "").lower() in {
-        "queued", "running", "cancelling", "settling", "stopping", "waiting",
-    }:
-        return {"accepted": False, "busy": True, "error": "任务仍在执行"}
-    from core.accounts.completion import completion_plan
-
-    data = task.get("data") if isinstance(task.get("data"), Mapping) else {}
-    settings = _completion_settings_from_snapshot(data.get("config_snapshot"))
-    if task.get("task_type") == "account_completion":
-        steps = set(completion_plan(db.get_account(account_id), settings)["missing_steps"])
-        unavailable = _completion_deployment_unavailable(steps, settings)
-    elif task.get("task_type") != "registration_resume":
-        from core.runtime.capabilities import account_setup_unavailable
-
-        steps = set(data.get("steps") or {"password", "plan_check", "twofa"})
-        unavailable = account_setup_unavailable(
-            steps, settings, force_twofa_change=bool(data.get("force_twofa_change")),
-            force_password_reset=task.get("task_type") == "password_change" or bool(data.get("force_password_reset")),
-        )
-    else:
-        from core.registration import service as registration_service
-
-        source_job = db.get_job(int(data.get("source_job_id") or 0))
-        unavailable = registration_service.registration_deployment_unavailable(
-            registration_service.registration_options_for_job(source_job),
-        )
-    if unavailable:
-        return unavailable
-    try:
-        run = operation_task_store.retry_runtime_task(
-            int(task["id"]),
-            trigger="manual_retry",
-            data={"retry_action": "manual_retry"},
-        )
-    except (LookupError, ValueError) as exc:
-        return {"accepted": False, "busy": False, "error": str(exc)}
-    task_gateway.notify_dispatch()
-    return {
-        "accepted": True,
-        "busy": False,
-        "reused": False,
-        "task_id": int(task["id"]),
-        "run_id": int(run["id"]),
-        "account_id": account_id or None,
-        "email": str(task.get("email_snapshot") or ""),
-        "status": "queued",
-        "source_system": _RUNTIME_SOURCE_SYSTEM,
-    }
+    """兼容旧入口，任务重跑业务由动作应用层持有。"""
+    return action_service.retry_runtime_task(task)
 
 
 def _cancel_native_runtime_task(task: Mapping[str, Any]) -> dict[str, Any]:
-    if str(task.get("source_system") or "") != _RUNTIME_SOURCE_SYSTEM:
-        return {"ok": False, "error": "任务来源不属于 WebUI runtime"}
-    active = next(
-        (
-            run for run in reversed(task.get("runs") or [])
-            if str(run.get("status") or "") in {
-                "queued", "running", "cancelling", "settling", "stopping", "waiting",
-            }
-        ),
-        None,
-    )
-    if not active:
-        return {"ok": True, "running": False, "state": "empty", "message": "任务没有活跃 attempt"}
-    try:
-        run = operation_task_store.request_run_cancel(
-            int(active["id"]), reason="用户手动停止 WebUI durable operation",
-        )
-    except LookupError as exc:
-        return {"ok": False, "error": str(exc)}
-    task_gateway.notify_dispatch()
-    return {
-        "ok": True,
-        "run_id": int(active["id"]),
-        "running": str(run.get("status") or "") != "cancelled",
-        "state": str(run.get("status") or "cancelling"),
-        "message": "已记录停止请求，任务将在安全检查点收口",
-    }
+    """兼容旧入口，任务停止业务由动作应用层持有。"""
+    return action_service.cancel_runtime_task(task)
 
 
 def _register_runtime_handlers() -> None:
-    global _RUNTIME_HANDLERS_REGISTERED
-    from core.accounts.email_change import service as email_change_service
-
-    email_change_service.register_operation_handlers()
-    with _RUNTIME_HANDLER_LOCK:
-        registered = set(task_gateway.registered_dispatch_types())
-        if _RUNTIME_HANDLERS_REGISTERED and _RUNTIME_HANDLER_TYPES <= registered:
-            return
-        for task_type in sorted(_RUNTIME_HANDLER_TYPES):
-            if task_type == "registration_resume":
-                handler = _handle_native_registration_resume
-            elif task_type == "account_completion":
-                handler = _handle_native_account_completion
-            else:
-                handler = _handle_native_account_setup
-            task_gateway.register_operation_handler(
-                task_type,
-                handler,
-                source_systems=(_RUNTIME_SOURCE_SYSTEM,),
-                config_allowlist=_RUNTIME_CONFIG_ALLOWLIST,
-                retry_handler=_retry_native_runtime_task,
-                cancel_handler=_cancel_native_runtime_task,
-            )
-        _RUNTIME_HANDLERS_REGISTERED = True
+    """组合根保留启动入口，注册状态仅由核心模块维护。"""
+    operation_handlers.register_runtime_handlers()
 
 
 def _legacy_recovery_exclusions(
@@ -1426,333 +262,29 @@ def _legacy_recovery_exclusions(
     *,
     legacy_source_systems: tuple[str, ...] | list[str] | set[str] | frozenset[str] | None = None,
 ) -> dict[str, Any]:
-    """Return row-level fences for legacy recovery.
-
-    A category-wide ``has_active`` bit is unsafe during the migration: an
-    active native Run for account A must not leave an unrelated legacy row for
-    account B running forever.  A failed safety query deliberately returns
-    ``skip_all`` so startup cannot clear a durable worker while its ownership
-    is uncertain.
-    """
-    normalized = tuple(sorted({str(item).strip() for item in task_types if str(item).strip()}))
-    target_source_systems = None if legacy_source_systems is None else {
-        str(item).strip() for item in legacy_source_systems if str(item).strip()
-    }
-    empty = {
-        "skip_all": False,
-        "account_ids": [],
-        "source_ids": [],
-        "source_fences": [],
-    }
-    try:
-        result = operation_task_store.list_active_runtime_recovery_exclusions(
-            task_types=normalized,
-        )
-    except AttributeError:
-        # Keep a safe rolling-upgrade fallback for an older coordinator facade.
-        # It may over-skip, but it can never clear a row belonging to an active
-        # durable operation.
-        try:
-            active = operation_task_store.has_active_runtime_operations(task_types=normalized)
-        except Exception:
-            logger.exception("无法确认 durable Run 是否活跃，跳过本次 legacy recovery")
-            return {**empty, "skip_all": True}
-        return {
-            "skip_all": bool(active),
-            "account_ids": [],
-            "source_ids": [],
-            "source_fences": [],
-        }
-    except Exception:
-        # A failed safety query must not let the old recovery code clear a
-        # durable worker that may be alive in another process.
-        logger.exception("无法读取 durable Run 行级恢复排除项，跳过本次 legacy recovery")
-        return {**empty, "skip_all": True}
-
-    if not isinstance(result, Mapping):
-        logger.error("durable Run 行级恢复排除项格式无效，跳过本次 legacy recovery")
-        return {**empty, "skip_all": True}
-    try:
-        account_ids = sorted({int(item) for item in (result.get("account_ids") or ())})
-        raw_fences = result.get("source_fences") or ()
-        source_fences: list[dict[str, str]] = []
-        for item in raw_fences:
-            if not isinstance(item, Mapping):
-                raise ValueError("source fence 不是对象")
-            source_system = str(item.get("source_system") or "").strip()
-            source_id = str(item.get("source_id") or "").strip()
-            if not source_system or not source_id:
-                raise ValueError("source fence 缺少 namespace/id")
-            source_fences.append({"source_system": source_system, "source_id": source_id})
-        source_fences = sorted(
-            source_fences,
-            key=lambda item: (item["source_system"], item["source_id"]),
-        )
-        if target_source_systems is None:
-            # Callers that only need a boolean must not receive an
-            # unqualified id list that can later be applied to another table.
-            source_ids = []
-        else:
-            source_ids = sorted({
-                item["source_id"] for item in source_fences
-                if item["source_system"] in target_source_systems
-            })
-            # A non-empty legacy source_ids response without namespaces is an
-            # unsafe partial rollout. Do not clear any legacy category when
-            # the exact source fence cannot be reconstructed.
-            if not source_fences and result.get("source_ids"):
-                return {**empty, "skip_all": True}
-    except (TypeError, ValueError):
-        logger.exception("durable Run 行级恢复排除项包含非法标识，跳过本次 legacy recovery")
-        return {**empty, "skip_all": True}
-    if account_ids or source_fences:
-        logger.info(
-            "按 durable active Run 行级保留 legacy 状态：types=%s accounts=%s source_fences=%s",
-            list(normalized), account_ids, source_fences,
-        )
-    return {
-        "skip_all": False,
-        "account_ids": account_ids,
-        "source_ids": source_ids,
-        "source_fences": source_fences,
-    }
-
-
-def _legacy_recovery_allowed(task_types: set[str] | frozenset[str] | tuple[str, ...]) -> bool:
-    """Compatibility predicate; startup uses row-level exclusions directly."""
-    exclusions = _legacy_recovery_exclusions(task_types)
-    return (
-        not exclusions["skip_all"]
-        and not exclusions["account_ids"]
-        and not exclusions["source_ids"]
-        and not exclusions.get("source_fences")
+    """兼容旧入口，行级恢复规则由核心 reconciliation 服务拥有。"""
+    return reconciliation.legacy_recovery_exclusions(
+        task_types, legacy_source_systems=legacy_source_systems, operation_logger=logger,
     )
 
 
+def _legacy_recovery_allowed(task_types: set[str] | frozenset[str] | tuple[str, ...]) -> bool:
+    """兼容旧入口，启动恢复使用核心服务的行级排除项。"""
+    return reconciliation.legacy_recovery_allowed(task_types, operation_logger=logger)
+
+
 def _handle_ready_completion_dependency(dependency: dict) -> None:
-    """Run one already-claimed completion continuation in the common pool.
-
-    ``task_gateway`` is the sole owner of the ready->running claim. This
-    function is intentionally a worker body and never claims again.
-    """
-    dependency_id = int(dependency.get("id") or 0)
-    if not dependency_id:
-        return
-    claimed = dependency
-    payload = claimed.get("payload") if isinstance(claimed.get("payload"), dict) else {}
-    parent_system = str(claimed.get("parent_source_system") or "")
-    parent_id = str(claimed.get("parent_source_id") or "")
-    child_status = str(claimed.get("child_status") or "").lower()
-    try:
-        if parent_system == _RUNTIME_SOURCE_SYSTEM:
-            parent_task_id = int(parent_id)
-            parent = operation_task_store.get_task(parent_task_id, include_events=False) or {}
-            expected_run = int(payload.get("parent_run_id") or 0) or None
-            if expected_run is None:
-                previous_runs = [row for row in parent.get("runs") or [] if isinstance(row, Mapping)]
-                if len(previous_runs) == 1:
-                    expected_run = int(previous_runs[0].get("id") or 0) or None
-                elif len(previous_runs) > 1:
-                    # 历史依赖没有记录执行代际，多个 Run 时不能猜测并覆盖或再启动新代。
-                    operation_task_store.complete_task_dependency(dependency_id, success=True)
-                    logger.info("历史补全依赖执行代际无法唯一确认，保留当前任务：dependency_id=%s parent_task_id=%s",
-                                dependency_id, parent_task_id)
-                    return
-            if expected_run is not None and int(parent.get("last_run_id") or 0) != expected_run:
-                operation_task_store.complete_task_dependency(dependency_id, success=True)
-                return
-            if str(parent.get("status") or "").lower() in {"cancelled", "cancelling", "stopped"}:
-                operation_task_store.complete_task_dependency(dependency_id, success=True)
-                return
-            if child_status != "success":
-                updated = operation_task_store.apply_task_dependency_result(
-                    parent_source_system=parent_system,
-                    parent_source_id=parent_id,
-                    child_status=child_status or "unknown",
-                    child_result=claimed.get("child_result") if isinstance(claimed.get("child_result"), dict) else {},
-                    **({"expected_parent_run_id": expected_run} if expected_run is not None else {}),
-                )
-                if updated is None:
-                    raise LookupError("补全父任务不存在")
-                operation_task_store.complete_task_dependency(dependency_id, success=True)
-                return
-            continuation_payload = {
-                "remaining_steps": [
-                    str(step) for step in payload.get("remaining_steps") or []
-                ],
-                "settings": dict(payload.get("settings") or {}),
-                "result_summary": dict(payload.get("result_summary") or {}),
-                "child_source_system": str(claimed.get("child_source_system") or ""),
-                "child_source_id": str(claimed.get("child_source_id") or ""),
-            }
-            run = operation_task_store.retry_runtime_task(
-                parent_task_id,
-                trigger="dependency_resume",
-                data={
-                    "retry_action": "dependency_resume",
-                    "continuation_payload": continuation_payload,
-                },
-                **({"expected_previous_run_id": expected_run} if expected_run is not None else {}),
-            )
-            if run.get("dependency_stale"):
-                operation_task_store.complete_task_dependency(dependency_id, success=True)
-                return
-            task_gateway.notify_dispatch()
-            operation_task_store.complete_task_dependency(dependency_id, success=True)
-            logger.info(
-                "补全父任务已由持久依赖续接：parent_task_id=%s run_id=%s",
-                parent_task_id, run.get("id"),
-            )
-            return
-        if parent_system == "native_operations":
-            # The email-change parent is terminal before its follow-up child
-            # becomes eligible. This dependency records the handoff; it does
-            # not reopen a completed parent operation.
-            operation_task_store.complete_task_dependency(dependency_id, success=True)
-            return
-        if parent_system != "account_action_tasks":
-            operation_task_store.complete_task_dependency(
-                dependency_id, success=False, error="暂不支持该父任务来源",
-            )
-            return
-        parent_task_id = int(parent_id)
-        if child_status != "success":
-            message = "子任务未成功，补全父任务保留待对账状态"
-            child_result = claimed.get("child_result")
-            if not isinstance(child_result, Mapping):
-                child_result = {}
-            child_context = {
-                "child_status": child_status or "unknown",
-                "child_task_id": (
-                    claimed.get("child_task_id")
-                    or claimed.get("child_source_id")
-                    or child_result.get("task_id")
-                ),
-                "child_run_id": (
-                    child_result.get("run_id")
-                    or child_result.get("child_run_id")
-                    or claimed.get("child_run_id")
-                ),
-                "failure_stage": child_result.get("failure_stage") or child_result.get("stage"),
-                "failure_event_id": child_result.get("failure_event_id") or child_result.get("event_id"),
-                "failure_message": (
-                    child_result.get("failure_message")
-                    or child_result.get("error_message")
-                    or child_result.get("error")
-                    or child_result.get("message")
-                ),
-            }
-            child_context = {
-                key: value for key, value in child_context.items()
-                if value not in (None, "")
-            }
-            account_task_store.append_event(
-                parent_task_id,
-                stage="plan",
-                level="WARNING",
-                message=message,
-                detail=child_context,
-                state="failed",
-            )
-            account_task_store.finish_task(
-                parent_task_id,
-                status="partial_success",
-                message=message,
-                error=f"child_status={child_status or 'unknown'}",
-                result_summary={
-                    "awaiting_steps": payload.get("remaining_steps") or [],
-                    "child_status": child_status or "unknown",
-                    "child_result": claimed.get("child_result") or {},
-                },
-                validation_method="account_completion_dependency",
-            )
-            operation_task_store.complete_task_dependency(dependency_id, success=True)
-            return
-
-        email = str(payload.get("email") or "").strip()
-        if not email:
-            raise ValueError("父任务续接缺少 email")
-        if not codex_retry_service.reserve(email):
-            # Return to the durable queue with storage-level backoff. A Timer
-            # per busy dependency would create an unbounded thread population
-            # during a long-running account operation.
-            operation_task_store.complete_task_dependency(
-                dependency_id, success=False, error="账号仍被其它操作占用",
-            )
-            account_task_store.notify_dependency_ready(claimed)
-            return
-        _run_account_completion_worker(
-            email,
-            account_id=int(payload.get("account_id") or 0),
-            task_id=parent_task_id,
-            task_trigger=str(payload.get("task_trigger") or "manual_account_completion"),
-            planned_steps=[str(step) for step in payload.get("remaining_steps") or []],
-            settings=dict(payload.get("settings") or {}),
-            initial_result_summary=dict(payload.get("result_summary") or {}),
-        )
-        operation_task_store.complete_task_dependency(dependency_id, success=True)
-    except Exception as exc:
-        logger.exception("补全父任务自动续接失败：dependency_id=%s", dependency_id)
-        operation_task_store.complete_task_dependency(
-            dependency_id, success=False, error=f"{type(exc).__name__}: {exc}",
-        )
-        account_task_store.notify_dependency_ready(claimed)
+    """兼容旧入口，委托账号核心模块的唯一实现。"""
+    return completion_dependencies.handle_ready_completion_dependency(
+        dependency,
+    )
 
 
 def _submit_ready_completion_dependency(dependency: dict):
-    """Submit a claimed dependency without executing it on the scanner.
-
-    ``try_submit`` is deliberately non-blocking. If the account-operation
-    budget is full, the claimed row is returned to the durable ready queue and
-    the next scanner tick can reclaim it after the storage backoff expires.
-    """
-    dependency_id = int(dependency.get("id") or 0)
-    if not dependency_id:
-        return None
-    from core.operations import concurrency
-
-    admission = dependency.get("_execution_context")
-    if admission is None:
-        # 兼容调用入口也须持真实账号配置许可，旧回调可能直接执行后续业务。
-        result = concurrency.try_admit_and_claim(
-            execution_key=f"operation_dependency:{dependency_id}", task_type="account_setup_retry",
-            claim=lambda conn, execution_id: dict(dependency),
-            metadata={key: dependency.get(key) for key in ("parent_source_system", "parent_source_id")},
-            extra_scopes=[{"kind": "account", "key": f"{int(dependency['payload']['account_id'])}:openai_interactive", "limit": 1}]
-            if isinstance(dependency.get("payload"), Mapping) and dependency["payload"].get("account_id") else [],
-        )
-        if not result.admitted:
-            operation_task_store.complete_task_dependency(dependency_id, success=False,
-                                                         error="等待业务执行许可")
-            account_task_store.notify_dependency_ready(dependency)
-            return None
-        admission = result.context
-    try:
-        future = _ACCOUNT_EXECUTOR.try_submit(
-            task_gateway.execute_admitted, admission,
-            lambda: _handle_ready_completion_dependency({key: value for key, value in dependency.items() if key != "_execution_context"}),
-        )
-    except Exception as exc:
-        logger.exception("补全依赖提交到共享 executor 失败：dependency_id=%s", dependency_id)
-        operation_task_store.complete_task_dependency(
-            dependency_id,
-            success=False,
-            error=f"{type(exc).__name__}: {exc}",
-        )
-        account_task_store.notify_dependency_ready(dependency)
-        concurrency.release_execution(admission, reason="executor_submit_failed")
-        return None
-    if future is None:
-        operation_task_store.complete_task_dependency(
-            dependency_id,
-            success=False,
-            error="账号操作共享并发预算已满",
-        )
-        account_task_store.notify_dependency_ready(dependency)
-        concurrency.release_execution(admission, reason="executor_submit_failed")
-    elif hasattr(future, "add_done_callback"):
-        future.add_done_callback(lambda completed: concurrency.release_execution(admission, reason="submission_cancelled") if completed.cancelled() else None)
-    return future
+    """兼容旧入口，委托账号核心模块的唯一实现。"""
+    return completion_dependencies.submit_ready_completion_dependency(
+        dependency,
+    )
 
 
 @dataclass
@@ -1821,108 +353,57 @@ class WebUIContext:
         )
 
     def retry_account_task_result(self, task_id: int) -> tuple[dict, int]:
-        """Resolve a historical account task to its current retry service."""
-        task = account_task_store.get_task(task_id)
-        if not task:
-            return {"ok": False, "error": "任务实例不存在"}, 404
-        from core.bulk_operations.execution import retry_managed
-        managed_retry = retry_managed(task)
-        if managed_retry is not None:
-            return {"ok": True, **managed_retry}, 202
-        if task.get("status") in {"queued", "running"}:
-            return {"ok": False, "error": "任务仍在执行"}, 409
-        account = db.get_account(int(task.get("account_id") or 0))
-        if not account:
-            return {"ok": False, "error": "关联账号不存在"}, 404
-        if db.account_is_deactivated(account):
-            return {
-                "ok": False,
-                "deactivated": True,
-                "error": "账号已废号，不能重跑",
-            }, 409
-        task_type = str(task.get("task_type") or "")
-        if task_type in {"live_check", "token_refresh"}:
-            queued = live_check_service.enqueue_account_live_check(
-                account_id=int(account["id"]),
-                email=str(account.get("email") or ""),
-                trigger="token_refresh_manual_retry" if task_type == "token_refresh" else "manual_retry",
-                proxy=None,
-                force_refresh=task_type == "token_refresh",
-            )
-        elif task_type == "plan_check":
-            queued = plan_check_service.enqueue_account_plan_check(
-                account_id=int(account["id"]),
-                email=str(account.get("email") or ""),
-                access_token=str(account.get("access_token") or ""),
-                trigger="manual_retry",
-                proxy=None,
-            )
-        elif task_type == "deactivation_mail":
-            queued = deactivation_mail_service.enqueue(int(account["id"]), trigger="manual_retry")
-        elif task_type == "extract_link":
-            result_summary = task.get("result_summary") if isinstance(task.get("result_summary"), dict) else {}
-            queued = extract_link_service.enqueue_account_extract(
-                account_id=int(account["id"]),
-                email=str(account.get("email") or ""),
-                access_token=str(account.get("access_token") or ""),
-                trigger="manual_retry",
-                # 失败类型会由提炼服务重新检查并自动换下一个可用类型。
-                link_type=str(result_summary.get("link_type") or "") or None,
-            )
-        elif task_type == "codex_retry":
-            queued = self.enqueue_codex_retry(
-                email=str(account.get("email") or ""),
-                trigger="manual_retry",
-            )
-        elif task_type in {"account_setup_retry", "password_setup", "password_change", "twofa_setup", "twofa_change"}:
-            step_map = {
-                "account_setup_retry": None,
-                "password_setup": {"password"},
-                "password_change": {"password"},
-                "twofa_setup": {"twofa"},
-                "twofa_change": {"twofa"},
-            }
-            operation_map = {
-                "password_change": "password_change",
-                "twofa_change": "twofa_change",
-            }
-            queued = self.enqueue_account_setup(
-                int(account["id"]),
-                trigger="manual_retry",
-                steps=step_map[task_type],
-                task_type=task_type,
-                operation=operation_map.get(task_type),
-            )
-        elif task_type == "account_completion":
-            queued = self.enqueue_account_completion(
-                int(account["id"]),
-                trigger="manual_retry_completion",
-            )
-        elif task_type == "codex_token_refresh":
-            summary = task.get("result_summary") if isinstance(task.get("result_summary"), dict) else {}
-            task_data = task.get("data") if isinstance(task.get("data"), dict) else {}
-            filename = str(
-                summary.get("filename")
-                or task_data.get("credential_filename")
-                or ""
-            )
-            queued = codex_token_refresh_service.enqueue_refresh(
-                filename,
-                trigger="manual_task_center_retry",
-                allow_unknown_manual_retry=True,
-            )
-        else:
-            return {"ok": False, "error": "该任务类型暂不支持重跑"}, 400
-        if queued.get("busy"):
-            return {"ok": False, **queued}, 409
-        if not queued.get("accepted"):
-            return {"ok": False, **queued}, 400
-        return {"ok": True, **queued}, 202
+        """兼容旧入口，历史任务重跑由动作应用层持有。"""
+        return action_service.retry_legacy_account_task(task_id, operation_logger=self.logger)
 
 
 _runtime_lock = threading.Lock()
 _runtime_started = False
 _runtime_started_at: float | None = None
+_legacy_settlement_started = False
+_legacy_settlement_atexit_registered = False
+
+
+def _stop_legacy_settlement_if_idle(timeout: float = 1.0) -> bool:
+    """Join only our idle carrier; this is not a legacy worker shutdown."""
+    global _legacy_settlement_started
+    from core.operations import settlement
+    from core.operations.executor import extract_executor
+    if not _legacy_settlement_started:
+        return True
+    # This compatibility entrypoint has no unified legacy producer stop proof.
+    # Do not stop compensation while any legacy producer can create more work.
+    with _runtime_lock:
+        if _runtime_started:
+            return False
+    if settlement.active_counts().get("registered"):
+        return False
+    if any(int(value or 0) for carrier in (_ACCOUNT_EXECUTOR, extract_executor)
+           for key, value in carrier.runtime_status().items() if key in {"active", "accepted"}):
+        return False
+    deadline = time.monotonic() + max(0.0, float(timeout))
+    if not settlement.drain_runtime(deadline) or not settlement.stop_runtime(deadline):
+        return False
+    _legacy_settlement_started = False
+    return True
+
+
+def _legacy_settlement_atexit() -> None:
+    if not _stop_legacy_settlement_if_idle(timeout=1.0):
+        logger.warning("legacy_settlement_stop_incomplete")
+
+
+def _start_legacy_settlement() -> None:
+    global _legacy_settlement_started, _legacy_settlement_atexit_registered
+    from core.operations import settlement
+    from core.runtime.execution_access import component_start_allowed
+    if not component_start_allowed():
+        return
+    if settlement.start_runtime():
+        _legacy_settlement_started = True
+    if _legacy_settlement_started and not _legacy_settlement_atexit_registered:
+        atexit.register(_legacy_settlement_atexit)
+        _legacy_settlement_atexit_registered = True
 
 
 def runtime_status() -> dict[str, Any]:
@@ -1932,6 +413,11 @@ def runtime_status() -> dict[str, Any]:
     payload.  ``ready`` means WebUI startup completed; component liveness is
     exposed separately so a health route can choose strict or degraded policy.
     """
+    from core.runtime.process import get_runtime_context
+    from core.operations import settlement
+    if get_runtime_context() is not None:
+        from core.runtime.process import runtime_status as managed_status
+        return managed_status()
     with _runtime_lock:
         started = bool(_runtime_started)
         started_at = _runtime_started_at
@@ -1978,11 +464,16 @@ def runtime_status() -> dict[str, Any]:
         "email_usage_reports": usage_reports_status,
         "email_service_sync": service_sync_status,
         "bulk_operations": bulk_status,
+        "settlement": settlement.runtime_status(),
     }
 
 
 def start_runtime(runtime_logger: logging.Logger | None = None) -> bool:
     """Start WebUI recovery and periodic workers once per process."""
+    from core.runtime.process import get_runtime_context
+    if get_runtime_context() is not None:
+        from core.runtime.process import start_runtime as managed_start
+        return managed_start(runtime_logger)
     global _runtime_started, _runtime_started_at
     active_logger = runtime_logger or logger
     with _runtime_lock:
@@ -1992,15 +483,8 @@ def start_runtime(runtime_logger: logging.Logger | None = None) -> bool:
         operation_task_store.init()
         from core.storage.operations import bulk
         bulk.init()
-        from core.operations import concurrency
-
-        recovered_permits = concurrency.recover_execution_permits()
-        active_logger.info("执行许可恢复核验：已释放=%s，存活=%s，待核验=%s",
-                           recovered_permits["released"], recovered_permits["alive"], recovered_permits["unverified"])
-        from core.email.email_butler import manual_import as butler_manual_import
-        recovered_imports = butler_manual_import.reconcile_interrupted()
-        if recovered_imports:
-            active_logger.warning("已恢复 %s 个因服务重启中断的 Butler 导入批次，可继续原批次", recovered_imports)
+        _start_legacy_settlement()
+        reconciliation.recover_before_handlers(active_logger)
         try:
             from core.proxy import pool as proxy_pool
 
@@ -2018,70 +502,7 @@ def start_runtime(runtime_logger: logging.Logger | None = None) -> bool:
         sub2api_monitor.register_handler()
         manual_upload.register_handler()
         c2a_manual_sync.register_handler()
-        recovered_operation_runs = operation_task_store.recover_interrupted_runtime_runs()
-        if recovered_operation_runs:
-            active_logger.warning("已收口 %s 个因 WebUI 重启中断的原生账号操作", recovered_operation_runs)
-        repaired_compatibility_projections = operation_task_store.repair_stale_compatibility_projections()
-        if repaired_compatibility_projections:
-            active_logger.warning(
-                "已修复 %s 个底层已结束但统一任务仍显示活动的兼容投影",
-                repaired_compatibility_projections,
-            )
-        # 原提链 Run 会内联查活和查询套餐，先恢复旧状态，再启动原单续查和调度。
-        live_check_recovery = _legacy_recovery_exclusions(
-            {"live_check", "token_refresh", "account_inspection"}, legacy_source_systems=(),
-        )
-        if not live_check_recovery["skip_all"]:
-            recovered_live_checks = db.recover_interrupted_live_checks(
-                excluded_account_ids=live_check_recovery["account_ids"],
-            )
-            if recovered_live_checks:
-                active_logger.warning("已恢复 %s 个因 WebUI 重启中断的查活状态", recovered_live_checks)
-        else:
-            active_logger.info("无法安全读取 durable live_check 行级排除项，跳过旧查活恢复")
-        plan_check_recovery = _legacy_recovery_exclusions(
-            {"plan_check"}, legacy_source_systems=(),
-        )
-        if not plan_check_recovery["skip_all"]:
-            recovered_plan_checks = db.recover_interrupted_plan_checks(
-                excluded_account_ids=plan_check_recovery["account_ids"],
-            )
-            if recovered_plan_checks:
-                active_logger.warning("已恢复 %s 个因 WebUI 重启中断的套餐查询状态", recovered_plan_checks)
-        else:
-            active_logger.info("无法安全读取 durable plan_check 行级排除项，跳过旧套餐查询恢复")
-        try:
-            resumed_extract_jobs = extract_link_service.resume_known_remote_jobs()
-            if resumed_extract_jobs:
-                active_logger.warning("已为 %s 个中断的提链远端任务排队状态同步", resumed_extract_jobs)
-        except Exception:
-            active_logger.exception("恢复中断的提链远端状态同步失败")
-        registration_recovery = _legacy_recovery_exclusions(
-            {"registration_resume"},
-            legacy_source_systems=("registration_jobs",),
-        )
-        if not registration_recovery["skip_all"]:
-            recovered_jobs = db.recover_interrupted_registration_jobs(
-                excluded_account_ids=registration_recovery["account_ids"],
-                excluded_source_ids=registration_recovery["source_ids"],
-            )
-            if recovered_jobs:
-                active_logger.warning("已恢复 %s 个因 WebUI 重启中断的注册/Codex 任务", recovered_jobs)
-        else:
-            active_logger.info("无法安全读取 durable registration_resume 行级排除项，跳过旧注册状态恢复")
-        account_task_recovery = _legacy_recovery_exclusions(
-            _LEGACY_DURABLE_TASK_TYPES,
-            legacy_source_systems=("account_action_tasks",),
-        )
-        if not account_task_recovery["skip_all"]:
-            recovered_account_tasks = account_task_store.recover_interrupted(
-                excluded_account_ids=account_task_recovery["account_ids"],
-                excluded_source_ids=account_task_recovery["source_ids"],
-            )
-            if recovered_account_tasks:
-                active_logger.warning("已恢复 %s 个因 WebUI 重启中断的账号任务实例", recovered_account_tasks)
-        else:
-            active_logger.info("无法安全读取 durable 账号操作行级排除项，跳过兼容账号任务恢复")
+        reconciliation.recover_before_dispatchers(active_logger)
         operation_task_store.start_projection_worker()
         from core.registration import service as registration_service
 
@@ -2091,61 +512,10 @@ def start_runtime(runtime_logger: logging.Logger | None = None) -> bool:
         account_task_store.start_dependency_dispatcher()
         from core.bulk_operations import service as bulk_service
         bulk_service.start_workers()
-        try:
-            resumed_dependencies = account_task_store.drain_ready_dependencies(initialized=True)
-            if resumed_dependencies:
-                active_logger.info("已恢复 %s 个待续接的账号补全父任务", resumed_dependencies)
-        except Exception:
-            # Dependency recovery is additive.  The durable ready rows remain
-            # queryable and will be retried on the next startup/reconcile.
-            active_logger.exception("恢复账号补全父子依赖失败；不影响 WebUI 启动")
-        from config.deployment import browser_enabled
-
-        if browser_enabled():
-            try:
-                from core.browser.roxy.client import cleanup_orphaned_profiles
-
-                orphan_result = cleanup_orphaned_profiles()
-                if orphan_result.get("found"):
-                    active_logger.warning(
-                        "Roxy 孤儿环境恢复完成：found=%s cleaned=%s failed=%s",
-                        orphan_result.get("found"), orphan_result.get("cleaned"), orphan_result.get("failed"),
-                    )
-            except Exception:
-                active_logger.exception("Roxy 孤儿环境启动恢复失败；登记会保留到下次启动继续重试")
-
-        try:
-            from core.registration.debug import cleanup_expired_artifacts
-
-            debug_cleanup = cleanup_expired_artifacts()
-            if debug_cleanup.get("removed_files") or debug_cleanup.get("removed_dirs"):
-                active_logger.info(
-                    "注册调试产物过期清理完成：files=%s dirs=%s",
-                    debug_cleanup.get("removed_files", 0),
-                    debug_cleanup.get("removed_dirs", 0),
-                )
-        except Exception:
-            active_logger.exception("注册调试产物过期清理失败；不影响 WebUI 启动")
-
+        reconciliation.recover_ready_dependencies(active_logger)
+        reconciliation.recover_local_artifacts(active_logger)
         sms_provider.start_cancel_worker()
-        extract_link_recovery = _legacy_recovery_exclusions(
-            {"extract_link"}, legacy_source_systems=(),
-        )
-        if not extract_link_recovery["skip_all"]:
-            recovered_extract_links = db.recover_interrupted_extract_links(
-                excluded_account_ids=extract_link_recovery["account_ids"],
-            )
-            if recovered_extract_links:
-                active_logger.warning("已恢复 %s 个因 WebUI 重启中断的提链状态", recovered_extract_links)
-        else:
-            active_logger.info("无法安全读取 durable extract_link 行级排除项，跳过旧提链恢复")
-        backfilled_proxy_context = db.backfill_account_registration_proxy_context()
-        if backfilled_proxy_context:
-            active_logger.info("已为 %s 个历史账号补齐注册代理来源/国家", backfilled_proxy_context)
-
-        resumed_codex_runs = codex_operation_service.resume_queued()
-        if resumed_codex_runs:
-            active_logger.info("已恢复调度 %s 个数据库队列中的 Codex attempt", resumed_codex_runs)
+        reconciliation.recover_account_background_state(active_logger)
         from core.accounts.deactivation.mail_scan import start_periodic_scanner
         from core.accounts.token_refresh import start_periodic_refresher
         from core.codex.token_refresh_service import start_periodic_refresher as start_codex_token_refresher
@@ -2176,3 +546,15 @@ def start_runtime(runtime_logger: logging.Logger | None = None) -> bool:
         _runtime_started = True
         _runtime_started_at = time.time()
         return True
+
+
+def stop_runtime(timeout: float = 60.0) -> bool:
+    """Stop an explicitly installed managed runtime with truthful drain status."""
+    from core.runtime.process import get_runtime_context
+    if get_runtime_context() is None:
+        # Idle failed startup may relinquish only the carrier this entrypoint
+        # created. Other legacy components have no proven shutdown here.
+        _stop_legacy_settlement_if_idle(timeout=min(1.0, max(0.0, timeout)))
+        return False
+    from core.runtime.process import stop_runtime as managed_stop
+    return managed_stop(timeout=timeout)

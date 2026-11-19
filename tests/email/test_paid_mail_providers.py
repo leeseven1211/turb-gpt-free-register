@@ -349,8 +349,11 @@ class PaidMailProviderTests(PostgresTestCase):
             mailcode.pick_account(owner_kind="registration_root", owner_id="other", acquisition_id="root-1")
         self.http.assert_not_called()
 
-    def test_provider_paid_failure_never_falls_back_to_other_provider(self):
-        with patch.object(cfg, "EMAIL_SOURCE", "mailcode,outlook"), patch.object(mailcode, "pick_account", side_effect=mailcode.MailCodeError("暂时故障")), patch("core.email.outlook.client.pick_account") as outlook:
-            with self.assertRaises(mailcode.MailCodeError):
-                email_provider.acquire_email(owner_kind="cli", owner_id="one", acquisition_id="one")
+    def test_explicit_paid_source_is_rejected_without_purchase_or_fallback(self):
+        with patch.object(cfg, "EMAIL_SOURCE", "mailcode,outlook"), patch.object(
+            mailcode, "pick_account", side_effect=AssertionError("新注册不能购买邮箱")
+        ) as purchase, patch("core.email.outlook.client.pick_account") as outlook:
+            with self.assertRaisesRegex(RuntimeError, "local_inventory_source_required"):
+                email_provider.acquire_email("mailcode", owner_kind="cli", owner_id="one", acquisition_id="one")
+        purchase.assert_not_called()
         outlook.assert_not_called()

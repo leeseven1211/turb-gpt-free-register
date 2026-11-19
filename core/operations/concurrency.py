@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 import uuid
 from collections.abc import Callable, Mapping
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -119,6 +120,9 @@ class ExecutionContext:
     _stop: threading.Event = field(default_factory=threading.Event, repr=False)
     domain_schema: str = field(default_factory=postgres.schema_name)
     _domain_url: str = field(default_factory=postgres.database_url, repr=False)
+    settlement_ticket: Mapping | None = field(default=None, repr=False)
+    settlement_domain: Any = field(default=None, repr=False)
+    _release_lock: Any = field(default_factory=threading.RLock, repr=False, compare=False)
 
 
 @dataclass(frozen=True)
@@ -138,6 +142,57 @@ _CURRENT: ContextVar[ExecutionContext | None] = ContextVar("business_execution_p
 _RELEASE_PENDING: dict[tuple[str, str], tuple[ExecutionContext, str]] = {}
 _RELEASE_LOCK = threading.Lock()
 _RELEASE_RETRY_THREAD: threading.Thread | None = None
+_RELEASE_INFLIGHT = 0
+_REGISTRATION_FAILED = threading.Event()
+_PERMIT_RENEWALS: dict[tuple[str, str, str, str], Any] = {}
+
+
+class _PermitRenewal:
+    """Exact original permit heartbeat thread, retained until physical join."""
+    def __init__(self, context, stop, thread):
+        self.stop = stop
+        self.thread = thread
+        self.participating = bool(getattr(context, "settlement_ticket", None))
+        self.identity = (str(context._domain_url), str(context.domain_schema),
+                         str(context.permit_id), str(context.execution_id))
+        self.release_confirmed = False
+        self._start_complete = False
+
+    def start(self):
+        try:
+            self.thread.start()
+        finally:
+            self._start_complete = True
+
+    def release(self, *, deadline=None):
+        self.stop.set()
+        if not self._start_complete:
+            return False
+        if self.thread.ident is not None:
+            if self.thread is threading.current_thread():
+                return False
+            self.thread.join(timeout=0.0 if deadline is None else max(0.0, deadline - time.monotonic()))
+        if self.thread.is_alive():
+            return False
+        self.release_confirmed = True
+        with _RELEASE_LOCK:
+            if _PERMIT_RENEWALS.get(self.identity) is self:
+                _PERMIT_RENEWALS.pop(self.identity)
+        return True
+
+
+def local_renewal_pending(permit_id: str, execution_id: str, *, schema=None, database_url=None) -> bool:
+    """A local callback exit cannot release a heartbeat still using the pool."""
+    with _RELEASE_LOCK:
+        handles = [handle for identity, handle in _PERMIT_RENEWALS.items()
+                   if identity[2:] == (str(permit_id), str(execution_id))
+                   and (schema is None or identity[1] == str(schema))
+                   and (database_url is None or identity[0] == str(database_url))]
+    # Observing a dead thread includes a real zero-wait join before eviction.
+    for handle in handles:
+        if handle._start_complete and not handle.thread.is_alive():
+            handle.release()
+    return any(not handle.release_confirmed for handle in handles)
 
 
 def current_execution() -> ExecutionContext | None:
@@ -232,6 +287,11 @@ def try_admit_and_claim(*, execution_key: str, task_type: str,
                         provider_key: str | None = None, provider_limit: int | None = None,
                         run_id: int | None = None, metadata: Mapping | None = None,
                         extra_scopes: list[dict] | None = None) -> AdmissionResult:
+    from core.runtime.execution_access import execution_allowed
+    if _REGISTRATION_FAILED.is_set():
+        return AdmissionResult(blocked_by=("settlement_registration",))
+    if not execution_allowed():
+        return AdmissionResult(blocked_by=("runtime_not_ready",))
     classification = resolve_admission_class(task_type)
     execution_id = str(execution_id or uuid.uuid4().hex)
     if not execution_key or not callable(claim):
@@ -240,18 +300,51 @@ def try_admit_and_claim(*, execution_key: str, task_type: str,
     policy = _scope_policy(classification,batch_key=batch_key,batch_limit=batch_limit,
                             provider_key=provider_key,provider_limit=provider_limit,extra_scopes=extra_scopes)
 
-    try:
-        result = permits.try_admit(execution_key=str(execution_key), task_type=classification.key,
-                                  execution_id=execution_id, run_id=run_id, batch_key=str(batch_key or ""),
-                                  owner=owner, metadata=dict(metadata or {}), policy=policy, claim=claim)
-    except ConcurrencyPolicyError:
-        raise
-    except Exception as exc:
-        raise ConcurrencyStoreUnavailable("并发存储不可用，暂停新准入") from exc
-    if not result.get("permit_id"):
-        return AdmissionResult(blocked_by=tuple(result.get("blocked_by") or ()))
-    return AdmissionResult(ExecutionContext(result["permit_id"], execution_id, str(execution_key), classification.key,
-                                           result["claimed_run"], int(result["policy_revision"])))
+    original_claim = claim
+
+    def guarded_claim(conn, claim_execution_id):
+        if not execution_allowed():
+            return None
+        return original_claim(conn, claim_execution_id)
+
+    from core.operations import settlement
+
+    participates = permits._participates_settlement(str(execution_key), classification.key, metadata or {})
+    reservation = settlement.reserve_admission() if participates else nullcontext(True)
+    with reservation as reserved:
+        if not reserved:
+            return AdmissionResult(blocked_by=("settlement_capacity",))
+        try:
+            result = permits.try_admit(execution_key=str(execution_key), task_type=classification.key,
+                                      execution_id=execution_id, run_id=run_id, batch_key=str(batch_key or ""),
+                                      owner=owner, metadata=dict(metadata or {}), policy=policy, claim=guarded_claim)
+        except ConcurrencyPolicyError:
+            raise
+        except Exception as exc:
+            raise ConcurrencyStoreUnavailable("并发存储不可用，暂停新准入") from exc
+        if not result.get("permit_id"):
+            return AdmissionResult(blocked_by=tuple(result.get("blocked_by") or ()))
+        context = ExecutionContext(result["permit_id"], execution_id, str(execution_key), classification.key,
+                                   result["claimed_run"], int(result["policy_revision"]))
+        if result.get("settlement_ticket"):
+            context.settlement_ticket = result["settlement_ticket"]
+            context.settlement_domain = result["settlement_domain"]
+            context.domain_schema = context.settlement_domain.permit_schema
+            context._domain_url = context.settlement_domain.database_url
+            try:
+                settlement.register_execution(context, context.settlement_ticket)
+            except Exception as exc:
+                # Claim and ticket already committed. Never run the callback or
+                # mark an exit. The exception preserves exact private evidence.
+                error = ConcurrencyStoreUnavailable("执行收尾责任登记失败，保留原许可")
+                error.execution_context = context
+                _REGISTRATION_FAILED.set()
+                from core.runtime.process import get_runtime_context
+                runtime = get_runtime_context()
+                if runtime is not None:
+                    runtime.admission.block("settlement_registration")
+                raise error from exc
+        return AdmissionResult(context)
 
 
 def heartbeat_permit(permit_id: str, execution_id: str, *, state: str | None = None,
@@ -267,13 +360,57 @@ def set_execution_state(context: ExecutionContext, state: str) -> bool:
 
 
 def release_permit(permit_id: str, execution_id: str, reason: str = "worker_exit", *,
-                   schema: str | None = None, database_url: str | None = None) -> bool:
-    return permits.release(permit_id, execution_id, reason=reason, schema=schema, database_url=database_url)
+                   schema: str | None = None, database_url: str | None = None,
+                   settlement_verified: bool = False, deadline: float | None = None) -> bool:
+    options = {"settlement_verified": True} if settlement_verified else {}
+    if deadline is not None:
+        options["deadline"] = deadline
+    return permits.release(permit_id, execution_id, reason=reason, schema=schema, database_url=database_url, **options)
 
 
-def release_execution(context: ExecutionContext, *, reason: str = "worker_exit") -> bool:
+def release_execution(context: ExecutionContext, *, reason: str = "worker_exit", deadline: float | None = None) -> bool:
+    acquired = (context._release_lock.acquire() if deadline is None else
+                context._release_lock.acquire(timeout=max(0.0, deadline - time.monotonic())))
+    if not acquired:
+        return False
+    try:
+        return _release_execution_locked(context, reason=reason, deadline=deadline)
+    finally:
+        context._release_lock.release()
+
+
+def _release_execution_locked(context: ExecutionContext, *, reason: str, deadline: float | None = None) -> bool:
     global _RELEASE_RETRY_THREAD
     if context.released:
+        return False
+    renewal = getattr(context, "_permit_renewal", None)
+    if context.settlement_ticket:
+        from core.operations import settlement
+
+        if settlement.responsibility(context) is None or not settlement.release_eligible(context):
+            settlement.request_release(context, reason=reason)
+            return False
+        if renewal is not None and not renewal.release(deadline=deadline):
+            settlement.request_release(context, reason=reason)
+            return False
+        context._permit_release_error_code = ""
+        try:
+            result = release_permit(context.permit_id, context.execution_id, reason,
+                                    schema=context.domain_schema, database_url=context._domain_url,
+                                    settlement_verified=True, deadline=deadline)
+        except Exception as exc:
+            # The managed carrier owns participating retries, including permit
+            # failures. Callback-thread exit never enters the legacy daemon.
+            context._permit_release_error_code, _permanent = settlement.classify_failure(exc)
+            settlement.request_release(context, reason=reason)
+            return False
+        if result:
+            context.released = True
+            context._stop.set()
+            permits.clear_execution_exit(context.permit_id, context.execution_id)
+        return result
+    if renewal is not None and not renewal.release(deadline=deadline):
+        _queue_legacy_release(context, reason)
         return False
     permits.mark_execution_exited(context.permit_id, context.execution_id)
     context._stop.set()
@@ -287,25 +424,62 @@ def release_execution(context: ExecutionContext, *, reason: str = "worker_exit")
         return result
     except Exception:
         logger.exception("执行已退出，许可释放暂不可用，保留占用并重试：permit_id=%s", context.permit_id)
-        with _RELEASE_LOCK:
-            _RELEASE_PENDING[(context.permit_id, context.execution_id)] = (context, reason)
-            if _RELEASE_RETRY_THREAD is None or not _RELEASE_RETRY_THREAD.is_alive():
-                _RELEASE_RETRY_THREAD = threading.Thread(target=_retry_releases, name="execution-permit-release", daemon=True)
-                _RELEASE_RETRY_THREAD.start()
+        _queue_legacy_release(context, reason)
         return False
 
 
-def _retry_releases() -> None:
+def _queue_legacy_release(context, reason):
     global _RELEASE_RETRY_THREAD
+    with _RELEASE_LOCK:
+        _RELEASE_PENDING[(context.permit_id, context.execution_id)] = (context, reason)
+        if _RELEASE_RETRY_THREAD is None or not _RELEASE_RETRY_THREAD.is_alive():
+            _RELEASE_RETRY_THREAD = threading.Thread(target=_retry_releases, name="execution-permit-release", daemon=True)
+            _RELEASE_RETRY_THREAD.start()
+
+
+def _retry_releases() -> None:
+    global _RELEASE_RETRY_THREAD, _RELEASE_INFLIGHT
     while True:
         threading.Event().wait(1)
         with _RELEASE_LOCK:
             pending = list(_RELEASE_PENDING.values())
             if not pending:
-                _RELEASE_RETRY_THREAD = None
                 return
         for context, reason in pending:
-            release_execution(context, reason=reason)
+            with _RELEASE_LOCK:
+                _RELEASE_INFLIGHT += 1
+            try:
+                release_execution(context, reason=reason)
+            finally:
+                with _RELEASE_LOCK:
+                    _RELEASE_INFLIGHT -= 1
+
+
+def release_runtime_status() -> dict[str, Any]:
+    """Nonparticipant retries retain their own truthful lifecycle accounting."""
+    with _RELEASE_LOCK:
+        handles = list(_PERMIT_RENEWALS.values())
+    for handle in handles:
+        if handle._start_complete and not handle.thread.is_alive():
+            handle.release()
+    with _RELEASE_LOCK:
+        return {"pending": len(_RELEASE_PENDING), "inflight": _RELEASE_INFLIGHT,
+                "alive": bool(_RELEASE_RETRY_THREAD and _RELEASE_RETRY_THREAD.is_alive()),
+                "registration_pending": int(_REGISTRATION_FAILED.is_set()),
+                "renewal_pending": sum(int(not handle.participating) for handle in _PERMIT_RENEWALS.values())}
+
+
+def stop_release_runtime(deadline: float) -> bool:
+    """Join the existing retry carrier without dropping failed releases."""
+    with _RELEASE_LOCK:
+        thread = _RELEASE_RETRY_THREAD
+        renewals = list(_PERMIT_RENEWALS.values())
+    for handle in renewals:
+        handle.release(deadline=deadline)
+    if thread is not None and thread is not threading.current_thread():
+        thread.join(timeout=max(0.0, float(deadline) - time.monotonic()))
+    status = release_runtime_status()
+    return not any(status.values()) and all(handle.release_confirmed for handle in renewals)
 
 
 @contextmanager
@@ -336,12 +510,23 @@ def execution_scope(context: ExecutionContext):
                 logger.exception("执行许可心跳暂不可用，保留占用并停止新准入")
 
     thread = threading.Thread(target=renew, name=f"execution-permit-{context.permit_id[:8]}", daemon=True)
-    thread.start()
+    renewal = _PermitRenewal(context, stop, thread)
+    context._permit_renewal = renewal
+    with _RELEASE_LOCK:
+        _PERMIT_RENEWALS[renewal.identity] = renewal
     try:
+        if getattr(context, "settlement_ticket", None):
+            from core.operations import settlement
+            settlement.register_cleanup(context, renewal, key=f"permit_heartbeat:{context.permit_id}", blocking=True)
+        renewal.start()
         yield context
     finally:
         stop.set()
-        thread.join(timeout=1)
+        # The execution-local carrier owns the shared-deadline join. Scope
+        # exit must not buy a fresh budget or declare blocked SQL quiescent.
+        if not renewal._start_complete:
+            renewal._start_complete = True
+        renewal.release()
         _CURRENT.reset(token)
 
 

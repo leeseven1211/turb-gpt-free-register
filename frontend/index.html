@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>任务中心 · 开发</title>
+    <link rel="stylesheet" href="/static/css/shared/ui-foundation.css">
+  </head>
+  <body>
+    <main id="task-center-root"></main>
+    <script type="module">
+      import { mountTaskCenter } from '/src/main.ts';
+      const taskCenter = mountTaskCenter(document.getElementById('task-center-root'));
+      taskCenter.setVisible(true);
+    </script>
+  </body>
+</html>

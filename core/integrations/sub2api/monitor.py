@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import importlib
 import json
+import logging
 import re
-import threading
 import time
 import uuid
 from collections import Counter
@@ -18,13 +18,14 @@ from core.accounts.credentials import get_account_login_credentials
 from core.codex import operation_service, token_refresh_service
 from core.integrations.sub2api import client, jobs
 from core.runtime import scheduler_state
+from core.runtime.periodic import PeriodicThread
 from core.storage import sub2api as repair_store
 from core.storage.operations import runtime as operation_runtime_store
 from core.operations import task_gateway
 
+logger = logging.getLogger(__name__)
 _TASK = "sub2api_monitor"
-_THREAD_LOCK = threading.Lock()
-_THREAD: threading.Thread | None = None
+_SCHEDULER = PeriodicThread("sub2api-monitor")
 _ACTIVE = {"queued", "running", "cancelling", "settling", "waiting", "retrying", "stopping"}
 _SUCCESS = {"success", "succeeded", "completed"}
 _WAIT_STAGES = {"refresh_wait", "reauth_wait", "refresh_submitting", "reauth_submitting"}
@@ -317,6 +318,15 @@ def _process(backend: str, account: dict, rows: list[dict], remote: list[dict], 
     _start_reauth(backend, account, state, generation, summary)
 
 
+def register_actions() -> None:
+    task_gateway.register_operation_actions(
+        "sub2api_scan",
+        retry_handler=task_gateway.default_operation_retry,
+        cancel_handler=task_gateway.default_operation_cancel,
+        terminate_handler=task_gateway.default_operation_terminate,
+    )
+
+
 def register_handler() -> None:
     """启动时恢复已排队扫描，注册本身不读取远端。"""
     task_gateway.register_operation_handler("sub2api_scan", _handle_scan, config_allowlist=())
@@ -443,23 +453,35 @@ def status() -> dict:
             states = dict(Counter(str(item.get("stage") or "idle") for item in repair_store.list_repairs(backend, active_only=True)))
     except Exception:
         pass
-    return {"enabled": _enabled(), "running": bool(_THREAD and _THREAD.is_alive()),
+    return {**scheduler_status(),
             "group_ids": client.configured_monitor_group_ids(),
             "interval_seconds": _interval(), "cooldown_seconds": _cooldown(),
             "max_per_cycle": max(1, int(getattr(_cfg, "SUB2API_MONITOR_MAX_PER_CYCLE", 20) or 20)),
             "repair_stages": states, **scheduler_state.describe(_TASK, _interval())}
 
 
+def _scheduler_loop() -> None:
+    scheduler_state.run_periodic(
+        task=_TASK, label="Sub2API 异常巡检", work=run_once,
+        enabled=_periodic_enabled, interval_seconds=_periodic_interval,
+        stop=_SCHEDULER.stop_event, lifecycle=_SCHEDULER,
+    )
+
+
 def start_periodic_monitor() -> bool:
-    """只恢复按配置周期运行的异常扫描，不另启修复进度轮询。"""
-    global _THREAD
-    register_handler()
-    with _THREAD_LOCK:
-        if _THREAD and _THREAD.is_alive():
-            return False
-        _THREAD = threading.Thread(target=scheduler_state.run_periodic, kwargs={
-            "task": _TASK, "label": "Sub2API 异常巡检", "work": run_once,
-            "enabled": _periodic_enabled, "interval_seconds": _periodic_interval,
-        }, name="sub2api-monitor", daemon=True)
-        _THREAD.start()
-        return True
+    """启动一个可观测的周期巡检，保留运行时准入边界。"""
+    try:
+        started = _SCHEDULER.start(_scheduler_loop, before_start=register_handler)
+    except Exception:
+        logger.exception("周期巡检启动失败，可稍后重试")
+        return False
+
+    return started
+
+
+def stop_periodic_monitor(timeout: float = 2.0) -> bool:
+    return _SCHEDULER.stop(timeout)
+
+
+def scheduler_status() -> dict:
+    return _SCHEDULER.status(enabled=_enabled())

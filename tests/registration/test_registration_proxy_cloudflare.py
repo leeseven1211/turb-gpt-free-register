@@ -6,8 +6,7 @@ from unittest.mock import patch
 
 from core import db, operation_task_store
 from core.storage import records as record_store
-from core.registration import service as service
-from core.registration import admission
+from core.registration import admission, service as service
 from core.auth.browser.browser_submission import unresolved_submission_ids
 from core.registration import roxy
 from core.storage import registration

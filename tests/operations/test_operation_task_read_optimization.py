@@ -3,6 +3,7 @@
 from unittest.mock import patch
 
 from core import account_task_store, operation_task_store
+from core.storage.operations import common as operation_common
 from tests.support_pg import PostgresTestCase
 
 
@@ -175,6 +176,72 @@ class OperationTaskReadOptimizationTests(PostgresTestCase):
         self.assertEqual("queued", item["status"])
         self.assertEqual(2, item["run_count"])
 
+    def test_source_identity_gate_preserves_collisions_missing_rows_and_nulls(self):
+        # Both legacy sources may have the same numeric ID. A missing row in
+        # the requested source must never borrow fields from the other source.
+        with operation_task_store._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""INSERT INTO {operation_task_store._table('account_action_tasks')}
+                    (id,task_uuid,task_type,trigger,status,queued_at,error)
+                    VALUES (77,'read-source-77','read-source','test','failed',
+                            '2026-10-01T01:00:00Z','account-error'),
+                           (88,'read-source-88','read-source','test','success',
+                            '2026-10-01T01:00:00Z','wrong-source-error')"""
+            )
+            cur.execute(
+                f"""INSERT INTO {operation_task_store._table('registration_jobs')}
+                    (id,job_uuid,created_at,updated_at,status,data)
+                    VALUES (77,'read-job-77','2026-10-01T00:00:00Z',
+                            '2026-10-01T00:00:00Z','pending',
+                            '{{"error_message":"registration-error"}}'::jsonb),
+                           (99,'read-job-99','','2026-10-01T00:00:00Z',NULL,'{{}}')"""
+            )
+            run_rows = """FROM (VALUES
+                (1,'registration_jobs','77','success','probe','raw-registration'),
+                (2,'account_action_tasks','77','running','probe','raw-account'),
+                (3,'native_operations','77','waiting','probe','raw-native'),
+                (4,'registration_jobs','88','waiting','probe','raw-missing'),
+                (5,'registration_jobs','99','running','probe','raw-null-status'),
+                (6,NULL,'77','waiting','probe','raw-null-source'),
+                (7,'registration_jobs',NULL,'failed','probe','raw-null-id')
+            ) value(id,source_system,source_id,status,progress_stage,error_message)
+            CROSS JOIN LATERAL (
+                SELECT value.*,NULL::timestamptz AS started_at,NULL::timestamptz AS completed_at,
+                    '{}'::jsonb AS data,'{}'::jsonb AS result_summary,
+                    value.id::bigint AS task_id,1 AS run_no
+            ) rr"""
+            fields = (
+                "effective_status", "effective_progress_stage", "effective_error_message",
+                "effective_created_at_sort",
+            )
+            rows_by_shape = []
+            for selected in (None, fields):
+                cur.execute(
+                    f"SELECT rr.id,{operation_common._compatibility_run_projection_sql(fields=selected)} "
+                    f"{run_rows} {operation_common._compatibility_run_joins_sql()} ORDER BY rr.id"
+                )
+                rows_by_shape.append([dict(row) for row in cur.fetchall()])
+        full, narrow = rows_by_shape
+        self.assertEqual(
+            [{key: row[key] for key in ("id", *fields)} for row in full], narrow,
+        )
+        self.assertEqual(
+            ["queued", "failed", "waiting", "waiting", None, "waiting", "failed"],
+            [row["effective_status"] for row in narrow],
+        )
+        self.assertEqual(
+            ["queued", "complete", "probe", "probe", "probe", "probe", "complete"],
+            [row["effective_progress_stage"] for row in narrow],
+        )
+        self.assertEqual(
+            ["registration-error", "account-error", "raw-native", "raw-missing", None,
+             "raw-null-source", "raw-null-id"],
+            [row["effective_error_message"] for row in narrow],
+        )
+        self.assertTrue(narrow[0]["effective_created_at_sort"])
+        self.assertTrue(narrow[1]["effective_created_at_sort"])
+        self.assertTrue(all(row["effective_created_at_sort"] is None for row in narrow[2:]))
+
     def test_filters_and_facets_match_baseline_sql_for_mixed_terminal_and_active_tasks(self):
         for index in range(8):
             task = operation_task_store.create_runtime_task(task_type="plan_check" if index % 2 else "live_check",
@@ -226,7 +293,7 @@ class OperationTaskReadOptimizationTests(PostgresTestCase):
                         plans.extend(node.get("Plans", ()))
                     self.assertEqual(1, scans)
 
-    def test_each_business_filter_uses_union_facets_with_ordered_parameters(self):
+    def test_each_business_filter_shares_facet_scan_with_ordered_parameters(self):
         import psycopg
 
         filters = dict(task_type="type-a,type-b", status="failed", source="native_operations",
@@ -249,7 +316,15 @@ class OperationTaskReadOptimizationTests(PostgresTestCase):
                     queries.clear()
                     operation_task_store.list_tasks(**{name: value})
                     self.assertEqual(1, len(queries))
-                    self.assertEqual(4, queries[0][0].count(" UNION ALL SELECT "))
+                    statement = queries[0][0]
+                    self.assertEqual(1, statement.count("facet_candidates AS MATERIALIZED"))
+                    self.assertEqual(1, statement.count("CROSS JOIN LATERAL"))
+                    for facet in facets:
+                        self.assertIn(f" AS matches_{facet}", statement)
+                        self.assertIn(
+                            f"('{facet}',candidate.value_{facet},candidate.matches_{facet})",
+                            statement,
+                        )
             queries.clear()
             operation_task_store.list_tasks(public_status=True, **filters)
             self.assertEqual(1, len(queries))
@@ -262,10 +337,9 @@ class OperationTaskReadOptimizationTests(PostgresTestCase):
                 ("created_from", ["2026-09-01"]), ("created_to", ["2026-10-01"]),
                 ("result", ["%result%"] * 3),
             )
-            branches = statement.split(" UNION ALL SELECT ")
-            self.assertEqual(len(facets), len(branches))
-            for branch, facet in zip(branches, facets):
-                self.assertIn(f"'{facet}' AS facet", branch)
+            self.assertEqual(len(facets), statement.count(" AS matches_"))
+            for facet in facets:
+                self.assertIn(f"('{facet}',candidate.value_{facet},candidate.matches_{facet})", statement)
             self.assertEqual([value for facet in facets for name, group in expected_groups
                               if name != facet for value in group], params)
             operation_task_store.list_tasks(include_facets=False, **filters)

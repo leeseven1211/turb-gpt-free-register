@@ -77,6 +77,9 @@ class AuthPageFlowTests(unittest.TestCase):
         )
         with ExitStack() as stack:
             stack.enter_context(patch.object(oauth, "BrowserSession", return_value=base))
+            # This checks document-context headers for one controlled rejection;
+            # retry counts are covered separately by test_codex_phone_retry_policy.
+            stack.enter_context(patch.object(oauth._cfg, "SMS_MAX_RETRIES", 1))
             for name in ("network_preflight", "human_delay", "check_cancelled", "report_stage"):
                 stack.enter_context(patch.object(oauth, name))
             stack.enter_context(patch.object(oauth, "_codex_auth_url_source", return_value="local"))

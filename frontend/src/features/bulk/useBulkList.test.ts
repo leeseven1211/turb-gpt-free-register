@@ -25,6 +25,8 @@ function fixture(initial: Partial<BulkNavigation> = {}) {
     updateNavigation: vi.fn((extra) => {
       navigation.value = { ...navigation.value, ...extra };
     }),
+    notify: vi.fn(),
+    openTask: vi.fn(),
     formatDateTime: String,
   };
   const scope = effectScope();
@@ -62,7 +64,8 @@ describe('批次列表读取与游标归属', () => {
       cursor: 'opaque/+==',
     });
     expect(url.searchParams.get('created_from')).toBe(new Date('2026-11-01T00:00:00').toISOString());
-    expect(url.searchParams.get('created_to')).toBe(new Date('2026-11-16T23:59:59').toISOString());
+    expect(url.searchParams.get('created_before')).toBe(new Date('2026-11-17T00:00:00').toISOString());
+    expect(url.searchParams.has('created_to')).toBe(false);
     expect(h.list.items.value[0]?.id).toBe('9007199254740993');
     expect(h.list.summary.value).toEqual({});
     expect(h.list.hasPrevious.value).toBe(false);
@@ -89,6 +92,18 @@ describe('批次列表读取与游标归属', () => {
     await h.list.applyFilters({ created_from: '2026-02-28' });
     expect(h.list.error.value).toBe('');
     expect(h.list.items.value).toHaveLength(1);
+  });
+
+  it.each([
+    ['2026-03-08','2026-03-09'],
+    ['2026-11-01','2026-11-02'],
+    ['2026-12-31','2027-01-01'],
+  ])('截止日期%s用本地日历次日零点%s的排他上界',async(created_to,nextDay)=>{
+    const h=fixture({created_from:created_to,created_to});await flushPromises();
+    const query=new URL(h.request.mock.calls[0]![0],'http://local').searchParams;
+    expect(query.get('created_from')).toBe(new Date(`${created_to}T00:00:00`).toISOString());
+    expect(query.get('created_before')).toBe(new Date(`${nextDay}T00:00:00`).toISOString());
+    expect(query.has('created_to')).toBe(false);
   });
 
   it('前页仅取真实访问历史，改筛选清空游标并写回导航', async () => {

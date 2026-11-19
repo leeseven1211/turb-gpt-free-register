@@ -16,16 +16,20 @@ class EmailChangeReportingTests(unittest.TestCase):
         real_begin = service.begin_change_with_optional_reauth
         context = SimpleNamespace(
             account_id=7, run_id=29, task_id=30, email="old@example.test",
-            run={"data": {"email_source": "outlook"}, "trigger": "test"},
+            run={"data": {"email_source": "outlook", "remail_acquisition_id": "change:30"}, "trigger": "test"},
             config_snapshot={"email_change_enabled": True},
             report=Mock(side_effect=lambda **event: events.append(event)),
             checkpoint=Mock(), lease=Mock(return_value=nullcontext()),
             remote_request_started=Mock(), remote_request_receipt=Mock(),
+            register_cleanup=Mock(), add_settlement_obligation=Mock(),
         )
         session = Mock()
-        route = SimpleNamespace(proxy_url="", public_dict=lambda: {}, release=Mock())
+        route = SimpleNamespace(proxy_url="", provider="synthetic", public_dict=lambda: {}, release=Mock())
         begin = service.BeginChangeResult(session, "fixture-at", 123.0, False)
         with ExitStack() as stack:
+            # Local inventory acquisitions carry the persisted submission identity;
+            # this reporting fixture represents a fresh, non-derived mailbox.
+            stack.enter_context(patch("core.email.derivation.store.find_allocation", return_value=None))
             database = stack.enter_context(patch.object(service, "db"))
             database.get_account.return_value = {
                 "email": context.email, "access_token": "fixture-at", "email_source": "outlook",
@@ -44,6 +48,10 @@ class EmailChangeReportingTests(unittest.TestCase):
             start = stack.enter_context(patch.object(service, "begin_change_with_optional_reauth", return_value=begin))
             protocol = stack.enter_context(patch.object(service, "EmailChangeProtocol"))
             stack.enter_context(patch("core.browser.traffic.record_unavailable"))
+            stack.enter_context(patch("core.operation_task_store.register_resource", return_value={
+                "id": 901, "resource_uuid": "fixture-route-resource",
+            }))
+            stack.enter_context(patch("core.operation_task_store.release_resource", return_value=True))
             release = stack.enter_context(patch.object(service, "_release_unconsumed"))
             readback = stack.enter_context(patch.object(service, "_safe_readback", return_value=True))
             closeout = stack.enter_context(patch.object(service, "_finalize_consumed_email", return_value={"status": "success"}))

@@ -3,11 +3,13 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from core import account_task_store, db
+from core.accounts import operation_handlers
 from core.operations import task_gateway
 from core.registration import service, standalone
 from core.storage import records, registration
 from core.storage.operations import store
 from tests.support_pg import PostgresTestCase
+from tests.support_settlement import install_native_settlement_fixture
 
 
 class ResumePasswordCompletionTests(PostgresTestCase):
@@ -78,6 +80,13 @@ class ResumePasswordCompletionTests(PostgresTestCase):
 
     def parent(self):
         return store.get_task(self.parent_id, include_events=False)
+
+    def register_runtime_handlers(self):
+        from webui import runtime
+
+        install_native_settlement_fixture(self)
+        with patch.object(operation_handlers, "_RUNTIME_HANDLERS_REGISTERED", False):
+            runtime._register_runtime_handlers()
 
     def test_each_registration_driver_queues_the_same_shared_password_task(self):
         for driver in ("protocol_oss_2", "roxy"):
@@ -150,8 +159,7 @@ class ResumePasswordCompletionTests(PostgresTestCase):
     def test_automatic_task_executes_with_real_operation_fence_and_password_receipt(self):
         from webui import runtime
 
-        with patch.object(runtime, "_RUNTIME_HANDLERS_REGISTERED", False):
-            runtime._register_runtime_handlers()
+        self.register_runtime_handlers()
         self.invoke()
         self.finish_auth()
         child = self.tasks()[0]
@@ -159,6 +167,7 @@ class ResumePasswordCompletionTests(PostgresTestCase):
         def worker(email, **kwargs):
             self.assertEqual(self.email, email)
             self.assertEqual({"password"}, kwargs["steps"])
+            self.assertEqual("protocol", kwargs["execution_settings"]["password_driver"])
             fence = kwargs["execution_fence"]
             self.assertEqual(child["last_run_id"], fence["run_id"])
             self.assertTrue(fence["execution_id"])
@@ -177,8 +186,7 @@ class ResumePasswordCompletionTests(PostgresTestCase):
     def test_queued_automatic_task_skips_remote_submission_if_password_was_confirmed(self):
         from webui import runtime
 
-        with patch.object(runtime, "_RUNTIME_HANDLERS_REGISTERED", False):
-            runtime._register_runtime_handlers()
+        self.register_runtime_handlers()
         self.invoke()
         self.finish_auth()
         child = self.tasks()[0]
@@ -192,8 +200,7 @@ class ResumePasswordCompletionTests(PostgresTestCase):
     def test_stopped_resume_cancels_queued_automatic_password_without_remote_submission(self):
         from webui import runtime
 
-        with patch.object(runtime, "_RUNTIME_HANDLERS_REGISTERED", False):
-            runtime._register_runtime_handlers()
+        self.register_runtime_handlers()
         self.invoke()
         self.finish_auth()
         child = self.tasks()[0]

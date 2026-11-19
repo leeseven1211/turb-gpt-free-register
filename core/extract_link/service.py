@@ -41,6 +41,7 @@ from core.operations.runtime import OperationCancelled
 from core.operations import run_log as task_run_log
 from core.operations.executor import configured_extract_workers
 from core.operations import task_gateway as account_task_store
+from core.operations.task_gateway import SETTLEMENT_CONTROL_ERRORS
 from core.operations.reporter import TaskReporter
 
 logger = logging.getLogger('core.extract_link_service')
@@ -1452,7 +1453,7 @@ def _run_extract(
                 on_request_started=mark_remote_create_started,
                 **create_kwargs,
             )
-        except account_task_store.OperationLeaseLost:
+        except (*SETTLEMENT_CONTROL_ERRORS, account_task_store.OperationLeaseLost):
             raise
         except ExtractCreateRejected as exc:
             if remote_boundary:
@@ -1655,6 +1656,8 @@ def _run_extract(
             elif event == "done":
                 break
         raise RuntimeError(f"提链事件流结束但未返回 result: {last_event}")
+    except SETTLEMENT_CONTROL_ERRORS:
+        raise
     except OperationCancelled as exc:
         receipt_outcome = str((remote_boundary or {}).get("receipt_outcome") or "")
         remote_unknown = bool(remote_boundary and receipt_outcome != "rejected")
@@ -1821,13 +1824,6 @@ def _run_extract(
                 task_stage, "failed", stage_message,
                 level="ERROR", detail={"error": safe_reason},
             )
-        reporter.finish(
-            status=final_status,
-            message=stage_message,
-            error=safe_reason,
-            result_summary=failure_summary,
-            validation_method="extract_link_sse" if job_id else "extract_preflight",
-        )
         try:
             db.update_account_extract(account_id, result)
         except Exception:
@@ -1837,6 +1833,13 @@ def _run_extract(
                 db.mark_extract_link_type_failed(account_id, link_type, reason)
             except Exception:
                 logger.exception("[提链] 记录失败类型异常: account_id=%s type=%s", account_id, link_type)
+        reporter.finish(
+            status=final_status,
+            message=stage_message,
+            error=safe_reason,
+            result_summary=failure_summary,
+            validation_method="extract_link_sse" if job_id else "extract_preflight",
+        )
         logger.exception("[提链] 失败: %s", email)
         return result
     finally:
@@ -2077,13 +2080,236 @@ def _safe_provider_job_state(
     }
 
 
-def _update_provider_job(context, provider_id: str, job_id: str | None, state: dict, private_data=None) -> None:
+def _update_provider_job(context, provider_id: str, job_id: str | None, state: dict, private_data=None) -> dict:
     from core.storage.extract_link import jobs as extract_link_jobs
 
     private = private_data if isinstance(private_data, dict) else {}
     context.checkpoint()
     fence = getattr(context, "execution_fence", None)
-    extract_link_jobs.save_provider_job(context.run_id, provider_id, job_id, state, private, execution_fence=fence)
+    return extract_link_jobs.save_provider_job(
+        context.run_id, provider_id, job_id, state, private, execution_fence=fence,
+    )
+
+
+def _provider_version(value) -> str:
+    return value.isoformat() if hasattr(value, "isoformat") else str(value or "")
+
+
+def _declare_post_payment_followup(context, *, provider_id, saved) -> None:
+    """Freeze the existing local enqueue identity, without copying its AT."""
+    version = _provider_version(saved.get("updated_at")) if isinstance(saved, dict) else ""
+    if not version:
+        raise RuntimeError("付款后套餐核验缺少原 Provider 版本")
+    from core.accounts.plans import service as plan_check_service
+    snapshot = plan_check_service.get_config_snapshot()
+    values = snapshot.as_dict() if callable(getattr(snapshot, "as_dict", None)) else dict(snapshot)
+    allowed = set(plan_check_service.PLAN_CONFIG_ALLOWLIST.values()) | {"PLAN_CHECK_COUNTRIES"}
+    plan_config = {key: value for key, value in values.items() if key in allowed}
+    revision = getattr(snapshot, "revision", values.get("config_snapshot_revision"))
+    if revision is not None:
+        plan_config["config_snapshot_revision"] = revision
+    key = f"extract-workbench:{context.task_id}:payment-success"
+    context.add_settlement_obligation(
+        "extract_plan_verify", resource_identity=key, blocks_permit=False,
+        payload={
+            "action_kind": "extract_plan_verify",
+            "task_id": int(context.task_id), "run_id": int(context.run_id),
+            "account_id": int(context.account_id), "provider_id": str(provider_id),
+            "expected_provider_updated_at": version,
+            "trigger": "extract_post_payment", "idempotency_key": key,
+            "config_snapshot": plan_config,
+        },
+    )
+
+
+def _followup_snapshot(payload):
+    from core.storage.operations import common
+
+    with common._connect() as conn, conn.cursor() as cur:
+        cur.execute(f"""
+            SELECT t.last_run_id, r.account_id, j.provider_id, j.updated_at, j.public_state
+            FROM {common._table('operation_tasks')} t
+            JOIN {common._table('operation_runs')} r ON r.task_id=t.id AND r.id=%s
+            JOIN {common._table('extract_link_provider_jobs')} j ON j.run_id=r.id
+            WHERE t.id=%s
+            """, (payload["run_id"], payload["task_id"]))
+        row = cur.fetchone()
+    if row is None:
+        return None
+    if (int(row["last_run_id"] or 0) != payload["run_id"]
+            or int(row["account_id"] or 0) != payload["account_id"]
+            or row["provider_id"] != payload["provider_id"]
+            or _provider_version(row["updated_at"]) != payload["expected_provider_updated_at"]):
+        return None
+    return row
+
+
+def _write_followup_state(payload, *, plus_status, message=None):
+    from core.storage.operations import common
+
+    change = {"plus_status": plus_status}
+    if message is not None:
+        change["message"] = message
+    with common._connect() as conn, conn.cursor() as cur:
+        # Lock the Task before touching the original provider snapshot. A new
+        # retry cannot become current between this check and this exact CAS.
+        cur.execute(f"SELECT last_run_id FROM {common._table('operation_tasks')} WHERE id=%s FOR UPDATE",
+                    (payload["task_id"],))
+        task = cur.fetchone()
+        if task is None or int(task["last_run_id"] or 0) != payload["run_id"]:
+            return True
+        cur.execute(f"""
+            UPDATE {common._table('extract_link_provider_jobs')} j
+            SET public_state=j.public_state || %s::jsonb, updated_at=now()
+            WHERE j.run_id=%s AND j.provider_id=%s AND j.updated_at=%s::timestamptz
+              AND EXISTS (SELECT 1 FROM {common._table('operation_runs')} r
+                          WHERE r.id=j.run_id AND r.task_id=%s AND r.account_id=%s)
+            """, (json.dumps(change, ensure_ascii=False), payload["run_id"], payload["provider_id"],
+                    payload["expected_provider_updated_at"], payload["task_id"], payload["account_id"]))
+    # Zero changed rows confirms that a newer provider version already owns
+    # the projection. Never overwrite it with an old enqueue receipt.
+    return True
+
+
+def apply_settlement_followup(payload, *, deadline=None) -> bool:
+    """Apply only the typed, original-version local post-payment tail."""
+    from core.runtime.execution_access import execution_allowed
+
+    kind = payload.get("action_kind")
+    if kind not in {"extract_plan_verify", "extract_provider_writeback"}:
+        raise ValueError("unsupported extract settlement followup")
+    for key in ("task_id", "run_id", "account_id"):
+        if type(payload.get(key)) is not int or payload[key] < 1:
+            raise ValueError("invalid extract settlement identity")
+    if not payload.get("provider_id") or not payload.get("expected_provider_updated_at"):
+        raise ValueError("missing original provider version")
+    if deadline is not None and time.monotonic() >= deadline:
+        return False
+    if kind == "extract_plan_verify":
+        if payload.get("trigger") != "extract_post_payment" or payload.get("idempotency_key") != (
+                f"extract-workbench:{payload['task_id']}:payment-success"):
+            raise ValueError("invalid original plan verification identity")
+        # Existing settlement may continue after owner loss, but local enqueue
+        # creates a new execution and therefore requires healthy admission.
+        if not execution_allowed():
+            return False
+    if _followup_snapshot(payload) is None:
+        return True
+    if kind == "extract_provider_writeback":
+        if payload.get("plus_status") not in {"pending", "failed", "confirmed", "not_applicable"}:
+            raise ValueError("invalid Plus followup state")
+        return _write_followup_state(
+            payload, plus_status=payload["plus_status"], message=payload.get("message"),
+        )
+    account = _settlement_account_snapshot(payload, deadline=deadline)
+    if account is None:
+        return True
+    token = str(account.get("access_token") or "").strip()
+    if not token:
+        return _write_followup_state(
+            payload, plus_status="failed", message="扫码已完成，但数据库没有可用 AT 供套餐核验",
+        )
+    if not execution_allowed() or (deadline is not None and time.monotonic() >= deadline):
+        return False
+    if _followup_snapshot(payload) is None:
+        return True
+    result = _settlement_enqueue_plan(payload, account, token, deadline=deadline)
+    return _write_followup_state(
+        payload, plus_status="pending" if result.get("accepted") else "failed",
+        message=None if result.get("accepted") else "扫码已完成，但 Plus 套餐核验未能排队",
+    )
+
+
+def _settlement_account_snapshot(payload, *, deadline=None):
+    """Read the captured account through the origin connection only.
+
+    The normal compatibility facade initializes the row store and may wait on
+    its process-wide DDL lock. Typed settlement cleanup must remain bounded
+    and use the already initialized operation domain instead.
+    """
+    from core.storage.operations import common
+
+    if deadline is not None and time.monotonic() >= deadline:
+        return None
+    with common._connect() as conn, conn.cursor() as cur:
+        row = common._settlement_account(cur, payload["account_id"])
+    if row is None or common._account_is_deactivated(row):
+        return None
+    return dict(row)
+
+
+def _settlement_enqueue_plan(payload, account, token, *, deadline=None):
+    """Submit one existing typed plan-check identity without row-store init."""
+    from config.countries import normalize_plan_check_countries
+    from core.accounts.plans import service as plan_check_service
+
+    snapshot = payload.get("config_snapshot") or {}
+    if not isinstance(snapshot, dict):
+        snapshot = {}
+    values = snapshot.as_dict() if callable(getattr(snapshot, "as_dict", None)) else snapshot
+    values = dict(values or {})
+    countries = normalize_plan_check_countries(values.get("PLAN_CHECK_COUNTRIES", []))
+    source = plan_check_service._country_proxy_source(values)
+    if deadline is not None and time.monotonic() >= deadline:
+        return {"accepted": False, "busy": True, "error": "settlement deadline expired"}
+    plan_check_service.register_operation_handlers()
+    submitted = account_task_store.submit_durable_operation(
+        task_type="plan_check",
+        account_id=int(payload["account_id"]),
+        email=str(account.get("email") or ""),
+        trigger=str(payload["trigger"]),
+        source_system="native_operations",
+        source_id=f"maintenance:plan_check:{payload['account_id']}:{payload['idempotency_key']}",
+        idempotency_key=str(payload["idempotency_key"]),
+        resource_family="openai_interactive",
+        data={
+            "countries": countries,
+            "timezone_offset_min": "-",
+            "proxy_source": source,
+        },
+        config_snapshot=values,
+        config_allowlist=plan_check_service.PLAN_CONFIG_ALLOWLIST,
+        dispatch=True,
+    )
+    response_args = {
+        "account_id": int(payload["account_id"]), "email": str(account.get("email") or ""),
+        "trigger": str(payload["trigger"]),
+    }
+    if not submitted.get("accepted"):
+        return plan_check_service._native_response(submitted, **response_args)
+    if not submitted.get("reused") and not _settlement_claim_plan(payload, deadline=deadline):
+        plan_check_service._cancel_unclaimed_native_run(submitted.get("run_id"))
+        return {
+            "accepted": False, "busy": True, **response_args,
+            "task_id": submitted.get("task_id"), "run_id": submitted.get("run_id"),
+            "error": "该账号正在查询套餐",
+        }
+    return plan_check_service._native_response(submitted, **response_args)
+
+
+def _settlement_claim_plan(payload, *, deadline=None):
+    """Preserve the existing claim guard without row-store initialization."""
+    from core.storage import postgres, records
+    from core.storage.operations import common
+
+    if deadline is not None and time.monotonic() >= deadline:
+        return False
+    guard, guard_params = db._stage_claim_guard("plan_check")
+    now = db._now()
+    sets, params = records._build_set_clause(records.ACCOUNTS, {
+        "plan_check_status": "queued", "plan_check_trigger": str(payload["trigger"]),
+        "plan_check_queued_at": now, "plan_check_started_at": None,
+        "plan_check_deadline_at": None, "plan_check_completed_at": None,
+        "plan_check_error": None, "updated_at": now,
+    }, partial=True)
+    params.extend((int(payload["account_id"]), *guard_params))
+    with common._connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"UPDATE {postgres.qualified(records.ACCOUNTS.name)} SET {', '.join(sets)} "
+            f"WHERE id=%s AND ({guard}) RETURNING id",
+            params,
+        )
+        return cur.fetchone() is not None
 
 
 def _provider_has_reference(job) -> bool:
@@ -2841,20 +3067,14 @@ def _acquire_huanguang_proxies(context, *, purposes=("entry", "exit")):
                 detail={"purpose": purpose, "region": str(getattr(lease, "region", "") or "")[:20]},
             )
             resource_ids.append(int(resource.get("id") or 0))
+            if isinstance(getattr(lease, "metadata", None), dict) and resource.get("resource_uuid"):
+                lease.metadata["extract_resource_uuid"] = str(resource["resource_uuid"])
+                lease.metadata["extract_resource_run_id"] = int(context.run_id)
         return leases, resource_ids
     except Exception:
-        from core.proxy import provider as proxy_provider
-        for lease in leases:
-            try:
-                proxy_provider.release_proxy(lease, reason="extract_link_allocation_failed")
-            except Exception:
-                logger.exception("[提链] 释放未使用的幻光线路失败")
-        for resource_id in resource_ids:
-            if resource_id:
-                try:
-                    context.release_resource(resource_id, state="released")
-                except Exception:
-                    pass
+        _release_huanguang_proxies(
+            context, leases, resource_ids, terminal=True, reason="extract_link_allocation_failed",
+        )
         raise
 
 
@@ -2871,27 +3091,111 @@ def _prepare_huanguang_proxies(context):
     return routes, leases, resource_ids
 
 
-def _release_huanguang_proxies(context, leases, resource_ids, *, terminal: bool) -> None:
+class _HuanguangProxyCleanup:
+    """The exact live proxy handle; cleanup never acquires a replacement."""
+
+    def __init__(self, context, lease, resource_id, *, reason):
+        self.context = context
+        self.lease = lease
+        self.resource_id = int(resource_id or 0)
+        self.reason = reason
+        self.domain = getattr(context, "_domain", None)
+        self.resource_uuid = str(getattr(lease, "metadata", {}).get("extract_resource_uuid") or "")
+        self.identity_confirmed = not getattr(lease, "metadata", {}).get("extract_restored_reference", False)
+        self.release_confirmed = False
+        self.physical_released = False
+        self._lock = threading.Lock()
+
+    def release(self, *, deadline=None):
+        from core.proxy import provider as proxy_provider
+        from core.storage.operations import common
+
+        with self._lock:
+            if self.release_confirmed:
+                return True
+            if deadline is not None and time.monotonic() >= deadline:
+                return False
+            scope = common.settlement_scope(self.domain, deadline=deadline) if self.domain is not None else nullcontext()
+            with scope:
+                if not self.identity_confirmed:
+                    with common._connect() as conn, conn.cursor() as cur:
+                        cur.execute(
+                            f"SELECT run_id,resource_uuid,external_id FROM {common._table('operation_resources')} WHERE id=%s",
+                            (self.resource_id,),
+                        )
+                        resource = cur.fetchone()
+                    self.identity_confirmed = bool(
+                        resource and int(resource["run_id"]) == int(self.context.run_id)
+                        and str(resource["external_id"]) == str(getattr(self.lease, "lease_id", ""))
+                        and (not self.resource_uuid or str(resource["resource_uuid"]) == self.resource_uuid)
+                    )
+                    if not self.identity_confirmed:
+                        # A different Run needs an explicit transfer workflow.
+                        return False
+                    self.resource_uuid = str(resource["resource_uuid"])
+                if not self.physical_released:
+                    proxy_provider.release_proxy(self.lease, reason=self.reason)
+                    self.physical_released = True
+                if self.resource_id:
+                    if self.identity_confirmed and self.resource_uuid and self.domain is not None:
+                        with common._connect() as conn, conn.cursor() as cur:
+                            cur.execute(f"""
+                                UPDATE {common._table('operation_resources')}
+                                SET state='released',released_at=now()
+                                WHERE id=%s AND run_id=%s AND resource_uuid=%s AND external_id=%s
+                                RETURNING id
+                                """, (self.resource_id, int(self.context.run_id), self.resource_uuid,
+                                      str(getattr(self.lease, "lease_id", ""))))
+                            if cur.fetchone() is None:
+                                return False
+                    else:
+                        self.context.release_resource(self.resource_id, state="released")
+            self.release_confirmed = True
+            return True
+
+
+def _release_huanguang_proxies(context, leases, resource_ids, *, terminal: bool,
+                               reason="extract_link_completed") -> None:
     if not terminal:
         return
-    from core.proxy import provider as proxy_provider
-    for lease in leases or []:
+    handles = getattr(context, "_extract_proxy_cleanup_handles", None)
+    if not isinstance(handles, dict):
+        handles = {}
+        context._extract_proxy_cleanup_handles = handles
+    ids = list(resource_ids or [])
+    for index, lease in enumerate(leases or []):
+        resource_id = ids[index] if index < len(ids) else 0
+        key = f"extract-proxy:{getattr(lease, 'lease_id', '')}:{resource_id}"
+        cleanup = handles.get(key)
+        if cleanup is None:
+            cleanup = _HuanguangProxyCleanup(context, lease, resource_id, reason=reason)
+            handles[key] = cleanup
+            register = getattr(context, "register_cleanup", None)
+            if callable(register):
+                register(cleanup, key=key, blocking=True)
         try:
-            proxy_provider.release_proxy(lease, reason="extract_link_completed")
+            cleanup.release()
+        except SETTLEMENT_CONTROL_ERRORS:
+            raise
         except Exception:
             logger.exception("[提链] 释放幻光线路失败")
-    for resource_id in resource_ids or []:
-        if resource_id:
-            try:
-                context.release_resource(resource_id, state="released")
-            except Exception:
-                logger.exception("[提链] 收口幻光线路资源失败")
+        declare = getattr(context, "add_settlement_obligation", None)
+        if callable(declare) and cleanup.identity_confirmed and cleanup.resource_id and cleanup.resource_uuid:
+            declare(
+                "resource_release", resource_identity=cleanup.resource_uuid, blocks_permit=True,
+                payload={
+                    "resource_id": cleanup.resource_id, "resource_uuid": cleanup.resource_uuid,
+                    "external_id": str(getattr(lease, "lease_id", "") or ""),
+                },
+            )
 
 
 def _huanguang_proxy_references(leases, resource_ids):
     """只保留释放统一池租约所需的标识，不复制完整代理地址。"""
     return [{
         "lease_id": lease.lease_id, "provider": lease.provider, "resource_id": resource_id,
+        "resource_uuid": lease.metadata.get("extract_resource_uuid") or "",
+        "resource_run_id": lease.metadata.get("extract_resource_run_id"),
         "pool_resource_id": lease.metadata["pool_resource_id"],
         "pool_anchor_id": lease.metadata["pool_anchor_id"],
     } for lease, resource_id in zip(leases, resource_ids)
@@ -2910,6 +3214,9 @@ def _restore_huanguang_proxy_references(private):
             continue
         leases.append(ProxyLease(ref["lease_id"], ref["provider"], "", "", datetime.now(), metadata={
             "pool_resource_id": ref["pool_resource_id"], "pool_anchor_id": ref["pool_anchor_id"],
+            "extract_resource_uuid": str(ref.get("resource_uuid") or ""),
+            "extract_resource_run_id": ref.get("resource_run_id"),
+            "extract_restored_reference": True,
         }))
         resource_ids.append(ref["resource_id"])
     return leases, resource_ids
@@ -3035,7 +3342,7 @@ def _monitor_provider_job(context, provider, runtime, job, state, *, provider_id
                 errors, next_wait, safe_error = 0, runtime.poll_interval, ""
                 if provider_id == "huanguang" and _huanguang_reconcile_halt_reason(job.private_data):
                     break
-            except (OperationCancelled, account_task_store.OperationLeaseLost):
+            except (*SETTLEMENT_CONTROL_ERRORS, OperationCancelled, account_task_store.OperationLeaseLost):
                 raise
             except Exception as exc:
                 errors += 1
@@ -3319,7 +3626,7 @@ def _handle_provider_operation(context):
     safe_error = ""
     sync_query_succeeded = False
 
-    with context.lease(resource_family="openai_interactive"), _huanguang_create_quota(
+    with context.lease(resource_family="openai_interactive", scope_kind="final"), _huanguang_create_quota(
         context, runtime, provider_id=provider_id, mode=mode, action=action,
     ) as quota_ready:
         if not quota_ready:
@@ -3634,7 +3941,7 @@ def _handle_provider_operation(context):
                             account_id=account_id, email=email, access_token=token,
                             trigger="extract_post_payment", operation_context=context,
                         )
-                    except (account_task_store.OperationLeaseLost, OperationCancelled):
+                    except (*SETTLEMENT_CONTROL_ERRORS, account_task_store.OperationLeaseLost, OperationCancelled):
                         raise
                     except Exception as exc:
                         logger.warning("[提链] 内联套餐核验未完成: run_id=%s error=%s", context.run_id,
@@ -3728,7 +4035,31 @@ def _handle_provider_operation(context):
                                detail={"payment_state": state["payment_state"]})
 
             state["message"] = status_message
-            _update_provider_job(context, provider_id, job_id or None, state, job.private_data if "job" in locals() else prior_private)
+            # Legacy inline callers have no settlement owner. Complete their
+            # existing local tail once, before terminal freeze as well.
+            declare_followup = schedule_plan_check and callable(getattr(context, "add_settlement_obligation", None))
+            if schedule_plan_check and not declare_followup:
+                current = db.get_account(account_id) or {}
+                token = str(current.get("access_token") or latest_token or "").strip()
+                if token:
+                    from core.accounts.plans import service as plan_check_service
+                    queued = plan_check_service.enqueue_account_plan_check(
+                        account_id=account_id, email=email, access_token=token,
+                        trigger="extract_post_payment",
+                        idempotency_key=f"extract-workbench:{context.task_id}:payment-success",
+                    )
+                    if not queued.get("accepted"):
+                        state["plus_status"] = "failed"
+                        state["message"] = "扫码已完成，但 Plus 套餐核验未能排队"
+                else:
+                    state["plus_status"] = "failed"
+                    state["message"] = "扫码已完成，但数据库没有可用 AT 供套餐核验"
+            saved_provider = _update_provider_job(
+                context, provider_id, job_id or None, state,
+                job.private_data if "job" in locals() else prior_private,
+            )
+            if declare_followup:
+                _declare_post_payment_followup(context, provider_id=provider_id, saved=saved_provider)
             artifact = state.get("payment_artifact") or {}
             checkout_url = (state.get("links") or [None])[0] or artifact.get("payment_page_url") or (state.get("payment_links") or [None])[0]
             result_summary = {
@@ -3783,29 +4114,8 @@ def _handle_provider_operation(context):
                     error=safe_error or (status_message if terminal_status in {"failed", "request_unknown"} else None),
                     result_summary=result_summary,
                 )
-            if schedule_plan_check:
-                current = db.get_account(account_id) or {}
-                token = str(current.get("access_token") or latest_token or "").strip()
-                if token:
-                    from core.accounts.plans import service as plan_check_service
-                    result = plan_check_service.enqueue_account_plan_check(
-                        account_id=account_id,
-                        email=email,
-                        access_token=token,
-                        trigger="extract_post_payment",
-                        idempotency_key=f"extract-workbench:{context.task_id}:payment-success",
-                    )
-                    if result.get("accepted"):
-                        state["plus_status"] = "pending"
-                    else:
-                        state["plus_status"] = "failed"
-                        state["message"] = "扫码已完成，但 Plus 套餐核验未能排队"
-                else:
-                    state["plus_status"] = "failed"
-                    state["message"] = "扫码已完成，但数据库没有可用 AT 供套餐核验"
-                extract_link_jobs.update_provider_job_state(context.run_id, state)
             return None
-        except account_task_store.OperationLeaseLost:
+        except (*SETTLEMENT_CONTROL_ERRORS, account_task_store.OperationLeaseLost):
             raise
         except OperationCancelled as exc:
             safe_error = task_run_log.redact_text(str(exc), 300)
@@ -4000,7 +4310,7 @@ def _handle_extract_operation(context):
     # CDK is a connection secret.  Durable data contains no copy; resolve it
     # once at claim time and keep it only in the worker's local call chain.
     cdk = _cdk()
-    with context.lease(resource_family="openai_interactive"):
+    with context.lease(resource_family="openai_interactive", scope_kind="final"):
         _run_extract(
             account_id=int(context.account_id),
             email=email,
@@ -4019,6 +4329,15 @@ def _handle_extract_operation(context):
     return None
 
 
+def register_actions() -> None:
+    account_task_store.register_operation_actions(
+        "extract_link",
+        retry_handler=account_task_store.default_operation_retry,
+        cancel_handler=account_task_store.default_operation_cancel,
+        terminate_handler=account_task_store.default_operation_terminate,
+    )
+
+
 def register_operation_handlers() -> bool:
     register = getattr(account_task_store, "register_operation_handler", None)
     if not callable(register):
@@ -4031,6 +4350,7 @@ def register_operation_handlers() -> bool:
         dispatch_capacity_key=_provider_dispatch_capacity_key,
         dispatch_capacity_limit=_provider_dispatch_capacity_limit,
     )
+    register_actions()
     return True
 
 
@@ -4202,4 +4522,4 @@ def enqueue_account_extract(
 # Register with the shared dispatcher when the runtime imports this service.
 # The runtime owns the single dispatcher thread; this call only installs the
 # task-type handler and its allowlist.
-register_operation_handlers()
+register_actions()

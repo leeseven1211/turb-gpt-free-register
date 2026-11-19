@@ -1,25 +1,20 @@
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
 const test = require('node:test');
-const vm = require('node:vm');
-
-const source = fs.readFileSync(path.join(__dirname, '../../webui/static/js/pages/operations/page.js'), 'utf8');
-const context = {
-  accountTaskAdmissionReasons: () => [],
-  accountTaskErrorDisplayText: (info, raw) => info?.summary || raw,
-};
-vm.runInNewContext(source.slice(
-  source.indexOf('function accountTaskResultText('),
-  source.indexOf('\nfunction normalizeAccountTaskStage('),
-), context);
+const {createVueHarness} = require('../frontend_vue_loader.cjs');
+const h = createVueHarness();
+const {resultText} = h.load('src/features/tasks/presentation.ts');
+const {taskResultSummary} = h.load('src/features/tasks/resultSummary.ts');
+const {shortErrorLabel} = h.load('src/shared/errorLabels.ts');
+test.after(() => h.close());
 
 function scan(status, result_summary = {}, extra = {}) {
-  return context.accountTaskResultText({task_type: 'sub2api_scan', status, result_summary, ...extra});
+  return resultText({id:'1',task_type: 'sub2api_scan', status, result_summary, ...extra});
 }
 
-const listSource = fs.readFileSync(path.join(__dirname, '../../webui/static/js/pages/operations/list-display.js'), 'utf8');
-const listResult = vm.runInNewContext(`${listSource}\ntaskListDisplay.result`);
+const listResult = task => {
+  const result = taskResultSummary({id:'1',...task},shortErrorLabel(task.error_info));
+  return [result.label,...(result.secondary?[result.secondary]:[])];
+};
 
 for (const [status, result_summary, expected, extra] of [
   ['success', {processed: 0}, '异常扫描完成'],

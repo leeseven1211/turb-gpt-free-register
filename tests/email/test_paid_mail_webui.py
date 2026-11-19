@@ -63,12 +63,13 @@ class PaidMailWebUiTests(PostgresTestCase):
         self.client = create_app(auth_code="test-auth").test_client()
         self.client.environ_base["HTTP_X_AUTH_CODE"] = "test-auth"
 
-    def test_source_readiness_is_local_and_enabled_in_order(self):
+    def test_source_readiness_lists_local_inventory_only(self):
         response = self.client.get("/api/email-sources")
         self.assertEqual(response.status_code, 200)
         sources = response.get_json()["sources"]
-        self.assertEqual([source["value"] for source in sources], ["mailcode", "xigua"])
-        self.assertTrue(all(source["enabled"] for source in sources))
+        self.assertEqual([source["value"] for source in sources],
+                         ["outlook", "generic_api", "cloudflare_domain", "icloud_hide", "email_butler"])
+        self.assertTrue(all(not source["enabled"] for source in sources))
         self.assertNotIn("private-test-key", response.get_data(as_text=True))
 
     def test_missing_secret_disables_source_and_rejects_before_job_submission(self):
@@ -78,21 +79,21 @@ class PaidMailWebUiTests(PostgresTestCase):
             self.assertEqual(response.status_code, 400)
             submit.assert_not_called()
 
-    def test_jobs_submit_without_reading_outlook_inventory(self):
+    def test_paid_sources_reject_before_submission_even_with_credentials(self):
         for source in ("mailcode", "xigua"):
-            with self.subTest(source=source), patch("webui.app.svc.submit_registration", return_value=[{"id": 1}]) as submit:
+            with self.subTest(source=source), patch("webui.app.svc.submit_registration") as submit:
                 response = self.client.post("/api/jobs", json={"count": 2, "workers": 2, "email_source": source})
-            self.assertEqual(response.status_code, 200)
-            self.assertEqual(response.get_json()["warning"], "")
-            submit.assert_called_once_with(count=2, workers=2, email_source=source)
+            self.assertEqual(response.status_code, 400)
+            self.assertIn("新注册只使用本地邮箱列表", response.get_json()["error"])
+            submit.assert_not_called()
 
-    def test_dashboard_renders_paid_sources_as_on_demand(self):
+    def test_dashboard_does_not_offer_retired_paid_sources(self):
         response = self.client.get("/api/dashboard")
         self.assertEqual(response.status_code, 200)
         sources = {row["source"]: row for row in response.get_json()["email"]["sources"]}
-        for name in ("mailcode", "xigua"):
-            self.assertEqual(sources[name]["kind"], "on_demand")
-            self.assertTrue(sources[name]["enabled"])
+        self.assertNotIn("mailcode", sources)
+        self.assertNotIn("xigua", sources)
+        self.assertTrue(all(row["kind"] == "local_pool" for row in sources.values()))
         self.assertNotIn("private-test-key", response.get_data(as_text=True))
 
     def test_catalog_is_retired_without_querying_remote_products_or_wallet(self):

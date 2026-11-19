@@ -13,11 +13,16 @@ from core.storage import records as record_store
 from core.operations import run_log as task_run_log
 from core.operations import task_gateway
 from core.storage.operations import store as operation
+from core.storage.operations import runtime as operation_runtime
+from core.storage.operations import legacy_task_store
 from tests.support_pg import PostgresTestCase
+from tests.support_settlement import install_native_settlement_fixture
 
 
 class PlanCheckRetryTests(PostgresTestCase):
     def setUp(self):
+        self.enterContext(patch.object(legacy_task_store, "_SCHEMA", self.schema))
+        self.enterContext(patch.object(legacy_task_store, "_READY_KEY", ""))
         log_dir = tempfile.TemporaryDirectory()
         self.addCleanup(log_dir.cleanup)
         for name, value in (
@@ -42,6 +47,10 @@ class PlanCheckRetryTests(PostgresTestCase):
             "quota_windows": [{"model": "test-model", "remaining": 20}],
             "quota_last_success_at": "2026-10-10T08:00:00+00:00",
         }
+        self.settlement_fixture = install_native_settlement_fixture(self, timeout=10)
+
+    def tearDown(self):
+        self.settlement_fixture.close()
 
     def _terminal_plan(self, status: str, *, email: str) -> tuple[int, dict]:
         account_id = record_store.insert_row(record_store.ACCOUNTS, {
@@ -119,7 +128,7 @@ class PlanCheckRetryTests(PostgresTestCase):
             observed_statuses.append(account["plan_check_status"])
             raise RuntimeError("模拟 Run 插入失败")
 
-        with patch.object(operation, "_insert_runtime_run", side_effect=fail_insert):
+        with patch.object(operation_runtime, "_insert_runtime_run", side_effect=fail_insert):
             with self.assertRaisesRegex(RuntimeError, "模拟 Run 插入失败"):
                 operation.retry_runtime_task(int(task["id"]), trigger="test_retry")
 
@@ -217,7 +226,5 @@ class PlanCheckRetryTests(PostgresTestCase):
                     }),
                 ):
                     task_gateway._execute_operation_handler("plan_check", int(retry["id"]))
-                expected = {"reason": f"plan-check-{account_id}"}
-                if transport_failure:
-                    expected["fault"] = True
+                expected = {"reason": f"plan-check-{account_id}", "fault": transport_failure}
                 route.release.assert_called_once_with(**expected)

@@ -219,6 +219,64 @@ TASK_FLOWS: dict[str, tuple[str, ...]] = {
     for task_type, flow in TASK_TEMPLATES.items()
 }
 
+# 仅供进度读模型使用；不参与执行器调度、模板过滤或失败传播。
+# 模板中相邻的节点没有隐含顺序，也不表示并行。动态条件只能由本次
+# Run 的冻结配置、计划或真实阶段事件确认，不能查询当前账号状态补猜。
+_PRESENTATION_CONDITIONS: dict[str, dict[str, tuple[str, str | None, tuple[str, ...]]]] = {
+    task_type: {
+        "browser": ("所选驱动需要浏览器时进入", None, ()),
+        "profile": ("认证页面要求补充账号资料时进入", None, ()),
+        "codex": ("本次任务启用 Codex 授权", "codex_enabled", ()),
+        "set_twofa": ("本次任务启用 2FA 配置", "twofa_enabled", ()),
+        "plan_check": ("本次任务启用套餐查询", "plan_check_enabled", ()),
+    } for task_type in ("registration", "registration_resume")
+}
+for _task_type in ("twofa_retry", "account_setup_retry", "password_setup", "password_change", "twofa_setup", "twofa_change", "account_completion"):
+    _PRESENTATION_CONDITIONS[_task_type] = {
+        "browser": ("所选驱动或回退流程需要浏览器时进入", None, ()),
+        "authenticate": ("当前登录态需要认证时进入", None, ()),
+        "set_password": ("计划要求设置或更改密码", None, ("password",)),
+        "set_twofa": ("计划要求配置或更改 2FA", None, ("twofa",)),
+        "plan_check": ("计划要求查询套餐", None, ("plan_check",)),
+    }
+_PRESENTATION_CONDITIONS.update({
+    "codex_retry": {
+        "browser": ("所选授权驱动需要浏览器时进入", None, ()),
+        "workspace": ("授权页面要求选择工作区时进入", None, ()),
+        "phone_verify": ("授权页面要求手机验证时进入", None, ()),
+        "sub2api_sync": ("本次任务启用自动上传 Sub2API", "auto_upload_sub2api", ()),
+    },
+    "plan_check": {"refresh_token": ("AT 失效且本次允许自动刷新时进入", None, ())},
+    "extract_link": {
+        "preflight": ("启用提炼前在线检查时进入", None, ()),
+        "refresh_token": ("AT 失效且启用预检刷新时进入", None, ()),
+    },
+    "email_change": {"login_password": ("远端要求重新认证时进入", None, ())},
+    "deactivation_mail": {"mailbox_scan": ("邮箱来源支持扫描且预检通过时进入", None, ())},
+})
+_PRESENTATION_CONDITIONS["account_completion"].update({
+    "refresh_dispatch": ("补全计划需要刷新 AT", None, ("refresh_at",)),
+    "account_setup_dispatch": ("补全计划需要账号配置", None, ("account_setup", "password", "twofa", "plan_check")),
+    "codex_dispatch": ("补全计划需要 Codex 授权", None, ("codex",)),
+})
+
+
+def stage_presentation_for(task_type: str, step_id: str) -> dict[str, Any]:
+    """返回展示约定；runtime_contract 不代表执行事件或顺序已确认。"""
+    known = step_id in {item["id"] for item in TASK_TEMPLATES.get(task_type, ())}
+    known = known or (task_type == "codex_retry" and step_id == "sub2api_sync")
+    condition = _PRESENTATION_CONDITIONS.get(task_type, {}).get(step_id)
+    kind = "result" if step_id == "result" else "conditional" if condition else "stage" if known else "unknown"
+    if task_type == "account_completion" and step_id in {"refresh_dispatch", "account_setup_dispatch", "codex_dispatch"}:
+        kind = "child_task"
+    return {
+        "kind": kind,
+        "condition_label": condition[0] if condition else None,
+        "condition_config": condition[1] if condition else None,
+        "condition_plan": condition[2] if condition else (),
+        "source": "runtime_contract" if known else "unknown",
+    }
+
 
 def normalize_stage(stage: Any) -> str:
     value = str(stage or "event").strip().lower().removesuffix("_result")

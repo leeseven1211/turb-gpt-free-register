@@ -14,13 +14,15 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from core.runtime.paths import legacy_log_roots, task_log_root
 
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _DEFAULT_LOG_ROOT = Path(tempfile.gettempdir()) / "turb-task-logs" if "unittest" in sys.modules else _PROJECT_ROOT / "logs"
-_LOG_ROOT = Path(os.getenv("TASK_RUN_LOG_ROOT") or _DEFAULT_LOG_ROOT)
+_LOG_ROOT = task_log_root(legacy_default=_DEFAULT_LOG_ROOT)
 _TASK_LOG_ROOT = _LOG_ROOT / "tasks"
 _LEGACY_LOG_ROOT = _PROJECT_ROOT / "注册日志"
+_ADDITIONAL_LEGACY_LOG_ROOTS = legacy_log_roots()
 _LOCK = threading.RLock()
 _SECRET_PARTS = ("password", "otp", "secret", "authorization", "cookie", "token")
 _PRIVATE_IDENTIFIER_KEYS = frozenset({
@@ -205,12 +207,15 @@ def resolve_path(log_file: str | Path, *, for_write: bool = False) -> Path:
     if resolved == root or root in resolved.parents:
         return resolved
 
-    legacy_root = _LEGACY_LOG_ROOT.resolve()
-    if resolved == legacy_root or legacy_root in resolved.parents:
-        mapped = root / resolved.relative_to(legacy_root)
-        if for_write or mapped.exists():
-            return mapped
-        return resolved
+    for legacy in (_LEGACY_LOG_ROOT, *_ADDITIONAL_LEGACY_LOG_ROOTS):
+        legacy_root = legacy.resolve()
+        if resolved == legacy_root or legacy_root in resolved.parents:
+            mapped = (root / resolved.relative_to(legacy_root)).resolve()
+            if mapped != root and root not in mapped.parents:
+                raise ValueError("任务日志路径不在受控目录内")
+            if for_write or mapped.exists():
+                return mapped
+            return resolved
 
     raise ValueError("任务日志路径不在受控目录内")
 

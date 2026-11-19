@@ -5,24 +5,65 @@
 
 ## 1. 运行形态与入口
 
-项目是一个以 PostgreSQL 为运行时事实来源的 Python 单体应用，提供两个共享同一业务层的
-入口：
+项目以 PostgreSQL 为运行时事实来源，业务模块共享同一核心层。当前源码提供
+`combined`、`web`、`worker` 三种显式模式，生产服务尚未切换到双进程：
 
 ```text
 CLI main.py
+  -> standalone 执行 owner 与原有任务许可
   -> main.run_registration（兼容门面）
   -> core.registration.dispatcher.run_registration
 
-WebUI web.py
+WebUI web.py（默认 combined，兼容原命令）
   -> PostgreSQL 启动检查
-  -> webui.app.create_app（装配鉴权与各领域 Blueprint）
-  -> webui.runtime.start_runtime（在同一进程恢复任务并启动后台工作）
-  -> Flask 接收 HTTP 请求
+  -> core.runtime.assembly.install
+  -> webui.app.create_app
+  -> 按领域注册的 Flask Blueprint
+  -> core.runtime.process.start_runtime
+  -> app.run 接收请求
+
+WebUI web.py --mode web
+  -> 配置观察、持久受理、查询和任务控制
+  -> 不持有执行 owner，不启动业务执行线程
+  -> --server flask（默认）或 waitress（固定 3.0.2）
+
+worker.py
+  -> 同一 runtime 组合根
+  -> 执行 owner、恢复、handler、dispatcher、周期任务与资源收尾
+  -> 不组装 Flask 或 HTTP listener
 ```
 
-Web 进程同时承担 HTTP 和后台执行职责。Flask 路由处理请求，读请求调用查询服务和仓储，写请求由各领域服务受理。`start_runtime()` 负责启动恢复、任务分发、投影和定时工作。打开页面或创建 Flask 应用都不会触发这段启动流程。[Web 入口](../../web.py) · [应用工厂](../../webui/app.py) · [运行时](../../webui/runtime.py)
+`webui.app.create_app()` 只组装 Flask 应用、鉴权、请求级依赖和 Blueprint；启动恢复、
+长任务 dispatcher 与周期 worker 由 `core.runtime` 的显式生命周期装配，
+`webui.runtime.start_runtime()` 保留兼容委托。`/healthz` 提供 liveness，`/readyz`
+同时检查数据库、配置应用、执行组件和 Worker 心跳；Web 没有可用 Worker 时不就绪，
+已成功持久化的提交仍可排队。
 
-`/healthz` 表示 HTTP 进程存活。`/readyz` 同时检查 PostgreSQL 和同一进程内的 runtime，两者都就绪时返回 200，否则返回 503。[健康检查](../../webui/routes/health.py)
+同一主机实例的 Web/Worker 使用相同代码版本、数据库/schema、实例 ID、加密主密钥和
+稳定绝对运行目录。`combined` 与 `worker`、需要执行的独立 CLI 共用文件锁和 PostgreSQL
+专用 session advisory 锁；心跳过期本身不释放 owner。失去 owner 或配置观察异常时停止
+新执行准入，已受理 Task/Run 与执行证据保留。关闭过程先停生产者和抢占，再排空任务、
+关闭执行器、收口投影/资源/兼容导出，最后关闭连接与 owner；超时明确返回失败。
+
+`core.runtime.http_server` 拥有单进程 Waitress listener、实际工作线程、响应资源和有界排空；
+Web 先停止 HTTP 准入并完成排空，再关闭 runtime。未完成排空返回失败，不能以 dispatcher
+的布尔返回值代替真实线程/资源退出。`tools/manage_runtime.py` 与 `webui.sh` 的显式角色
+命令通过 PID、启动时间、目录、release/instance 和 listener 归属绑定本机进程；
+`tools/check_runtime.py` 只读已有状态，不初始化表或执行恢复。服务示例和切换规则见
+[分进程运行说明](../deployment/split-runtime.md)，模板尚未安装，生产服务未切换。
+
+普通PG连接池按实际连接参数分别计数，默认每池12不是进程/实例总上限；专用owner连接与
+只读probe另计。本批F18只验证当时实际装配的4池键饱和、默认10秒PoolTimeout、owner/probe
+独立与释放后恢复，不承诺未来池键、SQL锁等待或全数据库中断；分项证据见[本批验收](/Users/lihongwei/.codex/visualizations/2026/11/13/01a1d26e-ed39-7171-a004-18b3e981d0c6/parallel-a-20261116/batch-current-acceptance.md)。
+
+心跳本地health/admission使用timeout epoch保护：在timeout前已开始的旧pulse不能以迟到成功
+清除heartbeat原因，后续及时成功pulse才恢复；pending状态独立于展示错误，避免反复超时检查
+饿死恢复。它不取消在途SQL或修改持久readiness协议，PG已保存ready字段不能单独替代本地
+执行准入。最小修复、新runtime v4回归及真实Worker/PG F19加速时钟验证已通过：旧pulse迟到
+返回和新CAS提交但尚未返回期间均保持本地gate，后续及时成功返回才恢复，原Run单次成功。
+该验证中durable PG ready在本地被阻挡期间实际仍为true；它不证明默认20秒墙钟时序或数据库
+中断。完整故障/容量验收与实际部署切换仍未完成。分项实现和运行验收的最新边界见
+[架构收敛第 12 节](convergence.md#12-邮箱代理与-runtime-a1-并行批次2026-11-16验收收口中)。
 
 路由 URL、HTTP 方法和 endpoint 的契约检查位于
 [`tests/webui/test_route_contract.py`](../../tests/webui/test_route_contract.py)。调整路由时应同时
@@ -37,15 +78,31 @@ core/
   -> 注册、账号、Codex、邮箱、代理、任务、存储与外部客户端
 webui/ routes/
   -> 参数校验、服务调用、响应序列化、现代界面
-main.py / web.py
-  -> CLI 兼容入口与 Web 进程生命周期
+main.py / web.py / worker.py
+  -> CLI 兼容入口与显式进程生命周期
 ```
 
 `core/` 不反向依赖 `webui/` 或 CLI。路由不得直接重写业务状态机；配置的公开字段以
 `config/schema.py` 为准，页面编辑器和所有入口必须共用相同的配置语义。
 
-WebUI 维护一套现代界面。主模板为 `webui/templates/index.html`，原页面脚本和样式位于
-`webui/static/js/pages/`、`webui/static/js/shared/` 与 `webui/static/css/`。已迁移的 Vue 页面和报告组件在 `frontend/src/`，由现有页面入口加载。[各页面接入范围](list-ui.md#当前接入范围)
+WebUI 只维护现代界面：主模板为 `webui/templates/index.html`。总览、注册、任务中心、Codex 凭证、
+账号资产、批量任务、配置、邮箱、代理、提链工作台与独立提链统计使用 `frontend/` 中的 Vue 3 / TypeScript 模块，按需加载
+`webui/static/task-center/` 构建产物；现有导航外壳通过薄桥接调用模块，页面不共享任务
+筛选 DOM 或分页状态。配置页只有一个草稿/保存 owner，旧全局配置仅接收已保存字段投影。
+邮箱 owner 拥有来源、库存/历史查询与选择、原请求导入和回执；本地粘贴不触发远端领取，
+已受理写入不会因页面隐藏或共享刷新失败而重放。代理 owner 拥有三表独立分页、共享筛选、
+轮询和冻结只读详情；公开关联 ID 通过共享解码器保留精确十进制值。两页旧脚本只保留
+显式导航桥接，弹窗关闭、滚动锁和可见性由所属生命周期管理。
+总览 owner 拥有能力可见性、卡片数据、布局和轮询；注册 owner 拥有批次、查询、动作回执与日志读取，
+执行驱动仍归核心注册模块。提链工作台 owner 拥有主列表、缓存和批次选择，候选创建与详情/支付
+分别有明确的页面内生命周期；统计拥有独立读取范围。页面隐藏会失效读取，已受理写入保存原回执，
+新的明确提交使用新身份，未知提交的显式重试沿用原身份。公开 job、Task、Run 和 batch 标识精确解码，
+注册任务兼容地址 `#register/tasks` 可从配置动作、直接链接和历史恢复进入。
+新迁移页面的懒加载由 `shared/page-bridge.js` 处理；共享原生弹层管理位于
+`frontend/src/shared/useNativeDialog.ts`，账号旧查活日志和二维码入口由 `shared/modal-compat.js` 兼容。
+外壳导航、兼容脚本和样式仍位于
+`webui/static/js/pages/`、`webui/static/js/shared/` 与 `webui/static/css/`。迁移边界、接口类型源与后续顺序见[架构收敛](convergence.md)。旧 `?ui=legacy` 链接和
+`ui_mode=legacy` Cookie 均返回现代页面；相关路由兼容检查属于现代界面的入口验收。
 
 `core/` 内按业务查找：`registration/`、`accounts/`、`codex/`、`email/`、`extract_link/`、`proxy/` 和 `sms/`；域内共用逻辑在各自根部，具体驱动或提供方在子目录。跨业务认证、浏览器、网络、任务和调度分别在 `auth/`、`browser/`、`network/`、`operations/`、`runtime/`，仓储集中于 `storage/<业务>/`。`integrations/` 放外部流程及 sub2api 客户端。
 
@@ -79,10 +136,23 @@ POST /api/jobs
   -> 账号资源族租约、取消检查点、终态收口
 ```
 
-`/api/operations` 和旧 `/api/account-tasks` 的列表、详情共用 `core.operations.query_service`。应用层负责公开状态和错误投影，存储层负责筛选、计数和分页。进度与事件按所选 Run 查询。[列表与任务详情](list-ui.md)
-
 新原生 operation 与 `account_action_*` 兼容来源并存；后者会按来源投影到 operation 表，
 不能把“统一列表”误解成旧表已经删除。详见[账号操作](../workflows/account-operations.md)。
+
+任务中心读取路径为 `Vue 页面 → API client → /api/operations → core.operations.query_service → 仓储`。查询服务拥有公开状态、分类错误、能力附加及 revision 编排；HTTP 层保留参数转换与响应。任务重跑、取消、终止和隐藏的业务选择及批量结果聚合由 `core.operations.action_service` 拥有；HTTP 路由只解析输入、传递幂等键并序列化响应。既有受管批次优先、注册 / Codex / 历史账号任务回退和 Task/Run 状态机保留。
+
+任务列表兼容GET仍可请求facets与batches；当前Vue客户端的批次参数始终为0。带
+include_facets=1/include_batches=1的元数据基准保留兼容读取成本，不代表每次Vue请求。
+不同账号基数的同机顺序测量若未控制cache、未做paired A/B，只描述各自观察值，不将差异
+全部归因基数或Web/Worker隔离。本批30万/50万各8场景30次Web-only读测的实际结果与
+多秒尾延迟、资源采样限制见[两档读测汇总](/Users/lihongwei/.codex/visualizations/2026/11/13/01a1d26e-ed39-7171-a004-18b3e981d0c6/parallel-a-20261116/runtime/scale-read-results.md)；
+该结果不是Worker吞吐、公平性或生产容量证明。
+
+账号操作的配置快照捕获、执行字段映射和补全能力组合由 `core.accounts.operation_settings` 维护，配置 schema 和默认值仍由 `config` 拥有。WebUI 和 `operation_coordinator` 的旧配置入口只委托该模块；批量 catalog / adapters 使用其公开入口。账号缺项规划由 `completion.py`、提交及既有持久来源常量由 `operation_coordinator.py` 负责。
+
+账号 setup / completion 的执行由 `setup_execution.py`、`completion_execution.py` 拥有；回执、本地读回和终态适配由 `operation_results.py` 拥有；父子任务续接及共享 executor 提交由 `completion_dependencies.py` 拥有。核心模块不依赖 WebUI。`core.accounts.operation_handlers` 拥有唯一 handler 注册锁 / 状态和历史注册续跑兼容 handler；`webui.runtime` 保留旧函数的同签名委托。持久来源 `webui_runtime` 沿用原值，文件迁移不迁移历史任务。Web 装配任务控制动作目录；实际执行 handler、恢复和 dispatcher 由执行进程装配。
+
+旧 `/api/account-tasks` 列表与详情也由 `query_service` 组装公开响应，但继续通过 `core.account_task_store` 读取旧任务模型。旧 ID、过滤参数、状态、刷新配置和错误响应保留；统一查询拥有者不等于合并新旧模型或删除兼容入口。
 
 ### Codex OAuth
 
@@ -101,15 +171,19 @@ PostgreSQL 是账号、注册任务、邮箱池、代理租约、Codex 凭证和
 `operation_events`、`operation_resources` 和账号资源租约表达运行历史。迁移期保留
 `account_action_*`，重跑必须新增 run，不能覆盖旧 run/event。
 
-进程启动时 runtime 先初始化 operation 存储和 handler，收口无法继续的中断 run，再启动
-投影与 dispatcher；注册和兼容账号任务恢复会避开已能确认继续语义的账号/来源。恢复只能
-收口运行状态或重新派发安全的 queued 工作，不得删除账号、邮箱或历史证据。
+执行进程启动时，`core.runtime.manifest` 显式列出存储、配置观察、handler、恢复及各 worker
+的装配顺序；必须先获得 owner 才执行这些回调。`core.operations.reconciliation` 拥有启动 /
+周期恢复编排及旧模型行级排除规则；`task_gateway` 保留 dispatcher / dependency 线程与
+恢复节流状态。注册和兼容账号任务恢复会避开已能确认继续语义的账号 / 来源，恢复只收口
+运行状态或重新派发安全的 queued 工作。
+
+统一任务仓储的真实实现按职责划分：`common.py` 维护连接 / 序列化 / 状态归一工具，`schema.py` 独占初始化锁与就绪状态，`runtime.py` 拥有 Run 生命周期、资源 / 回执 / 依赖事务，`recovery.py` 拥有失联恢复与行级排除查询，`projection.py` 拥有旧模型同步、批次统计、持久投影队列与唯一投影线程。`store.py` 保留列表 / 详情 / 进度 / 历史维护和同签名兼容委托，不再保存另一份运行写入或投影实现。跨模块的事务 cursor 继续由原调用链持有，锁序和原子终态不拆散。
 
 存储 schema、隔离测试和兼容导出规则见[存储架构](storage-architecture.md)。
 
 ## 5. 兼容入口
 
-新代码使用真实实现路径。下列旧入口仍供外部脚本、历史页面链接或现有调用方使用。
+新代码使用真实实现路径；下列旧入口仍为外部脚本、历史调用和测试保留。
 
 | 入口 | 真实实现 | 保留原因与删除条件 |
 | --- | --- | --- |
@@ -118,11 +192,8 @@ PostgreSQL 是账号、注册任务、邮箱池、代理租约、Codex 凭证和
 | `core.operation_task_store` | `core.storage.operations.store` | 任务中心旧导入与测试 patch 点；调用全部切换并完成观察期对账后删除 |
 | `core.account_task_store` | `core.storage.operations.legacy_task_store` | 仍在写入的旧账号任务模型；原生 operation 覆盖全部任务类型至少一个稳定版本后评估删除 |
 | `main.run_registration` | `core.registration.dispatcher.run_registration` | CLI 与外部调用门面；调用全部切换 dispatcher 后删除 |
-| `GET /api/account-tasks` 及其详情 | 新旧 GET 均调用 `core.operations.query_service`，各自保留原响应与 ID 语义 | 迁移旧调用方时核对字段、筛选和分页，确认历史任务能定位到对应的任务与 Run。重试动作和按 Run 读日志有各自的路由契约，须单独核对。[任务路由](../../webui/routes/operations.py) |
-| `?ui=legacy`、`ui_mode=legacy` Cookie | 两种旧入口均返回现代首页 | 确认旧链接与 Cookie 无调用依赖，且现代首页通过入口回归后，再评估退出兼容。[首页契约](../../tests/webui/test_dashboard_api.py) |
-| 批次详情深链接、原报告渲染器 | 原页面按批次与选定轮次读取报告，优先交给 Vue 展示，模块加载失败时回退 | 调整兼容入口前核对已保存的详情链接、当前结果与指定轮次。移除原渲染器前，还须验证正常加载和资源加载失败两条路径都能展示报告。[批次页面](../../webui/static/js/pages/bulk/page.js) · [浏览器回归](../../tests/bulk/test_list_navigation_browser.py) |
 
-表中的四个 `core` 旧入口通过 `sys.modules` 绑定真实实现模块，保持锁、缓存和 patch 点的对象唯一性，
+五个 `core` 旧入口通过 `sys.modules` 绑定真实实现模块，保持锁、缓存和 patch 点的对象唯一性，
 不得复制实现或改成通配符再导出。观察期内保留 `account_action_*` 表及其投影关系，不重排
 任务 ID、不覆盖历史 run/event；`core.storage.operations.store.verify()` 用于检查映射、
 孤儿记录、活跃资源族和终态资源的一致性。
@@ -144,18 +215,22 @@ PostgreSQL 是账号、注册任务、邮箱池、代理租约、Codex 凭证和
 
 - 代码改动先用最小相关测试验证，再按存储、运行时和发布风险扩大范围。
 - 数据库测试必须使用独立测试库或 schema，不能连接生产库或使用 `public` schema。
+- 测试进程/锁/连接释放与测试数据删除分别记账；有意保留的合成schema/CSV仍是复现材料，不能称已清理数据。
 - 账号、密码、Token、Cookie、OTP 和含凭据代理不得进入普通日志、任务事件、文档或提交。
 - 当前文档维护现行使用、架构与开发规则；过期方案、迁移记录和一次性验收结果通过 Git 历史追溯。
 
-## 7. 原六阶段计划在主线的进度
 
-阶段名称沿用历史候选 `59795268` 的 `docs/architecture/convergence.md` 第 7 节。下表按当前主线的实现核对进度。
+## 7. 2026 年 11 月 19 日本机完整合流
 
-| 阶段 | 主线现状 | 实现或验证依据 |
-| --- | --- | --- |
-| 1. 整体架构设计 | 设计已记录。模块职责、依赖方向与兼容入口分别见功能地图、代码规范和本文第 5 节。 | [功能地图](functional-map.md) · [代码规范](code-conventions.md) |
-| 2. 任务中心完整样板 | 部分接入。新旧任务查询共用服务，模板页面已支持紧凑列表、表头筛选、Run 切换和步骤证据。候选的任务中心 Vue 页面、OpenAPI 契约及生成类型尚未接入。 | [查询服务](../../core/operations/query_service.py) · [页面脚本](../../webui/static/js/pages/operations/page.js) · [任务详情](list-ui.md#任务详情) |
-| 3. 后端职责收敛 | 部分接入。配置读取使用快照，查询展示和历史任务投影已有实现。原账号任务的动作、恢复和终态处理仍有调用使用 `core.account_task_store`。 | [配置路由](../../webui/routes/config.py) · [旧账号任务存储](../../core/storage/operations/legacy_task_store.py) · [运行时](../../webui/runtime.py) |
-| 4. 性能测量与优化 | 部分接入。账号列表在无业务筛选时合并精确分类计数。任务列表在仅按运行中状态筛选且不请求分类计数时先缩小候选 ID。现有回归核对查询结果与字段，整站容量及端到端延迟仍待验证。 | [账号分类计数回归](../../tests/accounts/test_account_grouped_facets.py) · [任务读取回归](../../tests/operations/test_operation_task_read_optimization.py) |
-| 5. 其他业务页面迁移 | 部分接入。五个 Vue 构建入口覆盖总览、代理与流量、提链统计、历史子邮箱、批次列表和批次详情内的报告。账号与凭证列表、配置编辑、注册和提链工作台、批次目标与轮次控制仍由原页面承接。 | [构建入口](../../frontend/vite.config.ts) · [各页面接入范围](list-ui.md#当前接入范围) |
-| 6. Web / Worker 运行隔离 | 独立运行角色尚未接入。主线由 `web.py` 在同一进程组装应用、启动后台工作并提供 HTTP 服务。 | [Web 入口](../../web.py) · [运行时回归](../../tests/webui/test_webui_runtime.py) |
+本轮按已批准的六阶段范围合流，保留旧主线在账号、C2A、Sub2API、注册恢复、Codex诊断和读取模型上的后续修复。前述候选分阶段测试属于各自历史版本，不替代本次合流验证。
+
+| 范围 | 本轮验收要求 |
+| --- | --- |
+| 前端 | 十个按需加载入口、任务中心及其余业务页面统一类型源和公共列表；保留原操作、精确标识、隐藏读取与晚响应保护 |
+| 后端 | 查询与动作唯一owner、快照修订、注册恢复与后置关联、终态和资源补偿；原业务驱动流程不新增变化 |
+| 性能 | 保留已批准优化及其适用条件，合流对照完整响应；历史大规模结果不冒充新版本实测 |
+| 运行 | 同版Web/Worker、稳定包外运行数据、现行认证与配置来源、排空停止和可恢复旧版 |
+| 日期 | 批次截止日采用次日零点排他边界，非法日期返回400；既有精确时间参数的含义保持 |
+| 历史归档 | 已结束任务7天归档、归档文件30天保留，沿现行策略接续；账号和Codex归档状态不因迁移变动 |
+
+本轮目标是一次最终本机切换，不新增独立只读站点作为替代交付。Oracle验收继续延期。合流、完整回归、固定包和本机服务的验证分别记录，正式入口实际版本以运行进程目录为准。

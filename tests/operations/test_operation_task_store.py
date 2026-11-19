@@ -11,6 +11,8 @@ from core.storage import postgres as postgres_store, records as record_store
 from core.registration import debug as registration_debug
 from core.operations import run_log as task_run_log
 from core.storage.operations import store as operation
+from core.storage.operations import projection as operation_projection
+from core.storage.operations import runtime as operation_runtime
 from core.storage import registration
 from core.operations import task_gateway
 from tests.support_pg import PostgresTestCase
@@ -1126,7 +1128,7 @@ class OperationTaskStoreTests(PostgresTestCase):
                 raise DeadlockDetected("deadlock")
             return "written"
 
-        with patch.object(operation.time, "sleep") as sleep:
+        with patch.object(operation_projection.time, "sleep") as sleep:
             result = operation._run_projection_write_with_retry(write_once, operation_name="test")
 
         self.assertEqual("written", result)
@@ -1338,7 +1340,7 @@ class OperationTaskStoreTests(PostgresTestCase):
 
         # Startup drain is notification-only. It must not claim a row before
         # the persistent scanner gets ownership.
-        with patch.object(operation, "claim_task_dependency", side_effect=AssertionError("drain claimed")):
+        with patch.object(operation_runtime, "claim_task_dependency", side_effect=AssertionError("drain claimed")):
             self.assertEqual(
                 1,
                 task_gateway.drain_ready_dependencies(limit=10, initialized=True),
