@@ -13,14 +13,17 @@ FILTER_FIELDS = (
 FIELD_LABELS = {
     "id": "账号 ID", "email": "邮箱 / 姓名", "source": "来源",
     "registration_driver": "注册驱动", "token": "Token", "password": "密码",
-    "promotion": "Plus 优惠", "totp": "2FA", "risk": "封号邮件",
+    "promotion": "套餐优惠", "totp": "2FA", "risk": "封号邮件",
     "codex": "Codex", "account_status": "账号状态", "email_status": "邮箱状态",
 }
+PROMOTION_OFFER_VALUES = tuple(
+    f"{plan}_{discount}" for plan in ("plus", "go") for discount in ("100", "50", "other")
+)
 STATIC_VALUES = {
     "registration_driver": ["roxy", "roxy_oss", "protocol", "protocol_oss", "protocol_oss_2", "cloakbrowser", "unknown"],
     "token": ["has", "none", "expired", "invalid_401", "invalid_403", "invalid_other"],
     "password": ["has", "none"],
-    "promotion": ["free_trial", "half_price", "other_discount", "other_promo", "none", "unknown", "pending", "failed", "not_applicable"],
+    "promotion": ["free_trial", "half_price", "other_discount", "other_promo", "none", "unknown", "pending", "failed", "not_applicable", *PROMOTION_OFFER_VALUES],
     "totp": ["enabled", "disabled"], "risk": ["detected", "clear", "pending"],
     "email_status": ["invalid", "unmarked"],
 }

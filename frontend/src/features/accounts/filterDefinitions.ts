@@ -37,6 +37,8 @@ export function columnActive(query:DeepReadonly<AccountQuerySpec>,column:Account
   if(column.kind==='text')return !!textValue(query,column.key as AccountFilterField);
   return selectedValues(query,column.key).length>0;
 }
+export const promotionOffers = ['plus_100','plus_50','plus_other','go_100','go_50','go_other'];
+
 export function facetOptions(query:DeepReadonly<AccountQuerySpec>,facets:DeepReadonly<AccountFacets>,column:AccountColumn,label:AccountFacetLabel) {
   const selected=selectedValues(query,column.key);
   const source=column.kind==='enum' ? facets[column.key as keyof AccountFacets]||[] : [];
@@ -47,7 +49,11 @@ export function facetOptions(query:DeepReadonly<AccountQuerySpec>,facets:DeepRea
     const left=order.indexOf(a.value),right=order.indexOf(b.value);
     return (left<0?order.length:left)-(right<0?order.length:right);
   });
-  return values.map(item=>({...item,label:label(column.group||column.key,item.value)}));
+  const options: {value:string;count:number|null;label:string}[] = values
+    .filter(item=>column.key!=='promotion'||!promotionOffers.includes(item.value))
+    .map(item=>({...item,label:label(column.group||column.key,item.value)}));
+  if(column.key==='promotion')for(const value of promotionOffers)options.push({value,count:null,label:label('promotion',value)});
+  return options;
 }
 export function filterChips(query:DeepReadonly<AccountQuerySpec>,label:AccountFacetLabel) {
   return accountFilters.flatMap(column=>{

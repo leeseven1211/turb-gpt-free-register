@@ -824,6 +824,36 @@ console.log('ok');
         self.assertEqual(response.get_json()["item"]["promotion_query_snapshot"], {"version": 1})
         self.assertEqual(self.client.get("/api/accounts/999999/plan-details", headers=self.headers).status_code, 404)
 
+    def test_accounts_filter_by_matching_plan_and_discount(self):
+        from core.storage.admin_repository import account_query_count, account_query_facets
+
+        def offer(plan, percentage, *, eligible=True):
+            return {"plan": plan, "discount_percentage": percentage, "eligible": eligible}
+
+        self.seed(record_store.ACCOUNTS, [
+            {"email": "go-half@example.test", "email_source": "outlook", "account_promotions": [offer("plus", 100), offer("go", 50), offer("go", 50)]},
+            {"email": "plus-half@example.test", "email_source": "icloud_hide", "account_promotions": [offer("plus", 50), offer("go", 100)]},
+            {"email": "go-other@example.test", "account_promotions": [offer("go", 25)]},
+            {"email": "unknown@example.test", "account_promotions": [offer("go", None), offer("go", 50, eligible=False)]},
+            {"email": "legacy@example.test", "plus_promo_kind": "discount", "plus_promo_discount_percentage": 50, "plus_discount_eligible": True},
+        ])
+        for value, expected in (
+            ("go_50", {"go-half"}), ("plus_50", {"plus-half", "legacy"}),
+            ("go_other", {"go-other"}), ("go_100,plus_100", {"go-half", "plus-half"}),
+        ):
+            with self.subTest(value=value):
+                response = self.client.get(f"/api/accounts?paged=1&promotion={value}", headers=self.headers)
+                payload = response.get_json()
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual({row["email"].split("@")[0] for row in payload["items"]}, expected)
+                self.assertEqual(account_query_count({"filters": {"promotion": value}}), len(expected))
+        expected_sources = {"icloud_hide": 1, "outlook": 1}
+        self.assertEqual({item["value"]: item["count"] for item in payload["facets"]["source"]}, expected_sources)
+        legacy = self.client.get("/api/accounts?paged=1&trial=go_100,plus_100", headers=self.headers).get_json()
+        self.assertEqual(legacy["facets"], payload["facets"])
+        batch_facets = account_query_facets({"filters": {"promotion": ["go_100", "plus_100"]}})
+        self.assertEqual({item["value"]: item["count"] for item in batch_facets["source"]}, expected_sources)
+
     def test_accounts_column_filters_are_combined(self):
         self.seed(record_store.ACCOUNTS, [
             {"email": "target@example.com", "email_source": "outlook", "access_token": "token", "totp_secret": "JBSWY3DPEHPK3PXP", "codex_status": "success", "plan_type": "free", "current_plan_type": "free", "plan_check_status": "success", "plus_promo_kind": "free_trial", "plus_trial_eligible": True, "quota_status": "success", "quota_type": "月限额", "quota_windows": [{"kind": "monthly", "label": "月限额", "used_percent": 25, "remaining_percent": 75}], "extra_json": '{"account_password":"Account123!abcd"}'},

@@ -1,7 +1,7 @@
 import {computed,onScopeDispose,ref} from 'vue';
 import {BulkApiError} from '../../api/bulk';
 import type {AccountQuerySpec} from '../accounts/queryAdapter';
-import {accountFilters,filterChips,selectedValues,type AccountFilterField,type AccountFilterKey} from '../accounts/filterDefinitions';
+import {accountFilters,filterChips,promotionOffers,selectedValues,type AccountFilterField,type AccountFilterKey} from '../accounts/filterDefinitions';
 import type {BulkCatalog,BulkCreateDependencies,BulkDraft,BulkRecord} from './contracts';
 import {bulkId} from './contracts';
 
@@ -89,6 +89,7 @@ export function useBulkCreate(deps:BulkCreateDependencies) {
   const configured=definition?.options??definition?.enum??definition?.values;
   const rows=facets.value[key]??(Array.isArray(configured)?configured:[]),found=new Map<string,FacetOption>();
   for(const entry of rows){const row=typeof entry==='object'&&entry?entry as FacetOption:{value:String(entry)};if(row.value)found.set(row.value,{...row,label:row.label||facetLabel(key==='token'?'account_token':key,row.value)});}
+  if(key==='promotion')for(const value of promotionOffers)if(!found.has(value))found.set(value,{value,label:facetLabel(key,value)});
   for(const value of selectedValues(draft.value.query,key))if(!found.has(value))found.set(value,{value,label:facetLabel(key==='token'?'account_token':key,value)});
   return[...found.values()];
  }

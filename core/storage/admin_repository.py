@@ -227,8 +227,33 @@ def _account_facet_expressions() -> dict[str, str]:
     }
 
 
+def _promotion_offers_sql() -> str:
+    """按同一条优惠明细的目标套餐及比例生成筛选值，兼容历史 Plus 投影。"""
+    offers = "a.data->'account_promotions'"
+    percentage = "offer->'discount_percentage'"
+    return f"""CASE WHEN jsonb_typeof({offers}) = 'array' THEN ARRAY(
+        SELECT (offer->>'plan') || '_' || CASE {percentage}
+            WHEN '100'::jsonb THEN '100' WHEN '50'::jsonb THEN '50' ELSE 'other' END
+        FROM jsonb_array_elements({offers}) AS offer
+        WHERE offer->>'plan' IN ('plus', 'go') AND offer->'eligible' = 'true'::jsonb
+          AND jsonb_typeof({percentage}) = 'number'
+          AND {percentage} > '0'::jsonb AND {percentage} <= '100'::jsonb
+    ) WHEN {_ACCOUNT_PROMO_KIND} IN ('free_trial', 'discount', 'other_promo')
+         AND a.plus_promo_discount_percentage > 0 AND a.plus_promo_discount_percentage <= 100
+    THEN ARRAY[CASE a.plus_promo_discount_percentage
+        WHEN 100 THEN 'plus_100' WHEN 50 THEN 'plus_50' ELSE 'plus_other' END]
+    ELSE ARRAY[]::text[] END"""
+
+
+def _offer_filter_values(filters: dict[str, str]) -> list[str]:
+    from core.accounts.query import PROMOTION_OFFER_VALUES
+
+    return [value for value in _filter_values(filters.get("promotion") or filters.get("trial"))
+            if value in PROMOTION_OFFER_VALUES]
+
+
 def _account_facet_predicates(
-    plan: str, filters: dict[str, str], expressions: dict[str, str],
+    plan: str, filters: dict[str, str], expressions: dict[str, str], *, offer_column: str = "",
 ) -> list[tuple[str, str, list[Any]]]:
     """生成带列名的筛选条件，方便统计时仅跳过当前列。"""
     predicates: list[tuple[str, str, list[Any]]] = []
@@ -252,7 +277,17 @@ def _account_facet_predicates(
     if promotions:
         aliases = {"eligible": ["free_trial"], "ineligible": ["none"], "discount": ["half_price", "other_discount"]}
         values = list(dict.fromkeys(item for value in promotions for item in aliases.get(value, [value])))
-        predicates.append(("promotion", f"({expressions['promotion']}) = ANY(%s)", [values]))
+        offers = _offer_filter_values(filters)
+        categories = [value for value in values if value not in offers]
+        parts = []
+        params = []
+        if categories:
+            parts.append(f"({expressions['promotion']}) = ANY(%s)")
+            params.append(categories)
+        if offers:
+            parts.append(f"({offer_column or _promotion_offers_sql()}) && %s::text[]")
+            params.append(offers)
+        predicates.append(("promotion", f"({' OR '.join(parts)})", params))
     return predicates
 
 
@@ -367,12 +402,15 @@ def account_query_facets(spec: dict) -> dict:
     where, params = _compile_account_predicates(normalized["archived"], "", normalized["q"],
         normalized["date_from"], normalized["date_to"], {key: filters.get(key, "") for key in ("id", "email")})
     expressions = _account_facet_expressions()
+    offer_column = "b.promotion_offers" if _offer_filter_values(filters) else ""
     predicates = ["NULLIF(f.value, '') IS NOT NULL"]
     for key, predicate, values in _account_facet_predicates(
-        ",".join(normalized["plan"]), filters, {key: f"b.{key}" for key in expressions}):
+        ",".join(normalized["plan"]), filters, {key: f"b.{key}" for key in expressions}, offer_column=offer_column):
         predicates.append(f"(f.facet = %s OR ({predicate}))")
         params.extend((key, *values))
     columns = ", ".join(f"{expression} AS {key}" for key, expression in expressions.items())
+    if offer_column:
+        columns += f", {_promotion_offers_sql()} AS promotion_offers"
     facet_values = ", ".join(f"('{key}',b.{key})" for key in expressions)
     with _connect() as conn, conn.cursor() as cur:
         cur.execute(f"""WITH base AS MATERIALIZED (SELECT {columns} FROM {_q(record_store.ACCOUNTS)} a
@@ -481,10 +519,13 @@ def list_accounts(
     else:
         expressions = _account_facet_expressions()
         facet_columns = ", ".join(f"{expression} AS {key}" for key, expression in expressions.items())
+        offer_column = "b.promotion_offers" if _offer_filter_values(request.filters) else ""
+        if offer_column:
+            facet_columns += f", {_promotion_offers_sql()} AS promotion_offers"
         facet_values = ", ".join(f"('{key}', b.{key})" for key in expressions)
         facet_where = ["NULLIF(f.value, '') IS NOT NULL"]
         for key, predicate, values in _account_facet_predicates(
-            plan, request.filters, {key: f"b.{key}" for key in expressions},
+            plan, request.filters, {key: f"b.{key}" for key in expressions}, offer_column=offer_column,
         ):
             facet_where.append(f"(f.facet = %s OR ({predicate}))")
             facet_params.extend((key, *values))

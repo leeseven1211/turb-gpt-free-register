@@ -24,6 +24,16 @@ function setup(saved:Record<string,unknown>={}) {
 afterEach(()=>{scopes.splice(0).forEach(scope=>scope.stop());vi.useRealTimers();});
 
 describe('批次创建 owner',()=>{
+ it('载入筛选统计后仍可选择指定套餐与优惠比例',async()=>{
+  const h=setup();
+  h.handlers.read=async path=>path==='/catalog'?catalog():{facets:{promotion:[{value:'half_price',count:3}]},matched:3};
+  await h.owner.initialize();
+  expect(h.owner.filterOptions('promotion')).toEqual(expect.arrayContaining([
+    expect.objectContaining({value:'half_price',count:3}),
+    expect.objectContaining({value:'go_50'}),
+    expect.objectContaining({value:'plus_100'}),
+  ]));
+ });
  it('固定名单保留大整数字符串及来源快照，按 ready revision 创建暂停批次',async()=>{
   const h=setup();const ids=['9007199254740993','9007199254740995'];const seed=h.draft({source:{kind:'ids',entity:'account',ids}});h.owner.applySeed(seed);ids.push('5');await h.owner.initialize();await h.owner.createBatch(true);
   const writes=h.calls.filter(call=>call.body);expect(writes.map(call=>call.path)).toEqual(['/selections','/batches']);expect(writes[0]!.body).toMatchObject({source:{kind:'ids',entity:'account',ids:['9007199254740993','9007199254740995']},parameters:{timezone_offset_min:new Date().getTimezoneOffset()},expected_config_revision:'r1'});
