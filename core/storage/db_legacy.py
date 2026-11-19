@@ -1740,31 +1740,82 @@ def update_account_registration_proxy(
 
 def backfill_account_registration_proxy_context() -> int:
     """从历史成功注册任务补齐账号的代理来源/实际国家；已有值不覆盖。"""
-    accounts = record_store.list_rows(record_store.ACCOUNTS, order_by="id")
-    jobs = record_store.list_rows(record_store.JOBS, order_by="id DESC")
+    # 启动恢复路径只需要四个代理字段。旧实现把两张表的完整 JSONB
+    # 解码到 Python，再对每个账号线性扫描全部任务；生产库中这会把
+    # 5 秒 owner 探针窗口拖过，甚至在没有任何需要补齐的行时也会阻塞
+    # Worker 启动。让 PostgreSQL 做按账号/邮箱的最新任务匹配，并且只
+    # 传递窄字段，保留原来的 id DESC 优先级和逐字段幂等 claim。
+    from psycopg.rows import dict_row
+
+    accounts_table = postgres_store.qualified(record_store.ACCOUNTS.name)
+    jobs_table = postgres_store.qualified(record_store.JOBS.name)
+    query = f"""
+        WITH candidate_jobs AS (
+            SELECT
+                id,
+                account_id,
+                LOWER(BTRIM(email)) AS email_key,
+                NULLIF(BTRIM(data->>'proxy_provider'), '') AS proxy_provider,
+                UPPER(NULLIF(BTRIM(data->>'proxy_region'), '')) AS proxy_region
+            FROM {jobs_table}
+            WHERE
+                NULLIF(BTRIM(data->>'proxy_provider'), '') IS NOT NULL
+                OR LENGTH(BTRIM(data->>'proxy_region')) = 2
+        ),
+        missing_accounts AS (
+            SELECT
+                id,
+                email,
+                NULLIF(data->>'registration_proxy_provider', '') AS account_provider,
+                NULLIF(data->>'registration_proxy_region', '') AS account_region
+            FROM {accounts_table}
+            WHERE
+                NULLIF(data->>'registration_proxy_provider', '') IS NULL
+                OR NULLIF(data->>'registration_proxy_region', '') IS NULL
+        ),
+        candidate_matches AS (
+            SELECT a.id, j.id AS job_id, j.proxy_provider, j.proxy_region
+            FROM missing_accounts AS a
+            JOIN candidate_jobs AS j ON j.account_id = a.id
+            UNION ALL
+            SELECT a.id, j.id AS job_id, j.proxy_provider, j.proxy_region
+            FROM missing_accounts AS a
+            JOIN candidate_jobs AS j ON j.email_key = LOWER(BTRIM(a.email))
+            WHERE NULLIF(BTRIM(a.email), '') IS NOT NULL
+        ),
+        latest AS (
+            SELECT DISTINCT ON (id)
+                id,
+                proxy_provider,
+                proxy_region
+            FROM candidate_matches
+            ORDER BY id, job_id DESC
+        )
+        SELECT
+            a.id,
+            a.email,
+            a.account_provider,
+            a.account_region,
+            latest.proxy_provider,
+            latest.proxy_region
+        FROM missing_accounts AS a
+        LEFT JOIN latest USING (id)
+        ORDER BY a.id
+    """
+    with postgres_store.connect(row_factory=dict_row) as conn, conn.cursor() as cur:
+        cur.execute(query)
+        accounts = cur.fetchall()
     changed = 0
     for row in accounts:
-        if row.get("registration_proxy_provider") and row.get("registration_proxy_region"):
+        if row["account_provider"] and row["account_region"]:
             continue
-        account_id = int(row.get("id") or 0)
-        email = str(row.get("email") or "").strip().lower()
-        job = next((
-            item for item in jobs
-            if (
-                (account_id and int(item.get("account_id") or 0) == account_id)
-                or (email and str(item.get("email") or "").strip().lower() == email)
-            )
-            and (
-                str(item.get("proxy_provider") or "").strip()
-                or len(str(item.get("proxy_region") or "").strip()) == 2
-            )
-        ), None)
-        if not job:
+        account_id = int(row["id"] or 0)
+        provider = str(row["proxy_provider"] or "").strip()
+        region = str(row["proxy_region"] or "").strip().upper()
+        if not provider and len(region) != 2:
             continue
-        provider = str(job.get("proxy_provider") or "").strip()
-        region = str(job.get("proxy_region") or "").strip().upper()
         row_changed = False
-        if not row.get("registration_proxy_provider") and provider:
+        if not row["account_provider"] and provider:
             if record_store.claim_row(
                 record_store.ACCOUNTS,
                 account_id,
@@ -1773,7 +1824,7 @@ def backfill_account_registration_proxy_context() -> int:
                 guard_params=("",),
             ):
                 row_changed = True
-        if not row.get("registration_proxy_region") and len(region) == 2:
+        if not row["account_region"] and len(region) == 2:
             if record_store.claim_row(
                 record_store.ACCOUNTS,
                 account_id,

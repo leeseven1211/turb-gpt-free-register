@@ -155,20 +155,25 @@ class RuntimeReconciliationTests(TestCase):
         browser.assert_not_called()
         debug.assert_called_once_with()
 
-    def test_background_recovery_keeps_extract_backfill_codex_order(self):
+    def test_background_recovery_keeps_extract_and_codex_order(self):
         order = []
         with patch.object(
             reconciliation, "legacy_recovery_exclusions", return_value={"skip_all": False, "account_ids": [11]},
         ), patch.object(
             reconciliation.db, "recover_interrupted_extract_links", side_effect=lambda **_kwargs: order.append("extract") or 0,
         ) as extract, patch.object(
-            reconciliation.db, "backfill_account_registration_proxy_context", side_effect=lambda: order.append("backfill") or 0,
-        ), patch.object(
             reconciliation.codex_operation_service, "resume_queued", side_effect=lambda: order.append("codex") or 0,
         ):
             reconciliation.recover_account_background_state(Mock())
-        self.assertEqual(["extract", "backfill", "codex"], order)
+        self.assertEqual(["extract", "codex"], order)
         extract.assert_called_once_with(excluded_account_ids=[11])
+
+    def test_deferred_proxy_backfill_runs_after_worker_start(self):
+        with patch.object(
+            reconciliation.db, "backfill_account_registration_proxy_context", return_value=3,
+        ) as backfill:
+            self.assertEqual(3, reconciliation.run_deferred_account_proxy_backfill(Mock()))
+        backfill.assert_called_once_with()
 
     def test_periodic_recovery_repairs_projections_even_when_no_run_changed(self):
         with patch.object(

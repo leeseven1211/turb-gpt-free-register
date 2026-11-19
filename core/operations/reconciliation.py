@@ -281,13 +281,24 @@ def recover_account_background_state(runtime_logger: logging.Logger | None = Non
             active_logger.warning("已恢复 %s 个因 WebUI 重启中断的提链状态", recovered_extract_links)
     else:
         active_logger.info("无法安全读取 durable extract_link 行级排除项，跳过旧提链恢复")
-    backfilled_proxy_context = db.backfill_account_registration_proxy_context()
-    if backfilled_proxy_context:
-        active_logger.info("已为 %s 个历史账号补齐注册代理来源/国家", backfilled_proxy_context)
-
     resumed_codex_runs = codex_operation_service.resume_queued()
     if resumed_codex_runs:
         active_logger.info("已恢复调度 %s 个数据库队列中的 Codex attempt", resumed_codex_runs)
+
+
+def run_deferred_account_proxy_backfill(
+    runtime_logger: logging.Logger | None = None,
+) -> int:
+    """在 Worker 心跳已启动后补齐历史账号代理上下文。"""
+    active_logger = runtime_logger or logger
+    try:
+        changed = int(db.backfill_account_registration_proxy_context() or 0)
+    except Exception:
+        active_logger.exception("历史账号注册代理来源/国家回填失败；下次启动将重试")
+        return 0
+    if changed:
+        active_logger.info("已为 %s 个历史账号补齐注册代理来源/国家", changed)
+    return changed
 
 
 def reconcile_recovered_projections(operation_logger: logging.Logger | None = None) -> int:
