@@ -1811,7 +1811,10 @@ def backfill_account_registration_proxy_context(*, limit: int | None = None) -> 
     """
     if limit is not None:
         query += "\n        LIMIT %s"
-    with postgres_store.connect(row_factory=dict_row) as conn, conn.cursor() as cur:
+    # 历史维护不能无限等待锁；超时后由下一轮小批次重试，不能拖住 Worker 心跳。
+    with postgres_store.connect(
+        row_factory=dict_row, deadline=time.monotonic() + 2.0,
+    ) as conn, conn.cursor() as cur:
         if limit is None:
             cur.execute(query)
         else:
