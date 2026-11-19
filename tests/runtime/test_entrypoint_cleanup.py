@@ -228,6 +228,9 @@ class CodexCliOwnerTests(unittest.TestCase):
 
 class WorkerEntrypointCleanupTests(unittest.TestCase):
     def test_start_or_partial_install_error_survives_failed_runtime_cleanup(self):
+        def unexpected_owner_check():
+            self.fail("Worker polled execution ownership after a startup failure")
+
         for stage in ("install", "start"):
             for cleanup_raises in (False, True):
                 failure = StartupFailure(stage)
@@ -258,6 +261,7 @@ class WorkerEntrypointCleanupTests(unittest.TestCase):
                         RuntimeBootstrap=SimpleNamespace(from_environment=lambda **_kwargs: bootstrap)),
                     "core.runtime.assembly": _module("core.runtime.assembly", install=install),
                     "core.runtime.process": _module("core.runtime.process",
+                        execution_owner_lost=unexpected_owner_check,
                         start_runtime=start, stop_runtime=stop),
                     "core.storage": _module("core.storage",
                         postgres=SimpleNamespace(require_ready=lambda: None)),

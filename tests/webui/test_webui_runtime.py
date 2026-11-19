@@ -129,7 +129,7 @@ class WebUIRuntimeTests(unittest.TestCase):
                 patch.object(runtime.db, "recover_interrupted_live_checks", return_value=6)
             )
             backfill_proxy = stack.enter_context(
-                patch.object(runtime.db, "backfill_account_registration_proxy_context", return_value=7)
+                patch.object(runtime.db, "backfill_account_registration_proxy_context")
             )
             resume_codex = stack.enter_context(
                 patch.object(runtime.codex_operation_service, "resume_queued", return_value=8)
@@ -169,6 +169,8 @@ class WebUIRuntimeTests(unittest.TestCase):
             self.assertLess(startup_order.index("recover_live"), startup_order.index("start_dispatcher"))
             self.assertLess(startup_order.index("recover_live"), startup_order.index("resume_extract"))
             self.assertLess(startup_order.index("recover_plans"), startup_order.index("resume_extract"))
+            # Managed execution owns the deferred maintenance worker.
+            backfill_proxy.assert_not_called()
 
         for mock in (
             start_settlement,
@@ -188,7 +190,6 @@ class WebUIRuntimeTests(unittest.TestCase):
             recover_plans,
             recover_links,
             recover_live,
-            backfill_proxy,
             resume_codex,
             set_dependency_handler,
             start_dependency_dispatcher,

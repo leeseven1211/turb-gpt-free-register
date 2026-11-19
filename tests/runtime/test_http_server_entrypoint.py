@@ -9,6 +9,12 @@ from unittest.mock import patch
 ROOT=Path(__file__).resolve().parents[2]
 def mod(name,**values):
     value=ModuleType(name);value.__dict__.update(values);return value
+
+
+def unexpected_owner_check():
+    raise AssertionError("Worker polled execution ownership before the expected shutdown")
+
+
 class EntrypointTests(unittest.TestCase):
     def load(self,filename='web.py'):
         spec=importlib.util.spec_from_file_location('test_runtime_entry',ROOT/filename);module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module);return module
@@ -29,7 +35,9 @@ class EntrypointTests(unittest.TestCase):
               'core.runtime.bootstrap':mod('core.runtime.bootstrap',RuntimeBootstrap=SimpleNamespace(from_environment=lambda **_:bootstrap)),
               'core.storage':mod('core.storage',postgres=SimpleNamespace(require_ready=lambda:interrupt('database'))),
               'core.runtime.assembly':mod('core.runtime.assembly',install=lambda *_:events.append('install')),
-              'core.runtime.process':mod('core.runtime.process',start_runtime=lambda:interrupt('start'),stop_runtime=lambda **_:events.append('stop') or True)}
+              'core.runtime.process':mod('core.runtime.process',
+                execution_owner_lost=unexpected_owner_check,
+                start_runtime=lambda:interrupt('start'),stop_runtime=lambda **_:events.append('stop') or True)}
             with patch.dict(sys.modules,modules),patch.dict(entry.os.environ,{'PYTHON_DOTENV_DISABLED':'1'},clear=True),patch.object(sys,'argv',['worker.py']),patch.object(entry.signal,'signal',side_effect=lambda key,handler:handlers.__setitem__(key,handler)):
                 with self.assertRaises(SystemExit) as caught:entry.main()
                 self.assertEqual(caught.exception.code,0)
@@ -124,6 +132,7 @@ class ShutdownDeadlineTests(unittest.TestCase):
                 RuntimeBootstrap=SimpleNamespace(from_environment=lambda **_: bootstrap)),
             'core.runtime.assembly': mod('core.runtime.assembly', install=install),
             'core.runtime.process': mod('core.runtime.process',
+                execution_owner_lost=unexpected_owner_check,
                 start_runtime=lambda *_: None, stop_runtime=stop_runtime),
             'core.runtime.http_server': mod('core.runtime.http_server', HttpServer=Server),
             'core.runtime.role_launcher': mod('core.runtime.role_launcher',
