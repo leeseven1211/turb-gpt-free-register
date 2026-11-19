@@ -18,6 +18,33 @@ class OperationTaskReadOptimizationTests(PostgresTestCase):
     def tearDown(self):
         self.schema_patch.stop()
 
+    def test_default_public_list_disables_jit_only_for_its_read_transaction(self):
+        import psycopg
+
+        execute = psycopg.Cursor.execute
+        modes = {}
+
+        def trace(cursor, statement, params=None, **kwargs):
+            for name, marker in (("列表", "WITH page_ids AS MATERIALIZED"),
+                                 ("筛选统计", "WITH facet_current_runs AS MATERIALIZED")):
+                if marker in str(statement):
+                    with cursor.connection.cursor() as probe:
+                        execute(probe, "SHOW jit")
+                        modes[name] = probe.fetchone()["jit"]
+            return execute(cursor, statement, params, **kwargs)
+
+        with operation_task_store._connect() as conn, conn.cursor() as cur:
+            cur.execute("SHOW jit")
+            original = cur.fetchone()["jit"]
+        with patch.object(psycopg.Cursor, "execute", trace):
+            operation_task_store.list_tasks(public_status=True, page_size=20)
+            self.assertEqual({"列表": "off", "筛选统计": "off"}, modes)
+            operation_task_store.list_tasks(public_status=True, page_size=20, task_type="report")
+            self.assertEqual({"列表": original, "筛选统计": original}, modes)
+        with operation_task_store._connect() as conn, conn.cursor() as cur:
+            cur.execute("SHOW jit")
+            self.assertEqual(original, cur.fetchone()["jit"])
+
     def test_only_public_running_pages_without_facets_or_other_filters_prescreen(self):
         import psycopg
 
