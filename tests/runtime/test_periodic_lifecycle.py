@@ -7,7 +7,7 @@ import threading
 import types
 import unittest
 from contextlib import ExitStack, contextmanager
-from unittest.mock import patch
+from unittest.mock import Mock, call, patch
 
 from core.runtime import periodic, scheduler_state as scheduler, process
 from core.storage.operations import projection
@@ -209,9 +209,10 @@ class SchedulerLoopTests(RuntimeContextTestCase):
         global CONTEXT, ADMITTED
         CONTEXT, ADMITTED = None, False
 
-    def run_loop(self, work, stop, enabled=lambda: True):
+    def run_loop(self, work, stop, enabled=lambda: True, *, lifecycle=None):
         scheduler.run_periodic(task="task", label="Test", work=work, enabled=enabled,
-                               interval_seconds=lambda: 3600, initial_delay_seconds=0, stop=stop)
+                               interval_seconds=lambda: 3600, initial_delay_seconds=0,
+                               stop=stop, lifecycle=lifecycle)
 
     def test_managed_closed_gate_never_reads_schedule_or_runs_work(self):
         global CONTEXT, ADMITTED
@@ -267,6 +268,47 @@ class SchedulerLoopTests(RuntimeContextTestCase):
              patch.object(scheduler, "mark_ran") as mark:
             self.run_loop(work, stop)
         mark.assert_not_called()
+
+    def test_retry_pending_keeps_cycle_due_and_uses_a_stop_aware_wait(self):
+        lifecycle = Mock()
+        stop = ScriptedStop(lambda event, n: event.set() if n >= 2 else None)
+        work = Mock(side_effect=lambda: self._raise_cycle_retry())
+        with patch.object(scheduler, "seconds_until_due", return_value=0), \
+             patch.object(scheduler, "mark_ran") as mark, \
+             patch.object(scheduler.logger, "warning") as warning:
+            self.run_loop(work, stop, lifecycle=lifecycle)
+        mark.assert_not_called()
+        work.assert_called_once_with()
+        self.assertEqual([0.0, scheduler._POLL_CAP_SECONDS], stop.waits)
+        self.assertEqual([
+            call.work_started(),
+            call.record_error("scheduler_cycle_retry_pending"),
+            call.work_finished(),
+        ], lifecycle.mock_calls)
+        warning.assert_called_once_with(
+            "[%s] scheduled cycle will retry: code=%s", "Test", "scheduler_cycle_retry_pending",
+        )
+
+    def test_retry_pending_runs_due_work_after_backoff_and_marks_only_success(self):
+        stop = ScriptedStop(lambda event, n: event.set() if n >= 3 else None)
+        attempts = []
+
+        def work():
+            attempts.append(len(stop.waits))
+            if len(attempts) == 1:
+                self._raise_cycle_retry()
+            stop.set()
+
+        with patch.object(scheduler, "seconds_until_due", return_value=0), \
+             patch.object(scheduler, "mark_ran") as mark:
+            self.run_loop(work, stop)
+        self.assertEqual([1, 2], attempts)
+        self.assertEqual([0.0, scheduler._POLL_CAP_SECONDS], stop.waits)
+        mark.assert_called_once_with("task")
+
+    @staticmethod
+    def _raise_cycle_retry():
+        raise scheduler.PeriodicCycleRetry("private exception detail")
 
     def test_write_failure_does_not_repeat_cycle_after_sixty_seconds(self):
         stop = ScriptedStop(lambda event, n: event.set() if n >= 4 else None)

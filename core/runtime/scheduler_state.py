@@ -26,6 +26,10 @@ class PeriodicCycleCancelled(Exception):
     """The current cycle was interrupted and must remain due."""
 
 
+class PeriodicCycleRetry(Exception):
+    """The cycle exhausted its attempts and must remain due."""
+
+
 def _task_key(task: str) -> str:
     key = str(task)
     if not key:
@@ -184,13 +188,19 @@ def run_periodic(
                 continue
             if lifecycle:
                 lifecycle.work_started()
-            cancelled = False
+            keep_due = False
             try:
                 result = work()
                 logger.info("[%s] scheduled run: %s", label, result)
             except PeriodicCycleCancelled:
-                cancelled = True
+                keep_due = True
                 logger.info("[%s] scheduled cycle cancelled", label)
+            except PeriodicCycleRetry:
+                keep_due = True
+                code = "scheduler_cycle_retry_pending"
+                logger.warning("[%s] scheduled cycle will retry: code=%s", label, code)
+                if lifecycle:
+                    lifecycle.record_error(code)
             except Exception:
                 logger.exception("[%s] scheduled cycle failed", label)
                 if lifecycle:
@@ -198,7 +208,7 @@ def run_periodic(
             finally:
                 if lifecycle:
                     lifecycle.work_finished()
-            if cancelled:
+            if keep_due:
                 if ticker.wait(_POLL_CAP_SECONDS):
                     return
                 continue

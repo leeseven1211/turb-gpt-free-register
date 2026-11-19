@@ -6,6 +6,7 @@ import gzip
 import hashlib
 import json
 import logging
+import stat
 import tempfile
 import threading
 import time
@@ -14,6 +15,8 @@ from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from psycopg.errors import DeadlockDetected
 
 from core import operation_task_store
 from core.runtime import scheduler_state
@@ -27,6 +30,7 @@ _ARCHIVE_METADATA_KEYS = ("version", "created_at", "cutoff", "retention_days")
 _ARCHIVE_CHUNK_SIZE = 256 * 1024
 _DELETE_BATCH_SIZE = 500
 _MAX_BATCHES_PER_RUN = 20
+_DEADLOCK_RETRY_DELAYS = (0.05, 0.20)
 SCHEDULER_TASK = "task_center_retention"
 _INTERVAL_SECONDS = 24 * 60 * 60
 _INITIAL_DELAY_SECONDS = 60
@@ -205,6 +209,65 @@ def archive_snapshot_stream(
     return {"path": str(final_path), "size": size, "sha256": sha256, "counts": counts}
 
 
+def _archive_file_identity(path: Path) -> tuple[int, int, int] | None:
+    info = path.lstat()
+    if not stat.S_ISREG(info.st_mode):
+        return None
+    return info.st_dev, info.st_ino, info.st_ctime_ns
+
+
+def _cleanup_batch_with_retry(days: int, check_cancel: Callable[[], None],
+                              stop: threading.Event | None) -> dict[str, Any]:
+    for attempt in range(len(_DEADLOCK_RETRY_DELAYS) + 1):
+        check_cancel()
+        published: tuple[Path, tuple[int, int, int]] | None = None
+
+        def archive_for_attempt(metadata, sections, *, check_cancel=None):
+            nonlocal published
+            result = archive_snapshot_stream(metadata, sections, check_cancel=check_cancel)
+            path = Path(result["path"])
+            try:
+                identity = _archive_file_identity(path)
+                if identity is not None:
+                    published = path, identity
+            except OSError:
+                logger.warning("Task center archive identity could not be read")
+            return result
+
+        try:
+            result = operation_task_store.cleanup_terminal_history(
+                retention_days=days,
+                limit=_DELETE_BATCH_SIZE,
+                archive_stream=archive_for_attempt,
+                check_cancel=check_cancel,
+            )
+        except DeadlockDetected as error:
+            # The store's transaction has unwound with SQLSTATE 40P01.
+            # Only its own verified file is eligible for removal.
+            if published is not None:
+                path, identity = published
+                try:
+                    if _archive_file_identity(path) == identity:
+                        path.unlink(missing_ok=True)
+                except FileNotFoundError:
+                    pass
+                except OSError:
+                    logger.warning("Task center archive from a rolled back batch could not be removed")
+            check_cancel()
+            if attempt == len(_DEADLOCK_RETRY_DELAYS):
+                raise scheduler_state.PeriodicCycleRetry() from error
+            delay = _DEADLOCK_RETRY_DELAYS[attempt]
+            if stop is None:
+                time.sleep(delay)
+            else:
+                stop.wait(delay)
+        else:
+            # Contention during a retry does not complete the rolled back batch.
+            if attempt and result.get("locked"):
+                raise scheduler_state.PeriodicCycleRetry()
+            return result
+
+
 def cleanup_once(*, stop: threading.Event | None = None) -> dict[str, Any]:
     """Drain a bounded number of archive-first retention batches."""
     from config import operations as operation_config
@@ -230,13 +293,7 @@ def cleanup_once(*, stop: threading.Event | None = None) -> dict[str, Any]:
         "batches": 0,
     }
     for _ in range(_MAX_BATCHES_PER_RUN):
-        check_cancel()
-        result = operation_task_store.cleanup_terminal_history(
-            retention_days=days,
-            limit=_DELETE_BATCH_SIZE,
-            archive_stream=archive_snapshot_stream,
-            check_cancel=check_cancel,
-        )
+        result = _cleanup_batch_with_retry(days, check_cancel, stop)
         totals["batches"] += 1
         totals["deleted_tasks"] += int(result.get("deleted_tasks") or 0)
         totals["deleted_batches"] += int(result.get("deleted_batches") or 0)

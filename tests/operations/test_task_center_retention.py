@@ -14,6 +14,8 @@ from tests.runtime.test_periodic_lifecycle import FakeThread
 from pathlib import Path
 from unittest.mock import patch
 
+from psycopg.errors import DeadlockDetected, OperationalError
+
 
 class TaskCenterRetentionStreamWriterTests(unittest.TestCase):
     def setUp(self):
@@ -237,7 +239,185 @@ class TaskCenterRetentionArchiveTests(unittest.TestCase):
         self.assertEqual(2, result["batches"])
         self.assertEqual(2, cleanup.call_count)
         self.assertEqual(7, cleanup.call_args_list[0].kwargs["retention_days"])
-        self.assertIs(cleanup.call_args_list[0].kwargs["archive_stream"], retention.archive_snapshot_stream)
+        self.assertTrue(callable(cleanup.call_args_list[0].kwargs["archive_stream"]))
+
+    def test_deadlock_retries_failed_batch_and_removes_only_its_orphan_archive(self):
+        retention = importlib.import_module("core.operations.retention")
+        metadata = {
+            "version": 1, "created_at": "2026-11-19T00:00:00Z",
+            "cutoff": "2026-11-12T00:00:00Z", "retention_days": 7,
+        }
+        paths = []
+
+        def cleanup(**kwargs):
+            attempt = len(paths)
+            if attempt == 2:
+                self.assertFalse(paths[1].exists())
+                self.assertTrue(paths[0].is_file())
+            task_id = 10 if attempt == 0 else 20
+            result = kwargs["archive_stream"](metadata, {"tasks": iter([{"id": task_id}])})
+            paths.append(Path(result["path"]))
+            if attempt == 1:
+                raise DeadlockDetected("synthetic deadlock after publication")
+            return {"archive": result, "deleted_tasks": 1, "has_more": attempt == 0}
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            existing = root / "task-center-20261118T000000Z-aaaaaaaa.json.gz"
+            existing.write_bytes(b"archive from another attempt")
+            with patch("config.operations.TASK_CENTER_RETENTION_DAYS", 7), patch.object(
+                retention, "_ARCHIVE_ROOT", root,
+            ), patch.object(retention, "remove_expired_archives", return_value=0), patch.object(
+                retention.operation_task_store, "cleanup_terminal_history", side_effect=cleanup,
+            ):
+                result = retention.cleanup_once()
+            self.assertEqual(2, result["batches"])
+            self.assertEqual(2, result["deleted_tasks"])
+            self.assertEqual(str(paths[2]), result["last_archive"]["path"])
+            self.assertEqual({existing, paths[0], paths[2]}, set(root.iterdir()))
+
+    def test_three_deadlocks_leave_cycle_due(self):
+        retention = importlib.import_module("core.operations.retention")
+        with patch("config.operations.TASK_CENTER_RETENTION_DAYS", 7), patch.object(
+            retention.operation_task_store, "cleanup_terminal_history",
+            side_effect=DeadlockDetected("synthetic deadlock"),
+        ) as cleanup, patch.object(retention, "remove_expired_archives") as remove:
+            with self.assertRaises(retention.scheduler_state.PeriodicCycleRetry):
+                retention.cleanup_once()
+        self.assertEqual(3, cleanup.call_count)
+        remove.assert_not_called()
+
+    def test_deadlock_then_contended_lock_leaves_cycle_due(self):
+        retention = importlib.import_module("core.operations.retention")
+        locked_result = {"deleted_tasks": 0, "deleted_batches": 0, "locked": True}
+        with patch("config.operations.TASK_CENTER_RETENTION_DAYS", 7), patch.object(
+            retention.operation_task_store, "cleanup_terminal_history",
+            side_effect=[DeadlockDetected("synthetic deadlock"), locked_result],
+        ) as cleanup, patch.object(retention, "remove_expired_archives") as remove:
+            with self.assertRaises(retention.scheduler_state.PeriodicCycleRetry):
+                retention.cleanup_once()
+        self.assertEqual(2, cleanup.call_count)
+        remove.assert_not_called()
+
+    def test_initial_contended_lock_retains_no_op_behavior(self):
+        retention = importlib.import_module("core.operations.retention")
+        with patch("config.operations.TASK_CENTER_RETENTION_DAYS", 7), patch.object(
+            retention.operation_task_store, "cleanup_terminal_history",
+            return_value={"deleted_tasks": 0, "deleted_batches": 0, "locked": True},
+        ) as cleanup, patch.object(retention, "remove_expired_archives", return_value=0):
+            result = retention.cleanup_once()
+        cleanup.assert_called_once()
+        self.assertEqual(1, result["batches"])
+        self.assertEqual(0, result["deleted_tasks"])
+
+    def test_orphan_unlink_failure_does_not_prevent_retry(self):
+        retention = importlib.import_module("core.operations.retention")
+        metadata = {
+            "version": 1, "created_at": "2026-11-19T00:00:00Z",
+            "cutoff": "2026-11-12T00:00:00Z", "retention_days": 7,
+        }
+        unlink = Path.unlink
+        orphan = None
+        attempts = 0
+
+        def cleanup(**kwargs):
+            nonlocal orphan, attempts
+            attempts += 1
+            result = kwargs["archive_stream"](metadata, {"tasks": iter([{"id": 1}])})
+            if attempts == 1:
+                orphan = Path(result["path"])
+                raise DeadlockDetected("synthetic deadlock")
+            return {"archive": result, "deleted_tasks": 1}
+
+        def unlink_or_raise(path, *args, **kwargs):
+            if path == orphan:
+                raise PermissionError("synthetic unlink failure")
+            return unlink(path, *args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as td:
+            with patch("config.operations.TASK_CENTER_RETENTION_DAYS", 7), patch.object(
+                retention, "_ARCHIVE_ROOT", Path(td),
+            ), patch.object(retention, "remove_expired_archives", return_value=0), patch.object(
+                retention.operation_task_store, "cleanup_terminal_history", side_effect=cleanup,
+            ), patch.object(Path, "unlink", unlink_or_raise), self.assertLogs(retention.logger, "WARNING"):
+                result = retention.cleanup_once()
+            self.assertEqual(2, attempts)
+            self.assertTrue(orphan.is_file())
+            self.assertEqual(1, result["deleted_tasks"])
+
+    def test_deadlock_does_not_unlink_replaced_archive(self):
+        retention = importlib.import_module("core.operations.retention")
+        metadata = {
+            "version": 1, "created_at": "2026-11-19T00:00:00Z",
+            "cutoff": "2026-11-12T00:00:00Z", "retention_days": 7,
+        }
+        path = None
+
+        def cleanup(**kwargs):
+            nonlocal path
+            if path is not None:
+                return {"deleted_tasks": 1}
+            result = kwargs["archive_stream"](metadata, {"tasks": iter([{"id": 1}])})
+            path = Path(result["path"])
+            replacement = path.with_suffix(".replacement")
+            replacement.write_bytes(b"replacement")
+            replacement.replace(path)
+            raise DeadlockDetected("synthetic deadlock")
+
+        with tempfile.TemporaryDirectory() as td:
+            with patch("config.operations.TASK_CENTER_RETENTION_DAYS", 7), patch.object(
+                retention, "_ARCHIVE_ROOT", Path(td),
+            ), patch.object(retention, "remove_expired_archives", return_value=0), patch.object(
+                retention.operation_task_store, "cleanup_terminal_history", side_effect=cleanup,
+            ):
+                result = retention.cleanup_once()
+            self.assertEqual(1, result["deleted_tasks"])
+            self.assertEqual(b"replacement", path.read_bytes())
+
+    def test_failed_or_cancelled_transaction_retains_published_archive(self):
+        retention = importlib.import_module("core.operations.retention")
+        metadata = {
+            "version": 1, "created_at": "2026-11-19T00:00:00Z",
+            "cutoff": "2026-11-12T00:00:00Z", "retention_days": 7,
+        }
+        for failure in (OperationalError, retention.scheduler_state.PeriodicCycleCancelled):
+            with self.subTest(error=failure.__name__), tempfile.TemporaryDirectory() as td:
+                path = None
+
+                def cleanup(**kwargs):
+                    nonlocal path
+                    result = kwargs["archive_stream"](metadata, {"tasks": iter([{"id": 1}])})
+                    path = Path(result["path"])
+                    raise failure("synthetic interruption")
+
+                with patch("config.operations.TASK_CENTER_RETENTION_DAYS", 7), patch.object(
+                    retention, "_ARCHIVE_ROOT", Path(td),
+                ), patch.object(
+                    retention.operation_task_store, "cleanup_terminal_history", side_effect=cleanup,
+                ) as store:
+                    with self.assertRaises(failure):
+                        retention.cleanup_once()
+                    store.assert_called_once()
+                self.assertTrue(path.is_file())
+
+    def test_wait_between_deadlock_attempts_can_be_cancelled(self):
+        retention = importlib.import_module("core.operations.retention")
+        stop = threading.Event()
+
+        def cancel_during_wait(_timeout):
+            stop.set()
+            return True
+
+        with patch("config.operations.TASK_CENTER_RETENTION_DAYS", 7), patch(
+            "core.runtime.periodic.execution_allowed", return_value=True,
+        ), patch.object(stop, "wait", side_effect=cancel_during_wait) as wait, patch.object(
+            retention.operation_task_store, "cleanup_terminal_history",
+            side_effect=DeadlockDetected("synthetic deadlock"),
+        ) as cleanup:
+            with self.assertRaises(retention.scheduler_state.PeriodicCycleCancelled):
+                retention.cleanup_once(stop=stop)
+            wait.assert_called_once()
+            cleanup.assert_called_once()
 
     def test_scheduled_cycle_passes_cancellation_through_to_archive_transaction(self):
         retention = importlib.import_module("core.operations.retention")
