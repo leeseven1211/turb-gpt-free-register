@@ -112,7 +112,8 @@ onMounted(()=>{void owner.ensureMeta();});
         <form novalidate @submit.prevent="start">
           <div class="registration-launcher">
             <label>邮箱来源
-              <select v-model="source" :disabled="!state.meta||manualMode||!sourceOptions.length" :aria-describedby="launchHint ? 'registration-launch-hint' : 'registrationEmailSupplyHint'">
+              <select v-model="source" :disabled="!state.meta||manualMode||!sourceOptions.length"
+                :aria-describedby="launchHint ? 'registration-launch-hint registrationEmailSupplyHint' : 'registrationEmailSupplyHint'">
                 <option value="">请选择本次邮箱来源</option>
                 <option v-for="item in sourceOptions" :key="String(item.value)" :value="String(item.value)">{{ item.label||item.value }}</option>
               </select>
@@ -123,8 +124,10 @@ onMounted(()=>{void owner.ensureMeta();});
             <button type="submit" class="registration-start" :disabled="state.creating||confirmingStart||!source||Boolean(launchBlock)"
               :title="launchBlock||undefined">{{ state.creating ? '提交中…' : '开始注册' }}</button>
           </div>
-          <p v-if="launchHint" id="registration-launch-hint" class="registration-hint" :class="{'registration-warning':launchBlock}" role="status">{{ launchHint }}</p>
-          <p v-else id="registrationEmailSupplyHint" class="registration-hint">{{ supplyHint }}</p>
+          <p class="registration-hint">
+            <span v-if="launchHint" id="registration-launch-hint" :class="{'registration-warning':launchBlock}" role="status">{{ launchHint }} </span>
+            <span id="registrationEmailSupplyHint">{{ supplyHint }}</span>
+          </p>
         </form>
       </section>
 

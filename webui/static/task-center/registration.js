@@ -1021,33 +1021,29 @@ var kt = ["data-view"], At = { class: "registration-launch" }, jt = {
 }, Mt = {
 	class: "registration-launch-panel",
 	"aria-labelledby": "registration-launch-title"
-}, Nt = { class: "registration-launcher" }, Pt = ["disabled", "aria-describedby"], Ft = ["value"], It = { class: "registration-debug" }, Lt = ["disabled", "title"], Rt = {
-	key: 1,
-	id: "registrationEmailSupplyHint",
-	class: "registration-hint"
-}, zt = { class: "registration-tasks" }, Bt = { class: "registration-toolbar" }, Vt = ["disabled"], Ht = ["disabled"], Ut = {
+}, Nt = { class: "registration-launcher" }, Pt = ["disabled", "aria-describedby"], Ft = ["value"], It = { class: "registration-debug" }, Lt = ["disabled", "title"], Rt = { class: "registration-hint" }, zt = { id: "registrationEmailSupplyHint" }, Bt = { class: "registration-tasks" }, Vt = { class: "registration-toolbar" }, Ht = ["disabled"], Ut = ["disabled"], Wt = {
 	class: "registration-count-row",
 	"data-registration-count-row": ""
-}, Wt = { class: "registration-count-main" }, Gt = { class: "registration-count" }, Kt = { class: "registration-count-actions" }, qt = { class: "registration-mobile-filter" }, Jt = {
+}, Gt = { class: "registration-count-main" }, Kt = { class: "registration-count" }, qt = { class: "registration-count-actions" }, Jt = { class: "registration-mobile-filter" }, Yt = {
 	key: 0,
 	class: "registration-list-error",
 	role: "alert"
-}, Yt = { class: "registration-table-wrap" }, Xt = { key: 2 }, Zt = [
+}, Xt = { class: "registration-table-wrap" }, Zt = { key: 2 }, Qt = [
 	"aria-label",
 	"onPointerdown",
 	"onKeydown"
-], Qt = { key: 0 }, $t = { key: 1 }, en = [
+], $t = { key: 0 }, en = { key: 1 }, tn = [
 	"aria-label",
 	"checked",
 	"disabled",
 	"onChange"
-], tn = { key: 0 }, nn = { class: "registration-row-actions" }, rn = ["onClick"], an = ["onUpdate:modelValue"], on = ["onClick"], sn = ["onClick"], cn = ["onClick"], ln = ["disabled", "onClick"], un = { id: "registration-log-title" }, dn = { key: 0 }, fn = {
+], nn = { key: 0 }, rn = { class: "registration-row-actions" }, an = ["onClick"], on = ["onUpdate:modelValue"], sn = ["onClick"], cn = ["onClick"], ln = ["onClick"], un = ["disabled", "onClick"], dn = { id: "registration-log-title" }, fn = { key: 0 }, pn = {
 	key: 1,
 	role: "alert"
-}, pn = { key: 2 }, mn = ["disabled"], hn = ["href"], gn = { key: 0 }, _n = {
+}, mn = { key: 2 }, hn = ["disabled"], gn = ["href"], _n = { key: 0 }, vn = {
 	key: 1,
 	role: "alert"
-}, vn = { key: 3 }, yn = ["href"], bn = /* @__PURE__ */ e({
+}, yn = { key: 3 }, bn = ["href"], xn = /* @__PURE__ */ e({
 	__name: "RegistrationPage",
 	props: { deps: {} },
 	setup(e, { expose: s }) {
@@ -1374,7 +1370,7 @@ var kt = ["data-view"], At = { class: "registration-launch" }, jt = {
 					_("label", null, [r[19] ||= A("邮箱来源 ", -1), i(_("select", {
 						"onUpdate:modelValue": r[0] ||= (e) => F.value = e,
 						disabled: !E(D).meta || Z.value || !ye.value.length,
-						"aria-describedby": xe.value ? "registration-launch-hint" : "registrationEmailSupplyHint"
+						"aria-describedby": xe.value ? "registration-launch-hint registrationEmailSupplyHint" : "registrationEmailSupplyHint"
 					}, [r[18] ||= _("option", { value: "" }, "请选择本次邮箱来源", -1), (t(!0), O(f, null, a(ye.value, (e) => (t(), O("option", {
 						key: String(e.value),
 						value: String(e.value)
@@ -1412,12 +1408,12 @@ var kt = ["data-view"], At = { class: "registration-launch" }, jt = {
 						disabled: E(D).creating || _e.value || !F.value || !!be.value,
 						title: be.value || void 0
 					}, h(E(D).creating ? "提交中…" : "开始注册"), 9, Lt)
-				]), xe.value ? (t(), O("p", {
+				]), _("p", Rt, [xe.value ? (t(), O("span", {
 					key: 0,
 					id: "registration-launch-hint",
-					class: x(["registration-hint", { "registration-warning": be.value }]),
+					class: x({ "registration-warning": be.value }),
 					role: "status"
-				}, h(xe.value), 3)) : (t(), O("p", Rt, h(we.value), 1))], 32)]),
+				}, h(xe.value), 3)) : l("", !0), _("span", zt, h(we.value), 1)])], 32)]),
 				le.value ? (t(), g(_t, {
 					key: 0,
 					batch: E(D).batch,
@@ -1448,18 +1444,18 @@ var kt = ["data-view"], At = { class: "registration-launch" }, jt = {
 					"onLog"
 				])) : l("", !0)
 			], 512), [[T, le.value]]),
-			i(_("section", zt, [
-				_("div", Bt, [
+			i(_("section", Bt, [
+				_("div", Vt, [
 					_("button", {
 						type: "button",
 						onClick: r[7] ||= (e) => Q("retryBulk"),
 						disabled: !K.value.size
-					}, "重试", 8, Vt),
+					}, "重试", 8, Ht),
 					_("button", {
 						type: "button",
 						onClick: r[8] ||= (e) => Q("deleteBulk"),
 						disabled: !K.value.size
-					}, "删除", 8, Ht),
+					}, "删除", 8, Ut),
 					_("button", {
 						type: "button",
 						onClick: r[9] ||= (e) => Q("cancelAll")
@@ -1469,16 +1465,16 @@ var kt = ["data-view"], At = { class: "registration-launch" }, jt = {
 						onClick: Fe
 					}, "刷新")
 				]),
-				_("div", Ut, [_("div", Wt, [_("span", Gt, "共 " + h(E(D).total.toLocaleString()) + " 条任务", 1), c(ee, {
+				_("div", Wt, [_("div", Gt, [_("span", Kt, "共 " + h(E(D).total.toLocaleString()) + " 条任务", 1), c(ee, {
 					items: X.value,
 					onRemove: r[10] ||= (e) => pe(e, "")
-				}, null, 8, ["items"])]), _("div", Kt, [
+				}, null, 8, ["items"])]), _("div", qt, [
 					_("button", {
 						type: "button",
 						"aria-label": "恢复注册任务列宽",
 						onClick: M
 					}, "恢复列宽"),
-					_("span", qt, [c(ge, {
+					_("span", Jt, [c(ge, {
 						values: de.value,
 						sources: ve.value,
 						open: Y.value === "all",
@@ -1495,11 +1491,11 @@ var kt = ["data-view"], At = { class: "registration-launch" }, jt = {
 						onClick: Pe
 					}, "清筛")) : l("", !0)
 				])]),
-				E(D).error ? (t(), O("div", Jt, [A(h(E(D).error) + " ", 1), _("button", {
+				E(D).error ? (t(), O("div", Yt, [A(h(E(D).error) + " ", 1), _("button", {
 					type: "button",
 					onClick: Fe
 				}, "重试")])) : l("", !0),
-				_("div", Yt, [_("table", {
+				_("div", Xt, [_("table", {
 					class: "jobs-table-v2",
 					style: p({ width: `${E(k).total.value}px` })
 				}, [
@@ -1526,22 +1522,22 @@ var kt = ["data-view"], At = { class: "registration-launch" }, jt = {
 						"sources",
 						"open",
 						"onUpdate:open"
-					])) : (t(), O("span", Xt, h(e.label), 1)), n < N.length - 1 ? (t(), O("button", {
+					])) : (t(), O("span", Zt, h(e.label), 1)), n < N.length - 1 ? (t(), O("button", {
 						key: 3,
 						type: "button",
 						class: "registration-column-resize",
 						"aria-label": `调整${e.label}列宽，方向键调整`,
 						onPointerdown: b((e) => E(k).resize(n, e), ["prevent"]),
 						onKeydown: [d(b((e) => E(k).resizeWithKeyboard(n, -10), ["prevent"]), ["left"]), d(b((e) => E(k).resizeWithKeyboard(n, 10), ["prevent"]), ["right"])]
-					}, null, 40, Zt)) : l("", !0)])), 64))])]),
-					_("tbody", null, [E(D).loading ? (t(), O("tr", Qt, [...r[24] ||= [_("td", { colspan: "11" }, "正在加载任务…", -1)]])) : J.value.length ? l("", !0) : (t(), O("tr", $t, [...r[25] ||= [_("td", { colspan: "11" }, "暂无匹配任务", -1)]])), (t(!0), O(f, null, a(J.value, (e) => (t(), O("tr", { key: String(e.id) }, [
+					}, null, 40, Qt)) : l("", !0)])), 64))])]),
+					_("tbody", null, [E(D).loading ? (t(), O("tr", $t, [...r[24] ||= [_("td", { colspan: "11" }, "正在加载任务…", -1)]])) : J.value.length ? l("", !0) : (t(), O("tr", en, [...r[25] ||= [_("td", { colspan: "11" }, "暂无匹配任务", -1)]])), (t(!0), O(f, null, a(J.value, (e) => (t(), O("tr", { key: String(e.id) }, [
 						_("td", null, [_("input", {
 							type: "checkbox",
 							"aria-label": `选择任务 ${e.id}`,
 							checked: K.value.has(String(e.id)),
 							disabled: ["running", "stopping"].includes(String(e.status)),
 							onChange: (t) => Le(e.id, t)
-						}, null, 40, en)]),
+						}, null, 40, tn)]),
 						_("td", null, [c(j, {
 							text: `#${e.id}`,
 							secondary: e.parent_job_id ? `↳ #${e.parent_job_id}` : void 0
@@ -1563,24 +1559,24 @@ var kt = ["data-view"], At = { class: "registration-launch" }, jt = {
 							title: String(e.error_message || me(e)),
 							tone: "danger"
 						}, {
-							details: n(() => [_("p", null, h(e.error_message || me(e)), 1), e.error_info ? (t(), O("p", tn, h(e.error_info), 1)) : l("", !0)]),
+							details: n(() => [_("p", null, h(e.error_message || me(e)), 1), e.error_info ? (t(), O("p", nn, h(e.error_info), 1)) : l("", !0)]),
 							_: 2
 						}, 1032, ["label", "title"])) : (t(), g(j, {
 							key: 1,
 							text: "—"
 						}))]),
-						_("td", nn, [
+						_("td", rn, [
 							_("button", {
 								type: "button",
 								onClick: (t) => E(C).openLog(e.id)
-							}, "日志", 8, rn),
+							}, "日志", 8, an),
 							e.manual_otp_required && e.status === "running" ? (t(), O(f, { key: 0 }, [i(_("input", {
 								"onUpdate:modelValue": (t) => q.value[String(e.id)] = t,
 								placeholder: "邮箱验证码"
-							}, null, 8, an), [[w, q.value[String(e.id)]]]), _("button", {
+							}, null, 8, on), [[w, q.value[String(e.id)]]]), _("button", {
 								type: "button",
 								onClick: (t) => Ve(e)
-							}, "提交验证码", 8, on)], 64)) : l("", !0),
+							}, "提交验证码", 8, sn)], 64)) : l("", !0),
 							[
 								"pending",
 								"running",
@@ -1589,17 +1585,17 @@ var kt = ["data-view"], At = { class: "registration-launch" }, jt = {
 								key: 1,
 								type: "button",
 								onClick: (t) => Q("stop", e)
-							}, "停止", 8, sn)) : l("", !0),
+							}, "停止", 8, cn)) : l("", !0),
 							e.retryable ? (t(), O("button", {
 								key: 2,
 								type: "button",
 								onClick: (t) => Q("retry", e)
-							}, "重试", 8, cn)) : l("", !0),
+							}, "重试", 8, ln)) : l("", !0),
 							_("button", {
 								type: "button",
 								disabled: ["running", "stopping"].includes(String(e.status)),
 								onClick: (t) => Q("delete", e)
-							}, "删除", 8, ln)
+							}, "删除", 8, un)
 						])
 					]))), 128))])
 				], 4)]),
@@ -1636,39 +1632,39 @@ var kt = ["data-view"], At = { class: "registration-launch" }, jt = {
 				onClose: r[17] ||= (...e) => E(C).closeDetail && E(C).closeDetail(...e),
 				onClick: Me
 			}, [
-				_("header", null, [_("h2", un, "任务 #" + h(E(D).detail.id) + " 日志", 1), _("button", {
+				_("header", null, [_("h2", dn, "任务 #" + h(E(D).detail.id) + " 日志", 1), _("button", {
 					type: "button",
 					onClick: r[14] ||= (...e) => E(C).closeDetail && E(C).closeDetail(...e)
 				}, "关闭")]),
-				E(D).detail.loading ? (t(), O("p", dn, "加载中…")) : l("", !0),
-				E(D).detail.error ? (t(), O("p", fn, h(E(D).detail.error), 1)) : l("", !0),
+				E(D).detail.loading ? (t(), O("p", fn, "加载中…")) : l("", !0),
+				E(D).detail.error ? (t(), O("p", pn, h(E(D).detail.error), 1)) : l("", !0),
 				_("pre", null, h(E(D).detail.log || "（暂无日志）"), 1),
-				E(D).detail.debug?.enabled ? (t(), O("div", pn, [
+				E(D).detail.debug?.enabled ? (t(), O("div", mn, [
 					r[26] ||= _("strong", null, "网络调试", -1),
 					_("button", {
 						type: "button",
 						disabled: E(D).detail.comparing,
 						onClick: He
-					}, "与同批成功任务对比", 8, mn),
+					}, "与同批成功任务对比", 8, hn),
 					_("a", {
 						href: `/api/jobs/${E(D).detail.id}/debug/har`,
 						download: ""
-					}, "下载脱敏 HAR", 8, hn),
+					}, "下载脱敏 HAR", 8, gn),
 					_("button", {
 						type: "button",
 						onClick: r[15] ||= (e) => E(C).action(`/api/jobs/${E(D).detail.id}/debug/release`, { action: "finish" })
 					}, "结束调试并收口"),
-					E(D).detail.comparison ? (t(), O("pre", gn, h(E(D).detail.comparison), 1)) : l("", !0),
-					E(D).detail.compareError ? (t(), O("p", _n, h(E(D).detail.compareError), 1)) : l("", !0)
+					E(D).detail.comparison ? (t(), O("pre", _n, h(E(D).detail.comparison), 1)) : l("", !0),
+					E(D).detail.compareError ? (t(), O("p", vn, h(E(D).detail.compareError), 1)) : l("", !0)
 				])) : l("", !0),
-				E(D).detail.diagnostics?.captured ? (t(), O("div", vn, [
+				E(D).detail.diagnostics?.captured ? (t(), O("div", yn, [
 					r[28] ||= _("strong", null, "失败诊断", -1),
 					E(D).detail.diagnostics.screenshot_url ? (t(), O("a", {
 						key: 0,
 						href: String(E(D).detail.diagnostics.screenshot_url),
 						target: "_blank",
 						rel: "noopener"
-					}, "打开失败截图", 8, yn)) : l("", !0),
+					}, "打开失败截图", 8, bn)) : l("", !0),
 					_("details", null, [r[27] ||= _("summary", null, "完整诊断证据", -1), _("pre", null, h(E(D).detail.diagnostics), 1)])
 				])) : l("", !0)
 			], 544)
@@ -1676,8 +1672,8 @@ var kt = ["data-view"], At = { class: "registration-launch" }, jt = {
 	}
 });
 // src/registration.ts
-function xn(e, t = {}) {
-	let n = C(bn, { deps: {
+function Sn(e, t = {}) {
+	let n = C(xn, { deps: {
 		...t,
 		api: t.api || yt()
 	} }), r = n.mount(e);
@@ -1699,4 +1695,4 @@ function xn(e, t = {}) {
 		destroy: () => n.unmount()
 	};
 }
-export { xn as mountRegistration };
+export { Sn as mountRegistration };
