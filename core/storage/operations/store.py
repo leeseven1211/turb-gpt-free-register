@@ -431,6 +431,10 @@ def list_tasks(
         page_order = "selected.sort_at DESC,t.id DESC"
         page_run_count_expression = "selected.run_count"
     with _task_read_connection() as conn, conn.cursor() as cur:
+        if public_status and len(where) == 1 and _common._SETTLEMENT_CONNECTION.get() is None:
+            # 默认列表的兼容 Run 排序和筛选统计会触发秒级 JIT 编译。
+            # 仅在本次查询事务内关闭，连接归还后恢复原设置。
+            cur.execute("SET LOCAL jit = off")
         cur.execute(f"{count_cte}SELECT COUNT(*) AS n {count_from_sql}{clause}", params)
         total = int(cur.fetchone()["n"])
         cur.execute(
