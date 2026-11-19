@@ -20,6 +20,7 @@ from typing import Any, Iterable
 from urllib.parse import urlsplit
 
 from core.storage import postgres as postgres_store, records as record_store
+from core.storage.task_query_context import readonly_task_query
 
 
 CHECKPOINTS = (
@@ -479,7 +480,8 @@ def get_attempts_for_root_jobs(root_job_ids: list[int]) -> dict[int, dict]:
     roots = sorted({int(value) for value in root_job_ids if value is not None})
     if not roots:
         return {}
-    init()
+    if not readonly_task_query():
+        init()
     with _connect() as conn, conn.cursor() as cur:
         cur.execute(
             f"SELECT * FROM {_table('registration_attempts')} "

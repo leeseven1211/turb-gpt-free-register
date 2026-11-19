@@ -26,6 +26,7 @@ from datetime import datetime
 from typing import Any, Iterable
 
 from core.storage import postgres as postgres_store
+from core.storage.task_query_context import readonly_task_query
 
 _LOCK = threading.RLock()
 _READY_KEY = ""
@@ -1157,7 +1158,8 @@ def list_rows(
     exclude_columns: Iterable[str] = (),
 ) -> list[dict]:
     spec = _resolve(table)
-    init()
+    if not readonly_task_query():
+        init()
     excluded_data = tuple(dict.fromkeys(str(key) for key in data_exclude if str(key)))
     excluded_columns = {str(key) for key in exclude_columns if str(key)}
     if excluded_data or excluded_columns:

@@ -216,7 +216,10 @@ def _cache_key(name: str) -> str:
 
 
 def load_collection(name: str) -> tuple[bool, Any]:
-    ensure_schema()
+    from core.storage.task_query_context import readonly_task_query
+
+    if not readonly_task_query():
+        ensure_schema()
     key = _cache_key(name)
     with _LOCK:
         cached = _CACHE.get(key)

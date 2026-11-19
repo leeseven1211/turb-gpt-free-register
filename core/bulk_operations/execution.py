@@ -19,13 +19,22 @@ def managed_identity(conn, run_id: int) -> int | None:
 def attach_context(conn, items, *, run_rows: bool = False) -> None:
     """当前页一次集合关联具体Run，旧列表无需逐条访问批次历史。"""
     from core.storage.operations import bulk_schema, store
-    if bulk_schema._READY_KEY != f"{store.postgres_store.database_url()}::{store._schema_name()}":
+    from core.storage.task_query_context import readonly_task_query
+
+    initialized = bulk_schema._READY_KEY == f"{store.postgres_store.database_url()}::{store._schema_name()}"
+    if not initialized and not readonly_task_query():
         return
     ids = {int(item.get("id" if run_rows else "last_run_id") or 0) for item in items}
     ids.discard(0)
     if not ids:
         return
     with conn.cursor() as cur:
+        if not initialized:
+            # 批量表是可选模块，冷启动时由数据库本身判断是否有这两个表。
+            cur.execute("SELECT to_regclass(%s) IS NOT NULL AND to_regclass(%s) IS NOT NULL AS present",
+                        (store._table("operation_batch_run_links"), store._table("operation_batch_target_rounds")))
+            if not cur.fetchone()["present"]:
+                return
         cur.execute(f"""SELECT l.run_id,tr.batch_id,tr.round_id,tr.canonical_target_id
             FROM {store._table('operation_batch_run_links')} l
             JOIN {store._table('operation_batch_target_rounds')} tr ON tr.id=l.target_round_id

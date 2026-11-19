@@ -16,6 +16,7 @@ from flask import Response, jsonify, make_response, redirect, render_template, r
 
 from core import account_task_store
 from core.storage import admin_repository
+from core.storage.task_query_context import TaskSchemaUnavailable
 from core.codex import operation_service as codex_operation_service, retry_service as codex_retry_service, token_refresh_service as codex_token_refresh_service
 from core import db
 from core.accounts.deactivation import mail_scan as deactivation_mail_service
@@ -41,6 +42,10 @@ def create_operations_blueprint(context: WebUIContext):
     active_operation_statuses = {
         "queued", "running", "stopping", "cancelling", "settling", "waiting",
     }
+
+    @bp.app_errorhandler(TaskSchemaUnavailable)
+    def task_schema_unavailable(_error):
+        return jsonify({"ok": False, "error_code": "task_schema_not_ready", "error": "任务中心数据库结构尚未就绪"}), 503
 
     def _get_operation_action_task(task_id: int, action: str):
         """停止前只读任务状态，避免载入与取消无关的完整事件历史。"""

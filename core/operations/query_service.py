@@ -11,6 +11,7 @@ from core.operations.contracts import OperationQuery
 from core.operations.errors import classify_task_error
 from core.operations.presentation import public_progress_snapshot, public_result_status
 from core.registration import service as svc
+from core.storage.task_query_context import task_query
 
 
 def _project_owned_record(result: dict, *, task_type: str = "") -> dict:
@@ -52,6 +53,7 @@ def _attach_owned_legacy_task_error(task: dict, *, task_status: str) -> None:
         task["error_info"] = error_info
 
 
+@task_query()
 def list_legacy_account_tasks(
     *, page: int = 1, page_size: int = 50, task_type: str = "", status: str = "", q: str = "",
 ) -> dict:
@@ -70,6 +72,7 @@ def list_legacy_account_tasks(
     return result
 
 
+@task_query()
 def get_legacy_account_task(task_id: int) -> dict | None:
     source = account_task_store.get_task(task_id)
     if not source:
@@ -79,6 +82,7 @@ def get_legacy_account_task(task_id: int) -> dict | None:
     return _project_owned_record(task)
 
 
+@task_query()
 def list_operations(query: OperationQuery) -> dict:
     result = dict(operation_task_store.list_tasks(**query.store_arguments(), public_status=True))
     if not query.include_batches:
@@ -106,6 +110,7 @@ def list_operations(query: OperationQuery) -> dict:
     return result
 
 
+@task_query()
 def get_operation(task_id: int, *, include_events: bool = True) -> dict | None:
     source = operation_task_store.get_task(task_id, include_events=include_events)
     if not source:
@@ -120,11 +125,13 @@ def get_operation(task_id: int, *, include_events: bool = True) -> dict | None:
     return task
 
 
+@task_query()
 def get_run_progress(task_id: int, run_id: int) -> dict:
     progress = operation_task_store.get_run_progress(task_id, run_id, public_status=True)
     return public_progress_snapshot(progress)
 
 
+@task_query()
 def list_run_events(task_id: int, run_id: int, *, after_id: int | None = None, limit: int = 200) -> dict:
     """省略游标读取最近一页，传 0 从最早事件开始。"""
     return operation_task_store.list_task_events(task_id, run_id=run_id, after_id=after_id, limit=limit)

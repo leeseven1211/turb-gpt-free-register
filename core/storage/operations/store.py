@@ -20,6 +20,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
 
 from core.storage import postgres as postgres_store, records as record_store
+from core.storage.task_query_context import task_read_connection
 from core.operations import run_log as task_run_log
 from core.operations import task_gateway as account_task_store
 from core.bulk_operations import execution as bulk_execution
@@ -111,6 +112,19 @@ def _connect():
     from psycopg.rows import dict_row
 
     return postgres_store.connect(row_factory=dict_row)
+
+
+def _query_schema_initialized() -> bool:
+    from core.storage.operations import legacy_task_store
+
+    url = postgres_store.database_url()
+    return (_READY_KEY == f"{url}::{_schema_name()}"
+            and record_store._READY_KEY == f"{url}::{postgres_store.schema_name()}"
+            and legacy_task_store.schema_initialized())
+
+
+def _task_read_connection():
+    return task_read_connection(_connect, init, _query_schema_initialized)
 
 
 def _now() -> datetime:
@@ -2878,8 +2892,7 @@ def mark_registration_jobs_deleted(job_ids: Iterable[int]) -> None:
 
 
 def list_batches(*, limit: int = 50) -> list[dict]:
-    init()
-    with _connect() as conn, conn.cursor() as cur:
+    with _task_read_connection() as conn, conn.cursor() as cur:
         cur.execute(
             f"""
             SELECT b.*, q.status AS projection_queue_status,
@@ -3120,7 +3133,6 @@ def list_tasks(
     stage: str = "", created_from: str = "", created_to: str = "", result: str = "",
     include_facets: bool = True, public_status: bool = False,
 ) -> dict:
-    init()
     page = max(1, int(page or 1))
     page_size = max(1, min(200, int(page_size or 50)))
     filters = dict(
@@ -3196,7 +3208,7 @@ def list_tasks(
                          + _operation_task_indexed_run_join_sql())
         page_clause = ""
         page_order = "selected.sort_at DESC,t.id DESC"
-    with _connect() as conn, conn.cursor() as cur:
+    with _task_read_connection() as conn, conn.cursor() as cur:
         cur.execute(f"{count_cte}SELECT COUNT(*) AS n {count_from_sql}{clause}", params)
         total = int(cur.fetchone()["n"])
         cur.execute(
@@ -3388,8 +3400,7 @@ def get_run_task_links(run_ids: Iterable[int]) -> dict[int, dict[str, Any]]:
 
 
 def get_task(task_id: int, *, include_events: bool = True) -> dict | None:
-    init()
-    with _connect() as conn, conn.cursor() as cur:
+    with _task_read_connection() as conn, conn.cursor() as cur:
         cur.execute(
             f"""
             SELECT t.*, b.batch_uuid, b.title AS batch_title, b.batch_type
@@ -3535,8 +3546,7 @@ def delete_tasks(task_ids: Iterable[int]) -> dict[str, Any]:
 
 def get_run_progress(task_id: int, run_id: int, *, public_status: bool = False) -> dict:
     """Build progress from the complete selected Run, independent of event pages."""
-    init()
-    with _connect() as conn, conn.cursor() as cur:
+    with _task_read_connection() as conn, conn.cursor() as cur:
         cur.execute(
             f"SELECT id, task_type FROM {_table('operation_tasks')} WHERE id=%s",
             (int(task_id),),
@@ -3694,9 +3704,8 @@ def list_task_events(
     limit: int = 200,
 ) -> dict:
     """Return one bounded event page; omitted ``after_id`` means latest page."""
-    init()
     page_size = max(1, min(1000, int(limit or 200)))
-    with _connect() as conn, conn.cursor() as cur:
+    with _task_read_connection() as conn, conn.cursor() as cur:
         cur.execute(f"SELECT id, task_type FROM {_table('operation_tasks')} WHERE id=%s", (int(task_id),))
         task = cur.fetchone()
         if not task:

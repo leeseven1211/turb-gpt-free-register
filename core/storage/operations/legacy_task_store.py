@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from typing import Any, Iterable
 
 from core.storage import postgres as postgres_store
+from core.storage.task_query_context import task_read_connection
 from core.operations import run_log as task_run_log
 from core.operations.presentation import public_result_status, public_result_status_sql
 from core.operations.stages import normalize_step_state
@@ -60,6 +61,10 @@ def _index(name: str) -> str:
 def _connect():
     from psycopg.rows import dict_row
     return postgres_store.connect(row_factory=dict_row)
+
+
+def schema_initialized() -> bool:
+    return _READY_KEY == f"{postgres_store.database_url()}::{_SCHEMA}"
 
 
 def _sync_operation_task(task_id: int | None) -> None:
@@ -548,7 +553,6 @@ def recover_interrupted(
 
 
 def list_tasks(*, page: int = 1, page_size: int = 50, task_type: str = "", status: str = "", q: str = "", public_status: bool = False) -> dict:
-    init()
     page = max(1, int(page or 1))
     page_size = max(1, min(200, int(page_size or 50)))
     where: list[str] = []
@@ -567,7 +571,7 @@ def list_tasks(*, page: int = 1, page_size: int = 50, task_type: str = "", statu
     clause = f" WHERE {' AND '.join(where)}" if where else ""
     tasks = _table("account_action_tasks")
     offset = (page - 1) * page_size
-    with _connect() as conn, conn.cursor() as cur:
+    with task_read_connection(_connect, init, schema_initialized) as conn, conn.cursor() as cur:
         cur.execute(f"SELECT COUNT(*) AS n FROM {tasks}{clause}", params)
         total = int(cur.fetchone()["n"])
         cur.execute(
@@ -589,10 +593,9 @@ def list_tasks(*, page: int = 1, page_size: int = 50, task_type: str = "", statu
 
 
 def get_task(task_id: int) -> dict | None:
-    init()
     tasks = _table("account_action_tasks")
     events = _table("account_action_events")
-    with _connect() as conn, conn.cursor() as cur:
+    with task_read_connection(_connect, init, schema_initialized) as conn, conn.cursor() as cur:
         cur.execute(
             f"SELECT id, task_uuid, batch_id, task_type, account_id, email_snapshot, trigger, status, "
             "validation_method, network_route, proxy_mode, proxy_provider, proxy_region, proxy_used, "
