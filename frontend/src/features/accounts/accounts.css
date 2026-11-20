@@ -1,5 +1,12 @@
-/* Existing account presenter styles remain loaded; these rules only own the Vue list shell. */
-.ac-root{display:flex;flex:1 1 auto;flex-direction:column;min-width:0;min-height:0;color:var(--ui-color-text);background:var(--ui-color-surface)}
+/* 矮窗口允许整个面板延伸，给工具栏、表格和分页都保留可操作空间。 */
+#tab-accounts:not([data-module-view="tasks"]) #accountsPanelV2,
+#accounts-list-root,
+.ac-root {
+  min-height: min-content;
+}
+#accounts-list-root{display:flex;flex:1 1 auto;min-width:0}
+.ac-root{display:flex;flex:1 1 auto;flex-direction:column;min-width:0;color:var(--ui-color-text);background:var(--ui-color-surface)}
+.ac-root > .list-pagination{border-top:1px solid var(--ui-color-border)}
 .ac-toolbar{position:relative;z-index:3;display:flex;align-items:center;gap:6px 10px;flex-wrap:wrap;padding:6px 12px;border-bottom:1px solid var(--ui-color-border);flex:0 0 auto}
 .ac-toolbar-main{display:flex;align-items:center;gap:8px;min-width:0}
 .ac-toolbar-main:has(.list-filter-summary){flex:1 1 220px}
@@ -46,10 +53,23 @@
 }
 .ac-search button{border:0;background:transparent;color:var(--ui-color-text-secondary);min-width:28px;min-height:28px;cursor:pointer}
 .ac-feedback{margin:0;display:flex;align-items:center;gap:8px;padding:8px 12px;color:var(--ui-color-danger);font-size:12px;flex:0 0 auto}
-/* 将固定表头与固定列的层级限定在表格内。 */
-.ac-table-scroll{isolation:isolate;flex:1 1 auto;min-height:120px;min-width:0;overflow:auto;overscroll-behavior:contain}
+/* 表格内部滚动，账号行数不参与面板的最小高度计算。 */
+.ac-root > .ac-table-scroll {
+  isolation: isolate;
+  contain: size;
+  flex: 1 1 auto;
+  min-height: 120px;
+  max-height: none;
+  min-width: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
 .ac-table{table-layout:fixed;border-collapse:separate;border-spacing:0;max-width:none;min-width:0;font-size:12px}
 .ac-table th{position:sticky;top:0;z-index:2;height:36px;padding:6px 8px;text-align:left;background:var(--ui-color-surface-secondary,var(--ui-color-surface));border-bottom:1px solid var(--ui-color-border);font-weight:500}
+.ac-table th:has(.tc-column-filter-trigger){padding-inline:4px}
+.ac-table th .tc-column-filter-trigger{gap:3px;white-space:nowrap}
+.ac-table th .tc-column-filter-label{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.ac-table th .tc-column-filter-icon{width:12px;height:12px}
 .ac-table.accounts-table-v2 td{height:50px;padding:1px 8px;vertical-align:middle;border-bottom:1px solid var(--ui-color-border);overflow:hidden}
 .ac-table .col-check{padding:5px;text-align:center}
 .ac-table .col-id{font-variant-numeric:tabular-nums}

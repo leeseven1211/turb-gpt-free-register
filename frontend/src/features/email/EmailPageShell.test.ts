@@ -18,15 +18,26 @@ async function page(view='list',configure?:(context:ReturnType<typeof fixture>)=
  configure?.(f);const w=mount(EmailPageShell,{attachTo:document.body,props:{api:f.api,deps:f.deps,initialView:view as 'list',initialVisible:true}});wrappers.push(w);await flushPromises();return{w,...f};
 }
 describe('complete email page owner',()=>{
- it('mounts all local inventory actions, heading filters, count chips and exact total footer',async()=>{
+ it('工具栏保留筛选标签和选中数，总数只显示在分页栏',async()=>{
   const {w,calls}=await page();
-  expect(w.get('[data-email-count-row]').text()).toContain('45');
+  const inventory=w.get('section[aria-label="邮箱池"]');
+  const toolbar=inventory.get('.em-toolbar');
+  expect(inventory.find('[data-email-count-row]').exists()).toBe(false);
   for(const name of ['复制当前页','导入邮箱','从 Butler 导入','恢复列宽','刷新'])expect(w.findAll('button').some(b=>b.text()===name)).toBe(true);
   expect(w.findAll('thead button').some(b=>b.attributes('aria-label')==='筛选状态')).toBe(true);
   await w.get('button[aria-label="筛选状态"]').trigger('click');await flushPromises();
   const body=new DOMWrapper(document.body);await body.get('select[aria-label="状态"]').setValue('used');await flushPromises();
-  expect(w.get('[data-email-count-row]').text()).toContain('状态：已用');expect(calls.filter(c=>c.path.startsWith('/api/outlook?')).at(-1)?.path).toContain('status=used');
-  expect(w.find('.list-pagination__jump').exists()).toBe(true);expect(w.get('.list-pagination__meta').text()).toContain('45');
+  expect(toolbar.get('.list-filter-summary').text()).toContain('状态：已用');
+  expect(calls.filter(c=>c.path.startsWith('/api/outlook?')).at(-1)?.path).toContain('status=used');
+  await inventory.get('input[aria-label="选择邮箱 resource@example.test"]').setValue(true);
+  expect(toolbar.text()).toContain('已选 1 个邮箱');
+  expect(toolbar.text()).not.toContain('45');
+  expect(w.find('.list-pagination__jump').exists()).toBe(true);
+  expect(inventory.get('.list-pagination__range').text()).toContain('共 45 条');
+  await toolbar.get('button[aria-label="移除status筛选"]').trigger('click');await flushPromises();
+  expect(toolbar.find('.list-filter-summary').exists()).toBe(false);
+  const lastInventoryRead=calls.filter(c=>c.path.startsWith('/api/outlook?')).at(-1);
+  expect(lastInventoryRead?.path).toMatch(/[?&]status=(?:&|$)/);
   expect(w.get('[data-email-note] summary').text().trim().length).toBeLessThanOrEqual(10);
   expect(w.get('[data-email-note] summary').text().trim()).toBe('备注记录');
   expect(w.get('section[aria-label="邮箱池"]').findAll('thead tr')).toHaveLength(1);

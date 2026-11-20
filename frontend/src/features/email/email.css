@@ -35,6 +35,17 @@
 .em-table {min-width:100%;table-layout:fixed;border-collapse:collapse;font-size:12px}
 .em-table th,.em-table td {position:relative;padding:12px 10px;border-bottom:1px solid var(--ui-color-border);text-align:center;vertical-align:middle;overflow-wrap:anywhere}
 .em-table th {padding-block:10px;background:var(--ui-color-surface-subtle);font-weight:600}
+.em-inventory {display:flex;flex-direction:column;height:calc(100dvh - var(--topbar-height,56px) - 42px);min-height:min-content}
+.em-inventory > :not(.em-table-wrap) {flex-shrink:0}
+.em-inventory-utilities {margin-inline-start:auto}
+.em-inventory .em-toolbar > .list-filter-summary {flex:1 1 140px}
+.em-inventory .em-table-wrap {flex:1 1 0px;min-height:96px;isolation:isolate;overscroll-behavior:contain}
+.em-inventory .em-table {border-collapse:separate;border-spacing:0}
+.em-inventory .em-table th {position:sticky;top:0;z-index:3;padding-block:2px}
+.em-inventory > .list-pagination {border-top:1px solid var(--ui-color-border)}
+@media(max-width:860px) {
+  .em-inventory {height:calc(100dvh - var(--topbar-height,52px) - 26px)}
+}
 .em-table .em-align-start {text-align:left}
 .em-table tbody tr:hover {background:var(--ui-color-surface-subtle)}
 .em-table tbody tr.is-selected {background:var(--ui-color-brand-soft)}

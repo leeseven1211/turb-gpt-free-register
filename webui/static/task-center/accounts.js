@@ -1,8 +1,8 @@
-import { $ as e, A as t, C as n, F as r, G as i, H as a, K as o, L as s, M as c, N as l, P as u, R as d, S as f, X as p, Z as m, _ as h, a as g, c as _, d as v, dt as y, et as b, f as x, ft as S, g as C, h as w, j as T, k as E, l as D, lt as O, m as k, n as A, nt as j, o as M, s as N, st as P, t as F, tt as I, v as L, x as R } from "./_plugin-vue_export-helper-CBsH_ZoE.js";
-import { a as z, i as B, n as V, o as H, r as U, s as W, t as G } from "./ListFilterSummary-0POqp2Om.js";
-import { t as ee } from "./ListPagination-BDkSOj9k.js";
+import { $ as e, A as t, C as n, F as r, G as i, H as a, K as o, L as s, M as c, N as l, P as u, R as d, S as f, X as p, Z as m, _ as h, a as g, c as _, d as v, dt as y, et as b, f as x, ft as S, g as C, h as w, j as T, k as E, l as D, lt as O, m as k, n as A, nt as j, o as M, s as N, st as P, t as F, tt as I, v as L, x as R } from "./_plugin-vue_export-helper-BSZsFlS8.js";
+import { a as z, i as B, n as V, o as H, r as U, s as W, t as G } from "./ListFilterSummary-Bc1S5NP4.js";
+import { t as ee } from "./ListPagination-DURVj-Kj.js";
 import { a as K, c as q, i as J, n as Y, r as te, s as ne, t as re } from "./queryAdapter-BuJS1py0.js";
-import { t as ie } from "./useColumnWidths-CUEzVga1.js";
+import { t as ie } from "./useColumnWidths-D1sKP53m.js";
 import { t as ae } from "./errorLabels-B-XqaTSM.js";
 import { n as oe, r as X, t as Z } from "./client-B5R_MNgP.js";
 import { a as se, n as ce } from "./taskIds-BlchWwUp.js";
@@ -1810,6 +1810,7 @@ var wt = {
 				"onRetry"
 			]),
 			f(ee, {
+				compact: "",
 				page: P(m),
 				size: P(g),
 				pages: P(v),

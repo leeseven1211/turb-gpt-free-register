@@ -89,6 +89,6 @@ defineExpose({refresh:list.refresh,pollStatuses:list.pollStatuses,setVisible,set
     <p v-if="invalidSearch" id="accountAdvancedSearchErrorV2" class="ac-feedback" role="alert">{{ error }}</p>
     <div v-else-if="actionError||(error&&items.length)" class="ac-feedback" role="alert"><span>{{ actionError||error }}</span><button v-if="error" type="button" class="ac-link" @click="list.refresh">重试</button></div>
     <AccountsTable ref="table" :items="items" :selected="selected" :query="query" :facets="facets" :presentation="presentation" :loading="loading" :error="error" :invalid-search="invalidSearch" :stale="stale" :visible="visible&&documentVisible" :page-selected="pageSelected" :page-indeterminate="pageIndeterminate" :open-filter="openFilter" @update:open-filter="openFilter=$event" @filter="changeFilter" @clear-filter="clearFilter" @select="list.toggle" @select-page="list.togglePage" @action="invoke" @detail="detail" @retry="list.refresh" @rendered="callbacks.afterRender?.($event)"/>
-    <ListPagination :page="page" :size="size" :pages="pages" :total="total" :busy="loading" :page-sizes="[10,20,30,50,100]" label="账号列表分页" @update:page="list.setPage" @update:size="list.setSize"/>
+    <ListPagination compact :page="page" :size="size" :pages="pages" :total="total" :busy="loading" :page-sizes="[10,20,30,50,100]" label="账号列表分页" @update:page="list.setPage" @update:size="list.setSize"/>
   </section>
 </template>

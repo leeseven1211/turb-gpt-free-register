@@ -7,6 +7,7 @@ const props = withDefaults(defineProps<{
   total: number;
   pages?: number;
   busy?: boolean;
+  compact?: boolean;
   label?: string;
   pageSizes?: number[];
 }>(), {busy: false, label: '列表分页', pageSizes: () => [20, 50, 100]});
@@ -52,7 +53,7 @@ function changeSize(event: Event) {
 }
 </script>
 <template>
-  <nav class="tc-pagination list-pagination" :aria-label="label" :aria-busy="busy">
+  <nav class="tc-pagination list-pagination" :class="{'list-pagination--compact': compact}" :aria-label="label" :aria-busy="busy">
     <div class="list-pagination__layout">
     <div class="list-pagination__controls">
       <div class="list-pagination__pages">
@@ -101,6 +102,11 @@ function changeSize(event: Event) {
 .list-pagination button:focus-visible,.list-pagination input:focus-visible,.list-pagination select:focus-visible {outline:2px solid var(--ui-color-brand);outline-offset:2px}
 .list-pagination__mobile-page {display:none}
 .list-pagination__error {grid-column:1/-1;text-align:center;color:var(--ui-color-danger)}
+@media (min-width:681px) and (pointer:fine) {
+  .list-pagination--compact {padding:6px 12px}
+  .list-pagination--compact .list-pagination__layout {row-gap:6px}
+  .list-pagination--compact :is(button,input,select) {box-sizing:border-box;height:30px;min-height:30px;margin-block:0}
+}
 @container list-pagination (max-width:1120px) {
   .list-pagination__layout {grid-template-columns:minmax(0,1fr)}
   .list-pagination__controls,.list-pagination__meta {grid-column:1}

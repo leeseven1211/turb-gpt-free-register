@@ -95,13 +95,17 @@
 .registration-status-dot { width: 7px; height: 7px; border-radius: 50%; }
 .registration-batch-card { padding: 8px 15px; border-top: 1px solid var(--ui-color-border); }
 .registration-batch-card[data-tone=failed] { box-shadow: inset 3px 0 var(--ui-color-danger); }
-.registration-batch-row { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(0, 1fr) 156px; align-items: center; gap: 8px; min-height: 36px; }
+.registration-batch-row { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, .85fr) minmax(0, 1fr) 156px; align-items: center; gap: 8px 16px; min-height: 36px; }
 .registration-batch-identity, .registration-batch-result { min-width: 0; }
 .registration-batch-identity > strong { display: block; overflow-wrap: anywhere; }
 .registration-batch-row small { font-size: 12px; color: var(--ui-color-text-secondary); overflow-wrap: anywhere; }
 .registration-batch-result { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; }
 .registration-batch-card[data-tone=failed] .registration-batch-result > small { color: var(--registration-danger-text); }
-.registration-batch-row-actions { justify-content: flex-end; }
+.registration-batch-timing { min-width: 0; font-size: 12px; font-variant-numeric: tabular-nums; }
+.registration-batch-timing > strong { font-weight: 600; }
+.registration-batch-dates { display: flex; flex-wrap: wrap; gap: 0 10px; }
+.registration-batch-dates small { max-width: 100%; }
+.registration-batch-row-actions { grid-column: -2; justify-content: flex-end; }
 .registration-batch-row-actions button, .registration-stage-selected button { min-height: 32px; font-size: 12px; }
 .registration-batch-row-actions button { white-space: normal; }
 .registration-launch :is(.registration-batch-footer, .registration-batch-notice) { border-top: 1px solid var(--ui-color-border); padding: 8px 15px; overflow-wrap: anywhere; }
@@ -125,8 +129,10 @@
 @media (max-width: 700px) {
   .registration-launcher { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .registration-launcher > label:first-child { grid-column: 1 / -1; }
-  .registration-batch-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .registration-batch-row { grid-template-columns: minmax(0, 1fr) fit-content(156px); }
   .registration-batch-identity { grid-column: 1 / -1; }
+  .registration-batch-timing { grid-column: 1 / -1; grid-row: 3; }
+  .registration-batch-row-actions { grid-row: 2; }
 }
 @media (max-width: 540px) {
   .registration-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }

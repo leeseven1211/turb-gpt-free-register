@@ -20,6 +20,7 @@ export interface RegistrationSummary {
 export interface RegistrationJob {
   id:RegistrationId; batch_id?:RegistrationId|null; parent_job_id?:RegistrationId|null; operation_task_id?:RegistrationId|null; operation_run_id?:RegistrationId|null;
   status?:string;display_status?:string;retryable?:boolean;retry_action?:string;retry_label?:string;email?:string;email_source?:string;registration_driver?:string;
+  started_at?:string|null;completed_at?:string|null;retry_count?:number;
   [key:string]:unknown;
 }
 export interface RegistrationBatch {batch_id:RegistrationId;items:RegistrationJob[];total?:number;workers?:number;status_counts?:Record<string,number>;[key:string]:unknown}

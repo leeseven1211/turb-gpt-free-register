@@ -93,6 +93,37 @@ describe('registration list standards',()=>{
   expect(wrapper.get('.registration-batch-card').text()).toContain('queued@example.test');
   expect(wrapper.find('.registration-progress').exists()).toBe(false);
  });
+ it('从批次摘要展示运行耗时和执行时间，失败原因仍然可见',async()=>{
+  const {wrapper,api}=setup();
+  const now=Date.parse('2026-11-20T10:04:00Z');
+  vi.spyOn(Date,'now').mockReturnValue(now);
+  launchBatch(api,'timed-batch',[
+   {id:7,status:'failed',started_at:'2026-11-20T10:00:00Z',completed_at:'2026-11-20T10:01:30Z',
+    retry_count:2,progress:{failure:{label:'配置 2FA'}}},
+   {id:8,status:'running',started_at:'2026-11-20T10:02:00Z',progress:{current:{label:'登录验证'}}},
+   {id:9,status:'pending'},
+   {id:10,status:'success',started_at:'2026-11-20T10:00:00Z',completed_at:'2026-11-20T10:00:19Z',retry_count:0},
+   {id:11,status:'cancelled',completed_at:'2026-11-20T10:02:00Z'},
+   {id:12,status:'failed',started_at:'无效时间'},
+  ]);
+  (wrapper.vm as any).setView('launch');await (wrapper.vm as any).load();await flushPromises();
+  const [failed,running,pending,success,cancelled,legacy]=wrapper.findAll('.registration-batch-card');
+  expect(failed!.text()).toContain('配置 2FA');
+  expect(failed!.text()).toContain('#7');
+  expect(failed!.text()).toContain('人工重试 2 次');
+  expect(failed!.get('.registration-batch-timing').text()).toContain('运行耗时 1 分 30 秒');
+  expect(failed!.get('.registration-batch-timing').text()).toMatch(/开始 .+结束 /);
+  expect(running!.text()).toContain('登录验证');
+  expect(running!.get('.registration-batch-timing').text()).toContain('运行耗时 2 分 0 秒');
+  expect(running!.get('.registration-batch-timing').text()).not.toContain('结束');
+  expect(pending!.find('.registration-batch-timing').exists()).toBe(false);
+  expect(success!.text()).toContain('人工重试 0 次');
+  expect(success!.get('.registration-batch-timing').text()).toContain('运行耗时 19.0 秒');
+  expect(cancelled!.get('.registration-batch-timing').text()).toMatch(/^结束 /);
+  expect(legacy!.find('.registration-batch-timing').exists()).toBe(false);
+  expect(legacy!.text()).not.toContain('人工重试');
+  expect(api.progress).not.toHaveBeenCalled();
+ });
  it('keeps every card in a large batch and opens only the selected job with its exact id',async()=>{
   const {wrapper,api}=setup();
   const items: RegistrationJob[]=Array.from({length:205},(_,index)=>({id:index+1,status:'success'}));

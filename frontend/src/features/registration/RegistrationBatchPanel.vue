@@ -3,6 +3,7 @@ import {computed, onBeforeUnmount, ref, watch} from 'vue';
 import {isAbort} from '../../api/client';
 import type {JobProgressResponse, RegistrationBatch, RegistrationId, RegistrationJob} from '../../api/registration';
 import {shortErrorLabel} from '../../shared/errorLabels';
+import {dateTimeLines} from '../../shared/time';
 import {formatDateTime, formatDuration} from '../tasks/presentation';
 import {object, records, text} from '../tasks/detail/model';
 import RegistrationProgress from './RegistrationProgress.vue';
@@ -66,7 +67,6 @@ const expandedJob = computed(() => displayedRows.value.find(job => String(job.id
 const progressJob = ref<RegistrationJob>();
 const progressError = ref('');
 let progressRequest: AbortController | undefined;
-const rowsWithResult = computed(() => displayedRows.value.map(job => ({job, tone:category(job), result:rowResult(job)})));
 const batchStatus = computed(() => {
   const value = counts.value;
   if (!value.all) return {label:'暂无任务', tone:'other'};
@@ -77,24 +77,50 @@ const batchStatus = computed(() => {
   if (value.success === value.all) return {label:'已完成', tone:'success'};
   return {label:'已结束', tone:'other'};
 });
-const duration = (start: unknown, end: unknown) => {
-  const elapsed = Date.parse(text(end)) - Date.parse(text(start));
+const duration = (start: unknown, end: unknown, currentTime?: number) => {
+  const endTime = end ? Date.parse(text(end)) : currentTime ?? NaN;
+  const elapsed = endTime - Date.parse(text(start));
   return Number.isFinite(elapsed) && elapsed >= 0 ? formatDuration(elapsed) : '';
 };
 const batchDuration = computed(() => duration(props.batch?.started_at, props.batch?.completed_at));
 const formatCount = (value: number) => value.toLocaleString('zh-CN');
 const failure = (job: RegistrationJob) => object(object(job.progress).failure);
 
-function rowResult(job: RegistrationJob) {
-  if (category(job) === 'failed' || status(job) === 'partial_success') {
+const rowSummaries = computed(() => {
+  // 批次轮询返回新摘要时刷新运行中的耗时。
+  const now = Date.now();
+  return displayedRows.value.map(job => {
+    const tone = category(job);
+    const running = tone === 'active' && status(job) !== 'pending';
+    return {
+      job, tone, result: rowResult(job, tone),
+      identity: [
+        `#${job.id}`,
+        job.email_source && props.sourceLabel(job.email_source),
+        job.registration_driver && props.driverLabel(job.registration_driver),
+        typeof job.retry_count === 'number' && `人工重试 ${job.retry_count} 次`,
+      ].filter(Boolean).join(' · '),
+      elapsed: duration(job.started_at, job.completed_at, running ? now : undefined),
+      started: rowTime(job.started_at),
+      completed: rowTime(job.completed_at),
+    };
+  });
+});
+function rowTime(value?: string | null) {
+  if (!value || !Number.isFinite(Date.parse(value))) return null;
+  const {text: date, secondary: time} = dateTimeLines(value);
+  return {label: time ? `${date.slice(5)} ${time}` : date, full: time ? `${date} ${time}` : date};
+}
+function rowResult(job: RegistrationJob, tone: Exclude<Filter, 'all'>) {
+  if (tone === 'failed' || status(job) === 'partial_success') {
     const short = job.error_info ? shortErrorLabel(object(job.error_info)) : '';
     const stage = text(failure(job).label);
     if (short && short !== '执行异常') return short;
     if (stage && Array.from(stage).length <= 10) return stage;
     return short || '执行异常';
   }
-  if (category(job) === 'active') return text(object(object(job.progress).current).label);
-  return duration(job.started_at, job.completed_at);
+  if (tone === 'active') return text(object(object(job.progress).current).label);
+  return '';
 }
 function rowStatus(job: RegistrationJob) {
   if (job.debug_state === 'paused') return '调试暂停';
@@ -215,15 +241,22 @@ onBeforeUnmount(resetProgress);
         </button>
       </div>
 
-      <article v-for="{job, tone, result} in rowsWithResult" :key="String(job.id)" class="registration-batch-card" :data-tone="tone">
+      <article v-for="{job, tone, result, identity, elapsed, started, completed} in rowSummaries" :key="String(job.id)" class="registration-batch-card" :data-tone="tone">
         <div class="registration-batch-row">
           <div class="registration-batch-identity">
             <strong>{{ job.email || '准备邮箱中…' }}</strong>
-            <small>{{ [job.email_source && sourceLabel(job.email_source), job.registration_driver && driverLabel(job.registration_driver)].filter(Boolean).join(' · ') || `#${job.id}` }}</small>
+            <small>{{ identity }}</small>
           </div>
           <div class="registration-batch-result">
             <span class="registration-state" :data-tone="tone">{{ rowStatus(job) }}</span>
             <small v-if="result">{{ result }}</small>
+          </div>
+          <div v-if="elapsed || started || completed" class="registration-batch-timing">
+            <strong v-if="elapsed">运行耗时 {{ elapsed }}</strong>
+            <div class="registration-batch-dates">
+              <small v-if="started">开始 <time :datetime="job.started_at || undefined" :title="started.full">{{ started.label }}</time></small>
+              <small v-if="completed">结束 <time :datetime="job.completed_at || undefined" :title="completed.full">{{ completed.label }}</time></small>
+            </div>
           </div>
           <div class="registration-batch-actions registration-batch-row-actions">
             <button type="button" :aria-label="`查看阶段 · ${job.email || `任务 #${job.id}`}`"
