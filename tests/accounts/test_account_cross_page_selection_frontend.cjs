@@ -74,7 +74,7 @@ async function setup({request, confirmation = true, saved = null} = {}) {
     await setPage([9,10].map(id=>({id,email:`second-${id}@example.test`,account_status:'deactivated',current_plan_type:'plus',codex_status:'failed',codex_execution_status:'failed',email_source:'outlook'})));
     await selectAll(true);
   };
-  return{context,owner,calls,element,selectAll,changeRow,setPage,selectTwoPages,click:id=>toolbar.click(id),flushAnimationFrames:()=>toolbar.flush(),
+  return{context,owner,calls,element,selectAll,changeRow,setPage,selectTwoPages,click:id=>toolbar.click(id),clickShortcut:id=>toolbar.clickShortcut(id),flushAnimationFrames:()=>toolbar.flush(),
     clearSelection:async()=>{listWrapper.vm.clearSelection();await flushPromises();}};
 }
 
@@ -224,7 +224,7 @@ test('重新导入 C2A：取消后下一帧焦点回到顶部批量按钮', asyn
   const view = await setup({saved:JSON.stringify({btnReimportSelectedC2aV2:1})}), ui = c2aFixture(view, t);
   await view.selectTwoPages();
 
-  await view.click('btnReimportSelectedC2aV2');
+  await view.clickShortcut('btnReimportSelectedC2aV2');
   await ui.flush();
   assert.equal(ui.get('c2aReimportConfirmModal').open, true);
   await ui.click('btnCancelC2aReimportV2');
@@ -234,20 +234,20 @@ test('重新导入 C2A：取消后下一帧焦点回到顶部批量按钮', asyn
   assert.equal(ui.get('c2aReimportConfirmModal').open, false);
   assert.equal(view.calls.requests.length, 0);
   assert.deepEqual(view.calls.receipts, []);
-  assert.equal(ui.document.activeElement.id, 'btnReimportSelectedC2aV2');
+  assert.equal(ui.document.activeElement.dataset.accountShortcut, 'btnReimportSelectedC2aV2');
   assert.equal(ui.get('accountsMoreActionsV2').open, false);
 });
 
 test('重新导入 C2A：原生关闭事件同样恢复可见焦点且不发起同步', async t => {
   const view = await setup({saved:JSON.stringify({btnReimportSelectedC2aV2:1})}), ui = c2aFixture(view, t);
   await view.selectTwoPages();
-  await view.click('btnReimportSelectedC2aV2');
+  await view.clickShortcut('btnReimportSelectedC2aV2');
   await ui.flush();
   ui.get('c2aReimportConfirmModal').close('');
   ui.get('accountsMoreActionsV2').open = false;
   await ui.frame();
   assert.equal(view.calls.requests.length, 0);
-  assert.equal(ui.document.activeElement.id, 'btnReimportSelectedC2aV2');
+  assert.equal(ui.document.activeElement.dataset.accountShortcut, 'btnReimportSelectedC2aV2');
 });
 
 

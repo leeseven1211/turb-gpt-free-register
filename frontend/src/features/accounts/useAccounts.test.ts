@@ -109,14 +109,14 @@ afterEach(() => {
 });
 
 describe('Accounts owner 分页和选择身份', () => {
-  it('初次显示只读第 1 页的 10 条，重复显示不重复读，也不隐式取详情', async () => {
+  it('初次显示只读第 1 页的 20 条，重复显示不重复读，也不隐式取详情', async () => {
     const h = setup(); await h.owner.refresh(); await settle();
     expect(h.listCalls).toHaveLength(0);
     h.owner.setVisible(true); h.owner.setVisible(true); await settle();
     expect(h.listCalls).toHaveLength(1);
-    expect(h.listCalls[0]!.params).toMatchObject({paged: '1', page: '1', page_size: '10', archived: '0'});
+    expect(h.listCalls[0]!.params).toMatchObject({paged: '1', page: '1', page_size: '20', archived: '0'});
     expect(h.listCalls[0]!.params).not.toHaveProperty('limit');
-    expect(h.owner.page.value).toBe(1); expect(h.owner.size.value).toBe(10);
+    expect(h.owner.page.value).toBe(1); expect(h.owner.size.value).toBe(20);
     expect(h.detailsCalls).toHaveLength(0);
   });
 
@@ -131,8 +131,8 @@ describe('Accounts owner 分页和选择身份', () => {
     expect([...h.owner.selected.value].sort()).toEqual(['1', '12', '2']);
     h.owner.togglePage(false); expect([...h.owner.selected.value].sort()).toEqual(['1', '2']);
     await h.owner.refresh(); expect([...h.owner.selected.value].sort()).toEqual(['1', '2']);
-    h.owner.setSize(20); await settle();
-    expect(h.owner.page.value).toBe(1); expect(h.owner.size.value).toBe(20);
+    h.owner.setSize(30); await settle();
+    expect(h.owner.page.value).toBe(1); expect(h.owner.size.value).toBe(30);
     expect([...h.owner.selected.value].sort()).toEqual(['1', '2']);
     expect(h.owner.getAccountSelectionSnapshot({requireEmails: true}).expectedEmails).toEqual({
       '1': 'account-1@example.test', '2': 'account-2@example.test'});
@@ -141,7 +141,7 @@ describe('Accounts owner 分页和选择身份', () => {
   it('快照优先当前页最新邮箱，离页保留选中时邮箱，确认期间变化不能改动快照', async () => {
     const h = setup(); let currentEmail = 'selected@example.test';
     h.handlers.list = async call => listResult(call.page === 1 ? [row(1, {email: currentEmail})] : [row(11)],
-      {page: call.page, size: call.size, total: 20});
+      {page: call.page, size: call.size, total: 21});
     h.owner.setVisible(true); await settle(); h.owner.toggle('1', true);
     h.owner.setPage(2); await settle(); h.owner.toggle('11', true);
     expect(h.owner.getAccountSelectionSnapshot({requireEmails: true}).expectedEmails).toEqual({
@@ -165,7 +165,7 @@ describe('Accounts owner 分页和选择身份', () => {
 
   it('清选及确认移除同时删除邮箱记忆，单行动作仍可从当前页建立邮箱快照', async () => {
     const h = setup();
-    h.handlers.list = async call => listResult(call.page === 1 ? [row(1), row(2)] : [row(11)], {page: call.page, total: 20});
+    h.handlers.list = async call => listResult(call.page === 1 ? [row(1), row(2)] : [row(11)], {page: call.page, total: 21});
     h.owner.setVisible(true); await settle(); h.owner.togglePage(true);
     const single = h.owner.getAccountSelectionSnapshot({ids: ['2'], requireEmails: true});
     expect(single.ids).toEqual(['2']); expect(single.expectedEmails).toEqual({'2': 'account-2@example.test'});
@@ -341,13 +341,13 @@ describe('Accounts owner 查询与列表竞态', () => {
     h.handlers.list = async call => listResult([row(call.page)], {total: 60, page: call.page, size: call.size});
     h.owner.setVisible(true); await settle(); h.owner.setPage(2); await settle();
     h.listCalls.length = 0;
-    h.owner.setPage(1); h.owner.setSize(20); await settle();
-    expect(h.listCalls.map(call => [call.page, call.size])).toEqual([[1,20]]);
+    h.owner.setPage(1); h.owner.setSize(30); await settle();
+    expect(h.listCalls.map(call => [call.page, call.size])).toEqual([[1,30]]);
     const pending = deferred<AccountsListResponse>(); h.handlers.list = () => pending.promise;
     let completed = false;
     const refreshing = h.owner.refresh().then(() => { completed = true; });
     await settle(); expect(completed).toBe(false);
-    pending.resolve(listResult([row(9)], {total: 60, size: 20})); await refreshing;
+    pending.resolve(listResult([row(9)], {total: 60, size: 30})); await refreshing;
     expect(h.owner.items.value[0]?.id).toBe(9); expect(completed).toBe(true);
   });
 });
@@ -576,8 +576,8 @@ describe('Accounts owner 详情版本和消费者', () => {
 
   it('跨页仍打开的消费者可复用详情；显式关闭后释放缓存，重访同 revision 需要新详情', async () => {
     const h = setup();
-    h.handlers.list = async call => listResult(call.page === 1 ? [row(1)] : [row(11)], {page: call.page, total: 20});
-    h.handlers.statuses = async call => statusResult([statusRow(call.page === 1 ? 1 : 11)], {page: call.page, total: 20, revision: `page-${call.page}`});
+    h.handlers.list = async call => listResult(call.page === 1 ? [row(1)] : [row(11)], {page: call.page, total: 21});
+    h.handlers.statuses = async call => statusResult([statusRow(call.page === 1 ? 1 : 11)], {page: call.page, total: 21, revision: `page-${call.page}`});
     h.owner.setVisible(true); await settle(); await h.owner.pollStatuses();
     const old = h.owner.openPlanDetailsConsumer('1'); await old.loadPlanDetails('1', old.openGeneration);
     expect(h.detailsCalls).toHaveLength(1); h.owner.setPage(2); await settle();

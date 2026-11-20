@@ -69,7 +69,7 @@ export function useAccounts(adapter: AccountQueryAdapter, api: AccountsReadApi) 
   const query = shallowRef(adapter.normalize());
   const items = shallowRef<AccountViewRow[]>([]), facets = shallowRef<AccountFacets>({});
   const searchTerms = shallowRef<AccountSearchTerm[]>([]), queue = shallowRef<AccountQueueSettings | null>(null);
-  const total = ref(0), page = ref(1), size = ref(10), loading = ref(false), polling = ref(false);
+  const total = ref(0), page = ref(1), size = ref(20), loading = ref(false), polling = ref(false);
   const visible = ref(false), error = ref(''), invalidSearch = ref(false), draftSearch = ref('');
   const selected = shallowRef<ReadonlySet<string>>(new Set());
   const selectedEmails = shallowRef<Readonly<Record<string, string>>>({});

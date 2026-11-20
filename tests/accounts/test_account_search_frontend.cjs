@@ -118,14 +118,14 @@ test('同页刷新后忽略迟到的轮询，新列表可接收与旧轮询相�
 
 test('尚未载入的新页不发轮询，页内重复或换序时重新读取并保留上一页数据直至成功', async t => {
   for(const ids of [[7,7],[8,7]]){
-    const h=createReadFixture(t,{handlers:{list:async()=>list([row(7),row(8)],{total:20})}});await h.ready;
+    const h=createReadFixture(t,{handlers:{list:async()=>list([row(7),row(8)],{total:21})}});await h.ready;
     const pageRead=deferred();h.behavior.list=()=>pageRead.promise;h.owner.setPage(2);await h.settle();await h.owner.pollStatuses();assert.equal(h.statusRequests.length,0);
-    h.owner.setPage(1);await h.settle();pageRead.resolve(list([row(7),row(8)],{total:20}));await h.settle();
+    h.owner.setPage(1);await h.settle();pageRead.resolve(list([row(7),row(8)],{total:21}));await h.settle();
     const fresh=deferred();h.behavior.list=()=>fresh.promise;
-    h.behavior.statuses=async()=>status(ids.map(id=>statusRow(id,{live_check_status:'failed'})),{total:20,revision:'inconsistent',status_fields:['live_check_status']});
+    h.behavior.statuses=async()=>status(ids.map(id=>statusRow(id,{live_check_status:'failed'})),{total:21,revision:'inconsistent',status_fields:['live_check_status']});
     const read=h.owner.pollStatuses();await h.settle();assert.equal(h.requests.at(-1).page,1);assert.equal(h.owner.loading.value,true);
     assert.deepEqual(h.plain(h.owner.items.value.map(item=>item.id)),[7,8]);assert.ok(h.owner.items.value.every(item=>!item.live_check_status));
-    fresh.resolve(list([row(8),row(7)],{total:20}));await read;
+    fresh.resolve(list([row(8),row(7)],{total:21}));await read;
     assert.deepEqual(h.plain(h.owner.items.value.map(item=>item.id)),[8,7]);
   }
 });

@@ -8,5 +8,26 @@ function view(payload:ExtractAnalytics=data){const api={analytics:vi.fn(async()=
 describe('standalone extraction analytics',()=>{
  it('preserves all baseline sections, stage denominators, all-date current counts and Shanghai dates',async()=>{const {w}=view();await flushPromises();for(const text of ['今日与当前','当前待支付','全部日期','每日趋势','失败分类','模式分布','区间任务状态','平台对比','75.0%','50.0%','1 分 7 秒','2026-11-17'])expect(w.text()).toContain(text);expect(w.findAll('.es-metric strong').map(n=>n.text())).toEqual(['4','3','1','0']);expect(w.find('[aria-label="每日趋势数据"]').text()).toContain('2026-11-16');expect(w.findAll('.es-failures li')[0]?.text()).toContain('平台拒绝');expect(w.findAll('script')).toHaveLength(0);expect(w.text()).toContain('<script>unsafe</script>');});
  it('keeps provider options when a filter has no rows and sends exact 7/30/90-day scopes',async()=>{const {w,api}=view({...data,providers:[]});await flushPromises();await w.find('[data-extract-stats-provider]').setValue('huanguang');await w.find('[data-extract-stats-days="7"]').trigger('click');await flushPromises();expect(api.analytics).toHaveBeenLastCalledWith(7,'huanguang',expect.any(AbortSignal));expect(w.findAll('option').map(x=>x.attributes('value'))).toContain('legacy');});
+ it('按所选范围展示失败次数最多的五项，并在筛选条刷新',async()=>{
+  const failures=[2,8,0,5,1,4,7,6].map(count=>({code:`failure-${count}`,label:`测试原因 ${count}`,count}));
+  const {w,api}=view({...data,totals:{...data.totals,failed:33},failures});
+  await flushPromises();
+  const failureCounts=()=>w.findAll('.es-failures li strong').map(item=>item.text());
+  expect(failureCounts()).toEqual(['8','7','6','5','4']);
+  expect(w.text()).toContain('33 个失败任务');
+  expect(w.find('h1').exists()).toBe(false);
+  expect(w.text()).not.toContain('按任务创建日统计 · 同一任务仅计一次');
+
+  vi.mocked(api.analytics).mockResolvedValue({...data,failures:failures.slice(0,1)});
+  await w.get('[data-extract-stats-provider]').setValue('huanguang');
+  await w.get('[data-extract-stats-days="7"]').trigger('click');
+  await flushPromises();
+  expect(failureCounts()).toEqual(['2']);
+
+  await w.get('.es-controls [data-extract-stats-refresh]').trigger('click');
+  await flushPromises();
+  expect(api.analytics).toHaveBeenLastCalledWith(7,'huanguang',expect.any(AbortSignal));
+  expect(api.analytics).toHaveBeenCalledTimes(4);
+ });
  it('shows zero and missing rates safely, and a zero-volume range has no fabricated trend',async()=>{const {w}=view({ok:true,totals:{total:0,extraction_rate:0,payment_rate:null,avg_seconds:null},daily:[],providers:[],failures:[],modes:[]});await flushPromises();expect(w.text()).toContain('0.0%');expect(w.text()).toContain('—');expect(w.text()).toContain('这个时间段还没有提链任务');expect(w.find('svg').exists()).toBe(false);});
 });

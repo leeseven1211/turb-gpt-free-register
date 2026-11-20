@@ -17,11 +17,13 @@ function mountToolbarFixture({saved=null,storageBlocked=false,state={selectedCou
   const wrapper=vue.mount(AccountsToolbar,{props:{state,capabilities,getContext:getContext||(()=>context),runtime,
     invoke:(...args)=>{calls.push(args);return invoke?.(...args);},notify:notify||(()=>{})}});
   const get=id=>document.getElementById(id);
+  const shortcut=id=>document.querySelector(`[data-account-shortcut="${id}"]`);
   return{wrapper,document,storage,calls,context,get,ready:flushPromises(),
-    ids:()=>Array.from(get('accountsQuickActionsV2').querySelectorAll('button')).map(button=>button.id),
+    shortcut,ids:()=>Array.from(get('accountsQuickActionsV2').querySelectorAll('button')).map(button=>button.dataset.accountShortcut),
     async flush(){const pending=[...frames.values()];frames.clear();pending.forEach(callback=>callback());await flushPromises();},
     async refresh(){wrapper.vm.refreshQuickActions();await flushPromises();},
     async click(id){get(id).click();await flushPromises();},
+    async clickShortcut(id){shortcut(id).click();await flushPromises();},
     external(key=ACCOUNT_ACTION_USAGE_KEY){storageListener?.({key});},
     setState(value){return wrapper.setProps({state:value});},setCapabilities(value){return wrapper.setProps({capabilities:value});},
     close(){wrapper.unmount();},

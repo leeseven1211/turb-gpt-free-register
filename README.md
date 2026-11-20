@@ -825,7 +825,7 @@ CPA_MANAGEMENT_KEY = "你的CPA管理密钥"
 - 项目按 `config/`（声明式默认值）→ `core/`（驱动与业务服务）→ `webui/routes/` 和 `main.py`（WebUI / CLI 入口）分层；`core/` 不反向依赖 `webui/`。
 - 注册由 `core.registration.dispatcher.run_registration()` 按 `REGISTRATION_DRIVER` 分发，Codex OAuth 由 `core.codex.oauth.run_codex_oauth()` 按 `CODEX_OAUTH_DRIVER` 分发。驱动必须使用统一参数和任务进度上报接口。
 - `webui/app.py` 只负责组装应用；领域路由位于 `webui/routes/`，`webui/runtime.py` 负责启动恢复和后台 worker。新增长期任务时必须补充启动恢复，避免重启后记录永久停在 `running`。
-- WebUI 只维护现代界面，统一使用 `webui/templates/index.html` 和 `webui/static/js/pages/` 与 `webui/static/js/shared/`。旧书签中的 `?ui=legacy` 和浏览器保留的 `ui_mode=legacy` Cookie 仍返回现代页面。涉及页面结构、脚本或接口契约的改动，应检查现代界面、相关回归测试及真实浏览器行为。
+- WebUI 只维护现代界面，统一使用 `webui/templates/index.html` 和 `webui/static/js/pages/` 与 `webui/static/js/shared/`。旧书签中的 `?ui=legacy` 和浏览器保留的 `ui_mode=legacy` Cookie 仍返回现代页面。
 - 配置页保存到运行配置数据库并热加载，不修改 `config/*.py`。需要读取热加载值的运行时代码应通过配置模块访问，避免 `from config import X` 形成过期绑定。
 
 #### 邮件验证码
@@ -1739,33 +1739,25 @@ CODEX_PHONE_ENABLED = False
 ```bash
 cd frontend
 npm ci
-npm run check
 npm run build
 ```
 
-修改 `contracts/task-center.openapi.json` 后运行 `npm run generate:api`。`webui/static/task-center/` 的构建结果与源码、锁文件一起提交，适配现有不可变发布复制流程；部署服务器无需 npm。开发可运行 `npm run dev`，其 API 代理指向本机 8000 服务；浏览器的开发代理请求具有所连服务的实际副作用，界面验收优先使用[合成预览](frontend/README.md)。
+修改 `contracts/task-center.openapi.json` 后运行 `npm run generate:api`。`webui/static/task-center/` 的构建结果与源码、锁文件一起提交，适配现有不可变发布复制流程。部署服务器无需 npm。开发可运行 `npm run dev`，其 API 代理指向本机 8000 服务。发布前需要预览页面时可使用[合成预览](frontend/README.md)。
 
-项目统一通过 `tools/test_isolated.py` 调用 `pytest`，现有 `unittest.TestCase` 也由 pytest 收集。先在已激活的开发环境中提供独立测试库的 `DATABASE_URL`；入口会禁用项目 dotenv、清除业务环境配置并检查非生产数据库，测试 schema 必须以 `test_` 开头，未指定时由入口生成。禁止连接生产数据库 `turb_console` 或使用 `public` schema。
+非重大架构调整只运行与本次改动直接相关的测试，按测试文件或用例选取。重大架构调整按受影响的模块和契约扩大范围。大多数 UI 改动在部署后使用真实浏览器验收对应页面和交互，涉及业务逻辑或接口契约时运行直接相关的测试。
 
-小改动运行受影响功能的定向测试和相邻回归即可；只有共享存储、运行时、迁移、跨模块契约等风险，或明确的发布验收需要，才扩大范围，并说明原因。不要因为改了一个文件就默认全量，也不要按测试数量删除用例；调整测试应依据它保护的业务行为、重复覆盖和实际耗时。
+Python 测试统一使用 `tools/test_isolated.py`。运行前在开发环境中提供独立测试库的 `DATABASE_URL`，入口负责隔离项目 dotenv 和业务环境配置。以下命令以配置默认值改动为例。
 
 ```bash
-# 定向验证：包含指定文件中的普通与扩展测试，不扫描其他测试文件
 python tools/test_isolated.py --profile all -- tests/config/test_config_defaults.py -q
-
-# 定向测试通过后，按影响范围补充相邻回归
-python tools/test_isolated.py --profile all -- tests/config/test_config_ui.py tests/webui/test_dashboard_api.py -q
-
-# 静态检查
-ruff check .
-ruff check --select E4,E7,E9,F --exit-zero .
+ruff check config/
 ```
 
-`--profile default` 只选未标记 `extended` 的测试；`--profile extended` 只选扩展测试，不包含 default；`--profile all` 不加 marker 筛选，但仍受后面指定的文件、目录或用例节点限制。因此 `all -- tests/config/test_config_ui.py` 只是该文件的全部用例；不指定路径时，pytest 才按 `tests/` 收集整个测试目录。不要将 profile 与 pytest 的 `-m`/`--markexpr` 同时使用。完整的范围选择与交付规则见[发布与验证](docs/development/release-verification.md)。
+`--profile all` 在指定路径内运行普通和扩展测试。profile、隔离要求和更多定向命令见[发布与验证](docs/development/release-verification.md)。
 
-存储测试继承 `tests.support_pg.PostgresTestCase`；该基类创建临时 schema、重定向兼容导出并在用例间清理数据，与统一隔离入口配合使用。详细存储约束见[存储架构](docs/architecture/storage-architecture.md)。
+存储测试继承 `tests.support_pg.PostgresTestCase`，通过统一入口使用隔离的 PostgreSQL 测试 schema。详细存储约束见[存储架构](docs/architecture/storage-architecture.md)。
 
-涉及真实浏览器或外部服务时，先验证单任务，再逐步增加并发；测试结论要区分静态测试、数据库状态、浏览器链路和实际服务运行状态。
+验证真实业务任务时，先验证单任务，再逐步增加并发。测试结论要区分静态测试、数据库状态、浏览器链路和实际服务运行状态。
 
 Roxy 单任务重跑可通过 `POST /api/jobs/{id}/retry` 显式指定 `proxy_country: "JP"`（ISO 两位国家代码）。该参数仅支持 Roxy 注册、原身份续跑及账号配置补跑，只写入新子任务，不修改原任务或全局国家；账号配置补跑的套餐、浏览器及换线均使用指定国家。原账号 Profile 可用时，确认关闭、更新代理后重开；明确缺失时沿用原身份创建替代环境并更新绑定。已有其他国家的活动重跑任务时返回冲突，不中途切换线路。批量重跑接口不接受该参数。
 

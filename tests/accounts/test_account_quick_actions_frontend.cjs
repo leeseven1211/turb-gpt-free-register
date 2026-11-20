@@ -20,8 +20,9 @@ test('无使用记录时恰好展示五个默认操作，C2A 留在批量操作�
   assert.deepEqual(view.ids(), defaults);
   assert.equal(view.get('accountsMoreActionsV2').contains(view.get(c2aId)), true);
   const rendered = Array.from(view.get('accountsToolbarV2').querySelectorAll('button')).map(node => node.id);
-  assert.equal(rendered.length, 34);
-  assert.equal(new Set(rendered).size, 34);
+  assert.equal(rendered.length, 39);
+  assert.equal(new Set(rendered.filter(Boolean)).size, 34);
+  assert.deepEqual(Array.from(view.get('accountsMoreActionsV2').querySelectorAll('button')).map(button => button.id), ACCOUNT_TOOLBAR_BUTTONS.map(item => item.id));
 });
 
 test('一次入口点击累计一次，退出菜单、弹窗和工具栏焦点后才更新前五', async () => {
@@ -38,7 +39,8 @@ test('一次入口点击累计一次，退出菜单、弹窗和工具栏焦点�
   button.blur();await view.refresh();
   assert.deepEqual(view.ids(), [c2aId, ...defaults.slice(0, 4)]);
   assert.equal(more.contains(view.get(defaults[4])), true);
-  assert.equal(view.get('accountsToolbarV2').querySelectorAll('button').length, 34);
+  assert.equal(more.contains(button), true);
+  assert.equal(view.get('accountsToolbarV2').querySelectorAll('button').length, 39);
   assert.equal(view.get(c2aId),button);
   const expected=view.ids(),saved=view.storage.value;view.close();
   assert.deepEqual((await setup({saved})).ids(), expected);
@@ -76,7 +78,7 @@ test('页面级动作也按次数进入五个快捷位置，保留单一节点�
   assert.match(template,/id="accounts-list-root"/);
   assert.equal(toolbar.contains(view.document.getElementById('accounts-list-root')),false);
   const history=view.get('btnAccountInspectionHistory');await view.click(history.id);await view.flush();
-  assert.equal(view.ids().length,5);assert.equal(view.ids()[0],history.id);assert.equal(view.get('accountsQuickActionsV2').querySelector('button'),history);assert.equal(history.disabled,false);assert.equal(toolbar.querySelectorAll('button').length,34);
+  assert.equal(view.ids().length,5);assert.equal(view.ids()[0],history.id);assert.equal(view.get('accountsQuickActionsV2').querySelector('button'),view.shortcut(history.id));assert.equal(history.disabled,false);assert.equal(toolbar.querySelectorAll('button').length,39);
   assert.equal(view.calls.length,1);assert.equal(view.calls[0][0],'openAccountInspectionHistory');assert.equal(view.calls[0][1],view.context);assert.equal(view.calls[0][2],history);
 });
 

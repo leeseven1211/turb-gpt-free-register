@@ -175,17 +175,11 @@
   white-space: pre-wrap;
   max-width: 760px;
 }
-.pt-tabs-row {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  justify-content: space-between;
-}
 .pt-view-tabs {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
   min-width: 0;
-  overflow: auto;
   padding: 3px;
 }
 .pt-view-tabs button {
@@ -210,27 +204,29 @@
 .pt-toolbar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px 16px;
+  flex-wrap: wrap;
+  gap: 6px 16px;
   min-width: 0;
 }
 .pt-toolbar-main,
 .pt-toolbar-actions {
   display: flex;
   align-items: center;
-  gap: 10px;
+  flex-wrap: wrap;
+  gap: 6px 12px;
   min-width: 0;
 }
 .pt-toolbar-main {
-  flex: 1;
+  justify-content: space-between;
+  margin-inline-start: auto;
 }
 .pt-count {
-  flex: none;
   color: var(--ui-color-text-secondary);
   font-size: 12px;
+  white-space: nowrap;
 }
 .pt-toolbar-actions {
-  flex: none;
+  margin-inline-start: auto;
 }
 .pt-link {
   padding: 3px 0;
@@ -239,6 +235,9 @@
   color: var(--ui-color-brand);
   font: inherit;
   cursor: pointer;
+}
+.pt-toolbar .pt-link {
+  white-space: nowrap;
 }
 .pt-button {
   padding: 6px 10px;
@@ -368,18 +367,14 @@
   .pt-summary strong {
     font-size: 17px;
   }
-  .pt-toolbar {
-    flex-wrap: wrap;
-  }
   .pt-toolbar-main {
-    flex-basis: 100%;
-  }
-  .pt-toolbar-actions {
-    width: 100%;
-    justify-content: flex-end;
+    flex-grow: 1;
   }
   .pt-toolbar .pt-mobile-filter {
     display: inline-flex;
+  }
+  .pt-toolbar .pt-link {
+    min-height: 36px;
   }
   .pt-view-tabs button {
     padding: 8px;

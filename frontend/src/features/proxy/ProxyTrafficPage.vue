@@ -79,7 +79,7 @@ defineExpose({
           ><strong data-proxy-summary="todayRouteCount">{{ summary?.today_route_count ?? '—' }}</strong>
         </div>
       </div>
-      <div class="pt-tabs-row">
+      <div class="pt-toolbar">
         <div class="pt-view-tabs" role="tablist" aria-label="代理与流量视图" @keydown="keyboard">
           <button
             v-for="name in views"
@@ -96,31 +96,30 @@ defineExpose({
             {{ labels[name] }} <span>{{ error ? '—' : pages[name].total }}</span>
           </button>
         </div>
-      </div>
-      <div class="pt-toolbar">
         <div class="pt-toolbar-main">
           <span class="pt-count" role="status">{{
             error ? '数据暂不可用' : `${current.total.toLocaleString()} 条记录`
-          }}</span
-          ><ListFilterSummary :items="applied" @remove="owner.removeFilter" />
-        </div>
-        <div class="pt-toolbar-actions">
-          <span class="pt-mobile-filter"
-            ><ProxyFilters
-              :view="recordView"
-              :filters="filters"
-              :state="current.state"
-              :summary="summary"
-              :open="active && openFilter === 'all'"
-              @change="(key, value) => change(recordView, key, value)"
-              @update:open="openFilter = $event ? 'all' : null" /></span
-          ><button v-if="applied.length" type="button" class="pt-link" @click="owner.resetFilters">
-            清筛</button
-          ><button type="button" class="pt-link" aria-label="恢复当前列表列宽" @click="resetColumns">
-            恢复列宽
-          </button>
+          }}</span>
+          <div class="pt-toolbar-actions">
+            <span class="pt-mobile-filter">
+              <ProxyFilters
+                :view="recordView"
+                :filters="filters"
+                :state="current.state"
+                :summary="summary"
+                :open="active && openFilter === 'all'"
+                @change="(key, value) => change(recordView, key, value)"
+                @update:open="openFilter = $event ? 'all' : null"
+              />
+            </span>
+            <button v-if="applied.length" type="button" class="pt-link" @click="owner.resetFilters">清筛</button>
+            <button type="button" class="pt-link" aria-label="恢复当前列表列宽" @click="resetColumns">
+              恢复列宽
+            </button>
+          </div>
         </div>
       </div>
+      <ListFilterSummary :items="applied" @remove="owner.removeFilter" />
       <section
         v-for="name in views"
         v-show="recordView === name"
