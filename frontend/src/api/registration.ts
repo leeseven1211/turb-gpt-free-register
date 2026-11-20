@@ -24,10 +24,12 @@ export interface RegistrationJob {
 }
 export interface RegistrationBatch {batch_id:RegistrationId;items:RegistrationJob[];total?:number;workers?:number;status_counts?:Record<string,number>;[key:string]:unknown}
 export interface JobsResponse {items?:RegistrationJob[];total?:number;revision?:string;status_counts?:Record<string,number>;facets?:Record<string,unknown>;progress_batch?:RegistrationBatch|null;progress_batches?:RegistrationBatch[];[key:string]:unknown}
+export interface JobProgressResponse {ok:boolean;job?:RegistrationJob}
 export interface RegistrationApi {
   metadata(signal?:AbortSignal):Promise<RegistrationMeta>;
   summary(signal?:AbortSignal):Promise<RegistrationSummary>;
   jobs(params:Record<string,string|number>,signal?:AbortSignal):Promise<JobsResponse>;
+  progress(id:RegistrationId,signal?:AbortSignal):Promise<JobProgressResponse>;
   create(payload:{count:number;workers:number;email_source:string;debug_enabled:boolean},signal?:AbortSignal):Promise<Record<string,any>>;
   action(path:string,payload?:unknown,signal?:AbortSignal):Promise<Record<string,any>>;
   log(id:RegistrationId,signal?:AbortSignal):Promise<Record<string,any>>;
@@ -44,6 +46,7 @@ export function createRegistrationApi():RegistrationApi {
     ]).then(([value,capabilities])=>({...value,capabilities})),
     summary:signal=>request<RegistrationSummary>('/api/summary',{signal}),
     jobs:(params,signal)=>request<JobsResponse>(`/api/jobs?${new URLSearchParams(Object.entries(params).map(([k,v])=>[k,String(v)]))}`,{signal}),
+    progress:(id,signal)=>request<JobProgressResponse>(`/api/jobs/${encodeURIComponent(String(id))}/progress`,{signal}),
     create:(payload,signal)=>request<Record<string,any>>('/api/jobs', {...json(payload),signal}),
     action:(path,payload={},signal)=>request<Record<string,any>>(path,{...json(payload),signal}),
     log:(id,signal)=>request<Record<string,any>>(`/api/jobs/${encodeURIComponent(String(id))}/log`,{signal}),

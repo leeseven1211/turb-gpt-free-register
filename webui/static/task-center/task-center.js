@@ -1,13 +1,13 @@
-import { A as e, C as t, F as n, G as r, H as i, K as a, L as o, M as s, Q as c, S as l, V as u, X as d, Z as f, _ as p, a as m, c as h, d as g, dt as _, et as v, f as y, ft as b, g as x, h as S, j as C, k as w, l as T, lt as E, m as D, n as O, nt as k, s as A, st as j, v as M, x as N } from "./_plugin-vue_export-helper-BSZsFlS8.js";
+import { A as e, C as t, F as n, G as r, H as i, K as a, L as o, M as s, Q as c, S as l, V as u, X as d, Z as f, _ as p, a as m, c as h, d as g, dt as _, et as v, f as y, ft as b, g as x, h as S, j as C, k as w, l as T, lt as E, m as D, n as O, nt as k, s as A, st as j, v as M, x as N } from "./_plugin-vue_export-helper-CtnyMOwL.js";
 import { n as P, r as F, t as I } from "./client-BBEPwkQG.js";
 import { a as L, i as ee, n as te, r as R } from "./taskIds-BlchWwUp.js";
 import { n as z } from "./time-DOD6oyhP.js";
-import { A as B, C as ne, D as V, E as H, M as U, N as W, O as re, P as G, S as ie, T as ae, _ as oe, a as se, b as ce, c as le, d as ue, f as de, g as K, h as fe, i as q, j as J, k as pe, l as me, m as he, n as ge, o as _e, p as ve, r as ye, s as be, t as xe, u as Se, v as Ce, w as we, x as Te, y as Ee } from "./StepEvidence-CNs3ZCIS.js";
-import { n as De, r as Oe, t as ke } from "./ListFilterSummary-Bc1S5NP4.js";
-import { t as Ae } from "./useColumnWidths-D1sKP53m.js";
-import { t as je } from "./ListResult-BkPTMQVQ.js";
+import { A as B, C as ne, D as V, E as H, M as U, N as W, O as re, P as G, S as ie, T as ae, _ as oe, a as se, b as ce, c as le, d as ue, f as de, g as K, h as fe, i as q, j as J, k as pe, l as me, m as he, n as ge, o as _e, p as ve, r as ye, s as be, t as xe, u as Se, v as Ce, w as we, x as Te, y as Ee } from "./StepEvidence-ClK5TcST.js";
+import { n as De, r as Oe, t as ke } from "./ListFilterSummary-wgXrzXbr.js";
+import { t as Ae } from "./useColumnWidths-DZSfaGuI.js";
+import { t as je } from "./ListResult-DTuWvy8M.js";
 import { t as Y } from "./errorLabels-B-XqaTSM.js";
-import { t as Me } from "./ListPagination-BjETSj81.js";
+import { t as Me } from "./ListPagination-CrkNIuCM.js";
 // src/api/tasks.ts
 var X = (e, t = {}) => F(e, t, R);
 function Ne() {
@@ -1738,15 +1738,15 @@ function Nr() {
 			...t,
 			page: n.value,
 			page_size: r.value
-		}, c = JSON.stringify(i), f = e.metadata || S !== c || Date.now() - x >= 3e4, p = ++h;
+		}, c = JSON.stringify(i), f = JSON.stringify(t), p = e.metadata || S !== f || Date.now() - x >= 3e4, v = ++h;
 		g?.abort(), g = new AbortController(), u.value = !0;
 		try {
 			let e = await Le.list({
 				...i,
-				include_facets: +!!f,
+				include_facets: +!!p,
 				include_batches: 0
 			}, g.signal);
-			if (p !== h) return;
+			if (v !== h) return;
 			if (a.value = Number(e.total || 0), n.value > m.value) {
 				n.value = m.value;
 				return;
@@ -1757,11 +1757,11 @@ function Nr() {
 				let n = new Set(o.value.map((e) => e.id));
 				l.value = new Set([...l.value].filter((e) => n.has(e)));
 			}
-			e.facets && (s.value = e.facets), f && (x = Date.now(), S = c), d.value = "";
+			e.facets && (s.value = e.facets), p && (x = Date.now(), S = f), d.value = "";
 		} catch (e) {
-			p === h && !P(e) && (d.value = e instanceof Error ? e.message : "任务列表加载失败");
+			v === h && !P(e) && (d.value = e instanceof Error ? e.message : "任务列表加载失败");
 		} finally {
-			p === h && (u.value = !1, g = null, O());
+			v === h && (u.value = !1, g = null, O());
 		}
 	}
 	function A(e) {

@@ -1,9 +1,9 @@
-import { A as e, C as t, F as n, G as r, H as i, K as a, L as o, Q as s, S as c, Z as l, _ as u, a as d, c as f, d as p, dt as m, et as h, ft as g, g as _, h as v, j as y, k as b, l as x, lt as S, m as C, n as w, nt as T, s as E, st as D, v as O, x as k, y as A } from "./_plugin-vue_export-helper-BSZsFlS8.js";
-import { n as j, r as M, t as N } from "./ListFilterSummary-Bc1S5NP4.js";
-import { t as ee } from "./ListPagination-BjETSj81.js";
-import { t as P } from "./ListResult-BkPTMQVQ.js";
+import { A as e, C as t, F as n, G as r, H as i, K as a, L as o, Q as s, S as c, Z as l, _ as u, a as d, c as f, d as p, dt as m, et as h, ft as g, g as _, h as v, j as y, k as b, l as x, lt as S, m as C, n as w, nt as T, s as E, st as D, v as O, x as k, y as A } from "./_plugin-vue_export-helper-CtnyMOwL.js";
+import { n as j, r as M, t as ee } from "./ListFilterSummary-wgXrzXbr.js";
+import { t as N } from "./ListPagination-CrkNIuCM.js";
+import { t as P } from "./ListResult-DTuWvy8M.js";
 import { n as F, t as I } from "./time-DOD6oyhP.js";
-import { t as L } from "./useColumnWidths-D1sKP53m.js";
+import { t as L } from "./useColumnWidths-DZSfaGuI.js";
 import { n as R, r as z } from "./client-BBEPwkQG.js";
 import { r as te } from "./taskIds-BlchWwUp.js";
 // src/features/proxy/presentation.ts
@@ -889,25 +889,25 @@ function nt(t = {}) {
 		current: 0,
 		history: 0,
 		traffic: 0
-	}), v = h(!document.hidden), y = C(() => r.value && v.value), b = 0, x = 0, S = !1, w = null, E, D, O = null, k = /* @__PURE__ */ new Set(), A = () => !S && r.value && !document.hidden;
-	function j() {
+	}), v = h(!document.hidden), y = C(() => r.value && v.value), b = 0, x = 0, S = !1, w = null, E, D, O = null, k = !1, A = /* @__PURE__ */ new Set(), j = () => !S && r.value && !document.hidden;
+	function M() {
 		b++, x++, w?.abort(), w = null, clearTimeout(E), clearTimeout(D), E = D = void 0, O = null, p.value = !1;
 	}
-	function M() {
-		clearTimeout(D), A() && (D = setTimeout(() => {
-			D = void 0, I();
+	function ee() {
+		clearTimeout(D), j() && (D = setTimeout(() => {
+			D = void 0, L();
 		}, 3e4));
 	}
 	function N(t = null, n = 0) {
-		j();
+		t || (k = !0), M();
 		let r = x;
-		if (!A()) return;
+		if (!j()) return;
 		let i = () => {
-			E = void 0, r === x && A() && I(t);
+			E = void 0, r === x && j() && L(t);
 		};
 		n ? E = setTimeout(i, n) : e(i);
 	}
-	function ee(e) {
+	function P(e) {
 		let t = c[e];
 		return {
 			page: t.page,
@@ -918,7 +918,7 @@ function nt(t = {}) {
 			search: o.search
 		};
 	}
-	async function P(e, t, r) {
+	async function F(e, t, r) {
 		let i = await n.page(e, t, r), a = t.page;
 		if (r.aborted) throw new DOMException("Aborted", "AbortError");
 		return i.total === 0 ? {
@@ -932,7 +932,7 @@ function nt(t = {}) {
 			page: a
 		});
 	}
-	function F(e, t) {
+	function I(e, t) {
 		Object.assign(c[e], {
 			items: t.result.items,
 			total: t.result.total,
@@ -940,108 +940,107 @@ function nt(t = {}) {
 			aggregate: t.result.aggregate
 		});
 	}
-	async function I(e = null) {
-		if (!A()) return;
-		u.value || (e = null);
-		let r = e ? [e] : Q, i = Object.fromEntries(r.map((e) => [e, ee(e)])), a = JSON.stringify([e, i]);
-		if (O?.key === a) return O.promise;
-		j();
-		let o = b, s = new AbortController();
-		w = s, p.value = !0;
-		let l = (async () => {
+	async function L(e = null) {
+		if (!j()) return;
+		let r = !e || !u.value || k, i = r || d.value === null, a = r ? Q : Q.filter((t) => t === e || A.has(t)), o = Object.fromEntries(a.map((e) => [e, P(e)])), s = JSON.stringify([r, o]);
+		if (O?.key === s) return O.promise;
+		M(), r && (k = !0);
+		let l = b, f = new AbortController();
+		w = f, p.value = !0;
+		let h = (async () => {
 			try {
-				let a = n.pool(s.signal).catch((e) => {
+				let e = i ? n.pool(f.signal).catch((e) => {
 					if (R(e)) throw e;
 					return null;
-				}), [c, l, f] = await Promise.all([
-					Promise.all(r.map(async (e) => ({
+				}) : null, [s, c, p] = await Promise.all([
+					Promise.all(a.map(async (e) => ({
 						name: e,
-						...await P(e, i[e], s.signal)
+						...await F(e, o[e], f.signal)
 					}))),
-					e ? Promise.resolve(null) : n.summary(s.signal),
-					a
+					r ? n.summary(f.signal) : null,
+					e
 				]);
-				if (o !== b || !A()) return;
-				c.forEach((e) => {
-					F(e.name, e), k.delete(e.name) && _[e.name]++;
-				}), l && (u.value = l), d.value = f, m.value = "", t.onReady?.();
+				if (l !== b || !j()) return;
+				s.forEach((e) => {
+					I(e.name, e), A.delete(e.name) && _[e.name]++;
+				}), r && (c && (u.value = c), k = !1), i && (d.value = p), m.value = "", t.onReady?.();
 			} catch (e) {
-				if (o !== b || !A() || R(e)) return;
-				Q.forEach((e) => {
+				if (l !== b || !j() || R(e)) return;
+				a.forEach((e) => {
 					c[e].items = [], c[e].total = 0;
-				}), u.value = null, d.value = null, m.value = e instanceof Error ? e.message : String(e);
+				}), r && (u.value = null, d.value = null), m.value = e instanceof Error ? e.message : String(e);
 			} finally {
-				o === b && (p.value = !1, w = null, O = null, M());
+				l === b && (p.value = !1, w = null, O = null, ee());
 			}
 		})();
 		return O = {
-			key: a,
-			promise: l
-		}, l;
+			key: s,
+			promise: h
+		}, h;
 	}
-	function L(t = {}) {
+	function z(t = {}) {
 		let n = f.value?.opener;
 		f.value = null, t.restoreFocus !== !1 && n?.isConnected && e(() => n.focus({ preventScroll: !0 }));
 	}
-	function z(e) {
-		S || r.value === e || (r.value = e, e ? N() : (j(), g.value = null, L({ restoreFocus: !1 })));
-	}
 	function te(e) {
-		!S && ["pool", "records"].includes(e) && i.value !== e && (i.value = e, g.value = null, L({ restoreFocus: !1 }));
+		S || r.value === e || (r.value = e, e ? N() : (M(), g.value = null, z({ restoreFocus: !1 })));
 	}
 	function B(e) {
-		!S && Q.includes(e) && a.value !== e && (a.value = e, g.value = null, L({ restoreFocus: !1 }));
+		!S && ["pool", "records"].includes(e) && i.value !== e && (i.value = e, g.value = null, z({ restoreFocus: !1 }));
 	}
 	function V(e) {
+		!S && Q.includes(e) && a.value !== e && (a.value = e, g.value = null, z({ restoreFocus: !1 }));
+	}
+	function H(e) {
 		let t = Object.keys(e).filter((t) => e[t] !== void 0 && e[t] !== o[t]);
 		t.length && !S && (t.forEach((t) => {
 			o[t] = e[t];
 		}), Q.forEach((e) => {
-			c[e].page = 1, k.add(e);
+			c[e].page = 1, A.add(e);
 		}), N(null, t.every((e) => e === "search") ? 260 : 0));
 	}
-	function H(e, t) {
-		S || c[e].state === t || (c[e].state = t, c[e].page = 1, k.add(e), N(e));
-	}
 	function U(e, t) {
-		if (S || !Number.isFinite(t)) return;
-		let n = c[e], r = Math.min(Math.max(1, Math.ceil(n.total / n.size)), Math.max(1, Math.floor(t)));
-		r !== n.page && (n.page = r, k.add(e), N(e));
+		S || c[e].state === t || (c[e].state = t, c[e].page = 1, A.add(e), N(e));
 	}
 	function W(e, t) {
+		if (S || !Number.isFinite(t)) return;
+		let n = c[e], r = Math.min(Math.max(1, Math.ceil(n.total / n.size)), Math.max(1, Math.floor(t)));
+		r !== n.page && (n.page = r, A.add(e), N(e));
+	}
+	function G(e, t) {
 		!S && [
 			20,
 			50,
 			100
-		].includes(t) && c[e].size !== t && (c[e].size = t, c[e].page = 1, k.add(e), N(e));
+		].includes(t) && c[e].size !== t && (c[e].size = t, c[e].page = 1, A.add(e), N(e));
 	}
-	function G() {
+	function K() {
 		Object.assign(o, {
 			window: "all",
 			purpose: "all",
 			search: ""
 		}), Q.forEach((e) => {
-			c[e].state = "all", c[e].page = 1, k.add(e);
+			c[e].state = "all", c[e].page = 1, A.add(e);
 		}), N();
 	}
-	function K(e) {
-		e.startsWith("state:") ? H(e.slice(6), "all") : e === "search" ? V({ search: "" }) : (e === "window" || e === "purpose") && V({ [e]: "all" });
+	function ne(e) {
+		e.startsWith("state:") ? U(e.slice(6), "all") : e === "search" ? H({ search: "" }) : (e === "window" || e === "purpose") && H({ [e]: "all" });
 	}
-	function ne(e, t, n = null) {
-		!S && A() && (f.value = {
+	function q(e, t, n = null) {
+		!S && j() && (f.value = {
 			view: e,
 			row: JSON.parse(JSON.stringify(t)),
 			opener: n
 		});
 	}
-	function q() {
-		v.value = !document.hidden, document.hidden ? (j(), g.value = null, L({ restoreFocus: !1 })) : r.value && N();
-	}
-	document.addEventListener("visibilitychange", q);
 	function J() {
-		S || (S = !0, j(), L({ restoreFocus: !1 }), document.removeEventListener("visibilitychange", q));
+		v.value = !document.hidden, document.hidden ? (M(), g.value = null, z({ restoreFocus: !1 })) : r.value && N();
 	}
-	return l(J), t.visible && z(!0), {
+	document.addEventListener("visibilitychange", J);
+	function Y() {
+		S || (S = !0, M(), z({ restoreFocus: !1 }), document.removeEventListener("visibilitychange", J));
+	}
+	return l(Y), t.visible && te(!0), {
 		visible: r,
 		active: y,
 		documentVisible: v,
@@ -1056,19 +1055,19 @@ function nt(t = {}) {
 		error: m,
 		openFilter: g,
 		scrollRevision: _,
-		load: I,
-		setVisible: z,
-		setView: te,
-		setRecordView: B,
-		updateFilters: V,
-		setState: H,
-		setPage: U,
-		setSize: W,
-		resetFilters: G,
-		removeFilter: K,
-		openDetail: ne,
-		closeDetail: L,
-		dispose: J
+		load: L,
+		setVisible: te,
+		setView: B,
+		setRecordView: V,
+		updateFilters: H,
+		setState: U,
+		setPage: W,
+		setSize: G,
+		resetFilters: K,
+		removeFilter: ne,
+		openDetail: q,
+		closeDetail: z,
+		dispose: Y
 	};
 }
 // src/features/proxy/ProxyTrafficPage.vue?vue&type=script&setup=true&lang.ts
@@ -1162,7 +1161,7 @@ var rt = {
 					class: S({ "is-active": D(l) === e }),
 					onClick: (t) => D(i).setRecordView(e)
 				}, [k(g(M[e]) + " ", 1), v("span", null, g(D(x) ? "—" : D(f)[e].total), 1)], 10, dt)), 64))], 32)]),
-				v("div", ft, [v("div", pt, [v("span", mt, g(D(x) ? "数据暂不可用" : `${F.value.total.toLocaleString()} 条记录`), 1), c(N, {
+				v("div", ft, [v("div", pt, [v("span", mt, g(D(x) ? "数据暂不可用" : `${F.value.total.toLocaleString()} 条记录`), 1), c(ee, {
 					items: P.value,
 					onRemove: D(i).removeFilter
 				}, null, 8, ["items", "onRemove"])]), v("div", ht, [
@@ -1236,7 +1235,7 @@ var rt = {
 					"facet-label",
 					"onFilter",
 					"onDetail"
-				]), c(ee, {
+				]), c(N, {
 					page: D(f)[t].page,
 					size: D(f)[t].size,
 					total: D(f)[t].total,

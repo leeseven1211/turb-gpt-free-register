@@ -1,16 +1,16 @@
-import { A as e, C as t, F as n, H as r, L as i, M as a, Q as o, _ as s, b as c, c as l, d as u, dt as d, et as f, ft as p, h as m, j as h, l as g, lt as _, m as v, n as y, st as b, t as x, v as S } from "./_plugin-vue_export-helper-BSZsFlS8.js";
-import { t as C } from "./useNativeDialog-DWisXYg9.js";
-import { r as w } from "./client-BBEPwkQG.js";
+import { A as e, C as t, F as n, H as r, L as i, M as a, Q as o, _ as s, b as c, c as l, d as u, dt as d, et as f, ft as p, h as m, j as h, l as g, lt as _, m as v, n as y, st as b, t as x, v as S } from "./_plugin-vue_export-helper-CtnyMOwL.js";
+import { t as C } from "./useNativeDialog-lbmSLxEC.js";
+import { r as w, t as T } from "./client-BBEPwkQG.js";
 // src/features/dashboard/useDashboard.ts
-var T = "gpt_console_overview_preferences_v1", E = ["metrics", "panels"], D = (e) => Number(e || 0);
-function O(e) {
+var E = "gpt_console_overview_preferences_v1", D = ["metrics", "panels"], O = (e) => Number(e || 0);
+function k(e) {
 	let t = e?.statistics_updated_at, n = t ? `；统计于 ${new Date(t).toLocaleTimeString()} 更新` : "";
 	return `仅统计本地库存；用完后请手动导入邮箱。邮箱由 Email Butler 等邮箱服务准备${e?.reason ? `；${e.reason}` : ""}${n}`;
 }
-function k(e) {
-	return e?.status === "error" ? "读取失败" : Number.isInteger(e?.available) && e.available >= 0 ? e.available : Array.isArray(e?.sources) ? e.sources.reduce((e, t) => e + D(t?.available), 0) : 0;
+function A(e) {
+	return e?.status === "error" ? "读取失败" : Number.isInteger(e?.available) && e.available >= 0 ? e.available : Array.isArray(e?.sources) ? e.sources.reduce((e, t) => e + O(t?.available), 0) : 0;
 }
-function A(e, ...t) {
+function j(e, ...t) {
 	let n = e;
 	for (let e of t) {
 		if (!n || typeof n != "object") return null;
@@ -18,22 +18,22 @@ function A(e, ...t) {
 	}
 	return typeof n?.enabled == "boolean" ? n.enabled : null;
 }
-function j(e, t) {
-	let n = e?.email?.supply?.sources;
-	return Array.isArray(n) ? n.filter((e) => e?.kind === "local_pool") : (Array.isArray(e?.email?.sources) ? e.email.sources : []).filter((e) => e?.enabled === !0 && (A(t, "email_sources", e.source) ?? !0));
-}
 function M(e, t) {
-	return j(e, t).filter((e) => e?.kind === "local_pool");
+	let n = e?.email?.supply?.sources;
+	return Array.isArray(n) ? n.filter((e) => e?.kind === "local_pool") : (Array.isArray(e?.email?.sources) ? e.email.sources : []).filter((e) => e?.enabled === !0 && (j(t, "email_sources", e.source) ?? !0));
 }
 function N(e, t) {
-	let n = String(e?.proxy?.platform || "none").trim().toLowerCase();
-	return !n || n === "none" || n === "direct" ? !1 : A(t, "proxy", "registration") ?? !0;
+	return M(e, t).filter((e) => e?.kind === "local_pool");
 }
 function P(e, t) {
-	let n = e?.jobs?.counts || {}, r = D(n.running) + D(n.pending) + D(n.stopping);
-	return D(e?.jobs?.total) <= 0 && r <= 0 ? !1 : A(t, "features", "register") ?? !0;
+	let n = String(e?.proxy?.platform || "none").trim().toLowerCase();
+	return !n || n === "none" || n === "direct" ? !1 : j(t, "proxy", "registration") ?? !0;
 }
-function F(e) {
+function F(e, t) {
+	let n = e?.jobs?.counts || {}, r = O(n.running) + O(n.pending) + O(n.stopping);
+	return O(e?.jobs?.total) <= 0 && r <= 0 ? !1 : j(t, "features", "register") ?? !0;
+}
+function I(e) {
 	let t = String(e || "").trim();
 	return {
 		"1024proxy": "1024Proxy",
@@ -45,9 +45,9 @@ function F(e) {
 		direct: "直连"
 	}[t.toLowerCase()] || t || "未配置";
 }
-function I(e, t) {
-	let n = e && typeof e == "object" ? e : {}, r = new Set(E.flatMap((e) => t[e] || [])), i = Array.isArray(n.hidden) ? Array.from(new Set(n.hidden.filter((e) => typeof e == "string" && r.has(e)))) : [], a = {};
-	for (let e of E) {
+function L(e, t) {
+	let n = e && typeof e == "object" ? e : {}, r = new Set(D.flatMap((e) => t[e] || [])), i = Array.isArray(n.hidden) ? Array.from(new Set(n.hidden.filter((e) => typeof e == "string" && r.has(e)))) : [], a = {};
+	for (let e of D) {
 		let r = t[e] || [], i = Array.isArray(n.order?.[e]) ? n.order[e].filter((e) => typeof e == "string") : [];
 		a[e] = Array.from(/* @__PURE__ */ new Set([...i.filter((e) => r.includes(e)), ...r.filter((e) => !i.includes(e))]));
 	}
@@ -68,66 +68,66 @@ function I(e, t) {
 		heights: s
 	};
 }
-function L(e) {
-	try {
-		return I(JSON.parse(localStorage.getItem("gpt_console_overview_preferences_v1") || "{}"), e);
-	} catch {
-		return I({}, e);
-	}
-}
 function R(e) {
 	try {
-		localStorage.setItem(T, JSON.stringify(e));
+		return L(JSON.parse(localStorage.getItem("gpt_console_overview_preferences_v1") || "{}"), e);
+	} catch {
+		return L({}, e);
+	}
+}
+function z(e) {
+	try {
+		localStorage.setItem(E, JSON.stringify(e));
 	} catch {}
 }
-var z = [
+var B = [
 	{
 		id: "metric-accounts",
 		region: "metrics",
 		label: "有效账号",
-		available: (e) => D(e?.accounts?.total) > 0
+		available: (e) => O(e?.accounts?.total) > 0
 	},
 	{
 		id: "metric-email",
 		region: "metrics",
 		label: "本地可用邮箱",
-		available: (e, t) => j(e, t).length > 0
+		available: (e, t) => M(e, t).length > 0
 	},
 	{
 		id: "metric-jobs",
 		region: "metrics",
 		label: "运行任务",
-		available: (e, t) => P(e, t)
+		available: (e, t) => F(e, t)
 	},
 	{
 		id: "metric-codex",
 		region: "metrics",
 		label: "Codex 凭证",
-		available: (e) => D(e?.codex?.total) > 0
+		available: (e) => O(e?.codex?.total) > 0
 	},
 	{
 		id: "metric-proxy",
 		region: "metrics",
 		label: "活跃出口",
-		available: (e, t) => N(e, t)
+		available: (e, t) => P(e, t)
 	},
 	{
 		id: "panel-email",
 		region: "panels",
 		label: "邮箱资源 · 本地库存",
-		available: (e, t) => j(e, t).length > 0
+		available: (e, t) => M(e, t).length > 0
 	},
 	{
 		id: "panel-proxy",
 		region: "panels",
 		label: "网络出口 · 代理与网络",
-		available: (e, t) => N(e, t)
+		available: (e, t) => P(e, t)
 	},
 	{
 		id: "panel-jobs",
 		region: "panels",
 		label: "注册流水线 · 今日任务结果",
-		available: (e, t) => P(e, t)
+		available: (e, t) => F(e, t)
 	},
 	{
 		id: "panel-accounts",
@@ -139,90 +139,90 @@ var z = [
 		id: "panel-task-queue",
 		region: "panels",
 		label: "注册流水线 · 当前任务队列",
-		available: (e, t) => P(e, t) && [
+		available: (e, t) => F(e, t) && [
 			"pending",
 			"running",
 			"stopping"
-		].some((t) => D(e?.jobs?.counts?.[t]) > 0)
+		].some((t) => O(e?.jobs?.counts?.[t]) > 0)
 	},
 	{
 		id: "panel-job-history",
 		region: "panels",
 		label: "注册流水线 · 累计任务结果",
-		available: (e, t) => P(e, t) && [
+		available: (e, t) => F(e, t) && [
 			"success",
 			"partial_success",
 			"failed",
 			"stopped",
 			"cancelled"
-		].some((t) => D(e?.jobs?.counts?.[t]) > 0)
+		].some((t) => O(e?.jobs?.counts?.[t]) > 0)
 	},
 	{
 		id: "panel-email-health",
 		region: "panels",
 		label: "邮箱资源 · 邮箱池状态",
-		available: (e, t) => M(e, t).some((e) => D(e.total) > 0)
+		available: (e, t) => N(e, t).some((e) => O(e.total) > 0)
 	},
 	{
 		id: "panel-codex-progress",
 		region: "panels",
 		label: "Codex 授权 · 凭证处理进度",
-		available: (e) => D(e?.codex?.total) > 0
+		available: (e) => O(e?.codex?.total) > 0
 	}
 ];
-function B(e, t) {
-	return Object.fromEntries(E.map((n) => [n, z.filter((r) => r.region === n && r.available(e, t)).map((e) => e.id)]));
+function V(e, t) {
+	return Object.fromEntries(D.map((n) => [n, B.filter((r) => r.region === n && r.available(e, t)).map((e) => e.id)]));
 }
-function V(e) {
+function H(e) {
 	return e ? e < 220 ? "minimal" : e < 300 ? "compact" : "normal" : "normal";
 }
-function H(e, t) {
+function U(e, t) {
 	return e > 0 ? `另有 ${e} ${t}` : "";
 }
-function U(e, t, n, r) {
+function W(e, t, n, r) {
 	let i = t?.accounts || {}, a = t?.email || {}, o = t?.jobs || {}, s = t?.proxy || {}, c = t?.codex || {};
 	if (e === "metric-accounts") return {
-		value: D(i.active),
-		hint: `归档 ${D(i.archived)}`,
+		value: O(i.active),
+		hint: `归档 ${O(i.archived)}`,
 		color: "#5b5ce2"
 	};
 	if (e === "metric-email") return {
-		value: k(a.supply),
-		hint: O(a.supply),
+		value: A(a.supply),
+		hint: k(a.supply),
 		color: "#2dbb8a"
 	};
 	if (e === "metric-jobs") {
 		let e = o.counts || {};
 		return {
-			value: D(e.running) + D(e.pending) + D(e.stopping),
-			hint: `累计任务 ${D(o.total)}`,
+			value: O(e.running) + O(e.pending) + O(e.stopping),
+			hint: `累计任务 ${O(o.total)}`,
 			color: "#e6a23c"
 		};
 	}
 	if (e === "metric-codex") return {
-		value: D(c.total),
-		hint: `待导出 ${D(c.pending)}`,
+		value: O(c.total),
+		hint: `待导出 ${O(c.pending)}`,
 		color: "#377dff"
 	};
 	if (e === "metric-proxy") return {
-		value: D(s.active_leases),
-		hint: `代理平台 ${F(s.platform)}`,
+		value: O(s.active_leases),
+		hint: `代理平台 ${I(s.platform)}`,
 		color: "#a855f7"
 	};
 	if (e === "panel-email") return {
 		kind: "email",
 		action: ["outlook", "管理邮箱"],
-		sources: j(t, n)
+		sources: M(t, n)
 	};
 	if (e === "panel-proxy") {
-		let e = (s.leases || []).slice(0, 3), t = Math.max(D(s.active_leases), (s.leases || []).length);
+		let e = (s.leases || []).slice(0, 3), t = Math.max(O(s.active_leases), (s.leases || []).length);
 		return {
 			kind: "proxy",
 			action: ["config", "配置"],
-			platform: F(s.platform),
-			active: D(s.active_leases),
+			platform: I(s.platform),
+			active: O(s.active_leases),
 			leases: e,
-			more: H(t - 1, "个出口")
+			more: U(t - 1, "个出口")
 		};
 	}
 	if (e === "panel-jobs") {
@@ -235,17 +235,17 @@ function U(e, t, n, r) {
 				[
 					"success",
 					"成功",
-					D(e.success)
+					O(e.success)
 				],
 				[
 					"partial_success",
 					"部分成功",
-					D(e.partial_success)
+					O(e.partial_success)
 				],
 				[
 					"failed",
 					"失败",
-					D(e.failed)
+					O(e.failed)
 				]
 			]
 		};
@@ -253,7 +253,7 @@ function U(e, t, n, r) {
 	if (e === "panel-accounts") return {
 		kind: "plans",
 		action: ["accounts", "管理账号"],
-		plans: Object.entries(i.plans || {}).sort((e, t) => D(t[1]) - D(e[1]))
+		plans: Object.entries(i.plans || {}).sort((e, t) => O(t[1]) - O(e[1]))
 	};
 	if (e === "panel-task-queue") {
 		let e = o.counts || {};
@@ -261,9 +261,9 @@ function U(e, t, n, r) {
 			kind: "queue",
 			action: ["register", "查看任务"],
 			rows: [
-				["待处理", D(e.pending)],
-				["运行中", D(e.running)],
-				["停止中", D(e.stopping)]
+				["待处理", O(e.pending)],
+				["运行中", O(e.running)],
+				["停止中", O(e.stopping)]
 			]
 		};
 	}
@@ -273,15 +273,15 @@ function U(e, t, n, r) {
 			kind: "history",
 			action: ["register", "查看任务"],
 			rows: [
-				["成功", D(e.success)],
-				["失败", D(e.failed)],
-				["部分成功", D(e.partial_success)],
-				["已停止或取消", D(e.stopped) + D(e.cancelled)]
+				["成功", O(e.success)],
+				["失败", O(e.failed)],
+				["部分成功", O(e.partial_success)],
+				["已停止或取消", O(e.stopped) + O(e.cancelled)]
 			]
 		};
 	}
 	if (e === "panel-email-health") {
-		let e = M(t, n), r = (t) => e.reduce((e, n) => e + D(n[t]), 0);
+		let e = N(t, n), r = (t) => e.reduce((e, n) => e + O(n[t]), 0);
 		return {
 			kind: "health",
 			action: ["outlook", "查看邮箱"],
@@ -297,9 +297,9 @@ function U(e, t, n, r) {
 		kind: "codex",
 		action: ["codex", "查看凭证"],
 		rows: [
-			["已导出", D(c.exported)],
-			["待导出", D(c.pending)],
-			["账号 Codex 就绪", D(i.codex_ready)]
+			["已导出", O(c.exported)],
+			["待导出", O(c.pending)],
+			["账号 Codex 就绪", O(i.codex_ready)]
 		]
 	};
 }
@@ -315,28 +315,28 @@ function ee(e, t = {}) {
 	});
 	function b() {
 		if (!n.value) return;
-		let e = L(B(n.value, i.value));
+		let e = R(V(n.value, i.value));
 		y.order = e.order, y.hidden = e.hidden, y.sizes = e.sizes, y.heights = e.heights;
 	}
-	let x = v(() => n.value ? B(n.value, i.value) : {
+	let x = v(() => n.value ? V(n.value, i.value) : {
 		metrics: [],
 		panels: []
-	}), S = v(() => E.flatMap((e) => (y.order[e] || []).filter((e) => !y.hidden.includes(e)).map((e) => z.find((t) => t.id === e)).filter((e) => e && e.available(n.value, i.value)).map((e) => ({
+	}), S = v(() => D.flatMap((e) => (y.order[e] || []).filter((e) => !y.hidden.includes(e)).map((e) => B.find((t) => t.id === e)).filter((e) => e && e.available(n.value, i.value)).map((e) => ({
 		card: e,
-		payload: U(e.id, n.value, i.value, y),
+		payload: W(e.id, n.value, i.value, y),
 		size: y.sizes[e.id] || "normal",
 		height: y.heights[e.id],
-		density: V(y.heights[e.id])
+		density: H(y.heights[e.id])
 	}))));
 	function C() {
-		R(I(y, x.value));
+		z(L(y, x.value));
 	}
 	function w(e) {
 		e(y);
-		let t = I(y, x.value);
+		let t = L(y, x.value);
 		y.order = t.order, y.hidden = t.hidden, y.sizes = t.sizes, y.heights = t.heights, C();
 	}
-	function D(e, t, n) {
+	function T(e, t, n) {
 		w((r) => {
 			let i = r.order[e] || [], a = i.indexOf(t), o = n === "up" ? a - 1 : a + 1;
 			a < 0 || o < 0 || o >= i.length || ([i[a], i[o]] = [i[o], i[a]]);
@@ -370,7 +370,7 @@ function ee(e, t = {}) {
 	}
 	function j() {
 		try {
-			localStorage.removeItem(T);
+			localStorage.removeItem(E);
 		} catch {}
 		n.value && b(), t.notify?.("已恢复默认布局");
 	}
@@ -401,13 +401,13 @@ function ee(e, t = {}) {
 	function F(e) {
 		u.value = e;
 	}
-	let H = () => {
+	let I = () => {
 		!document.hidden && l.value ? M() : (d.value++, m?.abort(), g = void 0, s.value = !1, u.value = !1);
 	};
 	return a(() => {
-		document.addEventListener("visibilitychange", H), l.value && (N(), M());
+		document.addEventListener("visibilitychange", I), l.value && (N(), M());
 	}), h(() => {
-		_ = !0, l.value = !1, d.value++, g = void 0, s.value = !1, u.value = !1, document.removeEventListener("visibilitychange", H), m?.abort(), p && window.clearInterval(p), p = void 0;
+		_ = !0, l.value = !1, d.value++, g = void 0, s.value = !1, u.value = !1, document.removeEventListener("visibilitychange", I), m?.abort(), p && window.clearInterval(p), p = void 0;
 	}), r(() => t.visible, (e) => P(!!e)), {
 		data: n,
 		caps: i,
@@ -425,10 +425,10 @@ function ee(e, t = {}) {
 		closeCustomizer: () => F(!1),
 		resetLayout: j,
 		toggle: O,
-		move: D,
+		move: T,
 		reorder: k,
 		resize: A,
-		cardPayload: U
+		cardPayload: W
 	};
 }
 // src/features/dashboard/DashboardPage.vue?vue&type=script&setup=true&lang.ts
@@ -505,10 +505,10 @@ var te = {
 }, Ye = {
 	key: 0,
 	class: "overview-more-summary overview-more-summary--compact"
-}, Xe = {
+}, G = {
 	key: 1,
 	class: "overview-more-summary overview-more-summary--compact"
-}, W = {
+}, Xe = {
 	key: 2,
 	class: "overview-more-summary overview-more-summary--compact"
 }, Ze = {
@@ -518,7 +518,7 @@ var te = {
 	"aria-label",
 	"onPointerdown",
 	"onKeydown"
-], G = /*#__PURE__*/ x(/* @__PURE__ */ t({
+], K = /*#__PURE__*/ x(/* @__PURE__ */ t({
 	__name: "DashboardPage",
 	props: {
 		api: {},
@@ -527,7 +527,7 @@ var te = {
 	setup(t, { expose: o }) {
 		let v = t, y = ee(v.api, v.deps), { cards: x, ids: w, prefs: T, customizerOpen: E, loading: D, error: O } = y, k = f(), A = f();
 		C(A, () => E.value, () => y.visible.value);
-		let j = (e) => z.find((t) => t.id === e)?.label || e, M = f(null);
+		let j = (e) => B.find((t) => t.id === e)?.label || e, M = f(null);
 		function N(e, t) {
 			let n = e?.[t];
 			return Number.isInteger(n) && n >= 0 ? String(n) : e?.status === "error" ? "读取失败" : "未知";
@@ -553,7 +553,7 @@ var te = {
 				failed: "失败"
 			}[e] || e;
 		}
-		let I = (e) => e?.sources || [], L = (e) => e?.leases || [], R = (e) => e?.plans || [], B = (e) => e?.rows || [];
+		let I = (e) => e?.sources || [], L = (e) => e?.leases || [], R = (e) => e?.plans || [], z = (e) => e?.rows || [];
 		function V() {
 			y.closeCustomizer();
 		}
@@ -567,7 +567,7 @@ var te = {
 			e.key === "Escape" && (Z(), E.value && V());
 		}
 		a(() => document.addEventListener("keydown", U)), h(() => document.removeEventListener("keydown", U));
-		function G(e) {
+		function W(e) {
 			e && (e[0] === "config" ? v.deps.onConfig?.("代理与网络") : v.deps.onNavigate?.(e[0]));
 		}
 		function K(e) {
@@ -822,7 +822,7 @@ var te = {
 				m("div", Te, [m("div", null, [m("span", null, p(e.card.label.split(" · ")[0]), 1), m("h3", null, p(e.card.label.split(" · ").slice(1).join(" · ")), 1)]), m("div", Ee, [e.payload.action ? (n(), S("button", {
 					key: 0,
 					type: "button",
-					onClick: (t) => G(e.payload.action)
+					onClick: (t) => W(e.payload.action)
 				}, p(e.payload.action[1]), 9, De)) : s("", !0), m("span", {
 					class: "overview-card-drag",
 					role: "button",
@@ -876,18 +876,18 @@ var te = {
 					], 2))), 128)),
 					R(e.payload).length > 3 ? (n(), S("div", Ue, "另有 " + p(R(e.payload).length - 3) + " 种套餐，进入详情查看", 1)) : s("", !0),
 					R(e.payload).length > 2 ? (n(), S("div", We, "另有 " + p(R(e.payload).length - 2) + " 种套餐，进入详情查看", 1)) : s("", !0)
-				])) : e.payload.kind === "today" ? (n(), S("div", Ge, [(n(!0), S(u, null, i(B(e.payload), ([t, r, i], a) => (n(), S("div", {
+				])) : e.payload.kind === "today" ? (n(), S("div", Ge, [(n(!0), S(u, null, i(z(e.payload), ([t, r, i], a) => (n(), S("div", {
 					key: t,
 					class: _(["overview-job-row", { "overview-density-secondary": t === "partial_success" || Number(a) > 0 && !i }])
-				}, [m("span", { class: _(["pill", `status-${t}`]) }, p(F(t)), 3), m("div", Ke, [m("strong", null, p(i) + " 个任务", 1), m("small", null, p(e.payload.today) + " · " + p(r), 1)])], 2))), 128)), B(e.payload)[1]?.[2] ? (n(), S("div", qe, "部分成功 " + p(B(e.payload)[1]?.[2]), 1)) : s("", !0)])) : e.payload.kind === "queue" || e.payload.kind === "history" || e.payload.kind === "health" || e.payload.kind === "codex" ? (n(), S("div", Je, [
-					(n(!0), S(u, null, i(B(e.payload), ([t, r], i) => (n(), S("div", {
+				}, [m("span", { class: _(["pill", `status-${t}`]) }, p(F(t)), 3), m("div", Ke, [m("strong", null, p(i) + " 个任务", 1), m("small", null, p(e.payload.today) + " · " + p(r), 1)])], 2))), 128)), z(e.payload)[1]?.[2] ? (n(), S("div", qe, "部分成功 " + p(z(e.payload)[1]?.[2]), 1)) : s("", !0)])) : e.payload.kind === "queue" || e.payload.kind === "history" || e.payload.kind === "health" || e.payload.kind === "codex" ? (n(), S("div", Je, [
+					(n(!0), S(u, null, i(z(e.payload), ([t, r], i) => (n(), S("div", {
 						key: t,
 						class: _(["overview-status-item", { "overview-density-secondary": e.payload.kind === "health" ? [1, 3].includes(Number(i)) : Number(i) > 1 }])
 					}, [m("span", null, p(t), 1), m("strong", null, p(r), 1)], 2))), 128)),
-					e.payload.kind === "queue" && B(e.payload)[2]?.[1] ? (n(), S("div", Ye, "停止中 " + p(B(e.payload)[2]?.[1]), 1)) : s("", !0),
-					e.payload.kind === "history" && (B(e.payload)[2]?.[1] || B(e.payload)[3]?.[1]) ? (n(), S("div", Xe, "部分成功 " + p(B(e.payload)[2]?.[1] || 0) + " · 已停止或取消 " + p(B(e.payload)[3]?.[1] || 0), 1)) : s("", !0),
-					e.payload.kind === "health" ? (n(), S("div", W, "已用 " + p(B(e.payload)[1]?.[1] || 0) + " · 停用 " + p(B(e.payload)[3]?.[1] || 0), 1)) : s("", !0),
-					e.payload.kind === "codex" ? (n(), S("div", Ze, "账号 Codex 就绪 " + p(B(e.payload)[2]?.[1] || 0), 1)) : s("", !0)
+					e.payload.kind === "queue" && z(e.payload)[2]?.[1] ? (n(), S("div", Ye, "停止中 " + p(z(e.payload)[2]?.[1]), 1)) : s("", !0),
+					e.payload.kind === "history" && (z(e.payload)[2]?.[1] || z(e.payload)[3]?.[1]) ? (n(), S("div", G, "部分成功 " + p(z(e.payload)[2]?.[1] || 0) + " · 已停止或取消 " + p(z(e.payload)[3]?.[1] || 0), 1)) : s("", !0),
+					e.payload.kind === "health" ? (n(), S("div", Xe, "已用 " + p(z(e.payload)[1]?.[1] || 0) + " · 停用 " + p(z(e.payload)[3]?.[1] || 0), 1)) : s("", !0),
+					e.payload.kind === "codex" ? (n(), S("div", Ze, "账号 Codex 就绪 " + p(z(e.payload)[2]?.[1] || 0), 1)) : s("", !0)
 				])) : s("", !0),
 				m("button", {
 					type: "button",
@@ -910,17 +910,35 @@ var te = {
 	}
 }), [["__scopeId", "data-v-56b51968"]]);
 // src/api/dashboard.ts
-function K(e = (e, t) => w(e, t)) {
-	let t = (t, n) => e(t, n ? { signal: n } : void 0);
+async function q(e, t) {
+	if (!t) return e;
+	t.throwIfAborted();
+	let n, r = new Promise((e, r) => {
+		n = () => r(t.reason), t.addEventListener("abort", n, { once: !0 });
+	});
+	try {
+		return await Promise.race([e, r]);
+	} finally {
+		t.removeEventListener("abort", n);
+	}
+}
+function J(e = (e, t) => w(e, t), t) {
+	let n = (t, n) => e(t, n ? { signal: n } : void 0);
 	return {
-		dashboard: (e) => t("/api/dashboard", e),
-		capabilities: (e) => t("/api/capabilities", e)
+		dashboard: (e) => n("/api/dashboard", e),
+		async capabilities(e) {
+			let r = t?.();
+			if (!r) return n("/api/capabilities", e);
+			let i = await q(r, e);
+			if (typeof i != "object" || !i || !("ok" in i) || i.ok !== !0) throw new T("能力检查返回无效数据", 200);
+			return i;
+		}
 	};
 }
 // src/dashboard.ts
-function q(e, t = {}) {
-	let n = y(G, {
-		api: t.api || K(),
+function Y(e, t = {}) {
+	let n = y(K, {
+		api: t.api || J(void 0, t.pendingCapabilities),
 		deps: t
 	}), r = n.mount(e);
 	return {
@@ -932,4 +950,4 @@ function q(e, t = {}) {
 		destroy: () => n.unmount()
 	};
 }
-export { q as mountDashboard };
+export { Y as mountDashboard };

@@ -1397,6 +1397,16 @@ _CAUSE_DETAILS: dict[str, tuple[str, str]] = {
     "diagnostic_cause_unresolved": ("SYS-BULK-DIAGNOSTICS", "失败记录未保存错误原因"),
 }
 
+# 旧记录的正文匹配优先选择最长原因码。同长度仍按原因表的顺序处理。
+# 前瞻允许后续位置继续匹配，整词边界仍由同一组 Unicode 规则判定。
+_LEGACY_TEXT_CAUSE_ORDER = {
+    code: index for index, code in enumerate(sorted(_CAUSE_DETAILS, key=len, reverse=True))
+    if code not in {"auth_cloudflare_challenge", "email_otp_code_rejected", "auth_route_rejected"}
+}
+_LEGACY_TEXT_CAUSE_PATTERN = re.compile(
+    r"(?<!\w)(?=(" + "|".join(re.escape(code) for code in _LEGACY_TEXT_CAUSE_ORDER) + r")(?!\w))"
+)
+
 
 # 注册驱动可以写入 Run 的固定原因码；拒绝从异常正文推断或透传任意字符串。
 REGISTRATION_REQUEST_UNKNOWN_CAUSE_CODES = frozenset({
@@ -2736,18 +2746,15 @@ def classify_task_error(
     ):
         # 历史记录的明确平台失败仍可展示；恢复约束继续由已保存的回执状态决定。
         cause = _specific_error_cause({"cause_code": "extract_provider_failed"})
-    if cause is None:
-        # 旧记录可能只把固定原因码写在正文中；只识别整词，不输出任意诊断原文。
-        for candidate in sorted(_CAUSE_DETAILS, key=len, reverse=True):
-            if candidate in {"auth_cloudflare_challenge", "email_otp_code_rejected"}:
-                # 精确响应原因只接受结构化证据，不由正文中的原因码推断。
-                continue
-            if candidate == "auth_route_rejected":
-                # 历史原文的 HTTP 状态继续交给已有授权路由分类读取。
-                continue
-            if re.search(rf"(?<![\w]){re.escape(candidate)}(?![\w])", raw):
-                cause = _specific_error_cause({"cause_code": candidate})
-                break
+    if cause is None and raw:
+        # 精确响应原因仍要求结构化证据，旧授权路由原文交给 HTTP 状态分类。
+        candidate = min(
+            (match[1] for match in _LEGACY_TEXT_CAUSE_PATTERN.finditer(raw)),
+            key=_LEGACY_TEXT_CAUSE_ORDER.__getitem__,
+            default=None,
+        )
+        if candidate is not None:
+            cause = _specific_error_cause({"cause_code": candidate})
     if (
         str(task_type or "").strip().lower() in {"token_refresh", "live_check"}
         and (cause is None or cause["cause_code"] == "roxy_login_failed")

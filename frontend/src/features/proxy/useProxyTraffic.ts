@@ -43,6 +43,7 @@ export function useProxyTraffic(deps: ProxyTrafficDeps = {}) {
     controller: AbortController | null = null;
   let debounce: ReturnType<typeof setTimeout> | undefined, timer: ReturnType<typeof setTimeout> | undefined;
   let running: { key: string; promise: Promise<void> } | null = null;
+  let fullRefreshPending = false;
   const pendingScroll = new Set<ProxyRecordView>();
   const canRead = () => !disposed && visible.value && !document.hidden;
   function invalidate() {
@@ -65,6 +66,7 @@ export function useProxyTraffic(deps: ProxyTrafficDeps = {}) {
       }, 30000);
   }
   function queue(target: ProxyRecordView | null = null, delay = 0) {
+    if (!target) fullRefreshPending = true;
     invalidate();
     const ticket = scheduled;
     if (!canRead()) return;
@@ -108,25 +110,29 @@ export function useProxyTraffic(deps: ProxyTrafficDeps = {}) {
   }
   async function load(target: ProxyRecordView | null = null): Promise<void> {
     if (!canRead()) return;
-    if (!summary.value) target = null;
-    const names = target ? [target] : views,
+    const full = !target || !summary.value || fullRefreshPending,
+      readInventory = full || pool.value === null,
+      names = full ? views : views.filter((name) => name === target || pendingScroll.has(name)),
       queries = Object.fromEntries(names.map((name) => [name, query(name)])) as Record<
         ProxyRecordView,
         ProxyQuery
       >;
-    const key = JSON.stringify([target, queries]);
+    const key = JSON.stringify([full, queries]);
     if (running?.key === key) return running.promise;
     invalidate();
+    if (full) fullRefreshPending = true;
     const ticket = generation,
       readController = new AbortController();
     controller = readController;
     loading.value = true;
     const task = (async () => {
       try {
-        const inventory = api.pool(readController.signal).catch((cause) => {
-          if (isAbort(cause)) throw cause;
-          return null;
-        });
+        const inventory = readInventory
+          ? api.pool(readController.signal).catch((cause) => {
+              if (isAbort(cause)) throw cause;
+              return null;
+            })
+          : null;
         const [results, metrics, inventoryResult] = await Promise.all([
           Promise.all(
             names.map(async (name) => ({
@@ -134,7 +140,7 @@ export function useProxyTraffic(deps: ProxyTrafficDeps = {}) {
               ...(await readPage(name, queries[name], readController.signal)),
             })),
           ),
-          target ? Promise.resolve(null) : api.summary(readController.signal),
+          full ? api.summary(readController.signal) : null,
           inventory,
         ]);
         if (ticket !== generation || !canRead()) return;
@@ -142,18 +148,23 @@ export function useProxyTraffic(deps: ProxyTrafficDeps = {}) {
           apply(result.name, result);
           if (pendingScroll.delete(result.name)) scrollRevision[result.name]++;
         });
-        if (metrics) summary.value = metrics;
-        pool.value = inventoryResult;
+        if (full) {
+          if (metrics) summary.value = metrics;
+          fullRefreshPending = false;
+        }
+        if (readInventory) pool.value = inventoryResult;
         error.value = '';
         deps.onReady?.();
       } catch (cause) {
         if (ticket !== generation || !canRead() || isAbort(cause)) return;
-        views.forEach((name) => {
+        names.forEach((name) => {
           pages[name].items = [];
           pages[name].total = 0;
         });
-        summary.value = null;
-        pool.value = null;
+        if (full) {
+          summary.value = null;
+          pool.value = null;
+        }
         error.value = cause instanceof Error ? cause.message : String(cause);
       } finally {
         if (ticket === generation) {

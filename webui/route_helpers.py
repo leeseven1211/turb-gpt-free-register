@@ -11,6 +11,7 @@ from core.auth.fingerprint import clean_safe_fingerprint_summary
 from core.accounts.plans.promotion import promotion_kind_from_record
 from core.operations.errors import classify_task_error
 from core.operations.presentation import public_progress_snapshot, public_result_status
+from core.operations.progress import registration_progress_summary
 
 def _feature_unavailable(name: str, *, driver: str | None = None):
     """配置不完整时返回统一 503；页面禁用之外再做后端兜底。"""
@@ -603,7 +604,27 @@ def _current_progress_jobs(rows: list[dict]) -> list[dict]:
     return [_current_slot_attempt(attempts) for attempts in _progress_batch_slots(rows)[2].values()]
 
 
-def _latest_progress_batch(rows: list[dict], *, summarize_routes: bool = False, public_status: bool = False) -> dict | None:
+def _job_attempts_summary(attempts: list[dict], current: dict, compact: dict, *, public_status: bool) -> list[dict]:
+    items = []
+    for row in attempts:
+        attempt = compact if row is current else _compact_job_for_list(row, include_progress=False, public_status=public_status)
+        items.append({
+            "id": int(row.get("id") or 0),
+            "retry_attempt": int(row.get("retry_attempt") or 0),
+            "job_type": str(row.get("job_type") or "registration"),
+            "status": str(attempt.get("status") or "pending"),
+            "started_at": row.get("started_at"),
+            "completed_at": row.get("completed_at"),
+            "error_message": str(attempt.get("error_message") or "")[:240] or None,
+            "error_info": attempt.get("error_info") or {},
+            "warning_summary": str(attempt.get("warning_summary") or "")[:240] or None,
+            "internal_retry_count": int(attempt.get("internal_retry_count") or 0),
+        })
+    return items
+
+
+def _latest_progress_batch(rows: list[dict], *, summarize_routes: bool = False, public_status: bool = False,
+                           progress_detail: bool = True) -> dict | None:
     """构造批次 TaskSlot 进度；人工重试不重复增加批次任务数。"""
     batch_id, roots, slot_rows = _progress_batch_slots(rows)
     if not batch_id:
@@ -616,29 +637,23 @@ def _latest_progress_batch(rows: list[dict], *, summarize_routes: bool = False, 
         current = _current_slot_attempt(attempts)
         root = roots.get(root_id) or attempts[0]
         selected_rows.append(current)
-        compact = _compact_job_for_list(current, summarize_routes=summarize_routes, public_status=public_status)
-        attempt_items = []
-        for row in attempts:
-            attempt_compact = _compact_job_for_list(row, include_progress=False, public_status=public_status)
-            attempt_items.append({
-                "id": int(row.get("id") or 0),
-                "retry_attempt": int(row.get("retry_attempt") or 0),
-                "job_type": str(row.get("job_type") or "registration"),
-                "status": str(attempt_compact.get("status") or "pending"),
-                "started_at": row.get("started_at"),
-                "completed_at": row.get("completed_at"),
-                "error_message": str(attempt_compact.get("error_message") or "")[:240] or None,
-                "error_info": attempt_compact.get("error_info") or {},
-                "warning_summary": str(attempt_compact.get("warning_summary") or "")[:240] or None,
-                "internal_retry_count": int(attempt_compact.get("internal_retry_count") or 0),
-            })
+        compact = _compact_job_for_list(
+            current, include_progress=progress_detail, summarize_routes=summarize_routes, public_status=public_status,
+        )
+        if progress_detail:
+            compact["attempts"] = _job_attempts_summary(attempts, current, compact, public_status=public_status)
+        else:
+            compact["progress"] = registration_progress_summary(
+                str(current.get("job_type") or "registration"), compact["status"], current,
+            )
+            for key in ("otp_evidence", "debug_capture_summary", "failure_diagnostics_summary"):
+                compact.pop(key, None)
         compact.update({
             "root_job_id": root_id,
             "batch_id": batch_id,
             "batch_index": int(root.get("batch_index") or current.get("batch_index") or 1),
             "batch_size": int(root.get("batch_size") or len(slot_rows)),
             "retry_count": max(int(row.get("retry_attempt") or 0) for row in attempts),
-            "attempts": attempt_items,
         })
         items.append(compact)
 

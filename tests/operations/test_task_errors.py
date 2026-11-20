@@ -1,10 +1,26 @@
 # -*- coding: utf-8 -*-
+import re
 import unittest
+from unittest.mock import patch
 
 from core.operations.errors import classify_task_error
 
 
 class TaskErrorClassificationTests(unittest.TestCase):
+    def test_legacy_message_cause_keeps_whole_word_and_priority_without_recompiling(self):
+        cases = (
+            ("email_otp_no_mail: registration_checkpoint_failed", "registration_checkpoint_failed"),
+            ("边界（registration_checkpoint_failed）", "registration_checkpoint_failed"),
+            ("前registration_checkpoint_failed", "registration_failure_diagnostics_missing"),
+            ("registration_checkpoint_failed_suffix", "registration_failure_diagnostics_missing"),
+            ("REGISTRATION_CHECKPOINT_FAILED", "registration_failure_diagnostics_missing"),
+        )
+        with patch.object(re, "escape", wraps=re.escape) as escape:
+            for message, expected in cases:
+                info = classify_task_error(message, stage="complete", task_type="registration", task_status="failed")
+                self.assertEqual(expected, info["code"])
+        self.assertNotIn("registration_checkpoint_failed", [call.args[0] for call in escape.call_args_list])
+
     def test_failed_records_without_registered_details_are_classified_by_saved_stage(self):
         for status in ("failed", "attention_required", "partial_success"):
             original = {"failure_stage": "email_otp", "failure_evidence": "unconfirmed"}

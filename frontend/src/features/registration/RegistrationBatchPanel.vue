@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import {computed, ref, watch} from 'vue';
-import type {RegistrationBatch, RegistrationId, RegistrationJob} from '../../api/registration';
+import {computed, onBeforeUnmount, ref, watch} from 'vue';
+import {isAbort} from '../../api/client';
+import type {JobProgressResponse, RegistrationBatch, RegistrationId, RegistrationJob} from '../../api/registration';
 import {shortErrorLabel} from '../../shared/errorLabels';
 import {formatDateTime, formatDuration} from '../tasks/presentation';
 import {object, records, text} from '../tasks/detail/model';
@@ -12,6 +13,7 @@ const props = defineProps<{
   batch: RegistrationBatch | null;
   batches: RegistrationBatch[];
   batchId: string;
+  refreshGeneration: number;
   active: boolean;
   loading: boolean;
   error: string;
@@ -20,6 +22,7 @@ const props = defineProps<{
   statusLabel: (value: unknown) => string;
   sourceLabel: (value: unknown) => string;
   driverLabel: (value: unknown) => string;
+  readProgress: (id: RegistrationId, signal: AbortSignal) => Promise<JobProgressResponse>;
 }>();
 const emit = defineEmits<{
   select: [string];
@@ -59,6 +62,10 @@ const counts = computed(() => {
 });
 const displayedFilters = computed(() => filters.filter(item => item.key !== 'other' || counts.value.other || filter.value === 'other'));
 const displayedRows = computed(() => filter.value === 'all' ? rows.value : rows.value.filter(row => category(row) === filter.value));
+const expandedJob = computed(() => displayedRows.value.find(job => String(job.id) === expandedId.value));
+const progressJob = ref<RegistrationJob>();
+const progressError = ref('');
+let progressRequest: AbortController | undefined;
 const rowsWithResult = computed(() => displayedRows.value.map(job => ({job, tone:category(job), result:rowResult(job)})));
 const batchStatus = computed(() => {
   const value = counts.value;
@@ -115,7 +122,60 @@ function toggleDetails(job: RegistrationJob) {
   expandedId.value = expandedId.value === id ? null : id;
   focusFailure.value = expandedId.value !== null && category(job) === 'failed';
 }
+
+function resetProgress() {
+  progressRequest?.abort();
+  progressRequest = undefined;
+  progressJob.value = undefined;
+  progressError.value = '';
+}
+const runId = (job?: RegistrationJob) => String(job?.operation_run_id ?? '');
+async function loadProgress(job: RegistrationJob) {
+  if (progressRequest || !props.active) return;
+  const controller = new AbortController();
+  progressRequest = controller;
+  progressError.value = '';
+  try {
+    const result = await props.readProgress(job.id, controller.signal);
+    if (controller.signal.aborted) return;
+    if (!result.ok || !result.job || String(result.job.id) !== String(job.id)
+      || !Array.isArray(object(result.job.progress).main_steps)) {
+      throw new Error('阶段详情读取失败，请重试');
+    }
+    if (runId(job) && runId(job) !== runId(result.job)) {
+      throw new Error('当前执行已更新，请刷新批次后重试');
+    }
+    progressJob.value = result.job;
+  } catch (error) {
+    if (!controller.signal.aborted && !isAbort(error)) {
+      progressError.value = error instanceof Error ? error.message : '阶段详情读取失败，请重试';
+    }
+  } finally {
+    if (progressRequest === controller) progressRequest = undefined;
+  }
+}
+
 watch(() => props.batchId, () => setFilter('all'));
+watch([() => props.active, () => props.batchId, expandedJob, () => props.refreshGeneration],
+  ([active, batchId, job, generation], [, previousBatch, previousJob, previousGeneration]) => {
+    if (!active || !job) {
+      resetProgress();
+      if (active && props.batch && expandedId.value !== null) {
+        expandedId.value = null;
+        focusFailure.value = false;
+      }
+      return;
+    }
+    const changed = batchId !== previousBatch || String(job.id) !== String(previousJob?.id)
+      || runId(job) !== runId(previousJob) || status(job) !== (previousJob && status(previousJob));
+    const refreshed = generation !== previousGeneration;
+    if (changed || refreshed) resetProgress();
+    if (changed || refreshed || (!progressJob.value && !progressError.value) || category(job) === 'active') {
+      void loadProgress(job);
+    }
+  },
+);
+onBeforeUnmount(resetProgress);
 </script>
 
 <template>
@@ -172,22 +232,29 @@ watch(() => props.batchId, () => setFilter('all'));
             <button v-if="job.retryable" type="button" :disabled="mutating" @click="emit('retry',job)">{{ job.retry_label || '重试' }}</button>
           </div>
         </div>
-        <div :id="`registration-stages-${job.id}`" class="registration-batch-evidence" :hidden="expandedId !== String(job.id)">
+        <div :id="`registration-stages-${job.id}`" class="registration-batch-evidence" :hidden="expandedId !== String(job.id)"
+          :data-progress-state="expandedId === String(job.id) ? (progressError ? 'error' : progressJob ? 'ready' : 'loading') : undefined">
           <template v-if="expandedId === String(job.id)">
-            <RegistrationProgress :job="job" :active="active" inline :focus-failure="focusFailure" @log="emit('log',job.id,$event)"/>
-            <details v-if="job.error_message">
-              <summary>原始错误摘要</summary>
-              <p>{{ job.error_message }}</p>
-            </details>
-            <details v-if="records(job.attempts).length || records(job.route_attempts).length">
-              <summary>尝试与线路记录</summary>
-              <p v-for="attempt in records(job.attempts)" :key="text(attempt.id || attempt.attempt_id)">
-                {{ statusLabel(attempt.status) }} · {{ attempt.error_message || '已记录' }}
-              </p>
-              <p v-for="route in records(job.route_attempts)" :key="text(route.route_attempt_no)">
-                线路尝试 {{ route.route_attempt_no || 1 }} · {{ route.retry_reason || statusLabel(route.status) }}
-              </p>
-            </details>
+            <p v-if="progressError" class="registration-step-note" role="alert">
+              {{ progressError }} <button type="button" @click="loadProgress(job)">重试读取</button>
+            </p>
+            <p v-else-if="!progressJob" class="registration-step-note" role="status">正在读取阶段详情…</p>
+            <template v-if="progressJob">
+              <RegistrationProgress :job="progressJob" :active="active" inline :focus-failure="focusFailure" @log="emit('log',job.id,$event)"/>
+              <details v-if="progressJob.error_message">
+                <summary>原始错误摘要</summary>
+                <p>{{ progressJob.error_message }}</p>
+              </details>
+              <details v-if="records(progressJob.attempts).length || records(progressJob.route_attempts).length">
+                <summary>尝试与线路记录</summary>
+                <p v-for="attempt in records(progressJob.attempts)" :key="text(attempt.id || attempt.attempt_id)">
+                  {{ statusLabel(attempt.status) }} · {{ attempt.error_message || '已记录' }}
+                </p>
+                <p v-for="route in records(progressJob.route_attempts)" :key="text(route.route_attempt_no)">
+                  线路尝试 {{ route.route_attempt_no || 1 }} · {{ route.retry_reason || statusLabel(route.status) }}
+                </p>
+              </details>
+            </template>
           </template>
         </div>
       </article>

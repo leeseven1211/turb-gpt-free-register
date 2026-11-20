@@ -22,12 +22,16 @@ def public_result_status(status, summary: Mapping | None = None) -> str:
     return "partial_success" if requested == "partial_success" else "failed"
 
 
-def public_result_status_sql(expression: str, summary_expression: str | None = None) -> str:
+def public_result_status_sql(
+    expression: str, summary_expression: str | None = None, *, requested_status_expression: str | None = None,
+) -> str:
     """生成与 Python 投影等价的 SQL，保证分页、筛选和统计一致。"""
     statuses = ",".join(repr(value) for value in sorted(UNCONFIRMED_RESULT_STATUSES))
+    if requested_status_expression is None and summary_expression is not None:
+        requested_status_expression = f"({summary_expression})->>'requested_status'"
     partial = (
-        f"LOWER(BTRIM(COALESCE(({summary_expression})->>'requested_status','')))='partial_success'"
-        if summary_expression else "FALSE"
+        f"LOWER(BTRIM(COALESCE({requested_status_expression},'')))='partial_success'"
+        if requested_status_expression else "FALSE"
     )
     return (
         f"CASE WHEN LOWER(BTRIM(COALESCE(({expression})::text,''))) IN ({statuses}) "

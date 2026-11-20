@@ -550,7 +550,8 @@ def _workbench_payment_processing_sql(summary_sql: str) -> str:
             "payment_check_status", "automatic_payment_status", "xxsyun_status", "payment_status", "current_step",
         )
     ) + "))"
-    hints = " OR ".join(f"STRPOS({raw}, '{hint}')>0" for hint in _PAYMENT_PROCESSING_HINTS)
+    pattern = "|".join(re.escape(hint) for hint in _PAYMENT_PROCESSING_HINTS).replace("'", "''")
+    hints = f"{raw} ~ '{pattern}'"
     submitted = " OR ".join(
         f"COALESCE(({summary_sql})->'{key}' NOT IN ('null'::jsonb, 'false'::jsonb, '0'::jsonb, '\"\"'::jsonb), FALSE)"
         for key in ("payment_order_id", "payment_submitted_at")
@@ -795,14 +796,18 @@ def _workbench_timestamp_sql(value_sql: str) -> str:
         ELSE NULL END"""
 
 
-def _workbench_projection_sql(clauses: list[str], *, public_status: bool = False, materialized: bool = False) -> str:
+def _workbench_projection_sql(
+    clauses: list[str], *, public_status: bool = False, materialized: bool = False,
+    include_payment_processing: bool = True,
+) -> str:
     """仅归一化筛选所需标量，不载入账号凭据、付款内容和历史 Run。"""
     accounts = record_store._qualified(record_store.ACCOUNTS)
     # 与账号投影保持 account_id 优先、找不到时按规范化邮箱回填的规则。
-    account_columns = """id, plan_check_status, current_plan_type, plan_type,
-        COALESCE(NULLIF(BTRIM(data->>'plan_checked_at'), ''), NULLIF(BTRIM(plan_last_success_at), '')) AS plan_checked_at,
-        COALESCE(data->'has_active_subscription' NOT IN
-            ('null'::jsonb, 'false'::jsonb, '0'::jsonb, '\"\"'::jsonb, '[]'::jsonb, '{}'::jsonb), FALSE) AS subscribed"""
+    # 账号 JSON 可能存放在 TOAST 中。没有成功的 Plus/Pro 检查时无需读取其中的时间。
+    account_columns = """id, CASE WHEN LOWER(plan_check_status)='success'
+            AND BTRIM(LOWER(COALESCE(NULLIF(current_plan_type, ''), plan_type, ''))) IN ('plus','pro')
+        THEN COALESCE(NULLIF(BTRIM(data->>'plan_checked_at'), ''),
+                      NULLIF(BTRIM(plan_last_success_at), '')) END AS plan_checked_at"""
     checked_at_sql = _workbench_timestamp_sql("COALESCE(by_id.plan_checked_at, by_email.plan_checked_at)")
     payment_anchor_sql = _workbench_timestamp_sql("(job.public_state->'summary'->>'payment_submitted_at')")
     task_status = "LOWER(COALESCE(NULLIF(r.status, ''), NULLIF(t.status, ''), 'queued'))"
@@ -815,10 +820,15 @@ def _workbench_projection_sql(clauses: list[str], *, public_status: bool = False
     payment_unknown_sql = (f"CASE WHEN task_status IN ({active_statuses}) THEN 'pending_payment' ELSE 'failed' END"
                            if public_status else "'request_unknown'")
     payment_unknown_condition = "payment IN ('unknown','request_unknown')" if public_status else "payment='unknown'"
-    payment_processing_sql = _workbench_payment_processing_sql("job.public_state->'summary'")
+    payment_sql = "LOWER(COALESCE(NULLIF(job.public_state->>'payment_state', ''), NULLIF(r.result_summary->>'payment_status', ''), 'not_started'))"
     payment_processing_exclusions = "'unknown','not_started','failed','succeeded','success','paid'" + (
         ",'request_unknown'" if public_status else ""
     )
+    payment_processing_sql = "FALSE"
+    if include_payment_processing:
+        # 仅可能处于扫码阶段的任务才读取付款进度摘要。
+        progress = _workbench_payment_processing_sql("job.public_state->'summary'")
+        payment_processing_sql = f"CASE WHEN {payment_sql} NOT IN ({payment_processing_exclusions}) THEN {progress} ELSE FALSE END"
     # 最后只保留统计和分页所需标量，物化时无需为无关任务计算套餐时间等中间列。
     return f"""filtered_tasks AS MATERIALIZED (
         SELECT t.id, t.batch_id, t.account_id, t.email_snapshot, t.last_run_id, t.created_at, t.status,
@@ -847,18 +857,12 @@ def _workbench_projection_sql(clauses: list[str], *, public_status: bool = False
             CASE WHEN job.provider_id='huanguang' AND job.public_state->'summary'->'extraction_ever_succeeded'='true'::jsonb
                 THEN 'succeeded' ELSE LOWER(COALESCE(NULLIF(job.public_state->>'extraction_state', ''),
                     NULLIF(r.result_summary->>'extraction_status', ''), '')) END AS extraction,
-            LOWER(COALESCE(NULLIF(job.public_state->>'payment_state', ''), NULLIF(r.result_summary->>'payment_status', ''), 'not_started')) AS payment,
-            {payment_processing_sql} AND LOWER(COALESCE(NULLIF(job.public_state->>'payment_state', ''),
-                NULLIF(r.result_summary->>'payment_status', ''), 'not_started')) NOT IN
-                ({payment_processing_exclusions}) AS payment_processing,
+            {payment_sql} AS payment,
+            {payment_processing_sql} AS payment_processing,
             LOWER(COALESCE(NULLIF(job.public_state->>'plus_status', ''), NULLIF(r.result_summary->>'plus_status', ''), 'unknown')) AS plus,
             COALESCE(r.result_summary->'has_link' NOT IN
                 ('null'::jsonb, 'false'::jsonb, '0'::jsonb, '\"\"'::jsonb, '[]'::jsonb, '{{}}'::jsonb), FALSE)
                 OR COALESCE(r.result_summary->>'remote_job_id', '') <> '' AS legacy_succeeded,
-            LOWER(COALESCE(by_id.plan_check_status, by_email.plan_check_status, '')) AS plan_check_status,
-            LOWER(COALESCE(NULLIF(by_id.current_plan_type, ''), by_id.plan_type,
-                NULLIF(by_email.current_plan_type, ''), by_email.plan_type, '')) AS plan,
-            COALESCE(by_id.subscribed, by_email.subscribed, FALSE) AS subscribed,
             {checked_at_sql} AS plan_checked_at
         FROM filtered_tasks t
         LEFT JOIN {operation_store._table('operation_runs')} r ON r.id=t.last_run_id
@@ -887,7 +891,7 @@ def _workbench_projection_sql(clauses: list[str], *, public_status: bool = False
             local_reconcile_halted, extraction_status, payment_status, payment_processing,
             CASE WHEN mode IN ('auto_payment','manual_payment') AND extraction_status='success'
             AND payment_status='paid'
-            AND plan_check_status='success' AND BTRIM(plan) IN ('plus','pro') AND plan_checked_at > plus_freshness_anchor
+            AND plan_checked_at > plus_freshness_anchor
             THEN 'confirmed'
             ELSE plus END AS plus_status
         FROM normalized
@@ -899,7 +903,9 @@ def workbench_summary(*, public_status: bool = False) -> dict:
     operation_store.init()
     clauses, params = _workbench_where()
     # 多个统计共享一次状态归一化，防止内联后每个 FILTER 重复计算 JSON 与套餐表达式。
-    projection = _workbench_projection_sql(clauses, public_status=public_status, materialized=True)
+    projection = _workbench_projection_sql(
+        clauses, public_status=public_status, materialized=True, include_payment_processing=False,
+    )
     status_conditions = workbench_status_conditions(public_status=public_status)
     provider_status = "LOWER(COALESCE(r.status, t.status, ''))"
     provider_failure_status = (
@@ -986,30 +992,44 @@ def list_workbench_page(
     status_conditions = workbench_status_conditions(public_status=public_status)
     predicate = status_conditions.get(status, "FALSE") if status else "TRUE"
     count_columns = [f"COUNT(*) FILTER (WHERE {condition}) AS {name}" for name, condition in status_conditions.items()]
+    counts_sql = f"""SELECT COUNT(*) AS all, {', '.join(count_columns)},
+        COUNT(*) FILTER (WHERE {predicate}) AS total FROM projected"""
+    page_sql = f"""SELECT {_workbench_columns()} {_workbench_joins()}
+        JOIN selected ON selected.task_id=t.id"""
+    page_params = (page_size, (page - 1) * page_size)
     with operation_store._connect() as conn, conn.cursor() as cur:
         cur.execute("SET LOCAL jit = off")
-        cur.execute(
-            f"""WITH {projection} SELECT COUNT(*) AS all,
-                {', '.join(count_columns)}, COUNT(*) FILTER (WHERE {predicate}) AS total FROM projected""",
-            tuple(params),
-        )
-        totals = dict(cur.fetchone() or {})
-        # 全部状态只需按任务与最新 Run 排序取当前页，避免重复归一化全量任务及账号套餐。
-        selected_sql = (f"""SELECT t.id AS task_id FROM {operation_store._table('operation_tasks')} t
-                LEFT JOIN {operation_store._table('operation_runs')} r ON r.id=t.last_run_id
-                WHERE {' AND '.join(clauses)}
-                ORDER BY COALESCE(r.created_at, t.created_at) DESC, t.id DESC LIMIT %s OFFSET %s"""
-            if not status else f"""WITH {_workbench_projection_sql(clauses, public_status=public_status)}
-                SELECT task_id FROM projected WHERE {predicate}
-                ORDER BY sort_created_at DESC, task_id DESC LIMIT %s OFFSET %s""")
-        cur.execute(
-            f"""WITH selected AS ({selected_sql})
-            SELECT {_workbench_columns()} {_workbench_joins()}
-            JOIN selected ON selected.task_id=t.id
-            ORDER BY COALESCE(r.created_at, t.created_at) DESC, t.id DESC""",
-            (*params, page_size, (page - 1) * page_size),
-        )
-        items = _workbench_rows(cur.fetchall())
+        if status:
+            # 分面计数与状态筛选共用同一份投影；空页仍保留计数。
+            cur.execute(
+                f"""WITH {projection}, totals AS ({counts_sql}), selected AS (
+                    SELECT task_id FROM projected WHERE {predicate}
+                    ORDER BY sort_created_at DESC, task_id DESC LIMIT %s OFFSET %s
+                ), page_rows AS ({page_sql})
+                SELECT page_rows.*, to_jsonb(totals) AS workbench_counts
+                FROM totals LEFT JOIN page_rows ON TRUE
+                ORDER BY COALESCE(run_created_at, task_created_at) DESC, task_id DESC""",
+                (*params, *page_params),
+            )
+            rows = cur.fetchall()
+            totals = rows[0]["workbench_counts"]
+            for row in rows:
+                row.pop("workbench_counts")
+            items = _workbench_rows(row for row in rows if row["task_id"] is not None)
+        else:
+            cur.execute(f"WITH {projection} {counts_sql}", tuple(params))
+            totals = dict(cur.fetchone() or {})
+            # 无状态筛选时直接按任务与最新 Run 排序取当前页。
+            cur.execute(
+                f"""WITH selected AS (
+                    SELECT t.id AS task_id FROM {operation_store._table('operation_tasks')} t
+                    LEFT JOIN {operation_store._table('operation_runs')} r ON r.id=t.last_run_id
+                    WHERE {' AND '.join(clauses)}
+                    ORDER BY COALESCE(r.created_at, t.created_at) DESC, t.id DESC LIMIT %s OFFSET %s
+                ) {page_sql} ORDER BY COALESCE(r.created_at, t.created_at) DESC, t.id DESC""",
+                (*params, *page_params),
+            )
+            items = _workbench_rows(cur.fetchall())
     return {"items": items, "total": int(totals.pop("total", 0) or 0), "page": page, "page_size": page_size,
             "counts": {key: int(value or 0) for key, value in totals.items()}}
 

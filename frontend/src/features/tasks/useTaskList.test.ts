@@ -71,6 +71,43 @@ describe('任务列表请求生命周期', () => {
     list.setVisible(false); const calls = vi.mocked(tasksApi.list).mock.calls.length;
     await vi.advanceTimersByTimeAsync(20000); expect(tasksApi.list).toHaveBeenCalledTimes(calls);
   });
+  it('同一筛选条件切换页码和每页条数时复用统计，过期后重新读取', async () => {
+    const statistics = {status: [{value: 'failed', count: 100}]};
+    const request = vi.mocked(tasksApi.list);
+    request.mockImplementation(async query => ({
+      ...response(1), total: 100, page: query.page, page_size: query.page_size,
+      ...(query.include_facets ? {facets: statistics} : {}),
+    }));
+    const list = setup();
+    list.applyFilters({status: 'failed'});
+    list.setVisible(true);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(request).toHaveBeenLastCalledWith(
+      expect.objectContaining({status: 'failed', page: 1, page_size: 20, include_facets: 1}), expect.any(AbortSignal),
+    );
+
+    list.page.value = 2;
+    await vi.advanceTimersByTimeAsync(0);
+    expect(request).toHaveBeenLastCalledWith(
+      expect.objectContaining({status: 'failed', page: 2, page_size: 20, include_facets: 0}), expect.any(AbortSignal),
+    );
+    list.size.value = 50;
+    await vi.advanceTimersByTimeAsync(0);
+    expect(request).toHaveBeenLastCalledWith(
+      expect.objectContaining({status: 'failed', page: 2, page_size: 50, include_facets: 0}), expect.any(AbortSignal),
+    );
+    expect(list.facets.value).toEqual(statistics);
+
+    list.filters.status = 'success';
+    await vi.advanceTimersByTimeAsync(0);
+    expect(request).toHaveBeenLastCalledWith(
+      expect.objectContaining({status: 'success', page: 1, page_size: 50, include_facets: 1}), expect.any(AbortSignal),
+    );
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(request).toHaveBeenLastCalledWith(
+      expect.objectContaining({status: 'success', page: 1, page_size: 50, include_facets: 1}), expect.any(AbortSignal),
+    );
+  });
   it('刷新失败保留已展示结果并给出可重试错误', async () => {
     vi.mocked(tasksApi.list).mockResolvedValueOnce(response(7)).mockRejectedValue(new Error('网络中断'));
     const list = setup(); await list.refresh(); await list.refresh();

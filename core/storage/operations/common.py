@@ -481,6 +481,24 @@ def _registration_completion_overlay_sql(run_alias: str, registration_alias: str
     )
 
 
+def _compatibility_created_at_sort_sql(value_sql: str) -> str:
+    """将兼容来源的时间文本按原时区约定转换成排序时间。"""
+    local_offset = datetime.now().astimezone().utcoffset() or timedelta(0)
+    offset_seconds = int(local_offset.total_seconds())
+    offset_sign = "+" if offset_seconds >= 0 else "-"
+    offset_seconds = abs(offset_seconds)
+    offset_hours, offset_remainder = divmod(offset_seconds, 3600)
+    offset_minutes = offset_remainder // 60
+    local_timezone_sql = f"INTERVAL '{offset_sign}{offset_hours:02d}:{offset_minutes:02d}'"
+    text_sql = f"NULLIF(({value_sql})::text, '')"
+    return (
+        f"CASE WHEN {text_sql} IS NULL THEN NULL "
+        f"WHEN {text_sql} ~* '(Z|[+-][0-9]{{2}}:?[0-9]{{2}})$' "
+        f"THEN {text_sql}::timestamptz "
+        f"ELSE ({text_sql}::timestamp AT TIME ZONE {local_timezone_sql}) END"
+    )
+
+
 def _compatibility_run_projection_sql(
     *, run_alias: str = "rr", registration_alias: str = "registration_job",
     account_alias: str = "account_task", fields: Iterable[str] | None = None,
@@ -494,42 +512,18 @@ def _compatibility_run_projection_sql(
         f"WHEN ({status_sql}) IN ({_TERMINAL_STATUS_SQL}) THEN 'complete' "
         f"ELSE {run_alias}.progress_stage END"
     )
-    local_offset = datetime.now().astimezone().utcoffset() or timedelta(0)
-    offset_seconds = int(local_offset.total_seconds())
-    offset_sign = "+" if offset_seconds >= 0 else "-"
-    offset_seconds = abs(offset_seconds)
-    offset_hours, offset_remainder = divmod(offset_seconds, 3600)
-    offset_minutes = offset_remainder // 60
-    local_timezone_sql = f"INTERVAL '{offset_sign}{offset_hours:02d}:{offset_minutes:02d}'"
-
-    def legacy_sort_sql(value_sql: str) -> str:
-        text_sql = f"NULLIF(({value_sql})::text, '')"
-        return (
-            f"CASE WHEN {text_sql} IS NULL THEN NULL "
-            f"WHEN {text_sql} ~* '(Z|[+-][0-9]{{2}}:?[0-9]{{2}})$' "
-            f"THEN {text_sql}::timestamptz "
-            f"ELSE ({text_sql}::timestamp AT TIME ZONE {local_timezone_sql}) END"
-        )
-
-    created_at_sort_sql = (
+    created_at_sql = (
         f"CASE "
         f"WHEN {run_alias}.source_system='registration_jobs' AND {registration_alias}.id IS NOT NULL "
-        f"THEN {legacy_sort_sql(f'{registration_alias}.created_at')} "
+        f"THEN {registration_alias}.created_at "
         f"WHEN {run_alias}.source_system='account_action_tasks' AND {account_alias}.id IS NOT NULL "
-        f"THEN {legacy_sort_sql(f'{account_alias}.queued_at')} "
+        f"THEN {account_alias}.queued_at "
         f"ELSE NULL END"
     )
     expressions = {
         "effective_status": status_sql,
         "effective_progress_stage": stage_sql,
-        "effective_created_at": (
-            f"CASE "
-            f"WHEN {run_alias}.source_system='registration_jobs' AND {registration_alias}.id IS NOT NULL "
-            f"THEN {registration_alias}.created_at "
-            f"WHEN {run_alias}.source_system='account_action_tasks' AND {account_alias}.id IS NOT NULL "
-            f"THEN {account_alias}.queued_at "
-            f"ELSE NULL END"
-        ),
+        "effective_created_at": created_at_sql,
         "effective_started_at": (
             f"CASE "
             f"WHEN {run_alias}.source_system='registration_jobs' AND {registration_alias}.id IS NOT NULL "
@@ -548,7 +542,7 @@ def _compatibility_run_projection_sql(
             f"THEN NULLIF({account_alias}.finished_at, '') "
             f"ELSE {run_alias}.completed_at::text END"
         ),
-        "effective_created_at_sort": created_at_sort_sql,
+        "effective_created_at_sort": _compatibility_created_at_sort_sql(created_at_sql),
         "effective_error_message": (
             f"CASE "
             f"WHEN {_registration_completion_overlay_sql(run_alias, registration_alias)} "

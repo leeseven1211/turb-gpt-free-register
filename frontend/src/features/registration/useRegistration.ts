@@ -19,11 +19,11 @@ export function useRegistration(deps:RegistrationDeps){
   let disposed=false;
   const active=computed(()=>visible.value&&docVisible.value&&!disposed);
   const state=reactive<RegistrationState&{
-    query:RegistrationQuery;batchId:string;statusCounts:Record<string,number>;facets:Record<string,any>;
+    query:RegistrationQuery;batchId:string;batchRefreshGeneration:number;statusCounts:Record<string,number>;facets:Record<string,any>;
     creating:boolean;pendingActions:Record<string,boolean>;lastCreate:any;lastAction:any;
     detail:ReturnType<typeof emptyDetail>;
   }>({jobs:[],total:0,batch:null,batches:[],meta:null,summary:null,view:deps.view||'launch',loading:false,error:'',receipt:null,
-    query:emptyQuery(),batchId:'',statusCounts:{},facets:{},creating:false,pendingActions:{},lastCreate:null,lastAction:null,detail:emptyDetail()});
+    query:emptyQuery(),batchId:'',batchRefreshGeneration:0,statusCounts:{},facets:{},creating:false,pendingActions:{},lastCreate:null,lastAction:null,detail:emptyDetail()});
   const creating=computed(()=>state.creating);
   const registrationUnavailable=computed(()=>{
     const feature=state.meta?.capabilities?.features?.register;
@@ -88,6 +88,7 @@ export function useRegistration(deps:RegistrationDeps){
         for(let correction=0;correction<2;correction++){
           const params:Record<string,string|number>={paged:1,...state.query,view:requestView==='tasks'?'table':'batch',
             progress_batch_id:state.batchId,refresh_generation:generation};
+          if(requestView==='launch')params.progress_detail=0;
           if(requestView==='tasks'&&options.automatic&&facetsSignature===signature&&Date.now()-facetsAt<30000)params.include_facets=0;
           const result=await api.jobs(params,controller.signal);
           if(!valid())return;
@@ -104,6 +105,7 @@ export function useRegistration(deps:RegistrationDeps){
             }
             if(!state.batchId&&batch?.batch_id)state.batchId=batchString(batch.batch_id);
             state.batch=batch;
+            state.batchRefreshGeneration=generation;
           }else{
             state.total=Math.max(0,Number(result.total??result.items?.length??0)||0);
             if(Object.prototype.hasOwnProperty.call(result,'facets')){
@@ -126,6 +128,7 @@ export function useRegistration(deps:RegistrationDeps){
     return promise;
   }
   function setBatch(id:string){return load({progress_batch_id:batchString(id)});}
+  function readBatchProgress(id:RegistrationId,signal:AbortSignal){return api.progress(taskId(id),signal);}
   function updateQuery(patch:Partial<RegistrationQuery>){return load({...patch,page:patch.page??1});}
   function setPage(page:number){return load({page});}
   function setSize(size:number){return load({page:1,page_size:size});}
@@ -335,5 +338,5 @@ export function useRegistration(deps:RegistrationDeps){
   if(getCurrentInstance())onBeforeUnmount(dispose);
   return {state,active,creating,registrationUnavailable,ensureMeta,load,loadSummary,renderEmailSupply,applySummary,setVisible,setView,
     setBatch,updateQuery,setPage,setSize,shouldPollJobs,create,action,executeAction,compare,openLog,refreshDetail,closeDetail,notify,
-    terminalStatuses,activeStatuses,batchActions,dispose};
+    terminalStatuses,activeStatuses,batchActions,readBatchProgress,dispose};
 }

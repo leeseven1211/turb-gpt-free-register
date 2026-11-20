@@ -18,14 +18,14 @@ class OperationTaskReadOptimizationTests(PostgresTestCase):
     def tearDown(self):
         self.schema_patch.stop()
 
-    def test_default_public_list_disables_jit_only_for_its_read_transaction(self):
+    def test_public_lists_disable_jit_only_for_their_own_read_transactions(self):
         import psycopg
 
         execute = psycopg.Cursor.execute
         modes = {}
 
         def trace(cursor, statement, params=None, **kwargs):
-            for name, marker in (("列表", "WITH page_ids AS MATERIALIZED"),
+            for name, marker in (("列表", "page_ids AS MATERIALIZED"),
                                  ("筛选统计", "WITH facet_current_runs AS MATERIALIZED")):
                 if marker in str(statement):
                     with cursor.connection.cursor() as probe:
@@ -37,10 +37,25 @@ class OperationTaskReadOptimizationTests(PostgresTestCase):
             cur.execute("SHOW jit")
             original = cur.fetchone()["jit"]
         with patch.object(psycopg.Cursor, "execute", trace):
-            operation_task_store.list_tasks(public_status=True, page_size=20)
-            self.assertEqual({"列表": "off", "筛选统计": "off"}, modes)
-            operation_task_store.list_tasks(public_status=True, page_size=20, task_type="report")
+            for filters in ({}, {"status": "failed"}, {"status": "failed", "result": "超时"}):
+                with self.subTest(filters=filters):
+                    modes.clear()
+                    operation_task_store.list_tasks(public_status=True, page_size=20, **filters)
+                    self.assertEqual({"列表": "off", "筛选统计": "off"}, modes)
+            modes.clear()
+            operation_task_store.list_tasks(public_status=True, status="running", include_facets=False, page=2)
+            self.assertEqual({"列表": "off"}, modes)
+            modes.clear()
+            operation_task_store.list_tasks(public_status=False, page_size=20, task_type="report")
             self.assertEqual({"列表": original, "筛选统计": original}, modes)
+            modes.clear()
+            with operation_task_store._connect() as conn, conn.cursor() as cur:
+                cur.execute("SET LOCAL jit = on")
+                with operation_common.settlement_scope(None, conn=conn):
+                    operation_task_store.list_tasks(public_status=True, page_size=20)
+                self.assertEqual({"列表": "on", "筛选统计": "on"}, modes)
+                cur.execute("SHOW jit")
+                self.assertEqual("on", cur.fetchone()["jit"])
         with operation_task_store._connect() as conn, conn.cursor() as cur:
             cur.execute("SHOW jit")
             self.assertEqual(original, cur.fetchone()["jit"])
@@ -346,29 +361,34 @@ class OperationTaskReadOptimizationTests(PostgresTestCase):
                     statement = queries[0][0]
                     self.assertEqual(1, statement.count("facet_candidates AS MATERIALIZED"))
                     self.assertEqual(1, statement.count("CROSS JOIN LATERAL"))
+                    self.assertIn("FROM facet_groups candidate CROSS JOIN LATERAL", statement)
                     for facet in facets:
                         self.assertIn(f" AS matches_{facet}", statement)
                         self.assertIn(
-                            f"('{facet}',candidate.value_{facet},candidate.matches_{facet})",
+                            f"COUNT(*) FILTER (WHERE matches_{facet}) AS count_{facet}",
+                            statement,
+                        )
+                        self.assertIn(
+                            f"('{facet}',candidate.value_{facet},candidate.count_{facet})",
                             statement,
                         )
             queries.clear()
             operation_task_store.list_tasks(public_status=True, **filters)
             self.assertEqual(1, len(queries))
             statement, params = queries.pop()
-            expected_groups = (
-                ("task_type", [["type-a", "type-b"]]), ("status", ["failed"]),
-                ("source", ["native_operations"]), ("batch_id", [17]), ("q", ["%search%"] * 10),
-                ("task_id", ["%23%"]), ("target", ["%target%"] * 4), ("target_status", ["ready"]),
-                ("batch", ["%batch%"] * 3), ("run_count", [4]), ("stage", ["stage"]),
-                ("created_from", ["2026-09-01"]), ("created_to", ["2026-10-01"]),
-                ("result", ["%result%"] * 3),
-            )
+            expected_groups = (("task_type", ["type-a", "type-b"]), ("status", "failed"),
+                               ("target_status", "ready"), ("run_count", 4), ("stage", "stage"))
+            shared_params = [
+                "native_operations", 17, *["%search%"] * 10, "%23%", *["%target%"] * 4,
+                *["%batch%"] * 3, "2026-09-01", "2026-10-01", *["%result%"] * 3,
+            ]
             self.assertEqual(len(facets), statement.count(" AS matches_"))
             for facet in facets:
-                self.assertIn(f"('{facet}',candidate.value_{facet},candidate.matches_{facet})", statement)
-            self.assertEqual([value for facet in facets for name, group in expected_groups
-                              if name != facet for value in group], params)
+                self.assertIn(f"('{facet}',candidate.value_{facet},candidate.count_{facet})", statement)
+            self.assertEqual(
+                [value for facet in facets for name, value in expected_groups if name != facet] + shared_params,
+                params,
+            )
             operation_task_store.list_tasks(include_facets=False, **filters)
             self.assertEqual([], queries)
 
@@ -413,6 +433,27 @@ class OperationTaskReadOptimizationTests(PostgresTestCase):
                          all_rows["facets"]["run_count"])
         self.assertEqual([{"value": "partial_success", "count": 1}, {"value": "ready", "count": 1}],
                          all_rows["facets"]["target_status"])
+
+    def test_unselected_legacy_run_with_invalid_timestamp_does_not_break_the_list(self):
+        table = operation_task_store._table
+        with operation_task_store._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"""INSERT INTO {table('registration_jobs')}
+                (id,job_uuid,status,created_at,updated_at,data) VALUES
+                (77,'old-job','failed','invalid-time','2026-10-01T00:00:00Z','{{}}'),
+                (78,'current-job','running','2026-10-01T00:00:00Z','2026-10-01T00:00:00Z','{{}}')""")
+            cur.execute(f"""INSERT INTO {table('operation_tasks')}
+                (id,task_uuid,source_system,source_id,task_type,target_type,requested_action,
+                 status,target_status,created_at,data) VALUES
+                (1,'job','registration_chains','77','imported','none','read','running','ready','2026-10-01Z','{{}}')""")
+            cur.execute(f"""INSERT INTO {table('operation_runs')}
+                (id,run_uuid,task_id,run_no,source_system,source_id,status,progress_stage,created_at) VALUES
+                (1,'obsolete',1,1,'registration_jobs','77','failed','complete','2026-10-01Z'),
+                (2,'current',1,2,'registration_jobs','78','running','probe','2026-10-01Z')""")
+
+        for filters in ({}, {"status": "running"}, {"status": "running", "include_facets": False}):
+            with self.subTest(filters=filters):
+                response = operation_task_store.list_tasks(public_status=True, **filters)
+                self.assertEqual([2], [row["last_run_id"] for row in response["items"]])
 
     def _reference_list(self, filters):
         """独立按旧全集合SQL计算预期，测试不依赖Git历史或当前页快捷分支。"""

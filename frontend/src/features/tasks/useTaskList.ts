@@ -13,7 +13,7 @@ export function useTaskList() {
   let requestId = 0, controller: AbortController | null = null;
   let timer: ReturnType<typeof setTimeout> | undefined, debounce: ReturnType<typeof setTimeout> | undefined;
   let queuedRefresh = 0;
-  let metadataAt = 0, metadataQuery = '', revision = '';
+  let metadataAt = 0, metadataFilters = '', revision = '';
   const textFilters = new Set<keyof TaskFilters>(['task_id', 'target', 'batch', 'result']);
   let normalizedChange: {metadata: boolean; delay: number} | null = null;
   function queueRefresh(options: {metadata?: boolean} = {}, delay = 0) {
@@ -35,7 +35,8 @@ export function useTaskList() {
     ++queuedRefresh;
     const query = {...filters, page: page.value, page_size: size.value};
     const signature = JSON.stringify(query);
-    const metadata = options.metadata || metadataQuery !== signature || Date.now() - metadataAt >= 30000;
+    const filterSignature = JSON.stringify(filters);
+    const metadata = options.metadata || metadataFilters !== filterSignature || Date.now() - metadataAt >= 30000;
     const id = ++requestId;
     controller?.abort();
     controller = new AbortController();
@@ -53,7 +54,7 @@ export function useTaskList() {
         selected.value = new Set([...selected.value].filter(value => ids.has(value)));
       }
       if (result.facets) facets.value = result.facets;
-      if (metadata) { metadataAt = Date.now(); metadataQuery = signature; }
+      if (metadata) { metadataAt = Date.now(); metadataFilters = filterSignature; }
       error.value = '';
     } catch (cause) {
       if (id === requestId && !isAbort(cause)) error.value = cause instanceof Error ? cause.message : '任务列表加载失败';

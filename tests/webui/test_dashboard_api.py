@@ -9,10 +9,34 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pyotp
+from flask import Flask
 from core import db
 from core.storage import records as record_store
 from webui.app import create_app
+from webui.routes.dashboard import create_dashboard_blueprint
 from tests.support_pg import PostgresTestCase
+
+
+class DashboardRouteTests(unittest.TestCase):
+    @patch("core.proxy.pool.pool_source", return_value="manual")
+    @patch("core.proxy.provider.active_proxy_leases", return_value=[])
+    @patch("core.email.supply.email_supply_summary", return_value={
+        "sources": [{"source": "outlook", "total": 4, "available": 2}],
+    })
+    @patch("webui.routes.dashboard.admin_repository.dashboard_aggregates", return_value={
+        "accounts": {}, "jobs": {"counts": {}, "today_counts": {}}, "codex": {},
+    })
+    def test_dashboard_requests_only_the_aggregates_used_by_the_route(self, aggregate, supply, *_mocks):
+        app = Flask(__name__)
+        context = SimpleNamespace(app=app, logger=app.logger, prepared_downloads={})
+        app.register_blueprint(create_dashboard_blueprint(context))
+
+        response = app.test_client().get("/api/dashboard")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["email"]["local_available"], 2)
+        aggregate.assert_called_once_with(public_status=True, include_email_status=False)
+        supply.assert_called_once_with(include_next_expiry=True)
 
 
 class _DashboardMarkup(HTMLParser):

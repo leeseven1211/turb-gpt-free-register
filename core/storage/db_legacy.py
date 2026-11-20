@@ -1745,11 +1745,8 @@ def backfill_account_registration_proxy_context(
     cancelled: Callable[[], bool] | None = None,
 ) -> int:
     """从历史成功注册任务补齐账号的代理来源/实际国家；已有值不覆盖。"""
-    # 启动恢复路径只需要四个代理字段。旧实现把两张表的完整 JSONB
-    # 解码到 Python，再对每个账号线性扫描全部任务；生产库中这会把
-    # 5 秒 owner 探针窗口拖过，甚至在没有任何需要补齐的行时也会阻塞
-    # Worker 启动。让 PostgreSQL 做按账号/邮箱的最新任务匹配，并且只
-    # 传递窄字段，保留原来的 id DESC 优先级和逐字段幂等 claim。
+    # 先用账号 ID 和邮箱匹配任务，再读取去重后的任务 JSONB。
+    # 固化代理字段投影，避免查找最新任务时反复解压宽 JSONB。
     from psycopg.rows import dict_row
 
     if limit is not None:
@@ -1767,19 +1764,7 @@ def backfill_account_registration_proxy_context(
     accounts_table = postgres_store.qualified(record_store.ACCOUNTS.name)
     jobs_table = postgres_store.qualified(record_store.JOBS.name)
     query = f"""
-        WITH candidate_jobs AS (
-            SELECT
-                id,
-                account_id,
-                LOWER(BTRIM(email)) AS email_key,
-                NULLIF(BTRIM(data->>'proxy_provider'), '') AS proxy_provider,
-                UPPER(NULLIF(BTRIM(data->>'proxy_region'), '')) AS proxy_region
-            FROM {jobs_table}
-            WHERE
-                NULLIF(BTRIM(data->>'proxy_provider'), '') IS NOT NULL
-                OR LENGTH(BTRIM(data->>'proxy_region')) = 2
-        ),
-        missing_accounts AS (
+        WITH missing_accounts AS (
             SELECT
                 id,
                 email,
@@ -1790,23 +1775,36 @@ def backfill_account_registration_proxy_context(
                 NULLIF(data->>'registration_proxy_provider', '') IS NULL
                 OR NULLIF(data->>'registration_proxy_region', '') IS NULL
         ),
-        candidate_matches AS (
-            SELECT a.id, j.id AS job_id, j.proxy_provider, j.proxy_region
+        matched_jobs AS (
+            SELECT a.id AS account_id, j.id AS job_id
             FROM missing_accounts AS a
-            JOIN candidate_jobs AS j ON j.account_id = a.id
-            UNION ALL
-            SELECT a.id, j.id AS job_id, j.proxy_provider, j.proxy_region
+            JOIN {jobs_table} AS j ON j.account_id = a.id
+            UNION
+            SELECT a.id AS account_id, j.id AS job_id
             FROM missing_accounts AS a
-            JOIN candidate_jobs AS j ON j.email_key = LOWER(BTRIM(a.email))
+            JOIN {jobs_table} AS j ON LOWER(BTRIM(j.email)) = LOWER(BTRIM(a.email))
             WHERE NULLIF(BTRIM(a.email), '') IS NOT NULL
         ),
+        candidate_job_ids AS (
+            SELECT DISTINCT job_id FROM matched_jobs
+        ),
+        candidate_jobs AS MATERIALIZED (
+            SELECT
+                j.id,
+                NULLIF(BTRIM(j.data->>'proxy_provider'), '') AS proxy_provider,
+                BTRIM(j.data->>'proxy_region') AS proxy_region
+            FROM candidate_job_ids AS ids
+            JOIN {jobs_table} AS j ON j.id = ids.job_id
+        ),
         latest AS (
-            SELECT DISTINCT ON (id)
-                id,
-                proxy_provider,
-                proxy_region
-            FROM candidate_matches
-            ORDER BY id, job_id DESC
+            SELECT DISTINCT ON (m.account_id)
+                m.account_id,
+                j.proxy_provider,
+                UPPER(NULLIF(j.proxy_region, '')) AS proxy_region
+            FROM matched_jobs AS m
+            JOIN candidate_jobs AS j ON j.id = m.job_id
+            WHERE j.proxy_provider IS NOT NULL OR LENGTH(j.proxy_region) = 2
+            ORDER BY m.account_id, m.job_id DESC
         )
         SELECT
             a.id,
@@ -1816,7 +1814,7 @@ def backfill_account_registration_proxy_context(
             latest.proxy_provider,
             latest.proxy_region
         FROM missing_accounts AS a
-        JOIN latest USING (id)
+        JOIN latest ON latest.account_id = a.id
         WHERE (a.account_provider IS NULL AND latest.proxy_provider IS NOT NULL)
            OR (a.account_region IS NULL AND LENGTH(latest.proxy_region) = 2)
         ORDER BY a.id

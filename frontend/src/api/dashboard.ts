@@ -1,15 +1,42 @@
-import {request} from './client';
+import {ApiError,request} from './client';
 
 export type DashboardRequest=(path:string,options?:RequestInit)=>Promise<unknown>;
+export type PendingCapabilities=()=>Promise<unknown>|undefined;
 export interface DashboardApi {
  dashboard(signal?:AbortSignal):Promise<any>;
  capabilities(signal?:AbortSignal):Promise<any>;
 }
 
-export function createDashboardApi(send:DashboardRequest=(path,options)=>request(path,options)):DashboardApi {
+async function waitForSharedCapabilities(pending:Promise<unknown>, signal?:AbortSignal):Promise<unknown> {
+ if (!signal) return pending;
+ signal.throwIfAborted();
+ let cancel!:()=>void;
+ const cancelled = new Promise<never>((_resolve, reject) => {
+  cancel = () => reject(signal.reason);
+  signal.addEventListener('abort', cancel, {once:true});
+ });
+ try {
+  return await Promise.race([pending, cancelled]);
+ } finally {
+  signal.removeEventListener('abort', cancel);
+ }
+}
+
+export function createDashboardApi(
+ send:DashboardRequest=(path,options)=>request(path,options),
+ pendingCapabilities?:PendingCapabilities,
+):DashboardApi {
  const get=<T>(path:string,signal?:AbortSignal)=>send(path,signal?{signal}:undefined) as Promise<T>;
  return {
   dashboard:(signal)=>get('/api/dashboard',signal),
-  capabilities:(signal)=>get('/api/capabilities',signal),
+  async capabilities(signal){
+   const pending = pendingCapabilities?.();
+   if (!pending) return get('/api/capabilities', signal);
+   const result = await waitForSharedCapabilities(pending, signal);
+   if (result === null || typeof result !== 'object' || !('ok' in result) || result.ok !== true) {
+    throw new ApiError('能力检查返回无效数据', 200);
+   }
+   return result;
+  },
  };
 }
