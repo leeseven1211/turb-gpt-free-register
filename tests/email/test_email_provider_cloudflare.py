@@ -29,13 +29,11 @@ class EmailProviderCloudflareTests(unittest.TestCase):
             with patch.object(email_cfg, "EMAIL_DOMAIN", "custom.com"):
                 self.assertEqual(email_provider.resolve_email_source("x@custom.com"), "cloudflare")
 
-    @patch("core.email.cloudflare.client.pick_account")
-    def test_new_cloudflare_acquisition_requires_local_inventory(self, pick_account):
+    def test_new_cloudflare_acquisition_requires_local_inventory(self):
         with patch("core.email.inventory.claim") as local_claim:
             with self.assertRaises(LocalEmailInventoryError) as caught:
                 email_provider._pick_from_source("cloudflare")
         self.assertEqual(caught.exception.error_code, "local_inventory_source_required")
-        pick_account.assert_not_called()
         local_claim.assert_not_called()
 
     @patch("core.email.cloudflare.client.release_account")

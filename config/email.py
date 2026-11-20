@@ -17,15 +17,15 @@ USE_EMAIL_SERVICE = schema_default("USE_EMAIL_SERVICE")
 # WebUI 每批必须明确选择一个来源；任务领取失败时不会跨平台兜底。
 #   "outlook"           — 外购 Outlook 账号池 + mail.chatai.codes 远端取信
 #   "cloudflare_domain" — Cloudflare 域名邮箱（转发到 QQ 邮箱），通过 IMAP 取信
-#   "cloudflare" — Cloudflare Worker 临时邮箱（cloudflare_temp_email），API 创建并取码
+#   "cloudflare"       — Cloudflare Worker 历史邮箱取码
 #   "email_butler" — Email Butler v2 租约 API（人工导入长期租约 + 收码 + 显式退租）
 #   "generic_api"       — 通用 API 取码邮箱池（邮箱----取码地址）
-#   "gptmail"           — GPTMail 临时邮箱 API（运行时随机生成邮箱并自动收码）
-#   "mailnest"          — MailNest/迈巢临时邮箱 API（运行时购买邮箱并自动收码）
+#   "gptmail"           — GPTMail 历史邮箱取码
+#   "mailnest"          — MailNest/迈巢历史邮箱取码
 #   "remail"            — Remail 开放 API（按项目下单并自动收取验证码）
-#   "mailcode"          — 域名邮箱 MailCode（原订单与游标保存到 PostgreSQL）
-#   "xigua"             — 西瓜邮箱（固定 Offer 下单、原订单取码）
-#   "cloudmail"         — CloudMail/Cloud Mail API（自动从平台获取域名并随机生成邮箱）
+#   "mailcode"          — 域名邮箱 MailCode（按历史订单取码）
+#   "xigua"             — 西瓜邮箱（按历史订单取码）
+#   "cloudmail"         — CloudMail 历史邮箱取码
 #   "icloud_hide"       — iCloud Hide My Email 别名池（可用本机 Gmail IMAP 或 Email Butler 收码）
 EMAIL_SOURCE = schema_default("EMAIL_SOURCE")
 
@@ -106,14 +106,14 @@ QQ_IMAP_PASSWORD = schema_default("QQ_IMAP_PASSWORD")
 # GPTMail 临时邮箱 API（固定地址：https://mail.chatgpt.org.uk）
 # ============================================================
 
-# 选择 EMAIL_SOURCE="gptmail" 时必填；请在 WebUI「配置 → 邮箱 / OTP」填写。
+# GPTMail 历史邮箱取码密钥。
 # 兼容旧源码检查：GPTMAIL_API_KEY = env_str("GPTMAIL_API_KEY", "")
 GPTMAIL_API_KEY = schema_default("GPTMAIL_API_KEY")
 
 
 # ============================================================
 # Cloudflare Worker 临时邮箱（cloudflare_temp_email 兼容）
-# EMAIL_SOURCE 含 "cloudflare" 时启用；与 cloudflare_domain（QQ IMAP）不同。
+# 历史邮箱取件与封号信号使用此 Worker。
 # ============================================================
 
 # Worker API 根地址，例如 https://mail.example.com
@@ -122,7 +122,7 @@ CLOUDFLARE_API_BASE = schema_default("CLOUDFLARE_API_BASE")
 # 匿名模式可留空；admin 模式填 ADMIN_PASSWORD
 CLOUDFLARE_API_KEY = schema_default("CLOUDFLARE_API_KEY")
 
-# 只读封号邮件信号接口，建议使用与创建邮箱分离的 Key。
+# 只读封号邮件信号接口的独立 Key。
 CLOUDFLARE_SIGNAL_API_KEY = schema_default("CLOUDFLARE_SIGNAL_API_KEY")
 CLOUDFLARE_SIGNAL_PATH = schema_default("CLOUDFLARE_SIGNAL_PATH")
 
@@ -132,27 +132,18 @@ CLOUDFLARE_AUTH_MODE = schema_default("CLOUDFLARE_AUTH_MODE")
 # Worker 全局密码（PASSWORDS），注入请求头 x-custom-auth
 CLOUDFLARE_CUSTOM_AUTH = schema_default("CLOUDFLARE_CUSTOM_AUTH")
 
-CLOUDFLARE_PATH_ACCOUNTS = schema_default("CLOUDFLARE_PATH_ACCOUNTS")
 CLOUDFLARE_PATH_MESSAGES = schema_default("CLOUDFLARE_PATH_MESSAGES")
-
-# 默认收信域名，多个可用换行或逗号分隔；留空则由 Worker 决定
-CLOUDFLARE_DEFAULT_DOMAINS = schema_default("CLOUDFLARE_DEFAULT_DOMAINS")
-
 CLOUDFLARE_REQUEST_TIMEOUT = schema_default("CLOUDFLARE_REQUEST_TIMEOUT")
-CLOUDFLARE_NAME_LENGTH = schema_default("CLOUDFLARE_NAME_LENGTH")
 
 
 # ============================================================
 # MailNest-迈巢 Outlook 临时邮箱：https://mailnest.top/
 # ============================================================
 
-# 选择 EMAIL_SOURCE="mailnest" 时必填；请在 WebUI「配置 → 邮箱 / OTP」填写。
+# MailNest 历史邮箱取码密钥。
 # 兼容旧源码检查：MAIL_NEST_API_KEY = env_str("MAIL_NEST_API_KEY", "")
 MAIL_NEST_API_KEY = schema_default("MAIL_NEST_API_KEY")
 
-# MailNest 项目代码；OpenAI/ChatGPT 默认 chatgpt001。
-# 兼容旧源码检查：MAIL_NEST_PROJECT_CODE = "chatgpt001"
-MAIL_NEST_PROJECT_CODE = schema_default("MAIL_NEST_PROJECT_CODE")
 
 # ============================================================
 # Remail 开放 API：https://remail.aishop6.com/docs
@@ -176,29 +167,10 @@ REMAIL_REQUEST_TIMEOUT = schema_default("REMAIL_REQUEST_TIMEOUT")
 # Cloud Mail Worker/API 地址，例如：https://mail.example.com
 CLOUDMAIL_API_BASE = schema_default("CLOUDMAIL_API_BASE")
 
-# CloudMail 管理员邮箱/密码；用于手动生成 Token，也用于域名被隐藏时自动登录获取域名。
-# 旧版本曾写成：CLOUDMAIL_ADMIN_EMAIL = env_str("CLOUDMAIL_ADMIN_EMAIL", "") /
-# CLOUDMAIL_PASSWORD = env_str("CLOUDMAIL_PASSWORD", "")；现在默认值和覆盖统一由 schema 提供。
-CLOUDMAIL_ADMIN_EMAIL = schema_default("CLOUDMAIL_ADMIN_EMAIL")
-CLOUDMAIL_PASSWORD = schema_default("CLOUDMAIL_PASSWORD")
-
-# CloudMail 生成 Token 接口路径；默认按 Cloud Mail 公共 API 风格。
-CLOUDMAIL_TOKEN_PATH = schema_default("CLOUDMAIL_TOKEN_PATH")
-
-# CloudMail/Cloud Mail API Authorization Token；可手动填写，也可由账号密码自动获取。
+# CloudMail/Cloud Mail API Authorization Token 用于历史邮箱取码。
 # 旧版本曾写成：CLOUDMAIL_AUTH_TOKEN = env_str("CLOUDMAIL_AUTH_TOKEN", "")；
 # 保留注释便于旧源码检查，实际读取统一走下方 apply_env_overrides。
 CLOUDMAIL_AUTH_TOKEN = schema_default("CLOUDMAIL_AUTH_TOKEN")
-
-# 邮箱域名列表，每行一个或用英文逗号分隔；可留空，运行时会从 CloudMail 平台自动获取。
-# 旧版本声明为：CLOUDMAIL_DOMAINS = []
-CLOUDMAIL_DOMAINS = schema_default("CLOUDMAIL_DOMAINS")
-
-# 生成邮箱后是否调用 /api/public/addUser 创建邮箱用户。
-CLOUDMAIL_AUTO_ADD_USER = schema_default("CLOUDMAIL_AUTO_ADD_USER")
-
-# 随机邮箱 local-part 长度。
-CLOUDMAIL_RANDOM_LOCAL_LENGTH = schema_default("CLOUDMAIL_RANDOM_LOCAL_LENGTH")
 
 
 # ============================================================
@@ -232,15 +204,11 @@ ICLOUD_HME_FORWARD_IMAP_PASSWORD = schema_default("ICLOUD_HME_FORWARD_IMAP_PASSW
 ICLOUD_HME_AUTO_CREATE = schema_default("ICLOUD_HME_AUTO_CREATE")
 ICLOUD_HME_CREATE_LABEL_PREFIX = schema_default("ICLOUD_HME_CREATE_LABEL_PREFIX")
 
-# 付费邮箱：任务身份、幂等键、订单及取码游标统一保存到 PostgreSQL。
+# MailCode 和西瓜邮箱沿用 PostgreSQL 中的历史订单及取码游标。
 MAILCODE_API_KEY = schema_default("MAILCODE_API_KEY")
-MAILCODE_PRODUCT_ID = schema_default("MAILCODE_PRODUCT_ID")
 MAILCODE_REQUEST_TIMEOUT = schema_default("MAILCODE_REQUEST_TIMEOUT")
-MAILCODE_CHANNEL_WAIT_SECONDS = schema_default("MAILCODE_CHANNEL_WAIT_SECONDS")
 XIGUA_API_BASE = schema_default("XIGUA_API_BASE")
 XIGUA_API_KEY = schema_default("XIGUA_API_KEY")
-XIGUA_PROJECT_SLUG = schema_default("XIGUA_PROJECT_SLUG")
-XIGUA_OFFER_ID = schema_default("XIGUA_OFFER_ID")
 XIGUA_REQUEST_TIMEOUT = schema_default("XIGUA_REQUEST_TIMEOUT")
 XIGUA_POLL_ATTEMPTS = schema_default("XIGUA_POLL_ATTEMPTS")
 XIGUA_POLL_INTERVAL = schema_default("XIGUA_POLL_INTERVAL")

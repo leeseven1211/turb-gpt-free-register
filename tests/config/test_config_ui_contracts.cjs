@@ -114,16 +114,16 @@ test('region_select_preserves_empty_and_canonical_options', async () => {
 });
 
 test('email_source_uses_an_ordered_multi_select', async () => {
-  const view = createConfigView([field('EMAIL_SOURCE', '邮箱 / OTP', {value: 'mailnest,outlook', csv_options: ['outlook', 'mailnest'], options: [
-    {value: 'outlook', label: 'Outlook'}, {value: 'mailnest', label: 'MailNest'},
+  const view = createConfigView([field('EMAIL_SOURCE', '邮箱 / OTP', {value: 'email_butler,generic_api', csv_options: ['generic_api', 'email_butler'], options: [
+    {value: 'generic_api', label: '通用 API'}, {value: 'email_butler', label: 'Email Butler'},
   ]})]);
   const picker = view.wrapper.get('details');
-  assert.equal(picker.get('summary').text(), 'MailNest、Outlook');
-  await namedChoice(picker, 'MailNest').trigger('click');
-  await namedChoice(picker, 'MailNest').trigger('click');
-  assert.equal(view.owner.readField('EMAIL_SOURCE'), 'outlook,mailnest');
+  assert.equal(picker.get('summary').text(), 'Email Butler、通用 API');
+  await namedChoice(picker, 'Email Butler').trigger('click');
+  await namedChoice(picker, 'Email Butler').trigger('click');
+  assert.equal(view.owner.readField('EMAIL_SOURCE'), 'generic_api,email_butler');
   await view.owner.saveAll();
-  assert.deepEqual(view.saves[0], {EMAIL_SOURCE: 'outlook,mailnest'});
+  assert.deepEqual(view.saves[0], {EMAIL_SOURCE: 'generic_api,email_butler'});
 });
 
 test('regular_config_controls_expose_field_labels', () => {

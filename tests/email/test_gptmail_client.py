@@ -6,34 +6,6 @@ from core.email.gptmail import client as gptmail_client
 
 
 class GPTMailClientTests(unittest.TestCase):
-    def setUp(self):
-        gptmail_client._CONTEXT_CACHE.clear()
-
-    def test_pick_account_requires_configured_api_key(self):
-        with patch.object(gptmail_client._email_cfg, "GPTMAIL_API_KEY", "", create=True):
-            with self.assertRaisesRegex(gptmail_client.GPTMailError, "请填写 GPTMail API Key"):
-                gptmail_client.pick_account()
-
-    @patch("core.email.gptmail.client.requests.get")
-    def test_pick_account_generates_random_mailbox_with_key(self, get):
-        response = Mock(status_code=200)
-        response.json.return_value = {
-            "success": True,
-            "data": {"email": "fresh@gptmail.test"},
-        }
-        get.return_value = response
-
-        with patch.object(gptmail_client._email_cfg, "GPTMAIL_API_KEY", "key-123", create=True):
-            account = gptmail_client.pick_account()
-
-        self.assertEqual(account.email, "fresh@gptmail.test")
-        get.assert_called_once_with(
-            "https://mail.chatgpt.org.uk/api/generate-email",
-            headers={"Accept": "application/json", "X-API-Key": "key-123"},
-            params=None,
-            timeout=20,
-        )
-
     @patch("core.email.gptmail.client.time.sleep")
     @patch("core.email.gptmail.client.requests.get")
     def test_fetch_latest_otp_reads_only_new_openai_email(self, get, sleep):
@@ -128,13 +100,3 @@ class GPTMailClientTests(unittest.TestCase):
 
         self.assertEqual(code, "654321")
         self.assertEqual(sleep_calls, [3])
-
-    @patch("core.email.gptmail.client.requests.get")
-    def test_pick_account_reports_api_error_message(self, get):
-        response = Mock(status_code=401)
-        response.json.return_value = {"success": False, "error": "Invalid API key"}
-        get.return_value = response
-
-        with patch.object(gptmail_client._email_cfg, "GPTMAIL_API_KEY", "bad-key", create=True):
-            with self.assertRaisesRegex(gptmail_client.GPTMailError, "Invalid API key"):
-                gptmail_client.pick_account()

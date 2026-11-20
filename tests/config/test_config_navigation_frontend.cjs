@@ -39,7 +39,7 @@ test('XXSYUN查询区分已保存Key、未保存输入和明确清空，保留�
 test('XXSYUN查询失败与非法响应只显示固定中文提示，密钥改变后旧结果无效', async () => {
  const key='EXTRACT_LINK_HUANGUANG_XXSYUN_API_KEY';let resolve;const view=createConfigView([...providerFields(),field(key,'提链',{secret:true,configured:true})],{request:async url=>url.includes('/types')?{items:[]}:new Promise(done=>{resolve=done;})});await flush();const pending=view.actions.queryHuanguangXxsyun();await flush();view.owner.setField(key,'replacement');resolve({ok:true,quota:99});await pending;assert.doesNotMatch(view.actions.states.huanguangXxsyun.text,/99/);view.dependencies.request=async()=>{throw {code:'key_invalid',message:'SECRET-MESSAGE'};};await view.actions.queryHuanguangXxsyun();assert.match(view.actions.states.huanguangXxsyun.text,/无效或已失效/);assert.doesNotMatch(view.actions.states.huanguangXxsyun.text,/SECRET/);view.dependencies.request=async()=>({quota:'garbage'});await view.actions.queryHuanguangXxsyun();assert.match(view.actions.states.huanguangXxsyun.text,/响应无效/);
 });
-test('383字段保持旧导航目的地，七菜单字段投影唯一', () => {
+test('配置字段保持旧导航目的地，七菜单字段投影唯一', () => {
  const projected=navigation.projectedFields(completeSchema);assert.equal(new Set(projected.map(f=>f.key)).size,projected.length);assert.deepEqual(navigation.orderedMenus(completeSchema),['注册与账号','代理与网络','邮箱与验证码','浏览器','服务集成','提链','系统与维护']);for(const f of completeSchema){assert.equal(navigation.fieldDomain(f),f.legacyNavigation.domain,f.key);assert.equal(navigation.menuFor(navigation.fieldDomain(f)),f.legacyNavigation.menu,f.key);}
 });
 test('提链独立归入资源与服务，平台页签切换真实内容', async () => {
@@ -85,7 +85,14 @@ test('固定邮箱收码连接不依赖CLI来源或历史桥接开关，HME管�
  const view=createConfigView([field('EMAIL_SOURCE','邮箱 / OTP',{value:'outlook'}),field('EMAIL_BUTLER_API_BASE','邮箱 / OTP'),field('ICLOUD_HME_BUTLER_BRIDGE_ENABLED','邮箱 / OTP',{type:'bool',value:false})]);assert.ok(view.wrapper.get('[data-config-subsection="Email Butler"]').exists());assert.ok(view.wrapper.get('[data-config-subsection="iCloud 隐藏邮箱"]').exists());await view.section('iCloud 隐藏邮箱');assert.match(view.wrapper.text(),/Email Butler/);view.owner.setField('ICLOUD_HME_BUTLER_BRIDGE_ENABLED',true);await harness.nextTick();assert.ok(view.wrapper.get('[data-config-subsection="iCloud 隐藏邮箱"]').exists());assert.doesNotMatch(view.wrapper.html(),/btnTestICloudHME|btnLoadICloudHMEAccounts/);
 });
 test('邮箱收码页不含远端库存、账号管理或子地址策略操作，Butler连接可搜索', async () => {
- const view=createConfigView([field('CLOUDMAIL_AUTH_TOKEN','邮箱 / OTP'),field('MAILCODE_API_KEY','邮箱 / OTP'),field('ICLOUD_HME_API_BASE','邮箱 / OTP'),field('EMAIL_BUTLER_API_BASE','邮箱 / OTP')]);for(const section of ['CloudMail','域名邮箱 MailCode','iCloud 隐藏邮箱']){await view.section(section);assert.doesNotMatch(view.wrapper.html(),/btnGenCloudMailToken|btnLoadCloudMailDomains|btnTestICloudHME|btnLoadICloudHMEAccounts|loadMailCodeCatalog|EMAIL_DERIVATION_|邮箱子地址/);}await view.search('EMAIL_BUTLER_API_BASE');assert.equal(activeSection(view),'Email Butler');
+ const view=createConfigView(completeSchema);
+ await view.open('邮箱 / OTP');
+ const sections=view.wrapper.findAll('[data-config-subsection]').map(button=>button.text());
+ assert.deepEqual(sections,['通用邮箱 / OTP','iCloud 隐藏邮箱','Email Butler','Remail','其他邮箱配置']);
+ await view.section('iCloud 隐藏邮箱');
+ assert.doesNotMatch(view.wrapper.html(),/btnTestICloudHME|btnLoadICloudHMEAccounts|EMAIL_DERIVATION_|邮箱子地址/);
+ await view.search('EMAIL_BUTLER_API_BASE');
+ assert.equal(activeSection(view),'Email Butler');
 });
 test('跨菜单草稿一次保存，失败保留全部草稿，成功后清空', async () => {
  const view=createConfigView([field('ROXY_API_BASE','RoxyBrowser'),field('TASK_CENTER_RETENTION_DAYS','任务中心',{type:'int',value:30})],{save:async()=>{throw new Error('network');}});await view.edit('ROXY_API_BASE','http://localhost:5888');await view.edit('TASK_CENTER_RETENTION_DAYS',60);await view.save();assert.equal(view.owner.dirtyCount.value,2);view.dependencies.save=async updates=>({updated:Object.keys(updates),reloaded:true});await view.save();assert.deepEqual(view.saves[1],{ROXY_API_BASE:'http://localhost:5888',TASK_CENTER_RETENTION_DAYS:60});assert.equal(view.owner.dirtyCount.value,0);

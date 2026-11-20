@@ -38,9 +38,7 @@ def _cache_key(email: str) -> str:
 def _headers() -> dict[str, str]:
     api_key = str(getattr(_email_cfg, "GPTMAIL_API_KEY", "") or "").strip()
     if not api_key:
-        raise GPTMailError(
-            "GPTMail API Key 未配置，请填写 GPTMail API Key（WebUI「配置 → 邮箱 / OTP」）。"
-        )
+        raise GPTMailError("GPTMail API Key 未配置，请设置 GPTMAIL_API_KEY")
     return {"Accept": "application/json", "X-API-Key": api_key}
 
 
@@ -73,20 +71,8 @@ def _get(path: str, params: dict | None = None) -> dict:
     return data
 
 
-def pick_account() -> GPTMailAccount:
-    """生成并缓存一个新的 GPTMail 随机邮箱地址。"""
-    data = _get("/api/generate-email")
-    email = str(data.get("email") or "").strip()
-    if not email or "@" not in email:
-        raise GPTMailError("GPTMail 生成邮箱响应缺少有效 email")
-    account = GPTMailAccount(email=email)
-    _CONTEXT_CACHE[_cache_key(email)] = account
-    logger.info("[GPTMail] 已生成临时邮箱: %s", email)
-    return account
-
-
 def get_account_context(email: str) -> GPTMailAccount | None:
-    """返回当前进程已生成的 GPTMail 邮箱上下文。"""
+    """返回进程缓存的 GPTMail 邮箱上下文。"""
     return _CONTEXT_CACHE.get(_cache_key(email))
 
 

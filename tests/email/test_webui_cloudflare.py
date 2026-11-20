@@ -31,9 +31,7 @@ class CloudflareWebUiTests(PostgresTestCase):
             email_config, "EMAIL_SOURCE", "cloudflare"
         ), patch.object(email_config, "CLOUDFLARE_API_BASE", "https://mail.example.com", create=True), patch.object(
             email_config, "CLOUDFLARE_AUTH_MODE", "x-admin-auth", create=True
-        ), patch.object(email_config, "CLOUDFLARE_API_KEY", "", create=True), patch.object(
-            email_config, "CLOUDFLARE_PATH_ACCOUNTS", "/admin/new_address", create=True
-        ):
+        ), patch.object(email_config, "CLOUDFLARE_API_KEY", "", create=True):
             response = self.client.post("/api/jobs", json={"count": 1, "workers": 1, "email_source": "cloudflare"})
 
         self.assertEqual(response.status_code, 400)
@@ -48,9 +46,7 @@ class CloudflareWebUiTests(PostgresTestCase):
             email_config, "EMAIL_SOURCE", "cloudflare"
         ), patch.object(email_config, "CLOUDFLARE_API_BASE", "https://mail.example.com", create=True), patch.object(
             email_config, "CLOUDFLARE_AUTH_MODE", "none", create=True
-        ), patch.object(email_config, "CLOUDFLARE_API_KEY", "", create=True), patch.object(
-            email_config, "CLOUDFLARE_PATH_ACCOUNTS", "/api/new_address", create=True
-        ):
+        ), patch.object(email_config, "CLOUDFLARE_API_KEY", "", create=True):
             response = self.client.post("/api/jobs", json={"count": 1, "workers": 1, "email_source": "cloudflare"})
 
         self.assertEqual(response.status_code, 400)

@@ -50,6 +50,11 @@ from config.schema import (
 EDITABLE_FIELDS = CONFIG_SCHEMA.editor_metadata()
 _FIELD_BY_KEY = {f["key"]: f for f in EDITABLE_FIELDS}
 
+_HIDDEN_MAIL_ADAPTER_PREFIXES = (
+    "GPTMAIL_", "MAIL_NEST_", "MAILCODE_", "XIGUA_", "CLOUDMAIL_", "OUTLOOK_", "CLOUDFLARE_", "QQ_IMAP_",
+)
+_HIDDEN_MAIL_ADAPTER_KEYS = frozenset({"EMAIL_DOMAIN", "QQ_EMAIL"})
+
 # These values are read when a fixed worker pool or Flask auth context is
 # created. config.reload_all() still updates the .env-backed module values.
 RESTART_REQUIRED_KEYS = CONFIG_SCHEMA.restart_keys() | frozenset({"EXTRACT_LINK_QUEUE_LIMIT"})
@@ -200,7 +205,14 @@ def get_config() -> list[dict]:
     from config.env_loader import load_env
 
     load_env(override=True)
-    fields = _deployment_metadata(effective_config_metadata())
+    # 旧邮箱适配器继续解析持久配置和任务快照，工作台只显示保留的邮箱设置。
+    fields = _deployment_metadata([
+        field for field in effective_config_metadata()
+        if not (
+            field["group"] == "邮箱 / OTP"
+            and (field["key"] in _HIDDEN_MAIL_ADAPTER_KEYS or field["key"].startswith(_HIDDEN_MAIL_ADAPTER_PREFIXES))
+        )
+    ])
     for field in fields:
         if field["key"] == "ACCOUNT_BATCH_WORKERS":
             field.update(readonly=True, reason="仅供并发策略迁移预览，不再接受旧键写入。")

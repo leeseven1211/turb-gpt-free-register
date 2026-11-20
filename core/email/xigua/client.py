@@ -41,14 +41,14 @@ def _base():
     base = str(getattr(_cfg, "XIGUA_API_BASE", "https://xigua.dasiqo.com") or "").strip().rstrip("/")
     parsed = urlsplit(base)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.username or parsed.password or parsed.query or parsed.fragment:
-        raise XiguaError("西瓜 API 地址无效")
+        raise XiguaError("西瓜 API 地址无效，请检查 XIGUA_API_BASE")
     return base
 
 
 def _key():
     key = str(getattr(_cfg, "XIGUA_API_KEY", "") or "").strip()
     if not key:
-        raise XiguaError("西瓜 API Key 未配置")
+        raise XiguaError("西瓜 API Key 未配置，请设置 XIGUA_API_KEY")
     return key
 
 
@@ -56,21 +56,10 @@ def _identity():
     return orders.supplier_ref(_base(), _key())
 
 
-def validate_configuration():
-    _base()
-    _key()
-    if not str(getattr(_cfg, "XIGUA_OFFER_ID", "") or "").strip():
-        raise XiguaError("西瓜 Offer ID 未配置")
-
-
-def _request(method, path, *, body=None, idempotency_key=None):
+def _get(path):
     headers = {"Accept": "application/json", "Authorization": "Bearer " + _key()}
-    if body is not None:
-        headers["Content-Type"] = "application/json"
-    if idempotency_key:
-        headers["Idempotency-Key"] = idempotency_key
     try:
-        response = requests.request(method, _base() + path, json=body, headers=headers,
+        response = requests.request("GET", _base() + path, headers=headers,
                                     timeout=bounded_timeout(max(1, int(_cfg.XIGUA_REQUEST_TIMEOUT))),
                                     allow_redirects=False)
     except requests.RequestException as exc:
@@ -94,22 +83,6 @@ def _request(method, path, *, body=None, idempotency_key=None):
     return payload.get("data") if isinstance(payload.get("data"), (dict, list)) else payload
 
 
-def _original_order(row):
-    """先查询确切订单；无订单号时只接受供应商返回的同幂等键记录。"""
-    if row["order_id"]:
-        return _request("GET", "/api/v1/orders/" + quote(row["order_id"], safe=""))
-    payload = _request("GET", "/api/v1/orders")
-    items = payload if isinstance(payload, list) else payload.get("items", []) if isinstance(payload, dict) else []
-    for item in items:
-        if isinstance(item, dict) and str(item.get("idempotency_key") or item.get("idempotencyKey") or "") == row["idempotency_key"]:
-            if item.get("id"):
-                orders.update(row["id"], order_id=str(item["id"]))
-                if not item.get("email"):
-                    return _request("GET", "/api/v1/orders/" + quote(str(item["id"]), safe=""))
-            return item
-    return None
-
-
 def _account(row):
     account = XiguaAccount(row["email"], row["order_id"], int(row["id"]))
     with _LOCK:
@@ -128,43 +101,6 @@ def restore_account_context(email, **_kwargs):
     if account is None:
         raise XiguaError("西瓜原订单未保存在 PostgreSQL，不能猜测订单或重新购买")
     return account
-
-
-def pick_account(*, owner_kind=None, owner_id=None, acquisition_id=None):
-    validate_configuration()
-    if not owner_kind or owner_id is None:
-        raise XiguaError("西瓜领取缺少稳定任务身份，请通过注册或换绑任务领取")
-    with orders.order_lock("xigua", f"owner:{owner_kind}:{owner_id}"):
-        row = orders.prepare(provider="xigua", owner_kind=owner_kind, owner_id=str(owner_id),
-                             acquisition_id=acquisition_id, identity=_identity(),
-                             request={"offer_id": str(_cfg.XIGUA_OFFER_ID).strip()})
-        if not row["email"]:
-            data = None
-            if row["status"] in {"submitting", "request_unknown"}:
-                try:
-                    data = _original_order(row)
-                except XiguaError:
-                    # 只读查询失败仍允许使用原键恢复原请求，不创建另一领取身份。
-                    pass
-            orders.update(row["id"], status="submitting")
-            try:
-                if data is None:
-                    data = _request("POST", "/api/v1/orders", body=row["request_json"],
-                                    idempotency_key=row["idempotency_key"])
-                if not isinstance(data, dict):
-                    raise XiguaError("西瓜下单响应结构无效；重跑将沿用原幂等键")
-                email, order_id = str(data.get("email") or "").strip(), str(data.get("id") or "").strip()
-                if "@" not in email or not order_id:
-                    raise XiguaError("西瓜下单响应缺少有效 email/id；重跑将沿用原幂等键")
-            except XiguaError as exc:
-                orders.update(row["id"], status="request_unknown" if exc.status == 0 or exc.status >= 500 else "rejected")
-                raise
-            row = orders.update(row["id"], status="ready", email=email, order_id=order_id)
-        return _account(row)
-
-
-def get_email(**kwargs):
-    return pick_account(**kwargs).email
 
 
 def release_account(email, status="available", note=None):
@@ -199,7 +135,7 @@ def fetch_latest_otp(email, after_ts=0, max_wait=None, poll_interval=None, settl
         for attempt in range(attempts):
             if attempt and time.monotonic() > deadline:
                 break
-            data = _request("GET", "/api/v1/orders/" + quote(account.order_id, safe=""))
+            data = _get("/api/v1/orders/" + quote(account.order_id, safe=""))
             received = _received_at(data)
             code_value = data.get("code") or data.get("verification_code") or data.get("verificationCode")
             match = _CODE_RE.search(str(code_value or ""))

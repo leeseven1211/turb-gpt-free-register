@@ -8,6 +8,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 import requests
+from psycopg.errors import UniqueViolation
 
 from config import email as cfg
 from core.email import provider as email_provider
@@ -24,11 +25,6 @@ def response(data, status=200, headers=None):
     result = Mock(status_code=status, headers=headers or {})
     result.json.return_value = data
     return result
-
-
-def mailcode_order():
-    return {"order_id": "order-1", "status": "COMPLETED", "items": [
-        {"mailbox_id": "mailbox-1", "email": "paid@example.test", "status": "ACTIVE"}]}
 
 
 def codes(records=None, cursor="7", channel="READY", has_more=False):
@@ -130,10 +126,9 @@ class PaidMailProviderTests(PostgresTestCase):
         xigua._CACHE.clear()
         email_provider._EMAIL_SOURCE_HINTS.clear()
         self.addCleanup(email_provider._EMAIL_SOURCE_HINTS.clear)
-        settings = {"MAILCODE_API_KEY": "private-test-key", "MAILCODE_PRODUCT_ID": "product-test",
-                    "MAILCODE_REQUEST_TIMEOUT": 20, "MAILCODE_CHANNEL_WAIT_SECONDS": 2,
+        settings = {"MAILCODE_API_KEY": "private-test-key", "MAILCODE_REQUEST_TIMEOUT": 20,
                     "XIGUA_API_BASE": "https://xigua.example.test", "XIGUA_API_KEY": "private-test-key",
-                    "XIGUA_OFFER_ID": "offer-test", "XIGUA_REQUEST_TIMEOUT": 20,
+                    "XIGUA_REQUEST_TIMEOUT": 20,
                     "XIGUA_POLL_ATTEMPTS": 4, "XIGUA_POLL_INTERVAL": 1,
                     "OTP_MAX_WAIT": 3, "OTP_SETTLE_SECONDS": 0, "USE_EMAIL_SERVICE": True}
         for key, value in settings.items():
@@ -142,62 +137,42 @@ class PaidMailProviderTests(PostgresTestCase):
         self.enterContext(patch.object(mailcode, "bounded_sleep"))
         self.enterContext(patch.object(xigua, "bounded_sleep"))
 
-    def buy_mailcode(self, owner="root-1"):
-        self.http.side_effect = [response({"data": mailcode_order()}), response({"data": codes()})]
-        return mailcode.pick_account(owner_kind="registration_root", owner_id=owner, acquisition_id=owner)
+    def restore_historical_mailcode(self):
+        row = orders.prepare(
+            provider="mailcode", owner_kind="registration_root", owner_id="root-1",
+            acquisition_id="root-1", identity=mailcode._identity(),
+            request={"product_id": "product-test", "count": 1},
+        )
+        address = "paid@example.test"
+        orders.update(
+            row["id"], status="ready", email=address, order_id="order-1",
+            private={"mailbox_id": "mailbox-1", "next_sequence": "7"},
+        )
+        return mailcode.restore_account_context(address)
 
-    def buy_xigua(self, owner="root-2"):
-        self.http.side_effect = lambda method, *_args, **_kwargs: response({"data": []}) if method == "GET" else response({"data": {"email": "xigua@example.test", "id": "xigua-order"}})
-        return xigua.pick_account(owner_kind="registration_root", owner_id=owner, acquisition_id=owner)
+    def restore_historical_xigua(self):
+        row = orders.prepare(
+            provider="xigua", owner_kind="registration_root", owner_id="root-2",
+            acquisition_id="root-2", identity=xigua._identity(), request={"offer_id": "offer-test"},
+        )
+        address = "xigua@example.test"
+        orders.update(row["id"], status="ready", email=address, order_id="xigua-order")
+        return xigua.restore_account_context(address)
 
-    def test_mailcode_purchase_and_restart_reuse_exact_original_order(self):
-        account = self.buy_mailcode()
+    def test_mailcode_restart_reuses_exact_original_order(self):
+        account = self.restore_historical_mailcode()
         mailcode._CONTEXT_CACHE.clear()
         self.http.reset_mock(side_effect=True)
         self.http.side_effect = AssertionError("恢复禁止重购")
-        with patch.object(cfg, "MAILCODE_PRODUCT_ID", "another-product"):
-            recovered = mailcode.pick_account(owner_kind="registration_root", owner_id="root-1", acquisition_id="root-1")
+        recovered = mailcode.restore_account_context(account.email)
         self.assertEqual((recovered.email, recovered.order_id, recovered.next_sequence), (account.email, "order-1", "7"))
         self.http.assert_not_called()
         row = orders.get_by_owner("mailcode", "registration_root", "root-1")
         self.assertEqual(row["request_json"], {"product_id": "product-test", "count": 1})
         self.assertNotIn("private-test-key", str(row))
 
-    def test_mailcode_unknown_purchase_restart_keeps_original_idempotency(self):
-        self.http.side_effect = requests.Timeout("private-test-key")
-        with self.assertRaises(mailcode.MailCodeError) as caught:
-            mailcode.pick_account(owner_kind="registration_root", owner_id="root-1", acquisition_id="root-1")
-        self.assertNotIn("private-test-key", str(caught.exception))
-        first = self.http.call_args_list[0].kwargs
-        row = orders.get_by_owner("mailcode", "registration_root", "root-1")
-        self.assertEqual(row["status"], "request_unknown")
-        self.buy_mailcode()
-        resumed = self.http.call_args_list[-2].kwargs
-        self.assertEqual(first["headers"]["Idempotency-Key"], resumed["headers"]["Idempotency-Key"])
-        self.assertEqual(first["json"], resumed["json"])
-
-    def test_channel_failure_preserves_purchased_mailbox_without_repurchase(self):
-        self.http.side_effect = [response({"data": mailcode_order()}), response({"error": {"code": "UNAUTHORIZED"}}, 401)]
-        with self.assertRaises(mailcode.MailCodeError):
-            mailcode.pick_account(owner_kind="registration_root", owner_id="root-1", acquisition_id="root-1")
-        self.http.reset_mock()
-        self.http.side_effect = [response({"data": codes(cursor="9")})]
-        account = mailcode.pick_account(owner_kind="registration_root", owner_id="root-1", acquisition_id="root-1")
-        self.assertEqual(account.next_sequence, "9")
-        self.assertEqual(self.http.call_args.args[0], "GET")
-        self.assertEqual(self.http.call_count, 1)
-
-    def test_mailcode_concurrent_same_owner_only_buys_once(self):
-        self.http.side_effect = [response({"data": mailcode_order()}), response({"data": codes()})]
-        def acquire(_):
-            return mailcode.pick_account(owner_kind="registration_root", owner_id="root-1", acquisition_id="root-1").email
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            values = list(pool.map(acquire, range(2)))
-        self.assertEqual(values, ["paid@example.test"] * 2)
-        self.assertEqual(sum(call.args[0] == "POST" for call in self.http.call_args_list), 1)
-
     def test_mailcode_cursor_and_leading_zero_survive_restart(self):
-        account = self.buy_mailcode()
+        account = self.restore_historical_mailcode()
         now = time.time()
         self.http.side_effect = [response({"data": codes([
             {"code": "012345", "received_at": now * 1000, "expires_at": (now + 120) * 1000, "sequence": "8"}], cursor="8")})]
@@ -207,7 +182,7 @@ class PaidMailProviderTests(PostgresTestCase):
         self.assertEqual(self.http.call_args.kwargs["params"]["after_sequence"], "7")
 
     def test_mailcode_old_and_expired_codes_are_not_returned(self):
-        account = self.buy_mailcode()
+        account = self.restore_historical_mailcode()
         now = time.time()
         self.http.side_effect = [response({"data": codes([
             {"code": "123456", "received_at": (now - 30) * 1000, "sequence": "8"},
@@ -225,7 +200,7 @@ class PaidMailProviderTests(PostgresTestCase):
                 mailcode.fetch_latest_otp(account.email, after_ts=received - 1, settle_seconds=5)
 
     def test_mailcode_pending_candidate_and_cursor_restore_after_interruption(self):
-        account = self.buy_mailcode()
+        account = self.restore_historical_mailcode()
         clock = [time.time()]
         with patch.object(mailcode, "time", SimpleNamespace(time=lambda: clock[0], monotonic=time.monotonic)):
             self.interrupt_mailcode_candidate(account, clock[0])
@@ -241,7 +216,7 @@ class PaidMailProviderTests(PostgresTestCase):
         self.assertEqual(self.http.call_args.kwargs["params"]["after_sequence"], "8")
 
     def test_mailcode_returned_candidate_is_reentrant_only_for_same_challenge(self):
-        account = self.buy_mailcode()
+        account = self.restore_historical_mailcode()
         now = time.time()
         self.http.side_effect = [response({"data": codes([
             {"code": "012345", "received_at": now * 1000, "expires_at": (now + 120) * 1000, "sequence": "8"}], cursor="8")})]
@@ -253,7 +228,7 @@ class PaidMailProviderTests(PostgresTestCase):
             mailcode.fetch_latest_otp(account.email, after_ts=now - 2, max_wait=0)
 
     def test_mailcode_restart_discards_expired_pending_candidate(self):
-        account = self.buy_mailcode()
+        account = self.restore_historical_mailcode()
         clock = [time.time()]
         with patch.object(mailcode, "time", SimpleNamespace(time=lambda: clock[0], monotonic=time.monotonic)):
             self.interrupt_mailcode_candidate(account, clock[0], expires=clock[0] + 3)
@@ -265,7 +240,7 @@ class PaidMailProviderTests(PostgresTestCase):
         self.assertIsNone(private["otp_candidate"])
 
     def test_mailcode_restored_candidate_does_not_hide_newer_record(self):
-        account = self.buy_mailcode()
+        account = self.restore_historical_mailcode()
         now = time.time()
         self.interrupt_mailcode_candidate(account, now)
         self.http.side_effect = [response({"data": codes([
@@ -275,43 +250,18 @@ class PaidMailProviderTests(PostgresTestCase):
         self.assertEqual(private["next_sequence"], "9")
         self.assertEqual(private["otp_candidate"]["sequence"], 9)
 
-    def test_xigua_unknown_purchase_restart_reuses_key_and_original_offer(self):
-        self.http.side_effect = requests.Timeout("private-test-key")
-        with self.assertRaises(xigua.XiguaError) as caught:
-            xigua.pick_account(owner_kind="registration_root", owner_id="root-2", acquisition_id="root-2")
-        self.assertNotIn("private-test-key", str(caught.exception))
-        first = self.http.call_args.kwargs
-        with patch.object(cfg, "XIGUA_OFFER_ID", "different-offer"):
-            self.buy_xigua()
-        self.assertEqual(first["headers"]["Idempotency-Key"], self.http.call_args.kwargs["headers"]["Idempotency-Key"])
-        self.assertEqual(self.http.call_args.kwargs["json"], {"offer_id": "offer-test"})
-
-    def test_xigua_unknown_purchase_reconciles_only_matching_idempotency_key(self):
-        self.http.side_effect = requests.Timeout()
-        with self.assertRaises(xigua.XiguaError):
-            xigua.pick_account(owner_kind="registration_root", owner_id="root-2", acquisition_id="root-2")
-        row = orders.get_by_owner("xigua", "registration_root", "root-2")
-        self.http.reset_mock()
-        self.http.side_effect = [response({"items": [
-            {"email": "wrong@example.test", "id": "wrong-order", "idempotency_key": "other-key"},
-            {"email": "xigua@example.test", "id": "xigua-order", "idempotency_key": row["idempotency_key"]}]})]
-        account = xigua.pick_account(owner_kind="registration_root", owner_id="root-2", acquisition_id="root-2")
-        self.assertEqual((account.email, account.order_id), ("xigua@example.test", "xigua-order"))
-        self.assertEqual(self.http.call_count, 1)
-        self.assertEqual(self.http.call_args.args[0], "GET")
-
     def test_xigua_release_and_restart_keep_original_order(self):
-        account = self.buy_xigua()
+        account = self.restore_historical_xigua()
         self.http.reset_mock(side_effect=True)
         self.http.side_effect = AssertionError("失败禁止取消或重购")
         xigua.release_account(account.email, status="failed")
         xigua._CACHE.clear()
-        self.assertEqual(xigua.restore_account_context(account.email).order_id, "xigua-order")
-        self.assertEqual(xigua.pick_account(owner_kind="registration_root", owner_id="root-2", acquisition_id="root-2").email, account.email)
+        restored = xigua.restore_account_context(account.email)
+        self.assertEqual((restored.email, restored.order_id), (account.email, "xigua-order"))
         self.http.assert_not_called()
 
     def test_xigua_confirmed_code_and_duplicate_receipt_survive_restart(self):
-        account = self.buy_xigua()
+        account = self.restore_historical_xigua()
         self.http.side_effect = None
         self.http.return_value = response({"data": {"verification_code": "012345", "received_at": time.time()}})
         self.assertEqual(xigua.fetch_latest_otp(account.email, after_ts=1, settle_seconds=0), "012345")
@@ -320,7 +270,7 @@ class PaidMailProviderTests(PostgresTestCase):
             xigua.fetch_latest_otp(account.email, after_ts=1, settle_seconds=0)
 
     def test_provider_source_and_retry_restore_survive_cache_loss(self):
-        account = self.buy_mailcode()
+        account = self.restore_historical_mailcode()
         email_provider._EMAIL_SOURCE_HINTS.clear()
         mailcode._CONTEXT_CACHE.clear()
         self.assertEqual(email_provider.resolve_email_source(account.email, fallback=False), "mailcode")
@@ -335,25 +285,26 @@ class PaidMailProviderTests(PostgresTestCase):
         self.http.assert_not_called()
 
     def test_supplier_identity_change_does_not_repurchase(self):
-        self.buy_mailcode()
+        account = self.restore_historical_mailcode()
         self.http.reset_mock(side_effect=True)
         with patch.object(cfg, "MAILCODE_API_KEY", "other-key"):
-            with self.assertRaisesRegex(RuntimeError, "身份"):
-                mailcode.pick_account(owner_kind="registration_root", owner_id="root-1", acquisition_id="root-1")
+            with self.assertRaisesRegex(mailcode.MailCodeError, "原订单未保存在 PostgreSQL"):
+                mailcode.restore_account_context(account.email)
         self.http.assert_not_called()
 
     def test_same_acquisition_cannot_be_rebound_to_other_owner(self):
-        self.buy_mailcode()
+        self.restore_historical_mailcode()
         self.http.reset_mock(side_effect=True)
-        with self.assertRaises(Exception):
-            mailcode.pick_account(owner_kind="registration_root", owner_id="other", acquisition_id="root-1")
+        with self.assertRaises(UniqueViolation):
+            orders.prepare(
+                provider="mailcode", owner_kind="registration_root", owner_id="other",
+                acquisition_id="root-1", identity=mailcode._identity(), request={"product_id": "product-test", "count": 1},
+            )
         self.http.assert_not_called()
 
     def test_explicit_paid_source_is_rejected_without_purchase_or_fallback(self):
-        with patch.object(cfg, "EMAIL_SOURCE", "mailcode,outlook"), patch.object(
-            mailcode, "pick_account", side_effect=AssertionError("新注册不能购买邮箱")
-        ) as purchase, patch("core.email.outlook.client.pick_account") as outlook:
+        with patch.object(cfg, "EMAIL_SOURCE", "mailcode,outlook"), patch("core.email.outlook.client.pick_account") as outlook:
             with self.assertRaisesRegex(RuntimeError, "local_inventory_source_required"):
                 email_provider.acquire_email("mailcode", owner_kind="cli", owner_id="one", acquisition_id="one")
-        purchase.assert_not_called()
+        self.http.assert_not_called()
         outlook.assert_not_called()

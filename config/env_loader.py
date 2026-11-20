@@ -43,7 +43,6 @@ SECRET_ENV_KEYS: dict[str, str] = {
     "MAILCODE_API_KEY": "MailCode API Key",
     "XIGUA_API_KEY": "西瓜 API Key",
     "CLOUDMAIL_AUTH_TOKEN": "CloudMail Authorization Token",
-    "CLOUDMAIL_PASSWORD": "CloudMail 登录密码",
     "ICLOUD_HME_API_TOKEN": "iCloud HME 本地服务 API Token（可选）",
     "ICLOUD_HME_FORWARD_IMAP_PASSWORD": "隐藏邮箱转发目标的 IMAP 应用专用密码",
     "CPA_MANAGEMENT_KEY": "CPA 管理接口密钥",

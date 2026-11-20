@@ -125,11 +125,7 @@ function B(e) {
 		"OTP_MAX_WAIT",
 		"OTP_POLL_INTERVAL",
 		"EMAIL_SOURCE"
-	].includes(e) ? ["通用邮箱 / OTP", "邮箱来源选择、OTP 等待参数、手动邮箱等通用设置"] : e.startsWith("EMAIL_BUTLER_") ? ["Email Butler", "已导入邮箱的租约连接与取码权限"] : e.startsWith("GPTMAIL_") ? ["GPTMail", "GPTMail 临时邮箱 API 配置"] : e.startsWith("MAIL_NEST_") ? ["MailNest", "MailNest / 迈巢临时邮箱 API 配置"] : e.startsWith("REMAIL_") ? ["Remail", "历史 Remail 原订单收码连接；新邮箱请在邮箱服务中准备后导入"] : e.startsWith("MAILCODE_") ? ["域名邮箱 MailCode", "历史 MailCode 原订单收码连接"] : e.startsWith("XIGUA_") ? ["西瓜邮箱", "历史原订单的固定收码连接与轮询参数"] : e.startsWith("CLOUDMAIL_") ? ["CloudMail", "历史邮箱收信 API 连接及已有 Token"] : e.startsWith("ICLOUD_HME_") ? ["iCloud 隐藏邮箱", "已导入与历史隐藏邮箱的固定收件连接；邮箱管理在邮箱服务完成"] : e.startsWith("OUTLOOK_") ? ["Outlook 邮箱池", "Outlook 邮箱池和取件模式配置"] : e.startsWith("CLOUDFLARE_") ? ["Cloudflare 临时邮箱", "Cloudflare Worker 临时邮箱 API、鉴权与路径配置"] : [
-		"EMAIL_DOMAIN",
-		"QQ_EMAIL",
-		"QQ_IMAP_PASSWORD"
-	].includes(e) ? ["Cloudflare 域名邮箱", "Cloudflare 转发到 QQ 邮箱后的 IMAP 收信配置"] : ["其他邮箱配置", ""];
+	].includes(e) ? ["通用邮箱 / OTP", "邮箱来源选择、OTP 等待参数、手动邮箱等通用设置"] : e.startsWith("EMAIL_BUTLER_") ? ["Email Butler", "已导入邮箱的租约连接与取码权限"] : e.startsWith("REMAIL_") ? ["Remail", "历史 Remail 原订单收码连接；新邮箱请在邮箱服务中准备后导入"] : e.startsWith("ICLOUD_HME_") ? ["iCloud 隐藏邮箱", "已导入与历史隐藏邮箱的固定收件连接；邮箱管理在邮箱服务完成"] : ["其他邮箱配置", ""];
 }
 function te(e) {
 	return ["REGISTRATION_PROXY_RETRIES", "REGISTRATION_PROXY_RETRY_DELAY"].includes(e) ? ["注册主链路", "注册任务重试参数已归入注册主链路；线路本身由统一代理池按国家需求领取。"] : ["ACCOUNT_ACTION_PROXY_RETRIES", "ACCOUNT_ACTION_PROXY_RETRY_DELAY"].includes(e) ? ["账号补全", "账号动作重试参数已归入账号补全；新任务不在这里选择代理供应商。"] : [
@@ -276,15 +272,7 @@ var me = {
 		"通用邮箱 / OTP",
 		"iCloud 隐藏邮箱",
 		"Email Butler",
-		"GPTMail",
-		"MailNest",
 		"Remail",
-		"域名邮箱 MailCode",
-		"西瓜邮箱",
-		"CloudMail",
-		"Outlook 邮箱池",
-		"Cloudflare 临时邮箱",
-		"Cloudflare 域名邮箱",
 		"其他邮箱配置"
 	],
 	接码平台: [

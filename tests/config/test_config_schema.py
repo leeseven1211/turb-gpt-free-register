@@ -367,21 +367,31 @@ class ConfigSchemaTests(unittest.TestCase):
             self.assertEqual(len(entries), 1, key)
             self.assertEqual(entries[0]["group"], "定时任务", key)
 
-    def test_unused_cloudflare_paths_are_removed_from_config_contract(self):
-        """不再开放客户端从未调用的预留接口，现有 .env 无需改写。"""
+    def test_retired_email_creation_settings_are_ignored_by_runtime(self):
         from config import email
 
-        removed = {"CLOUDFLARE_PATH_DOMAINS", "CLOUDFLARE_PATH_TOKEN"}
+        removed = {
+            "CLOUDFLARE_PATH_DOMAINS", "CLOUDFLARE_PATH_TOKEN", "CLOUDFLARE_PATH_ACCOUNTS",
+            "CLOUDFLARE_DEFAULT_DOMAINS", "CLOUDFLARE_NAME_LENGTH",
+            "CLOUDMAIL_ADMIN_EMAIL", "CLOUDMAIL_PASSWORD", "CLOUDMAIL_TOKEN_PATH",
+            "CLOUDMAIL_DOMAINS", "CLOUDMAIL_AUTO_ADD_USER", "CLOUDMAIL_RANDOM_LOCAL_LENGTH",
+            "MAILCODE_PRODUCT_ID", "MAILCODE_CHANNEL_WAIT_SECONDS", "MAIL_NEST_PROJECT_CODE",
+            "XIGUA_PROJECT_SLUG", "XIGUA_OFFER_ID",
+        }
         for key in removed:
-            self.assertNotIn(key, CONFIG_SCHEMA)
-            self.assertNotIn(key, config_schema.DEFAULTS)
-            self.assertNotIn(key, config.__all__)
-            self.assertFalse(hasattr(email, key))
-            self.assertFalse(hasattr(config, key))
+            with self.subTest(key=key):
+                self.assertNotIn(key, CONFIG_SCHEMA)
+                self.assertNotIn(key, config_schema.DEFAULTS)
+                self.assertNotIn(key, config.__all__)
+                self.assertFalse(hasattr(email, key))
+                self.assertFalse(hasattr(config, key))
         with self.assertRaises(ConfigValidationError):
-            validate_config_updates({"CLOUDFLARE_PATH_TOKEN": "/unused"})
-        for key in ("CLOUDFLARE_PATH_ACCOUNTS", "CLOUDFLARE_PATH_MESSAGES", "CLOUDFLARE_DEFAULT_DOMAINS"):
-            self.assertIn(key, CONFIG_SCHEMA)
+            validate_config_updates({"CLOUDFLARE_PATH_ACCOUNTS": "/unused"})
+        persisted = dict.fromkeys(removed, "legacy-value")
+        persisted["CLOUDFLARE_PATH_MESSAGES"] = "/legacy/inbox"
+        snapshot = build_non_sensitive_snapshot(persisted, strict=True)
+        self.assertTrue(removed.isdisjoint(snapshot.values))
+        self.assertEqual("/legacy/inbox", snapshot["CLOUDFLARE_PATH_MESSAGES"])
 
     def test_schema_defaults_match_loaded_module_defaults(self):
         for field in CONFIG_SCHEMA.fields:
@@ -578,7 +588,6 @@ class ConfigSchemaTests(unittest.TestCase):
             "CLOUDFLARE_SIGNAL_API_KEY",
             "CLOUDFLARE_CUSTOM_AUTH",
             "MAIL_NEST_API_KEY",
-            "CLOUDMAIL_PASSWORD",
             "CLOUDMAIL_AUTH_TOKEN",
             "ICLOUD_HME_API_TOKEN",
             "ICLOUD_HME_FORWARD_IMAP_PASSWORD",
@@ -673,6 +682,37 @@ class ConfigSchemaTests(unittest.TestCase):
             self.assertNotIn("ACCOUNT_PLAN_CHECK_WORKERS", os.environ)
             self.assertEqual("keep", os.environ["UNRELATED_THREAD_ENV"])
 
+    def test_config_workspace_exposes_only_supported_email_settings(self):
+        legacy_source_order = "outlook,generic_api,cloudflare_domain,mailnest"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / ".env"
+            path.write_text(f'EMAIL_SOURCE="{legacy_source_order}"\n', encoding="utf-8")
+            try:
+                with patch.object(env_loader, "_ENV_PATH", path), patch.object(
+                    config_schema, "_PUBLISHED_SNAPSHOT", None
+                ), patch.dict(os.environ, {
+                    "PYTHON_DOTENV_DISABLED": "1", "EMAIL_SOURCE": legacy_source_order,
+                }, clear=True):
+                    config_editor.update_config({"OTP_MAX_WAIT": 241})
+                    metadata = {item["key"]: item for item in config_editor.get_config()}
+                    visible = {key for key, item in metadata.items() if item["group"] == "邮箱 / OTP"}
+                    self.assertEqual({
+                        "USE_EMAIL_SERVICE", "REGISTER_EMAIL", "OTP_MAX_WAIT", "OTP_POLL_INTERVAL",
+                        "EMAIL_SOURCE", "EMAIL_BUTLER_API_BASE", "EMAIL_BUTLER_API_KEY",
+                        "EMAIL_BUTLER_REQUEST_TIMEOUT", "REMAIL_API_BASE", "REMAIL_API_KEY",
+                        "REMAIL_REQUEST_TIMEOUT", "ICLOUD_HME_API_BASE", "ICLOUD_HME_API_TOKEN",
+                        "ICLOUD_HME_REQUEST_TIMEOUT", "ICLOUD_HME_INBOX_MODE",
+                        "ICLOUD_HME_BUTLER_BRIDGE_ENABLED", "ICLOUD_HME_FORWARD_IMAP_SERVER",
+                        "ICLOUD_HME_FORWARD_IMAP_PORT", "ICLOUD_HME_FORWARD_IMAP_EMAIL",
+                        "ICLOUD_HME_FORWARD_IMAP_PASSWORD",
+                    }, visible)
+                    self.assertEqual(legacy_source_order, env_loader.read_env_file()["EMAIL_SOURCE"])
+                    self.assertEqual(legacy_source_order, metadata["EMAIL_SOURCE"]["value"])
+                    self.assertIn("outlook", metadata["EMAIL_SOURCE"]["csv_options"])
+                    self.assertIn("cloudflare_domain", metadata["EMAIL_SOURCE"]["csv_options"])
+            finally:
+                config.reload_all()
+
     def test_enum_none_survives_save_reload_and_metadata(self):
         fd, raw_path = tempfile.mkstemp(prefix="turb-config-enum-")
         os.close(fd)
@@ -690,7 +730,7 @@ class ConfigSchemaTests(unittest.TestCase):
                 })
                 self.assertTrue(result["reloaded"])
                 saved = env_loader.read_env_file()
-                metadata = {item["key"]: item for item in config_editor.get_config()}
+                metadata = {item["key"]: item for item in effective_config_metadata()}
                 for key in ("REGISTRATION_PROXY_MODE", "CLOUDFLARE_AUTH_MODE"):
                     self.assertEqual("none", saved[key])
                     self.assertEqual("none", metadata[key]["value"])

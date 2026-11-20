@@ -1098,8 +1098,6 @@ const FEATURE_SELECTORS = {
   deactivation_mail: '#btnCheckSelectedDeactivationMailV2,#btnCheckSelectedDeactivationMail,[data-account-deactivation-mail]',
   proxy_provider_test: '#btnTestProxyProviderV2,#btnTestProxy1024V2,#btnTestProxy1024',
   roxy_workspaces: '#btnLoadRoxyWorkspacesV2,#btnLoadRoxyWorkspaces',
-  cloudmail_token: '#btnGenCloudMailTokenV2,#btnGenCloudMailToken',
-  cloudmail_domains: '#btnLoadCloudMailDomainsV2,#btnLoadCloudMailDomains',
   icloud_hme: '#btnTestICloudHMEV2,#btnTestICloudHME',
   email_butler_test: '#btnTestEmailButlerV2,#btnTestEmailButler',
 };

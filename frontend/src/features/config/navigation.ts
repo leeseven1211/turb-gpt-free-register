@@ -268,16 +268,8 @@ export function emailConfigSectionForKey(key: string): string[] {
     return ['通用邮箱 / OTP', '邮箱来源选择、OTP 等待参数、手动邮箱等通用设置'];
   }
   if (key.startsWith('EMAIL_BUTLER_')) return ['Email Butler', '已导入邮箱的租约连接与取码权限'];
-  if (key.startsWith('GPTMAIL_')) return ['GPTMail', 'GPTMail 临时邮箱 API 配置'];
-  if (key.startsWith('MAIL_NEST_')) return ['MailNest', 'MailNest / 迈巢临时邮箱 API 配置'];
   if (key.startsWith('REMAIL_')) return ['Remail', '历史 Remail 原订单收码连接；新邮箱请在邮箱服务中准备后导入'];
-  if (key.startsWith('MAILCODE_')) return ['域名邮箱 MailCode', '历史 MailCode 原订单收码连接'];
-  if (key.startsWith('XIGUA_')) return ['西瓜邮箱', '历史原订单的固定收码连接与轮询参数'];
-  if (key.startsWith('CLOUDMAIL_')) return ['CloudMail', '历史邮箱收信 API 连接及已有 Token'];
   if (key.startsWith('ICLOUD_HME_')) return ['iCloud 隐藏邮箱', '已导入与历史隐藏邮箱的固定收件连接；邮箱管理在邮箱服务完成'];
-  if (key.startsWith('OUTLOOK_')) return ['Outlook 邮箱池', 'Outlook 邮箱池和取件模式配置'];
-  if (key.startsWith('CLOUDFLARE_')) return ['Cloudflare 临时邮箱', 'Cloudflare Worker 临时邮箱 API、鉴权与路径配置'];
-  if (['EMAIL_DOMAIN','QQ_EMAIL','QQ_IMAP_PASSWORD'].includes(key)) return ['Cloudflare 域名邮箱', 'Cloudflare 转发到 QQ 邮箱后的 IMAP 收信配置'];
   return ['其他邮箱配置', ''];
 }
 
@@ -402,7 +394,7 @@ export function subsectionFor(field: ConfigField, fields: readonly ConfigField[]
   return '';
 }
 const subsectionOrder: Record<string,string[]> = {
-  '邮箱 / OTP':['通用邮箱 / OTP','iCloud 隐藏邮箱','Email Butler','GPTMail','MailNest','Remail','域名邮箱 MailCode','西瓜邮箱','CloudMail','Outlook 邮箱池','Cloudflare 临时邮箱','Cloudflare 域名邮箱','其他邮箱配置'],
+  '邮箱 / OTP':['通用邮箱 / OTP','iCloud 隐藏邮箱','Email Butler','Remail','其他邮箱配置'],
   '接码平台':['通用接码','GrizzlySMS','H 接码','L 接码','其他接码配置'],
   '代理与网络':['任务用池','代理来源','库存策略','高级兼容'], 'Codex':['基础配置','CPA配置','sub2api','Token 自动刷新'],
 };

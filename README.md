@@ -45,12 +45,8 @@ ChatGPT / OpenAI 账号自动注册与 Codex OAuth 授权工具。注册驱动�
 
 - Outlook 邮箱池：`email----password----clientId----refreshToken`
 - Cloudflare 域名邮箱 + QQ 邮箱 IMAP 收信（`cloudflare_domain`）
-- Cloudflare Worker 临时邮箱：自动创建 + JWT 取码（`cloudflare`，兼容 cloudflare_temp_email）
 - 通用 API 邮箱：`email----取码地址`
-- GPTMail 临时邮箱 API：运行时随机生成邮箱并自动收取验证码
 - Remail 开放 API：按项目下单领取邮箱并自动收取验证码（`remail`）
-- MailCode 域名邮箱：按指定商品购买邮箱，持久化幂等订单和取码游标（`mailcode`）
-- 西瓜邮箱接码：按指定 Offer 购买邮箱并获取邮件验证码（`xigua`）
 - iCloud Hide My Email：同步本机 sidecar 的隐藏邮箱别名，并通过隐藏邮箱实际转发目标的收件箱自动收码（`icloud_hide`）
 - `EMAIL_SOURCE` 支持配置多个已启用来源，例如：
 
@@ -59,8 +55,6 @@ EMAIL_SOURCE = "email_butler,icloud_hide"
 ```
 
 WebUI 启动注册前会显示“本次注册邮箱来源”下拉框，操作者必须为这一批任务明确选择其中一个来源。选中的来源会写入每个任务和重试任务；领取失败时任务直接失败，不会静默切换到另一个邮箱平台。这样可以清楚判断每个账号实际用了哪类邮箱，也避免 Butler 与 iCloud 隐藏邮箱在运行时被程序自动混用。
-
-- MailNest-迈巢：Outlook 临时邮箱
 
 ### Codex OAuth
 
@@ -359,41 +353,8 @@ EMAIL_SOURCE = "generic_api"
 或使用组合来源：
 
 ```python
-EMAIL_SOURCE = "outlook,generic_api,mailnest"
+EMAIL_SOURCE = "outlook,generic_api,email_butler"
 ```
-
-#### GPTMail 临时邮箱
-
-在 WebUI 的「配置 → 邮箱 / OTP」填写 `GPTMail API Key`，然后将邮箱来源设置为：
-
-```python
-EMAIL_SOURCE = "gptmail"
-```
-
-在配置页填写以下字段：
-
-```dotenv
-GPTMAIL_API_KEY=你的_GPTMail_API_Key
-```
-
-服务地址固定为 `https://mail.chatgpt.org.uk`。未填写 Key 时，任务会提示填写 `GPTMail API Key`，不会使用公共测试 Key。
-
-#### Cloudflare Worker 临时邮箱（`cloudflare`）
-
-兼容 `cloudflare_temp_email` 类 Worker：注册时自动创建域名邮箱，并用 JWT 轮询收件箱提取 OpenAI 六位验证码。  
-（与下方 `cloudflare_domain` / QQ IMAP 方案不同，请勿混用标识。）
-
-```dotenv
-EMAIL_SOURCE=cloudflare
-CLOUDFLARE_API_BASE=https://你的-worker-api-域名
-CLOUDFLARE_API_KEY=你的_ADMIN_PASSWORD
-CLOUDFLARE_AUTH_MODE=x-admin-auth
-# admin 创建时常用：
-# CLOUDFLARE_PATH_ACCOUNTS=/admin/new_address
-CLOUDFLARE_DEFAULT_DOMAINS=你的收信域名.com
-```
-
-匿名模式可将 `CLOUDFLARE_AUTH_MODE=none` 且 Key 留空，创建路径默认 `/api/new_address`；若被 Turnstile 拦截请改用 admin 模式。更多字段见 WebUI「配置 → 邮箱 / OTP」。
 
 #### 子邮箱统一由 Email Butler 管理
 
@@ -529,34 +490,13 @@ QQ_IMAP_PASSWORD = "QQ邮箱IMAP授权码"
 
 Cloudflare Email Routing 需要把域名邮件转发到 QQ 邮箱。此模式不调用 Worker 创建接口，仅本地生成地址并通过 QQ IMAP 取件。
 
-#### MailNest-迈巢 Outlook 临时邮箱
+#### 历史临时邮箱与接码订单
 
-可直接在 Web-UI 中配置 API Key 与项目代码`MAIL_NEST_PROJECT_CODE`，也可以在配置文件中配置。
+GPTMail（`gptmail`）、MailNest（`mailnest`）和 CloudMail（`cloudmail`）的旧账号继续使用各自的收件连接。所需配置分别为 `GPTMAIL_API_KEY`、`MAIL_NEST_API_KEY`，以及 `CLOUDMAIL_API_BASE` 和 `CLOUDMAIL_AUTH_TOKEN`。
 
-- `api-key`获取页面：https://mailnest.top/account
-- 项目代码获取页面：https://mailnest.top/buy-email。默认为`chatgpt001`，可以直接使用
+Cloudflare Worker 临时邮箱（`cloudflare`）通过原邮箱 JWT 读取收件箱。`CLOUDFLARE_API_BASE` 指定 Worker 地址，`CLOUDFLARE_PATH_MESSAGES` 指定收件路径，默认 `/api/mails`。
 
-#### MailCode 与西瓜邮箱接码
-
-在 WebUI「配置 → 邮箱 / OTP」填写所选供应商的密钥及商品信息，并在邮箱来源中启用 `mailcode` 或 `xigua`。注册批次和换绑邮箱仍须明确选择本次来源，不会在失败时切换到其他供应商。
-
-```dotenv
-# MailCode 固定使用官方服务地址；商品可用配置页的“查询商品与余额”确认
-MAILCODE_API_KEY=你的MailCode_API_Key
-MAILCODE_PRODUCT_ID=你的商品ID
-MAILCODE_REQUEST_TIMEOUT=20
-MAILCODE_CHANNEL_WAIT_SECONDS=60
-
-# 西瓜提供邮箱与邮件验证码
-XIGUA_API_BASE=https://xigua.dasiqo.com
-XIGUA_API_KEY=你的西瓜_API_Key
-XIGUA_OFFER_ID=你的Offer_ID
-XIGUA_REQUEST_TIMEOUT=20
-XIGUA_POLL_ATTEMPTS=10
-XIGUA_POLL_INTERVAL=5
-```
-
-两种供应商的订单身份、原请求及已购邮箱保存在 PostgreSQL `mail_provider_orders`，密钥加密保存在运行配置数据库中。同一个注册或换绑任务重跑时继续原订单和原邮箱；请求异常后保留原幂等键，不另建随机购买意图。MailCode 已购但通道尚未就绪时，下次继续准备原通道；验证码按每个邮箱持久化服务端游标，支持分页和重启恢复，保留前导零，不按验证码数字去重。西瓜按精确订单关联恢复，并要求连续两次确认相同验证码。普通释放不取消已购邮箱或退款。CLI 可用 `--mail-acquisition-id` 继续同一领取意图；历史 `--remail-acquisition-id` 参数继续兼容。
+MailCode（`mailcode`）和西瓜邮箱（`xigua`）沿用 PostgreSQL `mail_provider_orders` 中的原订单记录。`MAILCODE_API_KEY`、`XIGUA_API_BASE` 和 `XIGUA_API_KEY` 用于匹配和读取原订单。MailCode 将取码游标与候选验证码一起保存，支持分页及重启恢复。西瓜邮箱按原订单取码，并连续两次确认相同验证码。
 
 #### Remail 开放 API（`remail`）
 
@@ -1619,9 +1559,11 @@ WebUI 配置页保存后会热加载。Codex 补跑线程启动前也会重新�
 
 配置页分为「注册与账号、代理与网络、邮箱与验证码、浏览器、服务集成、提链、系统与维护」七组，常用参数优先展示，高级参数折叠。「注册与账号」内的查活、刷新 AT、补密码、补 2FA、邮箱换绑与查询套餐并列，各自集中维护相关参数。字段使用统一高度和对齐规则；枚举单选、国家和有序列表多选、数字范围校验复用统一交互。详细说明、配置键和来源收进可点击帮助，搜索仍可定位隐藏或高级配置。切换分类和保存失败时保留未保存值。
 
-密钥只显示是否配置，留空未修改不会覆盖旧值，明确清除后才删除配置值。`EMAIL_SOURCE` 控制新任务可领取的邮箱来源：自动模式至少启用一个来源，手动模式可为空。邮箱资源页默认只显示已启用来源和收码依赖；iCloud 使用 `forward_butler` 时保留 Email Butler 入口，历史桥接开启时保留 iCloud 配置。停用服务的配置、库存和历史不删除，可通过“显示未启用”查看；已注册账号的取码仍按账号保存的来源恢复。
+密钥只显示是否配置，留空未修改不会覆盖旧值，明确清除后才删除配置值。`EMAIL_SOURCE` 控制新任务可领取的邮箱来源：自动模式至少启用一个来源，手动模式可为空。邮箱资源页默认只显示已启用来源和收码依赖；iCloud 使用 `forward_butler` 时保留 Email Butler 入口，历史桥接开启时保留 iCloud 配置。邮箱资源页可通过“显示未启用”查看停用的服务。已注册账号的取码仍按账号保存的来源恢复。
 
-AT 刷新窗口、单轮上限、封号扫描首次延迟/回看天数、Outlook 远端地址和提链超时现在都由 schema 和配置页统一维护。标记“需重启”的运行字段会写入数据库，但当前进程中的既有 worker 不会伪装成已切换，重启后才开始使用新值。
+「配置 → 邮箱 / OTP」提供通用邮箱 / OTP、iCloud 隐藏邮箱、Email Butler 和 Remail 四个配置分组。GPTMail、MailNest、MailCode、西瓜邮箱、CloudMail、Outlook 邮箱池、Cloudflare 临时邮箱和 Cloudflare 域名邮箱的专属字段已退出配置页。通用分组中的 CLI 默认邮箱顺序仍支持现有本地库存来源。
+
+AT 刷新窗口、单轮上限、封号扫描首次延迟/回看天数和提链超时由 schema 和配置页统一维护。标记“需重启”的运行字段会写入数据库，但当前进程中的既有 worker 不会伪装成已切换，重启后才开始使用新值。
 
 自动刷新 AT、刷新 Codex 凭证、封号邮件扫描和原始认证上下文清理在启动时关闭，也可以保存配置后启用；调度线程最长约 60 秒识别开关变化，实际执行仍遵循首次延迟、已保存的下次执行时间和扫描间隔。关闭开关会阻止下一轮执行，已经开始的任务继续完成。
 
@@ -1658,11 +1600,6 @@ ROXY_OPEN_HEADLESS = True
 ```bash
 python tools/maintenance/test_codex_oauth.py --email <邮箱> --verbose
 ```
-
-### Cloudflare Worker 邮箱怎么配？
-
-将 `EMAIL_SOURCE` 设为 `cloudflare`，并配置 `CLOUDFLARE_API_BASE` 等（见上文「Cloudflare Worker 临时邮箱」）。  
-注意与 `cloudflare_domain`（QQ IMAP 转发）不是同一来源。
 
 ### 没有接码平台能注册吗？
 

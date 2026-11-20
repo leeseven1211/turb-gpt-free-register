@@ -28,8 +28,7 @@ def test_legacy_management_routes_are_gone_without_network_or_config_writes(meth
     forbidden = [
         "core.email.icloud_hide.client.list_accounts", "core.email.icloud_hide.client.test_connection",
         "core.email.icloud_hide.client.sync_aliases", "core.email.icloud_hide.client.create_address",
-        "core.email.cloudmail.client.gen_token", "core.email.cloudmail.client.fetch_domains",
-        "core.email.mailcode.client.list_products", "core.email.mailcode.client.get_wallet",
+        "requests.sessions.Session.request",
         "webui.config_editor.update_config",
     ]
     with ExitStack() as stack:
@@ -46,11 +45,7 @@ def test_legacy_management_routes_are_gone_without_network_or_config_writes(meth
 
 SUPPLY_KEYS = {
     "ICLOUD_HME_ACCOUNT_ID", "ICLOUD_HME_SYNC_TTL", "ICLOUD_HME_AUTO_CREATE", "ICLOUD_HME_CREATE_LABEL_PREFIX",
-    "CLOUDMAIL_ADMIN_EMAIL", "CLOUDMAIL_PASSWORD", "CLOUDMAIL_TOKEN_PATH", "CLOUDMAIL_DOMAINS",
-    "CLOUDMAIL_AUTO_ADD_USER", "CLOUDMAIL_RANDOM_LOCAL_LENGTH", "MAIL_NEST_PROJECT_CODE",
-    "MAILCODE_PRODUCT_ID", "MAILCODE_CHANNEL_WAIT_SECONDS", "XIGUA_PROJECT_SLUG", "XIGUA_OFFER_ID",
     "REMAIL_PROJECT_ID", "REMAIL_EMAIL_SUFFIX", "REMAIL_SERVICE_MODE", "REMAIL_SUPPLY_POLICY", "REMAIL_ORDER_WAIT_SECONDS",
-    "CLOUDFLARE_PATH_ACCOUNTS", "CLOUDFLARE_DEFAULT_DOMAINS", "CLOUDFLARE_NAME_LENGTH",
 }
 
 
@@ -62,11 +57,13 @@ def test_supply_policy_is_hidden_and_uneditable_but_historical_values_still_reso
             schema.validate_config_updates({key: schema.CONFIG_SCHEMA[key].default})
     historical = schema.resolve_config({
         "ICLOUD_HME_ACCOUNT_ID": "legacy-fixed-account", "ICLOUD_HME_AUTO_CREATE": "true",
-        "CLOUDMAIL_PASSWORD": "legacy-private-password", "REMAIL_SERVICE_MODE": "code",
+        "CLOUDMAIL_PASSWORD": "legacy-private-password", "CLOUDMAIL_AUTH_TOKEN": "legacy-read-token",
+        "REMAIL_SERVICE_MODE": "code",
     }, strict=True)
     assert historical["ICLOUD_HME_ACCOUNT_ID"].value == "legacy-fixed-account"
     assert historical["ICLOUD_HME_AUTO_CREATE"].value is True
-    assert historical["CLOUDMAIL_PASSWORD"].value == "legacy-private-password"
+    assert "CLOUDMAIL_PASSWORD" not in historical
+    assert historical["CLOUDMAIL_AUTH_TOKEN"].value == "legacy-read-token"
     assert historical["REMAIL_SERVICE_MODE"].value == "code"
 
 

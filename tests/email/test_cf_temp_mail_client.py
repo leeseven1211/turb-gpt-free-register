@@ -8,61 +8,6 @@ from core.email.cloudflare import client as client
 class CFTempMailClientTests(unittest.TestCase):
     def setUp(self):
         client._CONTEXT_CACHE.clear()
-        client._DOMAIN_COUNTER = 0
-
-    def test_pick_account_requires_api_base(self):
-        with patch.object(client._email_cfg, "CLOUDFLARE_API_BASE", "", create=True):
-            with self.assertRaisesRegex(client.CFTempMailError, "请填写 CLOUDFLARE_API_BASE"):
-                client.pick_account()
-
-    @patch("core.email.cloudflare.client.requests.request")
-    def test_pick_account_anonymous_create(self, request_mock):
-        response = Mock(status_code=200)
-        response.json.return_value = {
-            "address": "abc123@mail.example.com",
-            "jwt": "jwt-token-1",
-        }
-        request_mock.return_value = response
-
-        with patch.object(client._email_cfg, "CLOUDFLARE_API_BASE", "https://mail.example.com", create=True), patch.object(
-            client._email_cfg, "CLOUDFLARE_AUTH_MODE", "none", create=True
-        ), patch.object(client._email_cfg, "CLOUDFLARE_API_KEY", "", create=True), patch.object(
-            client._email_cfg, "CLOUDFLARE_PATH_ACCOUNTS", "/api/new_address", create=True
-        ), patch.object(client._email_cfg, "CLOUDFLARE_DEFAULT_DOMAINS", ["mail.example.com"], create=True), patch.object(
-            client._email_cfg, "CLOUDFLARE_CUSTOM_AUTH", "", create=True
-        ):
-            account = client.pick_account()
-
-        self.assertEqual(account.email, "abc123@mail.example.com")
-        self.assertEqual(account.jwt, "jwt-token-1")
-        self.assertIs(client.get_account_context(account.email), account)
-        args, kwargs = request_mock.call_args
-        self.assertEqual(args[0], "POST")
-        self.assertEqual(args[1], "https://mail.example.com/api/new_address")
-        self.assertEqual(kwargs["json"], {"domain": "mail.example.com"})
-
-    @patch("core.email.cloudflare.client.requests.request")
-    def test_admin_create_uses_name_payload_and_header(self, request_mock):
-        response = Mock(status_code=200)
-        response.json.return_value = {"address": "u@mail.example.com", "jwt": "jwt-2"}
-        request_mock.return_value = response
-
-        with patch.object(client._email_cfg, "CLOUDFLARE_API_BASE", "https://mail.example.com", create=True), patch.object(
-            client._email_cfg, "CLOUDFLARE_AUTH_MODE", "x-admin-auth", create=True
-        ), patch.object(client._email_cfg, "CLOUDFLARE_API_KEY", "admin-pass", create=True), patch.object(
-            client._email_cfg, "CLOUDFLARE_PATH_ACCOUNTS", "/admin/new_address", create=True
-        ), patch.object(client._email_cfg, "CLOUDFLARE_DEFAULT_DOMAINS", ["mail.example.com"], create=True), patch.object(
-            client._email_cfg, "CLOUDFLARE_CUSTOM_AUTH", "global-pass", create=True
-        ), patch.object(client._email_cfg, "CLOUDFLARE_NAME_LENGTH", 10, create=True):
-            account = client.pick_account()
-
-        self.assertEqual(account.email, "u@mail.example.com")
-        _, kwargs = request_mock.call_args
-        self.assertEqual(kwargs["headers"]["x-admin-auth"], "admin-pass")
-        self.assertEqual(kwargs["headers"]["x-custom-auth"], "global-pass")
-        self.assertEqual(kwargs["json"]["enablePrefix"], True)
-        self.assertEqual(kwargs["json"]["domain"], "mail.example.com")
-        self.assertIn("name", kwargs["json"])
 
     @patch("core.email.cloudflare.client.time.sleep")
     @patch("core.email.cloudflare.client.requests.request")
@@ -119,16 +64,6 @@ class CFTempMailClientTests(unittest.TestCase):
         client._CONTEXT_CACHE["a@b.com"] = client.CFTempMailAccount(email="a@b.com", jwt="t")
         client.release_account("a@b.com", status="used")
         self.assertIsNone(client.get_account_context("a@b.com"))
-
-    def test_admin_mode_without_key_fails(self):
-        with patch.object(client._email_cfg, "CLOUDFLARE_API_BASE", "https://mail.example.com", create=True), patch.object(
-            client._email_cfg, "CLOUDFLARE_AUTH_MODE", "x-admin-auth", create=True
-        ), patch.object(client._email_cfg, "CLOUDFLARE_API_KEY", "", create=True), patch.object(
-            client._email_cfg, "CLOUDFLARE_PATH_ACCOUNTS", "/admin/new_address", create=True
-        ):
-            with self.assertRaisesRegex(client.CFTempMailError, "CLOUDFLARE_API_KEY"):
-                client.pick_account()
-
 
     @patch("core.email.cloudflare.client.requests.request")
     def test_list_messages_sends_limit_offset(self, request_mock):

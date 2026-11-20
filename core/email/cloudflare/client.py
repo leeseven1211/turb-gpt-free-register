@@ -1,18 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Cloudflare Worker 临时邮箱客户端（cloudflare_temp_email 兼容）。
-
-对齐 grokRegister-cpa/email_providers/cloudflare.py：
-  - POST new_address / admin/new_address 自动创建邮箱，拿到 jwt
-  - GET mails 轮询收件箱，提取 OpenAI 六位 OTP
-"""
+"""Cloudflare Worker 历史邮箱取码与 OpenAI 封号信号扫描。"""
 from __future__ import annotations
 
 from core.email.mailbox_wait import bounded_sleep, bounded_timeout
 import logging
 import re
-import secrets
-import string
-import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -30,8 +22,6 @@ from core.email.otp import extract_otp, looks_like_openai_email
 logger = logging.getLogger('core.cf_temp_mail_client')
 
 DEFAULT_TIMEOUT = 20
-_DOMAIN_COUNTER = 0
-_DOMAIN_LOCK = threading.Lock()
 
 
 class CFTempMailError(RuntimeError):
@@ -74,9 +64,7 @@ def _normalize_path(path: str, default: str) -> str:
 def _base_url() -> str:
     base = _cfg_str("CLOUDFLARE_API_BASE")
     if not base:
-        raise CFTempMailError(
-            "Cloudflare API 地址未配置，请填写 CLOUDFLARE_API_BASE（WebUI「配置 → 邮箱 / OTP」）。"
-        )
+        raise CFTempMailError("Cloudflare API 地址未配置，请设置 CLOUDFLARE_API_BASE")
     if not re.match(r"^https?://", base, re.I):
         base = "https://" + base
     return base.rstrip("/")
@@ -109,10 +97,8 @@ def _apply_custom_auth(headers: dict[str, str]) -> dict[str, str]:
     return headers
 
 
-def _build_headers(*, content_type: bool = False, bearer_jwt: str | None = None) -> dict[str, str]:
+def _build_headers(*, bearer_jwt: str | None = None) -> dict[str, str]:
     headers: dict[str, str] = {"Accept": "application/json"}
-    if content_type:
-        headers["Content-Type"] = "application/json"
     if bearer_jwt:
         headers["Authorization"] = f"Bearer {bearer_jwt}"
     else:
@@ -138,67 +124,20 @@ def _auth_params(params: dict | None = None) -> dict:
     return merged
 
 
-def _is_admin_create_path(path: str) -> bool:
-    return str(path or "").rstrip("/").lower().endswith("/admin/new_address")
-
-
-def _normalize_domains(raw) -> list[str]:
-    if raw is None:
-        return []
-    if isinstance(raw, str):
-        parts = raw.replace(";", "\n").replace(",", "\n").splitlines()
-    else:
-        try:
-            parts = list(raw)
-        except TypeError:
-            parts = [raw]
-    out: list[str] = []
-    for item in parts:
-        domain = str(item or "").strip().lower().lstrip("@")
-        if domain and "." in domain and " " not in domain and domain not in out:
-            out.append(domain)
-    return out
-
-
-def _default_domains() -> list[str]:
-    return _normalize_domains(getattr(_email_cfg, "CLOUDFLARE_DEFAULT_DOMAINS", []) or [])
-
-
-def _next_domain() -> str:
-    domains = _default_domains()
-    if not domains:
-        return ""
-    global _DOMAIN_COUNTER
-    with _DOMAIN_LOCK:
-        domain = domains[_DOMAIN_COUNTER % len(domains)]
-        _DOMAIN_COUNTER += 1
-    return domain
-
-
-def _generate_local(length: int | None = None) -> str:
-    n = max(3, int(length if length is not None else _cfg_int("CLOUDFLARE_NAME_LENGTH", 10)))
-    alphabet = string.ascii_lowercase + string.digits
-    return "".join(secrets.choice(alphabet) for _ in range(n))
-
-
-def _request(
-    method: str,
+def _get(
     path: str,
     *,
-    json_body: dict | None = None,
     params: dict | None = None,
     bearer_jwt: str | None = None,
-    content_type: bool = False,
 ) -> Any:
     url = _base_url() + _normalize_path(path, path or "/")
-    headers = _build_headers(content_type=content_type or json_body is not None, bearer_jwt=bearer_jwt)
+    headers = _build_headers(bearer_jwt=bearer_jwt)
     query = _auth_params(params)
     try:
         response = requests.request(
-            method.upper(),
+            "GET",
             url,
             headers=headers,
-            json=json_body,
             params=query or None,
             timeout=bounded_timeout(_timeout()),
         )
@@ -224,10 +163,8 @@ def _request(
         if not message:
             message = str(payload)[:200]
         hint = ""
-        if response.status_code in (401, 403) and "turnstile" in message.lower():
-            hint = "；匿名创建可能被 Turnstile 拦截，请改用 x-admin-auth + /admin/new_address"
-        elif response.status_code in (401, 403) and _auth_mode() == "none":
-            hint = "；可尝试 CLOUDFLARE_AUTH_MODE=x-admin-auth 并填写 ADMIN_PASSWORD"
+        if response.status_code in (401, 403) and _auth_mode() == "none":
+            hint = "；请检查原邮箱 JWT、CLOUDFLARE_AUTH_MODE 和 CLOUDFLARE_API_KEY"
         raise CFTempMailError(
             f"Cloudflare 请求失败 ({path}): HTTP {response.status_code}; {message}{hint}"
         )
@@ -237,7 +174,7 @@ def _request(
 def _request_signal(email: str, lookback_days: int) -> dict:
     key = _signal_api_key()
     if not key:
-        raise CFTempMailError("Cloudflare 封号信号接口 Key 未配置")
+        raise CFTempMailError("Cloudflare 封号信号接口 Key 未配置，请设置 CLOUDFLARE_SIGNAL_API_KEY")
     path = _normalize_path(
         _cfg_str("CLOUDFLARE_SIGNAL_PATH", "/signals/scan"),
         "/signals/scan",
@@ -290,66 +227,6 @@ def _pick_list_payload(data: Any) -> list[dict]:
                 if isinstance(nested, list):
                     return [item for item in nested if isinstance(item, dict)]
     return []
-
-
-def create_address(domain: str | None = None) -> CFTempMailAccount:
-    """调用 Worker 创建临时邮箱，返回 address + jwt。"""
-    accounts_path = _normalize_path(
-        _cfg_str("CLOUDFLARE_PATH_ACCOUNTS", "/api/new_address"),
-        "/api/new_address",
-    )
-    selected_domain = str(domain or "").strip().lstrip("@") or _next_domain()
-    mode = _auth_mode()
-    key = _api_key()
-    admin_create = _is_admin_create_path(accounts_path)
-
-    if admin_create or mode in ("x-admin-auth", "bearer", "x-api-key", "query-key"):
-        if not key:
-            raise CFTempMailError(
-                "Cloudflare admin/鉴权模式需要 CLOUDFLARE_API_KEY（ADMIN_PASSWORD）。"
-            )
-
-    if admin_create:
-        payload: dict[str, Any] = {
-            "name": _generate_local(),
-            "enablePrefix": True,
-        }
-        if selected_domain:
-            payload["domain"] = selected_domain
-    else:
-        # 匿名 /api/new_address：仅 domain；鉴权头仍按 AUTH_MODE 注入（若配置了 Key）
-        payload = {}
-        if selected_domain:
-            payload["domain"] = selected_domain
-
-    data = _request("POST", accounts_path, json_body=payload, content_type=True)
-    if not isinstance(data, dict):
-        raise CFTempMailError(f"Cloudflare 创建邮箱响应格式错误: {str(data)[:200]}")
-
-    nested = data.get("data") if isinstance(data.get("data"), dict) else {}
-    address = str(data.get("address") or nested.get("address") or nested.get("email") or data.get("email") or "").strip()
-    jwt = str(data.get("jwt") or nested.get("jwt") or nested.get("token") or data.get("token") or "").strip()
-    if not address or "@" not in address:
-        raise CFTempMailError(f"Cloudflare 创建邮箱响应缺少 address: {str(data)[:200]}")
-    if not jwt:
-        raise CFTempMailError(f"Cloudflare 创建邮箱响应缺少 jwt: {str(data)[:200]}")
-
-    domain_part = address.split("@", 1)[-1].lower()
-    account = CFTempMailAccount(
-        email=address,
-        jwt=jwt,
-        domain=domain_part,
-        created_at=time.time(),
-    )
-    logger.info("[Cloudflare] 已创建临时邮箱: %s (domain=%s)", address, domain_part)
-    return account
-
-
-def pick_account() -> CFTempMailAccount:
-    """创建并缓存一个 Cloudflare 临时邮箱。"""
-    account = create_address()
-    _CONTEXT_CACHE[_cache_key(account.email)] = account
-    return account
 
 
 def get_account_context(email: str) -> CFTempMailAccount | None:
@@ -570,8 +447,7 @@ def list_messages(jwt: str, *, limit: int = 20, offset: int = 0) -> list[dict]:
     # 与 grokRegister-cpa 对齐：limit/offset 为必填查询参数
     safe_limit = max(1, min(100, int(limit or 20)))
     safe_offset = max(0, int(offset or 0))
-    payload = _request(
-        "GET",
+    payload = _get(
         path,
         bearer_jwt=jwt,
         params={"limit": safe_limit, "offset": safe_offset},
@@ -593,7 +469,7 @@ def get_message_detail(jwt: str, message_id: str) -> dict:
     last_error: Exception | None = None
     for path in candidates:
         try:
-            payload = _request("GET", path, bearer_jwt=jwt)
+            payload = _get(path, bearer_jwt=jwt)
             if isinstance(payload, dict) and isinstance(payload.get("data"), dict):
                 return payload["data"]
             if isinstance(payload, dict):
@@ -735,7 +611,7 @@ def fetch_latest_otp(
     account = get_account_context(target)
     if account is None or not account.jwt:
         raise CFTempMailError(
-            f"Cloudflare 邮箱上下文缺失: {target}。请确认该地址由当前进程 cloudflare 来源创建。"
+            f"Cloudflare 邮箱上下文缺失: {target}。历史取码需要原邮箱 JWT。"
         )
 
     wait_seconds = int(max_wait if max_wait is not None else _email_cfg.OTP_MAX_WAIT)

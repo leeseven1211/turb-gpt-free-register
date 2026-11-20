@@ -160,12 +160,16 @@ class ProtocolStageBudgetTests(unittest.TestCase):
                 mail.file.close.assert_called_once()
                 mail.logout.assert_not_called()
 
-    def test_cloudmail_token_cancel_is_not_retried_or_wrapped(self):
+    def test_cloudmail_historical_otp_cancel_is_not_retried_or_wrapped(self):
         from core.email.cloudmail import client as cloudmail_client
         error = CancellationRequested("已停止")
-        with patch.object(cloudmail_client.requests, "post", side_effect=error) as request:
+        with (
+            patch("config.email.CLOUDMAIL_API_BASE", "https://fixture.invalid"),
+            patch("config.email.CLOUDMAIL_AUTH_TOKEN", "fixture"),
+            patch.object(cloudmail_client.requests, "post", side_effect=error) as request,
+        ):
             with self.assertRaises(CancellationRequested) as raised:
-                cloudmail_client.gen_token(email="fixture@example.test", password="fixture", base_url="https://fixture.invalid")
+                cloudmail_client.fetch_latest_otp("fixture@example.test", max_wait=1)
         self.assertIs(raised.exception, error)
         request.assert_called_once()
 

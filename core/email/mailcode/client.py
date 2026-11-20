@@ -37,28 +37,18 @@ def _base():
 def _key():
     key = str(getattr(_cfg, "MAILCODE_API_KEY", "") or "").strip()
     if not key:
-        raise MailCodeError("MailCode API Key 未配置（配置 → 邮箱 / OTP → 域名邮箱 MailCode）")
+        raise MailCodeError("MailCode API Key 未配置，请设置 MAILCODE_API_KEY")
     return key
-
-
-def validate_configuration():
-    _key()
-    if not str(getattr(_cfg, "MAILCODE_PRODUCT_ID", "") or "").strip():
-        raise MailCodeError("MailCode 商品 ID 未配置")
 
 
 def _identity():
     return orders.supplier_ref(_base(), _key())
 
 
-def _request(method, path, *, params=None, body=None, idempotency_key=None):
+def _get(path, *, params=None):
     headers = {"Authorization": "Bearer " + _key(), "Accept": "application/json"}
-    if body is not None:
-        headers["Content-Type"] = "application/json"
-    if idempotency_key:
-        headers["Idempotency-Key"] = idempotency_key
     try:
-        response = requests.request(method, _base() + _PREFIX + path, params=params, json=body,
+        response = requests.request("GET", _base() + _PREFIX + path, params=params,
                                     headers=headers, timeout=bounded_timeout(max(1, int(_cfg.MAILCODE_REQUEST_TIMEOUT))),
                                     allow_redirects=False)
     except requests.RequestException as exc:
@@ -70,7 +60,7 @@ def _request(method, path, *, params=None, body=None, idempotency_key=None):
         delay = 0
     try:
         payload = response.json()
-    except ValueError as exc:
+    except ValueError:
         raise MailCodeError(f"MailCode 响应不是 JSON，HTTP {response.status_code}",
                             status=response.status_code, retry_after=delay) from None
     if not isinstance(payload, dict):
@@ -86,62 +76,18 @@ def _request(method, path, *, params=None, body=None, idempotency_key=None):
     return payload["data"]
 
 
-def _pages(path):
-    offset = 0
-    while True:
-        rows = _request("GET", path, params={"offset": offset, "limit": 100})
-        if not isinstance(rows, list):
-            raise MailCodeError("MailCode 分页响应 data 不是数组")
-        yield from rows
-        if len(rows) < 100:
-            break
-        offset += 100
-
-
-def list_products():
-    return list(_pages("/products"))
-
-
-def get_wallet():
-    return _request("GET", "/wallet")
-
-
-def list_orders():
-    return list(_pages("/orders"))
-
-
-def get_order(order_id):
-    return _request("GET", "/orders/" + quote(str(order_id), safe=""))
-
-
-def list_mailboxes():
-    return list(_pages("/mailboxes"))
-
-
 def _mailbox_path(mailbox_id, suffix):
     return "/mailboxes/" + quote(str(mailbox_id), safe="") + suffix
-
-
-def get_code_channel(mailbox_id):
-    return _request("GET", _mailbox_path(mailbox_id, "/code-channel"))
 
 
 def get_codes(mailbox_id, after_sequence=None):
     params = {"limit": 100}
     if after_sequence is not None:
         params["after_sequence"] = str(after_sequence)
-    data = _request("GET", _mailbox_path(mailbox_id, "/codes"), params=params)
+    data = _get(_mailbox_path(mailbox_id, "/codes"), params=params)
     if not isinstance(data, dict) or not isinstance(data.get("records"), list):
         raise MailCodeError("MailCode 取码响应缺少 records 数组")
     return data
-
-
-def export_code_links(ids):
-    return _request("POST", "/mailboxes/code-links/export", body={"ids": ids})
-
-
-def revoke_code_links(ids):
-    return _request("POST", "/mailboxes/code-links/revoke", body={"ids": ids})
 
 
 @dataclass
@@ -218,76 +164,6 @@ def _cursor(data, current):
     if not re.fullmatch(r"[0-9]+", value) or int(value) > 9000000000000000000:
         raise MailCodeError("MailCode 返回了无效 next_sequence")
     return value  # 服务端游标原样使用，不能 +1，也不能按验证码数字去重。
-
-
-def _prepare(account):
-    """首次取码按需初始化 IMAP；READY 后才将地址交给注册流程。"""
-    deadline = time.monotonic() + max(1, int(_cfg.MAILCODE_CHANNEL_WAIT_SECONDS))
-    while True:
-        try:
-            data = get_codes(account.mailbox_id)  # 不传游标取得最新水位，不读取全部历史。
-        except MailCodeError as exc:
-            if exc.status not in {0, 429, 500, 502, 503, 504}:
-                raise
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise
-            bounded_sleep(min(max(5, exc.retry_after), remaining))
-            continue
-        account.next_sequence = _cursor(data, account.next_sequence)
-        if data.get("channel_status") == "READY":
-            _save_context(account)
-            orders.update(account.order_pk, status="ready")
-            return
-        if data.get("channel_status") in {"PAUSED", "CLOSED"}:
-            raise MailCodeError(f"MailCode 通道不可用：{data.get('channel_status')}")
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise MailCodeError("MailCode 取码通道初始化超时；已购邮箱保留，下次领取继续初始化，不重新购买")
-        bounded_sleep(min(5, remaining))
-
-
-def pick_account(*, owner_kind=None, owner_id=None, acquisition_id=None):
-    validate_configuration()
-    if not owner_kind or owner_id is None:
-        raise MailCodeError("MailCode 领取缺少稳定任务身份，请通过注册或换绑任务领取")
-    product = str(getattr(_cfg, "MAILCODE_PRODUCT_ID", "product_a3783a0ead074b4091631b9ad04153f9") or "").strip()
-    with orders.order_lock("mailcode", f"owner:{owner_kind}:{owner_id}"):
-        row = orders.prepare(provider="mailcode", owner_kind=owner_kind, owner_id=str(owner_id),
-                             acquisition_id=acquisition_id, identity=_identity(),
-                             request={"product_id": product, "count": 1})
-        if not row["email"]:
-            for attempt in range(3):
-                try:
-                    orders.update(row["id"], status="submitting")
-                    data = _request("POST", "/orders", body=row["request_json"], idempotency_key=row["idempotency_key"])
-                    if not isinstance(data, dict) or data.get("status") != "COMPLETED" or len(data.get("items") or []) != 1:
-                        raise MailCodeError("MailCode 购买响应结构无效；保留原幂等键，勿重新下单")
-                    item = data["items"][0]
-                    if not item.get("mailbox_id") or "@" not in str(item.get("email", "")) or item.get("status") != "ACTIVE":
-                        raise MailCodeError("MailCode 购买响应缺少有效邮箱，保留原幂等键")
-                    row = orders.update(row["id"], status="purchased", email=item["email"],
-                                        order_id=str(data.get("order_id") or ""),
-                                        private={"mailbox_id": str(item["mailbox_id"]), "next_sequence": "0"})
-                    break
-                except MailCodeError as exc:
-                    retryable = exc.status == 0 or exc.status == 429 or exc.status >= 500
-                    if not retryable:
-                        orders.update(row["id"], status="rejected")
-                        raise
-                    orders.update(row["id"], status="request_unknown")
-                    if attempt == 2:
-                        raise MailCodeError(f"{exc}；购买结果未确认，已保存幂等键，下次继续原请求") from exc
-                    bounded_sleep(max(1, exc.retry_after))
-        account = _account(row)
-        if row["status"] != "ready":
-            _prepare(account)
-    logger.info("[MailCode] 原任务邮箱通道已就绪")
-    return account
-
-
-def get_email(**kwargs):
-    return pick_account(**kwargs).email
 
 
 def release_account(email, status="available", note=None):

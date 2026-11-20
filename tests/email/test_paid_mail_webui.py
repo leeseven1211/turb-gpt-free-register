@@ -55,9 +55,9 @@ class PaidMailConfigurationTests(unittest.TestCase):
 class PaidMailWebUiTests(PostgresTestCase):
     def setUp(self):
         for key, value in {"USE_EMAIL_SERVICE": True, "EMAIL_SOURCE": "mailcode,xigua",
-                           "MAILCODE_API_KEY": "private-test-key", "MAILCODE_PRODUCT_ID": "product-test",
-                           "XIGUA_API_KEY": "private-test-key", "XIGUA_API_BASE": "https://xigua.example.test",
-                           "XIGUA_OFFER_ID": "offer-test"}.items():
+                           "MAILCODE_API_KEY": "private-test-key",
+                           "XIGUA_API_KEY": "private-test-key",
+                           "XIGUA_API_BASE": "https://xigua.example.test"}.items():
             self.enterContext(patch.object(cfg, key, value))
         self.enterContext(patch("requests.sessions.Session.request", side_effect=AssertionError("禁止真实供应商调用")))
         self.client = create_app(auth_code="test-auth").test_client()
@@ -97,10 +97,8 @@ class PaidMailWebUiTests(PostgresTestCase):
         self.assertNotIn("private-test-key", response.get_data(as_text=True))
 
     def test_catalog_is_retired_without_querying_remote_products_or_wallet(self):
-        with patch("core.email.mailcode.client.list_products", return_value=[{"id": "product-test", "stock": 10}]) as products, patch("core.email.mailcode.client.get_wallet", return_value={"balance": "123"}) as wallet, patch("core.email.mailcode.client.pick_account") as purchase:
+        with patch("core.email.mailcode.client.requests.request") as network:
             response = self.client.get("/api/mailcode/catalog")
         self.assertEqual(response.status_code, 410)
         self.assertEqual(response.get_json()["reason_code"], "email_management_managed_by_service")
-        products.assert_not_called()
-        wallet.assert_not_called()
-        purchase.assert_not_called()
+        network.assert_not_called()

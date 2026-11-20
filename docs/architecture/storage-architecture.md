@@ -44,7 +44,7 @@ core/email/remail/order_coordinator.py  Remail 意图 CAS、原订单恢复和�
 | `proxy_leases` | 1024Proxy endpoint、出口 IP、出口代次、所有权和隔离期的跨进程租约 |
 | `proxy_pool_resources` | 独立代理库存的 profile、后台提取/检测状态、容量和生命周期事实；全局容量由数据库协调 |
 | `remail_order_intents` | Remail 付费领取意图、供应商订单关联、CAS 提交状态、核验结果和私有恢复凭据 |
-| `mail_provider_orders` | MailCode/Xigua 的稳定领取身份、幂等购买键、供应商订单、已购邮箱和私有取码游标 |
+| `mail_provider_orders` | MailCode/Xigua 的历史领取身份、幂等购买键、原供应商订单、已购邮箱和私有取码游标 |
 | `account_action_batches` / `_tasks` / `_events` | 账号操作任务（兼容模型） |
 | `operation_selections` / `operation_selection_targets` | 查询快照、固定目标名单及预检；准备中的名单可在进程重启后继续 |
 | `operation_batch_controls` / `operation_batch_rounds` | 批次控制版本、冻结设置、首轮和各重跑轮的范围与汇总 |
@@ -114,7 +114,7 @@ core/email/remail/order_coordinator.py  Remail 意图 CAS、原订单恢复和�
 
 ### 其他邮箱订单与账号巡检
 
-MailCode/Xigua 的领取按供应商和稳定任务身份唯一绑定，在 PostgreSQL advisory lock 下恢复原订单；商品请求、幂等键在付费请求前落库，已购邮箱和取码游标随后按行合并。MailCode 的游标与私有候选验证码原子保存，恢复时重新检查时间、有效期和取码请求身份；客户端准备返回不等于远端验证成功。订单锁使用独立连接池，先在池外按阶段预算排队，避免慢供应商占满普通读写连接。客户端内存缓存只用于加速，不负责重启恢复。新供应商不改写 Remail 已有订单状态机，也不把上游文件缓存引入主存储。
+MailCode/Xigua 的原订单保存在 PostgreSQL，历史商品请求与幂等键一并保留。取码由 advisory lock 按 MailCode 邮箱或西瓜订单协调，锁使用独立连接池，先在池外按阶段预算排队。MailCode 原子保存取码游标与私有候选验证码，恢复时重新检查时间、有效期和取码请求身份。客户端内存缓存用于加快读取，重启时从 PostgreSQL 恢复。
 
 账号巡检复用统一任务中心的 `operation_batches`、`operation_tasks`、`operation_runs` 和 `operation_batch_items`：父任务协调、每账号子任务走共享执行预算，清单保留最初 Run 关联用于历史读取；停止操作使用子任务当前活动 Run，单独取消子任务后同步收口父任务。AT 和套餐写回同时验证当前执行 fence 与账号邮箱/Token 快照，防止旧执行覆盖后续登录或换绑结果；套餐保存失败不覆盖已经确认的新 AT。巡检不新增 SQLite 或全量 JSON 集合。
 

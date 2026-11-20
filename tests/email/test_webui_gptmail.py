@@ -55,9 +55,7 @@ class GPTMailWebUiTests(PostgresTestCase):
         submit_registration.return_value = []
         with patch.object(email_config, "USE_EMAIL_SERVICE", True), patch.object(
             email_config, "EMAIL_SOURCE", "mailnest"
-        ), patch.object(email_config, "MAIL_NEST_API_KEY", "", create=True), patch.object(
-            email_config, "MAIL_NEST_PROJECT_CODE", "chatgpt001", create=True
-        ):
+        ), patch.object(email_config, "MAIL_NEST_API_KEY", "", create=True):
             response = self.client.post("/api/jobs", json={"count": 1, "workers": 1, "email_source": "mailnest"})
 
         self.assertEqual(response.status_code, 400)
@@ -70,9 +68,7 @@ class GPTMailWebUiTests(PostgresTestCase):
         outlook_pool_summary.return_value = {"total": 0, "available": 0, "used": 0, "failed": 0}
         with patch.object(email_config, "USE_EMAIL_SERVICE", True), patch.object(
             email_config, "EMAIL_SOURCE", "mailnest"
-        ), patch.object(email_config, "MAIL_NEST_API_KEY", "key-123", create=True), patch.object(
-            email_config, "MAIL_NEST_PROJECT_CODE", "chatgpt001", create=True
-        ):
+        ), patch.object(email_config, "MAIL_NEST_API_KEY", "key-123", create=True):
             response = self.client.post("/api/jobs", json={"count": 1, "workers": 1, "email_source": "mailnest"})
 
         self.assertEqual(response.status_code, 400)
@@ -81,13 +77,13 @@ class GPTMailWebUiTests(PostgresTestCase):
         submit_registration.assert_not_called()
 
     @patch("webui.app.svc.submit_registration")
-    def test_jobs_rejects_cloudmail_even_without_manual_domains(self, submit_registration):
+    def test_jobs_rejects_cloudmail_even_with_existing_read_token(self, submit_registration):
         submit_registration.return_value = []
         with patch.object(email_config, "USE_EMAIL_SERVICE", True), patch.object(
             email_config, "EMAIL_SOURCE", "cloudmail"
         ), patch.object(email_config, "CLOUDMAIL_API_BASE", "https://mail.example.com", create=True), patch.object(
             email_config, "CLOUDMAIL_AUTH_TOKEN", "token", create=True
-        ), patch.object(email_config, "CLOUDMAIL_DOMAINS", [], create=True):
+        ):
             response = self.client.post("/api/jobs", json={"count": 1, "workers": 1, "email_source": "cloudmail"})
 
         self.assertEqual(response.status_code, 400)
@@ -102,7 +98,7 @@ class GPTMailWebUiTests(PostgresTestCase):
             email_config, "EMAIL_SOURCE", "cloudmail"
         ), patch.object(email_config, "CLOUDMAIL_API_BASE", "https://mail.example.com", create=True), patch.object(
             email_config, "CLOUDMAIL_AUTH_TOKEN", "token", create=True
-        ), patch.object(email_config, "CLOUDMAIL_DOMAINS", ["example.com"], create=True):
+        ):
             response = self.client.post("/api/jobs", json={"count": 1, "workers": 1, "email_source": "cloudmail"})
 
         self.assertEqual(response.status_code, 400)

@@ -39,15 +39,8 @@ def _cache_key(email: str) -> str:
 def _api_key() -> str:
     api_key = str(getattr(_email_cfg, "MAIL_NEST_API_KEY", "") or "").strip()
     if not api_key:
-        raise MailNestClientError("MailNest API Key 未配置，请填写 MailNest API Key（WebUI「配置 → 邮箱 / OTP」）。")
+        raise MailNestClientError("MailNest API Key 未配置，请设置 MAIL_NEST_API_KEY")
     return api_key
-
-
-def _project_code() -> str:
-    project_code = str(getattr(_email_cfg, "MAIL_NEST_PROJECT_CODE", "") or "").strip()
-    if not project_code:
-        raise MailNestClientError("MailNest 项目代码未配置，请填写 MailNest 项目代码（默认 chatgpt001）。")
-    return project_code
 
 
 def _request(method: str, path: str, *, params: dict | None = None, json: dict | None = None):
@@ -69,36 +62,12 @@ def _request(method: str, path: str, *, params: dict | None = None, json: dict |
         raise MailNestClientError(f"MailNest 响应不是 JSON ({path}): HTTP {resp.status_code}") from exc
 
     if resp.status_code == 401:
-        raise MailNestClientError("MailNest API Key 非法或已失效")
+        raise MailNestClientError("MailNest API Key 非法或已失效，请检查 MAIL_NEST_API_KEY")
     if resp.status_code >= 400:
         raise MailNestClientError(f"MailNest 请求失败 ({path}): HTTP {resp.status_code}; {str(payload)[:200]}")
     if not isinstance(payload, dict) or str(payload.get("code")) != "00000":
         raise MailNestClientError(f"MailNest 请求失败 ({path}): {payload}")
     return payload.get("data")
-
-
-def pick_account() -> MailNestAccount:
-    """购买/领取一个 MailNest 临时邮箱并缓存上下文。"""
-    project_code = _project_code()
-    data = _request(
-        "POST",
-        "/api/v1/email/temporary/buy",
-        json={"project_code": project_code, "count": 1},
-    )
-    if not isinstance(data, list) or not data:
-        raise MailNestClientError("MailNest 购买邮箱响应缺少 data[0]")
-    email = str((data[0] or {}).get("email") or "").strip()
-    if not email or "@" not in email:
-        raise MailNestClientError("MailNest 购买邮箱响应缺少有效 email")
-    account = MailNestAccount(email=email, project_code=project_code)
-    _CONTEXT_CACHE[_cache_key(email)] = account
-    logger.info("[MailNest] 已获取临时邮箱: %s project_code=%s", email, project_code)
-    return account
-
-
-def get_email() -> str:
-    """兼容旧入口：返回新领取的邮箱地址。"""
-    return pick_account().email
 
 
 def get_account_context(email: str) -> MailNestAccount | None:
