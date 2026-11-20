@@ -54,7 +54,7 @@ class _SqlCaptureCursor:
 
     def fetchall(self):
         if "UNION ALL SELECT NULL, NULL, COUNT(*), MAX(updated_at) FROM base" in self.statements[-1][0]:
-            return [{"facet": None, "value": None, "count": 0, "latest": None}]
+            return [{"id": None, "facet": None, "value": None, "count": 0, "latest": None}]
         return []
 
 
@@ -158,7 +158,7 @@ class AccountGroupedFacetRoutingTests(unittest.TestCase):
                     statements, sql, helper_calls = self._capture(
                         archived=archived, filters=filters, **kwargs,
                     )
-                    self.assertEqual(len(statements), 2 if name in {"search", "search_space"} else 3)
+                    self.assertEqual(len(statements), 1 if name in {"search", "search_space"} else 3)
                     self.assertEqual(helper_calls, 0)
                     self.assertIn("CROSS JOIN LATERAL (VALUES", sql)
                     self.assertNotIn("GROUP BY GROUPING SETS", sql)

@@ -287,7 +287,7 @@ class AdminRepositoryTests(PostgresTestCase):
         self.assertTrue(result["revision"].startswith("2:2026-11-11:"))
         self.assertEqual(result["facets"]["source"], [{"value": "outlook", "count": 2}])
         account_queries = [sql for sql in counter.queries if '"registered_accounts" a' in sql]
-        self.assertEqual(len(account_queries), 2)
+        self.assertEqual(len(account_queries), 1)
 
     def test_combined_account_search_keeps_pagination_archive_and_column_filters(self):
         expected = []

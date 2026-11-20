@@ -493,6 +493,7 @@ def _account_list_grouped_facets_sql(
 def _list_account_facet_query(
     accounts: str, request: PageRequest, *, archived: str, plan: str, q: str,
     date_from: str, date_to: str, clause: str, params: list[Any],
+    page_projection: str = "",
 ) -> tuple[str, list[Any], bool]:
     base_where, facet_params = _account_where(
         archived, "", q, date_from, date_to,
@@ -518,6 +519,8 @@ def _list_account_facet_query(
         if share_search_scope:
             facet_columns += ", a.updated_at"
             latest_column = ", NULL::text AS latest"
+            if page_projection:
+                facet_columns += ", a.id"
         facet_values = ", ".join(f"('{key}', b.{key})" for key in expressions)
         facet_where = ["NULLIF(f.value, '') IS NOT NULL"]
         for key, predicate, values in _account_facet_predicates(
@@ -529,11 +532,10 @@ def _list_account_facet_query(
         # facets 一项就要约 200 ms。这里先物化一次轻量投影，再展开各个维度聚合；
         # 复杂 JSON/正则表达式只计算一遍。每列统计保留其他列条件，仅忽略自身筛选；
         # 搜索、日期、ID、邮箱与归档范围始终生效，且不受当前页限制。
-        facet_sql = f"""
-            WITH base AS MATERIALIZED (
-                SELECT {facet_columns}
-                  FROM {accounts} a{base_clause}
-            )
+        facet_base = f"""WITH base AS MATERIALIZED (
+            SELECT {facet_columns} FROM {accounts} a{base_clause}
+        )"""
+        facet_summary = f"""
             SELECT f.facet, f.value, COUNT(*) AS count{latest_column}
               FROM base b
               CROSS JOIN LATERAL (VALUES {facet_values}) AS f(facet, value)
@@ -541,7 +543,24 @@ def _list_account_facet_query(
              GROUP BY f.facet, f.value
         """
         if share_search_scope:
-            facet_sql += " UNION ALL SELECT NULL, NULL, COUNT(*), MAX(updated_at) FROM base"
+            facet_summary += " UNION ALL SELECT NULL, NULL, COUNT(*), MAX(updated_at) FROM base"
+        facet_sql = f"{facet_base} {facet_summary}"
+        if share_search_scope and page_projection:
+            # 分页先从基集选取 ID，再读取宽字段和列表展示的历史注册驱动。
+            # FULL JOIN 同时保留分页行与统计行，越界页也能收到完整统计。
+            facet_sql = f"""{facet_base}, summary AS ({facet_summary}),
+            page_ids AS MATERIALIZED (
+                SELECT id FROM base ORDER BY id DESC LIMIT %s OFFSET %s
+            )
+            SELECT page.*, summary.*
+              FROM (
+                SELECT {page_projection}
+                  FROM page_ids JOIN {accounts} a ON a.id = page_ids.id
+              ) page
+              FULL JOIN summary ON FALSE
+             ORDER BY page.id DESC NULLS LAST
+            """
+            facet_params.extend((request.limit, request.offset))
     return facet_sql, facet_params, share_search_scope
 
 
@@ -573,18 +592,21 @@ def list_accounts(
         f"'has_account_password', {_ACCOUNT_PASSWORD_PRESENT}, 'totp_enabled', {_ACCOUNT_TOTP_PRESENT}, "
         f"'registration_driver', {_account_registration_driver_sql()})"
     )
+    page_projection = f"{selected}, ({safe_data}) AS data"
     facets = {}
     if include_facets:
         facet_sql, facet_params, share_search_scope = _list_account_facet_query(
             accounts, request, archived=archived, plan=plan, q=q, date_from=date_from,
-            date_to=date_to, clause=clause, params=params,
+            date_to=date_to, clause=clause, params=params, page_projection=page_projection,
         )
     else:
         share_search_scope = False
     with _connect() as conn, conn.cursor() as cur:
         if share_search_scope:
             cur.execute(facet_sql, facet_params)
-            summary_rows = cur.fetchall()
+            result_rows = cur.fetchall()
+            page_rows = [row for row in result_rows if row["id"] is not None]
+            summary_rows = [row for row in result_rows if row["id"] is None]
             aggregate = next(row for row in summary_rows if row["facet"] is None)
             total = int(aggregate["count"])
             facets = _facet_dict(summary_rows)
@@ -592,14 +614,15 @@ def list_accounts(
             cur.execute(f"SELECT COUNT(*) AS total, MAX(a.updated_at) AS latest FROM {accounts} a{clause}", params)
             aggregate = cur.fetchone()
             total = int(aggregate["total"] or 0)
-        cur.execute(
-            _account_page_sql(
-                accounts, f"{selected}, ({safe_data}) AS data", clause, request,
-                total=total, plan=plan, q=q, date_from=date_from, date_to=date_to,
-            ),
-            (*params, request.limit, request.offset),
-        )
-        rows = [db.decorate_account(record_store.merge_row(record_store.ACCOUNTS, row)) for row in cur.fetchall()]
+            cur.execute(
+                _account_page_sql(
+                    accounts, page_projection, clause, request,
+                    total=total, plan=plan, q=q, date_from=date_from, date_to=date_to,
+                ),
+                (*params, request.limit, request.offset),
+            )
+            page_rows = cur.fetchall()
+        rows = [db.decorate_account(record_store.merge_row(record_store.ACCOUNTS, row)) for row in page_rows]
         if include_facets and not share_search_scope:
             cur.execute(facet_sql, facet_params)
             facets = _facet_dict(cur.fetchall())
