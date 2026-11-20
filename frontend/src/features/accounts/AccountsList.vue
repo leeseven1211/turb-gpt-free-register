@@ -75,7 +75,7 @@ defineExpose({refresh:list.refresh,pollStatuses:list.pollStatuses,setVisible,set
 <template>
   <section v-show="visible" class="ac-root" aria-label="账号列表">
     <div class="ac-toolbar">
-      <div class="ac-toolbar-main"><span id="accountsPageSummary" class="ac-count" role="status">{{ total.toLocaleString() }} 个账号 · 当前页 {{ items.length }} 条</span><ListFilterSummary :items="chips" @remove="clearFilter"/></div>
+      <div v-if="chips.length" class="ac-toolbar-main"><ListFilterSummary :items="chips" @remove="clearFilter"/></div>
       <slot name="actions"/>
       <div class="ac-toolbar-utilities">
         <div class="ac-mobile-filters"><AccountFilters :query="query" :facets="facets" :label="presentation.facetLabel" :open="documentVisible&&openFilter==='all'" @update:open="openFilter=$event?'all':null" @change="changeFilter" @clear="clearFilter"/></div>

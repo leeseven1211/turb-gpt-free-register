@@ -70,7 +70,7 @@ test('错误搜索显示行内提示并清除旧结果，修正后正常恢复',
   const h=createReadFixture(t,{mounted:true});await h.ready;
   h.behavior.list=async()=>{throw new ApiError('请填写有效国家代码',400,'account_search_invalid');};await submit(h,'地区:JJ');
   assert.equal(inputOf(h).attributes('aria-invalid'),'true');assert.match(h.wrapper.get('#accountAdvancedSearchErrorV2').text(),/有效国家代码/);assert.equal(h.wrapper.find('[data-account-row]').exists(),false);
-  assert.match(h.wrapper.get('#accountsPageSummary').text(),/^0 个账号/);await h.owner.pollStatuses();assert.equal(h.statusRequests.length,0);
+  assert.equal(h.wrapper.get('[aria-label="账号列表分页"] .list-pagination__range').text(),'共 0 条');await h.owner.pollStatuses();assert.equal(h.statusRequests.length,0);
   h.behavior.list=async()=>list([row(9)],{search_terms:[{label:'注册出口',display_value:'日本 JP',query_without:'协议'}]});await submit(h,'协议 jp');
   assert.equal(h.wrapper.get('[data-account-row]').attributes('data-account-row'),'9');assert.equal(inputOf(h).attributes('aria-invalid'),undefined);assert.match(h.wrapper.text(),/日本 JP/);
 });

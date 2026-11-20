@@ -3,7 +3,6 @@
 .ac-toolbar{position:relative;z-index:3;display:flex;align-items:center;gap:6px 10px;flex-wrap:wrap;padding:6px 12px;border-bottom:1px solid var(--ui-color-border);flex:0 0 auto}
 .ac-toolbar-main{display:flex;align-items:center;gap:8px;min-width:0}
 .ac-toolbar-main:has(.list-filter-summary){flex:1 1 220px}
-.ac-count{flex:none;white-space:nowrap;font-size:12px;font-variant-numeric:tabular-nums;color:var(--ui-color-text-secondary)}
 .ac-toolbar-utilities{display:flex;align-items:center;gap:6px;flex-wrap:wrap;min-width:0;margin-inline-start:auto}
 .ac-toolbar .accounts-command-deck{
   position:static;flex:0 1 auto;min-width:0;max-width:100%;
