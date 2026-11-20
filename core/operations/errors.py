@@ -2750,6 +2750,17 @@ def classify_task_error(
                 break
     if cause is None and re.search(r"\bKeyError\s*:\s*['\"]?schema 未定义字段:\s*[A-Z][A-Z0-9_]*", raw):
         cause = _specific_error_cause({"cause_code": "local_config_schema_mismatch"})
+    if (
+        cause is None and str(task_type or "").strip().lower() == "codex_retry"
+        and raw.removeprefix("RuntimeError: ").startswith("未找到 Node 可执行文件，请确认已安装 Node.js 并加入 PATH，")
+    ):
+        cause = {
+            "cause_code": TaskErrorCode.CONFIGURATION.value,
+            "cause_display_code": _DISPLAY_CODES[TaskErrorCode.CONFIGURATION.value],
+            "cause_summary": "授权后台运行环境找不到 Node.js",
+        }
+        if stage in {"", "event", "unknown", "complete", "result", "network", "network_route"}:
+            stage = "login"
     if cause is None and (str(error_code).startswith(("roxy_", "email_derivation_", "email_resource_", "password_setup_"))
                           or str(error_code) in _BUTLER_RECIPIENT_CAUSES
                           or str(error_code) in _AT_CALLBACK_CAUSE_CODES):

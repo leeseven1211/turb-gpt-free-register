@@ -678,9 +678,23 @@ def _failure(task_type: str, run: dict[str, Any], attempts: list[dict[str, Any]]
     reconcile = reconcile or bool(chosen.get("reconcile_required"))
     message = _safe_message(chosen.get("message") or run.get("message") or run.get("error_message"))
     try:
-        from core.operations.errors import classify_task_error
+        from core.operations.errors import TaskErrorCode, classify_task_error
         error_code = chosen.get("error_code") or summary.get("error_code") or data.get("error_code") or run.get("error_code") or ""
         error_info = classify_task_error(message or str(error_code), stage=chosen.get("raw_stage"), task_type=chosen.get("child_task_type") or task_type, error_code=error_code, result_summary=summary, task_status=status)
+        if (
+            task_type == "codex_retry" and not explicit_failure and not child_failure
+            and chosen.get("raw_stage") in {"network", "network_route"}
+        ):
+            terminal_error = run.get("error_message") or summary.get("message")
+            terminal_info = classify_task_error(
+                terminal_error, stage=chosen["raw_stage"], task_type=task_type,
+                error_code=error_code, result_summary=summary, task_status=status,
+            )
+            if terminal_info and terminal_info["stage"] == "login" and terminal_info["code"] == TaskErrorCode.CONFIGURATION.value:
+                # 领取成功事件不能充当本地认证失败的证据。
+                chosen = {"raw_stage": "login"}
+                message = _safe_message(terminal_error)
+                error_info = terminal_info
         if task_type in {"token_refresh", "live_check"} and (error_info or {}).get("code") == "roxy_login_failed":
             classification_error = _roxy_login_failure_error(run, chosen, events)
             if classification_error:

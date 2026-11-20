@@ -33,6 +33,44 @@ def _step(snapshot, step_id):
     return next(item for item in snapshot["main_steps"] if item["id"] == step_id)
 
 
+def test_codex_node_runtime_error_is_not_attributed_to_successful_proxy_allocation():
+    from core.operations.query_service import public_operation_record
+
+    error = (
+        "RuntimeError: 未找到 Node 可执行文件，请确认已安装 Node.js 并加入 PATH，"
+        "或通过 NODE_EXECUTABLE 环境变量指定绝对路径。"
+    )
+    run = _run("attention_required", progress_stage="network", failure_stage="network",
+               error_message=error, result_summary={"outcome": "request_unknown", "message": error})
+    events = [_event(1, "network", "success", message="OAuth 网络预检通过")]
+
+    task = public_operation_record(dict(run, task_type="codex_retry"))
+    assert task["error_info"]["code"] == "configuration.missing"
+    assert task["error_info"]["stage"] == "login"
+    assert task["error_info"]["summary"] == "授权后台运行环境找不到 Node.js"
+    assert task["error_info"]["reconcile_required"] is True
+
+    snapshot = build_progress_snapshot(1, 2, "codex_retry", run, events)
+    assert _step(snapshot, "network")["state"] == "success"
+    assert snapshot["failure"]["step_id"] == "authenticate"
+    assert snapshot["failure"]["stage"] == "login"
+    assert snapshot["failure"]["error_info"] == task["error_info"]
+    assert snapshot["failure"]["message"] == error
+    assert snapshot["failure"]["event_id"] is None
+    assert snapshot["failure"]["reconcile_required"] is True
+
+
+def test_codex_proxy_pool_timeout_retains_network_failure_evidence():
+    error = "ProxyPoolTimeout: 代理池暂时没有符合要求的可用线路，领取等待超时"
+    run = _run("failed", progress_stage="network", error_message=error)
+    events = [_event(1, "network", "failed", message=error)]
+
+    snapshot = build_progress_snapshot(1, 2, "codex_retry", run, events)
+    assert snapshot["failure"]["stage"] == "network"
+    assert snapshot["failure"]["error_info"]["code"] == "external.proxy"
+    assert snapshot["failure"]["event_id"] == "1"
+
+
 def test_historical_roxy_login_failure_classifies_saved_error_without_changing_stage_facts():
     import copy
 
