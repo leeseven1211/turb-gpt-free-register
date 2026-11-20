@@ -13,10 +13,39 @@ from core.operations import run_log as task_run_log
 from core.storage.operations import store as operation
 from core.storage.operations import projection as operation_projection
 from core.storage.operations import runtime as operation_runtime
+from core.storage.operations import schema as operation_schema
+from core.storage.operations import settlements
 from core.storage import registration
 from core.operations import task_gateway
 from tests.support_pg import PostgresTestCase
 from webui.app import create_app
+
+
+class OperationSchemaMigrationTests(PostgresTestCase):
+    def setUp(self):
+        self.enterContext(patch.object(account_task_store, "_SCHEMA", self.schema))
+        self.enterContext(patch.object(account_task_store, "_READY_KEY", ""))
+        operation_task_store.reset_ready()
+        operation_task_store.init()
+
+    def test_new_process_reuses_migration_for_same_settlement_domain(self):
+        new_account_id = record_store.insert_row(record_store.ACCOUNTS, {"email": "new@example.test"})
+        self.assertIsNone(record_store.get_row(record_store.ACCOUNTS, new_account_id)["codex_execution_status"])
+        with (
+            patch.object(operation_schema, "_READY_KEY", ""),
+            patch.object(settlements, "initialize_schema", wraps=settlements.initialize_schema) as initialize,
+        ):
+            operation_task_store.init()
+            initialize.assert_not_called()
+        account = record_store.get_row(record_store.ACCOUNTS, new_account_id)
+        self.assertEqual(account["codex_execution_status"], "empty")
+        self.assertEqual(account["codex_credential_state"], "none")
+
+    def test_explicit_reset_rechecks_operation_schema(self):
+        with patch.object(settlements, "initialize_schema", wraps=settlements.initialize_schema) as initialize:
+            operation_task_store.reset_ready()
+            operation_task_store.init()
+            initialize.assert_called_once()
 
 
 class OperationTaskStoreTests(PostgresTestCase):
@@ -844,6 +873,44 @@ class OperationTaskStoreTests(PostgresTestCase):
             account_task_store.append_event(
                 legacy_task_id, stage="twofa", message="非法状态", state="done",
             )
+
+    def test_receipt_status_api_reads_selected_runs_and_task_fallback(self):
+        task = operation_task_store.create_runtime_task(
+            task_type="token_refresh", account_id=None, email="receipt-run@example.test", trigger="test",
+        )
+        old_run = task["run"]["id"]
+        operation_task_store.finish_run(old_run, status="attention_required", error="回执待确认")
+        active = operation_task_store.retry_runtime_task(task["id"])
+        other = operation_task_store.create_runtime_task(
+            task_type="token_refresh", account_id=None, email="receipt-other@example.test", trigger="test",
+        )
+        operation_task_store.finish_run(other["run"]["id"], status="success", result_summary={"message": "操作完成"})
+        client = create_app(auth_code="test-auth").test_client()
+        client.environ_base["HTTP_X_AUTH_CODE"] = "test-auth"
+        values = [
+            f"{task['id']}:{old_run}",
+            str(task["id"]),
+            f"{task['id']}:{other['run']['id']}",
+            f"{other['id']}:{other['run']['id']}",
+            f"{task['id']}:{active['id']}",
+        ]
+        with patch.object(operation_task_store, "get_task", side_effect=AssertionError("回执无需读取任务详情")):
+            response = client.get("/api/operations/receipts", query_string=[("ref", value) for value in values])
+        self.assertEqual(200, response.status_code)
+        self.assertEqual({"ok": True, "items": [
+            {"task_id": str(task["id"]), "run_id": str(old_run), "status": "failed", "message": "回执待确认"},
+            {"task_id": str(task["id"]), "run_id": None, "status": "queued", "message": ""},
+            {"task_id": str(other["id"]), "run_id": str(other["run"]["id"]), "status": "success", "message": "操作完成"},
+            {"task_id": str(task["id"]), "run_id": str(active["id"]), "status": "queued", "message": ""},
+        ]}, response.get_json())
+
+    def test_receipt_status_api_validates_batch_size_and_ids(self):
+        client = create_app(auth_code="test-auth").test_client()
+        client.environ_base["HTTP_X_AUTH_CODE"] = "test-auth"
+        for refs in ([], ["2:0"], ["10:9223372036854775808"], ["x"] * 21):
+            with self.subTest(refs=refs):
+                response = client.get("/api/operations/receipts", query_string=[("ref", value) for value in refs])
+                self.assertEqual(400, response.status_code)
 
     def test_incremental_event_and_run_log_api_use_explicit_contract(self):
         task = operation_task_store.create_runtime_task(

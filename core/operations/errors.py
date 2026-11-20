@@ -2625,16 +2625,18 @@ def classify_task_error(
     error_code: str = "",
     result_summary: dict[str, Any] | None = None,
     task_status: str = "",
+    cancel_reason: str = "",
 ) -> dict[str, Any] | None:
     """具体原因优先展示；回执缺失只约束后续操作，不充当通用主错误。"""
     raw = str(message or "").strip()
     summary_data = result_summary if isinstance(result_summary, dict) else {}
     stage = _failure_stage(stage, summary_data)
+    task_status_key = str(task_status or "").strip().lower()
     concurrency_projection = _concurrency_error_projection(raw, error_code, summary_data, stage)
     if concurrency_projection is not None:
         return concurrency_projection
     reconcile_required = (
-        str(task_status or "").strip().lower() == "request_unknown"
+        task_status_key == "request_unknown"
         or str(error_code or "").strip().lower() == "request_unknown"
         or is_request_unknown(summary_data)
         or any(marker in raw.lower() for marker in (
@@ -2643,6 +2645,27 @@ def classify_task_error(
             "禁止直接重试", "远端结果待确认", "结果待核验",
         ))
     )
+    if task_status_key in {"cancelled", "canceled"} and (
+        summary_data.get("cancelled") is True
+        or summary_data.get("cancel_requested") is True
+        or str(error_code or "").lower() == TaskErrorCode.USER_INTERRUPTED.value
+        or str(cancel_reason or "").startswith(("用户手动停止", "批量任务请求停止", "批量任务取消未开始"))
+    ):
+        projection = _error_projection(
+            TaskErrorCode.USER_INTERRUPTED.value,
+            "user",
+            "用户操作",
+            "任务被停止",
+            stage=stage,
+            error_code=error_code,
+            raw=raw,
+            summary="任务已取消",
+            display_code="USR-001",
+        )
+        if reconcile_required:
+            projection.update(reconcile_required=True, retryability="manual_only",
+                              remote_state_impact="unknown", next_action="manual_reconcile")
+        return projection
     sub2api_projection = _sub2api_error_projection(raw, error_code=error_code, stage=stage, summary=summary_data)
     if sub2api_projection is not None:
         if reconcile_required:

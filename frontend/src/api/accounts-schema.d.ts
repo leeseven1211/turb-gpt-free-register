@@ -51,10 +51,177 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/accounts/operation-receipt": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description 查询已持久化的任务与其原始 Run 编号。批量提交仍在处理时可能只返回部分任务。每次查询读取当时已受理的任务。 */
+        get: operations["findAccountOperationReceipt"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/accounts/check-live-bulk": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description 验证现有 AT。 */
+        post: operations["queueAccountsLiveCheck"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/accounts/refresh-token-bulk": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description 刷新账号 AT。 */
+        post: operations["queueAccountsTokenRefresh"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/accounts/check-plan": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description 查询单个账号的套餐。 */
+        post: operations["queueAccountPlanCheck"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/accounts/check-plan-bulk": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description 查询多个账号的套餐。 */
+        post: operations["queueAccountsPlanCheck"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/accounts/{acc_id}/check-deactivation-mail": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description 扫描单个账号的封号邮件。 */
+        post: operations["queueAccountDeactivationMailCheck"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/accounts/check-deactivation-mail-bulk": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description 扫描多个账号的封号邮件。 */
+        post: operations["queueAccountsDeactivationMailCheck"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        AccountOperationRequestKey: string;
+        AccountOperationReceipt: {
+            task_id: string;
+            run_id: string;
+        };
+        AccountOperationReceipts: {
+            /** @constant */
+            ok: true;
+            found: boolean;
+            items: components["schemas"]["AccountOperationReceipt"][];
+        };
+        AccountOperationBulkTargets: {
+            account_ids?: (number | string)[];
+            /** @description 保留兼容字段。 */
+            ids?: (number | string)[];
+        } | unknown | unknown;
+        AccountOperationPlanTarget: {
+            account_id?: number | string;
+            /** @description 保留兼容字段。 */
+            id?: number | string;
+            email?: string;
+            /** @description 客户端时区偏移（分钟）。省略时沿用服务端默认行为。 */
+            timezone_offset_min?: string | number;
+        } | unknown | unknown | unknown;
+        AccountOperationAccepted: {
+            /** @constant */
+            ok: true;
+            task_id?: number | string | null;
+            run_id?: number | string | null;
+        } & {
+            [key: string]: unknown;
+        };
+        AccountOperationBulkAccepted: {
+            /** @constant */
+            ok: true;
+            started: ({
+                task_id?: number | string | null;
+                run_id?: number | string | null;
+            } & {
+                [key: string]: unknown;
+            })[];
+            started_count: number;
+            busy_count: number;
+            failed_count?: number;
+            skipped: Record<string, never>[];
+        } & {
+            [key: string]: unknown;
+        };
         PublicScalar: string | number | boolean | null;
         AccountQueryFilters: {
             id: string;
@@ -405,6 +572,7 @@ export interface components {
             revision: string;
             /** @constant */
             compact: true;
+            /** @description include_facets=0 时为空对象。 */
             facets: components["schemas"]["AccountFacets"];
             search_terms: components["schemas"]["AccountSearchTerm"][];
         };
@@ -595,7 +763,10 @@ export interface components {
         };
     };
     responses: never;
-    parameters: never;
+    parameters: {
+        /** @description 标识一次账号操作意图。提交时生成请求编号，按相同编号查询该次提交已受理的任务。 */
+        AccountOperationRequestKey: components["schemas"]["AccountOperationRequestKey"];
+    };
     requestBodies: never;
     headers: never;
     pathItems: never;
@@ -611,6 +782,8 @@ export interface operations {
                 page?: number;
                 /** @description 既有查询参数。 */
                 page_size?: number;
+                /** @description 分页统计开关。默认为 1，传 0 跳过筛选统计，facets 返回空对象。 */
+                include_facets?: 0 | 1;
                 /** @description 既有查询参数。 */
                 limit?: number;
                 /** @description 既有查询参数。 */
@@ -854,6 +1027,306 @@ export interface operations {
                 };
             };
             /** @description 普通业务/网络服务端错误；保留原 HTTP 状态与错误消息。 */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    findAccountOperationReceipt: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description 标识一次账号操作意图。提交时生成请求编号，按相同编号查询该次提交已受理的任务。 */
+                "X-Account-Request-Key": components["schemas"]["AccountOperationRequestKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 回执查询成功。尚未查到任务时 found 为 false，items 为空。 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountOperationReceipts"];
+                };
+            };
+            /** @description 缺少请求编号或编号格式无效。 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description 登录失效。 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    queueAccountsLiveCheck: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description 标识一次账号操作意图。提交时生成请求编号，按相同编号查询该次提交已受理的任务。 */
+                "X-Account-Request-Key"?: components["parameters"]["AccountOperationRequestKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AccountOperationBulkTargets"] & {
+                    driver?: string | null;
+                };
+            };
+        };
+        responses: {
+            /** @description 提交已处理，批量接口按项目返回受理结果。 */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountOperationBulkAccepted"];
+                };
+            };
+            /** @description 登录失效。 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 提交失败或操作当前不可用。 */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    queueAccountsTokenRefresh: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description 标识一次账号操作意图。提交时生成请求编号，按相同编号查询该次提交已受理的任务。 */
+                "X-Account-Request-Key"?: components["parameters"]["AccountOperationRequestKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AccountOperationBulkTargets"];
+            };
+        };
+        responses: {
+            /** @description 提交已处理，批量接口按项目返回受理结果。 */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountOperationBulkAccepted"];
+                };
+            };
+            /** @description 登录失效。 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 提交失败或操作当前不可用。 */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    queueAccountPlanCheck: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description 标识一次账号操作意图。提交时生成请求编号，按相同编号查询该次提交已受理的任务。 */
+                "X-Account-Request-Key"?: components["parameters"]["AccountOperationRequestKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AccountOperationPlanTarget"];
+            };
+        };
+        responses: {
+            /** @description 任务已受理。 */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountOperationAccepted"];
+                };
+            };
+            /** @description 登录失效。 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 提交失败或操作当前不可用。 */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    queueAccountsPlanCheck: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description 标识一次账号操作意图。提交时生成请求编号，按相同编号查询该次提交已受理的任务。 */
+                "X-Account-Request-Key"?: components["parameters"]["AccountOperationRequestKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AccountOperationBulkTargets"] & {
+                    /** @description 客户端时区偏移（分钟）。省略时沿用服务端默认行为。 */
+                    timezone_offset_min?: string | number;
+                };
+            };
+        };
+        responses: {
+            /** @description 提交已处理，批量接口按项目返回受理结果。 */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountOperationBulkAccepted"];
+                };
+            };
+            /** @description 登录失效。 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 提交失败或操作当前不可用。 */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    queueAccountDeactivationMailCheck: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description 标识一次账号操作意图。提交时生成请求编号，按相同编号查询该次提交已受理的任务。 */
+                "X-Account-Request-Key"?: components["parameters"]["AccountOperationRequestKey"];
+            };
+            path: {
+                acc_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 任务已受理。 */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountOperationAccepted"];
+                };
+            };
+            /** @description 登录失效。 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 提交失败或操作当前不可用。 */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    queueAccountsDeactivationMailCheck: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description 标识一次账号操作意图。提交时生成请求编号，按相同编号查询该次提交已受理的任务。 */
+                "X-Account-Request-Key"?: components["parameters"]["AccountOperationRequestKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AccountOperationBulkTargets"];
+            };
+        };
+        responses: {
+            /** @description 提交已处理，批量接口按项目返回受理结果。 */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountOperationBulkAccepted"];
+                };
+            };
+            /** @description 登录失效。 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 提交失败或操作当前不可用。 */
             default: {
                 headers: {
                     [name: string]: unknown;

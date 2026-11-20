@@ -33,7 +33,7 @@ def _project_owned_record(result: dict, *, task_type: str = "") -> dict:
         if original is not None and projected != original:
             result[f"internal_{key}"] = original
             result[key] = projected
-    if result.get("error_message") or result.get("status") in {"failed", "partial_success", "interrupted", "deactivated"}:
+    if result.get("error_message") or result.get("status") in {"failed", "partial_success", "interrupted", "deactivated", "cancelled"}:
         info = classify_task_error(
             result.get("error_message") or result.get("error"),
             stage=str(result.get("failure_stage") or summary.get("failure_stage") or
@@ -43,6 +43,7 @@ def _project_owned_record(result: dict, *, task_type: str = "") -> dict:
             error_code=str(result.get("error_code") or ""),
             result_summary=summary,
             task_status=str(original_status or ""),
+            cancel_reason=str(result.get("cancel_reason") or ""),
         )
         if info:
             result["error_info"] = info
@@ -126,6 +127,27 @@ def list_operations(query: OperationQuery) -> dict:
         [result.get("total"), result.get("items")], sort_keys=True, default=str,
     ).encode()).hexdigest()[:20]
     return result
+
+
+@task_query()
+def find_account_request_receipts(request_key: str) -> list[dict[str, str]]:
+    """按账号页请求编号找回已受理任务。"""
+    return operation_task_store.find_account_request_receipts(request_key)
+
+
+@task_query()
+def get_operation_receipt_statuses(references: list[tuple[int, int | None]]) -> list[dict]:
+    """只投影回执轮询所需的公开状态与提示。"""
+    items = []
+    for row in operation_task_store.get_operation_receipt_statuses(references):
+        status = public_result_status(row["status"], {"requested_status": row["requested_status"]}) or "queued"
+        items.append({
+            "task_id": str(row["task_id"]),
+            "run_id": str(row["run_id"]) if row["run_id"] is not None else None,
+            "status": status,
+            "message": row["error_message"] or row["summary_message"] or ("已确认完成" if status == "success" else ""),
+        })
+    return items
 
 
 @task_query()

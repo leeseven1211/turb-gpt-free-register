@@ -101,10 +101,9 @@ export function createAccountSetupActions(base: AccountActionDependencies, deps:
   async function pageUpdate(update: () => Promise<unknown>): Promise<void> {
     try {await update();} catch (cause) {base.notify(`请求已处理，但页面更新失败: ${message(cause)}`);}
   }
-  async function refreshAndOpen(context: AccountActionContext, options?: AccountTaskOpen): Promise<void> {
-    // A successful submission must retain its task link even when the independent list refresh fails.
-    await pageUpdate(() => deps.refresh(context));
-    if (options) await pageUpdate(async () => deps.openTasks(options));
+  function refreshAndOpen(context: AccountActionContext, options?: AccountTaskOpen): void {
+    if (options) void pageUpdate(async () => deps.openTasks(options));
+    void pageUpdate(() => deps.refresh(context));
   }
   async function invoke(descriptor: string, supplied: AccountActionContext, trigger: HTMLElement | null = null): Promise<void> {
     if (!isSupported(descriptor)) throw new Error(`未支持的账号动作：${parsed(descriptor).name}`);
@@ -155,24 +154,24 @@ export function createAccountSetupActions(base: AccountActionDependencies, deps:
         const single = name === 'account-setup', result = await post(single ? `/api/accounts/${id}/setup` : '/api/accounts/setup-bulk', single ? {} : {account_ids: ids});
         const skipped = entries(result.skipped).length;
         base.notify(single ? String(result.message || '已开始补齐账号配置') : skipped ? `已开始补齐 ${count(result.started_count)} 个，跳过 ${skipped} 个` : `已开始补齐 ${count(result.started_count)} 个账号配置`);
-        await refreshAndOpen(context, {filters: {target: single ? labelEmail : '', type: 'account_setup_retry'}});
+        refreshAndOpen(context, {filters: {target: single ? labelEmail : '', type: 'account_setup_retry'}});
       } else if (action && details) {
         const single = name === 'account-action', result = await post(single ? `/api/accounts/${id}/action` : '/api/accounts/action-bulk', single ? {action} : {account_ids: ids, action});
         const skipped = entries(result.skipped).length, started = entries(result.started);
         base.notify(single ? String(result.message || `${details.label}已入队`) : skipped ? `已开始 ${count(result.started_count)} 个，跳过 ${skipped} 个` : String(result.message || `${details.label}已入队`));
         const resume = single ? !!result.registration_resume : started.length > 0 && started.every(item => item.registration_resume);
-        await refreshAndOpen(context, {filters: single ? {target: labelEmail, type: resume ? 'registration_resume' : details.type} : {type: resume ? 'registration_resume' : details.type}});
+        refreshAndOpen(context, {filters: single ? {target: labelEmail, type: resume ? 'registration_resume' : details.type} : {type: resume ? 'registration_resume' : details.type}});
       } else if (name.startsWith('codex-')) {
         const endpoint = name === 'codex-stop' ? 'stop' : name === 'codex-reset-retrying' ? 'reset-retrying' : 'retry';
         const result = await post(`/api/codex/${endpoint}`, name === 'codex-reset-retrying' ? {email, status: 'failed'} : {email});
         base.notify(String(result.message || (name === 'codex-stop' ? '已发送停止信号' : name === 'codex-reset-retrying' ? '已重置补跑状态' : '已开始补跑')));
-        await refreshAndOpen(context, name === 'codex-retry' ? {filters: {target: email, type: 'codex_retry'}} : undefined);
+        refreshAndOpen(context, name === 'codex-retry' ? {filters: {target: email, type: 'codex_retry'}} : undefined);
       } else if (name === 'stopSelectedCodex' || name === 'retrySelectedCodex') {
         const stop = name === 'stopSelectedCodex', result = await post(`/api/codex/${stop ? 'stop' : 'retry'}-bulk`, {account_ids: ids});
         const skipped = entries(result.skipped).length;
         base.notify(stop ? `已停止 ${count(result.stopped_count)} 个${skipped ? `，跳过 ${skipped} 个` : ''}`
           : skipped ? `已开始 ${count(result.started_count)} 个，跳过 ${skipped} 个` : String(result.message || '已开始批量补跑'));
-        await refreshAndOpen(context, stop ? undefined : {filters: {target: '', type: 'codex_retry'}});
+        refreshAndOpen(context, stop ? undefined : {filters: {target: '', type: 'codex_retry'}});
       } else if (name === 'uploadSelectedCodexSub2') {
         const result = await post('/api/accounts/codex/upload-sub2-bulk', {account_ids: ids}), skipped = count(result.skipped_count??entries(result.skipped).length) + count(result.failed_count??entries(result.failed).length);
         const reasons=skipped?accountBulkUnqueuedReasons(result):'';

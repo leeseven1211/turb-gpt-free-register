@@ -45,7 +45,7 @@ class PlanAutoRefreshRouteTests(TestCase):
     def test_bulk_missing_at_uses_one_current_config_read_and_keeps_all_eligible_accounts(self):
         with (
             patch("webui.routes.accounts._feature_unavailable", return_value=None),
-            patch("webui.routes.accounts.db.get_account", side_effect=self.accounts.get),
+            patch("webui.routes.accounts.record_store.list_rows", return_value=list(self.accounts.values())),
             patch("webui.routes.accounts.plan_check_service.get_config_snapshot",
                   return_value={"PLAN_CHECK_AUTO_REFRESH_AT_ENABLED": True}) as snapshot,
             patch("webui.routes.accounts.account_task_store.create_batch", return_value="batch-10") as batch,
@@ -65,7 +65,7 @@ class PlanAutoRefreshRouteTests(TestCase):
     def test_bulk_auto_refresh_disabled_skips_missing_at_but_keeps_existing_at(self):
         with (
             patch("webui.routes.accounts._feature_unavailable", return_value=None),
-            patch("webui.routes.accounts.db.get_account", side_effect=self.accounts.get),
+            patch("webui.routes.accounts.record_store.list_rows", return_value=list(self.accounts.values())),
             patch("webui.routes.accounts.plan_check_service.get_config_snapshot",
                   return_value={"PLAN_CHECK_AUTO_REFRESH_AT_ENABLED": False}),
             patch("webui.routes.accounts.account_task_store.create_batch", return_value="batch-11") as batch,

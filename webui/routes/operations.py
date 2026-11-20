@@ -1,4 +1,7 @@
 from __future__ import annotations
+
+import re
+
 from flask import jsonify, request, send_file
 
 from core import operation_task_store
@@ -7,6 +10,9 @@ from core.operations.contracts import OperationQuery
 from core.operations import action_service, query_service
 from webui.blueprint import LegacyEndpointBlueprint
 from webui.runtime import WebUIContext
+
+
+_RECEIPT_REFERENCE = re.compile(r"([1-9][0-9]{0,18})(?::([1-9][0-9]{0,18}))?")
 
 
 def create_operations_blueprint(context: WebUIContext):
@@ -68,6 +74,25 @@ def create_operations_blueprint(context: WebUIContext):
         )
         result = query_service.list_operations(query)
         return jsonify(result)
+
+    @bp.get("/api/operations/receipts")
+    def api_operation_receipt_statuses():
+        references = request.args.getlist("ref")
+        if not 1 <= len(references) <= 20:
+            return jsonify({"ok": False, "error": "每次可查询 1 至 20 条任务回执"}), 400
+        pairs = []
+        for value in references:
+            match = _RECEIPT_REFERENCE.fullmatch(value)
+            if match is None:
+                return jsonify({"ok": False, "error": "任务回执编号格式无效"}), 400
+            task_id = int(match[1])
+            run_id = int(match[2]) if match[2] else None
+            if task_id >= 2**63 or (run_id is not None and run_id >= 2**63):
+                return jsonify({"ok": False, "error": "任务回执编号超出范围"}), 400
+            pairs.append((task_id, run_id))
+        response = jsonify({"ok": True, "items": query_service.get_operation_receipt_statuses(pairs)})
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
     @bp.get("/api/operations/<int:task_id>")
     def api_operation_detail(task_id: int):

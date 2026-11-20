@@ -4,7 +4,6 @@ Private seams are deliberately version fenced: server._map/trigger, channel pars
 requests/outbuf locks and dispatcher queue. shutdown()'s bool is never stop evidence.
 """
 from __future__ import annotations
-from collections import deque
 from importlib.metadata import version
 import logging
 import math
@@ -13,7 +12,47 @@ import tempfile
 import threading
 import time
 
+from .request_timing import RequestTiming, current_request_timing
+
 AUDITED_WAITRESS_VERSION = '3.0.2'
+_SLOW_REQUEST_SECONDS = 1.0
+_OBSERVED_API_PATHS = frozenset({
+    '/api/accounts', '/api/accounts/inspections', '/api/accounts/plan-check-status',
+    '/api/bulk/batches', '/api/bulk/catalog', '/api/bulk/query-facets',
+    '/api/capabilities', '/api/codex', '/api/config', '/api/dashboard',
+    '/api/email-derivation/allocations', '/api/email-derivation/summary',
+    '/api/extract-workbench/analytics', '/api/extract-workbench/batches',
+    '/api/extract-workbench/config', '/api/extract-workbench/summary', '/api/extract-workbench/tasks',
+    '/api/jobs', '/api/operations', '/api/outlook', '/api/proxy-pool',
+    '/api/proxy-traffic/current', '/api/proxy-traffic/history', '/api/proxy-traffic/summary',
+    '/api/proxy-traffic/traffic', '/api/summary', '/api/ui-settings',
+})
+_OBSERVED_API_GROUPS = {
+    '/api/accounts/': '/api/accounts/*',
+    '/api/bulk/': '/api/bulk/*',
+    '/api/extract-workbench/': '/api/extract-workbench/*',
+    '/api/jobs/': '/api/jobs/*',
+    '/api/operations/': '/api/operations/*',
+}
+
+
+def _request_route_label(path: str) -> str:
+    """用固定值关联浏览器观察，路径参数和静态文件名不进入日志。"""
+    if path in {'/', '/login'}:
+        return '文档'
+    if path in {'/healthz', '/readyz'}:
+        return path
+    if path.startswith('/static/') or path == '/favicon.ico':
+        return '静态资源'
+    if path in _OBSERVED_API_PATHS:
+        return path
+    if path.startswith('/api/'):
+        for prefix, label in _OBSERVED_API_GROUPS.items():
+            if path.startswith(prefix):
+                return label
+        return '其他 API'
+    return '其他'
+
 
 class HttpServer:
     def __init__(self, application, *, host: str, port: int, spool_dir: Path,
@@ -35,8 +74,15 @@ class HttpServer:
 
     def _tracked_app(self,environ,start_response):
         with self._lock:self._active_calls+=1
+        timing = current_request_timing.get()
+        if timing is not None:
+            timing.route = _request_route_label(environ.get('PATH_INFO', ''))
+        started_at = time.monotonic()
         try:response=self.application(environ,start_response)
         finally:
+            if timing is not None:
+                timing.handler_finished = time.monotonic()
+                timing.handler_seconds = timing.handler_finished - started_at
             with self._lock:self._active_calls-=1
         token=object()
         with self._lock:self._responses.add(token)
@@ -71,6 +117,23 @@ class HttpServer:
             return SizedTrackedResponse()
         return TrackedResponse()
 
+    def _log_slow_request(self, timing: RequestTiming) -> None:
+        if timing.handler_finished is None:
+            return
+        response_seconds = time.monotonic() - timing.handler_finished
+        if timing.queue_seconds + timing.handler_seconds + response_seconds < _SLOW_REQUEST_SECONDS:
+            return
+        try:
+            self.logger.warning(
+                'HTTP 慢请求 code=http_slow_request route=%s queue_ms=%.1f handler_ms=%.1f '
+                'json_ms=%.1f pool_ms=%.1f response_ms=%.1f',
+                timing.route, timing.queue_seconds * 1000, timing.handler_seconds * 1000,
+                timing.json_seconds * 1000, timing.pool_seconds * 1000, response_seconds * 1000,
+            )
+        except Exception:
+            # 日志失败时保持原有响应和连接清理。
+            pass
+
     def start(self):
         if self._state!='new':raise RuntimeError('http_server_not_restartable')
         if version('waitress')!=AUDITED_WAITRESS_VERSION:raise RuntimeError('http_waitress_version_mismatch')
@@ -100,18 +163,24 @@ class HttpServer:
                             task=self.queue.popleft()
                             if owner._draining.is_set():
                                 self.queue.appendleft(task);self.queue_cv.wait(.01);continue
+                            queue_seconds = time.monotonic() - task._turb_enqueued_at
                             self.active.add(task)
+                        timing = RequestTiming(queue_seconds)
+                        timing_token = current_request_timing.set(timing)
                         try:task.service()
                         except BaseException:owner.logger.exception('http_task_failed')
                         finally:
+                            current_request_timing.reset(timing_token)
                             with self.lock:self.active.discard(task)
                             if owner._draining.is_set():task.close_when_flushed=True
                             try:owner._server.pull_trigger()
                             except OSError:pass
+                            owner._log_slow_request(timing)
                 finally:
                     with self.lock:self.threads.discard(thread_no);self.thread_exit_cv.notify_all()
             def add_task(self,task):
                 with self.lock:
+                    task._turb_enqueued_at = time.monotonic()
                     self.queue.append(task);self.queue_cv.notify()
             def begin_drain(self):
                 with self.lock:

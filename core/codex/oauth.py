@@ -24,6 +24,7 @@ from core.auth.email_guard import bind_auth_observer, serialize_email_auth
 from core.auth.protocol.session import BrowserSession
 from core.auth.humanize import delay as human_delay
 from core.auth.protocol.openai_auth import _is_transient_network_error, _extract_error_code, detect_account_unusable_response_body, AccountUnusableError, request_sentinel_token, build_sentinel_header, network_preflight, navigate_email_otp_send, _rotate_document_navigation_id
+from core.codex import cpa_download
 from core.codex.phone_errors import CodexPhoneVerificationError, phone_failure_from_response
 from core.codex.auth_page import CodexAuthPageSession
 from core.codex.session_diagnostics import CodexDiagnosticSession, safe_session_diagnostics
@@ -238,7 +239,7 @@ def _cpa_management_key() -> str:
     return key
 
 
-def _cpa_request_json(method: str, path: str, body: dict | None = None) -> dict:
+def _cpa_request_json(method: str, path: str, body: dict | None = None, *, download_phase: str = "") -> dict:
     """调用 CPA 管理接口，兼容 FlowPilot 的 /v0/management/* 协议。"""
     origin = _cpa_management_origin()
     key = _cpa_management_key()
@@ -250,11 +251,13 @@ def _cpa_request_json(method: str, path: str, body: dict | None = None) -> dict:
         "X-Management-Key": key,
     }
     url = f"{origin}{path}"
-    session = curl_requests.Session()
+    session = curl_requests.Session(curl_infos=cpa_download.CURL_INFOS) if download_phase else curl_requests.Session()
     try:
-        resp = session.request(
+        resp = cpa_download.send(
+            session,
             method.upper(),
             url,
+            phase=download_phase,
             headers=headers,
             data=None if body is None else json.dumps(body),
             timeout=timeout,
@@ -431,7 +434,8 @@ def _submit_sub2_callback(callback_url: str, *, session_id: str = "", redirect_u
 
 
 
-def _cpa_request_raw(method: str, path: str, body: dict | None = None, *, response_type: str = "text"):
+def _cpa_request_raw(method: str, path: str, body: dict | None = None, *, response_type: str = "text",
+                     download_phase: str = ""):
     """调用 CPA 管理接口并返回原始响应；用于下载 auth-files 这类非 JSON 响应。"""
     origin = _cpa_management_origin()
     key = _cpa_management_key()
@@ -443,11 +447,13 @@ def _cpa_request_raw(method: str, path: str, body: dict | None = None, *, respon
         "X-Management-Key": key,
     }
     url = f"{origin}{path}"
-    session = curl_requests.Session()
+    session = curl_requests.Session(curl_infos=cpa_download.CURL_INFOS) if download_phase else curl_requests.Session()
     try:
-        resp = session.request(
+        resp = cpa_download.send(
+            session,
             method.upper(),
             url,
+            phase=download_phase,
             headers=headers,
             data=None if body is None else json.dumps(body),
             timeout=timeout,
@@ -466,9 +472,11 @@ def _cpa_request_raw(method: str, path: str, body: dict | None = None, *, respon
             pass
 
 
-def list_cpa_codex_auth_files() -> list[dict]:
+def list_cpa_codex_auth_files(*, observe_web_download: bool = False) -> list[dict]:
     """读取 CPA auth-files 列表，仅返回 type/name/email 可识别为 codex 的凭证。"""
-    payload = _cpa_request_json("GET", "/v0/management/auth-files")
+    payload = _cpa_request_json(
+        "GET", "/v0/management/auth-files", download_phase="auth_files" if observe_web_download else "",
+    )
     files = payload.get("files") if isinstance(payload.get("files"), list) else []
     out = []
     for item in files:
@@ -485,14 +493,16 @@ def list_cpa_codex_auth_files() -> list[dict]:
     return out
 
 
-def find_cpa_codex_auth_file(*, email: str = "", local_filename: str = "") -> dict | None:
+def find_cpa_codex_auth_file(
+    *, email: str = "", local_filename: str = "", observe_web_download: bool = False,
+    files: list[dict] | None = None,
+) -> dict | None:
     """按本地回执/凭证文件名或邮箱匹配 CPA 侧 codex auth 文件。"""
     email_l = str(email or "").strip().lower()
     local_name_l = str(local_filename or "").strip().lower()
     local_stem_l = local_name_l[:-5] if local_name_l.endswith(".json") else local_name_l
-    files = list_cpa_codex_auth_files()
-    if not files:
-        return None
+    if files is None:
+        files = list_cpa_codex_auth_files(observe_web_download=observe_web_download)
 
     def score(item: dict) -> int:
         name_l = str(item.get("name") or "").lower()
@@ -513,11 +523,14 @@ def find_cpa_codex_auth_file(*, email: str = "", local_filename: str = "") -> di
                 s = max(s, 75)
         return s
 
-    ranked = sorted(((score(item), item) for item in files), key=lambda x: x[0], reverse=True)
-    return ranked[0][1] if ranked and ranked[0][0] > 0 else None
+    best_score, best_file = max(((score(item), item) for item in files), key=lambda pair: pair[0], default=(0, None))
+    return best_file if best_score > 0 else None
 
 
-def download_cpa_codex_auth_text(*, cpa_name: str | None = None, email: str = "", local_filename: str = "") -> tuple[str, str, dict]:
+def download_cpa_codex_auth_text(
+    *, cpa_name: str | None = None, email: str = "", local_filename: str = "", observe_web_download: bool = False,
+    files: list[dict] | None = None,
+) -> tuple[str, str, dict]:
     """
     从 CPA auth-files 下载一个 Codex JSON 文本。
     Returns: (content_text, download_filename, matched_file_meta)
@@ -529,12 +542,17 @@ def download_cpa_codex_auth_text(*, cpa_name: str | None = None, email: str = ""
         # 账号列表批量下载会先统一列一次列表；这里重复列会导致选中多账号时浏览器长时间等待下载确认。
         meta = {"name": name}
     else:
-        meta = find_cpa_codex_auth_file(email=email, local_filename=local_filename)
+        meta = find_cpa_codex_auth_file(
+            email=email, local_filename=local_filename, observe_web_download=observe_web_download, files=files,
+        )
         name = str((meta or {}).get("name") or "").strip()
     if not name:
         target = email or local_filename or cpa_name or "未知"
         raise RuntimeError(f"[Codex][CPA] 未在 CPA auth-files 中找到匹配的 Codex 凭证: {target}")
-    text = _cpa_request_raw("GET", f"/v0/management/auth-files/download?name={quote(name, safe='')}", response_type="text")
+    text = _cpa_request_raw(
+        "GET", f"/v0/management/auth-files/download?name={quote(name, safe='')}",
+        response_type="text", download_phase="auth_file_download" if observe_web_download else "",
+    )
     # 下载接口正常应返回 JSON 文本，这里做一次轻校验，避免把 HTML/错误文本当凭证导出。
     try:
         parsed = json.loads(text)

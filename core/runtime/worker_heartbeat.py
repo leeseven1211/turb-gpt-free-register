@@ -41,6 +41,11 @@ class WorkerHeartbeat:
         self._started_at = None
         self._last_success = None
         self._inflight = False
+        self._pulse_phase = 'idle'
+        self._phase_started = None
+        self._collect_seconds = None
+        self._write_seconds = None
+        self._schedule_lag = 0.0
         self._timeout_epoch = 0
         self._timeout_pending = False
         self._started_threads = False
@@ -96,7 +101,19 @@ class WorkerHeartbeat:
         safe_type = (exception_type if isinstance(exception_type, str)
                      and len(exception_type) <= 80 and exception_type.isascii()
                      and exception_type.isidentifier() else 'none')
-        return safe_code, safe_type
+        now = self._clock()
+        phase, collect_ms, write_ms = self._pulse_timing_locked(now)
+        return safe_code, safe_type, phase, collect_ms, write_ms, self._schedule_lag * 1000
+
+    def _pulse_timing_locked(self, now):
+        collect_seconds, write_seconds = self._collect_seconds, self._write_seconds
+        if self._pulse_phase == 'collect':
+            collect_seconds = now - self._phase_started
+        elif self._pulse_phase == 'write':
+            write_seconds = now - self._phase_started
+        return (self._pulse_phase,
+                collect_seconds * 1000 if collect_seconds is not None else -1.,
+                write_seconds * 1000 if write_seconds is not None else -1.)
 
     @staticmethod
     def _log_failure(diagnostic):
@@ -104,7 +121,9 @@ class WorkerHeartbeat:
             return
         # 日志处理器可能阻塞；所有调用者必须先退出心跳状态锁。
         try:
-            logger.warning('后台心跳异常：code=%s exception_type=%s', *diagnostic)
+            logger.warning(
+                '后台心跳异常：code=%s exception_type=%s phase=%s collect_ms=%.1f write_ms=%.1f schedule_lag_ms=%.1f',
+                *diagnostic)
         except Exception:
             # 诊断失败不能改变既有执行门禁与失败状态。
             pass
@@ -115,7 +134,9 @@ class WorkerHeartbeat:
                 return
             self._inflight = True
             timeout_epoch = self._timeout_epoch
-        started = self._clock()
+            started = self._phase_started = self._clock()
+            self._pulse_phase = 'collect'
+            self._collect_seconds = self._write_seconds = None
         stage = 'collect'
         try:
             if final:
@@ -137,6 +158,10 @@ class WorkerHeartbeat:
             if final:
                 payload['state'], payload['ready'] = 'stopping', False
             stage = 'write'
+            with self._lock:
+                self._phase_started = self._clock()
+                self._collect_seconds = self._phase_started - started
+                self._pulse_phase = stage
             accepted = self._write(payload)
             if accepted is not True:
                 self._fail('heartbeat_fenced', fatal=True)
@@ -163,6 +188,13 @@ class WorkerHeartbeat:
         finally:
             with self._lock:
                 self._inflight = False
+                elapsed = self._clock() - self._phase_started
+                if self._pulse_phase == 'collect':
+                    self._collect_seconds = elapsed
+                else:
+                    self._write_seconds = elapsed
+                self._pulse_phase = 'idle'
+                self._phase_started = None
 
     def _check_health(self):
         diagnostic = None
@@ -187,7 +219,10 @@ class WorkerHeartbeat:
                         return
                 self._pulse()
                 if not self._stop.is_set():
-                    self._wake_writer.wait(self._interval)
+                    due = self._clock() + self._interval
+                    woke_early = self._wake_writer.wait(self._interval)
+                    with self._lock:
+                        self._schedule_lag = 0. if woke_early else max(0., self._clock() - due)
             # Nonready publication is best effort. It remains part of this
             # thread, so a blocked final write is visible to stop's join budget.
             self._pulse(final=True)

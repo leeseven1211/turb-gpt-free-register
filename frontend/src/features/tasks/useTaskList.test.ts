@@ -18,7 +18,7 @@ describe('任务列表请求生命周期', () => {
     list.filters.status = 'failed'; list.filters.type = 'token_refresh'; list.filters.created_from = '2026-11-01';
     await nextTick(); await nextTick();
     expect(tasksApi.list).toHaveBeenCalledTimes(1);
-    expect(tasksApi.list).toHaveBeenLastCalledWith(expect.objectContaining({status: 'failed', type: 'token_refresh', created_from: '2026-11-01', page: 1, include_facets: 1}), expect.any(AbortSignal));
+    expect(tasksApi.list).toHaveBeenLastCalledWith(expect.objectContaining({status: 'failed', type: 'token_refresh', created_from: '2026-11-01', page: 1, include_facets: 0}), expect.any(AbortSignal));
     await vi.advanceTimersByTimeAsync(300);
     expect(tasksApi.list).toHaveBeenCalledTimes(1);
     list.filters.created_to = '2026-11-13'; await nextTick(); await nextTick();
@@ -65,7 +65,7 @@ describe('任务列表请求生命周期', () => {
   it('可见时轮询不带统计，隐藏后停止请求', async () => {
     vi.mocked(tasksApi.list).mockResolvedValue(response(1));
     const list = setup(); list.setVisible(true); await nextTick(); await vi.advanceTimersByTimeAsync(0);
-    expect(tasksApi.list).toHaveBeenLastCalledWith(expect.objectContaining({include_facets: 1, include_batches: 0}), expect.any(AbortSignal));
+    expect(tasksApi.list).toHaveBeenLastCalledWith(expect.objectContaining({include_facets: 0, include_batches: 0}), expect.any(AbortSignal));
     await vi.advanceTimersByTimeAsync(5001);
     expect(tasksApi.list).toHaveBeenLastCalledWith(expect.objectContaining({include_facets: 0, include_batches: 0}), expect.any(AbortSignal));
     list.setVisible(false); const calls = vi.mocked(tasksApi.list).mock.calls.length;
@@ -76,22 +76,35 @@ describe('任务列表请求生命周期', () => {
     const list = setup(); await list.refresh(); await list.refresh();
     expect(list.items.value[0]?.id).toBe(7); expect(list.error.value).toBe('网络中断');
   });
-  it('相同 revision 保留列表对象和选择，筛选变化重新获取统计和列表', async () => {
-    vi.mocked(tasksApi.list).mockImplementation(async () => ({...response(1), facets: {status: [{value: 'success', count: 1}]}}));
+  it('按需读取筛选统计，翻页与相同条件的轮询复用统计', async () => {
+    vi.mocked(tasksApi.list).mockImplementation(async query => ({
+      ...response(1), total: 100, page: query.page,
+      ...(query.include_facets ? {facets: {status: [{value: 'success', count: 1}]}} : {}),
+    }));
     const list = setup(); list.setVisible(true); await nextTick(); await vi.advanceTimersByTimeAsync(0);
+    expect(tasksApi.list).toHaveBeenLastCalledWith(expect.objectContaining({include_facets: 0}), expect.any(AbortSignal));
+    list.setFacetsVisible(true); await nextTick(); await vi.advanceTimersByTimeAsync(0);
+    expect(tasksApi.list).toHaveBeenLastCalledWith(expect.objectContaining({include_facets: 1}), expect.any(AbortSignal));
     const first = list.items.value;
     const facets = list.facets.value;
     list.toggle(1, true);
-    vi.mocked(tasksApi.list).mockImplementation(async () => response(1));
     await list.refresh();
     expect(list.items.value).toBe(first);
     expect(list.facets.value).toBe(facets);
     expect(list.selected.value.has(1)).toBe(true);
     expect(tasksApi.list).toHaveBeenLastCalledWith(expect.objectContaining({include_facets: 0, include_batches: 0}), expect.any(AbortSignal));
+    list.page.value = 2; await nextTick(); await vi.advanceTimersByTimeAsync(0);
+    expect(tasksApi.list).toHaveBeenLastCalledWith(expect.objectContaining({page: 2, include_facets: 0}), expect.any(AbortSignal));
+    list.size.value = 50; await nextTick(); await vi.advanceTimersByTimeAsync(0);
+    expect(tasksApi.list).toHaveBeenLastCalledWith(expect.objectContaining({page_size: 50, include_facets: 0}), expect.any(AbortSignal));
     list.filters.status = 'failed'; await nextTick(); await vi.advanceTimersByTimeAsync(261);
     expect(tasksApi.list).toHaveBeenLastCalledWith(expect.objectContaining({status: 'failed', include_facets: 1, include_batches: 0}), expect.any(AbortSignal));
     expect(list.items.value).not.toBe(first);
     expect(list.selected.value.size).toBe(0);
+    list.setFacetsVisible(false);
+    const firstCollection = vi.mocked(tasksApi.list).mock.calls.filter(([query]) => query.include_facets).length;
+    await vi.advanceTimersByTimeAsync(35000);
+    expect(vi.mocked(tasksApi.list).mock.calls.filter(([query]) => query.include_facets)).toHaveLength(firstCollection);
   });
   it('手动刷新绕过统计缓存并替换在途请求，迟到轮询不会覆盖最新统计', async () => {
     let resolvePolling!: (result: OperationList) => void;

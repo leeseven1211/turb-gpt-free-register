@@ -501,6 +501,29 @@ def test_all_task_types_share_v2_template_and_result_tail():
         assert snapshot["main_steps"][-1]["id"] == "result"
 
 
+def test_at_refresh_projects_browser_and_navigation_under_authentication():
+    events = [
+        _event("b0", "browser", "running", detail={"child_step_id": "browser"}),
+        _event("b1", "browser", "success", detail={"child_step_id": "browser"}),
+        _event("p0", "page", "running", detail={"child_step_id": "page"}),
+    ]
+    for task_type, parent_id in (("token_refresh", "authenticate"), ("plan_check", "refresh_token")):
+        snapshot = build_progress_snapshot(1, 2, task_type, _run(), events)
+        assert snapshot["current"]["step_id"] == parent_id
+        assert snapshot["current"]["child_step_id"] == "page"
+        assert snapshot["current"]["label"] == "打开页面"
+        children = _step(snapshot, parent_id)["children"]
+        assert [(child["id"], child["state"]) for child in children] == [("browser", "success"), ("page", "running")]
+
+
+def test_protocol_at_refresh_preparation_projects_identity_without_browser_or_password():
+    events = [_event("a", "authenticate", "running")]
+    snapshot = build_progress_snapshot(1, 2, "token_refresh", _run(), events)
+    assert snapshot["current"]["step_id"] == "authenticate"
+    assert snapshot["current"]["child_step_id"] is None
+    assert _step(snapshot, "authenticate")["children"] == []
+
+
 def test_observed_order_event_ids_and_children_are_retained():
     events = [
         _event("n", "network", "success", created_at="2026-01-01T00:00:00Z"),

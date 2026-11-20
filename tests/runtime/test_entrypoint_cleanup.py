@@ -42,7 +42,7 @@ class StartupFailure(RuntimeError):
 
 class WebEntrypointCleanupTests(unittest.TestCase):
     def _run_web(self, stage=None, *, stop_result=True, stop_error=None, run_error=None,
-                 interrupt_start=False):
+                 interrupt_start=False, mode="combined"):
         state = SimpleNamespace(port_locked=False, installed=False, stop_attempted=False,
                                 ran=False, signal_handler=None)
         failure = StartupFailure(stage or "unused")
@@ -90,7 +90,7 @@ class WebEntrypointCleanupTests(unittest.TestCase):
             fail_at("signal")
             state.signal_handler = handler
 
-        bootstrap = SimpleNamespace(mode="combined", prepare_log_environment=lambda: None)
+        bootstrap = SimpleNamespace(mode=mode, prepare_log_environment=lambda: None)
         modules = {
             "config": _module("config"),
             "config.env_loader": _module("config.env_loader", ensure_loaded=lambda: None),
@@ -102,6 +102,8 @@ class WebEntrypointCleanupTests(unittest.TestCase):
             "core.runtime.assembly": _module("core.runtime.assembly", install=install),
             "core.runtime.process": _module("core.runtime.process",
                 start_runtime=start, stop_runtime=stop),
+            "core.operation_task_store": _module(
+                "core.operation_task_store", init=lambda: fail_at("operation-storage")),
             "core.storage": _module("core.storage",
                 postgres=SimpleNamespace(require_ready=lambda: fail_at("db"))),
             "webui": _module("webui"),
@@ -128,6 +130,13 @@ class WebEntrypointCleanupTests(unittest.TestCase):
         self.assertIs(error, failure)
         self.assertFalse(state.port_locked)
         self.assertFalse(state.installed)
+
+    def test_web_storage_failure_releases_the_port_before_any_listener(self):
+        state, failure, error = self._run_web("operation-storage", mode="web")
+        self.assertIs(error, failure)
+        self.assertFalse(state.port_locked)
+        self.assertTrue(state.stop_attempted)
+        self.assertFalse(state.ran)
 
     def test_partial_install_and_startup_failures_stop_installed_resources(self):
         for stage in ("install", "app", "start", "auth", "signal"):

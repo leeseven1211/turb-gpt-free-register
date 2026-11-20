@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import threading
@@ -828,6 +829,7 @@ def start_dispatcher() -> bool:
 def _submit_native_scan(
     *, account_id: int, email: str, trigger: str, batch_id: str | None,
     idempotency_key: str | None,
+    account_request_key: str | None = None,
 ) -> dict:
     register_operation_handlers()
     key = str(idempotency_key or "").strip() or None
@@ -843,6 +845,7 @@ def _submit_native_scan(
         source_system="native_operations",
         source_id=source_id,
         idempotency_key=key,
+        **({"account_request_key": account_request_key} if account_request_key else {}),
         batch_id=_numeric_batch_id(batch_id),
         resource_family="mailbox_scan",
         data={
@@ -858,6 +861,7 @@ def _submit_native_scan(
 def _submit_native_hme_group(
     *, anchor_account_id: int, anchor_email: str, entries: list[dict], trigger: str,
     batch_id: str | None, idempotency_key: str | None,
+    account_request_key: str | None = None,
 ) -> dict:
     """Persist one durable coordinator Run for one shared HME bulk search."""
     register_operation_handlers()
@@ -874,6 +878,13 @@ def _submit_native_hme_group(
         f"maintenance:deactivation_mail:bulk:{key}"
         if key else f"maintenance:deactivation_mail:bulk:{uuid.uuid4().hex}"
     )
+    request_fields = {}
+    if account_request_key:
+        targets = ",".join(str(account_id) for account_id in sorted(item["account_id"] for item in normalized))
+        request_fields = {
+            "account_request_key": account_request_key,
+            "account_request_target": "hme:" + hashlib.sha256(targets.encode("ascii")).hexdigest(),
+        }
     return account_task_store.submit_durable_operation(
         task_type="deactivation_mail",
         account_id=int(anchor_account_id),
@@ -882,6 +893,7 @@ def _submit_native_hme_group(
         source_system="native_operations",
         source_id=source_id,
         idempotency_key=key,
+        **request_fields,
         batch_id=_numeric_batch_id(batch_id),
         resource_family="mailbox_scan",
         data={
@@ -900,6 +912,7 @@ def _submit_native_hme_group(
 def _enqueue_native_bulk(
     account_ids: list[int], trigger: str = "manual_bulk", batch_id: str | None = None,
     idempotency_key: str | None = None,
+    account_request_key: str | None = None,
 ) -> dict:
     started: list[dict] = []
     busy: list[dict] = []
@@ -953,6 +966,7 @@ def _enqueue_native_bulk(
                 trigger=trigger,
                 batch_id=batch_id,
                 idempotency_key=key,
+                **({"account_request_key": account_request_key} if account_request_key else {}),
             )
         except Exception as exc:
             skipped.append({
@@ -1000,6 +1014,7 @@ def _enqueue_native_bulk(
                 trigger=trigger,
                 batch_id=batch_id,
                 idempotency_key=group_key,
+                **({"account_request_key": account_request_key} if account_request_key else {}),
             )
         except Exception as exc:
             error = f"封号邮件批量扫描持久化失败: {type(exc).__name__}: {str(exc)[:240]}"
@@ -1048,19 +1063,23 @@ def _enqueue_native_bulk(
 def enqueue_bulk(
     account_ids: list[int], trigger: str = "manual_bulk", batch_id: str | None = None,
     idempotency_key: str | None = None,
+    account_request_key: str | None = None,
 ) -> dict:
     """Submit mailbox scans to the durable queue; the scheduler remains a producer."""
     return _enqueue_native_bulk(
         account_ids, trigger=trigger, batch_id=batch_id, idempotency_key=idempotency_key,
+        **({"account_request_key": account_request_key} if account_request_key else {}),
     )
 
 
 def enqueue(
     account_id: int, trigger: str = "manual", batch_id: str | None = None,
     idempotency_key: str | None = None,
+    account_request_key: str | None = None,
 ) -> dict:
     result = enqueue_bulk(
         [account_id], trigger=trigger, batch_id=batch_id, idempotency_key=idempotency_key,
+        **({"account_request_key": account_request_key} if account_request_key else {}),
     )
     if result["started"]:
         item = result["started"][0]

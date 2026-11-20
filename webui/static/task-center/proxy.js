@@ -4,7 +4,7 @@ import { t as ee } from "./ListPagination-BjETSj81.js";
 import { t as P } from "./ListResult-BkPTMQVQ.js";
 import { n as F, t as I } from "./time-DOD6oyhP.js";
 import { t as L } from "./useColumnWidths-D1sKP53m.js";
-import { n as R, r as z } from "./client-BBEPwkQG.js";
+import { n as R, r as z } from "./client-B5R_MNgP.js";
 import { r as te } from "./taskIds-BlchWwUp.js";
 // src/features/proxy/presentation.ts
 function B(e, t = "—") {

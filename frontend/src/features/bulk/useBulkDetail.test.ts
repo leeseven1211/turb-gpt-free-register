@@ -22,6 +22,8 @@ function fixture(initial: Partial<BulkNavigation> = {}) {
 describe('批次详情范围与写入契约', () => {
   it('报告独立于结果筛选与游标，IDs不转成Number', async () => {
     const h = fixture({round_id: round, result_state: 'failed', cursor: 'opaque/+='}); await flushPromises();
+    expect(h.request.mock.calls.some(([path]) => path.includes('/report?'))).toBe(false);
+    await h.state.openReport();
     const urls = h.request.mock.calls.map(([path]) => new URL(path, 'http://local'));
     const target = urls.find(url => url.pathname.endsWith('/targets'))!;
     expect(target.searchParams.get('cursor')).toBe('opaque/+='); expect(target.searchParams.get('state[]')).toBe('failed');
@@ -74,6 +76,7 @@ describe('批次详情范围与写入契约', () => {
   });
   it('报告节流，结束revision变化立即刷新；失败保留报告', async () => {
     const h = fixture(); await flushPromises(); const reports = () => h.request.mock.calls.filter(([p]) => p.includes('/report?')).length;
+    await h.state.openReport();
     expect(reports()).toBe(1); await h.state.refresh(); expect(reports()).toBe(1); h.advance(); await h.state.refresh(); expect(reports()).toBe(2);
     h.request.mockImplementationOnce(async <T>() => detail({control: {state: 'ended', revision: 9}, summary_revision: 8}) as T);
     await h.state.refresh(); expect(reports()).toBe(3);
@@ -92,14 +95,36 @@ describe('批次详情范围与写入契约', () => {
   });
   it('隐藏中止报告，恢复后读新报告；旧响应不可回写',async()=>{
     const h=fixture();await flushPromises();let release!:(value:unknown)=>void;
+    await h.state.openReport();
     h.request.mockImplementationOnce(()=>new Promise(resolve=>{release=resolve;}));const old=h.state.refreshReport(true);const signal=(h.request.mock.calls.at(-1) as unknown as [string,RequestInit])[1].signal;
     h.state.setVisible(false);expect(signal?.aborted).toBe(true);expect(h.state.needsPolling.value).toBe(false);release({operation_key:'plan_check',old:true});await old;expect(h.state.report.value?.old).toBeUndefined();
     const previous=h.request.mock.calls.length;await h.state.refresh(true);expect(h.request).toHaveBeenCalledTimes(previous);h.state.setVisible(true);await h.state.refresh(true);expect(h.state.report.value?.operation_key).toBe('plan_check');
   });
   it('换轮次立即清报告，旧报告迟到不替换新轮次',async()=>{
     const h=fixture();await flushPromises();let release!:(value:unknown)=>void;
+    await h.state.openReport();
     h.request.mockImplementationOnce(()=>new Promise(resolve=>{release=resolve;}));const old=h.state.refreshReport(true);
     h.navigation.value={...h.navigation.value,round_id:round};expect(h.state.report.value).toBeNull();await flushPromises();release({operation_key:'plan_check',old:true});await old;expect(h.state.report.value?.old).toBeUndefined();
+    expect(h.request.mock.calls.some(([path]) => path.includes(`/report?view=round&round_id=${round}`))).toBe(true);
+    h.navigation.value={...h.navigation.value,batch_id:'42'};await flushPromises();
+    expect(h.request.mock.calls.some(([path]) => path.startsWith('/batches/42/report?'))).toBe(false);
+  });
+  it('普通详情和结果轮询跳过报告，主动打开时合并在途读取', async () => {
+    const h = fixture(); await flushPromises();
+    const reports = () => h.request.mock.calls.filter(([path]) => path.includes('/report?'));
+    await h.state.refresh(true);
+    h.advance();
+    await h.state.refresh();
+    expect(reports()).toHaveLength(0);
+    let release!: (value: unknown) => void;
+    h.request.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+    const first = h.state.openReport();
+    const second = h.state.openReport();
+    await h.state.refresh();
+    expect(reports()).toHaveLength(1);
+    release({operation_key: 'plan_check', phase: 'running'});
+    await Promise.all([first, second]);
+    expect(h.state.report.value?.operation_key).toBe('plan_check');
   });
   it('确认冻结revision与选中列表，后续刷新不偷换请求',async()=>{
     const h=fixture();await flushPromises();for(let index=1;index<=10;index++)h.state.toggleTarget(String(index),true);await h.state.retry(true);

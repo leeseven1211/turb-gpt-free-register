@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import re
 import time
+from contextlib import contextmanager
 from datetime import datetime
 from functools import wraps
 from urllib.parse import urlparse
@@ -23,7 +24,7 @@ from core.auth.protocol.openai_auth import AccountUnusableError, EmailOtpSendErr
 from core.auth.challenge import AuthCancelledError
 from core.auth.browser.password_auth import PASSWORD_PREPARE_REASONS
 from core.auth.browser.password_evidence import password_evidence, password_receipt_ids
-from core.operations.runtime import OperationCancelled, check_cancelled, current_token, report_stage
+from core.operations.runtime import OperationCancelled, check_cancelled, current_token, record_stage, report_stage
 from core.operations.task_gateway import OperationLeaseLost
 from core.auth.browser.selenium_auth import build_driver as _build_driver, center_browser_window as _center_browser_window, clear_otp_inputs as _clear_otp_inputs, click_continue as _click_continue, click_resend_email_otp as _click_resend_email_otp, email_otp_page_state as _email_otp_page_state, fetch_chatgpt_session as _fetch_chatgpt_session, find_any as _find_any, has_access_token as _has_access_token, is_email_verification_page as _is_email_verification_page, is_login_password_page as _is_login_password_page, maybe_accept as _maybe_accept, page_warmup as _page_warmup, quit_driver as _quit_driver, safe_get as _safe_get, submit_email_step as _submit_email_step, submit_email_via_browser_nextauth as _submit_email_via_browser_nextauth, type_email_address as _type_email_address, type_otp as _type_otp, wait_after_email_otp_submit as _wait_after_email_otp_submit, wait_email_submit_next_state as _wait_email_submit_next_state
 from core.browser.roxy.client import RoxyBrowserClient
@@ -31,6 +32,16 @@ from core.accounts.liveness.roxy.refresh_errors import ROXY_LOGIN_CAUSES, roxy_l
 from core.network.at_transport_recovery import AtRecoveryTimeout
 
 logger = logging.getLogger('core.roxy_liveness')
+
+
+@contextmanager
+def _timed_refresh_step(step: str):
+    started_at = time.monotonic()
+    try:
+        yield
+    finally:
+        logger.info("[查活][Roxy] %s耗时 %.0f ms", step, (time.monotonic() - started_at) * 1000)
+
 
 _ROXY_STAGE_CAUSES = {
     "open": ("roxy_profile_open_failed", "browser"),
@@ -972,15 +983,26 @@ def refresh_access_token(
             debug_session.update_stage({"open": "browser", "driver": "browser", "navigation": "browser",
                                         "login": "login", "session": "token", "callback": "token"}.get(value, value))
         if current_token() is not None:
+            completed = {
+                "navigation": ("browser", "Roxy 浏览器已启动并连接"),
+                "login": ("page", "ChatGPT 登录页已打开"),
+                "email_otp": ("login", "已确认邮箱提交后的验证页面"),
+            }.get(value)
+            if value == "session" and not email_challenge_started:
+                completed = ("login", "已确认浏览器进入登录状态")
+            if completed:
+                completed_stage, message = completed
+                record_stage(completed_stage, message, state="success", detail={"child_step_id": completed_stage})
             visible_stage, message = {
-                "driver": ("login", "正在连接 Roxy 浏览器"),
-                "navigation": ("login", "正在加载 ChatGPT 登录页"),
-                "login": ("login", "正在登录账号，优先使用页面提供的已保存密码入口"),
+                "driver": ("browser", "正在连接 Roxy 浏览器"),
+                "navigation": ("page", "正在加载 ChatGPT 登录页"),
+                "login": ("login", "正在提交登录邮箱并识别后续认证页面"),
                 "email_otp": ("email_otp", "服务端仍要求邮箱验证，正在查收邮箱验证码"),
                 "session": ("refresh_token", "登录验证已完成，正在读取会话和 AT"),
                 "callback": ("token", "正在处理已取得的登录会话"),
             }[value]
-            report_stage(visible_stage, message)
+            detail = {"child_step_id": visible_stage} if visible_stage in {"browser", "page"} else None
+            report_stage(visible_stage, message, detail=detail)
 
     try:
         check_cancelled("用户手动停止刷新 AT")
@@ -989,13 +1011,14 @@ def refresh_access_token(
 
         bound_profile_id = account_profile_id_by_email(email, strict=True)
         logger.info("[查活][Roxy] 打开或创建账号指纹浏览器环境")
-        opened = client.open_profile_for_account(
-            profile_id=bound_profile_id or None,
-            proxy_url=proxy,
-            data_saver_flow="token_refresh",
-            stop_checker=lambda: check_cancelled("用户手动停止刷新 AT"),
-            **({"headless": False} if full_debug else {}),
-        )
+        with _timed_refresh_step("启动 Roxy 环境"):
+            opened = client.open_profile_for_account(
+                profile_id=bound_profile_id or None,
+                proxy_url=proxy,
+                data_saver_flow="token_refresh",
+                stop_checker=lambda: check_cancelled("用户手动停止刷新 AT"),
+                **({"headless": False} if full_debug else {}),
+            )
         profile_reused = bool(
             bound_profile_id
             and str(opened.profile_id) == str(bound_profile_id)
@@ -1022,7 +1045,8 @@ def refresh_access_token(
                 logger.exception("[浏览器流量] 关联刷新 AT 上下文失败；刷新继续")
         effective_proxy = None if profile_reused else proxy
         stage("driver")
-        driver = _build_driver(opened)
+        with _timed_refresh_step("连接 Selenium"):
+            driver = _build_driver(opened)
         initial_password_ids = password_receipt_ids(driver)
         capture = getattr(opened, "traffic_capture", None)
         observe = getattr(capture, "set_submission_observer", None)
@@ -1052,15 +1076,17 @@ def refresh_access_token(
             pass
         check_cancelled("用户手动停止刷新 AT")
         stage("navigation")
-        _safe_get(
-            driver,
-            "https://chatgpt.com/auth/login",
-            timeout=min(50, int(getattr(cfg, "ROXY_SELENIUM_TIMEOUT", 90) or 90)),
-            attempts=2,
-            accept_hosts=("chatgpt.com", "auth.openai.com"),
-        )
-        _page_warmup(driver, reason="live_check_login")
-        _maybe_accept(driver)
+        with _timed_refresh_step("导航至登录页"):
+            _safe_get(
+                driver,
+                "https://chatgpt.com/auth/login",
+                timeout=min(50, int(getattr(cfg, "ROXY_SELENIUM_TIMEOUT", 90) or 90)),
+                attempts=2,
+                accept_hosts=("chatgpt.com", "auth.openai.com"),
+            )
+        with _timed_refresh_step("准备登录页"):
+            _page_warmup(driver, reason="live_check_login")
+            _maybe_accept(driver)
         code = _page_account_unusable_code(driver)
         if code:
             refresh_result = {
@@ -1084,13 +1110,14 @@ def refresh_access_token(
             nonlocal otp_after_ts
             otp_after_ts = time.time()
 
-        state = _login_existing_account_with_recovery(
-            driver,
-            email,
-            password=password,
-            totp_secret=totp_secret,
-            on_restart=restart_otp_boundary,
-        )
+        with _timed_refresh_step("处理邮箱提交与登录挑战"):
+            state = _login_existing_account_with_recovery(
+                driver,
+                email,
+                password=password,
+                totp_secret=totp_secret,
+                on_restart=restart_otp_boundary,
+            )
         if state == "otp":
             email_challenge_started = True
             stage("email_otp")

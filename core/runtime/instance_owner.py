@@ -211,6 +211,10 @@ class ExecutionOwner:
         self._last_verified_at: float | None = None
         self._last_verified_mono = 0.0
         self._last_idle_veto = 'none'
+        self._probe_due: float | None = None
+        self._probe_schedule_lag = 0.0
+        self._probe_db_started: float | None = None
+        self._probe_db_elapsed: float | None = None
         self._error_code = ''
         self._callback_failed = False
 
@@ -317,8 +321,20 @@ class ExecutionOwner:
             return True
         return False
 
+    def _probe_timing_locked(self, now: float) -> tuple[int, int, str]:
+        schedule_lag = self._probe_schedule_lag
+        if self._probe_due is not None:
+            schedule_lag = max(0, now - self._probe_due)
+        elapsed = self._probe_db_elapsed
+        if self._probe_db_started is not None:
+            elapsed = now - self._probe_db_started
+        return (int(schedule_lag * 1000),
+                int(max(0, elapsed) * 1000) if elapsed is not None else -1,
+                'true' if self._probe_db_started is not None else 'false')
+
     def _notify_lost(self, code: str, *, verified_age: float | None = None,
-                     last_idle_veto: str = 'none') -> None:
+                     last_idle_veto: str = 'none',
+                     probe_timing: tuple[int, int, str] | None = None) -> None:
         # Publish the closed state before notifying the shared admission gate.
         try:
             self._on_lost()
@@ -327,13 +343,19 @@ class ExecutionOwner:
                 self._callback_failed = True
         # 先关闭接单，再在状态锁外记录固定原因；日志故障不影响已有收口。
         safe_code = code if code in _LOSS_DIAGNOSTIC_CODES else 'owner_lost'
+        if probe_timing is None:
+            with self._mutex:
+                probe_timing = self._probe_timing_locked(time.monotonic())
         try:
             if verified_age is not None:
                 logger.warning(
-                    "执行归属已丢失：code=%s retry=deadline last_idle_veto=%s verified_age_ms=%d",
-                    safe_code, last_idle_veto, int(verified_age * 1000))
+                    "执行归属已丢失：code=%s retry=deadline last_idle_veto=%s verified_age_ms=%d "
+                    "probe_schedule_lag_ms=%d probe_db_ms=%d probe_db_inflight=%s",
+                    safe_code, last_idle_veto, int(verified_age * 1000), *probe_timing)
             else:
-                logger.warning("执行归属已丢失：code=%s", safe_code)
+                logger.warning(
+                    "执行归属已丢失：code=%s probe_schedule_lag_ms=%d probe_db_ms=%d probe_db_inflight=%s",
+                    safe_code, *probe_timing)
         except Exception:
             pass
 
@@ -344,7 +366,8 @@ class ExecutionOwner:
         with self._mutex:
             if not self._same_process() or self._state not in ('held', 'paused'):
                 return
-            age = time.monotonic() - self._last_verified_mono
+            now = time.monotonic()
+            age = now - self._last_verified_mono
             if self._state == 'held' and age >= self._timeout:
                 if self._on_pause is None or age >= 2 * self._timeout:
                     lost = self._mark_lost_locked('owner_probe_timeout')
@@ -362,12 +385,17 @@ class ExecutionOwner:
             elif self._state == 'paused' and age >= 2 * self._timeout:
                 lost = self._mark_lost_locked('owner_probe_timeout')
             last_idle_veto = self._last_idle_veto
+            if lost or paused:
+                probe_timing = self._probe_timing_locked(now)
         if lost:
             self._notify_lost(reason, verified_age=age if reason == 'owner_probe_timeout' else None,
-                              last_idle_veto=last_idle_veto)
+                              last_idle_veto=last_idle_veto, probe_timing=probe_timing)
         elif paused:
             try:
-                logger.warning("执行归属验证超时，已暂停接单：code=owner_probe_paused")
+                logger.warning(
+                    "执行归属验证超时，已暂停接单：code=owner_probe_paused verified_age_ms=%d "
+                    "probe_schedule_lag_ms=%d probe_db_ms=%d probe_db_inflight=%s",
+                    int(age * 1000), *probe_timing)
             except Exception:
                 pass
 
@@ -391,8 +419,15 @@ class ExecutionOwner:
 
     def _monitor(self) -> None:
         unsigned_key = tuple(value & 0xffffffff for value in self.lock.advisory_key)
-        while not self._stop.wait(self._interval):
+        while True:
+            with self._mutex:
+                due = self._probe_due = time.monotonic() + self._interval
+            if self._stop.wait(self._interval):
+                return
             try:
+                with self._mutex:
+                    self._probe_schedule_lag = max(0, time.monotonic() - due)
+                    self._probe_due = None
                 self._expire()
                 with self._mutex:
                     state = self._state
@@ -409,12 +444,20 @@ class ExecutionOwner:
                         return
                 # A successful SELECT 1 alone does not prove this session still owns
                 # the lock. Two-int advisory locks have objsubid=2 in pg_locks.
-                row = self._connection.execute('''SELECT EXISTS (
-                    SELECT 1 FROM pg_catalog.pg_locks
-                    WHERE locktype = 'advisory' AND pid = pg_backend_pid()
-                      AND classid = %s::oid AND objid = %s::oid AND objsubid = 2
-                      AND mode = 'ExclusiveLock' AND granted
-                ), pg_backend_pid()''', unsigned_key).fetchone()
+                with self._mutex:
+                    started = self._probe_db_started = time.monotonic()
+                try:
+                    row = self._connection.execute('''SELECT EXISTS (
+                        SELECT 1 FROM pg_catalog.pg_locks
+                        WHERE locktype = 'advisory' AND pid = pg_backend_pid()
+                          AND classid = %s::oid AND objid = %s::oid AND objsubid = 2
+                          AND mode = 'ExclusiveLock' AND granted
+                    ), pg_backend_pid()''', unsigned_key).fetchone()
+                finally:
+                    finished = time.monotonic()
+                    with self._mutex:
+                        self._probe_db_elapsed = finished - started
+                        self._probe_db_started = None
                 if not row or row[0] is not True:
                     self._lose('owner_lock_lost')
                     return

@@ -28,6 +28,15 @@ describe('setup and change actions',()=>{
   it('preserves bulk server validation and does not add automatic chunks or 20-limit to supplementation',async()=>{fetchMock.mockResolvedValue(json({ok:false,error:'单次最多 500 个账号'},400));const h=setup();await h.actions.invoke('addPasswordSelectedAccounts',context(Array.from({length:501},(_,i)=>String(i+1))));expect(fetchMock).toHaveBeenCalledTimes(1);expect(body().account_ids).toHaveLength(501);expect(messages(h)).toContain('单次最多 500');});
   it('routes a single registration_resume and only all-started bulk resumes to their source type',async()=>{fetchMock.mockResolvedValueOnce(json(receipt({registration_resume:true}),202)).mockResolvedValueOnce(json(receipt({started:[{registration_resume:true},{registration_resume:true}]}),202)).mockResolvedValueOnce(json(receipt({started:[{registration_resume:true},{registration_resume:false}]}),202));const h=setup();await h.actions.invoke('account-action:twofa',context(['7']));await h.actions.invoke('addTwofaSelectedAccounts',context());await h.actions.invoke('addTwofaSelectedAccounts',context());expect(h.deps.openTasks.mock.calls.map(call=>call[0].filters?.type)).toEqual(['registration_resume','registration_resume','twofa_setup']);});
   it('refresh failure after accepted setup still opens task center and never repeats POST',async()=>{fetchMock.mockResolvedValue(json(receipt(),202));const h=setup({refresh:async()=>{throw new Error('refresh offline');}});await h.actions.invoke('account-setup',context(['7']));expect(fetchMock).toHaveBeenCalledTimes(1);expect(h.deps.openTasks).toHaveBeenCalledTimes(1);expect(messages(h)).toContain('请求已处理，但页面更新失败');});
+  it('受理后打开任务并释放按钮，账号列表在后台刷新',async()=>{
+    fetchMock.mockResolvedValue(json(receipt(),202));
+    const delayed=deferred<unknown>(),h=setup({refresh:()=>delayed.promise,openTasks:()=>delayed.promise});
+    await h.actions.invoke('account-setup',context(['7']));
+    expect(h.deps.openTasks).toHaveBeenCalledTimes(1);
+    expect(h.deps.refresh).toHaveBeenCalledTimes(1);
+    expect(h.restore).toHaveBeenCalledTimes(1);
+    delayed.resolve(undefined);
+  });
 });
 
 describe('Codex operations and Sub2 receipts',()=>{

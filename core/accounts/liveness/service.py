@@ -886,14 +886,14 @@ def _report_protocol_v2_refresh(reporter: TaskReporter, result: dict) -> None:
         reporter.stage("login_password", "skipped", "账号没有保存密码，沿用邮箱认证")
     elif result.get("ok"):
         reporter.stage(
-            "login_password",
+            "authenticate",
             "success",
             "Roxy 浏览器认证已完成" if is_roxy_fallback else "协议认证已完成",
             detail={"auth_method": auth_method},
         )
     else:
         reporter.stage(
-            "login_password",
+            "authenticate",
             "failed",
             "Roxy 浏览器认证未完成" if is_roxy_fallback else f"{protocol_label} 认证未完成",
             level="ERROR",
@@ -1070,7 +1070,7 @@ def _run_live_check(
             )
         if selected_refresh_driver:
             reporter.note(
-                stage="login_password",
+                stage="preflight",
                 message=("刷新 AT 使用 Roxy 浏览器登录" if selected_refresh_driver == "browser_roxy"
                          else f"刷新 AT 协议版本：{_refresh_protocol_version(selected_refresh_driver)}"),
                 detail={
@@ -1158,8 +1158,8 @@ def _run_live_check(
                 for key in ("network_route", "proxy_mode", "proxy_provider", "proxy_region")
             })
             network_open = False
-            if force_refresh:
-                reporter.stage("login_password", "running", "正在重新登录刷新 AT")
+            if force_refresh and selected_refresh_driver != "browser_roxy":
+                reporter.stage("authenticate", "running", "正在准备账号认证")
             return account_route.proxy_url
 
         def acquire_explicit_route() -> str:
@@ -1190,8 +1190,8 @@ def _run_live_check(
                 reporter.resource("resource.acquired", "已选择指定账号线路", stage="network", detail=route)
                 reporter.stage("network", "success", "网络线路已就绪")
                 network_open = False
-                if force_refresh:
-                    reporter.stage("login_password", "running", "正在重新登录刷新 AT")
+                if force_refresh and selected_refresh_driver != "browser_roxy":
+                    reporter.stage("authenticate", "running", "正在准备账号认证")
             return account_route.proxy_url
 
         # 查活和刷新 AT 是两个不同动作：
@@ -1201,7 +1201,7 @@ def _run_live_check(
         if force_refresh and account.get("email_invalid") is True and selected_refresh_driver not in {"browser_roxy", "protocol_v3"}:
             selected_refresh_driver = "protocol_v2"
             reporter.note(
-                stage="login_password",
+                stage="preflight",
                 message="邮箱已失效，优先使用保存的密码及 2FA 登录",
                 detail={"protocol_version": "v2", "token_refresh_driver": selected_refresh_driver},
             )
@@ -1331,7 +1331,7 @@ def _run_live_check(
             if _refresh_result_not_submitted(remote_result):
                 if prior_unknown:
                     reporter.note(
-                        stage="reauth", message="本轮尚未派发认证请求，前次未知回执继续保留",
+                        stage="authenticate", message="本轮尚未派发认证请求，前次未知回执继续保留",
                         detail={"attempt_not_submitted": True, "previous_receipt_preserved": True},
                     )
                     return _mark_refresh_reconcile_required(remote_result)
@@ -1369,7 +1369,7 @@ def _run_live_check(
             if _refresh_result_is_rejected(remote_result):
                 if prior_unknown:
                     reporter.note(
-                        stage="reauth", message="本轮认证被拒绝，前次未知回执继续保留",
+                        stage="authenticate", message="本轮认证被拒绝，前次未知回执继续保留",
                         detail={"attempt_rejected": True, "previous_receipt_preserved": True},
                     )
                     return _mark_refresh_reconcile_required(remote_result)
@@ -1426,7 +1426,7 @@ def _run_live_check(
             def retry_event(event):
                 detail = {"attempt": network_recovery_attempts, **safe_failure(event)}
                 reporter.note(
-                    stage="reauth", level="WARNING", message="AT 网络请求失败，沿原线路和当前步骤重试一次",
+                    stage="authenticate", level="WARNING", message="AT 网络请求失败，沿原线路和当前步骤重试一次",
                     detail={**detail, "same_route_retry": True},
                 )
                 network_recovery_history.append({**detail, "event": "same_route_retry"})
@@ -1523,7 +1523,7 @@ def _run_live_check(
                     return attempt_result
                 network_route_retries += 1
                 reporter.note(
-                    stage="reauth", level="WARNING", message="AT 网络恢复仍失败，隔离原线路并换新线路重新登录",
+                    stage="authenticate", level="WARNING", message="AT 网络恢复仍失败，隔离原线路并换新线路重新登录",
                     detail={"attempt": network_recovery_attempts, "route_retry": network_route_retries,
                             "restart_login": True, **final_network_failure},
                 )
@@ -1666,7 +1666,7 @@ def _run_live_check(
 
         if result is None:
             reporter.note(
-                stage="reauth",
+                stage="authenticate" if force_refresh else "access_token",
                 message=(
                     "按账号可用凭据重新登录刷新 AT"
                     if force_refresh
@@ -1684,6 +1684,7 @@ def _run_live_check(
             _checkpoint(operation_context, "Roxy 登录刷新 AT 前检查取消状态")
             def run_browser_refresh(on_remote_request_started):
                 selected_proxy = acquire_retry_route(1) if not str(proxy or "").strip() else acquire_explicit_route()
+                reporter.stage("browser", "running", "正在启动 Roxy 浏览器", detail={"child_step_id": "browser"})
                 return refresh_access_token(
                     email, proxy=selected_proxy,
                     **({"context_recorder": auth_context_recorder} if auth_context_recorder is not None else {}),
@@ -1869,6 +1870,7 @@ def _run_live_check(
                         refresh_kwargs["context_recorder"] = auth_context_recorder
                     if callable(refresh_authenticated_hook):
                         refresh_kwargs["on_authenticated"] = refresh_authenticated_hook
+                    reporter.stage("browser", "running", "正在启动 Roxy 浏览器", detail={"child_step_id": "browser"})
                     return refresh_access_token(email, **refresh_kwargs)
 
                 roxy_result = invoke_refresh(
@@ -1953,24 +1955,29 @@ def _run_live_check(
                 }
                 login_cause = ROXY_LOGIN_CAUSES.get(result.get("error_code") or roxy_login_failure_code(error_message))
                 failure_message = error_message if page_error else login_cause[1] if login_cause else "Roxy 浏览器登录未完成"
+                failed_stage = {
+                    "open": "browser", "driver": "browser", "navigation": "page",
+                }.get(result.get("failure_stage"))
+                stage = failed_stage if not result.get("ok") and failed_stage else "authenticate"
                 reporter.stage(
-                    "authenticate", "success" if result.get("ok") else "failed",
+                    stage, "success" if result.get("ok") else "failed",
                     "Roxy 浏览器登录已完成" if result.get("ok") else failure_message,
                     level="INFO" if result.get("ok") else "ERROR",
                     detail={"auth_method": result.get("auth_method"), "error": result.get("error"),
-                            "error_code": _safe_refresh_cause_code(result)},
+                            "error_code": _safe_refresh_cause_code(result),
+                            **({"child_step_id": stage} if stage in {"browser", "page"} else {})},
                 )
                 if result.get("ok"):
                     reporter.stage("token", "success", "最新 AT 已获取并保存")
             elif selected_refresh_driver in {"protocol_v2", "protocol_v3"}:
                 _report_protocol_v2_refresh(reporter, result)
             elif result.get("ok"):
-                reporter.stage("login_password", "success", "邮箱登录已完成")
+                reporter.stage("authenticate", "success", "邮箱登录已完成")
                 reporter.stage("email_otp", "success", "登录验证已通过")
                 reporter.stage("token", "success", "最新 AT 已获取并保存")
             else:
                 reporter.stage(
-                    "login_password", "failed", "邮箱登录刷新 AT 未完成",
+                    "authenticate", "failed", "邮箱登录刷新 AT 未完成",
                     level="ERROR", detail={"error": result.get("error")},
                 )
         if result.get("ok"):
@@ -2158,7 +2165,7 @@ def _run_live_check(
             )
         else:
             reporter.stage(
-                "login_password" if force_refresh else "access_token",
+                "authenticate" if force_refresh else "access_token",
                 "failed",
                 "刷新 AT 后台异常" if force_refresh else "AT 验证后台异常",
                 level="ERROR",
@@ -2436,6 +2443,7 @@ def _submit_native_live(
     resource_family: str = "openai_interactive",
     allow_missing_token: bool = False,
     config_snapshot: dict | None = None,
+    account_request_key: str | None = None,
 ) -> dict:
     register_operation_handlers()
     key = str(idempotency_key or "").strip() or None
@@ -2451,6 +2459,12 @@ def _submit_native_live(
         source_system="native_operations",
         source_id=source_id,
         idempotency_key=key,
+        **({
+            "account_request_key": account_request_key,
+            "claim_before_create": lambda conn: db.claim_account_live_check(
+                acc_id=account_id, trigger=trigger, conn=conn,
+            ),
+        } if account_request_key else {}),
         batch_id=_numeric_batch_id(batch_id),
         resource_family=str(resource_family or "openai_interactive"),
         data={
@@ -2615,6 +2629,7 @@ def enqueue_account_live_check(
     resource_family: str = "openai_interactive",
     allow_missing_token: bool = False,
     config_snapshot: dict | None = None,
+    account_request_key: str | None = None,
 ) -> dict:
     account_id = int(account_id)
     email = str(email or "").strip()
@@ -2667,7 +2682,7 @@ def enqueue_account_live_check(
     task_type = "token_refresh" if force_refresh else "live_check"
     claimed = False
     key = str(idempotency_key or "").strip() or None
-    if not key:
+    if not key and not account_request_key:
         if not db.claim_account_live_check(acc_id=account_id, trigger=trigger):
             return {"accepted": False, "busy": True, "error": "该账号正在查活"}
         claimed = True
@@ -2680,6 +2695,7 @@ def enqueue_account_live_check(
             batch_id=batch_id, idempotency_key=key,
             resource_family=resource_family,
             config_snapshot=snapshot,
+            **({"account_request_key": account_request_key} if account_request_key else {}),
             **({"allow_missing_token": True} if force_refresh and allow_missing_token else {}),
         )
     except Exception as exc:
@@ -2691,7 +2707,7 @@ def enqueue_account_live_check(
         if claimed and not submitted.get("busy"):
             db.update_account_liveness(account_id, {"ok": False, "status": "failed", "error": submitted.get("error")})
         return _native_response(submitted, task_type=task_type, account_id=account_id, email=email, trigger=trigger)
-    if key and not submitted.get("reused"):
+    if key and not account_request_key and not submitted.get("reused"):
         if not db.claim_account_live_check(acc_id=account_id, trigger=trigger):
             _cancel_unclaimed_native_run(submitted.get("run_id"), "账号查活业务状态已被其他请求占用")
             return {
@@ -2699,11 +2715,12 @@ def enqueue_account_live_check(
                 "email": email, "task_id": submitted.get("task_id"),
                 "run_id": submitted.get("run_id"), "error": "该账号正在查活",
             }
-    _append_log(
-        email,
-        f"[{'刷新AT' if force_refresh else '查活'}] 已持久化 account_id={account_id} trigger={trigger}",
-        clear=True,
-    )
+    if not account_request_key or not submitted.get("reused"):
+        _append_log(
+            email,
+            f"[{'刷新AT' if force_refresh else '查活'}] 已持久化 account_id={account_id} trigger={trigger}",
+            clear=True,
+        )
     response = _native_response(
         submitted, task_type=task_type, account_id=account_id, email=email, trigger=trigger,
     )

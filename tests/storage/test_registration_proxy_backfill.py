@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import threading
+from unittest.mock import patch
 
 from core.storage import db_legacy
 from core.storage import postgres, records
@@ -80,7 +81,7 @@ def test_backfill_reads_only_proxy_fields_and_keeps_idempotent_claims(monkeypatc
     changed = db_legacy.backfill_account_registration_proxy_context()
 
     assert changed == 2
-    assert "candidate_jobs" in connection.cursor_instance.statement
+    assert "JOIN LATERAL" in connection.cursor_instance.statement
     assert "UNION ALL" in connection.cursor_instance.statement
     assert "SELECT *" not in connection.cursor_instance.statement
     assert [item[1] for item in claims] == [7, 7, 8]
@@ -98,7 +99,7 @@ def test_backfill_can_process_a_bounded_batch(monkeypatch):
 
     monkeypatch.setattr(db_legacy.postgres_store, "connect", connect)
     assert db_legacy.backfill_account_registration_proxy_context(limit=100) == 0
-    assert "JOIN latest" in connection.cursor_instance.statement
+    assert "AS latest ON TRUE" in connection.cursor_instance.statement
     assert connection.cursor_instance.params == (100,)
 
 
@@ -222,3 +223,35 @@ class RegistrationProxyBackfillBatchTests(PostgresTestCase):
             })
         self.assertEqual(0, db_legacy.backfill_account_registration_proxy_context(limit=100))
         self.assertIsNone(records.get_row(records.ACCOUNTS, account_id).get("registration_proxy_region"))
+
+    def test_batch_skips_accounts_whose_latest_job_cannot_fill_a_missing_field(self):
+        with records.transaction() as conn:
+            blocked = records.insert_row(records.ACCOUNTS, {
+                "email": "latest-email@example.test", "registration_proxy_provider": "existing",
+            }, conn=conn)
+            records.insert_row(records.JOBS, {
+                "email": "old@example.test", "account_id": blocked,
+                "proxy_provider": "old", "proxy_region": "GB",
+            }, conn=conn)
+            records.insert_row(records.JOBS, {
+                "email": " LATEST-EMAIL@example.test ", "proxy_provider": "new", "proxy_region": "invalid",
+            }, conn=conn)
+            fillable = records.insert_row(records.ACCOUNTS, {
+                "email": "fillable-email@example.test", "registration_proxy_provider": "existing",
+            }, conn=conn)
+            records.insert_row(records.JOBS, {
+                "email": " FILLABLE-EMAIL@example.test ", "proxy_region": "de",
+            }, conn=conn)
+
+        self.assertEqual(1, db_legacy.backfill_account_registration_proxy_context(limit=1))
+        self.assertEqual("DE", records.get_row(records.ACCOUNTS, fillable)["registration_proxy_region"])
+        self.assertIsNone(records.get_row(records.ACCOUNTS, blocked).get("registration_proxy_region"))
+
+    def test_backfill_uses_bounded_latest_lookups_on_both_match_paths(self):
+        with patch.object(postgres, "connect", return_value=_Connection([])) as connect:
+            db_legacy.backfill_account_registration_proxy_context(limit=100)
+        statement = connect.return_value.cursor_instance.statement
+        self.assertEqual(2, statement.count("ORDER BY job.id DESC"))
+        self.assertIn("job.account_id = a.id", statement)
+        self.assertIn("LOWER(BTRIM(job.email)) = LOWER(BTRIM(a.email))", statement)
+        self.assertEqual(3, statement.count("LIMIT 1"))

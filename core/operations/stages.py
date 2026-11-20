@@ -197,13 +197,18 @@ TASK_TEMPLATES: _FLOW = {
     # 依赖只说明明确失败后哪些本地步骤无法进入，不强制按模板顺序运行。
     # 注册、补全和配置分支含条件或独立子任务，保持无依赖推断。
     "live_check": _flow(_s("preflight"), _s("network", depends_on=("preflight",)), _s("access_token", depends_on=("network",))),
-    "token_refresh": _flow(_s("preflight"), _s("network", depends_on=("preflight",)), _s("authenticate", "login", "login_password", "login_mfa", "email_otp", "mfa_challenge", depends_on=("network",)), _s("refresh_token", depends_on=("authenticate",)), _s("token", depends_on=("refresh_token",))),
+    "token_refresh": _flow(
+        _s("preflight"), _s("network", depends_on=("preflight",)),
+        _s("authenticate", "browser", "page", "login", "login_password", "login_mfa", "email_otp",
+           "mfa_challenge", depends_on=("network",)),
+        _s("refresh_token", depends_on=("authenticate",)), _s("token", depends_on=("refresh_token",)),
+    ),
     "codex_token_refresh": _flow(_s("preflight"), _s("refresh_token", depends_on=("preflight",)), _s("credential", "credential_confirm", "credential_persist", depends_on=("refresh_token",))),
     "c2a_session_reimport": _flow(_s("preflight"), _s("c2a_resolve", depends_on=("preflight",)), _s("c2a_safety", depends_on=("c2a_resolve",)), _s("c2a_update", depends_on=("c2a_safety",))),
     "plan_check": _flow(
         _s("preflight"), _s("network", depends_on=("preflight",)),
         _step("refresh_token", "刷新 AT", "account", "refresh_token", "authenticate", "login", "login_password",
-              "login_mfa", "email_otp", "mfa_challenge", "reauth", "token", "browser",
+              "login_mfa", "email_otp", "mfa_challenge", "reauth", "token", "browser", "page",
               depends_on=("network",)),
         _s("plan_check", depends_on=("network",)),
     ),

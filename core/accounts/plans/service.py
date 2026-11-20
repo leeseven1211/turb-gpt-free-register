@@ -392,7 +392,11 @@ def _plan_result_summary(result: dict) -> dict:
         "checked_at", "token_expires_at", "plan_check_countries", "plan_check_partial",
         "country_success_count", "country_total_count", "failed_countries", "auto_refresh_at",
     )
-    summary = {"ok": bool(result.get("ok")), **{key: result.get(key) for key in keys}}
+    summary = {
+        "ok": bool(result.get("ok")),
+        "cancelled": result.get("cancelled") is True,
+        **{key: result.get(key) for key in keys},
+    }
     from core.bulk_operations.plan_report_evidence import plan_report_snapshot
     summary["plan_report_evidence"] = plan_report_snapshot(result)
     if result.get("ok") is not True:
@@ -1248,6 +1252,7 @@ def _country_proxy_source(snapshot) -> str:
 def _submit_native_plan(
     *, account_id: int, email: str, trigger: str, timezone_offset_min: str,
     batch_id: str | None, idempotency_key: str | None,
+    account_request_key: str | None = None,
 ) -> dict:
     register_operation_handlers()
     key = str(idempotency_key or "").strip() or None
@@ -1274,6 +1279,12 @@ def _submit_native_plan(
         source_system="native_operations",
         source_id=source_id,
         idempotency_key=key,
+        **({
+            "account_request_key": account_request_key,
+            "claim_before_create": lambda conn: db.claim_account_plan_check(
+                acc_id=account_id, trigger=trigger, conn=conn,
+            ),
+        } if account_request_key else {}),
         batch_id=_numeric_batch_id(batch_id),
         resource_family="openai_interactive",
         data={
@@ -1301,6 +1312,7 @@ def enqueue_account_plan_check(
     timezone_offset_min: str = "-",
     batch_id: str | None = None,
     idempotency_key: str | None = None,
+    account_request_key: str | None = None,
 ) -> dict:
     """Persist a plan check in the native operation queue when available."""
     account_id = int(account_id)
@@ -1321,7 +1333,7 @@ def enqueue_account_plan_check(
         }
     claimed = False
     key = str(idempotency_key or "").strip() or None
-    if not key:
+    if not key and not account_request_key:
         if not db.claim_account_plan_check(acc_id=account_id, trigger=trigger):
             return {"accepted": False, "busy": True, "error": "该账号正在查询套餐"}
         claimed = True
@@ -1330,6 +1342,7 @@ def enqueue_account_plan_check(
             account_id=account_id, email=email, trigger=trigger,
             timezone_offset_min=str(timezone_offset_min or "-"),
             batch_id=batch_id, idempotency_key=key,
+            **({"account_request_key": account_request_key} if account_request_key else {}),
         )
     except Exception as exc:
         error = f"套餐查询任务持久化失败: {type(exc).__name__}: {str(exc)[:300]}"
@@ -1338,7 +1351,7 @@ def enqueue_account_plan_check(
         return {"accepted": False, "busy": False, "error": error}
     if not submitted.get("accepted"):
         return _native_response(submitted, account_id=account_id, email=email, trigger=trigger)
-    if key and not submitted.get("reused"):
+    if key and not account_request_key and not submitted.get("reused"):
         if not db.claim_account_plan_check(acc_id=account_id, trigger=trigger):
             _cancel_unclaimed_native_run(submitted.get("run_id"))
             return {

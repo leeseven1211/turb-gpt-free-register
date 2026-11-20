@@ -5,6 +5,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import ANY, Mock, call, patch
 
+import requests
+
 from core.browser.roxy import client as roxybrowser_client
 from core.registration import dispatcher
 from core.runtime import standalone as runtime_standalone
@@ -12,6 +14,65 @@ from core.browser.roxy.client import RoxyBrowserClient, RoxyOpenResult
 
 
 class RoxyProfileLifecycleTests(unittest.TestCase):
+    def test_at_refresh_logs_close_confirmation_proxy_and_each_open_attempt(self):
+        client = RoxyBrowserClient(api_base="http://roxy.example")
+        profile = {"code": 0, "data": {"rows": [{"dirId": "profile-1", "openStatus": 0}]}}
+
+        def response(payload):
+            return Mock(status_code=200, text="", json=Mock(return_value=payload))
+
+        responses = [
+            response(profile), response({"code": 0}), response(profile), response({"code": 0}),
+            requests.exceptions.ReadTimeout("Read timed out (fixture)"),
+            response({"code": 0, "data": {"debuggerAddress": "127.0.0.1:9999"}}),
+        ]
+        with (
+            self.assertLogs(roxybrowser_client.logger.name, level="INFO") as captured,
+            patch.object(client.http, "request", side_effect=responses) as request,
+            patch.multiple(roxybrowser_client._cfg, ROXY_API_RETRIES=2, ROXY_REUSE_ACCOUNT_PROFILE=True),
+            patch.object(roxybrowser_client.time, "sleep"),
+            patch.object(roxybrowser_client, "_mark_profile_bound"),
+            patch("core.proxy.chain.open_browser_proxy", return_value=("http://127.0.0.1:31280", None)),
+            patch("core.browser.traffic.start_roxy_capture"),
+        ):
+            result = client.open_profile_for_account(
+                profile_id="profile-1", proxy_url="http://new-route.example:8080",
+                data_saver_flow="token_refresh",
+            )
+
+        self.assertTrue(result.account_bound)
+        self.assertEqual([entry.args[1].split(".example")[1] for entry in request.call_args_list], [
+            "/browser/list_v2", "/browser/close", "/browser/list_v2", "/browser/mdf", "/browser/open", "/browser/open",
+        ])
+        messages = "\n".join(captured.output)
+        for fragment in (
+            "请求关闭旧窗口至 API 回包耗时", "轮询确认旧窗口状态已关闭耗时", "更新绑定环境代理耗时",
+            "等待 /browser/open 串行锁耗时", "/browser/open 第 1 次请求耗时", "启动原因待确认",
+            "/browser/open 第 2 次请求耗时", "收到成功回包",
+        ):
+            self.assertIn(fragment, messages)
+        self.assertNotIn("回包确认内核下载中", messages)
+
+    def test_kernel_download_diagnostic_requires_explicit_open_api_response(self):
+        client = RoxyBrowserClient(api_base="http://roxy.example")
+        response = Mock(
+            status_code=200, text="",
+            json=Mock(return_value={"code": 100, "msg": "正在下载浏览器内核。fixture-private-detail"}),
+        )
+        for flow in ("token_refresh", "registration"):
+            with (
+                self.subTest(flow=flow),
+                self.assertLogs(roxybrowser_client.logger.name, level="INFO") as captured,
+                patch.object(client.http, "request", return_value=response) as request,
+                self.assertRaisesRegex(RuntimeError, "正在下载浏览器内核"),
+            ):
+                client.open_profile("profile-1", data_saver_flow=flow)
+
+            request.assert_called_once()
+            messages = "\n".join(captured.output)
+            self.assertEqual("Roxy 回包确认内核下载中" in messages, flow == "token_refresh")
+            self.assertNotIn("fixture-private-detail", messages)
+
     def test_account_profile_reuse_updates_task_proxy_before_open(self):
         client = RoxyBrowserClient(api_base="http://roxy.example")
         opened = RoxyOpenResult(profile_id="profile-1", raw={})

@@ -3,6 +3,9 @@
 
 from __future__ import annotations
 
+import logging
+import time
+from contextlib import contextmanager
 from functools import partial
 from core.bulk_operations.preflight_policy import PLAN_CHECK_POLICY, effective_settings
 from core.operations.presentation import public_result_status
@@ -27,6 +30,7 @@ from core.storage.operations.bulk_common import (
     public_reason_target_ids,
 )
 
+logger = logging.getLogger(__name__)
 
 _KIND = {
     "query": "account_query",
@@ -131,6 +135,32 @@ def _account_select(*, plan_baseline: bool = False) -> str:
       ) AS plan_comparison"""
 
 
+@contextmanager
+def _observe_freeze(selection_id: int, fence: int | None):
+    """在连接上下文退出后记录耗时，包含提交或回滚。"""
+    started = time.monotonic()
+    timing = {}
+    outcome = "interrupted"
+    try:
+        yield timing
+        outcome = timing.get("outcome", "completed")
+    except Exception as exc:
+        outcome = exc.code if isinstance(exc, BulkError) else getattr(exc, "sqlstate", None) or type(exc).__name__
+        raise
+    finally:
+        finished = time.monotonic()
+        query_started = timing.get("query_started")
+        query_finished = timing.get("query_finished")
+        query_end = finished if query_finished is None else query_finished
+        prepare_ms = f"{(query_started - started) * 1000:.1f}" if query_started is not None else "-"
+        query_ms = f"{(query_end - query_started) * 1000:.1f}" if query_started is not None else "-"
+        finalize_ms = f"{(finished - query_finished) * 1000:.1f}" if query_finished is not None else "-"
+        logger.info("批次名单固定结束 selection_id=%s fence=%s target_count=%s outcome=%s "
+                    "prepare_ms=%s query_ms=%s finalize_ms=%s freeze_ms=%.1f",
+                    selection_id, fence, timing.get("target_count"), outcome,
+                    prepare_ms, query_ms, finalize_ms, (finished - started) * 1000)
+
+
 def freeze_selection(
     selection_id: int,
     *,
@@ -147,7 +177,7 @@ def freeze_selection(
     if preflight_policy is not None and preflight is not None:
         raise BulkError("preflight_policy_conflict", "内置策略不能与自定义预检同时使用", 422)
     bulk_schema.init()
-    with connect() as conn, conn.cursor() as cur:
+    with _observe_freeze(selection_id, fence) as timing, connect() as conn, conn.cursor() as cur:
         # 来源批的投影锁必须早于selection锁；普通选择不争批次控制锁。
         row = require_row(cur, f"SELECT * FROM {table('operation_selections')} WHERE id=%s", (selection_id,))
         if row["selection_kind"] == "retry_members":
@@ -165,6 +195,7 @@ def freeze_selection(
         if preflight_policy is not None and row["action_key"] != "plan_check":
             raise BulkError("preflight_policy_operation_mismatch", "预检策略与操作不匹配", 422)
         if row["status"] in ("ready", "consumed"):
+            timing.update(outcome=row["status"], target_count=row["total_count"])
             return public_selection(row)
         if row["status"] != "preparing":
             raise BulkError("selection_not_preparing", "选择请求已结束")
@@ -203,6 +234,8 @@ def freeze_selection(
             query = f"""SELECT a.id,row_number() OVER(ORDER BY a.id DESC) AS ordinal,{account_select}
                 FROM {account_table} a WHERE ({where_sql}) ORDER BY a.id DESC LIMIT %s"""
             args = [*params, min(int(limit), 100001) if limit is not None else 100001]
+        # 候选查询和名单快照写入是同一条 SQL。套餐内置预检在同一条 SQL 里执行。
+        timing["query_started"] = time.monotonic()
         frozen = None
         if preflight_policy is not None:
             # 大名单的 CTE 基数估算可能触发秒级 JIT 编译；仅限制本次
@@ -230,6 +263,8 @@ def freeze_selection(
                 (*args, selection_id, basis["summary_revision"] if basis else None, selection_id),
             )
             frozen = dict(cur.fetchone())
+        timing["query_finished"] = time.monotonic()
+        timing["target_count"] = frozen["total_count"]
         if int(frozen["total_count"]) > 100000:
             raise BulkError("selection_capacity_exceeded", "匹配范围超过100,000个账号，请设置数量上限或缩小条件", 422)
         # 预检可追加固定目标的有限证据，必须纯数据库操作，不能发远端请求。
@@ -273,6 +308,7 @@ def freeze_selection(
             f"UPDATE {table('operation_selections')} SET status='ready' WHERE id=%s RETURNING *", (selection_id,)
         )
         frozen = dict(cur.fetchone())
+        timing["outcome"] = frozen["status"]
         return public_selection(frozen)
 
 

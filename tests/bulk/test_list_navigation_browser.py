@@ -92,7 +92,10 @@ def bulk_browser(request, release_delayed_response, blocked_report_asset):
         if path == 'bulk/catalog':
             return bulk_response({'operations': [{'key': 'plan_check', 'label': '查询套餐'}]})
         if path == 'bulk/query-facets':
-            return bulk_response({'facets': {}, 'matched': 0})
+            query = (args.get('query') or [''])[0]
+            if '等待预览' in query and not release_delayed_response.wait(10):
+                return {}, 504
+            return bulk_response({'facets': {}, 'matched': 6410 if '等待预览' in query else 4})
         if path.startswith('bulk/'):
             unexpected.append((http_request.method, path))
             return {}, 404
@@ -181,6 +184,11 @@ def list_query(page):
 ], indirect=True)
 def test_direct_detail_report_with_each_renderer(bulk_browser, blocked_report_asset):
     page, expect, calls = bulk_browser
+    if blocked_report_asset.endswith('/report.js'):
+        expect(page.get_by_role('heading', name=FIRST_NAME)).to_be_visible()
+        expect(page.get_by_role('heading', name='账号明细')).to_be_visible()
+        assert not any(path.endswith('/report') for path, _ in calls)
+        page.get_by_role('button', name='查看报告').click()
     report = page.get_by_role('region', name='批次报告', exact=True)
     expect(report.get_by_role('heading', name='查套餐完成报告')).to_be_visible()
     expect(report.get_by_text('当前结果 · 每个账号取最近一轮 · 3 个账号')).to_be_visible()
@@ -250,6 +258,7 @@ def test_legacy_routes_history_and_tab_visibility(bulk_browser):
     search(page, '合成')
     row.get_by_role('button', name=FIRST_NAME).click()
     expect(page.locator('.bulk-detail-page-heading h2')).to_have_text(FIRST_NAME)
+    assert not any(path.endswith('/report') for path, _ in calls)
     assert urlsplit(page.url).fragment == f'bulk/detail?batch_id={BATCH_ID}'
     page.go_back()
     expect(row).to_be_visible()
@@ -259,7 +268,7 @@ def test_legacy_routes_history_and_tab_visibility(bulk_browser):
     page.get_by_role('button', name='筛选结果状态').click()
     expect(page.get_by_role('radio', name='失败 1', exact=True)).to_be_checked()
     page.keyboard.press('Escape')
-    expect(page.locator('[data-bulk-plan-report] h3')).to_have_text('查套餐完成报告')
+    expect(page.get_by_role('region', name='批次报告')).to_have_count(0)
     assert (f'bulk/batches/{BATCH_ID}/targets',
             {'view': ['current'], 'page_size': ['50'], 'state[]': ['failed']}) in calls
     page.go_back()
@@ -318,3 +327,25 @@ def test_direct_link_and_late_response_after_navigation(bulk_browser, release_de
     page.wait_for_load_state('networkidle')
     expect(first).to_be_visible()
     expect(listing.get_by_text('已离开页面的旧结果')).to_have_count(0)
+
+
+def test_create_back_button_keeps_pointer_target_during_preview(bulk_browser, release_delayed_response):
+    page, expect, _ = bulk_browser
+    listing = page.get_by_role('region', name='批次列表', exact=True)
+    bulk = page.get_by_role('region', name='批量任务', exact=True)
+    bulk.get_by_role('button', name='新建批次', exact=True).click()
+    back = bulk.get_by_role('button', name='返回批次列表', exact=False)
+    expect(back).to_be_visible()
+    page.get_by_role('searchbox', name='邮箱或姓名').fill('等待预览')
+    with page.expect_request(lambda req: '等待预览' in parse_qs(urlsplit(req.url).query).get('query', [''])[0]):
+        page.clock.fast_forward(350)
+    before = back.bounding_box()
+    assert before is not None
+    page.mouse.move(before['x'] + before['width'] / 2, before['y'] + before['height'] / 2)
+    page.mouse.down()
+    release_delayed_response.set()
+    expect(page.locator('[data-bulk-side-warning]')).to_have_text('本批将处理 6410 个账号。')
+    assert back.bounding_box() == before
+    page.mouse.up()
+    expect(listing).to_be_visible()
+    assert urlsplit(page.url).fragment == 'bulk/list'

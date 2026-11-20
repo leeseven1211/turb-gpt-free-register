@@ -85,6 +85,7 @@ defineExpose({refresh:list.refresh,pollStatuses:list.pollStatuses,setVisible,set
         <button id="btnResetAccountFiltersV2" type="button" class="ac-link" title="清除全部列筛选" @click="list.resetFilters">清筛</button><button id="btnResetAccountsColumnsV2" type="button" class="ac-link" title="恢复账号列表默认列宽" @click="resetColumns">恢复列宽</button><button id="btnRefreshAccountsV2" type="button" class="ac-button" :disabled="loading" @click="list.refresh">{{ loading?'刷新中…':'刷新' }}</button>
       </div>
     </div>
+    <slot name="feedback"/>
     <p v-if="invalidSearch" id="accountAdvancedSearchErrorV2" class="ac-feedback" role="alert">{{ error }}</p>
     <div v-else-if="actionError||(error&&items.length)" class="ac-feedback" role="alert"><span>{{ actionError||error }}</span><button v-if="error" type="button" class="ac-link" @click="list.refresh">重试</button></div>
     <AccountsTable ref="table" :items="items" :selected="selected" :query="query" :facets="facets" :presentation="presentation" :loading="loading" :error="error" :invalid-search="invalidSearch" :stale="stale" :visible="visible&&documentVisible" :page-selected="pageSelected" :page-indeterminate="pageIndeterminate" :open-filter="openFilter" @update:open-filter="openFilter=$event" @filter="changeFilter" @clear-filter="clearFilter" @select="list.toggle" @select-page="list.togglePage" @action="invoke" @detail="detail" @retry="list.refresh" @rendered="callbacks.afterRender?.($event)"/>

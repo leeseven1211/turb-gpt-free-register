@@ -204,6 +204,53 @@
         }
       }
     },
+    "/api/operations/receipts": {
+      "get": {
+        "operationId": "listOperationReceipts",
+        "summary": "批量查询指定任务和执行实例的回执",
+        "parameters": [
+          {
+            "name": "ref",
+            "in": "query",
+            "required": true,
+            "style": "form",
+            "explode": true,
+            "description": "任务 ID 或以冒号连接的任务 ID 与执行实例 ID。重复参数最多传入 20 项。",
+            "schema": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 20,
+              "items": {
+                "type": "string",
+                "pattern": "^[1-9][0-9]*(:[1-9][0-9]*)?$"
+              }
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "返回已找到的回执",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperationReceipts"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "回执查询参数无效",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/operations/{task_id}": {
       "get": {
         "operationId": "getOperation",
@@ -1836,6 +1883,36 @@
           "task"
         ],
         "additionalProperties": true
+      },
+      "OperationReceipts": {
+        "type": "object",
+        "required": ["ok", "items"],
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["task_id", "run_id", "status", "message"],
+              "properties": {
+                "task_id": {
+                  "type": "string"
+                },
+                "run_id": {
+                  "type": ["string", "null"]
+                },
+                "status": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
       },
       "ProgressStep": {
         "type": "object",

@@ -7,6 +7,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 from core.runtime.http_server import HttpServer
 
 class HttpServerTests(unittest.TestCase):
@@ -28,8 +29,14 @@ class HttpServerTests(unittest.TestCase):
         self.address=self.server.start();self.port=int(self.address[1])
     def tearDown(self):
         self.release.set();self.server.stop(timeout=2);self.directory.cleanup()
-    def get(self,path='/'):
-        conn=http.client.HTTPConnection('127.0.0.1',self.port,timeout=3);conn.request('GET',path);response=conn.getresponse();value=(response.status,response.read());conn.close();return value
+    def get(self, path='/', *, headers=None):
+        conn = http.client.HTTPConnection('127.0.0.1', self.port, timeout=3)
+        try:
+            conn.request('GET', path, headers=headers or {})
+            response = conn.getresponse()
+            return response.status, response.read()
+        finally:
+            conn.close()
     def test_idle_stop_closes_real_listener_channels_loop_and_worker_threads(self):
         self.assertEqual(self.get(),(200,b'fixture-body'));self.assertTrue(self.closed.wait(1))
         self.assertTrue(self.server.stop(timeout=2));status=self.server.status()
@@ -66,6 +73,122 @@ class HttpServerTests(unittest.TestCase):
         self.release.set()
         for reader in readers:reader.join(2)
         queued.close();self.assertTrue(self.server.stop(timeout=2));self.assertEqual(len(results),2)
+
+    def test_slow_requests_report_queue_and_handler_time_separately(self):
+        with patch('core.runtime.http_server._SLOW_REQUEST_SECONDS', .08, create=True):
+            with self.assertLogs('core.runtime.http_server', level='WARNING') as observed:
+                self.assertEqual(self.get(), (200, b'fixture-body'))
+                readers = [threading.Thread(target=self.get, args=('/block',)) for _ in range(2)]
+                for reader in readers:
+                    reader.start()
+                deadline = time.monotonic() + 2
+                while self.server.status()['active_calls'] < 2 and time.monotonic() < deadline:
+                    time.sleep(.01)
+                self.assertEqual(self.server.status()['active_calls'], 2)
+                queued = threading.Thread(target=self.get, args=('/',))
+                queued.start()
+                deadline = time.monotonic() + 2
+                while self.server.status()['buffered_requests'] < 3 and time.monotonic() < deadline:
+                    time.sleep(.01)
+                self.assertEqual(self.server.status()['buffered_requests'], 3)
+                time.sleep(.12)
+                self.release.set()
+                for reader in [*readers, queued]:
+                    reader.join(2)
+                    self.assertFalse(reader.is_alive())
+        records = [record.getMessage() for record in observed.records if 'http_slow_request' in record.getMessage()]
+        document = [message for message in records if 'route=文档 ' in message]
+        self.assertEqual(len(document), 1)
+        self.assertRegex(document[0], r'queue_ms=\d+\.\d handler_ms=\d+\.\d')
+        queue_ms, handler_ms = (float(document[0].split(f'{field}=')[1].split()[0])
+                                for field in ('queue_ms', 'handler_ms'))
+        self.assertGreater(queue_ms, 100)
+        self.assertGreater(queue_ms, handler_ms)
+        blocked = [message for message in records if 'route=其他 ' in message]
+        self.assertEqual(len(blocked), 2)
+        for message in blocked:
+            queue_ms, handler_ms = (float(message.split(f'{field}=')[1].split()[0])
+                                    for field in ('queue_ms', 'handler_ms'))
+            self.assertGreater(handler_ms, 100)
+            self.assertGreater(handler_ms, queue_ms)
+
+    def test_slow_request_logs_only_fixed_route_labels(self):
+        self.assertTrue(self.server.stop(timeout=2))
+
+        def app(_environ, start_response):
+            time.sleep(.04)
+            start_response('200 OK', [('Content-Length', '0')])
+            return [b'']
+
+        self.server = HttpServer(app, host='127.0.0.1', port=0, spool_dir=Path(self.directory.name))
+        self.port = self.server.start()[1]
+        cases = {
+            '/api/extract-workbench/tasks?search=fixture-query': '/api/extract-workbench/tasks',
+            '/api/accounts/fixture-account-id?search=fixture-query': '/api/accounts/*',
+            '/api/unknown/fixture-account-id?search=fixture-query': '其他 API',
+            '/static/fixture-file-name?search=fixture-query': '静态资源',
+        }
+        with patch('core.runtime.http_server._SLOW_REQUEST_SECONDS', .02, create=True):
+            with self.assertLogs('core.runtime.http_server', level='WARNING') as observed:
+                for path in cases:
+                    with self.subTest(path=path):
+                        conn = http.client.HTTPConnection('127.0.0.1', self.port, timeout=2)
+                        try:
+                            conn.request('GET', path, headers={'Authorization': 'Bearer fixture-auth'})
+                            response = conn.getresponse()
+                            self.assertEqual((response.status, response.read()), (200, b''))
+                        finally:
+                            conn.close()
+        messages = [record.getMessage() for record in observed.records]
+        self.assertEqual(len(messages), len(cases))
+        for message, label in zip(messages, cases.values()):
+            self.assertIn(f'route={label} ', message)
+            self.assertNotIn('fixture-', message)
+
+    def test_slow_json_and_streamed_body_report_separate_durations(self):
+        from flask import jsonify
+        from webui.app import create_app
+
+        app = create_app(auth_code="test-auth")
+        app.json.default = lambda _value: time.sleep(.04) or "fixture"
+
+        @app.get('/api/timing-test')
+        def timing_fixture():
+            return jsonify({"value": object()})
+
+        self.assertTrue(self.server.stop(timeout=2))
+        self.server = HttpServer(app, host='127.0.0.1', port=0, spool_dir=Path(self.directory.name))
+        self.port = self.server.start()[1]
+        with patch('core.runtime.http_server._SLOW_REQUEST_SECONDS', .02):
+            with self.assertLogs('core.runtime.http_server', level='WARNING') as traced:
+                self.assertEqual(self.get('/api/timing-test', headers={"X-Auth-Code": "test-auth"})[0], 200)
+                self.assertTrue(self.server.stop(timeout=2))
+        values = dict(field.split('=') for field in traced.records[0].getMessage().split() if '=' in field)
+        self.assertGreater(float(values['json_ms']), 35)
+        self.assertGreaterEqual(float(values['handler_ms']), float(values['json_ms']))
+
+        def streaming(_environ, start_response):
+            start_response('200 OK', [])
+            def body():
+                time.sleep(.04)
+                yield b'fixture-stream'
+            return body()
+
+        self.server = HttpServer(streaming, host='127.0.0.1', port=0, spool_dir=Path(self.directory.name))
+        self.port = self.server.start()[1]
+        with patch('core.runtime.http_server._SLOW_REQUEST_SECONDS', .02):
+            with self.assertLogs('core.runtime.http_server', level='WARNING') as traced:
+                self.assertEqual(self.get('/timing-test'), (200, b'fixture-stream'))
+                self.assertTrue(self.server.stop(timeout=2))
+        values = dict(field.split('=') for field in traced.records[0].getMessage().split() if '=' in field)
+        self.assertGreater(float(values['response_ms']), 35)
+        self.assertGreater(float(values['response_ms']), float(values['handler_ms']))
+
+    def test_slow_log_failure_cannot_replace_application_response(self):
+        with patch('core.runtime.http_server._SLOW_REQUEST_SECONDS', 0), \
+                patch.object(self.server.logger, 'warning', side_effect=OSError('日志写入失败')):
+            self.assertEqual(self.get(), (200, b'fixture-body'))
+
     def test_upload_limit_and_iterable_error_close_resources(self):
         self.server.stop(timeout=1)
         closed=threading.Event()

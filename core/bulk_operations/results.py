@@ -220,14 +220,18 @@ def project_one(evidence: Mapping, *, operation_key: str | None = None, schema_v
         reason_code = "diagnostic_cause_unresolved"
     reason = {"code": reason_code, "stage": summary.get("failure_stage") or run.get("progress_stage"),
               "scope": "data_contract" if contract_error else "operation"} if reason_code else None
-    if reason is not None and state in {"failed", "partial_success"}:
-        info = classify_task_error(run.get("error_message") or reason_code, stage=reason["stage"] or "",
+    if (reason is not None and state in {"failed", "partial_success"}) or state == "cancelled":
+        stage = summary.get("failure_stage") or run.get("progress_stage")
+        info = classify_task_error(run.get("error_message") or reason_code, stage=stage or "",
                                    task_type=key, error_code=str(reason_code or ""),
-                                   result_summary=summary, task_status=state) or {}
-        reason.update(code=info.get("code") or reason_code, summary=info.get("summary"),
-                      display_code=info.get("display_code"), stage=info.get("stage") or reason["stage"])
-        if "failure_stage" in result:
-            result["failure_stage"] = reason["stage"]
+                                   result_summary=summary, task_status=state,
+                                   cancel_reason=run.get("cancel_reason") or "") or {}
+        if state != "cancelled" or info.get("code") == "user.interrupted":
+            reason = {**(reason or {"scope": "operation"}),
+                      "code": info.get("code") or reason_code, "summary": info.get("summary"),
+                      "display_code": info.get("display_code"), "stage": info.get("stage") or stage}
+            if "failure_stage" in result:
+                result["failure_stage"] = reason["stage"]
     dimensions = {}
     if key == "plan_check":
         if result.get("confirmed_no_offer"):

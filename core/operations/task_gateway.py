@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from typing import Any, Iterable, Iterator
 
 from core.operations.runtime import CancellationToken, OperationAccountDeactivated, OperationCancelled, operation_context
+from core.operations import account_receipts
 from core.operations.settlement_contracts import (
     OperationSettlementPending, OperationSettlementConflict, OperationSettlementFenced,
     seal_intent, same_intent, thaw as settlement_thaw,
@@ -1280,6 +1281,9 @@ def submit_durable_operation(
     source_system: str = "native_operations",
     source_id: str | None = None,
     idempotency_key: str | None = None,
+    account_request_key: str | None = None,
+    account_request_target: str | None = None,
+    claim_before_create: Callable[[Any], bool] | None = None,
     parent_task_id: int | None = None,
     batch_id: int | None = None,
     batch_ordinal: int | None = None,
@@ -1300,6 +1304,9 @@ def submit_durable_operation(
     name = str(task_type or "").strip()
     if not name:
         return {"accepted": False, "error": "task_type 为空"}
+    if account_request_key:
+        target = account_request_target or str(account_id)
+        source_id = f"{account_receipts.source_prefix(account_request_key)}:{name}:{trigger}:{target}"
     if config_snapshot is None and config_snapshot_provider is not None:
         config_snapshot = config_snapshot_provider()
     if config_snapshot is not None:
@@ -1333,6 +1340,8 @@ def submit_durable_operation(
                 batch_ordinal=batch_ordinal,
                 resource_family=str(resource_family or "openai_interactive"),
                 data=payload,
+                **({"account_request": True, "lock_account_request": account_request_target is not None,
+                    "claim_before_create": claim_before_create} if account_request_key else {}),
                 **({"conn": conn} if conn is not None else {}),
             )
     except Exception as exc:
@@ -1358,6 +1367,8 @@ def submit_durable_operation(
                 "run_id": int(active.get("id") or 0) or None if active else None,
             }
         raise
+    if created.get("request_rejected"):
+        return {"accepted": False, **created["request_rejected"]}
     run = created.get("run") if isinstance(created.get("run"), Mapping) else {}
     run_id = int(run.get("id") or 0) or None
     task_id = int(created.get("id") or 0) or None
@@ -1367,7 +1378,7 @@ def submit_durable_operation(
         "accepted": True,
         # ``busy`` is a rejection/conflict signal for compatibility callers;
         # a newly accepted durable queue item is not a busy result.
-        "busy": bool(reused and status in {"queued", "running", "cancelling", "settling", "waiting"}),
+        "busy": bool(not account_request_key and reused and status in {"queued", "running", "cancelling", "settling", "waiting"}),
         "reused": reused,
         "task_id": task_id,
         "run_id": run_id,

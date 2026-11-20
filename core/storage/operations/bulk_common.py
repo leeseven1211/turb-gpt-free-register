@@ -237,9 +237,9 @@ def public_reason_target_ids(cur, batch_id: int, reason_codes) -> list[int]:
     """只有按原因筛选时读取本批证据，筛选采用与页面相同的分类结果。"""
     wanted = set(reason_codes)
     cur.execute(f"""SELECT tr.id,tr.outcome,tr.result,tr.reason_code,
-      source.result_summary,source.error_message,source.error_code
+      source.result_summary,source.error_message,source.error_code,source.cancel_reason
       FROM {table('operation_batch_target_rounds')} tr
-      LEFT JOIN LATERAL (SELECT r.result_summary,r.error_message,r.error_code
+      LEFT JOIN LATERAL (SELECT r.result_summary,r.error_message,r.error_code,r.cancel_reason
         FROM {table('operation_batch_run_links')} l JOIN {table('operation_runs')} r ON r.id=l.run_id_snapshot
         WHERE l.target_round_id=tr.id AND l.relation IN ('owned_root','owned_continuation')
         ORDER BY l.execution_generation DESC,l.id DESC LIMIT 1) source ON TRUE
@@ -248,7 +248,8 @@ def public_reason_target_ids(cur, batch_id: int, reason_codes) -> list[int]:
     while rows := cur.fetchmany(500):
         for row in rows:
             value = public_target_result(dict(row["result"] or {}, state=row["outcome"]),
-                summary=row["result_summary"], message=row["error_message"], error_code=row["error_code"] or row["reason_code"])
+                summary=row["result_summary"], message=row["error_message"], error_code=row["error_code"] or row["reason_code"],
+                cancel_reason=row["cancel_reason"])
             if (value.get("reason") or {}).get("code") in wanted:
                 matched.append(row["id"])
     return matched
@@ -307,7 +308,7 @@ def preserve_partial_counts(cur, row: dict, *, round_id=None) -> dict:
     return preserve_partial_counts_many(cur, [row])[0]
 
 
-def public_target_result(value: dict, *, summary=None, message=None, error_code=None) -> dict:
+def public_target_result(value: dict, *, summary=None, message=None, error_code=None, cancel_reason=None) -> dict:
     """历史物化结果按当前公开契约读取，具体原因从原 Run 取证。"""
     from core.operations.errors import classify_task_error
 
@@ -344,15 +345,18 @@ def public_target_result(value: dict, *, summary=None, message=None, error_code=
     if result.get("_metrics") is not None:
         result["_metrics"] = public_metrics(result["_metrics"])
     reason = dict(result.get("reason") or {})
-    if state in {"failed", "partial_success"}:
-        code = error_code or reason.get("code") or summary.get("cause_code") or "diagnostic_cause_unresolved"
+    if state in {"failed", "partial_success", "cancelled"}:
+        code = error_code or reason.get("code") or summary.get("cause_code") or ""
+        if state != "cancelled" and not code:
+            code = "diagnostic_cause_unresolved"
         info = classify_task_error(message or code, error_code=code,
             task_type=str(result.get("schema") or "").split(".")[0],
             stage=summary.get("failure_stage") or reason.get("stage") or fields.get("failure_stage") or "",
-            result_summary=summary, task_status=state) or {}
-        reason.update(code=info.get("code") or code, summary=info.get("summary"), display_code=info.get("display_code"),
-                      stage=info.get("stage") or reason.get("stage"))
-        if "failure_stage" in fields:
-            fields["failure_stage"] = reason["stage"]
-        result["reason"] = reason
+            result_summary=summary, task_status=state, cancel_reason=cancel_reason or "") or {}
+        if state != "cancelled" or info.get("code") == "user.interrupted":
+            reason.update(code=info.get("code") or code, summary=info.get("summary"), display_code=info.get("display_code"),
+                          stage=info.get("stage") or reason.get("stage"))
+            if "failure_stage" in fields:
+                fields["failure_stage"] = reason["stage"]
+            result["reason"] = reason
     return result

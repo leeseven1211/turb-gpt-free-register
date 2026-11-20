@@ -1,11 +1,11 @@
 import {computed, onScopeDispose, ref} from 'vue';
-import {tasksApi,type TaskId} from '../../api/tasks';
-import {taskId,optionalTaskId,sameTaskId} from '../../api/taskIds';
+import {tasksApi, type OperationReceiptReference, type TaskId} from '../../api/tasks';
+import {taskId, optionalTaskId} from '../../api/taskIds';
 import {isAbort} from '../../api/client';
-import {record} from './presentation';
 
 export interface AcceptedReference {accepted?: boolean; task_id?: TaskId; run_id?: TaskId | null; status?: string}
-export interface Receipt {task_id: TaskId; run_id: TaskId | null; label: string; status: string; message: string}
+export interface Receipt extends OperationReceiptReference {label: string; status: string; message: string}
+const receiptKey = ({task_id, run_id}: OperationReceiptReference) => `${task_id}:${run_id ?? ''}`;
 export function useReceipts() {
   const items = ref<Receipt[]>([]), visible = ref(false), loading = ref(false), error = ref('');
   const terminal = new Set(['success', 'partial_success', 'failed', 'cancelled', 'stopped', 'interrupted', 'attention_required', 'deactivated', 'unsupported', 'request_unknown', 'manual_reconcile']);
@@ -25,32 +25,37 @@ export function useReceipts() {
     controller = new AbortController();
     loading.value = true;
     error.value = '';
-    const results = await Promise.allSettled(selected.map(item => tasksApi.detail(item.task_id, controller!.signal)));
-    if (id !== generation) return;
-    results.forEach((result, index) => {
-      const reference = selected[index]!;
-      if (result.status === 'rejected') {
-        if (!isAbort(result.reason)) error.value = '部分回执暂未读到，请稍后刷新。';
-        return;
+    try {
+      const result = await tasksApi.receipts(selected, controller.signal);
+      if (id !== generation) return;
+      const byKey = new Map(result.items.map(item => [receiptKey(item), item]));
+      for (const reference of selected) {
+        const item = byKey.get(receiptKey(reference));
+        if (!item) {
+          error.value = reference.run_id === null
+            ? '部分回执暂未读到，请稍后刷新。' : '部分执行记录暂未读到，请稍后刷新。';
+          continue;
+        }
+        reference.status = item.status || 'queued';
+        reference.message = item.message || (item.status === 'success' ? '已确认完成' : '');
       }
-      const task = result.value.task;
-      const run = task.runs?.find(item => sameTaskId(item.id,reference.run_id));
-      // 指定 Run 不能被最新 Run 的状态替换；旧回执缺失时保留原状态。
-      if (reference.run_id && !run) { error.value = '部分执行记录暂未读到，请稍后刷新。'; return; }
-      const source = run || task, summary = record(source.result_summary);
-      reference.status = source.status || 'queued';
-      reference.message = source.error_message || String(summary.message || (source.status === 'success' ? '已确认完成' : ''));
-    });
-    loading.value = false;
-    controller = null;
-    schedule();
+    } catch (cause) {
+      if (id === generation && !isAbort(cause)) error.value = '回执暂未读到，请稍后刷新。';
+    } finally {
+      if (id === generation) {
+        loading.value = false;
+        controller = null;
+        schedule();
+      }
+    }
   }
   function track(references: AcceptedReference[], title: string) {
     for (const item of references) {
       if (!item.accepted) continue;
       try {
         const task=taskId(item.task_id),run=optionalTaskId(item.run_id);
-        if (items.value.some(existing => sameTaskId(existing.task_id,task) && (run===null?existing.run_id===null:sameTaskId(existing.run_id,run)))) continue;
+        const key = receiptKey({task_id: task, run_id: run});
+        if (items.value.some(existing => receiptKey(existing) === key)) continue;
         items.value.push({task_id: task, run_id: run, label: title, status: item.status || 'queued', message: ''});
       } catch { error.value='任务回执标识无效，无法读取原任务。'; }
     }

@@ -373,8 +373,6 @@
 .bulk-side-hint { margin: 0; color: var(--ui-color-text-secondary); font-size: 12px; line-height: 1.6; }
 .bulk-side-actions { display: grid; gap: 8px; }
 .bulk-side-actions .jobs-tb-btn { width: 100%; min-height: 42px; }
-.bulk-side-back { border: 0; background: transparent; color: var(--ui-color-text-secondary); padding: 6px 0; text-align: center; font-size: 12px; }
-.bulk-side-back:hover { color: var(--ui-color-text); }
 .bulk-create-side [data-bulk-action-error],
 .bulk-create-side [data-bulk-action-notice] { font-size: 12px; padding: 10px 12px; }
 .bulk-create-side [data-bulk-action-notice] { margin: 0; }
@@ -406,7 +404,7 @@
   .bulk-create-main { display: grid; gap: 12px; }
   .bulk-create-side { position: fixed; left: 8px; right: 8px; bottom: calc(8px + env(safe-area-inset-bottom)); top: auto; z-index: 35; padding: 0; border-radius: 14px; box-shadow: 0 -8px 30px rgb(15 23 42 / 18%); }
   .bulk-side-sticky { gap: 8px; max-height: 46dvh; padding: 12px; }
-  .bulk-side-meta, .bulk-side-hint, .bulk-side-back { display: none; }
+  .bulk-side-meta, .bulk-side-hint { display: none; }
   .bulk-side-heading { align-items: center; }
   .bulk-side-heading strong { font-size: 13px; }
   .bulk-side-count { font-size: 10px; }
@@ -489,7 +487,6 @@
   .bulk-side-sticky { max-height: none; overflow: visible; }
   .bulk-side-meta { display: grid; }
   .bulk-side-hint { display: block; }
-  .bulk-side-back { display: block; }
   .bulk-side-foot { grid-column: 1 / -1; }
 }
 @media (max-width: 600px) {

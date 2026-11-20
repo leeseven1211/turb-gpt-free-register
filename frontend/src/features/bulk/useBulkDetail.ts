@@ -14,10 +14,12 @@ export function useBulkDetail(getNavigation: () => BulkNavigation, deps: BulkDet
   const detail = shallowRef<BulkRecord|null>(null), targets = shallowRef<BulkPageData|null>(null), report = shallowRef<BulkRecord|null>(null);
   const rounds = shallowRef<BulkRecord[]>([]), roundsCursor = ref<string|null>(null);
   const selected = ref(new Set<string>()), previousCursors = ref<string[]>([]), pendingRound = ref<string|null>(null);
+  const reportOpen = ref(false);
   const loading = ref(false), targetsLoading = ref(false), reportLoading = ref(false), roundsLoading = ref(false), writing = ref(false);
   const error = ref(''), targetError = ref(''), reportError = ref(''), actionError = ref('');
   const confirmation = shallowRef<BulkConfirmation|null>(null);
   let disposed = false, reportLoadedAt = 0, roundsStarted = false;
+  let reportControlRevision: unknown;
   let detailPending:Promise<void>|null=null,detailPendingKey='';
   const requests = new Map<string, {generation: number; controller: AbortController}>();
   const scopeKey = () => `${navigation.value.batch_id || ''}:${navigation.value.round_id || ''}`;
@@ -36,6 +38,7 @@ export function useBulkDetail(getNavigation: () => BulkNavigation, deps: BulkDet
   }
   const counts=computed(()=>countsOf(detail.value?.summary || detail.value?.counts));
   const controlState=computed(()=>object(detail.value?.control));
+  const controlRevision=computed(()=>controlState.value.revision ?? detail.value?.control_revision);
   const ended=computed(()=>['ended','completed'].includes(String(controlState.value.state || detail.value?.control_state)));
   const paused=computed(()=>Boolean(controlState.value.paused || detail.value?.is_paused));
   const hasPrevious=computed(()=>previousCursors.value.length>0);
@@ -57,13 +60,32 @@ export function useBulkDetail(getNavigation: () => BulkNavigation, deps: BulkDet
     }catch(cause){if(valid('targets',request))targetError.value=message(cause);}finally{if(valid('targets',request))targetsLoading.value=false;}
   }
   async function refreshReport(force=false) {
-    if(!visible.value || navigation.value.view!=='detail' || !hasReport.value || reportLoading.value)return;
+    if(!visible.value || navigation.value.view!=='detail' || !reportOpen.value || !hasReport.value || reportLoading.value)return;
     const complete=ended.value || object(detail.value?.selected_round).state==='completed';
-    const finalFresh=complete && report.value?.phase==='completed' && report.value.summary_revision===detail.value?.summary_revision;
-    if(!force && ((complete && finalFresh)||(!complete && (report.value||reportError.value) && deps.now()-reportLoadedAt<10000)))return;
-    const request=begin('report');reportLoading.value=true;reportLoadedAt=deps.now();
-    try {const data=await deps.api.request<BulkRecord>(`${path('/report')}?${params()}`,{signal:request.controller.signal});if(valid('report',request)){report.value=data;reportError.value='';reportLoadedAt=deps.now();}}
-    catch(cause){if(valid('report',request))reportError.value=message(cause);}finally{if(valid('report',request))reportLoading.value=false;}
+    const finalFresh=complete && report.value?.phase==='completed'
+      && report.value.summary_revision===detail.value?.summary_revision && reportControlRevision===controlRevision.value;
+    if(!force && (finalFresh || !complete && (report.value || reportError.value) && deps.now()-reportLoadedAt<10000))return;
+    const request=begin('report');
+    const requestedRevision=controlRevision.value;
+    const requestedSummary=detail.value?.summary_revision;
+    reportLoading.value=true;
+    let refreshAgain=false;
+    try {
+      const data=await deps.api.request<BulkRecord>(`${path('/report')}?${params()}`,{signal:request.controller.signal});
+      if(!valid('report',request))return;
+      report.value=data;reportError.value='';reportControlRevision=requestedRevision;
+      const nowComplete=ended.value || object(detail.value?.selected_round).state==='completed';
+      refreshAgain=nowComplete && (requestedSummary!==detail.value?.summary_revision || requestedRevision!==controlRevision.value);
+    } catch(cause) {
+      if(valid('report',request))reportError.value=message(cause);
+    } finally {
+      if(valid('report',request)){reportLoading.value=false;reportLoadedAt=deps.now();}
+    }
+    if(refreshAgain)void refreshReport();
+  }
+  function openReport() {
+    reportOpen.value=true;
+    return refreshReport(Boolean(reportError.value));
   }
   function refresh(force=false):Promise<void> {
     if(disposed || !visible.value || navigation.value.view!=='detail' || !navigation.value.batch_id)return Promise.resolve();
@@ -79,7 +101,8 @@ export function useBulkDetail(getNavigation: () => BulkNavigation, deps: BulkDet
       const previousRevision=detail.value?.summary_revision;detail.value=data;mergeRounds(data.rounds_head);if(data.selected_round)mergeRounds([data.selected_round]);
       if(!roundsStarted)roundsCursor.value=typeof data.rounds_next_cursor==='string'?data.rounds_next_cursor:null;
       if(pendingRound.value){const pending=rounds.value.find(round=>round.id===pendingRound.value);if(pending && pending.state!=='preparing'){pendingRound.value=null;deps.callbacks.notify(pending.completion_reason==='cancelled_before_freeze'?'重跑准备已取消，当前结果归属不变。':'重跑名单已固定，可以切换查看新轮次。');}}
-      const work:Promise<void>[]=[refreshReport(force)];if(force || !targets.value || previousRevision!==data.summary_revision)work.push(loadTargets());await Promise.all(work);
+      void refreshReport(force);
+      if(force || !targets.value || previousRevision!==data.summary_revision)await loadTargets();
     }catch(cause){if(valid('detail',request))error.value=message(cause);}finally{if(valid('detail',request))loading.value=false;}
   }
   async function moreRounds() {
@@ -132,11 +155,14 @@ export function useBulkDetail(getNavigation: () => BulkNavigation, deps: BulkDet
   function setVisible(value: boolean) {visible.value=value;if(!value){abort('detail','targets','report','rounds');loading.value=false;targetsLoading.value=false;reportLoading.value=false;roundsLoading.value=false;confirmation.value=null;}}
   watch(getNavigation, value=>{if(JSON.stringify(value)!==JSON.stringify(navigation.value)){previousCursors.value=[];navigation.value={...value};}}, {deep:true,flush:'sync'});
   watch(()=>navigation.value.view,value=>{if(value!=='detail')setVisible(false);},{flush:'sync'});
-  watch(()=>[scopeKey(),targetKey(),navigation.value.cursor||''],(current,old)=>{
+  watch(()=>[scopeKey(),targetKey(),navigation.value.cursor||'',navigation.value.batch_id],(current,old)=>{
     confirmation.value=null;actionError.value='';
-    if(!old||current[0]!==old[0]){abort('detail','targets','report','rounds');detail.value=null;targets.value=null;report.value=null;rounds.value=[];roundsCursor.value=null;roundsStarted=false;reportLoadedAt=0;reportError.value='';targetError.value='';loading.value=false;targetsLoading.value=false;reportLoading.value=false;roundsLoading.value=false;clearSelection();previousCursors.value=[];pendingRound.value=null;void refresh();}
+    if(!old||current[0]!==old[0]){
+      if(current[3]!==old?.[3])reportOpen.value=false;
+      abort('detail','targets','report','rounds');detail.value=null;targets.value=null;report.value=null;rounds.value=[];roundsCursor.value=null;roundsStarted=false;reportLoadedAt=0;reportControlRevision=undefined;reportError.value='';targetError.value='';loading.value=false;targetsLoading.value=false;reportLoading.value=false;roundsLoading.value=false;clearSelection();previousCursors.value=[];pendingRound.value=null;void refresh();
+    }
     else {if(current[1]!==old[1]){clearSelection();previousCursors.value=[];}targets.value=null;void loadTargets();}
   },{immediate:true,flush:'sync'});
   onScopeDispose(()=>{disposed=true;abort('detail','targets','report','rounds');confirmation.value=null;});
-  return {navigation,detail,targets,report,rounds,roundsCursor,selected,pendingRound,loading,targetsLoading,reportLoading,roundsLoading,writing,error,targetError,reportError,actionError,confirmation,counts,ended,paused,needsPolling,hasReport,hasPrevious,nextCursor,controlDisabled,refresh,loadTargets,refreshReport,moreRounds,next,previous,first,setFilter,setRound,toggleTarget,selectPage,clearSelection,retryCount,retry,control,confirm,cancelConfirmation,copyBatch,setVisible};
+  return {navigation,detail,targets,report,reportOpen,rounds,roundsCursor,selected,pendingRound,loading,targetsLoading,reportLoading,roundsLoading,writing,error,targetError,reportError,actionError,confirmation,counts,ended,paused,needsPolling,hasReport,hasPrevious,nextCursor,controlDisabled,refresh,loadTargets,openReport,refreshReport,moreRounds,next,previous,first,setFilter,setRound,toggleTarget,selectPage,clearSelection,retryCount,retry,control,confirm,cancelConfirmation,copyBatch,setVisible};
 }

@@ -126,6 +126,26 @@ class SelectionWorkerRoutingTests(TestCase):
 
 
 class SelectionWorkerTests(PostgresTestCase):
+    def test_selection_logs_correlate_admission_and_freeze(self):
+        account_id = self.seed(records.ACCOUNTS, [{"email": "worker-timing@example.test"}])[0]
+        request_key = "worker-timing-acceptance"
+        with self.assertLogs("core", level="INFO") as logs:
+            selected = service.create_selection({
+                "operation": {"key": "plan_check"},
+                "source": {"kind": "ids", "ids": [account_id]},
+            }, request_key)
+            self.assertEqual(1, service.run_once("selection"))
+        selection_id = selected["id"]
+        matching = [record.getMessage() for record in logs.records
+                    if f"selection_id={selection_id} " in record.getMessage()]
+        self.assertEqual(3, len(matching))
+        self.assertRegex(matching[0], r"批次名单已受理 .*accept_ms=\d+\.\d")
+        self.assertRegex(matching[1], r"批次名单已领取 .*fence=1 .*created_to_claim_ms=-?\d+ .*claim_ms=\d+\.\d")
+        self.assertRegex(matching[2], r"批次名单固定结束 .*fence=1 .*outcome=ready")
+        self.assertRegex(matching[2], r"query_ms=\d+\.\d finalize_ms=\d+\.\d")
+        self.assertNotIn(request_key, "\n".join(matching))
+        self.assertEqual("ready", bulk.get_selection(selection_id)["state"])
+
     def test_token_refresh_keeps_identity_projection_and_persists_real_preflight(self):
         bulk.reset_ready()
         bulk.init()

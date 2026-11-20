@@ -35,6 +35,7 @@ interface DetailEntry {
   details?: AccountPlanDetails;
   request?: {version: number; controller: AbortController; promise: Promise<AccountPlanDetailsSnapshot>};
 }
+const FACET_TTL_MS = 30_000;
 const detailKeys = ['account_promotions', 'promotion_query_snapshot', 'plan_check_country_results'] as const;
 const facetKeys = ['source', 'registration_driver', 'token', 'password', 'plan', 'promotion', 'totp',
   'risk', 'codex', 'account_status', 'email_status'] as const;
@@ -83,6 +84,7 @@ export function useAccounts(adapter: AccountQueryAdapter, api: AccountsReadApi) 
   let listController: AbortController | undefined, statusController: AbortController | undefined;
   let pollTimer: ReturnType<typeof setTimeout> | undefined, searchTimer: ReturnType<typeof setTimeout> | undefined;
   let refreshTimer: ReturnType<typeof setTimeout> | undefined, statusRevision = '', invalidQuery: string | undefined;
+  let facetSnapshot: {filter: string; readAt: number} | undefined;
   const details = new Map<string, DetailEntry>();
   const consumers = new Map<number, string>();
   const documentVisible = () => typeof document === 'undefined' || !document.hidden;
@@ -134,16 +136,24 @@ export function useAccounts(adapter: AccountQueryAdapter, api: AccountsReadApi) 
     }
     pruneDetails();
   }
-  async function refresh(): Promise<void> {
+  async function readPage(reuseFacets: boolean): Promise<void> {
     invalidate();
     if (!canRead()) return;
     const generation = epoch, controller = new AbortController();
+    const filter = adapter.toLegacy(query.value).toString();
+    const includeFacets = !reuseFacets || facetSnapshot?.filter !== filter || Date.now() - facetSnapshot.readAt >= FACET_TTL_MS;
+    if (includeFacets) facetSnapshot = undefined;
     listController = controller; loading.value = true;
     try {
       for (let correction = 0; correction < 2; correction++) {
         const key = signature.value, spec = copy(query.value), requestedPage = page.value, requestedSize = size.value;
-        const result = await api.list(spec, requestedPage, requestedSize, controller.signal);
+        const needsFacets = includeFacets && !facetSnapshot;
+        const result = await api.list(spec, requestedPage, requestedSize, controller.signal, {includeFacets: needsFacets});
         if (!current(generation, key)) return;
+        if (needsFacets) {
+          facets.value = keepSelectedFacets(result.facets);
+          facetSnapshot = {filter, readAt: Date.now()};
+        }
         const lastPage = Math.max(1, Math.ceil(result.total / requestedSize));
         if (requestedPage > lastPage) {
           page.value = lastPage;
@@ -152,7 +162,7 @@ export function useAccounts(adapter: AccountQueryAdapter, api: AccountsReadApi) 
           return;
         }
         acceptFullRows(result.items);
-        total.value = result.total; facets.value = keepSelectedFacets(result.facets); searchTerms.value = copy(result.search_terms);
+        total.value = result.total; searchTerms.value = copy(result.search_terms);
         renderedSignature.value = key; statusRevision = ''; error.value = ''; invalidSearch.value = false; invalidQuery = undefined;
         return;
       }
@@ -161,6 +171,7 @@ export function useAccounts(adapter: AccountQueryAdapter, api: AccountsReadApi) 
       error.value = cause instanceof Error ? cause.message : '加载账号失败';
       if (cause instanceof ApiError && cause.code === 'account_search_invalid') {
         invalidQuery = query.value.q; invalidSearch.value = true;
+        facetSnapshot = undefined;
         items.value = []; total.value = 0; searchTerms.value = []; facets.value = {};
         pruneDetails();
       }
@@ -168,6 +179,7 @@ export function useAccounts(adapter: AccountQueryAdapter, api: AccountsReadApi) 
       if (generation === epoch) { loading.value = false; listController = undefined; schedulePoll(); }
     }
   }
+  function refresh(): Promise<void> { return readPage(false); }
   function applyStatus(row: AccountViewRow, incoming: AccountStatusRow, fields: string[]): AccountViewRow {
     const merged = copy(row) as unknown as Record<string, unknown>;
     for (const key of fields) delete merged[key];
@@ -216,6 +228,7 @@ export function useAccounts(adapter: AccountQueryAdapter, api: AccountsReadApi) 
     } catch (cause) {
       if (current(generation, key) && cause instanceof ApiError && cause.code === 'account_search_invalid') {
         invalidQuery = query.value.q; invalidSearch.value = true; error.value = cause instanceof Error ? cause.message : '筛选语法无效';
+        facetSnapshot = undefined;
         items.value = []; total.value = 0; facets.value = {}; searchTerms.value = []; pruneDetails();
       }
       // Keep the existing list on ordinary polling failures, matching the legacy page.
@@ -223,13 +236,13 @@ export function useAccounts(adapter: AccountQueryAdapter, api: AccountsReadApi) 
       if (generation === epoch) { polling.value = false; statusController = undefined; schedulePoll(); }
     }
   }
-  function requestRefresh(delay = 0) {
+  function requestRefresh(delay = 0, reuseFacets = false) {
     // Invalidate immediately, but read only the final synchronous page/size state.
     invalidate();
     if (!canRead()) return;
     const ticket = refreshTicket;
     const execute = () => {
-      if (ticket === refreshTicket && canRead()) void refresh();
+      if (ticket === refreshTicket && canRead()) void readPage(reuseFacets);
     };
     if (delay) refreshTimer = setTimeout(execute, delay);
     else void nextTick(execute);
@@ -257,12 +270,12 @@ export function useAccounts(adapter: AccountQueryAdapter, api: AccountsReadApi) 
   function setPage(value: number) {
     if (disposed || !Number.isFinite(value)) return;
     const next = Math.min(pages.value, Math.max(1, Math.floor(value)));
-    if (next !== page.value) { page.value = next; requestRefresh(); }
+    if (next !== page.value) { page.value = next; requestRefresh(0, true); }
   }
   function setSize(value: number) {
     if (disposed || !Number.isFinite(value) || value < 1) return;
     const next = Math.min(500, Math.floor(value));
-    if (next !== size.value) { size.value = next; page.value = 1; requestRefresh(); }
+    if (next !== size.value) { size.value = next; page.value = 1; requestRefresh(0, true); }
   }
   function setSearchDraft(value: string) {
     draftSearch.value = value; clearTimeout(searchTimer); searchTimer = undefined;

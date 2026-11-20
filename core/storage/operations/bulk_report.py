@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
+from concurrent.futures import Future
 from copy import deepcopy
 from datetime import datetime, timezone
 import hashlib
@@ -12,11 +13,13 @@ from core.operations.presentation import public_result_status
 from core.storage.operations import bulk_schema, store
 from core.storage.operations.bulk_common import BulkError, OWNED, TERMINAL, connect, public_metrics, require_row, table
 
-_CACHE: dict[tuple, tuple[float, dict]] = {}
+_CACHE: dict[tuple, tuple[float | None, dict]] = {}
+_IN_FLIGHT: dict[tuple, Future] = {}
 _CACHE_LOCK = threading.Lock()
 _CACHE_SECONDS = 10
 _CACHE_SIZE = 64
 _REPORT_VERSION = 1
+_COMPLETED_SCOPES = frozenset({"completed", "ended", "failed"})
 
 
 def _timestamp(value):
@@ -95,7 +98,7 @@ def aggregate_report(targets: list[dict], *, batch: dict, scope: dict, projectio
                 refresh[f"{key}_accounts"] += 1
     completed = sum(buckets.get(key, 0) for key in TERMINAL)
     total = len(targets)
-    complete = (scope.get("state") in {"completed", "ended", "failed"} and completed == total
+    complete = (scope.get("state") in _COMPLETED_SCOPES and completed == total
                 and projection["state"] == "current")
     phase = "preparing" if scope.get("state") == "preparing" else "completed" if complete else "running"
     report = {
@@ -169,71 +172,107 @@ def _load_historical_promotions(cur, targets: list[dict]) -> None:
         candidates[row["run_id"]].setdefault("promotion_query_records", []).append(row["detail"])
 
 
-def _get_task_report(batch_id: int, *, round_id: int | None = None, required_operation: str | None = None) -> dict:
-    """一次固定快照读取；短缓存保护运行中报告，详情轮询不触发逐条扫描。"""
-    bulk_schema.require_readable()
-    with connect() as conn, conn.cursor() as cur:
-        cur.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
-        batch = require_row(cur, f"SELECT * FROM {table('operation_batch_controls')} WHERE batch_id=%s", (batch_id,))
-        from core.bulk_operations.catalog import OPERATIONS
+def _read_report_targets(cur, *, selection_id, join_round, join_args, outcome, operation_key):
+    cur.execute(f"""SELECT m.id,m.target_id AS account_id,tr.id AS target_round_id,
+      tr.chain_started_at,{outcome} AS outcome,COALESCE(tr.result,'{{}}'::jsonb) AS result
+      FROM {table('operation_selection_targets')} m
+      LEFT JOIN {table('operation_batch_target_rounds')} tr ON
+        tr.canonical_target_id=COALESCE(m.canonical_target_id,m.id) AND tr.round_id={join_round}
+      WHERE m.selection_id=%s ORDER BY m.ordinal""", (*join_args, selection_id))
+    targets = [dict(row) for row in cur.fetchall()]
+    ids = [row["target_round_id"] for row in targets if row["target_round_id"]]
+    by_target = defaultdict(list)
+    if ids:
+        cur.execute(f"""SELECT l.target_round_id,l.relation,l.execution_generation AS generation,
+          l.run_id_snapshot AS id,r.status,r.started_at,r.completed_at,r.result_summary,r.error_code,
+          jsonb_build_object('plan_auto_refresh_at',r.data->'plan_auto_refresh_at') AS data
+          FROM {table('operation_batch_run_links')} l
+          LEFT JOIN {table('operation_runs')} r ON r.id=l.run_id_snapshot
+          WHERE l.target_round_id=ANY(%s) AND l.relation=ANY(%s)
+          ORDER BY l.target_round_id,l.execution_generation,l.run_id_snapshot""", (ids, list(OWNED)))
+        for row in cur.fetchall():
+            by_target[row["target_round_id"]].append(dict(row))
+    for target in targets:
+        target["runs"] = by_target[target["target_round_id"]]
+    if operation_key == "plan_check":
+        _load_historical_promotions(cur, targets)
+    return targets
 
-        if batch["action_key"] not in OPERATIONS or required_operation and batch["action_key"] != required_operation:
-            raise BulkError("report_operation_unsupported", "当前批次不支持此任务报告。", 422)
-        if round_id is not None:
-            row = require_row(cur, f"SELECT * FROM {table('operation_batch_rounds')} WHERE id=%s AND batch_id=%s",
-                              (round_id, batch_id))
-            scope = dict(row, kind="round", round_id=row["id"])
-            selection_id, join_round, join_args = row["member_selection_id"], "%s", [round_id]
-            outcome = f"COALESCE(tr.outcome,'{row['unmaterialized_bucket']}')"
-        else:
-            scope = dict(batch, kind="current", target_count=0)
-            selection_id, join_round, join_args = batch["selection_id"], "COALESCE(m.latest_requested_round_id,%s)", [batch["initial_round_id"]]
-            outcome = "COALESCE(tr.outcome,(SELECT e.key FROM jsonb_each_text(m.current_contribution) e WHERE e.value::bigint=1 LIMIT 1),'pending_submit')"
-        database = hashlib.sha256(store.postgres_store.database_url().encode()).hexdigest()
-        key = (database, store._schema_name(), batch["action_key"], required_operation, batch_id, round_id,
-               scope["summary_revision"], batch["control_revision"],
-               scope["state"], scope.get("target_count"), _REPORT_VERSION)
-        with _CACHE_LOCK:
-            cached = _CACHE.get(key)
-            if cached and time.monotonic() - cached[0] < _CACHE_SECONDS:
-                return deepcopy(cached[1])
-        cur.execute(f"""SELECT m.id,m.target_id AS account_id,tr.id AS target_round_id,
-          tr.chain_started_at,{outcome} AS outcome,COALESCE(tr.result,'{{}}'::jsonb) AS result
-          FROM {table('operation_selection_targets')} m
-          LEFT JOIN {table('operation_batch_target_rounds')} tr ON
-            tr.canonical_target_id=COALESCE(m.canonical_target_id,m.id) AND tr.round_id={join_round}
-          WHERE m.selection_id=%s ORDER BY m.ordinal""", (*join_args, selection_id))
-        targets = [dict(row) for row in cur.fetchall()]
-        ids = [row["target_round_id"] for row in targets if row["target_round_id"]]
-        by_target = defaultdict(list)
-        if ids:
-            cur.execute(f"""SELECT l.target_round_id,l.relation,l.execution_generation AS generation,
-              l.run_id_snapshot AS id,r.status,r.started_at,r.completed_at,r.result_summary,r.error_code,
-              jsonb_build_object('plan_auto_refresh_at',r.data->'plan_auto_refresh_at') AS data
-              FROM {table('operation_batch_run_links')} l
-              LEFT JOIN {table('operation_runs')} r ON r.id=l.run_id_snapshot
-              WHERE l.target_round_id=ANY(%s) AND l.relation=ANY(%s)
-              ORDER BY l.target_round_id,l.execution_generation,l.run_id_snapshot""", (ids, list(OWNED)))
-            for row in cur.fetchall():
-                by_target[row["target_round_id"]].append(dict(row))
-        for target in targets:
-            target["runs"] = by_target[target["target_round_id"]]
-        if batch["action_key"] == "plan_check":
-            _load_historical_promotions(cur, targets)
-        cur.execute(f"""SELECT count(DISTINCT e.target_round_id) AS pending,bool_or(e.error_code IS NOT NULL) AS failed
-          FROM {table('operation_projection_outbox')} e
-          JOIN {table('operation_batch_target_rounds')} tr ON tr.id=e.target_round_id
-          WHERE tr.batch_id=%s AND e.consumer_kind='bulk_target' AND e.processed_at IS NULL
-            AND (%s::bigint IS NULL OR tr.round_id=%s)""", (batch_id, round_id, round_id))
-        pending = cur.fetchone()
-        projection = {"state": "failed" if pending["failed"] else "syncing" if pending["pending"] else "current",
-                      "pending_targets": pending["pending"]}
+
+def _get_task_report(batch_id: int, *, round_id: int | None = None, required_operation: str | None = None) -> dict:
+    """一次固定快照读取，合并同一已完成版本并发生成。"""
+    bulk_schema.require_readable()
+    owner = None
+    try:
+        with connect() as conn, conn.cursor() as cur:
+            cur.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            batch = require_row(cur, f"SELECT * FROM {table('operation_batch_controls')} WHERE batch_id=%s", (batch_id,))
+            from core.bulk_operations.catalog import OPERATIONS
+
+            if batch["action_key"] not in OPERATIONS or required_operation and batch["action_key"] != required_operation:
+                raise BulkError("report_operation_unsupported", "当前批次不支持此任务报告。", 422)
+            if round_id is not None:
+                row = require_row(cur, f"SELECT * FROM {table('operation_batch_rounds')} WHERE id=%s AND batch_id=%s",
+                                  (round_id, batch_id))
+                scope = dict(row, kind="round", round_id=row["id"])
+                selection_id, join_round, join_args = row["member_selection_id"], "%s", [round_id]
+                outcome = f"COALESCE(tr.outcome,'{row['unmaterialized_bucket']}')"
+            else:
+                scope = dict(batch, kind="current", target_count=0)
+                selection_id, join_round, join_args = batch["selection_id"], "COALESCE(m.latest_requested_round_id,%s)", [batch["initial_round_id"]]
+                outcome = "COALESCE(tr.outcome,(SELECT e.key FROM jsonb_each_text(m.current_contribution) e WHERE e.value::bigint=1 LIMIT 1),'pending_submit')"
+            # Run 写入及投影失败都可能早于汇总版本推进。先读取本快照待投影状态。
+            cur.execute(f"""SELECT count(DISTINCT e.target_round_id) AS pending,bool_or(e.error_code IS NOT NULL) AS failed
+              FROM {table('operation_projection_outbox')} e
+              JOIN {table('operation_batch_target_rounds')} tr ON tr.id=e.target_round_id
+              WHERE tr.batch_id=%s AND e.consumer_kind='bulk_target' AND e.processed_at IS NULL
+                AND (%s::bigint IS NULL OR tr.round_id=%s)""", (batch_id, round_id, round_id))
+            pending = cur.fetchone()
+            projection = {"state": "failed" if pending["failed"] else "syncing" if pending["pending"] else "current",
+                          "pending_targets": pending["pending"]}
+            database = hashlib.sha256(store.postgres_store.database_url().encode()).hexdigest()
+            key = (database, store._schema_name(), batch["created_at"], batch["action_key"], batch_id, round_id,
+                   selection_id, scope["summary_revision"], batch["control_revision"], scope["control_revision"],
+                   scope["state"], scope.get("target_count"), _REPORT_VERSION)
+            reusable = projection["state"] == "current" and batch["purge_started_at"] is None
+            completed_scope = reusable and scope["state"] in _COMPLETED_SCOPES
+            waiting = None
+            if reusable:
+                with _CACHE_LOCK:
+                    cached = _CACHE.pop(key, None)
+                    if cached and (cached[0] is None or time.monotonic() < cached[0]):
+                        _CACHE[key] = cached
+                        return deepcopy(cached[1])
+                    if completed_scope:
+                        waiting = _IN_FLIGHT.get(key)
+                        if waiting is None:
+                            owner = _IN_FLIGHT[key] = Future()
+            if waiting is None:
+                targets = _read_report_targets(cur, selection_id=selection_id, join_round=join_round,
+                    join_args=join_args, outcome=outcome, operation_key=batch["action_key"])
+        # 聚合只用已读出的快照数据，等待中的请求也先归还数据库连接。
+        if waiting is not None:
+            return deepcopy(waiting.result())
         report = aggregate_report(targets, batch=batch, scope=scope, projection=projection)
-    with _CACHE_LOCK:
-        if len(_CACHE) >= _CACHE_SIZE:
-            _CACHE.pop(min(_CACHE, key=lambda item: _CACHE[item][0]))
-        _CACHE[key] = (time.monotonic(), deepcopy(report))
-    return report
+        if reusable:
+            expires_at = None if report["phase"] == "completed" else time.monotonic() + _CACHE_SECONDS
+            stored = deepcopy(report)
+            with _CACHE_LOCK:
+                _CACHE.pop(key, None)
+                _CACHE[key] = (expires_at, stored)
+                if len(_CACHE) > _CACHE_SIZE:
+                    _CACHE.pop(next(iter(_CACHE)))
+            if owner is not None:
+                owner.set_result(stored)
+        return report
+    except BaseException as exc:
+        if owner is not None:
+            owner.set_exception(exc)
+        raise
+    finally:
+        if owner is not None:
+            with _CACHE_LOCK:
+                _IN_FLIGHT.pop(key)
 
 
 def get_task_report(batch_id: int, *, round_id: int | None = None) -> dict:

@@ -96,6 +96,7 @@ class AccountOperationDeactivationPolicyTests(unittest.TestCase):
         with (
             patch("webui.routes.accounts._feature_unavailable", return_value=None),
             patch("webui.routes.accounts.db.get_account", return_value=_DEACTIVATED_ACCOUNT),
+            patch("webui.routes.accounts.record_store.list_rows", return_value=[_DEACTIVATED_ACCOUNT]),
             patch("webui.routes.accounts.account_task_store.create_batch") as create_batch,
             patch("webui.routes.accounts.plan_check_service.enqueue_account_plan_check") as enqueue_plan,
             patch("webui.routes.accounts.extract_link_service.enqueue_account_extract") as enqueue_extract,

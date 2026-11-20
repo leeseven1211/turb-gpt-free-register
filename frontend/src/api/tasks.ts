@@ -1,6 +1,6 @@
 import type {components} from './schema';
 import {ApiError, request as clientRequest} from './client';
-import {parseTaskJson,taskId,type TaskId,type TaskResponse} from './taskIds';
+import {optionalTaskId,parseTaskJson,taskId,type TaskId,type TaskResponse} from './taskIds';
 export type {TaskId} from './taskIds';
 const request=<T>(path:string,options:RequestInit={})=>clientRequest<T>(path,options,parseTaskJson);
 
@@ -8,6 +8,8 @@ export type OperationTask = TaskResponse<components['schemas']['OperationTask']>
 export type OperationRun = TaskResponse<components['schemas']['OperationRun']>;
 export type OperationList = TaskResponse<components['schemas']['OperationList']>;
 export type OperationDetail = TaskResponse<components['schemas']['OperationDetail']>;
+export type OperationReceipts = components['schemas']['OperationReceipts'];
+export interface OperationReceiptReference {task_id: TaskId; run_id: TaskId | null}
 export type ProgressResponse = TaskResponse<components['schemas']['ProgressResponse']>;
 export type EventsResponse = TaskResponse<components['schemas']['EventsResponse']>;
 export type LogsResponse = TaskResponse<components['schemas']['LogsResponse']>;
@@ -31,6 +33,14 @@ export function emptyFilters(): TaskFilters {
 function queryString(query: object): string {
   return new URLSearchParams(Object.entries(query).filter(([, value]) => value !== undefined && value !== '')
     .map(([key, value]) => [key, String(value)])).toString();
+}
+function receiptQuery(references: readonly OperationReceiptReference[]): string {
+  const params = new URLSearchParams();
+  for (const reference of references) {
+    const task = taskId(reference.task_id), run = optionalTaskId(reference.run_id);
+    params.append('ref', run === null ? String(task) : `${task}:${run}`);
+  }
+  return params.toString();
 }
 
 /** 网络重试复用同一意图；改变选项代表新意图，不阻断新的批量重跑。 */
@@ -74,6 +84,8 @@ function operationBody(path:string,body:object):string {
 export const tasksApi = {
   list: (query: TaskQuery, signal?: AbortSignal) => request<OperationList>(`/api/operations?${queryString(query)}`, {signal}),
   detail: (id: TaskId, signal?: AbortSignal) => request<OperationDetail>(`/api/operations/${taskId(id)}?include_events=0`, {signal}),
+  receipts: (references: readonly OperationReceiptReference[], signal?: AbortSignal) =>
+    request<OperationReceipts>(`/api/operations/receipts?${receiptQuery(references)}`, {signal}),
   progress: (id: TaskId, runId: TaskId, signal?: AbortSignal) => request<ProgressResponse>(`/api/operations/${taskId(id)}/runs/${taskId(runId)}/progress`, {signal}),
   events: (id: TaskId, runId: TaskId, query: {after_id?: TaskId; limit?: number} = {}, signal?: AbortSignal) =>
     request<EventsResponse>(`/api/operations/${taskId(id)}/runs/${taskId(runId)}/events?${queryString({limit: 500, ...query})}`, {signal}),

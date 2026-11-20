@@ -490,20 +490,8 @@ def _account_list_grouped_facets_sql(
     return sql, list(base_params)
 
 
-def list_accounts(
-    request: PageRequest,
-    *,
-    archived: str = "0",
-    plan: str = "",
-    q: str = "",
-    date_from: str = "",
-    date_to: str = "",
-) -> dict:
-    from core import db
-
-    accounts = _q(record_store.ACCOUNTS)
-    where, params = _account_where(archived, plan, q, date_from, date_to, request.filters)
-    clause = f" WHERE {' AND '.join(where)}" if where else ""
+def _list_account_facet_query(accounts: str, request: PageRequest, *, archived: str, plan: str,
+                              q: str, date_from: str, date_to: str) -> tuple[str, list]:
     base_where, facet_params = _account_where(
         archived, "", q, date_from, date_to,
         {key: request.filters.get(key, "") for key in ("id", "email")},
@@ -544,6 +532,24 @@ def list_accounts(
              WHERE {' AND '.join(facet_where)}
              GROUP BY f.facet, f.value
         """
+    return facet_sql, facet_params
+
+
+def list_accounts(
+    request: PageRequest,
+    *,
+    archived: str = "0",
+    plan: str = "",
+    q: str = "",
+    date_from: str = "",
+    date_to: str = "",
+    include_facets: bool = True,
+) -> dict:
+    from core import db
+
+    accounts = _q(record_store.ACCOUNTS)
+    where, params = _account_where(archived, plan, q, date_from, date_to, request.filters)
+    clause = f" WHERE {' AND '.join(where)}" if where else ""
     # chatgpt_session 是恢复用的敏感完整响应，不进入管理列表查询。
     promoted = [
         "id",
@@ -569,8 +575,13 @@ def list_accounts(
             (*params, request.limit, request.offset),
         )
         rows = [db.decorate_account(record_store.merge_row(record_store.ACCOUNTS, row)) for row in cur.fetchall()]
-        cur.execute(facet_sql, facet_params)
-        facets = _facet_dict(cur.fetchall())
+        facets = {}
+        if include_facets:
+            facet_sql, facet_params = _list_account_facet_query(
+                accounts, request, archived=archived, plan=plan, q=q, date_from=date_from, date_to=date_to,
+            )
+            cur.execute(facet_sql, facet_params)
+            facets = _facet_dict(cur.fetchall())
     return {
         "ok": True,
         "items": rows,

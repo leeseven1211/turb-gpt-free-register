@@ -221,14 +221,65 @@ class RoxyRefreshDriverTests(unittest.TestCase):
         self.assertTrue(result["accepted"])
         self.assertEqual("browser_roxy", run.call_args.kwargs["refresh_driver"])
 
+    def test_refresh_reports_browser_preparation_before_password_stage(self):
+        reporter = MagicMock()
+        route = MagicMock(proxy_url="http://proxy.example:8080")
+        route.public_dict.return_value = {"network_route": "proxy", "proxy_region": "US"}
+        browser_result = {
+            "ok": True,
+            "status": "live",
+            "access_token": "fixture-fresh",
+            "session": {},
+            "live_check_driver": "browser_roxy",
+            "auth_method": "roxy_browser",
+        }
+        with (
+            patch.object(service.db, "mark_account_live_check_running", return_value=True),
+            patch.object(service.db, "get_account", return_value={"email_invalid": True, "access_token": "fixture-at"}),
+            patch.object(service.db, "update_account_liveness", return_value=True),
+            patch.object(service, "_reporter", return_value=reporter),
+            patch.object(service, "_append_log"),
+            patch.object(service, "_checkpoint"),
+            patch.object(service, "token_claims", return_value={}),
+            patch.object(service, "_resolve_at_refresh_country", return_value=None),
+            patch("core.proxy.account_routes.acquire_account_proxy", return_value=route),
+            patch("core.accounts.operation_results.own_account_route", side_effect=lambda _context, original_route, **_kwargs: original_route),
+            patch.object(roxy_liveness, "refresh_access_token", return_value=browser_result),
+        ):
+            result = service._run_live_check(
+                account_id=1, email=EMAIL, trigger="fixture", proxy=None,
+                force_refresh=True, refresh_driver="browser_roxy",
+                config_snapshot={"auth_raw_context_enabled": False},
+            )
+
+        self.assertTrue(result["ok"])
+        running_password = [
+            call for call in reporter.stage.call_args_list
+            if call.args[:2] == ("login_password", "running")
+        ]
+        self.assertEqual([], running_password)
+        self.assertIn(
+            ("browser", "running", "正在启动 Roxy 浏览器"),
+            [call.args[:3] for call in reporter.stage.call_args_list],
+        )
+        self.assertFalse(any(call.kwargs.get("stage") == "login_password" for call in reporter.note.call_args_list))
+
     def test_direct_browser_worker_acquires_one_route_without_protocol_or_second_fallback(self):
-        for success in (True, False):
-            with self.subTest(success=success), ExitStack() as stack:
+        for success, failure_stage, expected_stage in (
+            (True, None, "authenticate"),
+            (False, None, "authenticate"),
+            (False, "open", "browser"),
+            (False, "driver", "browser"),
+            (False, "navigation", "page"),
+        ):
+            with self.subTest(success=success, failure_stage=failure_stage), ExitStack() as stack:
                 reporter = MagicMock()
                 route = MagicMock(proxy_url="http://proxy.example:8080")
                 route.public_dict.return_value = {"network_route": "proxy", "proxy_region": "US"}
                 browser_result = ({"ok": True, "status": "live", "access_token": "fixture-fresh", "session": {}}
                                   if success else {"ok": False, "status": "failed", "error": "network_preflight_failed"})
+                if failure_stage:
+                    browser_result["failure_stage"] = failure_stage
                 for item in (
                     patch.object(service.db, "mark_account_live_check_running", return_value=True),
                     patch.object(service.db, "get_account", return_value={"email_invalid": True, "access_token": "fixture-at"}),
@@ -236,6 +287,7 @@ class RoxyRefreshDriverTests(unittest.TestCase):
                     patch.object(service, "_reporter", return_value=reporter),
                     patch.object(service, "_append_log"),
                     patch.object(service, "token_claims", return_value={}),
+                    patch.object(service, "_resolve_at_refresh_country", return_value=None),
                 ):
                     stack.enter_context(item)
                 acquire = stack.enter_context(patch("core.proxy.account_routes.acquire_account_proxy", return_value=route))
@@ -256,7 +308,7 @@ class RoxyRefreshDriverTests(unittest.TestCase):
                 browser.assert_called_once()
                 protocol.assert_not_called()
                 legacy.assert_not_called()
-                self.assertTrue(any(call.args[:2] == ("authenticate", "success" if success else "failed")
+                self.assertTrue(any(call.args[:2] == (expected_stage, "success" if success else "failed")
                                     for call in reporter.stage.call_args_list))
                 self.assertFalse(any(call.args[:2] == ("email_otp", "success") for call in reporter.stage.call_args_list))
 
@@ -319,6 +371,32 @@ class RoxyRefreshHookTests(unittest.TestCase):
         with patch.multiple(roxy_liveness.cfg, REGISTRATION_DRIVER="protocol", ROXY_API_BASE="http://127.0.0.1:50000",
                             ROXY_API_TOKEN="fixture", ROXY_WORKSPACE_ID="fixture"):
             self.assertTrue(roxy_liveness.available())
+
+    def test_browser_connection_and_navigation_close_before_email_login(self):
+        from core.operations.runtime import CancellationToken, operation_context
+
+        self._context()
+        events = []
+        token = CancellationToken(9, "fixture", lambda *_args: False)
+        with (
+            self.assertLogs("core.roxy_liveness", level="INFO") as captured,
+            operation_context(token, reporter=lambda **event: events.append(event)),
+        ):
+            result = roxy_liveness.refresh_access_token(EMAIL)
+
+        self.assertTrue(result["ok"])
+        facts = [(event["stage"], event["state"]) for event in events]
+        self.assertEqual(
+            [
+                ("browser", "running"), ("browser", "success"),
+                ("page", "running"), ("page", "success"),
+                ("login", "running"), ("login", "success"),
+                ("refresh_token", "running"),
+            ],
+            facts,
+        )
+        for step in ("启动 Roxy 环境", "连接 Selenium", "导航至登录页", "准备登录页", "处理邮箱提交与登录挑战"):
+            self.assertTrue(any(f"{step}耗时" in line for line in captured.output), step)
 
     def test_remote_boundary_and_authenticated_callback_use_real_result_and_http_bridge(self):
         driver, _, _, events, _, _ = self._context()

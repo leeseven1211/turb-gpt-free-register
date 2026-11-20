@@ -10,6 +10,7 @@ import time
 import uuid
 import zipfile
 from datetime import datetime
+from functools import wraps
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -33,6 +34,8 @@ from core.registration import service as svc
 from core.accounts.search import AccountSearchError, account_search_filters, parse_account_search
 from core.accounts.liveness.router import LiveCheckDriverError
 from core.accounts.plans.promotion import is_free_trial_record
+from core.operations import query_service as operation_query_service
+from core.operations.account_receipts import normalize_request_key
 from core.operations.errors import classify_task_error
 from webui import config_editor
 from webui.blueprint import LegacyEndpointBlueprint
@@ -40,6 +43,36 @@ from webui.runtime import WebUIContext
 from webui.route_helpers import _account_secret_value, _compact_account_for_list, _feature_unavailable
 
 logger = logging.getLogger(__name__)
+
+_ACCOUNT_REQUEST_KEY_HEADER = "X-Account-Request-Key"
+
+
+def _with_account_request_key(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        raw = request.headers.get(_ACCOUNT_REQUEST_KEY_HEADER)
+        try:
+            key = normalize_request_key(raw) if raw is not None else None
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+        return view(*args, account_request_key=key, **kwargs)
+
+    return wrapped
+
+
+def _load_bulk_operation_accounts(account_ids: list[int]) -> dict[int, dict]:
+    """一次读取批量操作所需的账号记录，超出数据库 ID 范围的值视为不存在。"""
+    database_ids = [account_id for account_id in account_ids if -(2**63) <= account_id < 2**63]
+    if not database_ids:
+        return {}
+    rows = record_store.list_rows(
+        record_store.ACCOUNTS,
+        where="id = ANY(%s::bigint[])",
+        params=(database_ids,),
+        exclude_columns=("chatgpt_session",),
+        data_exclude=("chatgpt_session", "email_change_material_line"),
+    )
+    return {row["id"]: row for row in rows}
 
 
 def _strict_positive_account_id(value):
@@ -56,6 +89,16 @@ def create_accounts_blueprint(context: WebUIContext):
     _enqueue_account_setup = context.enqueue_account_setup
     _enqueue_account_completion = context.enqueue_account_completion
     _put_prepared_download = context.put_prepared_download
+
+    @bp.get("/api/accounts/operation-receipt")
+    @_with_account_request_key
+    def api_account_operation_receipt(*, account_request_key):
+        if account_request_key is None:
+            return jsonify({"ok": False, "error": "缺少账号操作请求编号"}), 400
+        items = operation_query_service.find_account_request_receipts(account_request_key)
+        response = jsonify({"ok": True, "found": bool(items), "items": items})
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
     def _inspection_page():
         try:
@@ -175,6 +218,8 @@ def create_accounts_blueprint(context: WebUIContext):
         page_size_arg = request.args.get("page_size", default=None, type=int)
         page = max(1, int(page_arg or 1))
         page_size = max(1, min(500, int(page_size_arg or limit or 50)))
+        is_paged = paged or page_arg is not None or page_size_arg is not None
+        include_facets = is_paged and str(request.args.get("include_facets") or "1").lower() not in {"0", "false", "no"}
         result = admin_repository.list_accounts(
             admin_repository.PageRequest(page=page, page_size=page_size, filters=column_filters),
             archived=archived,
@@ -182,6 +227,7 @@ def create_accounts_blueprint(context: WebUIContext):
             q=q,
             date_from=date_from or "",
             date_to=date_to or "",
+            include_facets=include_facets,
         )
         account_registration_retry.attach_projection(result.get("items") or [])
         result["items"] = [_compact_account_for_list(r) for r in (result.get("items") or [])]
@@ -190,7 +236,7 @@ def create_accounts_blueprint(context: WebUIContext):
             "search_terms": account_search_filters(search_terms),
         })
         # 旧调用方不传分页参数时仍返回数组，但底层也只执行 SQL 分页，不再加载全表。
-        if not (paged or page_arg is not None or page_size_arg is not None):
+        if not is_paged:
             return jsonify(result["items"])
         return jsonify(result)
 
@@ -521,11 +567,15 @@ def create_accounts_blueprint(context: WebUIContext):
         }), 202
 
     @bp.post("/api/accounts/<int:acc_id>/check-deactivation-mail")
-    def api_account_check_deactivation_mail(acc_id: int):
+    @_with_account_request_key
+    def api_account_check_deactivation_mail(acc_id: int, *, account_request_key):
         unavailable = _feature_unavailable("deactivation_mail")
         if unavailable:
             return unavailable
-        result = deactivation_mail_service.enqueue(acc_id, trigger="manual")
+        result = deactivation_mail_service.enqueue(
+            acc_id, trigger="manual",
+            **({"account_request_key": account_request_key} if account_request_key else {}),
+        )
         if result.get("busy"):
             return jsonify({"ok": False, **result}), 409
         if not result.get("accepted"):
@@ -537,7 +587,8 @@ def create_accounts_blueprint(context: WebUIContext):
         }), 202
 
     @bp.post("/api/accounts/check-deactivation-mail-bulk")
-    def api_accounts_check_deactivation_mail_bulk():
+    @_with_account_request_key
+    def api_accounts_check_deactivation_mail_bulk(*, account_request_key):
         unavailable = _feature_unavailable("deactivation_mail")
         if unavailable:
             return unavailable
@@ -577,6 +628,7 @@ def create_accounts_blueprint(context: WebUIContext):
             valid_ids,
             trigger="manual_bulk",
             batch_id=batch_id,
+            **({"account_request_key": account_request_key} if account_request_key else {}),
         )
         started.extend(queued.get("started") or [])
         busy.extend(queued.get("busy") or [])
@@ -961,7 +1013,8 @@ def create_accounts_blueprint(context: WebUIContext):
         })
 
     @bp.post("/api/accounts/check-live-bulk")
-    def api_accounts_check_live_bulk():
+    @_with_account_request_key
+    def api_accounts_check_live_bulk(*, account_request_key):
         """批量查活：只在线验证现有 AT，不发送邮箱 OTP、不刷新 AT。"""
         data = request.get_json(silent=True) or {}
         requested_driver = data.get("driver")
@@ -995,9 +1048,10 @@ def create_accounts_blueprint(context: WebUIContext):
             seen.add(acc_id)
             account_ids.append(acc_id)
 
+        accounts_by_id = _load_bulk_operation_accounts(account_ids)
         accounts = []
         for acc_id in account_ids:
-            acc = db.get_account(acc_id)
+            acc = accounts_by_id.get(acc_id)
             if not acc:
                 skipped.append({"id": acc_id, "reason": "账号不存在"})
                 continue
@@ -1031,9 +1085,13 @@ def create_accounts_blueprint(context: WebUIContext):
                 batch_id=batch_id,
                 force_refresh=False,
                 driver=effective_driver,
+                **({"account_request_key": account_request_key} if account_request_key else {}),
             )
             if queued.get("accepted"):
-                started.append({"id": acc_id, "email": email, "status": "queued"})
+                started.append({
+                    "id": acc_id, "email": email, "status": "queued",
+                    "task_id": queued.get("task_id"), "run_id": queued.get("run_id"),
+                })
             elif queued.get("busy"):
                 busy_count += 1
                 skipped.append({"id": acc_id, "email": email, "reason": queued.get("error") or "正在查活"})
@@ -1055,7 +1113,8 @@ def create_accounts_blueprint(context: WebUIContext):
         }), 202
 
     @bp.post("/api/accounts/refresh-token-bulk")
-    def api_accounts_refresh_token_bulk():
+    @_with_account_request_key
+    def api_accounts_refresh_token_bulk(*, account_request_key):
         """批量刷新 AT：明确通过邮箱登录重新获取并保存最新 accessToken。"""
         unavailable = _feature_unavailable("token_refresh")
         if unavailable:
@@ -1079,9 +1138,10 @@ def create_accounts_blueprint(context: WebUIContext):
             seen.add(acc_id)
             account_ids.append(acc_id)
 
+        accounts_by_id = _load_bulk_operation_accounts(account_ids)
         accounts = []
         for acc_id in account_ids:
-            acc = db.get_account(acc_id)
+            acc = accounts_by_id.get(acc_id)
             if not acc:
                 skipped.append({"id": acc_id, "reason": "账号不存在"})
                 continue
@@ -1112,6 +1172,7 @@ def create_accounts_blueprint(context: WebUIContext):
                 proxy=None,
                 batch_id=batch_id,
                 force_refresh=True,
+                **({"account_request_key": account_request_key} if account_request_key else {}),
             )
             if queued.get("accepted"):
                 started.append({
@@ -1139,7 +1200,8 @@ def create_accounts_blueprint(context: WebUIContext):
         }), 202
 
     @bp.post("/api/accounts/check-plan")
-    def api_account_check_plan():
+    @_with_account_request_key
+    def api_account_check_plan(*, account_request_key):
         """把单账号套餐查询加入后台队列；线路统一由账号功能代理策略决定。"""
         unavailable = _feature_unavailable("plan_check")
         if unavailable:
@@ -1170,6 +1232,7 @@ def create_accounts_blueprint(context: WebUIContext):
             trigger="manual",
             proxy=None,
             timezone_offset_min=str(data.get("timezone_offset_min") or "-"),
+            **({"account_request_key": account_request_key} if account_request_key else {}),
         )
         if queued.get("busy"):
             return jsonify({"ok": False, **queued}), 409
@@ -1178,7 +1241,8 @@ def create_accounts_blueprint(context: WebUIContext):
         return jsonify({"ok": True, "started": True, **queued}), 202
 
     @bp.post("/api/accounts/check-plan-bulk")
-    def api_accounts_check_plan_bulk():
+    @_with_account_request_key
+    def api_accounts_check_plan_bulk(*, account_request_key):
         """批量把套餐查询加入统一后台队列；每个账号独立获取线路。"""
         unavailable = _feature_unavailable("plan_check")
         if unavailable:
@@ -1191,20 +1255,28 @@ def create_accounts_blueprint(context: WebUIContext):
             return jsonify({"ok": False, "error": "单次最多查询 500 个账号"}), 400
         timezone_offset_min = str(data.get("timezone_offset_min") or "-")
 
-        items = []
-        skipped = []
         seen = set()
-        auto_refresh_at = None
+        ordered_inputs = []
         for raw in ids:
             try:
                 acc_id = int(raw)
             except Exception:
-                skipped.append({"id": raw, "reason": "ID 非法"})
+                ordered_inputs.append((None, raw))
                 continue
             if acc_id in seen:
                 continue
             seen.add(acc_id)
-            acc = db.get_account(acc_id)
+            ordered_inputs.append((acc_id, raw))
+
+        accounts_by_id = _load_bulk_operation_accounts(list(seen))
+        items = []
+        skipped = []
+        auto_refresh_at = None
+        for acc_id, raw in ordered_inputs:
+            if acc_id is None:
+                skipped.append({"id": raw, "reason": "ID 非法"})
+                continue
+            acc = accounts_by_id.get(acc_id)
             if not acc:
                 skipped.append({"id": acc_id, "reason": "账号不存在"})
                 continue
@@ -1236,6 +1308,7 @@ def create_accounts_blueprint(context: WebUIContext):
                 proxy=None,
                 timezone_offset_min=timezone_offset_min,
                 batch_id=batch_id,
+                **({"account_request_key": account_request_key} if account_request_key else {}),
             )
             item = {"id": acc.get("id"), "email": acc.get("email"), **queued}
             if queued.get("accepted"):
@@ -1667,7 +1740,8 @@ def create_accounts_blueprint(context: WebUIContext):
         import json as _json
         import zipfile
         from datetime import datetime as _dt
-        from core.codex.oauth import download_cpa_codex_auth_text, list_cpa_codex_auth_files
+        from core.codex.cpa_download import CpaDownloadError, error_payload
+        from core.codex.oauth import download_cpa_codex_auth_text, find_cpa_codex_auth_file, list_cpa_codex_auth_files
 
         data = request.get_json(silent=True) or {}
         if not data and request.form:
@@ -1683,37 +1757,14 @@ def create_accounts_blueprint(context: WebUIContext):
         if len(ids) > 1000:
             return jsonify({"ok": False, "error": "单次最多下载 1000 个账号"}), 400
 
+        started_at = time.perf_counter()
         try:
-            cpa_files = list_cpa_codex_auth_files()
+            cpa_files = list_cpa_codex_auth_files(observe_web_download=True)
+        except CpaDownloadError as exc:
+            return jsonify({"ok": False, **error_payload(exc)}), 502
         except Exception as exc:
             return jsonify({"ok": False, "error": f"读取 CPA auth-files 失败: {type(exc).__name__}: {exc}"}), 502
-
-        def _match_cpa_file(email: str, local_filename: str = "") -> dict | None:
-            """在已缓存的 CPA 文件列表中匹配，避免每个账号都重新请求 auth-files。"""
-            email_l = str(email or "").strip().lower()
-            local_name_l = str(local_filename or "").strip().lower()
-            local_stem_l = local_name_l[:-5] if local_name_l.endswith(".json") else local_name_l
-
-            def score(item: dict) -> int:
-                name_l = str(item.get("name") or "").lower()
-                item_email_l = str(item.get("email") or "").lower()
-                s = 0
-                if local_name_l and name_l == local_name_l:
-                    s = max(s, 100)
-                if local_stem_l and name_l.startswith(local_stem_l):
-                    s = max(s, 80)
-                if email_l and item_email_l == email_l:
-                    s = max(s, 70)
-                if email_l and email_l in name_l:
-                    s = max(s, 60)
-                if local_stem_l.endswith("-cpa-callback"):
-                    base = local_stem_l[:-len("-cpa-callback")]
-                    if base and name_l.startswith(base + "-"):
-                        s = max(s, 75)
-                return s
-
-            ranked = sorted(((score(item), item) for item in cpa_files), key=lambda x: x[0], reverse=True)
-            return ranked[0][1] if ranked and ranked[0][0] > 0 else None
+        list_seconds = time.perf_counter() - started_at
 
         # 建立 email -> 本地 codex 文件名索引；有本地文件名时传给 CPA 匹配逻辑可提升命中率。
         local_by_email: dict[str, str] = {}
@@ -1731,6 +1782,7 @@ def create_accounts_blueprint(context: WebUIContext):
         used_names = set()
         seen_ids = set()
         buf = io.BytesIO()
+        match_seconds = download_seconds = zip_seconds = 0.0
         with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
             for raw_id in ids:
                 try:
@@ -1753,19 +1805,27 @@ def create_accounts_blueprint(context: WebUIContext):
 
                 local_filename = local_by_email.get(email.lower(), "")
                 try:
-                    meta = _match_cpa_file(email=email, local_filename=local_filename)
+                    match_started_at = time.perf_counter()
+                    meta = find_cpa_codex_auth_file(email=email, local_filename=local_filename, files=cpa_files)
+                    match_seconds += time.perf_counter() - match_started_at
                     cpa_name_hint = str((meta or {}).get("name") or "").strip()
                     if not cpa_name_hint:
                         raise RuntimeError(f"[Codex][CPA] 未在 CPA auth-files 中找到匹配的 Codex 凭证: {email}")
-                    cpa_text, cpa_name, meta = download_cpa_codex_auth_text(
-                        cpa_name=cpa_name_hint,
-                    )
+                    download_started_at = time.perf_counter()
+                    try:
+                        cpa_text, cpa_name, meta = download_cpa_codex_auth_text(
+                            cpa_name=cpa_name_hint, observe_web_download=True,
+                        )
+                    finally:
+                        download_seconds += time.perf_counter() - download_started_at
                     arcname = cpa_name
                     if arcname in used_names:
                         stem, dot, ext = arcname.rpartition(".")
                         arcname = f"{stem or arcname}-{len(used_names)+1}{dot}{ext}" if dot else f"{arcname}-{len(used_names)+1}"
                     used_names.add(arcname)
+                    zip_started_at = time.perf_counter()
                     zf.writestr(arcname, cpa_text)
+                    zip_seconds += time.perf_counter() - zip_started_at
                     added.append({
                         "id": acc_id,
                         "email": email,
@@ -1778,6 +1838,8 @@ def create_accounts_blueprint(context: WebUIContext):
                             db.mark_codex_exported(local_filename)
                         except Exception:
                             pass
+                except CpaDownloadError as exc:
+                    errors.append({"id": acc_id, "email": email, **error_payload(exc)})
                 except Exception as exc:
                     errors.append({"id": acc_id, "email": email, "error": f"{type(exc).__name__}: {exc}"})
 
@@ -1788,9 +1850,21 @@ def create_accounts_blueprint(context: WebUIContext):
                 "files": added,
                 "errors": errors,
             }
+            zip_started_at = time.perf_counter()
             zf.writestr("manifest.json", _json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
 
+        zip_seconds += time.perf_counter() - zip_started_at
+        logger.info(
+            "CPA 网页打包 source=accounts requested=%d added=%d failed=%d "
+            "auth_files_ms=%.1f match_ms=%.1f download_ms=%.1f zip_ms=%.1f total_ms=%.1f",
+            len(ids), len(added), len(errors), list_seconds * 1000, match_seconds * 1000,
+            download_seconds * 1000, zip_seconds * 1000, (time.perf_counter() - started_at) * 1000,
+        )
         if not added:
+            network_error = next((item for item in errors if item.get("error_code")), None)
+            if network_error:
+                return jsonify({"ok": False, "error": network_error["error"], "error_code": network_error["error_code"],
+                                "errors": errors}), 502
             return jsonify({"ok": False, "error": "没有成功从 CPA 下载任何凭证", "errors": errors}), 502
         now = _dt.now()
         dl_name = f"accounts-cpa-bulk-{now.strftime('%Y%m%d-%H%M%S')}.zip"

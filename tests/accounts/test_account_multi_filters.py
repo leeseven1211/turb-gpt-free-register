@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """账号枚举列的真实选项、多选组合及轻量轮询回归。"""
 import json
+from unittest.mock import patch
 
 from core.storage import admin_repository as repo
 from core.storage import records as rs
@@ -39,6 +40,19 @@ class AccountMultiFilterTests(PostgresTestCase):
         self.assertEqual({item["value"]: item["count"] for item in result["facets"]["plan"]}, {"free": 2, "plus": 1, "unqueried": 2})
         archived = repo.list_accounts(repo.PageRequest(), archived="only")
         self.assertEqual(archived["facets"]["plan"], [{"value": "pro", "count": 1}])
+
+    def test_page_without_facets_skips_aggregation_and_keeps_public_shape(self):
+        params = {"paged": "1", "page_size": "1", "page": "2", "plan": "free"}
+        url = "/api/accounts"
+        full = self.client.get(url, query_string=params, headers=self.headers).get_json()
+        self.assertTrue(full["facets"]["plan"])
+        with patch.object(repo, "_facet_dict", side_effect=AssertionError("意外执行筛选统计")):
+            response = self.client.get(url, query_string={**params, "include_facets": "0"}, headers=self.headers)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json(), {**full, "facets": {}})
+        legacy = self.client.get(url, headers=self.headers).get_json()
+        self.assertIsInstance(legacy, list)
+        self.assertEqual(len(legacy), 5)
 
     def test_empty_and_fallback_plans_match_the_display_in_both_endpoints(self):
         for endpoint, result in self.get_pages(plan="unqueried"):

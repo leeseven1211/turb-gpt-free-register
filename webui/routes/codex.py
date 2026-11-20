@@ -189,6 +189,9 @@ def create_codex_blueprint(context: WebUIContext):
         unavailable = _feature_unavailable("cpa_download")
         if unavailable:
             return unavailable
+        from core.codex.cpa_download import CpaDownloadError, error_payload
+        from core.codex.oauth import download_cpa_codex_auth_text
+
         try:
             content, fname = db.read_codex_credential(filename)
             import json as _json
@@ -197,10 +200,13 @@ def create_codex_blueprint(context: WebUIContext):
             except Exception:
                 local = {}
             email = str(local.get("email") or "").strip()
-            from core.codex.oauth import download_cpa_codex_auth_text
-            cpa_text, cpa_name, _meta = download_cpa_codex_auth_text(email=email, local_filename=fname)
+            cpa_text, cpa_name, _meta = download_cpa_codex_auth_text(
+                email=email, local_filename=fname, observe_web_download=True,
+            )
         except ValueError as exc:
             return jsonify({"ok": False, "error": str(exc)}), 404
+        except CpaDownloadError as exc:
+            return jsonify({"ok": False, **error_payload(exc)}), 502
         except Exception as exc:
             return jsonify({"ok": False, "error": f"{type(exc).__name__}: {exc}"}), 502
         db.mark_codex_exported(fname)
@@ -223,7 +229,8 @@ def create_codex_blueprint(context: WebUIContext):
         import json as _json
         import zipfile
         from datetime import datetime as _dt
-        from core.codex.oauth import download_cpa_codex_auth_text
+        from core.codex.cpa_download import CpaDownloadError, error_payload
+        from core.codex.oauth import download_cpa_codex_auth_text, list_cpa_codex_auth_files
 
         data = request.get_json(silent=True) or {}
         filenames = data.get("filenames") or []
@@ -236,6 +243,10 @@ def create_codex_blueprint(context: WebUIContext):
         added = []
         used_names = set()
         buf = io.BytesIO()
+        started_at = time.perf_counter()
+        list_seconds = download_seconds = zip_seconds = 0.0
+        cpa_files = None
+        cpa_list_error = None
         with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
             for fname in filenames:
                 if not isinstance(fname, str):
@@ -248,15 +259,38 @@ def create_codex_blueprint(context: WebUIContext):
                     except Exception:
                         local = {}
                     email = str(local.get("email") or "").strip()
-                    cpa_text, cpa_name, _meta = download_cpa_codex_auth_text(email=email, local_filename=real_fname)
+                    if cpa_files is None and cpa_list_error is None:
+                        list_started_at = time.perf_counter()
+                        try:
+                            cpa_files = list_cpa_codex_auth_files(observe_web_download=True)
+                        except CpaDownloadError as exc:
+                            cpa_list_error = error_payload(exc)
+                        except Exception as exc:
+                            cpa_list_error = {"error": f"{type(exc).__name__}: {exc}"}
+                        finally:
+                            list_seconds += time.perf_counter() - list_started_at
+                    if cpa_list_error is not None:
+                        errors.append({"filename": fname, **cpa_list_error})
+                        continue
+                    download_started_at = time.perf_counter()
+                    try:
+                        cpa_text, cpa_name, _meta = download_cpa_codex_auth_text(
+                            email=email, local_filename=real_fname, observe_web_download=True, files=cpa_files,
+                        )
+                    finally:
+                        download_seconds += time.perf_counter() - download_started_at
                     arcname = cpa_name
                     if arcname in used_names:
                         stem, dot, ext = arcname.rpartition(".")
                         arcname = f"{stem or arcname}-{len(used_names)+1}{dot}{ext}" if dot else f"{arcname}-{len(used_names)+1}"
                     used_names.add(arcname)
+                    zip_started_at = time.perf_counter()
                     zf.writestr(arcname, cpa_text)
+                    zip_seconds += time.perf_counter() - zip_started_at
                     added.append({"local_filename": real_fname, "cpa_filename": cpa_name})
                     db.mark_codex_exported(real_fname)
+                except CpaDownloadError as exc:
+                    errors.append({"filename": fname, **error_payload(exc)})
                 except Exception as exc:
                     errors.append({"filename": fname, "error": f"{type(exc).__name__}: {exc}"})
             manifest = {
@@ -266,9 +300,21 @@ def create_codex_blueprint(context: WebUIContext):
                 "files": added,
                 "errors": errors,
             }
+            zip_started_at = time.perf_counter()
             zf.writestr("manifest.json", _json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
 
+        zip_seconds += time.perf_counter() - zip_started_at
+        logger.info(
+            "CPA 网页打包 source=codex requested=%d added=%d failed=%d auth_files_ms=%.1f download_ms=%.1f "
+            "zip_ms=%.1f total_ms=%.1f",
+            len(filenames), len(added), len(errors), list_seconds * 1000, download_seconds * 1000, zip_seconds * 1000,
+            (time.perf_counter() - started_at) * 1000,
+        )
         if not added:
+            network_error = next((item for item in errors if item.get("error_code")), None)
+            if network_error:
+                return jsonify({"ok": False, "error": network_error["error"], "error_code": network_error["error_code"],
+                                "errors": errors}), 502
             return jsonify({"ok": False, "error": "没有成功从 CPA 下载任何凭证", "errors": errors}), 502
         now = _dt.now()
         dl_name = f"codex-cpa-bulk-{now.strftime('%Y%m%d-%H%M%S')}.zip"

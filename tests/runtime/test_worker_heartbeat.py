@@ -142,7 +142,12 @@ class HeartbeatTests(unittest.TestCase):
         now[0] = .010
         pulse = self.start_pulse(worker, entered, release)
         now[0] = .061
-        worker._check_health()
+        with self.assertLogs('core.runtime.worker_heartbeat', level='WARNING') as captured:
+            worker._check_health()
+        message = captured.records[0].getMessage()
+        self.assertIn('phase=write', message)
+        self.assertIn('collect_ms=0.0', message)
+        self.assertIn('write_ms=51.0', message)
         self.assertEqual(worker._error, 'heartbeat_timeout')
         now[0] = .062
         release.set()

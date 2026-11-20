@@ -16,7 +16,9 @@ from urllib.parse import urlparse
 
 import pyotp
 from flask import Flask
+from flask.json.provider import DefaultJSONProvider
 
+from core.runtime.request_timing import current_request_timing
 from core.storage import admin_repository
 from core import account_task_store
 from core.codex import operation_service as codex_operation_service, retry_service as codex_retry_service, token_refresh_service as codex_token_refresh_service
@@ -50,8 +52,21 @@ from webui.routes.bulk import create_bulk_blueprint
 logger = logging.getLogger(__name__)
 
 
+class TimedJSONProvider(DefaultJSONProvider):
+    def dumps(self, obj, **kwargs) -> str:
+        timing = current_request_timing.get()
+        if timing is None:
+            return super().dumps(obj, **kwargs)
+        started = time.monotonic()
+        try:
+            return super().dumps(obj, **kwargs)
+        finally:
+            timing.json_seconds += time.monotonic() - started
+
+
 def create_app(auth_code: str | None = None) -> Flask:
     app = Flask(__name__, template_folder="templates")
+    app.json = TimedJSONProvider(app)
     # Keep static bundles in the browser cache for a short, explicit window so
     # switching/reopening the console does not re-download several hundred KB
     # of CSS/JS on every visit.

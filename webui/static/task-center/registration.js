@@ -7,7 +7,7 @@ import { t as re } from "./errorLabels-B-XqaTSM.js";
 import { O as P, _ as ie, a as ae, b as F, g as I, h as L, i as R, n as oe, p as z, r as B, t as V, v as H, x as U, y as W } from "./StepEvidence-CNs3ZCIS.js";
 import { t as se } from "./useNativeDialog-DWisXYg9.js";
 import { t as ce } from "./ListPagination-BjETSj81.js";
-import { n as G, r as K } from "./client-BBEPwkQG.js";
+import { n as G, r as K } from "./client-B5R_MNgP.js";
 import { a as q, r as le } from "./taskIds-BlchWwUp.js";
 // src/features/registration/RegistrationFilters.vue?vue&type=script&setup=true&lang.ts
 var ue = { class: "registration-filter-fields" }, J = { key: 0 }, Y = ["value"], de = ["value", "aria-label"], fe = ["value"], X = ["value"], pe = ["value"], me = [

@@ -91,6 +91,86 @@ class RecordStoreSchemaTests(PostgresTestCase):
             self.assertEqual(tuple(cur.fetchone().values()), (False, False, False, False))
 
 
+class RecordStoreMigrationTests(PostgresTestCase):
+    def test_new_process_reuses_completed_migration_without_schema_lock(self):
+        rs.init()
+        with (
+            patch.object(rs, "_READY_KEY", ""),
+            patch.object(rs, "advisory_xact_lock", wraps=rs.advisory_xact_lock) as schema_lock,
+            patch.object(rs, "_sync_identity_cursor", wraps=rs._sync_identity_cursor) as repair,
+        ):
+            rs.init()
+            schema_lock.assert_not_called()
+            repair.assert_not_called()
+
+    def test_migration_failure_leaves_no_completed_version(self):
+        rs.reset_ready()
+        with patch.object(rs, "_sync_identity_cursor", side_effect=RuntimeError("模拟序列修复中断")):
+            with self.assertRaisesRegex(RuntimeError, "模拟序列修复中断"):
+                rs.init()
+
+        with (
+            patch.object(rs, "_FORCE_SCHEMA_CHECK", False),
+            patch.object(rs, "advisory_xact_lock", wraps=rs.advisory_xact_lock) as schema_lock,
+            patch.object(rs, "_sync_identity_cursor", wraps=rs._sync_identity_cursor) as repair,
+        ):
+            rs.init()
+            schema_lock.assert_called_once()
+            self.assertEqual(repair.call_count, len(rs.ALL_TABLES))
+
+    def test_second_initializer_rechecks_version_after_waiting_for_schema_lock(self):
+        rs.init()
+        with (
+            patch.object(rs, "_READY_KEY", ""),
+            patch.object(rs, "_SCHEMA_VERSION", rs._SCHEMA_VERSION + 1),
+            patch.object(rs, "_apply_record_schema", wraps=rs._apply_record_schema) as migrate,
+            rs._connect() as first,
+            first.cursor() as cur,
+        ):
+            rs.advisory_xact_lock(first, f"record-store-schema:{self.schema}")
+            cur.execute(
+                f"INSERT INTO {rs.postgres_store.qualified(rs._SCHEMA_MIGRATIONS)} (version) VALUES (%s)",
+                (rs._SCHEMA_VERSION,),
+            )
+            original_lock = rs.advisory_xact_lock
+            reached_lock = threading.Event()
+            errors = []
+
+            def wait_for_lock(conn, key):
+                reached_lock.set()
+                original_lock(conn, key)
+
+            def init_in_second_connection():
+                try:
+                    rs.init()
+                except Exception as exc:
+                    errors.append(exc)
+
+            with patch.object(rs, "advisory_xact_lock", side_effect=wait_for_lock):
+                second = threading.Thread(target=init_in_second_connection)
+                second.start()
+                try:
+                    self.assertTrue(reached_lock.wait(timeout=10))
+                finally:
+                    first.commit()
+                    second.join(timeout=10)
+
+            self.assertFalse(second.is_alive())
+            self.assertEqual(errors, [])
+            migrate.assert_not_called()
+
+    def test_registration_jobs_have_normalized_email_index(self):
+        rs.init()
+        with rs._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT indexdef FROM pg_indexes WHERE schemaname = %s AND indexname = %s",
+                (self.schema, "idx_registration_jobs_normalized_email_id"),
+            )
+            definition = cur.fetchone()
+        self.assertIsNotNone(definition)
+        self.assertIn("lower(btrim(email)), id DESC", definition["indexdef"])
+
+
 class PartialUpdateTests(PostgresTestCase):
     def setUp(self):
         rs.reset_ready()

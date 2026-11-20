@@ -57,13 +57,14 @@ def test_current_page_shows_compact_status_and_complete_detail(width):
         if target.path in ('/api/accounts', '/api/accounts/plan-check-status'):
             number = int(query.get('page', ['1'])[0])
             size = int(query.get('page_size', ['10'])[0])
+            page_rows = rows if number == 1 else [dict(defaults, id=17, email='page-two@example.test')]
             payload = {
-                'ok': True, 'items': rows, 'total': len(rows), 'page': number, 'page_size': size,
+                'ok': True, 'items': page_rows, 'total': 21, 'page': number, 'page_size': size,
                 'offset': (number - 1) * size, 'limit': size, 'revision': 'synthetic-current',
             }
             if target.path.endswith('/plan-check-status'):
                 payload.update(items=[dict(row, plan_details_revision='synthetic-details',
-                                           plan_summary={'promotions': [], 'countries': []}) for row in rows],
+                                           plan_summary={'promotions': [], 'countries': []}) for row in page_rows],
                                status_fields=[], queue={'workers': 1, 'registration_workers': 1,
                                                         'queue_limit': 100, 'min_interval': 0, 'jitter': 0})
             else:
@@ -134,6 +135,19 @@ def test_current_page_shows_compact_status_and_complete_detail(width):
             page.wait_for_function("window.syntheticCopies.length === 1")
             assert page.evaluate('window.syntheticCopies') == ['password-from-secret-api']
             assert ('/api/accounts/7/secret', {'field': ['account_password']}) in reads
+            pagination = page.get_by_role('navigation', name='账号列表分页')
+            pagination.get_by_role('button', name='下一页').click()
+            playwright.expect(items).to_have_count(1)
+            playwright.expect(items.first).to_contain_text('page-two@example.test')
+            playwright.expect(pagination).to_contain_text('共 21 条')
+            list_reads = [query for path, query in reads if path == '/api/accounts']
+            assert list_reads[-1]['page'] == ['2']
+            assert list_reads[-1]['include_facets'] == ['0']
+            with page.expect_response(lambda response: urlsplit(response.url).path == '/api/accounts') as refreshed:
+                page.locator('#btnRefreshAccountsV2').click()
+            refreshed_query = parse_qs(urlsplit(refreshed.value.url).query)
+            assert refreshed_query['page'] == ['2']
+            assert 'include_facets' not in refreshed_query
             assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth'), '页面不应横向溢出'
             assert not unexpected, unexpected
             assert not errors, errors

@@ -661,7 +661,7 @@ def list_targets(
             cur.execute(
                 f"""SELECT DISTINCT ON(link.target_round_id) link.target_round_id,link.task_id_snapshot AS task_id,
               link.run_id_snapshot AS run_id,r.result_summary AS source_summary,r.error_message AS source_message,
-              r.error_code AS source_error_code
+              r.error_code AS source_error_code,r.cancel_reason AS source_cancel_reason
               FROM {table("operation_batch_run_links")} link LEFT JOIN {table("operation_runs")} r ON r.id=link.run_id_snapshot
               WHERE link.target_round_id=ANY(%s) AND link.relation IN ('owned_root','owned_continuation')
               ORDER BY link.target_round_id,link.execution_generation DESC,link.id DESC""",
@@ -674,7 +674,7 @@ def list_targets(
             source_summary = item.pop("source_summary", None)
             item["result"] = public_target_result(dict(item["result"], state=item["outcome"]),
                 summary=source_summary, message=item.pop("source_message", None),
-                error_code=item.pop("source_error_code", None))
+                error_code=item.pop("source_error_code", None), cancel_reason=item.pop("source_cancel_reason", None))
             if item["result"].get("reason"):
                 item["reason_code"] = item["result"]["reason"]["code"]
         return {

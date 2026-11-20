@@ -69,6 +69,8 @@ class FlaskRouteContractTests(PostgresTestCase):
         "/api/maintenance/sentinel/check\tPOST\tapi_sentinel_maintenance_check",
         "/api/accounts/<int:acc_id>/registration-retry\tPOST\tapi_account_registration_retry",
         "/api/accounts/registration-retry-bulk\tPOST\tapi_accounts_registration_retry_bulk",
+        "/api/accounts/operation-receipt\tGET\tapi_account_operation_receipt",
+        "/api/operations/receipts\tGET\tapi_operation_receipt_statuses",
     }
 
     def test_public_route_map_matches_refactor_baseline(self):

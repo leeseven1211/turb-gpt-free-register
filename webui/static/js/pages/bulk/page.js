@@ -210,7 +210,12 @@ window.BulkTasks = (() => {
   async function navigate(view,extra = {},focusReport = false) {
     restoreNavigation({tab:'bulk',view,...extra});const ticket = generation;visible = true;
     activateTab('bulk',true,'none');recordNavigationHistory('push');
-    try {const api = await ensure();if (ticket !== generation || !isVisible()) return;await api.activate();if (focusReport) await api.showReport();}
+    try {
+      const api = await ensure();
+      if (ticket !== generation || !isVisible()) return;
+      await api.activate();
+      if (focusReport && ticket === generation && isVisible()) await api.showReport();
+    }
     catch (error) {report(error);}
   }
   async function fromAccounts(selected = false,operationKey = 'plan_check',snapshot = null) {

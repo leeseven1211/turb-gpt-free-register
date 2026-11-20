@@ -5,6 +5,7 @@ import logging
 import threading
 import time
 import uuid
+from datetime import datetime, timezone
 from typing import Any, Mapping
 
 from core.accounts.query import AccountQueryError, normalize_query, compile_query, query_schema
@@ -127,6 +128,7 @@ def _validate_result_selection(selection, *, allow_all=False):
 
 
 def create_selection(payload: dict, request_key: str) -> dict:
+    started = time.monotonic()
     _store().init()
     key, version = _operation(payload.get("operation"))
     parameters = _catalog().normalize_parameters(key, payload.get("parameters") or {})
@@ -149,6 +151,9 @@ def create_selection(payload: dict, request_key: str) -> dict:
         config_revision=settings["config_revision"], config_snapshot=settings["config_snapshot"],
         query_spec=source.get("query") or {})
     wake()
+    if not result.get("reused"):
+        logger.info("批次名单已受理 selection_id=%s source=%s operation=%s accept_ms=%.1f",
+                    result["id"], source["kind"], key, (time.monotonic() - started) * 1000)
     return result
 
 
@@ -297,11 +302,26 @@ def _run_once(kind: str) -> int:
         if not execution_allowed():
             return _settle_controls(store)
         from core.bulk_operations.execution import repair_pending_handoffs
+        handoff_started = time.monotonic()
         work += repair_pending_handoffs(limit=50)
+        handoff_ms = (time.monotonic() - handoff_started) * 1000
         if not execution_allowed():
             return work + _settle_controls(store)
-        for item in store.claim_work("selection", _OWNER, limit=1):
+        claim_started = time.monotonic()
+        selections = store.claim_work("selection", _OWNER, limit=1)
+        claim_ms = (time.monotonic() - claim_started) * 1000
+        for item in selections:
+            # 已存在的创建时间来自数据库，保留有符号差值以暴露时钟偏差。
+            created_at = item.get("created_at")
+            created_to_claim_ms = (
+                round((datetime.now(timezone.utc) - created_at).total_seconds() * 1000) if created_at else "-"
+            )
+            logger.info("批次名单已领取 selection_id=%s fence=%s operation=%s "
+                        "created_to_claim_ms=%s claim_ms=%.1f handoff_ms=%.1f",
+                        item["id"], item.get("fence"), item["action_key"], created_to_claim_ms, claim_ms, handoff_ms)
             if not execution_allowed():
+                logger.info("批次名单暂缓固定 selection_id=%s fence=%s reason=execution_not_admitted",
+                            item["id"], item.get("fence"))
                 break
             try:
                 saved = item.get("query_spec") or {}

@@ -47,7 +47,10 @@ async function refresh(force=true):Promise<void>{
  try{await task;}finally{if(refreshing===task){refreshing=null;refreshKey='';}schedule();}
 }
 async function activate(){active.value=true;await refresh(false);}
-async function showReport(){if(navigation.value.view!=='detail')return;focusReport=true;await refresh(false);}
+async function showReport(){
+ await nextTick();
+ if(visible.value&&navigation.value.view==='detail')await detail.value?.showReport();
+}
 function setVisible(value:boolean){active.value=value;syncVisibility();schedule();}
 function navigationState():BulkNavigation{return{...navigation.value};}
 function restoreNavigation(value:Partial<BulkNavigation>){navigationEpoch++;navigation.value=normalizeBulkNavigation(value);error.value='';notice.value='';focusReport=false;}

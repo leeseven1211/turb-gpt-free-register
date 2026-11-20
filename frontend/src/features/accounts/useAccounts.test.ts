@@ -68,7 +68,7 @@ function documentHidden(hidden: boolean) {
   document.dispatchEvent(new Event('visibilitychange'));
 }
 type ReadCall = {query: AccountQuerySpec; page: number; size: number;
-  params: Record<string, string>; signal?: AbortSignal};
+  params: Record<string, string>; signal?: AbortSignal; includeFacets?: boolean};
 type DetailsCall = {id: string; signal?: AbortSignal};
 function setup() {
   const adapter = realQueryAdapter();
@@ -85,8 +85,9 @@ function setup() {
       params: Object.fromEntries(adapter.toLegacy(query, {paged: '1', page, page_size: size}))};
   }
   const api: AccountsReadApi = {
-    list(query, page, size, signal) {
-      const call = readCall(query, page, size, signal); listCalls.push(call); return handlers.list(call);
+    list(query, page, size, signal, options) {
+      const call = {...readCall(query, page, size, signal), includeFacets: options?.includeFacets ?? true};
+      listCalls.push(call); return handlers.list(call);
     },
     statuses(query, page, size, signal) {
       const call = readCall(query, page, size, signal); statusCalls.push(call); return handlers.statuses(call);
@@ -118,6 +119,31 @@ describe('Accounts owner 分页和选择身份', () => {
     expect(h.listCalls[0]!.params).not.toHaveProperty('limit');
     expect(h.owner.page.value).toBe(1); expect(h.owner.size.value).toBe(10);
     expect(h.detailsCalls).toHaveLength(0);
+  });
+
+  it('同条件翻页和改每页条数复用短期筛选统计，数据行和总数仍实时获取', async () => {
+    const h = setup();
+    const sampleFacets = {source: [{value: 'outlook', count: 60}]};
+    h.handlers.list = async call => listResult(call.page === 1 ? [row(1)] : [row(2)], {
+      total: call.page === 1 ? 60 : 59, page: call.page, size: call.size,
+      facets: call.includeFacets ? sampleFacets : {},
+    });
+    h.owner.setVisible(true); await settle();
+    expect(h.listCalls.at(-1)?.includeFacets).toBe(true);
+    h.owner.setPage(2); await settle();
+    expect(h.listCalls.at(-1)?.includeFacets).toBe(false);
+    expect(h.owner.items.value[0]?.id).toBe(2);
+    expect(h.owner.total.value).toBe(59);
+    expect(h.owner.facets.value).toEqual(sampleFacets);
+    h.owner.setSize(20); await settle();
+    expect(h.listCalls.at(-1)?.includeFacets).toBe(false);
+    vi.setSystemTime(Date.now() + 30001);
+    h.owner.setPage(2); await settle();
+    expect(h.listCalls.at(-1)?.includeFacets).toBe(true);
+    await h.owner.refresh();
+    expect(h.listCalls.at(-1)?.includeFacets).toBe(true);
+    h.owner.setArchived(true); await settle();
+    expect(h.listCalls.at(-1)?.includeFacets).toBe(true);
   });
 
   it('页选只改变当前页，跨页选择经刷新和 size 变更保留', async () => {

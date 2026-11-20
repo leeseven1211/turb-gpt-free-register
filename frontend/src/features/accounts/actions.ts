@@ -1,5 +1,6 @@
 import type {AccountActionContext} from './useAccounts';
 import {createQueuedAccountActions, type AccountQueuedDependencies} from './queuedActions';
+import type {AccountOperationReceiptsView} from './operationReceipts';
 import {createAccountSetupActions, type AccountSetupDependencies} from './setupActions';
 import {createLocalAccountMutations, type LocalAccountMutationDependencies} from './localMutations';
 
@@ -23,6 +24,7 @@ export interface AccountActionDependencies {
   beginBusy?(descriptor: string, trigger: HTMLElement | null, label?: string): (() => void) | void;
 }
 export interface AccountActionDispatcher {
+  receipts?: AccountOperationReceiptsView;
   setVisible(visible: boolean): void;
   dispose(): void;
   isSupported(descriptor: string): boolean;
@@ -175,5 +177,6 @@ export function createAccountActions(deps: AccountActionDependencies): AccountAc
   }
   return {isSupported: descriptor => isSupported(descriptor) || queued?.isSupported(descriptor) === true || setup?.isSupported(descriptor) === true || local?.isSupported(descriptor) === true, invoke,
     isPending: (descriptor, context) => pending.has(keyFor(descriptor, context.accountIds)) || queued?.isPending(descriptor, context) === true || setup?.isPending(descriptor, context) === true || local?.isPending(descriptor, context) === true,
+    receipts: queued?.receipts,
     setVisible: visible => queued?.setVisible(visible), dispose: () => queued?.dispose()};
 }

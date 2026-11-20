@@ -9,6 +9,20 @@ from tests.support_pg import PostgresTestCase
 
 
 class ResultPresentationTests(TestCase):
+    def test_cancelled_plan_uses_same_stop_reason_for_historical_and_new_results(self):
+        run = {"status": "cancelled", "cancel_reason": "批量任务请求停止",
+               "error_code": "plan_check_failure_diagnostics_missing", "progress_stage": "plan_check"}
+        historical = {"schema": "plan_check.v1", "state": "cancelled",
+                      "reason": {"code": run["error_code"]}}
+        old = bulk_common.public_target_result(
+            historical, error_code=run["error_code"], cancel_reason=run["cancel_reason"],
+        )
+        new = results.project_one({"run": run}, operation_key="plan_check")
+        for projected in (old, new):
+            self.assertEqual(projected["state"], "cancelled")
+            self.assertEqual(projected["reason"]["code"], "user.interrupted")
+            self.assertEqual(projected["reason"]["summary"], "任务已取消")
+
     def test_old_waiting_password_setup_remains_pending_without_changing_evidence(self):
         for state in ("pending_submit", "waiting_account", "queued", "running", "waiting"):
             with self.subTest(state=state):

@@ -1226,6 +1226,8 @@ def claim_account_plan_check(
     acc_id: int | None = None,
     email: str | None = None,
     trigger: str = "manual",
+    *,
+    conn=None,
 ) -> bool:
     """原子占用账号的套餐查询；已有未超时查询时返回 False。"""
     if acc_id is None:
@@ -1243,7 +1245,7 @@ def claim_account_plan_check(
         "plan_check_completed_at": None,
         "plan_check_error": None,
         "updated_at": now,
-    })
+    }, conn=conn)
 
 
 def mark_account_plan_check_running(acc_id: int) -> bool:
@@ -1766,59 +1768,49 @@ def backfill_account_registration_proxy_context(
 
     accounts_table = postgres_store.qualified(record_store.ACCOUNTS.name)
     jobs_table = postgres_store.qualified(record_store.JOBS.name)
+    # 每个账号分别按关联 ID 与规范邮箱查询最新候选，用较大的任务 ID 决定来源。
+    # 先检查所选任务能否补齐缺失字段，再计入批次，避免无效历史记录占满批次。
+    candidate_fields = """
+        job.id,
+        NULLIF(BTRIM(job.data->>'proxy_provider'), '') AS proxy_provider,
+        UPPER(NULLIF(BTRIM(job.data->>'proxy_region'), '')) AS proxy_region
+    """
+    has_proxy_context = """(
+        NULLIF(BTRIM(job.data->>'proxy_provider'), '') IS NOT NULL
+        OR LENGTH(BTRIM(job.data->>'proxy_region')) = 2
+    )"""
     query = f"""
-        WITH candidate_jobs AS (
-            SELECT
-                id,
-                account_id,
-                LOWER(BTRIM(email)) AS email_key,
-                NULLIF(BTRIM(data->>'proxy_provider'), '') AS proxy_provider,
-                UPPER(NULLIF(BTRIM(data->>'proxy_region'), '')) AS proxy_region
-            FROM {jobs_table}
-            WHERE
-                NULLIF(BTRIM(data->>'proxy_provider'), '') IS NOT NULL
-                OR LENGTH(BTRIM(data->>'proxy_region')) = 2
-        ),
-        missing_accounts AS (
-            SELECT
-                id,
-                email,
-                NULLIF(data->>'registration_proxy_provider', '') AS account_provider,
-                NULLIF(data->>'registration_proxy_region', '') AS account_region
-            FROM {accounts_table}
-            WHERE
-                NULLIF(data->>'registration_proxy_provider', '') IS NULL
-                OR NULLIF(data->>'registration_proxy_region', '') IS NULL
-        ),
-        candidate_matches AS (
-            SELECT a.id, j.id AS job_id, j.proxy_provider, j.proxy_region
-            FROM missing_accounts AS a
-            JOIN candidate_jobs AS j ON j.account_id = a.id
-            UNION ALL
-            SELECT a.id, j.id AS job_id, j.proxy_provider, j.proxy_region
-            FROM missing_accounts AS a
-            JOIN candidate_jobs AS j ON j.email_key = LOWER(BTRIM(a.email))
-            WHERE NULLIF(BTRIM(a.email), '') IS NOT NULL
-        ),
-        latest AS (
-            SELECT DISTINCT ON (id)
-                id,
-                proxy_provider,
-                proxy_region
-            FROM candidate_matches
-            ORDER BY id, job_id DESC
-        )
         SELECT
             a.id,
-            a.email,
-            a.account_provider,
-            a.account_region,
+            NULLIF(a.data->>'registration_proxy_provider', '') AS account_provider,
+            NULLIF(a.data->>'registration_proxy_region', '') AS account_region,
             latest.proxy_provider,
             latest.proxy_region
-        FROM missing_accounts AS a
-        JOIN latest USING (id)
-        WHERE (a.account_provider IS NULL AND latest.proxy_provider IS NOT NULL)
-           OR (a.account_region IS NULL AND LENGTH(latest.proxy_region) = 2)
+        FROM {accounts_table} AS a
+        JOIN LATERAL (
+            (SELECT {candidate_fields}
+             FROM {jobs_table} AS job
+             WHERE job.account_id = a.id AND {has_proxy_context}
+             ORDER BY job.id DESC
+             LIMIT 1)
+            UNION ALL
+            (SELECT {candidate_fields}
+             FROM {jobs_table} AS job
+             WHERE NULLIF(BTRIM(a.email), '') IS NOT NULL
+               AND LOWER(BTRIM(job.email)) = LOWER(BTRIM(a.email))
+               AND {has_proxy_context}
+             ORDER BY job.id DESC
+             LIMIT 1)
+            ORDER BY id DESC
+            LIMIT 1
+        ) AS latest ON TRUE
+        WHERE (
+            NULLIF(a.data->>'registration_proxy_provider', '') IS NULL
+            OR NULLIF(a.data->>'registration_proxy_region', '') IS NULL
+        ) AND (
+            (NULLIF(a.data->>'registration_proxy_provider', '') IS NULL AND latest.proxy_provider IS NOT NULL)
+            OR (NULLIF(a.data->>'registration_proxy_region', '') IS NULL AND LENGTH(latest.proxy_region) = 2)
+        )
         ORDER BY a.id
     """
     if limit is not None:
@@ -2362,7 +2354,7 @@ def finish_account_email_change(
     return True
 
 
-def claim_account_live_check(acc_id: int, trigger: str = "manual") -> bool:
+def claim_account_live_check(acc_id: int, trigger: str = "manual", *, conn=None) -> bool:
     """原子占用账号查活任务；已有未超时任务或账号已封时返回 False。"""
     now = _now()
     return _claim_account_stage(acc_id, "live_check", {
@@ -2375,7 +2367,7 @@ def claim_account_live_check(acc_id: int, trigger: str = "manual") -> bool:
         "live_check_error": None,
         "live_check_http_status": None,
         "updated_at": now,
-    }, require_alive=True)
+    }, require_alive=True, conn=conn)
 
 
 def recover_interrupted_live_checks(

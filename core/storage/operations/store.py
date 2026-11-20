@@ -12,6 +12,7 @@ from core.storage.task_query_context import task_read_connection
 from core.storage import postgres as postgres_store, records as record_store
 from core.operations import run_log as task_run_log
 from core.bulk_operations import execution as bulk_execution
+from core.operations import account_receipts
 from core.operations.progress import build_progress_snapshot
 from core.operations.presentation import public_result_status, public_result_status_sql
 from core.operations.stages import flow_for, stage_label
@@ -37,7 +38,7 @@ def _query_schema_initialized() -> bool:
     from core.storage.operations import legacy_task_store
 
     url = postgres_store.database_url()
-    return (_schema._READY_KEY == f"{url}::{_common._schema_name()}"
+    return (_schema.schema_initialized()
             and record_store._READY_KEY == f"{url}::{postgres_store.schema_name()}"
             and legacy_task_store.schema_initialized())
 
@@ -618,6 +619,43 @@ def get_run_task_links(run_ids: Iterable[int]) -> dict[int, dict[str, Any]]:
         return {int(row["run_id"]): dict(row) for row in cur.fetchall()}
 
 
+def get_operation_receipt_statuses(references: list[tuple[int, int | None]]) -> list[dict]:
+    """用一次有界查询读取指定 Run，旧回执用任务当前 Run 的展示状态。"""
+    task_ids, run_ids = zip(*references)
+    effective_status = _common._compatibility_run_status_sql()
+    run_status = f"CASE WHEN LOWER(BTRIM({effective_status}))='pending' THEN 'queued' ELSE LOWER(BTRIM({effective_status})) END"
+    active_statuses = _common._ACTIVE_RUN_STATUS_SQL
+    error_projection = _common._compatibility_run_projection_sql(fields=("effective_error_message",))
+    with _task_read_connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT task.id AS task_id, wanted.run_id,
+                   COALESCE(run.status, task.status) AS status,
+                   CASE WHEN run.id IS NULL THEN task.error_message
+                        WHEN wanted.run_id IS NULL AND run.status IN ({active_statuses}) THEN NULL
+                        ELSE run.effective_error_message END AS error_message,
+                   run.requested_status, run.summary_message
+            FROM unnest(%s::bigint[], %s::bigint[]) WITH ORDINALITY AS wanted(task_id, run_id, seq)
+            JOIN {_table('operation_tasks')} task ON task.id=wanted.task_id
+            LEFT JOIN LATERAL (
+                SELECT rr.id, {run_status} AS status, {error_projection},
+                       rr.result_summary->>'requested_status' AS requested_status,
+                       rr.result_summary->>'message' AS summary_message
+                FROM {_table('operation_runs')} rr {_common._compatibility_run_joins_sql()}
+                WHERE rr.task_id=task.id AND (wanted.run_id IS NULL OR rr.id=wanted.run_id)
+                ORDER BY CASE WHEN ({run_status}) IN ({active_statuses}) THEN 0 ELSE 1 END,
+                         rr.run_no DESC, rr.id DESC
+                LIMIT 1
+            ) run ON TRUE
+            WHERE lower(COALESCE(task.data->>'deleted_by_user', '')) <> 'true'
+              AND (wanted.run_id IS NULL OR run.id IS NOT NULL)
+            ORDER BY wanted.seq
+            """,
+            (list(task_ids), list(run_ids)),
+        )
+        return [dict(row) for row in cur.fetchall()]
+
+
 def get_task(task_id: int, *, include_events: bool = True) -> dict | None:
     with _task_read_connection() as conn, conn.cursor() as cur:
         cur.execute(
@@ -1021,6 +1059,26 @@ def find_task_by_source(
             )
             raw = cur.fetchone()
         return _row(dict(raw)) if raw else None
+
+
+def find_account_request_receipts(request_key: str) -> list[dict[str, str]]:
+    """读取已持久化的任务和初次执行编号，回执查询不创建或重跑任务。"""
+    prefix = account_receipts.source_prefix(request_key)
+    with _task_read_connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT task.id AS task_id, run.id AS run_id
+            FROM {_table('operation_tasks')} task
+            JOIN {_table('operation_runs')} run ON run.task_id=task.id AND run.run_no=1
+            WHERE task.source_system='native_operations'
+              AND task.source_id >= %s AND task.source_id < %s
+              AND starts_with(task.source_id, %s)
+              AND lower(COALESCE(task.data->>'deleted_by_user', '')) <> 'true'
+            ORDER BY task.id
+            """,
+            (prefix, account_receipts.source_prefix_end(request_key), prefix + ":"),
+        )
+        return [{"task_id": str(row["task_id"]), "run_id": str(row["run_id"])} for row in cur.fetchall()]
 
 
 _RETENTION_FETCH_ROWS = 32
@@ -1852,9 +1910,13 @@ def create_runtime_task(
     source_system: str = "native_operations",
     source_id: str | None = None,
     idempotency_key: str | None = None,
+    account_request: bool = False,
+    lock_account_request: bool = False,
+    claim_before_create=None,
     conn=None,
 ) -> dict:
-    return _runtime.create_runtime_task(task_type=task_type, account_id=account_id, email=email, trigger=trigger, batch_id=batch_id, batch_ordinal=batch_ordinal, parent_task_id=parent_task_id, resource_family=resource_family, data=data, source_system=source_system, source_id=source_id, idempotency_key=idempotency_key, conn=conn)
+    return _runtime.create_runtime_task(task_type=task_type, account_id=account_id, email=email, trigger=trigger, batch_id=batch_id, batch_ordinal=batch_ordinal, parent_task_id=parent_task_id, resource_family=resource_family, data=data, source_system=source_system, source_id=source_id, idempotency_key=idempotency_key,
+                                        account_request=account_request, lock_account_request=lock_account_request, claim_before_create=claim_before_create, conn=conn)
 
 
 def create_runtime_tasks_many(specifications: list[dict], *, conn) -> list[dict]:

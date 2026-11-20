@@ -239,6 +239,27 @@ class TaskErrorClassificationTests(unittest.TestCase):
         self.assertEqual("mfa_rejected", info["code"])
         self.assertIn("自动刷新 AT 失败：MFA 验证被拒绝", info["summary"])
 
+    def test_cancelled_plan_check_with_cancel_evidence_is_user_interrupted(self):
+        info = classify_task_error(
+            "OperationCancelled",
+            task_type="plan_check",
+            stage="plan_check",
+            task_status="cancelled",
+            result_summary={"cancelled": True},
+        )
+        self.assertEqual("user.interrupted", info["code"])
+        self.assertEqual("USR-001", info["display_code"])
+        self.assertEqual("任务已取消", info["summary"])
+
+    def test_cancel_evidence_keeps_unknown_remote_receipt_metadata(self):
+        info = classify_task_error(
+            "远端结果待确认", task_type="plan_check", task_status="cancelled",
+            result_summary={"cancelled": True, "outcome": "request_unknown"},
+        )
+        self.assertEqual("user.interrupted", info["code"])
+        self.assertTrue(info["reconcile_required"])
+        self.assertEqual("manual_reconcile", info["next_action"])
+
     def test_extract_categories_do_not_infer_cause_from_generic_http(self):
         for raw in ("平台提链失败：HTTP 401", "平台提链失败：HTTP 400", "平台提链失败：原因未知"):
             with self.subTest(raw=raw):

@@ -1,13 +1,15 @@
 """报告按账号当前轮次聚合；只在独立测试库验证 SQL 与 API。"""
 from __future__ import annotations
 
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+from threading import Event
 import uuid
 from unittest.mock import patch
 
 from core.storage import records
 from core.storage.operations import bulk, bulk_common as common
-from core.storage.operations.bulk_report import _CACHE, _duration
+from core.storage.operations.bulk_report import _CACHE, _duration, aggregate_report
 from tests.support_pg import PostgresTestCase
 from webui.app import create_app
 
@@ -202,6 +204,62 @@ class PlanReportTests(PostgresTestCase):
             cur.execute(f"UPDATE {common.table('operation_batch_controls')} SET summary_revision=summary_revision+1 WHERE batch_id=%s", (batch["id"],))
         fresh = bulk.get_plan_report(batch["id"])
         self.assertGreater(fresh["summary_revision"], report["summary_revision"])
+
+    def test_completed_report_cache_reuses_result_until_control_or_projection_changes(self):
+        batch = self.batch(1)
+        bulk.materialize_targets(batch["id"])
+        target = self.rows(batch["id"])[0]
+        self.attach(target)
+        self.complete(batch)
+        first = bulk.get_plan_report(batch["id"])
+        with patch("core.storage.operations.bulk_report.time.monotonic", return_value=10**20):
+            self.assertEqual(first["generated_at"], bulk.get_plan_report(batch["id"])["generated_at"])
+        with patch("core.storage.operations.bulk_report.aggregate_report", wraps=aggregate_report) as aggregate:
+            with common.connect() as conn, conn.cursor() as cur:
+                cur.execute(f"UPDATE {common.table('operation_batch_controls')} "
+                            "SET control_revision=control_revision+1 WHERE batch_id=%s", (batch["id"],))
+            fresh = bulk.get_plan_report(batch["id"])
+            self.assertNotEqual(first["generated_at"], fresh["generated_at"])
+            with common.connect() as conn, conn.cursor() as cur:
+                cur.execute(f"""INSERT INTO {common.table('operation_projection_outbox')}
+                  (event_key,consumer_kind,target_round_id,source_kind,source_id,source_revision,event_kind)
+                  VALUES ('report-cache-pending','bulk_target',%s,'target_round',%s,1,'fact_changed')""",
+                            (target["id"], target["id"]))
+            pending = bulk.get_plan_report(batch["id"])
+            self.assertEqual({"state": "syncing", "pending_targets": 1}, pending["projection"])
+            self.assertEqual(2, aggregate.call_count)
+
+    def test_completed_report_concurrent_reads_share_one_aggregation(self):
+        batch = self.batch(1)
+        bulk.materialize_targets(batch["id"])
+        self.attach(self.rows(batch["id"])[0])
+        self.complete(batch)
+        calculating, waiting, release = Event(), Event(), Event()
+
+        def aggregate(*args, **kwargs):
+            calculating.set()
+            if not release.wait(timeout=10):
+                raise TimeoutError("测试未释放报告聚合")
+            return aggregate_report(*args, **kwargs)
+
+        class ObservedFuture(Future):
+            def result(self, timeout=None):
+                waiting.set()
+                return super().result(timeout)
+
+        with patch("core.storage.operations.bulk_report.aggregate_report", side_effect=aggregate) as observed, \
+             patch("core.storage.operations.bulk_report.Future", ObservedFuture), ThreadPoolExecutor(2) as executor:
+            leader = executor.submit(bulk.get_task_report, batch["id"])
+            try:
+                self.assertTrue(calculating.wait(timeout=10))
+                follower = executor.submit(bulk.get_plan_report, batch["id"])
+                self.assertTrue(waiting.wait(timeout=10))
+            finally:
+                release.set()
+            first, second = leader.result(timeout=10), follower.result(timeout=10)
+            self.assertEqual(first, second)
+            self.assertIsNot(first["totals"], second["totals"])
+            self.assertEqual(1, observed.call_count)
 
     def test_historical_events_restore_none_only_for_complete_last_owned_country_receipts(self):
         batch = self.batch(5)

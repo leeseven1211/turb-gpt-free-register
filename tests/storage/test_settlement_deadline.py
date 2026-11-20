@@ -8,6 +8,25 @@ from core.storage import postgres
 
 
 class SettlementDeadlineTests(unittest.TestCase):
+    def test_checkout_timeout_logs_wait_without_connection_target(self):
+        from psycopg_pool import PoolTimeout
+
+        @contextmanager
+        def timed_out(**_kwargs):
+            raise PoolTimeout('postgresql://private-user:private-password@unit.invalid/test_deadline')
+            yield
+
+        pool = MagicMock()
+        pool.connection = timed_out
+        with patch.object(postgres, '_pool_for', return_value=pool), \
+                self.assertLogs('core.postgres_store', level='WARNING') as captured:
+            with self.assertRaises(PoolTimeout):
+                with postgres.connect('postgresql://unit.invalid/test_deadline'):
+                    self.fail('超时后仍进入数据库上下文')
+        message = captured.records[0].getMessage()
+        self.assertRegex(message, r'\bdb_pool_checkout_timeout\b.*\bcheckout_ms=\d')
+        self.assertNotIn('private', message)
+
     def test_expired_deadline_never_checks_out_or_creates_pool(self):
         with patch.object(postgres, '_pool_for') as factory, patch.object(postgres, '_guard_production_database'):
             with self.assertRaises(TimeoutError):

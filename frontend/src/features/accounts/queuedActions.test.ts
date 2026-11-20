@@ -32,8 +32,8 @@ function setup(overrides: Partial<AccountQueuedDependencies> = {}, baseOverrides
 }
 function body(index = 0) {return JSON.parse(fetchMock.mock.calls[index]![1]!.body as string);}
 function messages(h: ReturnType<typeof setup>) {return h.deps.notify.mock.calls.flat().join(' ');}
-beforeEach(() => {vi.useFakeTimers(); vi.stubGlobal('fetch', fetchMock); fetchMock.mockReset();});
-afterEach(() => {vi.useRealTimers(); vi.unstubAllGlobals();});
+beforeEach(() => {vi.useFakeTimers(); vi.stubGlobal('fetch', fetchMock); fetchMock.mockReset(); sessionStorage.clear();});
+afterEach(() => {vi.useRealTimers(); vi.unstubAllGlobals(); sessionStorage.clear();});
 
 describe('queued action boundary', () => {
   it('requires opt-in dependencies and preserves already migrated secret support', async () => {
@@ -53,6 +53,119 @@ describe('queued action boundary', () => {
   it('invalid IDs and empty selection cannot create tasks', async () => {
     const h = setup(); await h.actions.invoke('checkSelectedPlans', context([])); await h.actions.invoke('checkSelectedPlans', context(['9007199254740993']));
     expect(fetchMock).not.toHaveBeenCalled(); expect(messages(h)).toContain('请先选择账号'); expect(messages(h)).toContain('账号 ID 无效');
+  });
+});
+
+describe('账号操作回执', () => {
+  const uuid = /^[0-9a-f]{32}$|^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+  const requestKey = (index: number) => new Headers(fetchMock.mock.calls[index]![1]?.headers).get('X-Account-Request-Key');
+
+  it.each([
+    ['plan-check', ['7']], ['checkSelectedPlans', ['7', '11']],
+    ['account-live-check', ['7']], ['checkSelectedLive', ['7', '11']],
+    ['account-refresh-token', ['7']], ['refreshSelectedToken', ['7', '11']],
+    ['deactivation-mail-check', ['7']], ['checkSelectedDeactivationMail', ['7', '11']],
+  ])('%s 每次提交都发送新的回执查询键', async (name, ids) => {
+    fetchMock.mockImplementation(async () => json(receipt({started_count: 0}), 202));
+    const h = setup({getRowSnapshot: () => ({deactivation_mail_scan_status: 'done'})});
+    const first = h.actions.invoke(name, context(ids));
+    await vi.advanceTimersByTimeAsync(1500);
+    await first;
+    const second = h.actions.invoke(name, context(ids));
+    await vi.advanceTimersByTimeAsync(1500);
+    await second;
+    expect(requestKey(0) || '').toMatch(uuid);
+    expect(requestKey(1) || '').toMatch(uuid);
+    expect(requestKey(0)).not.toBe(requestKey(1));
+  });
+
+  it('传输失联保留查询键，重新进入账号页可查询，重新提交使用新键', async () => {
+    fetchMock.mockRejectedValueOnce(new TypeError('请求超时'))
+      .mockResolvedValueOnce(json({ok: true, found: false, items: []}))
+      .mockResolvedValueOnce(json(receipt(), 202))
+      .mockResolvedValueOnce(json({ok: true, found: true, items: [{task_id: '9007199254740993', run_id: 72}]}));
+    const h = setup();
+    await h.actions.invoke('checkSelectedLive', context());
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(messages(h)).toContain('受理结果未确认');
+    expect(h.restore).toHaveBeenCalledTimes(1);
+
+    const remounted = setup();
+    const receipts = remounted.actions.receipts!;
+    const previous = receipts.entries.value[0]!;
+    expect(previous.key).toBe(requestKey(0));
+    await receipts.lookup(previous.key);
+    expect(fetchMock.mock.calls[1]![0]).toBe('/api/accounts/operation-receipt');
+    expect(fetchMock.mock.calls[1]![1]?.method).toBe('GET');
+    expect(requestKey(1)).toBe(previous.key);
+    expect(receipts.entries.value[0]?.message).toContain('暂未查到');
+
+    await remounted.actions.invoke('checkSelectedLive', context(['11', '7']));
+    expect(fetchMock.mock.calls[2]![1]?.method).toBe('POST');
+    expect(requestKey(2)).not.toBe(previous.key);
+    await receipts.lookup(previous.key);
+    expect(receipts.entries.value[0]?.items).toEqual([{task_id: '9007199254740993', run_id: 72}]);
+    expect(receipts.entries.value[0]?.message).toContain('当前查到 1 条任务回执');
+    await receipts.open({task_id: '9007199254740993', run_id: 72});
+    expect(remounted.q.openAccountTaskLog).toHaveBeenCalledWith('9007199254740993', 72);
+    receipts.dismiss(previous.key);
+    expect(setup().actions.receipts!.entries.value).toEqual([]);
+  });
+
+  it.each([
+    [409, {ok: false, error: '计划查询已在执行'}],
+    [503, {ok: false, feature: 'plan_check', error: '套餐查询配置不完整'}],
+  ])('HTTP %s 明确拒绝时报告服务端原因，清除待查询的回执', async (status, response) => {
+    fetchMock.mockResolvedValueOnce(json(response, status));
+    const h = setup();
+    await h.actions.invoke('plan-check', context(['7']));
+    expect(messages(h)).toContain(response.error);
+    expect(h.actions.receipts!.entries.value).toEqual([]);
+    expect(setup().actions.receipts!.entries.value).toEqual([]);
+  });
+
+  it.each([
+    [503, {ok: false, accepted: false, error: '套餐查询任务持久化失败'}],
+    [504, {ok: false, error: '网关等待超时'}],
+  ])('HTTP %s 无法确认入队时保留查询键并显示服务端原因', async (status, response) => {
+    fetchMock.mockResolvedValueOnce(json(response, status));
+    const h = setup();
+    await h.actions.invoke('plan-check', context(['7']));
+    expect(messages(h)).toContain('受理结果未确认');
+    expect(messages(h)).toContain(response.error);
+    expect(h.actions.receipts!.entries.value[0]?.key).toBe(requestKey(0));
+    expect(setup().actions.receipts!.entries.value[0]?.key).toBe(requestKey(0));
+  });
+
+  it('等待受理超时立即恢复按钮，允许继续发起请求', async () => {
+    const delayed = deferred<Response>();
+    fetchMock.mockReturnValueOnce(delayed.promise).mockResolvedValueOnce(json(receipt(), 202));
+    const h = setup();
+    const first = h.actions.invoke('refreshSelectedToken', context());
+    await vi.advanceTimersByTimeAsync(10000);
+    await first;
+    expect(h.restore).toHaveBeenCalledTimes(1);
+    expect(messages(h)).toContain('受理结果未确认');
+    expect(h.actions.receipts!.entries.value[0]?.key).toBe(requestKey(0));
+    await h.actions.invoke('refreshSelectedToken', context());
+    expect(requestKey(1)).not.toBe(requestKey(0));
+    delayed.resolve(json(receipt(), 202));
+  });
+
+  it('收到回执后无需等日志或列表刷新就可继续操作', async () => {
+    const log = deferred<void>(), refresh = deferred<void>();
+    fetchMock.mockResolvedValue(json(receipt({started: [{task_id: 71, run_id: 72}]}), 202));
+    const h = setup({openAccountTaskLog: () => log.promise, refresh: () => refresh.promise});
+    const finished = vi.fn();
+    const first = h.actions.invoke('refreshSelectedToken', context()).then(finished);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.q.openAccountTaskLog).toHaveBeenCalledOnce();
+    expect(h.q.refresh).toHaveBeenCalledOnce();
+    expect(h.q.refreshSummary).toHaveBeenCalledOnce();
+    expect(finished).toHaveBeenCalledOnce();
+    expect(h.actions.isPending('refreshSelectedToken', context())).toBe(false);
+    log.resolve(); refresh.resolve();
+    await first;
   });
 });
 
@@ -117,9 +230,13 @@ describe('token refresh', () => {
     fetchMock.mockResolvedValue(json(receipt({started:[]}),202));const h=setup({readConfig:async()=>[{key:'ACCOUNT_AT_REFRESH_DRIVER',value:'protocol'},{key:'OPENAI_PROTOCOL_VERSION',value:version},{key:'ACCOUNT_AT_REFRESH_ROXY_DEBUG_ENABLED',value:debug}]});
     await h.actions.invoke('account-refresh-token',context(['7']));const confirmation=h.deps.confirm.mock.calls[0]![0];expect(confirmation).toContain(expected);expect(confirmation).toContain('密码、2FA 或邮箱验证');expect(confirmation.includes('HAR')).toBe(hasDebug);expect(confirmation).not.toContain('并发线程数');expect(body()).toEqual({account_ids:[7]});
   });
-  it('uses configured fallback on GET failure and does not cancel or replay submission',async()=>{
-    fetchMock.mockResolvedValue(json(receipt(),202));const h=setup({readConfig:async()=>{throw new Error('config unavailable');},fallbackConfig:()=>[{key:'ACCOUNT_AT_REFRESH_DRIVER',value:'browser_roxy'}]});await h.actions.invoke('refreshSelectedToken',context());
-    expect(h.q.fallbackConfig).toHaveBeenCalledTimes(1);expect(h.deps.confirm.mock.calls[0]![0]).toContain('Roxy 指纹浏览器');expect(fetchMock).toHaveBeenCalledTimes(1);
+  it('opens confirmation from already loaded refresh settings without waiting for GET',async()=>{
+    fetchMock.mockResolvedValue(json(receipt(),202));const h=setup({fallbackConfig:()=>[{key:'ACCOUNT_AT_REFRESH_DRIVER',value:'browser_roxy'}]});await h.actions.invoke('refreshSelectedToken',context());
+    expect(h.q.readConfig).not.toHaveBeenCalled();expect(h.deps.confirm.mock.calls[0]![0]).toContain('Roxy 指纹浏览器');expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+  it('uses the saved-driver confirmation if config is unavailable',async()=>{
+    fetchMock.mockResolvedValue(json(receipt(),202));const h=setup({readConfig:async()=>{throw new Error('config unavailable');}});await h.actions.invoke('refreshSelectedToken',context());
+    expect(h.deps.confirm.mock.calls[0]![0]).toContain('已保存的刷新驱动');expect(fetchMock).toHaveBeenCalledTimes(1);
   });
   it('default/empty config names the saved driver; cancelling restores controls without POST',async()=>{
     const h=setup({}, {confirm:()=>false});await h.actions.invoke('refreshSelectedToken',context(['7']));expect(h.deps.confirm.mock.calls[0]![0]).toContain('已保存的刷新驱动');expect(fetchMock).not.toHaveBeenCalled();expect(h.restore).toHaveBeenCalledTimes(1);expect(h.actions.isPending('refreshSelectedToken',context())).toBe(false);
@@ -132,10 +249,10 @@ describe('token refresh', () => {
 describe('deactivation mail polling', () => {
   it('single POST has no body/confirmation/AT refresh and polls after 1500ms until visible targets terminate',async()=>{
     fetchMock.mockResolvedValue(json({ok:true,accepted:true},202));const h=setup({getRowSnapshot:()=>({deactivation_mail_scan_status:'done'})});const pending=h.actions.invoke('deactivation-mail-check',context(['7']));await vi.advanceTimersByTimeAsync(0);
-    expect(fetchMock.mock.calls[0]).toEqual(['/api/accounts/7/check-deactivation-mail',{credentials:'same-origin',method:'POST'}]);expect(h.q.refresh).toHaveBeenCalledTimes(1);expect(h.deps.confirm).not.toHaveBeenCalled();expect(messages(h)).toContain('不会刷新 AT');await vi.advanceTimersByTimeAsync(1499);expect(h.q.refresh).toHaveBeenCalledTimes(1);await vi.advanceTimersByTimeAsync(1);await pending;expect(h.q.refresh).toHaveBeenCalledTimes(2);expect(h.q.getRowSnapshot).toHaveBeenCalledWith('7');expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]).toEqual(['/api/accounts/7/check-deactivation-mail',{credentials:'same-origin',method:'POST',headers:{'X-Account-Request-Key':expect.any(String)}}]);expect(h.q.refresh).toHaveBeenCalledTimes(1);expect(h.deps.confirm).not.toHaveBeenCalled();expect(messages(h)).toContain('不会刷新 AT');await vi.advanceTimersByTimeAsync(1499);expect(h.q.refresh).toHaveBeenCalledTimes(1);await vi.advanceTimersByTimeAsync(1);await pending;expect(h.q.refresh).toHaveBeenCalledTimes(2);expect(h.q.getRowSnapshot).toHaveBeenCalledWith('7');expect(fetchMock).toHaveBeenCalledTimes(1);
   });
   it('bulk sends all IDs, refreshes once and skips polling when started_count is zero',async()=>{
-    fetchMock.mockResolvedValue(json(receipt({started_count:0,skipped_count:2}),202));const h=setup();await h.actions.invoke('checkSelectedDeactivationMail',context());expect(body()).toEqual({account_ids:[7,11]});expect(fetchMock.mock.calls[0]![0]).toBe('/api/accounts/check-deactivation-mail-bulk');expect(h.q.refresh).toHaveBeenCalledTimes(1);expect(h.q.getRowSnapshot).not.toHaveBeenCalled();expect(vi.getTimerCount()).toBe(0);expect(messages(h)).toContain('已入队 0 个，跳过 2 个；不会刷新 AT');
+    fetchMock.mockResolvedValue(json(receipt({started_count:0,skipped_count:2}),202));const h=setup();await h.actions.invoke('checkSelectedDeactivationMail',context());await vi.advanceTimersByTimeAsync(0);expect(body()).toEqual({account_ids:[7,11]});expect(fetchMock.mock.calls[0]![0]).toBe('/api/accounts/check-deactivation-mail-bulk');expect(h.q.refresh).toHaveBeenCalledTimes(1);expect(h.q.getRowSnapshot).not.toHaveBeenCalled();expect(vi.getTimerCount()).toBe(0);expect(messages(h)).toContain('已入队 0 个，跳过 2 个；不会刷新 AT');
   });
   it('an empty visible subset cannot end polling early; it stops after exactly 30 delayed reads',async()=>{
     fetchMock.mockResolvedValue(json(receipt(),202));const h=setup();const pending=h.actions.invoke('checkSelectedDeactivationMail',context());await vi.advanceTimersByTimeAsync(0);await vi.advanceTimersByTimeAsync(45000);await pending;
@@ -144,6 +261,29 @@ describe('deactivation mail polling', () => {
   it('a visible running target keeps polling until the next visible terminal subset',async()=>{
     fetchMock.mockResolvedValue(json(receipt(),202));let reads=0;const h=setup({getRowSnapshot:id=>id==='7'?{deactivation_mail_scan_status:++reads===1?'running':'done'}:undefined});const pending=h.actions.invoke('checkSelectedDeactivationMail',context());await vi.advanceTimersByTimeAsync(3000);await pending;expect(h.q.refresh).toHaveBeenCalledTimes(3);expect(fetchMock).toHaveBeenCalledTimes(1);
   });
+  it('连续获受理的不同账号共用一次列表读取，首次读取看到的终态不提前结束新账号轮询', async () => {
+    const firstRefresh = deferred<void>();
+    fetchMock.mockImplementation(async () => json({ok:true,accepted:true},202));
+    let refreshing = true;
+    const h = setup({
+      refresh: () => {
+        if (!refreshing) return Promise.resolve();
+        refreshing = false;
+        return firstRefresh.promise;
+      },
+      getRowSnapshot: () => ({deactivation_mail_scan_status:'done'}),
+    });
+    await h.actions.invoke('deactivation-mail-check', context(['7']));
+    await h.actions.invoke('deactivation-mail-check', context(['11']));
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(h.q.refresh).toHaveBeenCalledOnce();
+    firstRefresh.resolve();
+    await vi.advanceTimersByTimeAsync(1500);
+    expect(h.q.refresh).toHaveBeenCalledTimes(2);
+    expect(h.q.getRowSnapshot.mock.calls.map(([id]) => id)).toEqual(['7', '11']);
+    await vi.advanceTimersByTimeAsync(1500);
+    expect(h.q.refresh).toHaveBeenCalledTimes(2);
+  });
   it.each(['hide','dispose','owner removed'])('%s stops waits and future reads without cancelling an accepted POST',async mode=>{
     fetchMock.mockResolvedValue(json(receipt(),202));let active=true;const h=setup({isOwnerActive:()=>active});const pending=h.actions.invoke('checkSelectedDeactivationMail',context());await vi.advanceTimersByTimeAsync(0);
     if(mode==='hide')h.actions.setVisible(false);else if(mode==='dispose')h.actions.dispose();else active=false;
@@ -151,7 +291,7 @@ describe('deactivation mail polling', () => {
     h.actions.setVisible(true);await vi.advanceTimersByTimeAsync(45000);expect(h.q.refresh).toHaveBeenCalledTimes(1);expect(fetchMock).toHaveBeenCalledTimes(1);
   });
   it('hiding during POST does not abort it or start UI reads after its acceptance',async()=>{
-    const response=deferred<Response>();fetchMock.mockReturnValue(response.promise);const h=setup();const pending=h.actions.invoke('checkSelectedDeactivationMail',context());h.actions.setVisible(false);response.resolve(json(receipt(),202));await pending;expect(h.q.refresh).not.toHaveBeenCalled();expect(fetchMock.mock.calls[0]![1]!.signal).toBeUndefined();expect(messages(h)).toContain('已入队 1 个');expect(vi.getTimerCount()).toBe(0);
+    const response=deferred<Response>();fetchMock.mockReturnValue(response.promise);const h=setup();const pending=h.actions.invoke('checkSelectedDeactivationMail',context());h.actions.setVisible(false);response.resolve(json(receipt(),202));await pending;await vi.advanceTimersByTimeAsync(0);expect(h.q.refresh).not.toHaveBeenCalled();expect(fetchMock.mock.calls[0]![1]!.signal).toBeUndefined();expect(messages(h)).toContain('已入队 1 个');expect(vi.getTimerCount()).toBe(0);
   });
   it('hiding during a refresh prevents stale completion from restarting polling or reading rows',async()=>{
     fetchMock.mockResolvedValue(json(receipt(),202));const refresh=deferred<void>();const h=setup({refresh:()=>refresh.promise});const pending=h.actions.invoke('checkSelectedDeactivationMail',context());await vi.advanceTimersByTimeAsync(0);h.actions.setVisible(false);h.actions.setVisible(true);refresh.resolve();await pending;expect(h.q.refresh).toHaveBeenCalledTimes(1);expect(h.q.getRowSnapshot).not.toHaveBeenCalled();expect(vi.getTimerCount()).toBe(0);
@@ -163,7 +303,7 @@ describe('deactivation mail polling', () => {
     expect(messages(h)).toContain('已入队 1 个');expect(messages(h)).not.toContain('late read error');expect(fetchMock).toHaveBeenCalledTimes(1);expect(vi.getTimerCount()).toBe(0);
   });
   it('accepted mail request with refresh failure reports page update separately and never resubmits',async()=>{
-    fetchMock.mockResolvedValue(json(receipt(),202));const h=setup({refresh:async()=>{throw new Error('list offline');}});await h.actions.invoke('checkSelectedDeactivationMail',context());expect(messages(h)).toContain('请求已处理，但页面更新失败: list offline');expect(messages(h)).not.toContain('批量扫描失败');expect(fetchMock).toHaveBeenCalledTimes(1);expect(vi.getTimerCount()).toBe(0);
+    fetchMock.mockResolvedValue(json(receipt(),202));const h=setup({refresh:async()=>{throw new Error('list offline');}});await h.actions.invoke('checkSelectedDeactivationMail',context());await vi.advanceTimersByTimeAsync(0);expect(messages(h)).toContain('请求已处理，但页面更新失败: list offline');expect(messages(h)).not.toContain('批量扫描失败');expect(fetchMock).toHaveBeenCalledTimes(1);expect(vi.getTimerCount()).toBe(0);
   });
 });
 

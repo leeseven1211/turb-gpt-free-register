@@ -1,5 +1,7 @@
 import type {AccountActionContext, AccountViewRow} from './useAccounts';
 import type {AccountActionDependencies} from './actions';
+import {accountRequestKeyHeader, createAccountOperationReceipts} from './operationReceipts';
+import {optionalTaskId, taskId, type TaskId} from '../../api/taskIds';
 
 export interface AccountQueuedDependencies {
   refresh(context: AccountActionContext): Promise<unknown>;
@@ -12,7 +14,8 @@ export interface AccountQueuedDependencies {
   readConfig(): Promise<unknown>;
   fallbackConfig(): unknown;
   openLiveLog(email: string): void | Promise<unknown>;
-  openAccountTaskLog(taskId: number, runId: number | null): void | Promise<unknown>;
+  openAccountTaskLog(taskId: TaskId, runId: TaskId | null): void | Promise<unknown>;
+  openReceiptTask?(taskId: TaskId, runId: TaskId | null): void | Promise<unknown>;
   getRowSnapshot(id: string): {deactivation_mail_scan_status?: unknown} | undefined;
   isOwnerActive(): boolean;
   clearScheduled(handle: unknown): void;
@@ -32,6 +35,7 @@ const actions: Readonly<Record<string, Action>> = {
   'extract-link': {kind: 'extract', single: true, error: '提链失败: '},
   extractSelectedLinks: {kind: 'extract', single: false, error: '批量提链失败: '},
 };
+const receiptLabels = {plan: '查套餐', live: '查活', token: '刷新 AT', mail: '封号邮件扫描'};
 const isSupported = (name: string) => Object.prototype.hasOwnProperty.call(actions, name);
 const message = (cause: unknown) => cause instanceof Error ? cause.message : '请求失败，请稍后重试。';
 function object(value: unknown): Record<string, unknown> {
@@ -110,6 +114,8 @@ function trialKind(row: AccountViewRow): string {
 
 export function createQueuedAccountActions(base: AccountActionDependencies, deps: AccountQueuedDependencies) {
   const pending = new Set<string>(), waits = new Set<() => void>();
+  const receipts = createAccountOperationReceipts(base, deps.openReceiptTask ?? deps.openAccountTaskLog);
+  let mailReads: {generation: number; targets: Set<{ids: number[]; attempts: number}>} | undefined;
   let visible = true, disposed = false, readGeneration = 0;
   const keyFor = (name: string, ids: readonly (string | number)[]) => actions[name]?.single ? JSON.stringify([name, ...ids.map(String)]) : name;
   const active = (generation: number) => !disposed && visible && generation === readGeneration && deps.isOwnerActive();
@@ -124,16 +130,30 @@ export function createQueuedAccountActions(base: AccountActionDependencies, deps
     });
   }
   async function mailResults(ids: number[], context: AccountActionContext, generation: number): Promise<void> {
-    for (let attempt = 0; attempt < 30; attempt++) {
-      if (!await wait(generation)) return;
-      await deps.refresh(context);
-      if (!active(generation)) return;
-      const visibleRows = ids.map(id => deps.getRowSnapshot(String(id))).filter(row => row !== undefined && row !== null);
-      if (visibleRows.length && visibleRows.every(row => !['queued', 'running'].includes(String(row.deactivation_mail_scan_status || '')))) return;
+    const target = {ids, attempts: 0};
+    if (mailReads?.generation === generation) {
+      if (ids.length) mailReads.targets.add(target);
+      return;
     }
+    const pendingReads = {generation, targets: new Set(ids.length ? [target] : [])};
+    mailReads = pendingReads;
+    try {
+      await deps.refresh(context);
+      while (pendingReads.targets.size && await wait(generation)) {
+        // 只处理本次读取开始前已获受理的账号，避免把新增账号的旧状态当成扫描结果。
+        const targets = [...pendingReads.targets];
+        await deps.refresh(context);
+        if (!active(generation)) return;
+        for (const target of targets) {
+          const visibleRows = target.ids.map(id => deps.getRowSnapshot(String(id))).filter(row => row != null);
+          const finished = visibleRows.length > 0 && visibleRows.every(row => !['queued', 'running'].includes(String(row.deactivation_mail_scan_status || '')));
+          if (++target.attempts >= 30 || finished) pendingReads.targets.delete(target);
+        }
+      }
+    } finally { if (mailReads === pendingReads) mailReads = undefined; }
   }
-  async function updateAfterAccepted(update: () => Promise<unknown>, current: () => boolean = () => true): Promise<void> {
-    try {await update();} catch (cause) {if (current()) base.notify(`请求已处理，但页面更新失败: ${message(cause)}`);}
+  async function updateAfterAccepted(update: () => unknown, current: () => boolean = () => true): Promise<void> {
+    try {if (current()) await update();} catch (cause) {if (current()) base.notify(`请求已处理，但页面更新失败: ${message(cause)}`);}
   }
   async function invoke(name: string, supplied: AccountActionContext, trigger: HTMLElement | null = null): Promise<void> {
     if (!isSupported(name)) throw new Error(`未支持的账号动作：${name}`);
@@ -141,6 +161,7 @@ export function createQueuedAccountActions(base: AccountActionDependencies, deps
     const action = actions[name]!;
     let key: string | undefined, restore: (() => void) | undefined;
     const generation = readGeneration;
+    const current = () => active(generation);
     try {
       const ids = idsOf(supplied);
       if (!ids.length) {base.notify('请先选择账号'); return;}
@@ -150,61 +171,78 @@ export function createQueuedAccountActions(base: AccountActionDependencies, deps
       pending.add(key);
       const context = contextForReads(supplied, ids);
       const busy = (label: string) => {restore = base.beginBusy?.(name, trigger, label) || undefined;};
-      const post = async (path: string, body?: object) => object(await base.request(path, body === undefined ? {method: 'POST'}
-        : {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)}));
+      const post = async (path: string, body?: object, requestKey?: string) => {
+        const headers: Record<string, string> = {};
+        const options: RequestInit = {method: 'POST'};
+        if (requestKey) headers[accountRequestKeyHeader] = requestKey;
+        if (body !== undefined) {
+          headers['Content-Type'] = 'application/json';
+          options.body = JSON.stringify(body);
+        }
+        if (requestKey || body !== undefined) options.headers = headers;
+        const result = object(await base.request(path, options));
+        if (requestKey && result.ok !== true) throw new Error('服务端响应格式无效');
+        return result;
+      };
+      const submit = (kind: keyof typeof receiptLabels, path: string, body?: object) =>
+        receipts.submit(receiptLabels[kind], ids.length, requestKey => post(path, body, requestKey));
       if (action.kind === 'plan') {
         busy('查询中…');
-        let result: Record<string, unknown>;
-        try {result = await post(action.single ? '/api/accounts/check-plan' : '/api/accounts/check-plan-bulk', action.single ? {account_id: ids[0]} : {account_ids: ids});}
+        let result: Record<string, unknown> | undefined;
+        try {result = await submit('plan', action.single ? '/api/accounts/check-plan' : '/api/accounts/check-plan-bulk', action.single ? {account_id: ids[0]} : {account_ids: ids});}
         catch (cause) {
           base.notify(action.error + message(cause));
-          if (action.single) {
-            try {await deps.pollStatuses(context);} catch (readError) {base.notify(`套餐状态读取失败: ${message(readError)}`);}
+          if (action.single && current()) {
+            void deps.pollStatuses(context).catch(readError => {
+              if (current()) base.notify(`套餐状态读取失败: ${message(readError)}`);
+            });
           }
           return;
         }
+        if (!result) return;
         base.notify(action.single ? String(result.message || '套餐查询已加入后台队列')
           : `已入队 ${count(result.started_count)} 个，查询中跳过 ${count(result.busy_count)} 个，入队失败 ${count(result.failed_count)} 个${rows(result.skipped).length ? `，跳过 ${rows(result.skipped).length} 个` : ''}${queueReasons(result)}`);
-        await updateAfterAccepted(() => deps.pollStatuses(context));
+        void updateAfterAccepted(() => deps.pollStatuses(context), current);
       } else if (action.kind === 'live') {
         const workers = deps.operationWorkers();
         const note = action.single ? '确定查活这个账号吗？\n\n只在线验证现有 accessToken，不会发送邮箱验证码，也不会刷新 AT。'
           : `确定查活选中的 ${ids.length} 个账号吗？\n\n只在线验证现有 accessToken，不会发送邮箱验证码，也不会刷新 AT。\n\n并发线程数：${workers}`;
         if (!await base.confirm(note)) return;
         busy('查活中…');
-        const result = await post('/api/accounts/check-live-bulk', {account_ids: ids, driver: deps.configuredLiveCheckDriver()});
+        const result = await submit('live', '/api/accounts/check-live-bulk', {account_ids: ids, driver: deps.configuredLiveCheckDriver()});
+        if (!result) return;
         const skipped = rows(result.skipped).length, started = rows(result.started);
         base.notify(`查活已入队 ${count(result.started_count)} 个，忙碌 ${count(result.busy_count)} 个，失败 ${count(result.failed_count)}${skipped ? `，跳过 ${skipped}` : ''}（配置驱动：${deps.configuredLiveCheckDriver() || '默认'}，实际驱动：${result.live_check_driver || '未知'}）${queueReasons(result)}`);
-        await updateAfterAccepted(async () => {
-          if (started[0]?.email) await deps.openLiveLog(String(started[0].email));
-          await deps.refresh(context); await deps.refreshSummary();
-        });
+        if (started[0]?.email) void updateAfterAccepted(() => deps.openLiveLog(String(started[0]!.email)), current);
+        void updateAfterAccepted(() => deps.refresh(context), current);
+        void updateAfterAccepted(() => deps.refreshSummary(), current);
       } else if (action.kind === 'token') {
         const workers = deps.operationWorkers();
-        busy('读取配置…');
-        let config: unknown;
-        try {config = await deps.readConfig();} catch {config = deps.fallbackConfig();}
+        let config = deps.fallbackConfig();
+        const hasRefreshDriver = Array.isArray(config)
+          && config.some(field => field?.key === 'ACCOUNT_AT_REFRESH_DRIVER');
+        busy(hasRefreshDriver ? '刷新 AT…' : '读取配置…');
+        if (!hasRefreshDriver) {
+          try {config = await deps.readConfig();} catch {config = deps.fallbackConfig();}
+        }
         const settings = tokenSettings(config), scope = ids.length === 1 ? '这个账号' : `选中的 ${ids.length} 个账号`;
         if (!await base.confirm(`确定刷新${scope}的 AT 吗？\n\n${settings.description}${settings.debugDescription ? `\n\n${settings.debugDescription}` : ''}${ids.length > 1 ? `\n\n并发线程数：${workers}` : ''}`)) return;
         deps.updateBusyLabel?.(name, trigger, '刷新中…');
-        const result = await post('/api/accounts/refresh-token-bulk', {account_ids: ids});
+        const result = await submit('token', '/api/accounts/refresh-token-bulk', {account_ids: ids});
+        if (!result) return;
         const skipped = rows(result.skipped).length, first = rows(result.started)[0];
         base.notify(`刷新AT已入队 ${count(result.started_count)} 个，忙碌 ${count(result.busy_count)} 个，失败 ${count(result.failed_count)}${skipped ? `，跳过 ${skipped}` : ''}${queueReasons(result)}`);
-        await updateAfterAccepted(async () => {
-          if (first?.task_id) await deps.openAccountTaskLog(Number(first.task_id), first.run_id ? Number(first.run_id) : null);
-          else if (first?.email) await deps.openLiveLog(String(first.email));
-          await deps.refresh(context); await deps.refreshSummary();
-        });
+        if (first?.task_id) void updateAfterAccepted(() => deps.openAccountTaskLog(taskId(first.task_id), optionalTaskId(first.run_id)), current);
+        else if (first?.email) void updateAfterAccepted(() => deps.openLiveLog(String(first.email)), current);
+        void updateAfterAccepted(() => deps.refresh(context), current);
+        void updateAfterAccepted(() => deps.refreshSummary(), current);
       } else if (action.kind === 'mail') {
         busy('扫描中…');
-        const result = await post(action.single ? `/api/accounts/${ids[0]}/check-deactivation-mail` : '/api/accounts/check-deactivation-mail-bulk', action.single ? undefined : {account_ids: ids});
+        const result = await submit('mail', action.single ? `/api/accounts/${ids[0]}/check-deactivation-mail` : '/api/accounts/check-deactivation-mail-bulk', action.single ? undefined : {account_ids: ids});
+        if (!result) return;
         base.notify(action.single ? '封号邮件扫描已入队；不会刷新 AT' : `已入队 ${count(result.started_count)} 个，跳过 ${count(result.skipped_count)} 个；不会刷新 AT`);
-        await updateAfterAccepted(async () => {
-          if (!active(generation)) return;
-          await deps.refresh(context);
-          if (!active(generation)) return;
-          if (action.single || count(result.started_count) > 0) await mailResults(ids, context, generation);
-        }, () => active(generation));
+        void updateAfterAccepted(() =>
+          mailResults(action.single || count(result.started_count) > 0 ? ids : [], context, generation), current);
       } else if (action.kind === 'extract') {
         if (action.single) {
           const row = supplied.rowHints.find(item => String(item.id) === String(ids[0]));
@@ -228,7 +266,7 @@ export function createQueuedAccountActions(base: AccountActionDependencies, deps
     } catch (cause) {base.notify(action.error + message(cause));}
     finally {if (key) pending.delete(key); restore?.();}
   }
-  return {isSupported, invoke, isPending: (name: string, context: AccountActionContext) => pending.has(keyFor(name, context.accountIds)),
+  return {isSupported, invoke, receipts: receipts.view, isPending: (name: string, context: AccountActionContext) => pending.has(keyFor(name, context.accountIds)),
     setVisible(value: boolean) {visible = value; if (!value) stopReads();},
     dispose() {disposed = true; stopReads();},
   };

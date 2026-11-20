@@ -5,12 +5,13 @@ import os
 import tempfile
 import unittest
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import Mock, call, patch
 
-from core import account_task_store
+from core import account_task_store, operation_task_store
 from core.codex import retry_service as codex_retry_service
 from core.accounts.liveness import service as live_check_service
 from core.storage import postgres as postgres_store, records as record_store
@@ -860,6 +861,196 @@ class AccountActionLoginTests(unittest.TestCase):
 
 
 class AccountTaskApiTests(PostgresTestCase):
+    def test_account_receipts_recover_first_runs_for_all_supported_submission_routes(self):
+        ids = self.seed(record_store.ACCOUNTS, [
+            {"email": f"receipt-{index}@example.test", "access_token": "saved-token",
+             "email_source": source}
+            for index, source in enumerate([
+                "cloudflare", "cloudflare", "cloudflare", "cloudflare",
+                "icloud_hide", "icloud_hide", "cloudflare",
+            ])
+        ])
+        client = create_app(auth_code="test-auth").test_client()
+        client.environ_base["HTTP_X_AUTH_CODE"] = "test-auth"
+        actions = [
+            ("/api/accounts/check-live-bulk", {"account_ids": [ids[0], ids[6]]}, 2),
+            ("/api/accounts/refresh-token-bulk", {"account_ids": [ids[1]]}, 1),
+            ("/api/accounts/check-plan", {"account_id": ids[2]}, 1),
+            ("/api/accounts/check-plan-bulk", {"account_ids": [ids[3]]}, 1),
+            (f"/api/accounts/{ids[6]}/check-deactivation-mail", None, 1),
+            ("/api/accounts/check-deactivation-mail-bulk", {"account_ids": ids[4:6]}, 1),
+        ]
+        with (
+            patch("core.runtime.capabilities.require_feature", return_value=(True, "")),
+            patch.object(live_check_service, "deployment_unavailable", return_value=None),
+            patch("core.operations.task_gateway.notify_dispatch"),
+        ):
+            for path, payload, run_count in actions:
+                with self.subTest(path=path):
+                    headers = {"X-Account-Request-Key": str(uuid.uuid4())}
+                    before = client.get("/api/accounts/operation-receipt", headers=headers)
+                    self.assertEqual(200, before.status_code)
+                    self.assertEqual({"ok": True, "found": False, "items": []}, before.get_json())
+
+                    sent = client.post(path, headers=headers, json=payload)
+                    self.assertEqual(202, sent.status_code)
+                    body = sent.get_json()
+                    submitted = body["started"] if isinstance(body.get("started"), list) else [body]
+                    self.assertTrue(submitted, body)
+                    expected = [
+                        {"task_id": str(task_id), "run_id": str(run_id)}
+                        for task_id, run_id in sorted({(item["task_id"], item["run_id"]) for item in submitted})
+                    ]
+                    self.assertEqual(run_count, len(expected))
+                    receipt = client.get("/api/accounts/operation-receipt", headers=headers)
+                    self.assertEqual(200, receipt.status_code)
+                    self.assertEqual({"ok": True, "found": True, "items": expected}, receipt.get_json())
+                    self.assertEqual("no-store", receipt.headers["Cache-Control"])
+
+    def test_account_receipt_stays_with_original_run_after_task_retry(self):
+        account_id, = self.seed(record_store.ACCOUNTS, [
+            {"email": "receipt-retry@example.test", "access_token": "saved-token"},
+        ])
+        client = create_app(auth_code="test-auth").test_client()
+        client.environ_base["HTTP_X_AUTH_CODE"] = "test-auth"
+        headers = {"X-Account-Request-Key": "ffffffff-ffff-4fff-8fff-ffffffffffff"}
+        with (
+            patch("core.runtime.capabilities.require_feature", return_value=(True, "")),
+            patch("core.operations.task_gateway.notify_dispatch"),
+        ):
+            sent = client.post("/api/accounts/check-plan", json={"account_id": account_id}, headers=headers)
+            self.assertEqual(202, sent.status_code)
+            original = sent.get_json()
+            operation_task_store.finish_run(original["run_id"], status="failed", error="测试重跑")
+            retried = operation_task_store.retry_runtime_task(original["task_id"])
+            receipt = client.get("/api/accounts/operation-receipt", headers=headers)
+        self.assertNotEqual(original["run_id"], retried["id"])
+        self.assertEqual(
+            [{"task_id": str(original["task_id"]), "run_id": str(original["run_id"])}],
+            receipt.get_json()["items"],
+        )
+
+    def test_account_receipt_does_not_report_a_rejected_busy_claim(self):
+        account_id, = self.seed(record_store.ACCOUNTS, [
+            {"email": "receipt-busy@example.test", "access_token": "saved-token",
+             "live_check_status": "queued", "live_check_queued_at": datetime.now().isoformat()},
+        ])
+        client = create_app(auth_code="test-auth").test_client()
+        client.environ_base["HTTP_X_AUTH_CODE"] = "test-auth"
+        headers = {"X-Account-Request-Key": uuid.uuid4().hex}
+        with (
+            patch("core.runtime.capabilities.require_feature", return_value=(True, "")),
+            patch.object(live_check_service, "deployment_unavailable", return_value=None),
+            patch("core.operations.task_gateway.notify_dispatch"),
+        ):
+            response = client.post("/api/accounts/check-live-bulk", json={"account_ids": [account_id]}, headers=headers)
+            receipt = client.get("/api/accounts/operation-receipt", headers=headers)
+        self.assertEqual(202, response.status_code)
+        self.assertEqual(0, response.get_json()["started_count"])
+        self.assertEqual(1, response.get_json()["busy_count"])
+        self.assertEqual({"ok": True, "found": False, "items": []}, receipt.get_json())
+
+    def test_account_request_replay_after_finish_keeps_original_run_and_accepts_new_key(self):
+        ids = self.seed(record_store.ACCOUNTS, [
+            {"email": f"receipt-replay-{i}@example.test", "access_token": "saved-token", "email_source": source}
+            for i, source in enumerate(("cloudflare", "cloudflare", "icloud_hide", "icloud_hide"))
+        ])
+        client = create_app(auth_code="test-auth").test_client()
+        client.environ_base["HTTP_X_AUTH_CODE"] = "test-auth"
+        actions = [
+            ("/api/accounts/check-live-bulk", {"account_ids": [ids[0]]}, "live_check_status"),
+            ("/api/accounts/refresh-token-bulk", {"account_ids": [ids[0]]}, "live_check_status"),
+            ("/api/accounts/check-plan", {"account_id": ids[0]}, "plan_check_status"),
+            (f"/api/accounts/{ids[1]}/check-deactivation-mail", None, "deactivation_mail_scan_status"),
+            ("/api/accounts/check-deactivation-mail-bulk", {"account_ids": ids[2:]}, "deactivation_mail_scan_status"),
+        ]
+        headers = {"X-Account-Request-Key": str(uuid.uuid4())}
+        with (
+            patch("core.runtime.capabilities.require_feature", return_value=(True, "")),
+            patch.object(live_check_service, "deployment_unavailable", return_value=None),
+            patch("core.operations.task_gateway.notify_dispatch"),
+        ):
+            for path, payload, status_field in actions:
+                with self.subTest(path=path):
+                    def send(request_headers, output=payload):
+                        response = client.post(path, json=output, headers=request_headers)
+                        self.assertEqual(202, response.status_code)
+                        body = response.get_json()
+                        return body["started"][0] if isinstance(body.get("started"), list) else body
+
+                    account_id = ids[1] if payload is None else (
+                        payload["account_ids"][0] if "account_ids" in payload else payload["account_id"]
+                    )
+
+                    def finish(run_id):
+                        operation_task_store.finish_run(run_id, status="failed", error="测试完成")
+                        record_store.patch_row(record_store.ACCOUNTS, account_id, {status_field: "failed"})
+
+                    original = send(headers)
+                    finish(original["run_id"])
+                    replay = send(headers, {"account_ids": ids[2:][::-1]} if path.endswith("mail-bulk") else payload)
+                    self.assertEqual((original["task_id"], original["run_id"]), (replay["task_id"], replay["run_id"]))
+                    self.assertEqual("failed", webui_app.db.get_account(account_id)[status_field])
+                    renewed = send({"X-Account-Request-Key": str(uuid.uuid4())})
+                    self.assertNotEqual(original["run_id"], renewed["run_id"])
+                    finish(renewed["run_id"])
+
+    def test_account_request_receipt_hides_deleted_task_but_fresh_key_can_submit(self):
+        account_id, = self.seed(record_store.ACCOUNTS, [
+            {"email": "receipt-delete@example.test", "access_token": "saved-token"},
+        ])
+        client = create_app(auth_code="test-auth").test_client()
+        client.environ_base["HTTP_X_AUTH_CODE"] = "test-auth"
+        headers = {"X-Account-Request-Key": str(uuid.uuid4())}
+        with (
+            patch("core.runtime.capabilities.require_feature", return_value=(True, "")),
+            patch("core.operations.task_gateway.notify_dispatch"),
+        ):
+            sent = client.post("/api/accounts/check-plan", json={"account_id": account_id}, headers=headers).get_json()
+            operation_task_store.finish_run(sent["run_id"], status="failed", error="测试完成")
+            record_store.patch_row(record_store.ACCOUNTS, account_id, {"plan_check_status": "failed"})
+            self.assertEqual(1, operation_task_store.delete_tasks([sent["task_id"]])["deleted_count"])
+            receipt = client.get("/api/accounts/operation-receipt", headers=headers)
+            fresh = client.post("/api/accounts/check-plan", json={"account_id": account_id},
+                                headers={"X-Account-Request-Key": str(uuid.uuid4())})
+        self.assertEqual({"ok": True, "found": False, "items": []}, receipt.get_json())
+        self.assertEqual(202, fresh.status_code)
+        self.assertNotEqual(sent["task_id"], fresh.get_json()["task_id"])
+
+    def test_concurrent_keyed_plan_submissions_return_one_active_run(self):
+        account_id, = self.seed(record_store.ACCOUNTS, [
+            {"email": "receipt-concurrent@example.test", "access_token": "saved-token"},
+        ])
+        app = create_app(auth_code="test-auth")
+        headers = {"X-Auth-Code": "test-auth", "X-Account-Request-Key": str(uuid.uuid4())}
+
+        def send():
+            return app.test_client().post("/api/accounts/check-plan", json={"account_id": account_id}, headers=headers)
+
+        with (
+            patch("core.runtime.capabilities.require_feature", return_value=(True, "")),
+            patch("core.operations.task_gateway.notify_dispatch") as dispatch,
+            ThreadPoolExecutor(max_workers=2) as pool,
+        ):
+            results = [pool.submit(send) for _ in range(2)]
+            replies = [result.result(timeout=15) for result in results]
+            dispatch.assert_called_once()
+        self.assertEqual([202, 202], [reply.status_code for reply in replies])
+        bodies = [reply.get_json() for reply in replies]
+        self.assertEqual({False, True}, {body["reused"] for body in bodies})
+        self.assertEqual(1, len({(body["task_id"], body["run_id"]) for body in bodies}))
+        self.assertTrue(all(body["status"] == "queued" and not body["busy"] for body in bodies))
+
+    def test_receipt_request_rejects_invalid_keys(self):
+        client = create_app(auth_code="test-auth").test_client()
+        client.environ_base["HTTP_X_AUTH_CODE"] = "test-auth"
+        headers = {"X-Account-Request-Key": "%"}
+        with patch("core.runtime.capabilities.require_feature", return_value=(True, "")):
+            lookup = client.get("/api/accounts/operation-receipt", headers=headers)
+            submission = client.post("/api/accounts/check-live-bulk", json={"account_ids": [1]}, headers=headers)
+        self.assertEqual(400, lookup.status_code)
+        self.assertEqual(400, submission.status_code)
+
     def test_token_refresh_bulk_accepts_more_than_500_accounts_and_deduplicates_ids(self):
         account_ids = self.seed(record_store.ACCOUNTS, [
             {"email": f"refresh-{index}@example.test"} for index in range(501)
@@ -873,6 +1064,7 @@ class AccountTaskApiTests(PostgresTestCase):
             patch.object(
                 live_check_service, "enqueue_account_live_check", return_value={"accepted": True},
             ) as enqueue,
+            patch.object(record_store, "list_rows", wraps=record_store.list_rows) as load_accounts,
         ):
             response = client.post(
                 "/api/accounts/refresh-token-bulk",
@@ -891,6 +1083,41 @@ class AccountTaskApiTests(PostgresTestCase):
         )
         self.assertEqual(account_ids, [item.kwargs["account_id"] for item in enqueue.call_args_list])
         self.assertTrue(all(item.kwargs["force_refresh"] for item in enqueue.call_args_list))
+        load_accounts.assert_called_once()
+        self.assertIs(record_store.ACCOUNTS, load_accounts.call_args.args[0])
+
+    def test_bulk_account_preflight_preserves_results_and_uses_one_read(self):
+        active_id, deactivated_id = self.seed(record_store.ACCOUNTS, [
+            {"email": "ready@example.test", "access_token": "synthetic-at"},
+            {"email": "deactivated@example.test", "account_status": "deactivated"},
+        ])
+        overflow_id = 2**63
+        ids = [overflow_id, deactivated_id, "bad-id", active_id, str(active_id)]
+        app = create_app(auth_code="test-auth")
+        client = app.test_client()
+        client.environ_base["HTTP_X_AUTH_CODE"] = "test-auth"
+        for action, service, expected_skips in (
+            ("check-live", "live_check_service.enqueue_account_live_check",
+             [("bad-id", "ID 非法"), (overflow_id, "账号不存在"), (deactivated_id, "账号已标记为封号")]),
+            ("refresh-token", "live_check_service.enqueue_account_live_check",
+             [("bad-id", "ID 非法"), (overflow_id, "账号不存在"), (deactivated_id, "账号已标记为封号")]),
+            ("check-plan", "plan_check_service.enqueue_account_plan_check",
+             [(overflow_id, "账号不存在"), (deactivated_id, "账号已废号"), ("bad-id", "ID 非法")]),
+        ):
+            with (
+                self.subTest(action=action),
+                patch("core.runtime.capabilities.require_feature", return_value=(True, "")),
+                patch.object(account_task_store, "create_batch", return_value="bulk-batch"),
+                patch(f"webui.routes.accounts.{service}", return_value={"accepted": True}) as enqueue,
+                patch.object(record_store, "list_rows", wraps=record_store.list_rows) as load_accounts,
+            ):
+                response = client.post(f"/api/accounts/{action}-bulk", json={"account_ids": ids})
+                self.assertEqual(202, response.status_code)
+                payload = response.get_json()
+                self.assertEqual([active_id], [item["id"] for item in payload["started"]])
+                self.assertEqual(expected_skips, [(item["id"], item["reason"]) for item in payload["skipped"]])
+                load_accounts.assert_called_once()
+                enqueue.assert_called_once()
 
     def test_token_refresh_bulk_still_requires_nonempty_id_array(self):
         app = create_app(auth_code="test-auth")
@@ -921,7 +1148,7 @@ class AccountTaskApiTests(PostgresTestCase):
             patch("core.runtime.capabilities.require_feature", return_value=(True, "")),
             patch.object(account_task_store, "create_batch", side_effect=["live-batch", "refresh-batch"]),
             patch.object(live_check_service, "enqueue_account_live_check", return_value={"accepted": True}) as enqueue,
-            patch.object(webui_app.db, "get_account", return_value=account),
+            patch.object(record_store, "list_rows", return_value=[account]),
         ):
             live_response = client.post("/api/accounts/check-live-bulk", json={"account_ids": [7]})
             refresh_response = client.post("/api/accounts/refresh-token-bulk", json={"account_ids": [7]})
@@ -944,7 +1171,7 @@ class AccountTaskApiTests(PostgresTestCase):
             patch("core.runtime.capabilities.require_feature", return_value=(True, "")),
             patch.object(account_task_store, "create_batch", return_value="live-batch"),
             patch.object(live_check_service, "enqueue_account_live_check", return_value={"accepted": True}) as enqueue,
-            patch.object(webui_app.db, "get_account", return_value=account),
+            patch.object(record_store, "list_rows", return_value=[account]),
             patch("config.account.ACCOUNT_LIVE_CHECK_BROWSER_ENABLED", True),
         ):
             response = client.post(
@@ -962,7 +1189,7 @@ class AccountTaskApiTests(PostgresTestCase):
         client.environ_base["HTTP_X_AUTH_CODE"] = "test-auth"
         with (
             patch("core.runtime.capabilities.require_feature", return_value=(True, "")),
-            patch.object(webui_app.db, "get_account") as get_account,
+            patch.object(record_store, "list_rows") as load_accounts,
         ):
             response = client.post(
                 "/api/accounts/check-live-bulk",
@@ -971,7 +1198,7 @@ class AccountTaskApiTests(PostgresTestCase):
 
         self.assertEqual(400, response.status_code)
         self.assertIn("尚未开放", response.get_json()["error"])
-        get_account.assert_not_called()
+        load_accounts.assert_not_called()
 
     def test_live_check_bulk_rejects_configured_driver_when_gate_is_closed(self):
         app = create_app(auth_code="test-auth")
@@ -979,7 +1206,7 @@ class AccountTaskApiTests(PostgresTestCase):
         client.environ_base["HTTP_X_AUTH_CODE"] = "test-auth"
         with (
             patch("core.runtime.capabilities.require_feature", return_value=(True, "")),
-            patch.object(webui_app.db, "get_account") as get_account,
+            patch.object(record_store, "list_rows") as load_accounts,
             patch("config.account.ACCOUNT_LIVE_CHECK_DRIVER", "browser_roxy"),
             patch("config.account.ACCOUNT_LIVE_CHECK_BROWSER_ENABLED", False),
         ):
@@ -990,7 +1217,7 @@ class AccountTaskApiTests(PostgresTestCase):
 
         self.assertEqual(400, response.status_code)
         self.assertIn("ACCOUNT_LIVE_CHECK_BROWSER_ENABLED", response.get_json()["error"])
-        get_account.assert_not_called()
+        load_accounts.assert_not_called()
 
     def test_list_api_returns_task_instances(self):
         app = create_app(auth_code="test-auth")

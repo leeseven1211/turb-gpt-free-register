@@ -16,6 +16,7 @@ import Inspection from './Inspection.vue';
 import EmailChange from './EmailChange.vue';
 import C2aReimport from './C2aReimport.vue';
 import RegistrationRetryReceipt from './RegistrationRetryReceipt.vue';
+import AccountOperationReceipts from './AccountOperationReceipts.vue';
 import type {RegistrationRetryEntry,RegistrationRetryReceipt as RegistrationReceipt} from './setupActions';
 import type {C2aReimportDependencies} from './useC2aReimport';
 import type {AccountEmailChangeDependencies} from './useAccountEmailChange';
@@ -106,6 +107,9 @@ defineExpose({
   <AccountsList ref="list" :adapter="adapter" :api="api" :presentation="presentation" :callbacks="callbacks">
     <template #actions>
       <AccountsToolbar ref="toolbar" :state="toolbarState" :capabilities="capabilities" :runtime="toolbarRuntime" :get-context="()=>owner().getActionContext()" :invoke="invoke" :notify="callbacks.notify"/>
+    </template>
+    <template #feedback>
+      <AccountOperationReceipts v-if="actions.receipts" :receipts="actions.receipts"/>
     </template>
   </AccountsList>
   <AccountDetail ref="drawer" :api="detailApi" :presentation="detailPresentation" :callbacks="detailCallbacks"/>

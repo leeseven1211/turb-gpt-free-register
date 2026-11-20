@@ -22,7 +22,9 @@ describe('真实批次详情组件',()=>{
   });
   it('报告入口焦点、复制语义、目标刷新不打断checkbox',async()=>{
     const h=fixture();await flushPromises();const vm=h.wrapper.vm as unknown as {refresh(force?:boolean):Promise<void>;showReport():Promise<void>};
-    await vm.showReport();expect(document.activeElement).toBe(h.wrapper.get('[data-bulk-plan-report]').element);
+    expect(h.wrapper.find('[data-bulk-plan-report]').exists()).toBe(false);
+    await h.wrapper.get('[data-bulk-action="view-report"]').trigger('click');await flushPromises();
+    expect(document.activeElement).toBe(h.wrapper.get('[data-bulk-plan-report]').element);
     const checkbox=h.wrapper.get('[data-bulk-target]');(checkbox.element as HTMLElement).focus();await vm.refresh(true);expect(document.activeElement).toBe(checkbox.element);
     await h.wrapper.get('[data-bulk-action="copy-targets"]').trigger('click');expect(h.callbacks.copyBatch).toHaveBeenLastCalledWith({status:['active']},{kind:'batch_targets',batch_id:'9007199254740993',selection:{kind:'all'}},'plan_check');
     await h.wrapper.get('[data-bulk-action="copy-query"]').trigger('click');expect(h.callbacks.copyBatch).toHaveBeenLastCalledWith({status:['active']},null,'plan_check');
@@ -34,7 +36,7 @@ describe('真实批次详情组件',()=>{
     vm.setVisible(false);const calls=h.request.mock.calls.length;await vm.refresh(true);expect(h.request).toHaveBeenCalledTimes(calls);expect(vm.needsRefresh).toBe(false);
   });
   it('初始URL在detail但Shell隐藏时不读，props恢复只等Shell刷新',async()=>{
-    const h=fixture('detail',false);await flushPromises();expect(h.request).not.toHaveBeenCalled();await h.wrapper.setProps({visible:true});await flushPromises();expect(h.request).not.toHaveBeenCalled();await (h.wrapper.vm as unknown as {refresh():Promise<void>}).refresh();expect(h.request).toHaveBeenCalledTimes(3);
+    const h=fixture('detail',false);await flushPromises();expect(h.request).not.toHaveBeenCalled();await h.wrapper.setProps({visible:true});await flushPromises();expect(h.request).not.toHaveBeenCalled();await (h.wrapper.vm as unknown as {refresh():Promise<void>}).refresh();expect(h.request).toHaveBeenCalledTimes(2);
   });
   it('结果列筛选与数量同栏条件清除复用真实查询并重置游标',async()=>{
     const h=fixture('detail',undefined,{cursor:'opaque.direct'});await flushPromises();

@@ -12,7 +12,8 @@ export type AccountPlanDetails = components['schemas']['AccountPlanDetails'];
 export type AccountPlanDetailsResponse = components['schemas']['AccountPlanDetailsResponse'];
 export type AccountQueueSettings = components['schemas']['AccountQueueSettings'];
 export interface AccountsReadApi {
-  list(query: AccountQuerySpec, page: number, size: number, signal?: AbortSignal): Promise<AccountsListResponse>;
+  list(query: AccountQuerySpec, page: number, size: number, signal?: AbortSignal,
+    options?: {includeFacets?: boolean}): Promise<AccountsListResponse>;
   statuses(query: AccountQuerySpec, page: number, size: number, signal?: AbortSignal): Promise<AccountStatusesResponse>;
   planDetails(accountId: string, signal?: AbortSignal): Promise<AccountPlanDetailsResponse>;
 }
@@ -35,8 +36,9 @@ function malformed(): never {
 /** Validate the envelope only; never rewrite optional row projections or unknown enums. */
 export function createAccountsApi(query: AccountQueryAdapter): AccountsReadApi {
   return {
-    async list(spec, page, size, signal) {
+    async list(spec, page, size, signal, options) {
       const params = query.toLegacy(spec, {paged: '1', page, page_size: size});
+      if (options?.includeFacets === false) params.set('include_facets', '0');
       const payload = await request<unknown>(`/api/accounts?${params}`, {signal});
       if (!pageEnvelope(payload) || payload.compact !== true || !record(payload.facets)
         || !Array.isArray(payload.search_terms)) malformed();

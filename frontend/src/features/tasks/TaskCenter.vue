@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import {computed, nextTick, ref} from 'vue';
+import {computed, nextTick, ref, watch} from 'vue';
 import {tasksApi, type OperationTask, type TaskAction, type TaskFilters, type TaskId} from '../../api/tasks';
 import TaskDetail from './detail/TaskDetail.vue';
 import TaskFiltersMenu from './TaskFilters.vue';
@@ -21,6 +21,9 @@ const detail = ref<InstanceType<typeof TaskDetail> | null>(null);
 const table = ref<InstanceType<typeof TaskTable> | null>(null);
 const busy = ref(false), notice = ref(''), actionError = ref('');
 const openFilter = ref<string | null>(null);
+watch(openFilter, key => {
+  list.setFacetsVisible(key === 'mobile' || filterColumns.some(column => column.key === key && column.kind === 'select'));
+});
 const activeFilters = computed(() => filterColumns.filter(column => isFilterActive(column, filters)));
 const filterChips = computed(() => activeFilters.value.map(column => ({key: column.key,
   label: `${column.label}：${filterSummary(column, filters, facets.value)}`,

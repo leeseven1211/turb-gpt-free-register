@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import json
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from contextlib import nullcontext
 from typing import Any, Iterable
 from core.storage import records as record_store
@@ -719,6 +719,9 @@ def create_runtime_task(
     source_system: str = "native_operations",
     source_id: str | None = None,
     idempotency_key: str | None = None,
+    account_request: bool = False,
+    lock_account_request: bool = False,
+    claim_before_create: Callable[[Any], bool] | None = None,
     conn=None,
 ) -> dict:
     """原子创建逻辑任务和第一次执行。
@@ -735,6 +738,9 @@ def create_runtime_task(
     account_value = int(account_id) if account_id else None
     managed_source_run_id = bulk_execution.source_run_for_creation(account_id=account_value, data=data)
     with (_common._connect() if conn is None else nullcontext(conn)) as conn, conn.cursor() as cur:
+        if lock_account_request:
+            # 共享邮箱的锚点可能改变，同一个目标集合仍共用一把事务锁。
+            record_store.advisory_xact_lock(conn, source_value)
         managed = bulk_execution.lock_run(conn, managed_source_run_id) if managed_source_run_id else None
         if managed:
             data = {**(data or {}), "bulk_target_round_id": int(managed["id"])}
@@ -746,7 +752,7 @@ def create_runtime_task(
                 conn=conn,
                 for_update=True,
             ))
-            if _common._account_is_deactivated(account):
+            if not account_request and _common._account_is_deactivated(account):
                 raise OperationAccountDeactivated("账号已废号，禁止创建任务")
         if source_id or idempotency_key:
             cur.execute(
@@ -759,10 +765,13 @@ def create_runtime_task(
             )
             existing = cur.fetchone()
             if existing:
+                if account_request and _common._task_is_user_deleted(dict(existing)):
+                    return {"request_rejected": {"error": "原任务已从任务中心删除，请重新发起操作"}}
+                order = "ASC" if account_request else "DESC"
                 cur.execute(
                     f"""
                     SELECT * FROM {_common._table('operation_runs')}
-                    WHERE task_id=%s ORDER BY run_no DESC, id DESC LIMIT 1
+                    WHERE task_id=%s ORDER BY run_no {order}, id {order} LIMIT 1
                     """,
                     (int(existing["id"]),),
                 )
@@ -771,6 +780,10 @@ def create_runtime_task(
                 result["run"] = _common._row(dict(current_run)) if current_run else None
                 result["idempotent"] = True
                 return result
+        if account_request and account_value and _common._account_is_deactivated(account):
+            raise OperationAccountDeactivated("账号已废号，禁止创建任务")
+        if claim_before_create is not None and not claim_before_create(conn):
+            return {"request_rejected": {"busy": True, "error": "该账号已有排队或运行中的账号操作"}}
         cur.execute(
             f"""
             INSERT INTO {_common._table('operation_tasks')} (

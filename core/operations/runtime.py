@@ -141,6 +141,18 @@ def report_stage(
     detail: dict | None = None,
 ) -> object | None:
     check_cancelled()
+    return record_stage(stage, message, state=state, level=level, detail=detail)
+
+
+def record_stage(
+    stage: str,
+    message: str,
+    *,
+    state: str = "running",
+    level: str = "INFO",
+    detail: dict | None = None,
+) -> object | None:
+    """记录已观察到的阶段事实，沿用调用方现有取消检查点。"""
     task_run_log.set_current_stage(stage)
     reporter = _CURRENT_REPORTER.get()
     if reporter is not None:

@@ -104,7 +104,7 @@ def project_batch(batch_id: int, *, limit: int = 200) -> int:
         targets = [dict(x) for x in cur.fetchall()]
         cur.execute(
             f"""SELECT l.target_round_id,l.relation,l.execution_generation AS generation,r.id,r.task_id,r.status,
-          r.started_at,r.cancel_requested_at,r.progress_stage,r.error_code,r.result_summary,
+          r.started_at,r.cancel_requested_at,r.cancel_reason,r.progress_stage,r.error_code,r.result_summary,
           jsonb_build_object('required_steps',r.data->'required_steps','configured_steps',r.data->'configured_steps',
             'remote_intent',r.data->'remote_intent','force_refresh',r.data->'force_refresh','blocked',r.data->'blocked') AS data
           FROM {table("operation_batch_run_links")} l JOIN {table("operation_runs")} r ON r.id=l.run_id

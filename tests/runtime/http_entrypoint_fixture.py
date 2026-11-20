@@ -68,6 +68,7 @@ def main():
         'core.runtime.assembly':module('core.runtime.assembly',install=lambda *_args,**_kwargs:None),
         'core.runtime.process':module('core.runtime.process',start_runtime=lambda *_args:None,stop_runtime=stop_runtime),
         'core.storage':module('core.storage',postgres=SimpleNamespace(require_ready=lambda:None)),
+        'core.operation_task_store':module('core.operation_task_store',init=lambda:None),
         'webui.app':module('webui.app',create_app=lambda **_kwargs:app),
         'webui.auth':module('webui.auth',is_generated_code=lambda:False),
         'core.runtime.http_server':module('core.runtime.http_server',HttpServer=Observed),

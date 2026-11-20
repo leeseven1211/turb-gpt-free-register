@@ -92,6 +92,7 @@ window.AccountsPage = (() => {
             refreshSummary: () => loadSummary(), reloadTasks: () => loadAccountTasks(), operationWorkers: () => getAccountOperationWorkers(),
             configuredLiveCheckDriver: () => configuredLiveCheckDriver(), readConfig: () => apiCached('/api/config', {}, 30000), fallbackConfig: () => CONFIG,
             openLiveLog: email => openLiveLog(email), openAccountTaskLog: (id, runId) => openAccountTaskLog(id, runId),
+            openReceiptTask: (taskId, runId) => window.TaskCenter.open({taskId, runId}),
             getRowSnapshot: id => instance?.getRowSnapshot(id), isOwnerActive: () => visible && !document.hidden,
             clearScheduled: handle => clearTimeout(handle),
             updateBusyLabel: (action, trigger, label) => { const button = actionButton(action, trigger); if(button?.closest?.('#accountsToolbarV2')) instance?.setToolbarBusyLabel(action,label);else if(button) button.textContent = label; },

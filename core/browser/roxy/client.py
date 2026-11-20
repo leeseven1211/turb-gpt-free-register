@@ -8,6 +8,8 @@ import random
 import re
 import threading
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from collections.abc import Callable
 from urllib.parse import unquote, urljoin, urlparse
@@ -51,10 +53,44 @@ _HTTP_STATUS_RE = re.compile(
 # “正在创建中，请稍等！”。这里只串行化 Profile 创建，创建完成后的浏览器仍可并发运行。
 _PROFILE_CREATE_LOCK = threading.Lock()
 _PROFILE_OPEN_LOCK = threading.Lock()
+_TRACE_AT_OPEN_REQUEST: ContextVar[bool] = ContextVar("trace_at_roxy_open_request", default=False)
 _PROFILE_REGISTRY_LOCK = threading.RLock()
 _PROFILE_REGISTRY_PATH = runtime_dir() / "roxy_active_profiles.json"
 _PROFILE_RELAYS: dict[str, object] = {}
 _PROFILE_RELAYS_LOCK = threading.RLock()
+
+
+@contextmanager
+def _trace_at_startup_step(flow: str | None, step: str):
+    """记录刷新 AT 的本地浏览器启动步骤，异常也保留耗时。"""
+    started_at = time.monotonic() if flow == "token_refresh" else None
+    try:
+        yield
+    finally:
+        if started_at is not None:
+            logger.info("[查活][Roxy] %s耗时 %.0f ms", step, (time.monotonic() - started_at) * 1000)
+
+
+def _report_at_open_attempt(started_at: float, attempt: int, error: Exception | None = None) -> None:
+    duration_ms = (time.monotonic() - started_at) * 1000
+    if error is None:
+        outcome = "收到成功回包"
+    elif isinstance(error, requests.exceptions.ConnectTimeout):
+        outcome = "建立本地 API 连接超时"
+    elif isinstance(error, requests.exceptions.Timeout):
+        outcome = "等待本地 API 回包超时，启动原因待确认"
+    elif isinstance(error, RuntimeError) and str(error).startswith(("Roxy API 返回失败", "Roxy API 请求失败")):
+        message = str(error).lower()
+        if any(marker in message for marker in (
+            "正在下载内核", "内核正在下载", "内核下载中", "正在下载浏览器内核",
+            "downloading browser kernel", "kernel is downloading", "kernel download in progress",
+        )):
+            outcome = "Roxy 回包确认内核下载中"
+        else:
+            outcome = "收到 Roxy 失败回包"
+    else:
+        outcome = f"本地 API 请求异常（{type(error).__name__}）"
+    logger.info("[查活][Roxy] /browser/open 第 %s 次请求耗时 %.0f ms，%s", attempt, duration_ms, outcome)
 
 
 def _remember_profile_relay(profile_id: str, relay, *, persist: bool = True) -> None:
@@ -465,7 +501,9 @@ class RoxyBrowserClient:
         max_attempts = 1 if is_create else max(1, int(getattr(_cfg, "ROXY_API_RETRIES", 3) or 3))
         base_delay = max(0.5, float(getattr(_cfg, "ROXY_API_RETRY_DELAY", 2) or 2))
         last_exc: Exception | None = None
+        trace_open = _TRACE_AT_OPEN_REQUEST.get()
         for attempt in range(1, max_attempts + 1):
+            started_at = time.monotonic() if trace_open else None
             try:
                 logger.debug(
                     "[Roxy] %s %s params=%s body=%s attempt=%s/%s",
@@ -492,10 +530,14 @@ class RoxyBrowserClient:
                     if code not in (None, 0, 200, "0", "200") and ok is not True and success is not True:
                         msg = payload.get("msg") or payload.get("message") or payload.get("error") or json.dumps(payload, ensure_ascii=False)[:500]
                         raise RuntimeError(f"Roxy API 返回失败 {method_u} {path}: {msg}")
+                if started_at is not None:
+                    _report_at_open_attempt(started_at, attempt)
                 if attempt > 1:
                     logger.info("[Roxy] API 重试成功：%s %s attempt=%s/%s", method_u, path, attempt, max_attempts)
                 return payload if isinstance(payload, dict) else {"data": payload}
             except Exception as exc:
+                if started_at is not None:
+                    _report_at_open_attempt(started_at, attempt, exc)
                 last_exc = exc
                 retryable = self._is_retryable_error(exc)
                 if attempt >= max_attempts or not retryable:
@@ -925,13 +967,27 @@ class RoxyBrowserClient:
         logger.info("[Roxy] open 参数：profile=已隐藏 headless=%s keep_open=%s", params.get("headless"), getattr(_cfg, "ROXY_KEEP_BROWSER_OPEN", False))
         # Roxy 本地 API 并发打开多个环境时会长时间阻塞，严重时 API 服务直接退出。
         # 这里只串行发送 open 并等待浏览器就绪；已打开的窗口不会因此被串行使用。
-        with _PROFILE_OPEN_LOCK:
-            result = self.request(
-                _cfg.ROXY_OPEN_METHOD,
-                path,
-                params=params if _cfg.ROXY_OPEN_METHOD.upper() == "GET" else None,
-                json_body=params if _cfg.ROXY_OPEN_METHOD.upper() != "GET" else None,
-            )
+        trace_open = data_saver_flow == "token_refresh"
+        wait_started_at = time.monotonic() if trace_open else None
+        lock_wait_ms = None
+        try:
+            with _PROFILE_OPEN_LOCK:
+                if wait_started_at is not None:
+                    lock_wait_ms = (time.monotonic() - wait_started_at) * 1000
+                trace_token = _TRACE_AT_OPEN_REQUEST.set(True) if trace_open else None
+                try:
+                    result = self.request(
+                        _cfg.ROXY_OPEN_METHOD,
+                        path,
+                        params=params if _cfg.ROXY_OPEN_METHOD.upper() == "GET" else None,
+                        json_body=params if _cfg.ROXY_OPEN_METHOD.upper() != "GET" else None,
+                    )
+                finally:
+                    if trace_token is not None:
+                        _TRACE_AT_OPEN_REQUEST.reset(trace_token)
+        finally:
+            if lock_wait_ms is not None:
+                logger.info("[查活][Roxy] 等待 /browser/open 串行锁耗时 %.0f ms", lock_wait_ms)
         debugger_address = self._extract_debugger_address(result)
         logger.info(
             "[Roxy] open 返回摘要: debugger_present=%s response_keys=%s",
@@ -1105,11 +1161,16 @@ class RoxyBrowserClient:
                     if preclosed_profile:
                         if self.get_open_profile_connection(normalized_profile) is not None:
                             raise RuntimeError("原 Profile 仍存在打开连接，不能更新代理")
-                    elif not self.close_profile(normalized_profile):
-                        raise RuntimeError("Roxy 绑定 Profile 关闭未确认，不能切换代理后继续打开")
-                # 绑定 Profile 仍复用其 cookies/指纹，但每次动作必须把新租约
-                # 写入 Roxy，否则 /browser/open 会继续使用旧代理。
-                update_bound_profile_proxy()
+                    else:
+                        closed = self.close_profile(
+                            normalized_profile,
+                            **({"timing_flow": data_saver_flow} if data_saver_flow == "token_refresh" else {}),
+                        )
+                        if not closed:
+                            raise RuntimeError("Roxy 绑定 Profile 关闭未确认，不能切换代理后继续打开")
+                    # 绑定 Profile 保留 cookies 和指纹，换线时把新租约写入 Roxy。
+                    with _trace_at_startup_step(data_saver_flow, "更新绑定环境代理"):
+                        update_bound_profile_proxy()
                 opened = open_with(profile_id=normalized_profile, proxy_url=None)
                 opened.account_bound = True
                 # A crash can leave the profile in the process registry after
@@ -1143,7 +1204,7 @@ class RoxyBrowserClient:
         opened.proxy_relay = restore_profile_relay(opened.profile_id)
         opened.proxy_route_retained = True
 
-    def close_profile(self, profile_id: str) -> bool:
+    def close_profile(self, profile_id: str, *, timing_flow: str | None = None) -> bool:
         if not profile_id:
             return False
         path = str(_cfg.ROXY_CLOSE_PATH).format(profile_id=profile_id)
@@ -1152,13 +1213,16 @@ class RoxyBrowserClient:
                 "workspaceId": _workspace_id_value(),
                 "dirId": int(profile_id) if str(profile_id).isdigit() else profile_id,
             }
-            self.request(
-                _cfg.ROXY_CLOSE_METHOD,
-                path,
-                params=body if str(_cfg.ROXY_CLOSE_METHOD).upper() == "GET" else None,
-                json_body=body if str(_cfg.ROXY_CLOSE_METHOD).upper() != "GET" else None,
-            )
-            if not self._wait_profile_closed(profile_id):
+            with _trace_at_startup_step(timing_flow, "请求关闭旧窗口至 API 回包"):
+                self.request(
+                    _cfg.ROXY_CLOSE_METHOD,
+                    path,
+                    params=body if str(_cfg.ROXY_CLOSE_METHOD).upper() == "GET" else None,
+                    json_body=body if str(_cfg.ROXY_CLOSE_METHOD).upper() != "GET" else None,
+                )
+            with _trace_at_startup_step(timing_flow, "轮询确认旧窗口状态已关闭"):
+                closed = self._wait_profile_closed(profile_id)
+            if not closed:
                 logger.warning("[Roxy] 关闭环境请求已接受，但未确认环境已退出（profile 原值不写日志）")
                 return False
             logger.info("[Roxy] 已关闭环境（profile 原值不写日志）")

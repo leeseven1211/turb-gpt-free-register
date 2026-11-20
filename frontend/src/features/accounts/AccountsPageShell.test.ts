@@ -3,6 +3,7 @@ import {afterEach,beforeEach,expect,it,vi} from 'vitest';
 import AccountsPageShell from './AccountsPageShell.vue';
 import {deferred,presentation,readApi,realAdapter} from './uiTestSupport';
 import {createAccountActions} from './actions';
+import type {AccountQueuedDependencies} from './queuedActions';
 import type {AccountInspectionDependencies} from './useAccountInspection';
 
 function c2aDependencies(){return{request:vi.fn(),notify:vi.fn(),refreshAccounts:vi.fn(),trackAccepted:vi.fn(),openTasks:vi.fn()};}
@@ -101,4 +102,46 @@ it('routes supported actions once and keeps inspection dialogs on the same page 
   vm.openInspectionHistory(trigger);await flushPromises();
   expect(inspection.request).toHaveBeenCalledWith('/api/accounts/inspections?page=1',expect.objectContaining({signal:expect.any(AbortSignal)}));
   vm.closeInspection();await flushPromises();expect(document.querySelector<HTMLDialogElement>('#accountInspectionHistory')?.open).toBe(false);
+});
+it('账号页可查询未确认的受理回执并打开原执行记录', async () => {
+  sessionStorage.clear();
+  const {api}=readApi();
+  const request=vi.fn<(path:string,options?:RequestInit)=>Promise<unknown>>()
+    .mockRejectedValueOnce(new TypeError('网络中断'))
+    .mockResolvedValueOnce({ok:true,found:true,items:[{task_id:'71',run_id:'72'}]});
+  const openReceiptTask=vi.fn();
+  const queued:AccountQueuedDependencies={
+    refresh:vi.fn(),pollStatuses:vi.fn(),refreshSummary:vi.fn(),reloadTasks:vi.fn(),
+    configuredLiveCheckDriver:()=>null,operationWorkers:()=>1,readConfig:vi.fn(),fallbackConfig:()=>[],
+    openReceiptTask,openAccountTaskLog:vi.fn(),openLiveLog:vi.fn(),getRowSnapshot:()=>undefined,
+    isOwnerActive:()=>true,clearScheduled:vi.fn(),
+  };
+  const actions=createAccountActions({request,notify:vi.fn(),confirm:()=>true,clipboard:vi.fn(),
+    downloadBlob:vi.fn(),downloadUrl:vi.fn(),now:()=>new Date(),schedule:()=>1,reloadCodex:vi.fn(),queued});
+  wrapper=mount(AccountsPageShell,{attachTo:document.body,props:{adapter:realAdapter(),api,presentation,
+    callbacks:{invoke:vi.fn(),openDetail:vi.fn()},detailApi:{roxyProfile:vi.fn()},
+    detailPresentation:{renderBody:()=>'',sourceLabel:()=>''},syncModalScrollLock:vi.fn(),
+    initialCapabilities:{},toolbarRuntime:{storage:{getItem:()=>null,setItem(){}},requestFrame:()=>1,cancelFrame(){},addStorageListener:()=>()=>{}},
+    c2aDependencies:c2aDependencies(),emailChangeDependencies:emailChangeDependencies(),inspectionDependencies:inspectionDependencies(),actions}});
+  const vm=wrapper.vm as unknown as InstanceType<typeof AccountsPageShell>;
+  vm.setVisible(true);
+  await flushPromises();
+  await wrapper.get<HTMLInputElement>('.account-row-check').setValue(true);
+  await wrapper.get('#btnCheckSelectedLiveV2').trigger('click');
+  await flushPromises();
+  const box=wrapper.get('.ac-operation-receipts');
+  expect(box.text()).toContain('受理结果未确认');
+  expect(wrapper.get<HTMLButtonElement>('#btnCheckSelectedLiveV2').element.disabled).toBe(false);
+  expect(request).toHaveBeenCalledOnce();
+  await box.get('button').trigger('click');
+  await flushPromises();
+  expect(request.mock.calls.map(([path,opts])=>[path,opts?.method])).toEqual([
+    ['/api/accounts/check-live-bulk','POST'],['/api/accounts/operation-receipt','GET'],
+  ]);
+  expect(box.text()).toContain('当前查到 1 条任务回执');
+  await box.findAll('button').find(button=>button.text().includes('任务 #71'))!.trigger('click');
+  expect(openReceiptTask).toHaveBeenCalledWith(71,72);
+  await box.findAll('button').find(button=>button.text()==='移除此提示')!.trigger('click');
+  expect(wrapper.find('.ac-operation-receipts').exists()).toBe(false);
+  sessionStorage.clear();
 });

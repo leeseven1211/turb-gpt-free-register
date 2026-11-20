@@ -6,10 +6,10 @@ import TaskFilters from './TaskFilters.vue';
 import TaskFilterFields from './TaskFilterFields.vue';
 import {filterColumns} from './filterDefinitions';
 import {emptyFilters, tasksApi} from '../../api/tasks';
-vi.mock('../../api/tasks', async importOriginal => ({...await importOriginal<typeof import('../../api/tasks')>(), tasksApi: {list: vi.fn(), detail: vi.fn(), action: vi.fn(), bulk: vi.fn()}}));
+vi.mock('../../api/tasks', async importOriginal => ({...await importOriginal<typeof import('../../api/tasks')>(), tasksApi: {list: vi.fn(), receipts: vi.fn(), action: vi.fn(), bulk: vi.fn()}}));
 const wrappers: ReturnType<typeof mount>[] = [];
 beforeEach(() => {
-  vi.useFakeTimers(); vi.mocked(tasksApi.list).mockReset(); vi.mocked(tasksApi.action).mockReset(); vi.mocked(tasksApi.detail).mockReset(); vi.mocked(tasksApi.bulk).mockReset();
+  vi.useFakeTimers(); vi.mocked(tasksApi.list).mockReset(); vi.mocked(tasksApi.action).mockReset(); vi.mocked(tasksApi.receipts).mockReset(); vi.mocked(tasksApi.bulk).mockReset();
   vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
   vi.mocked(tasksApi.list).mockResolvedValue({ok: true, items: [
     {id: 1, task_type: 'plan_check', status: 'failed', next_actions: [{action: 'retry'}]},
@@ -102,11 +102,14 @@ describe('任务中心组件', () => {
 });
 
 it('回执保留手动开合、滚动和同一Run按钮焦点，navigate false不跳页或请求', async () => {
-  vi.mocked(tasksApi.detail).mockResolvedValue({ok: true, task: {id: 17, task_type: 'sub2api_manual_upload', status: 'running', runs: [{id: 29, status: 'running'}, {id: 30, status: 'running'}]}});
+  vi.mocked(tasksApi.receipts).mockResolvedValue({ok: true, items: [
+    {task_id: '17', run_id: '29', status: 'running', message: ''},
+    {task_id: '17', run_id: '30', status: 'running', message: ''},
+  ]});
   const wrapper = mount(TaskCenter, {attachTo: document.body, global: {stubs: {TaskDetail: true}}}); wrappers.push(wrapper);
   wrapper.vm.track([{accepted: true, task_id: 17, run_id: 29}, {accepted: true, task_id: 17, run_id: 30}], '上传', {navigate: false});
   await flushPromises();
-  expect(wrapper.emitted('navigate')).toBeUndefined(); expect(tasksApi.detail).not.toHaveBeenCalled();
+  expect(wrapper.emitted('navigate')).toBeUndefined(); expect(tasksApi.receipts).not.toHaveBeenCalled();
   const details = wrapper.get('.tc-receipts details').element as HTMLDetailsElement;
   expect(details.open).toBe(false);
   wrapper.vm.setVisible(true); await flushPromises();
@@ -125,8 +128,8 @@ it('回执保留手动开合、滚动和同一Run按钮焦点，navigate false�
 });
 
 it('100项回执完成仍默认收起并保留同一外壳、刷新按钮与最终结果', async () => {
-  vi.mocked(tasksApi.detail).mockImplementation(async id => ({ok: true, task: {id, task_type: 'sub2api_manual_upload',
-    status: 'success', runs: [{id: Number(id) + 1000, status: 'success'}]}}));
+  vi.mocked(tasksApi.receipts).mockImplementation(async references => ({ok: true, items: references.map(({task_id,run_id}) =>
+    ({task_id: String(task_id), run_id: String(run_id), status: 'success', message: '已确认完成'}))}));
   const wrapper = mount(TaskCenter, {attachTo: document.body, global: {stubs: {TaskDetail: true}}}); wrappers.push(wrapper);
   wrapper.vm.track(Array.from({length: 100}, (_, index) => ({accepted: true, task_id: index + 1, run_id: index + 1001})),
     '手动上传', {navigate: false});
@@ -145,31 +148,30 @@ it('100项回执完成仍默认收起并保留同一外壳、刷新按钮与最�
   expect(details.open).toBe(false);
   expect(refreshButton.disabled).toBe(true);
   expect(wrapper.emitted('navigate')).toBeUndefined();
-  expect(tasksApi.detail).toHaveBeenCalledTimes(100);
+  expect(tasksApi.receipts).toHaveBeenCalledTimes(5);
   await vi.advanceTimersByTimeAsync(10000);
-  expect(tasksApi.detail).toHaveBeenCalledTimes(100);
+  expect(tasksApi.receipts).toHaveBeenCalledTimes(5);
 });
 
 it('留页回执隐藏时不读取，主动进入任务中心才开始，页面隐藏后停止', async () => {
-  vi.mocked(tasksApi.detail).mockResolvedValue({ok: true, task: {id: 17, task_type: 'sub2api_manual_upload',
-    status: 'running', runs: [{id: 29, status: 'running'}]}});
+  vi.mocked(tasksApi.receipts).mockResolvedValue({ok: true, items: [{task_id: '17', run_id: '29', status: 'running', message: ''}]});
   const wrapper = mount(TaskCenter, {global: {stubs: {TaskDetail: true}}}); wrappers.push(wrapper);
   wrapper.vm.track([{accepted: true, task_id: 17, run_id: 29}], '上传', {navigate: false});
   await vi.advanceTimersByTimeAsync(6000);
   expect(wrapper.emitted('navigate')).toBeUndefined();
-  expect(tasksApi.detail).not.toHaveBeenCalled();
+  expect(tasksApi.receipts).not.toHaveBeenCalled();
   wrapper.vm.setVisible(true); await flushPromises();
   expect(wrapper.get('.tc-receipts [role="status"]').text()).toContain('等待/执行 1');
-  expect(tasksApi.detail).toHaveBeenCalledTimes(1);
+  expect(tasksApi.receipts).toHaveBeenCalledTimes(1);
   Object.defineProperty(document, 'hidden', {configurable: true, value: true});
   document.dispatchEvent(new Event('visibilitychange'));
   await vi.advanceTimersByTimeAsync(6000);
-  expect(tasksApi.detail).toHaveBeenCalledTimes(1);
+  expect(tasksApi.receipts).toHaveBeenCalledTimes(1);
   Object.defineProperty(document, 'hidden', {configurable: true, value: false});
   document.dispatchEvent(new Event('visibilitychange')); await flushPromises();
-  expect(tasksApi.detail).toHaveBeenCalledTimes(2);
+  expect(tasksApi.receipts).toHaveBeenCalledTimes(2);
   wrapper.vm.setVisible(false); await vi.advanceTimersByTimeAsync(6000);
-  expect(tasksApi.detail).toHaveBeenCalledTimes(2);
+  expect(tasksApi.receipts).toHaveBeenCalledTimes(2);
 });
 
 it('批量删除只提交非活动选择，保留跳过原因；单条删除使用既有确认', async () => {

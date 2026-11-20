@@ -91,6 +91,12 @@ class PlanReportEvidenceTests(unittest.TestCase):
         self.assertEqual(failed["plan_at_issue"], "token_local_expired")
         self.assertTrue(failed["plan_report_evidence"]["at_refresh_observed"])
 
+    def test_cancelled_plan_summary_keeps_cancellation_evidence(self):
+        from core.accounts.plans.service import _plan_result_summary
+
+        summary = _plan_result_summary({"ok": False, "cancelled": True, "error": "OperationCancelled"})
+        self.assertTrue(summary["cancelled"])
+
     def test_no_owned_execution_is_separate_from_unknown(self):
         out = normalize_plan_report_evidence([], state="pending_submit", projected_result={})
         self.assertTrue(out["at_refresh"]["not_executed"])

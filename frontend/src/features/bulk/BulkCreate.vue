@@ -40,7 +40,7 @@ defineExpose({refresh:owner.refresh,recover:owner.recover,restoreSelectionReques
  <form v-else ref="form" data-bulk-create-form class="bulk-create-form" novalidate :aria-busy="disabled" @submit.prevent="owner.createBatch()" @keydown.esc="closeFilter($event)">
   <div class="bulk-create-main">
    <section class="bulk-card bulk-create-card">
-    <div class="bulk-step-head"><span class="bulk-step-no">1</span><div><h3>选择操作</h3><p class="bulk-section-note">本次要对账号做什么</p></div></div>
+    <div class="bulk-step-head"><span class="bulk-step-no">1</span><div><h3>选择操作</h3><p class="bulk-section-note">本次要对账号做什么</p></div><button type="button" class="bulk-link" data-bulk-action="list" @click="deps.callbacks.navigate('list')">← 返回批次列表</button></div>
     <div class="bulk-operation-grid" role="radiogroup" aria-label="批量操作">
      <label v-for="item in operations" :key="item.key" class="bulk-operation" :title="item.availability?.available===false?item.availability.reason||'当前不可用':''">
       <input type="radio" name="operation_key" :value="item.key" :checked="draft.operation_key===item.key" :disabled="disabled" required @change="owner.setOperation(item.key)">
@@ -88,7 +88,7 @@ defineExpose({refresh:owner.refresh,recover:owner.recover,restoreSelectionReques
    <p v-if="error" id="bulkCreateError" class="bulk-error" data-bulk-action-error role="alert">{{ error }}<button v-if="existingBatchId" type="button" class="bulk-link" @click="deps.callbacks.navigate('detail',{batch_id:existingBatchId})">查看批次 #{{ existingBatchId }}</button></p>
    <div v-if="pendingCount" class="bulk-notice" data-bulk-recovery role="status"><span>有 {{ pendingCount }} 个请求未收到回执，草稿已保留。</span><button type="button" class="jobs-tb-btn" :disabled="disabled" @click="owner.recover">{{ recovering?'正在找回…':'找回原请求' }}</button></div>
    <div class="bulk-side-actions"><button type="submit" class="jobs-tb-btn jobs-tb-btn--primary" data-bulk-submit :disabled="disabled||count===0||!operations.length">{{ creating?'正在创建批次…':'创建并执行' }}</button><button type="button" class="jobs-tb-btn" data-bulk-action="create-paused" :disabled="disabled||count===0||!operations.length" @click="owner.createBatch(true)">{{ creating?'正在创建批次…':'创建并暂停' }}</button></div>
-   <p class="bulk-side-foot">提交时固定账号范围，暂停后可继续原批次</p><button type="button" class="bulk-side-back" data-bulk-action="list" @click="deps.callbacks.navigate('list')">← 返回批次列表</button>
+   <p class="bulk-side-foot">提交时固定账号范围，暂停后可继续原批次</p>
   </div></aside>
  </form>
 </template>

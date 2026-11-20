@@ -420,6 +420,9 @@ class InstanceOwnerTests(unittest.TestCase):
         self.assertFalse(resumed.is_set())
         self.assertIn('retry=deadline', captured.records[-1].getMessage())
         self.assertRegex(captured.records[-1].getMessage(), r'\bverified_age_ms=\d+\b')
+        self.assertRegex(captured.records[-1].getMessage(), r'\bprobe_schedule_lag_ms=\d+\b')
+        self.assertRegex(captured.records[-1].getMessage(), r'\bprobe_db_ms=\d+\b')
+        self.assertIn('probe_db_inflight=true', captured.records[-1].getMessage())
 
     def test_fresh_retry_cannot_resume_after_database_session_change(self):
         lost = threading.Event()

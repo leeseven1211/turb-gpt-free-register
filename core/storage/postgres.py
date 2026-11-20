@@ -22,6 +22,8 @@ from contextvars import ContextVar
 from copy import deepcopy
 from typing import Any
 
+from core.runtime.request_timing import current_request_timing
+
 logger = logging.getLogger('core.postgres_store')
 _LOCK = threading.RLock()
 _SCHEMA_READY_KEY = ""
@@ -136,6 +138,12 @@ def require_ready() -> None:
 
 _POOLS: dict[tuple, Any] = {}
 _POOL_LOCK = threading.RLock()
+_SLOW_CHECKOUT_SECONDS = 0.25
+_SQL_WAIT_ERRORS = {
+    "40P01": "db_deadlock",
+    "55P03": "db_lock_unavailable",
+    "57014": "db_query_cancelled",
+}
 
 
 def _pool_for(target: str, kwargs: dict):
@@ -185,8 +193,52 @@ def connect(url: str | None = None, *, deadline: float | None = None, **kwargs):
     _guard_production_database(target)
     pool = _pool_for(target, kwargs)
     if deadline is None:
-        return pool.connection()
+        return _observed_pool_connection(pool)
     return _deadline_connection(pool, deadline)
+
+
+def _log_connection_delay(message: str, *args) -> None:
+    try:
+        logger.warning(message, *args)
+    except Exception:
+        # 日志处理失败不能替换调用方原本收到的数据库结果。
+        pass
+
+
+@contextmanager
+def _observed_pool_connection(pool, **kwargs):
+    from psycopg import Error
+    from psycopg_pool import PoolTimeout
+
+    started = time.monotonic()
+    request_timing = current_request_timing.get()
+    checked_out = None
+    try:
+        with pool.connection(**kwargs) as conn:
+            checked_out = time.monotonic()
+            if request_timing is not None:
+                request_timing.pool_seconds += checked_out - started
+            yield conn
+    except PoolTimeout:
+        if checked_out is None:
+            elapsed = time.monotonic() - started
+            if request_timing is not None:
+                request_timing.pool_seconds += elapsed
+            _log_connection_delay("数据库连接池等待超时：code=db_pool_checkout_timeout checkout_ms=%.1f",
+                                  elapsed * 1000)
+        raise
+    except Error as exc:
+        diagnostic = _SQL_WAIT_ERRORS.get(exc.sqlstate)
+        if checked_out is not None and diagnostic:
+            _log_connection_delay(
+                "数据库事务异常：code=%s sqlstate=%s checkout_ms=%.1f transaction_ms=%.1f",
+                diagnostic, exc.sqlstate, (checked_out - started) * 1000,
+                (time.monotonic() - checked_out) * 1000)
+        raise
+    finally:
+        if checked_out is not None and checked_out - started >= _SLOW_CHECKOUT_SECONDS:
+            _log_connection_delay("数据库连接池等待较长：code=db_pool_checkout_slow checkout_ms=%.1f",
+                                  (checked_out - started) * 1000)
 
 
 @contextmanager
@@ -199,7 +251,7 @@ def _deadline_connection(pool, deadline: float):
     remaining = float(deadline) - time.monotonic()
     if remaining <= 0:
         raise TimeoutError("数据库结算截止时间已到")
-    with pool.connection(timeout=remaining) as conn:
+    with _observed_pool_connection(pool, timeout=remaining) as conn:
         with conn.cursor() as cur:
             _apply_deadline(cur, deadline)
         yield _DeadlineConnection(conn, deadline)

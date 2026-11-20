@@ -173,6 +173,12 @@ def main() -> None:
         runtime_install_attempted = True
         install(bootstrap, logger=logger)
 
+        if bootstrap.mode == "web":
+            # 独立 Web 先准备统一任务存储，再接收请求。
+            from core.operation_task_store import init as init_operation_storage
+
+            init_operation_storage()
+
         app = create_app(auth_code=args.auth_code)
         start_runtime(logger)
         url = f"http://{'127.0.0.1' if args.host in ('0.0.0.0', '::') else args.host}:{args.port}"

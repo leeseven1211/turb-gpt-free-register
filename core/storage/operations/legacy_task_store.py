@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from typing import Any, Iterable
 
 from core.storage import postgres as postgres_store
+from core.storage.records import advisory_xact_lock
 from core.storage.task_query_context import task_read_connection
 from core.operations import run_log as task_run_log
 from core.operations.presentation import public_result_status, public_result_status_sql
@@ -97,6 +98,8 @@ def init() -> None:
         tasks = _table("account_action_tasks")
         events = _table("account_action_events")
         with _connect() as conn, conn.cursor() as cur:
+            # 独立 Web 和 Worker 共用兼容表，先串行化 DDL，避免索引与列变更的锁升级互相阻塞。
+            advisory_xact_lock(conn, f"legacy-account-task-schema:{_SCHEMA}")
             cur.execute(f"CREATE SCHEMA IF NOT EXISTS {_schema()}")
             cur.execute(f"SET LOCAL search_path TO {_schema()}, public")
             cur.execute(
