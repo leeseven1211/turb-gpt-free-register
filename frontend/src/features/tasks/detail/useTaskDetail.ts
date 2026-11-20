@@ -42,6 +42,7 @@ export function useTaskDetail(api: DetailApi = tasksApi, onTerminal: () => void 
   let eventRequest = 0;
   let logRequest = 0;
   let refreshRequest = 0;
+  let pendingRefresh: Promise<void> | null = null;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let controller = new AbortController();
   let terminalNotified = false;
@@ -51,6 +52,7 @@ export function useTaskDetail(api: DetailApi = tasksApi, onTerminal: () => void 
     generation += 1;
     controller.abort();
     controller = new AbortController();
+    pendingRefresh = null;
     loading.value = eventsLoading.value = logsLoading.value = false;
     stopTimer();
   }
@@ -58,7 +60,7 @@ export function useTaskDetail(api: DetailApi = tasksApi, onTerminal: () => void 
   const canRead = () => opened.value && visible.value && !!taskId.value;
   function schedule() {
     stopTimer();
-    if (canRead() && (!task.value || isActive(task.value))) timer = setTimeout(() => void refresh(), 2000);
+    if (canRead() && (!task.value || isActive(task.value))) timer = setTimeout(() => void requestRefresh(true), 2000);
   }
   function clearRun() {
     eventRequest += 1;
@@ -140,11 +142,22 @@ export function useTaskDetail(api: DetailApi = tasksApi, onTerminal: () => void 
     } catch (cause) { if (current(version)) progressError.value = message(cause); }
   }
 
-  async function refresh() {
-    if (!canRead() || !taskId.value || loading.value) return;
+  function refresh() { return requestRefresh(false); }
+  function requestRefresh(automatic: boolean) {
+    if (!canRead() || !taskId.value) return Promise.resolve();
+    // 自动轮询保留界面状态；手动刷新可等待同一请求并显示加载反馈。
+    if (!automatic) loading.value = true;
+    if (pendingRefresh) return pendingRefresh;
     const version = generation;
     const request = ++refreshRequest;
-    loading.value = true;
+    pendingRefresh = readDetail(version, request).finally(() => {
+      if (current(version) && request === refreshRequest) { pendingRefresh = null; loading.value = false; schedule(); }
+    });
+    return pendingRefresh;
+  }
+
+  async function readDetail(version: number, request: number) {
+    if (!taskId.value) return;
     stopTimer();
     try {
       const result = await api.detail(taskId.value, controller.signal);
@@ -167,9 +180,6 @@ export function useTaskDetail(api: DetailApi = tasksApi, onTerminal: () => void 
       if (!current(version)) return;
       if (!isActive(result.task) && !terminalNotified) { terminalNotified = true; onTerminal(); }
     } catch (cause) { if (current(version)) error.value = message(cause); }
-    finally {
-      if (current(version) && request === refreshRequest) { loading.value = false; schedule(); }
-    }
   }
 
   function open(id: TaskId, desiredRun?: TaskId | null, filter?: string | null) {

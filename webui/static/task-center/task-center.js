@@ -114,105 +114,114 @@ var Re = {
 	})
 }, ze = (e) => e instanceof Error ? e.message : "读取失败，请重试";
 function Be(e = Re, t = () => {}) {
-	let n = v(!1), r = v(!0), i = v(null), a = v(null), o = k(null), s = k(null), c = k([]), l = k([]), u = v("events"), d = v(null), p = v(""), m = v(""), h = v(""), g = v(""), _ = v(!1), y = v(!1), b = v(!1), x = v(null), S = v(null), C = v("tail"), w = v("tail"), T = v(!1), E = v(!1), O = v(!1), A = v(!1), j = v(!0), M = D(() => o.value?.runs || []), N = D(() => M.value.find((e) => ee(e.id, a.value))), P = 0, F = 0, I = 0, ne = 0, R, z = new AbortController(), B = !1;
-	function V() {
-		R !== void 0 && clearTimeout(R), R = void 0;
-	}
+	let n = v(!1), r = v(!0), i = v(null), a = v(null), o = k(null), s = k(null), c = k([]), l = k([]), u = v("events"), d = v(null), p = v(""), m = v(""), h = v(""), g = v(""), _ = v(!1), y = v(!1), b = v(!1), x = v(null), S = v(null), C = v("tail"), w = v("tail"), T = v(!1), E = v(!1), O = v(!1), A = v(!1), j = v(!0), M = D(() => o.value?.runs || []), N = D(() => M.value.find((e) => ee(e.id, a.value))), P = 0, F = 0, I = 0, ne = 0, R = null, z, B = new AbortController(), V = !1;
 	function H() {
-		P += 1, z.abort(), z = new AbortController(), _.value = y.value = b.value = !1, V();
+		z !== void 0 && clearTimeout(z), z = void 0;
 	}
-	let U = (e) => e === P && n.value, W = () => n.value && r.value && !!i.value;
-	function G() {
-		V(), W() && (!o.value || pe(o.value)) && (R = setTimeout(() => void oe(), 2e3));
+	function U() {
+		P += 1, B.abort(), B = new AbortController(), R = null, _.value = y.value = b.value = !1, H();
 	}
+	let W = (e) => e === P && n.value, G = () => n.value && r.value && !!i.value;
 	function K() {
+		H(), G() && (!o.value || pe(o.value)) && (z = setTimeout(() => void ce(!0), 2e3));
+	}
+	function re() {
 		F += 1, I += 1, y.value = b.value = !1, s.value = null, m.value = h.value = g.value = "", c.value = [], l.value = [], x.value = S.value = null, T.value = E.value = O.value = A.value = !1, C.value = w.value = "tail", j.value = !0;
 	}
-	async function re(t = "incremental") {
-		if (!W() || !a.value || !i.value || t === "incremental" && y.value || t === "incremental" && C.value === "start" && E.value || t === "next" && !E.value) return;
+	async function ie(t = "incremental") {
+		if (!G() || !a.value || !i.value || t === "incremental" && y.value || t === "incremental" && C.value === "start" && E.value || t === "next" && !E.value) return;
 		let n = P, r = ++F, o = t === "tail" || t === "start" || x.value === null, s = {
 			limit: 500,
 			...t === "start" ? { after_id: 0 } : t !== "tail" && x.value !== null ? { after_id: x.value } : {}
 		};
 		y.value = !0;
 		try {
-			let l = await e.events(i.value, a.value, s, z.signal);
-			if (!U(n) || r !== F) return;
+			let l = await e.events(i.value, a.value, s, B.signal);
+			if (!W(n) || r !== F) return;
 			c.value = o ? l.items : ue(c.value, l.items), x.value = l.next_after_id, (t === "tail" || t === "start") && (C.value = t), o && C.value === "tail" ? (T.value = l.has_more, E.value = !1) : (E.value = l.has_more, C.value === "start" && (T.value = !1)), h.value = "";
 		} catch (e) {
-			U(n) && r === F && (h.value = ze(e));
+			W(n) && r === F && (h.value = ze(e));
 		} finally {
-			U(n) && r === F && (y.value = !1);
+			W(n) && r === F && (y.value = !1);
 		}
 	}
-	async function ie(t = "incremental") {
-		if (!W() || !a.value || !i.value || t === "incremental" && b.value || t === "incremental" && w.value === "start" && A.value || t === "next" && !A.value) return;
+	async function ae(t = "incremental") {
+		if (!G() || !a.value || !i.value || t === "incremental" && b.value || t === "incremental" && w.value === "start" && A.value || t === "next" && !A.value) return;
 		let n = P, r = ++I, o = t === "tail" || t === "start" || S.value === null, s = {
 			limit: 500,
 			...t === "start" ? { cursor: 0 } : t !== "tail" && S.value !== null ? { cursor: S.value } : {}
 		};
 		b.value = !0;
 		try {
-			let c = await e.logs(i.value, a.value, s, z.signal);
-			if (!U(n) || r !== I) return;
+			let c = await e.logs(i.value, a.value, s, B.signal);
+			if (!W(n) || r !== I) return;
 			l.value = o ? c.items : [...l.value, ...c.items], S.value = c.next_cursor, (t === "tail" || t === "start") && (w.value = t), A.value = c.has_more, O.value = w.value === "tail" && c.available, j.value = c.available, g.value = "";
 		} catch (e) {
-			U(n) && r === I && (g.value = ze(e));
+			W(n) && r === I && (g.value = ze(e));
 		} finally {
-			U(n) && r === I && (b.value = !1);
+			W(n) && r === I && (b.value = !1);
 		}
 	}
-	async function ae(t) {
+	async function oe(t) {
 		if (i.value && a.value) try {
-			let n = await e.progress(i.value, a.value, z.signal);
-			if (!U(t)) return;
+			let n = await e.progress(i.value, a.value, B.signal);
+			if (!W(t)) return;
 			s.value = n.progress, m.value = "";
 		} catch (e) {
-			U(t) && (m.value = ze(e));
+			W(t) && (m.value = ze(e));
 		}
 	}
-	async function oe() {
-		if (!W() || !i.value || _.value) return;
-		let n = P, r = ++ne;
-		_.value = !0, V();
-		try {
-			let s = await e.detail(i.value, z.signal);
-			if (!U(n) || r !== ne) return;
-			o.value = s.task;
-			let c = s.task.runs || [];
-			if (a.value && !c.some((e) => ee(e.id, a.value))) {
-				K(), p.value = `所选运行 #${a.value} 不存在或已不可用，请选择其他运行。`;
-				return;
+	function se() {
+		return ce(!1);
+	}
+	function ce(e) {
+		if (!G() || !i.value) return Promise.resolve();
+		if (e || (_.value = !0), R) return R;
+		let t = P, n = ++ne;
+		return R = le(t, n).finally(() => {
+			W(t) && n === ne && (R = null, _.value = !1, K());
+		}), R;
+	}
+	async function le(n, r) {
+		if (i.value) {
+			H();
+			try {
+				let s = await e.detail(i.value, B.signal);
+				if (!W(n) || r !== ne) return;
+				o.value = s.task;
+				let c = s.task.runs || [];
+				if (a.value && !c.some((e) => ee(e.id, a.value))) {
+					re(), p.value = `所选运行 #${a.value} 不存在或已不可用，请选择其他运行。`;
+					return;
+				}
+				let l = a.value || s.task.last_run_id || c.at(-1)?.id || null, d = c.some((e) => ee(e.id, l)) ? l : c.at(-1)?.id || null;
+				if (d !== a.value && (re(), a.value = d), p.value = "", a.value && await Promise.allSettled([
+					oe(n),
+					ie(),
+					...u.value === "logs" ? [ae()] : []
+				]), !W(n)) return;
+				!pe(s.task) && !V && (V = !0, t());
+			} catch (e) {
+				W(n) && (p.value = ze(e));
 			}
-			let l = a.value || s.task.last_run_id || c.at(-1)?.id || null, d = c.some((e) => ee(e.id, l)) ? l : c.at(-1)?.id || null;
-			if (d !== a.value && (K(), a.value = d), p.value = "", a.value && await Promise.allSettled([
-				ae(n),
-				re(),
-				...u.value === "logs" ? [ie()] : []
-			]), !U(n)) return;
-			!pe(s.task) && !B && (B = !0, t());
-		} catch (e) {
-			U(n) && (p.value = ze(e));
-		} finally {
-			U(n) && r === ne && (_.value = !1, G());
 		}
 	}
-	function se(e, t, r) {
-		return H(), n.value = !0, i.value = L(e), a.value = te(t), o.value = null, p.value = "", u.value = "events", d.value = r || null, B = !1, K(), oe();
+	function de(e, t, r) {
+		return U(), n.value = !0, i.value = L(e), a.value = te(t), o.value = null, p.value = "", u.value = "events", d.value = r || null, V = !1, re(), se();
 	}
-	function ce() {
-		n.value = !1, H();
+	function fe() {
+		n.value = !1, U();
 	}
-	function le(e) {
-		if (e = L(e), !ee(e, a.value)) return H(), a.value = e, d.value = null, K(), oe();
+	function q(e) {
+		if (e = L(e), !ee(e, a.value)) return U(), a.value = e, d.value = null, re(), se();
 	}
-	function de(e) {
-		if (u.value = e, e === "logs") return ie();
+	function J(e) {
+		if (u.value = e, e === "logs") return ae();
 	}
-	function fe(e) {
-		r.value !== e && (r.value = e, e ? n.value && oe() : H());
+	function me(e) {
+		r.value !== e && (r.value = e, e ? n.value && se() : U());
 	}
-	return f(ce), {
+	return f(fe), {
 		opened: n,
 		taskId: i,
 		runId: a,
@@ -238,14 +247,14 @@ function Be(e = Re, t = () => {}) {
 		logsEarlier: O,
 		logsMore: A,
 		logsAvailable: j,
-		open: se,
-		close: ce,
-		selectRun: le,
-		selectTab: de,
-		setVisible: fe,
-		refresh: oe,
-		loadEvents: re,
-		loadLogs: ie
+		open: de,
+		close: fe,
+		selectRun: q,
+		selectTab: J,
+		setVisible: me,
+		refresh: se,
+		loadEvents: ie,
+		loadLogs: ae
 	};
 }
 // src/features/tasks/detail/TaskFailure.vue?vue&type=script&setup=true&lang.ts

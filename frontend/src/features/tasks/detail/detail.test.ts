@@ -177,6 +177,19 @@ describe('详情请求与生命周期', () => {
     await detail.refresh();
     expect(detail.progressError.value).toBe('');
   });
+  it('详情接口同步抛错后仍可手动重试，不残留已完成的请求', async () => {
+    const { api, detail } = fixture();
+    await detail.open(1);
+    const saved = detail.task.value;
+    api.detail.mockImplementationOnce(() => { throw new Error('详情请求暂不可用'); });
+    await detail.refresh();
+    expect(detail.task.value).toBe(saved);
+    expect(detail.error.value).toBe('详情请求暂不可用');
+    expect(detail.loading.value).toBe(false);
+    await detail.refresh();
+    expect(detail.error.value).toBe('');
+    expect(detail.loading.value).toBe(false);
+  });
   it('隐藏和关闭时停止轮询，恢复可见后再读取', async () => {
     vi.useFakeTimers();
     const { api, detail } = fixture();

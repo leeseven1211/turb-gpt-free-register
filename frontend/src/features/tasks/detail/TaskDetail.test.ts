@@ -29,6 +29,42 @@ afterEach(() => {
 });
 
 describe('任务详情组件交互', () => {
+  it('后台轮询保持头部稳定，手动刷新复用正在读取的请求并显示反馈', async () => {
+    vi.useFakeTimers();
+    const running = { ok: true, task: { id: 1, task_type: 'plan_check', status: 'running', last_run_id: 10,
+      runs: [{ id: 10, status: 'running', run_no: 1 }] } };
+    vi.mocked(tasksApi.detail).mockResolvedValue(running);
+    const wrapper = mount(TaskDetail, { attachTo: document.body });
+    try {
+      await wrapper.vm.open(1); await flushPromises();
+      const header = document.querySelector('.tc-detail-header')!;
+      const refresh = header.querySelector<HTMLButtonElement>('.tc-detail-header-actions button')!;
+      const selector = header.querySelector('select')!;
+      const firstEvent = document.querySelector('.tc-event')!;
+      let resolve!: (value: Awaited<ReturnType<typeof tasksApi.detail>>) => void;
+      vi.mocked(tasksApi.detail).mockReturnValueOnce(new Promise(done => { resolve = done; }));
+      vi.mocked(tasksApi.events).mockResolvedValueOnce({ ok: true, items: [{ id: 3, message: '后台新增记录' }],
+        next_after_id: 3, has_more: false });
+
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(refresh.textContent).toBe('刷新');
+      expect(refresh.disabled).toBe(false);
+      expect(header.querySelector('select')).toBe(selector);
+      expect(document.querySelector('.tc-event')).toBe(firstEvent);
+      const reads = vi.mocked(tasksApi.detail).mock.calls.length;
+
+      refresh.click(); await flushPromises();
+      expect(refresh.textContent).toBe('刷新中…');
+      expect(refresh.disabled).toBe(true);
+      expect(tasksApi.detail).toHaveBeenCalledTimes(reads);
+
+      resolve(running); await flushPromises();
+      expect(refresh.textContent).toBe('刷新');
+      expect(refresh.disabled).toBe(false);
+      expect(document.querySelector('.tc-event')).toBe(firstEvent);
+      expect(document.querySelector('#tc-detail-panel-events')?.textContent).toContain('后台新增记录');
+    } finally { wrapper.unmount(); vi.useRealTimers(); }
+  });
   it('诊断入口绑定当前 Run，切换历史运行时不展示其它运行的产物', async () => {
     // 从 test_roxy_refresh_frontend.cjs 迁移真实产物展示契约；旧页面继续验证入口传参。
     vi.mocked(tasksApi.detail).mockResolvedValue({ ok: true, task: { id: 1, task_type: 'token_refresh',
