@@ -10,9 +10,23 @@ import StepRelations from './StepRelations.vue';
 import TaskFailure from './TaskFailure.vue';
 
 const props = defineProps<{ progress: Progress | null; filter: string | null; active: boolean; context: string;
+  taskType?: string | null;
   execution?: Pick<OperationRun, 'error_message' | 'error_info'> | null }>();
 const emit = defineEmits<{ filter: [value: string | null]; child: [taskId: TaskId, runId: TaskId | null] }>();
-const steps = computed(() => phaseSteps(props.progress?.main_steps));
+const isCodexRetry = computed(() => props.taskType === 'codex_retry');
+const steps = computed(() => isCodexRetry.value ? props.progress?.main_steps || [] : phaseSteps(props.progress?.main_steps));
+const visibleSteps = computed(() => isCodexRetry.value
+  ? steps.value.filter(step => step.observed_order != null || step.evidence === 'run_status')
+  : steps.value);
+const statusTones: Record<string, string> = {
+  success: 'tc-badge--success', recovered: 'tc-badge--success', failed: 'tc-badge--danger', running: 'tc-badge--active',
+  stopped: 'tc-badge--warning', interrupted: 'tc-badge--warning', debug_paused: 'tc-badge--warning',
+};
+function codexStatus(step: Step) {
+  const state = stepState(step);
+  return ['success', 'failed', 'skipped', 'running'].includes(state)
+    ? progressLabel(state) : phaseState(step);
+}
 const inspectedId = ref<string | null>(null);
 const inspected = computed(() => steps.value.find(step => stepId(step) === inspectedId.value));
 const inspector = ref<HTMLDialogElement>();
@@ -52,21 +66,25 @@ onBeforeUnmount(() => inspector.value?.close());
 
 <template>
   <section v-if="progress" class="tc-progress" aria-label="执行进度">
-    <div class="tc-progress-heading"><strong>{{ currentText }}</strong><small>{{ progress.source === 'legacy_derived' ? '历史记录还原' : progress.source === 'insufficient_evidence' ? '步骤记录缺失' : '按首次记录排列，可含分支与重试' }}</small></div>
-    <ul v-if="steps.length" class="tc-progress-track" aria-label="执行阶段，排列不代表固定顺序">
-      <li v-for="step in steps" :key="stepId(step)" :class="['tc-step', `tc-step--${stepState(step)}`, { 'tc-step--selected': selected(step) }]">
+    <div class="tc-progress-heading"><strong>{{ currentText }}</strong><small v-if="!isCodexRetry || progress.source !== 'explicit'">{{ progress.source === 'legacy_derived' ? '历史记录还原' : progress.source === 'insufficient_evidence' ? '步骤记录缺失' : '按首次记录排列，可含分支与重试' }}</small></div>
+    <ul v-if="visibleSteps.length" class="tc-progress-track" :class="{ 'tc-progress-track--codex': isCodexRetry }" aria-label="执行阶段，排列不代表固定顺序">
+      <li v-for="step in visibleSteps" :key="stepId(step)" :class="['tc-step', `tc-step--${stepState(step)}`, { 'tc-step--selected': selected(step) }]">
         <button type="button" class="tc-step-select" :aria-pressed="selected(step)" :title="phaseTitle(step)" @click="emit('filter', selected(step) ? null : stepId(step))">
-          <span class="tc-step-dot" aria-hidden="true"></span><strong>{{ stepLabel(step) }}</strong>
-          <span class="tc-step-meta">{{ phaseState(step) }}<small v-if="stepDuration(step) != null"> · {{ formatDuration(stepDuration(step)) }}</small><small v-for="marker in phaseMarkers(step)" :key="marker"> · {{ marker }}</small></span>
+          <span v-if="!isCodexRetry" class="tc-step-dot" aria-hidden="true"></span><strong>{{ stepLabel(step) }}</strong>
+          <span v-if="isCodexRetry" class="tc-step-meta">
+            <span class="tc-badge tc-step-status" :class="statusTones[stepState(step)]">{{ codexStatus(step) }}</span>
+            <small v-if="stepState(step) !== 'skipped' && stepDuration(step) != null">{{ formatDuration(stepDuration(step)) }}</small>
+          </span>
+          <span v-else class="tc-step-meta">{{ phaseState(step) }}<small v-if="stepDuration(step) != null"> · {{ formatDuration(stepDuration(step)) }}</small><small v-for="marker in phaseMarkers(step)" :key="marker"> · {{ marker }}</small></span>
         </button>
         <button type="button" class="tc-step-inspect" :aria-label="`查看${stepLabel(step)}的时间、阶段事件与子步骤`" title="查看阶段关系与证据" aria-haspopup="dialog" @click="inspect(step)"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="8" cy="8" r="5.5" fill="none" stroke="currentColor"/><path d="M8 7v4M8 4.5v1" stroke="currentColor" stroke-width="1.5"/></svg></button>
       </li>
     </ul>
-    <p v-else class="tc-detail-muted">此运行没有完整步骤快照，可继续查看事件、日志和诊断资源。</p>
+    <p v-else class="tc-detail-muted">{{ isCodexRetry ? '此运行暂无阶段记录。' : '此运行没有完整步骤快照，可继续查看事件、日志和诊断资源。' }}</p>
     <details v-if="steps.length" class="tc-flow-relations">
       <summary>依赖与执行记录</summary>
       <p>{{ progress.structure?.parallelism === 'explicit' ? '并行分组来自执行记录；依赖关系单独显示。' : '已记录的阶段按首次出现时间排列；未记录的并行关系不作推断。' }}</p>
-      <div v-for="step in steps" :key="stepId(step)" class="tc-flow-relation"><strong>{{ stepLabel(step) }}</strong><StepRelations :step="step" :siblings="steps"/></div>
+      <div v-for="step in steps" :key="stepId(step)" class="tc-flow-relation"><strong>{{ stepLabel(step) }}</strong><span v-if="isCodexRetry">{{ codexStatus(step) }}</span><StepRelations :step="step" :siblings="steps"/></div>
     </details>
     <TaskFailure :failure="progress.failure" :execution="execution" :status="progress.outcome.status" />
     <div v-if="children.length" class="tc-child-tasks"><strong>独立子任务</strong><button v-for="child in children" :key="child.task_id" type="button" @click="emit('child', child.task_id, child.run_id)">{{ label('task_type', text(child.task_type)) }} #{{ child.task_id }} · {{ progressLabel(child.status) }}</button></div>

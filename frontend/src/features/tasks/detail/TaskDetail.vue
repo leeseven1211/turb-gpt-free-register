@@ -140,7 +140,7 @@ defineExpose({ open, close, setVisible });
         <p v-if="runSummary?.status === 'queued'" class="tc-detail-notice">{{ admissionText(runSummary) }}</p>
         <p v-if="pause.state === 'paused'" class="tc-detail-notice">调试暂停，等待结束调试。<template v-if="pause.hold_until">保留至 {{ formatDateTime(pause.hold_until) }}。</template></p>
         <TaskFailure v-if="!progress" :execution="runSummary" :status="runSummary?.status" />
-        <TaskProgress :progress="progress" :execution="runSummary" :filter="stepFilter" :active="opened" :context="`${taskId}:${runId}`" @filter="value => stepFilter = value" @child="open" />
+        <TaskProgress :progress="progress" :task-type="task?.task_type" :execution="runSummary" :filter="stepFilter" :active="opened" :context="`${taskId}:${runId}`" @filter="value => stepFilter = value" @child="open" />
         <p v-if="progressError" class="tc-detail-error" role="status">进度读取失败：{{ progressError }}<template v-if="progress">；保留上次快照</template></p>
         <div class="tc-detail-view-toolbar">
           <div class="tc-detail-tabs" role="tablist" aria-label="任务详情视图" @keydown="tabKeys"><button v-for="item in tabs" :id="`tc-detail-tab-${item.id}`" :key="item.id" type="button" role="tab" :data-detail-tab="item.id" :aria-selected="tab === item.id" :aria-controls="`tc-detail-panel-${item.id}`" :tabindex="tab === item.id ? 0 : -1" @click="selectTab(item.id)">{{ item.label }}</button></div>

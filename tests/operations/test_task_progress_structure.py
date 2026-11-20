@@ -46,6 +46,21 @@ def test_conditions_use_frozen_config_but_actual_execution_takes_precedence():
         "label": "本次任务启用 Codex 授权", "state": "met", "evidence": "explicit"}
 
 
+def test_codex_sub2api_events_use_one_stable_stage_with_or_without_summary():
+    events = [event(1, "sub2api_sync", "running")]
+    running = snapshot("codex_retry", events=events)
+    complete = snapshot("codex_retry", status="success",
+                        result_summary={"sub2api_sync": {"status": "success"}},
+                        events=[*events, event(2, "sub2api_sync", "success")])
+
+    for value, state, ids in ((running, "running", ["1"]), (complete, "success", ["1", "2"])):
+        sync_steps = [item for item in value["main_steps"] if "sub2api_sync" in item["raw_stages"]]
+        assert len(sync_steps) == 1
+        assert sync_steps[0]["id"] == "sub2api_sync"
+        assert sync_steps[0]["display_status"] == state
+        assert sync_steps[0]["event_ids"] == ids
+
+
 def test_child_dispatch_success_remains_waiting_and_does_not_claim_parallelism():
     summary = {"planned_steps": ["refresh_at", "password", "codex"], "awaiting_steps": ["refresh_at"],
                "continuation_steps": ["password", "codex"], "refresh_at": {"task_id": 30, "accepted": True}}

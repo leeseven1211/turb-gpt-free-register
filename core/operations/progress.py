@@ -1384,11 +1384,13 @@ def build_progress_snapshot(
                 explicit = explicit or bool(_event_id(event))
             continue
         recorded_id = _raw_to_main(task_key, raw, detail, steps, step_resolutions)
-        if recorded_id is None and state is not None and task_key == "account_completion":
-            # native child 分派可能不在旧计划列表中；仍复用已定义的分派 ID。
+        if recorded_id is None and state is not None and (
+            task_key == "account_completion" or (task_key == "codex_retry" and raw == "sub2api_sync")
+        ):
+            # 实际分派和同步事件可以补回本次模板中未列出的可选步骤。
             stable_id = resolve_step(task_key, raw, detail)
             definition = next((value for value in flow_for(task_key) if value["id"] == stable_id
-                               and stable_id in {"refresh_dispatch", "account_setup_dispatch", "codex_dispatch"}), None)
+                               and stable_id in {"refresh_dispatch", "account_setup_dispatch", "codex_dispatch", "sub2api_sync"}), None)
             if definition and not _find_step(steps, stable_id):
                 steps.insert(max(0, len(steps) - 1), _step(definition))
                 recorded_id = stable_id

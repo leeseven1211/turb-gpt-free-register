@@ -182,6 +182,7 @@ TASK_TEMPLATES: _FLOW = {
         _s("authenticate", "login", "login_password", "login_mfa", "email_otp", "mfa_challenge"),
         _s("workspace"), _s("phone_verify", "phone_check", "phone_acquire", "phone_otp"),
         _s("consent"), _s("callback"), _s("credential", "credential_confirm", "credential_persist"),
+        _s("sub2api_sync"),
     ),
     "twofa_retry": _flow(_s("network"), _s("browser"), _s("authenticate", "login", "login_password", "email_otp", "mfa_challenge"), _s("set_twofa", "twofa", "twofa_result"), _s("plan_check")),
     "account_setup_retry": _flow(_s("network"), _s("plan_check"), _s("browser"), _s("authenticate", "login", "email_otp", "mfa_challenge"), _s("set_password", "login_password", "password_reset", "password_reset_otp", "password_checkpoint"), _s("set_twofa", "twofa", "twofa_result")),
@@ -269,7 +270,6 @@ _PRESENTATION_CONDITIONS["account_completion"].update({
 def stage_presentation_for(task_type: str, step_id: str) -> dict[str, Any]:
     """返回展示约定；runtime_contract 不代表执行事件或顺序已确认。"""
     known = step_id in {item["id"] for item in TASK_TEMPLATES.get(task_type, ())}
-    known = known or (task_type == "codex_retry" and step_id == "sub2api_sync")
     condition = _PRESENTATION_CONDITIONS.get(task_type, {}).get(step_id)
     kind = "result" if step_id == "result" else "conditional" if condition else "stage" if known else "unknown"
     if task_type == "account_completion" and step_id in {"refresh_dispatch", "account_setup_dispatch", "codex_dispatch"}:
@@ -329,9 +329,9 @@ def flow_for(task_type: Any, run: dict[str, Any] | None = None) -> list[dict[str
         and (task_key == "password_setup" or twofa_driver not in {"browser", "roxy", "roxybrowser", "browser_fallback"})
     ):
         flow = tuple(item for item in flow if item["id"] != "browser")
-    if task_key == "codex_retry":
-        if config.get("auto_upload_sub2api") or result_summary.get("sub2api_sync"):
-            flow = (*flow[:-1], _s("sub2api_sync"), flow[-1])
+    if task_key == "codex_retry" and run is not None:
+        if not (config.get("auto_upload_sub2api") or result_summary.get("sub2api_sync")):
+            flow = tuple(item for item in flow if item["id"] != "sub2api_sync")
     planned_value = result_summary.get("planned_steps")
     planned_steps = planned_value if isinstance(planned_value, (list, tuple)) else []
     planned = {str(value).strip().lower() for value in planned_steps if str(value).strip()}
@@ -410,10 +410,13 @@ def resolve_step(task_type: Any, stage: Any, detail: dict[str, Any] | None = Non
     if is_task_lifecycle_stage(task_key, stage):
         return None
     explicit = str(detail_value.get("main_step_id") or detail_value.get("step_id") or "").strip()
+    raw = normalize_stage(stage)
     known = {item["id"] for item in flow_for(task_key, run)}
     if explicit in known:
         return explicit
-    raw = normalize_stage(stage)
+    # 实际事件在运行结果写入前也能关联到可选步骤。
+    if task_key == "codex_retry" and raw == "sub2api_sync":
+        return "sub2api_sync"
     if raw == "account_status" and task_key in _ACCOUNT_SETUP_TASK_TYPES:
         return "result"
     if raw in known:

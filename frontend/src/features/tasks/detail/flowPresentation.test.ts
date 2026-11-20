@@ -76,6 +76,26 @@ describe('阶段与依赖展示', () => {
     expect(wrapper.emitted('filter')?.[1]).toEqual([null]);
     wrapper.unmount();
   });
+  it('Codex 补跑主栏展示有记录的四种状态，模板占位留在折叠详情', () => {
+    const wrapper = mount(TaskProgress, { props: {
+      taskType: 'codex_retry', filter: null, active: true, context: '1:10',
+      progress: { task_id: 1, run_id: 10, revision: '1', outcome: { status: 'running' }, main_steps: [
+        step({ id: 'callback', observed_order: 1 }),
+        step({ id: 'phone_verify', state: 'skipped', observed_order: 2 }),
+        step({ id: 'sync', state: 'failed', observed_order: 3 }),
+        step({ id: 'credential', state: 'running', observed_order: 4 }),
+        step({ id: 'consent', label: '确认授权', state: 'pending', display_status: 'record_incomplete', evidence: 'unobserved', event_ids: ['99'] }),
+      ] },
+    } });
+    const statuses = wrapper.findAll('.tc-step-status');
+    expect(statuses.map(item => item.text())).toEqual(['已完成', '已跳过', '失败', '执行中']);
+    expect(statuses.map(item => item.classes().find(name => name.startsWith('tc-badge--')) || '')).toEqual(
+      ['tc-badge--success', '', 'tc-badge--danger', 'tc-badge--active'],
+    );
+    expect(wrapper.get('.tc-progress-track').text()).not.toContain('确认授权');
+    expect(wrapper.get('.tc-flow-relations').text()).toContain('确认授权');
+    wrapper.unmount();
+  });
   it('共用泛化分类但原文不同的失败保留两个原因与原始证据', () => {
     const wrapper = mount(TaskFailure, { props: {
       failure: { label: '登录验证', message: '验证码过期', error_info: { summary: '登录失败', cause_summary: '验证码无效' } },
