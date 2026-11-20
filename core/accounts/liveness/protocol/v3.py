@@ -68,234 +68,126 @@ def _reraise_control(exception: BaseException) -> None:
 
 
 def _client_auth_context(session, payload: dict) -> dict:
-    """Read the server's auth context from response or its signed cookie.
-
-    Cookie data only selects a server challenge; final Session/AT identity is
-    still verified independently. Never expose decoded contents in results.
-    """
-    explicit = payload.get("oai-client-auth-session")
-    if isinstance(explicit, dict) and explicit:
-        return explicit
-    jar = session.session.cookies
-    candidates = []
-    for cookie in getattr(jar, "jar", jar):
-        if (getattr(cookie, "name", "") != "oai-client-auth-session"
-                or str(getattr(cookie, "domain", "")).lower().lstrip(".") not in {"auth.openai.com", "openai.com"}
-                or (getattr(cookie, "expires", None) and cookie.expires <= time.time())):
-            continue
-        raw = str(cookie.value or "")
-        if len(raw) > 65536:
-            continue
-        raw = unquote(raw).strip('"')
-        # Both signed payload.signature and JWT header.payload.signature occur.
-        for segment in raw.split(".")[:2]:
-            try:
-                decoded = json.loads(base64.urlsafe_b64decode(segment + "=" * (-len(segment) % 4)).decode("utf-8"))
-            except (ValueError, UnicodeError):
-                continue
-            if not isinstance(decoded, dict):
-                continue
-            decoded = decoded.get("oai-client-auth-session", decoded)
-            if not isinstance(decoded, dict):
-                continue
-            context = {key: decoded[key] for key in ("mfa_challenge_factors", "mfa_factors", "workspaces", "workspace_id") if key in decoded}
-            if context:
-                candidates.append(context)
-    unique = {json.dumps(value, sort_keys=True): value for value in candidates}
-    if len(unique) > 1:
-        raise _error("auth_context_ambiguous", category="response")
-    return next(iter(unique.values()), {})
+    """Compatibility entry; execution and explicit capabilities live in the kernel."""
+    from core.kernels.protocol.local.refresh_at.v3 import _client_auth_context as execute, ClientAuthContextDependencies
+    dependencies = ClientAuthContextDependencies(
+        base64=base64,
+        json=json,
+        time=time,
+        unquote=unquote,
+        _error=_error,
+    )
+    return execute(session, payload, _deps=dependencies)
 
 
 def _trusted_url(value: str, *, base=_AUTH) -> str:
-    target = urljoin(base, str(value or ""))
-    try:
-        parsed = urlparse(target)
-        if (parsed.scheme != "https" or parsed.hostname not in _HOSTS
-                or parsed.port not in (None, 443) or parsed.username or parsed.password):
-            raise ValueError
-    except (TypeError, ValueError):
-        raise _error("untrusted_auth_url", category="response") from None
-    return target
+    """Compatibility entry; execution and explicit capabilities live in the kernel."""
+    from core.kernels.protocol.local.refresh_at.v3 import _trusted_url as execute, TrustedUrlDependencies
+    dependencies = TrustedUrlDependencies(
+        urljoin=urljoin,
+        urlparse=urlparse,
+        _HOSTS=_HOSTS,
+        _error=_error,
+    )
+    return execute(value, base=base, _deps=dependencies)
 
 
 def _continue(payload: dict) -> str:
-    page = payload.get("page") or {}
-    page = page if isinstance(page, dict) else {}
-    nested = page.get("payload") or {}
-    nested = nested if isinstance(nested, dict) else {}
-    value = (payload.get("continue_url") or payload.get("external_url") or payload.get("url")
-             or page.get("continue_url") or page.get("external_url") or page.get("url") or nested.get("url"))
-    return _trusted_url(value) if value else ""
+    """Compatibility entry; execution and explicit capabilities live in the kernel."""
+    from core.kernels.protocol.local.refresh_at.v3 import _continue as execute, ContinueDependencies
+    dependencies = ContinueDependencies(
+        _trusted_url=_trusted_url,
+    )
+    return execute(payload, _deps=dependencies)
 
 
 def _follow(session, url: str, *, referer=_CHAT + "/") -> str:
-    """Check every redirect before sending any cookies to the next origin."""
-    current = _trusted_url(url)
-    for _ in range(12):
-        parsed = urlparse(current)
-        header_method = session.get_chatgpt_navigate_headers if parsed.hostname == "chatgpt.com" else session.get_auth_navigate_headers
-        response = session.get(current, headers=header_method(referer=referer), allow_redirects=False)
-        status = int(getattr(response, "status_code", 0) or 0)
-        if status in {301, 302, 303, 307, 308}:
-            location = str((getattr(response, "headers", {}) or {}).get("location") or "")
-            if not location:
-                raise _error("auth_redirect_invalid", category="response")
-            referer, current = current, _trusted_url(location, base=current)
-            continue
-        if not 200 <= status < 300:
-            error = _error("auth_navigation_failed", category="network", retryable=status in {403, 429} or status >= 500)
-            error.diagnostics = {"operation": "protocol_v3_auth", "http_status": status, "response_observed": True}
-            raise error
-        return current
-    raise _error("auth_redirect_limit", category="response")
+    """Compatibility entry; execution and explicit capabilities live in the kernel."""
+    from core.kernels.protocol.local.refresh_at.v3 import _follow as execute, FollowDependencies
+    dependencies = FollowDependencies(
+        urlparse=urlparse,
+        _error=_error,
+        _trusted_url=_trusted_url,
+    )
+    return execute(session, url, referer=referer, _deps=dependencies)
 
 
 def _factor(payload: dict, url: str) -> str:
+    """Compatibility entry; execution and explicit capabilities live in the kernel."""
+    from core.kernels.protocol.local.refresh_at.v3 import _factor as execute, FactorDependencies
     from core.accounts.liveness.protocol.v2 import _extract_factor_id
-    direct = _extract_factor_id(payload, url)
-    if direct:
-        return direct
-    context = payload.get("oai-client-auth-session") or {}
-    if isinstance(context, dict):
-        factors = [item for key in ("mfa_challenge_factors", "mfa_factors")
-                   for item in (context.get(key) or []) if isinstance(item, dict) and item.get("factor_type") == "totp" and item.get("id")]
-        unique = {str(item["id"]) for item in factors}
-        if len(unique) == 1:
-            return unique.pop()
-    raise _error("mfa_factor_missing", category="response")
+    dependencies = FactorDependencies(
+        _error=_error,
+        _extract_factor_id=_extract_factor_id,
+    )
+    return execute(payload, url, _deps=dependencies)
 
 
 def _account_identity(target: dict) -> tuple[str, str]:
-    saved = target.get("chatgpt_session") or {}
-    if isinstance(saved, str):
-        try:
-            saved = json.loads(saved)
-        except (ValueError, TypeError):
-            saved = {}
-    saved = saved if isinstance(saved, dict) else {}
-    try:
-        claims = token_claims(str(target.get("access_token") or ""))
-    except Exception:
-        claims = {}
-    return (str(target.get("user_id") or (saved.get("user") or {}).get("id") or claims.get("user_id") or ""),
-            str(target.get("chatgpt_account_id") or (saved.get("account") or {}).get("id") or claims.get("account_id") or ""))
+    """Compatibility entry; execution and explicit capabilities live in the kernel."""
+    from core.kernels.protocol.local.refresh_at.v3 import _account_identity as execute, AccountIdentityDependencies
+    dependencies = AccountIdentityDependencies(
+        json=json,
+        token_claims=token_claims,
+    )
+    return execute(target, _deps=dependencies)
 
 
 def _verify_identity(info: dict, email: str, target: dict) -> None:
-    user, account = info.get("user") or {}, info.get("account") or {}
-    if not isinstance(user, dict) or not isinstance(account, dict) or not str(user.get("email") or "").strip():
-        raise _error("identity_unconfirmed", category="response")
-    if str(user["email"]).strip().lower() != email.lower():
-        raise _error("identity_mismatch", category="account")
-    user_id, account_id = _account_identity(target)
-    if (user_id and str(user.get("id") or "") != user_id) or (account_id and str(account.get("id") or "") != account_id):
-        raise _error("identity_mismatch", category="account")
-    try:
-        claims = token_claims(str(info.get("accessToken") or ""))
-    except Exception:
-        claims = {}
-    if ((claims.get("email") and str(claims["email"]).strip().lower() != email.lower())
-            or (claims.get("user_id") and str(claims["user_id"]) != str(user.get("id") or ""))
-            or (claims.get("account_id") and str(claims["account_id"]) != str(account.get("id") or ""))):
-        raise _error("identity_mismatch", category="account")
+    """Compatibility entry; execution and explicit capabilities live in the kernel."""
+    from core.kernels.protocol.local.refresh_at.v3 import _verify_identity as execute, VerifyIdentityDependencies
+    dependencies = VerifyIdentityDependencies(
+        _account_identity=_account_identity,
+        _error=_error,
+        token_claims=token_claims,
+    )
+    return execute(info, email, target, _deps=dependencies)
 
 
 def _workspace(payload: dict, target: dict) -> str:
-    page = payload.get("page") or {}
-    context = payload.get("oai-client-auth-session") or {}
-    candidates = context.get("workspaces") if isinstance(context, dict) else None
-    if candidates is None and isinstance(page, dict):
-        nested = page.get("payload") or {}
-        candidates = nested.get("workspaces") if isinstance(nested, dict) else None
-    candidates = [item for item in (candidates or []) if isinstance(item, dict) and item.get("id")]
-    unique = {str(item["id"]): item for item in candidates}
-    expected = _account_identity(target)[1]
-    matched = [str(item["id"]) for item in candidates if expected and expected in {str(item["id"]), str(item.get("account_id") or "")}]
-    if len(set(matched)) == 1:
-        return matched[0]
-    if len(unique) == 1:
-        return next(iter(unique))
-    raise _error("workspace_ambiguous" if unique else "workspace_missing", category="response")
+    """Compatibility entry; execution and explicit capabilities live in the kernel."""
+    from core.kernels.protocol.local.refresh_at.v3 import _workspace as execute, WorkspaceDependencies
+    dependencies = WorkspaceDependencies(
+        _account_identity=_account_identity,
+        _error=_error,
+    )
+    return execute(payload, target, _deps=dependencies)
 
 
 def _read_session(session, *, cached: bool) -> dict | None:
-    try:
-        response = session.get(_SESSION_URL, headers=session.get_nextauth_headers(referer=_CHAT + "/"), allow_redirects=False)
-    except (OperationCancelled, OperationLeaseLost):
-        raise
-    except Exception:
-        raise _error("cached_session_network_failed" if cached else "session_fetch_failed", category="network", retryable=True) from None
-    status = int(getattr(response, "status_code", 0) or 0)
-    if cached and status == 401:
-        return None
-    if not 200 <= status < 300:
-        error = _error("cached_session_http_failed" if cached else "session_fetch_failed", category="network", retryable=status in {403, 429} or status >= 500)
-        error.diagnostics = {"operation": "session_reuse" if cached else "protocol_v3_auth", "http_status": status, "response_observed": True}
-        raise error
-    try:
-        info = response.json()
-    except Exception:
-        raise _error("cached_session_invalid_response" if cached else "session_invalid_response", category="response") from None
-    if not isinstance(info, dict):
-        raise _error("cached_session_invalid_response" if cached else "session_invalid_response", category="response")
-    if not str(info.get("accessToken") or "").strip():
-        if cached and not info:
-            return None
-        raise _error("access_token_missing", category="response")
-    try:
-        expired = token_claims(str(info["accessToken"])).get("token_expired") is True
-    except (ValueError, TypeError, OverflowError):
-        raise _error("session_invalid_response", category="response") from None
-    if expired:
-        raise _error("access_token_expired", category="auth")
-    return info
+    """Compatibility entry; execution and explicit capabilities live in the kernel."""
+    from core.kernels.protocol.local.refresh_at.v3 import _read_session as execute, ReadSessionDependencies
+    dependencies = ReadSessionDependencies(
+        OperationCancelled=OperationCancelled,
+        OperationLeaseLost=OperationLeaseLost,
+        _CHAT=_CHAT,
+        _SESSION_URL=_SESSION_URL,
+        _error=_error,
+        token_claims=token_claims,
+    )
+    return execute(session, cached=cached, _deps=dependencies)
 
 
 def _cookie_payload(session, info: dict) -> dict:
-    cookies = []
-    cookie_jar = session.session.cookies
-    for item in getattr(cookie_jar, "jar", cookie_jar):
-        domain = str(getattr(item, "domain", "") or "").lower().lstrip(".")
-        expiry = getattr(item, "expires", None)
-        if domain not in _COOKIE_HOSTS or (expiry and float(expiry) <= time.time()):
-            continue
-        cookies.append({"name": str(item.name), "value": str(item.value), "domain": str(item.domain),
-                        "path": str(item.path or "/"), "secure": bool(item.secure), "expires": expiry})
-    # Store only device fields, never route credentials, navigation URLs or trace IDs.
-    profile = {key: value for key, value in (getattr(session, "browser_profile", {}) or {}).items()
-               if key in _STABLE_PROFILE_FIELDS and key not in {"script_src_samples", "window_feature_flags", "navigator_proto_samples", "document_key_samples", "window_key_samples"}}
-    return {"cookies": cookies, "device_id": str(session.device_id), "browser_profile": profile,
-            "user_id": str((info.get("user") or {}).get("id") or ""),
-            "chatgpt_account_id": str((info.get("account") or {}).get("id") or "")}
+    """Compatibility entry; execution and explicit capabilities live in the kernel."""
+    from core.kernels.protocol.local.refresh_at.v3 import _cookie_payload as execute, CookiePayloadDependencies
+    dependencies = CookiePayloadDependencies(
+        time=time,
+        _COOKIE_HOSTS=_COOKIE_HOSTS,
+        _STABLE_PROFILE_FIELDS=_STABLE_PROFILE_FIELDS,
+    )
+    return execute(session, info, _deps=dependencies)
 
 
 def _restore_cookies(session, payload: dict) -> None:
-    cookies = payload.get("cookies")
-    if not isinstance(cookies, list) or not cookies or len(cookies) > 200:
-        raise ValueError("invalid_cached_cookies")
-    for item in cookies:
-        if not isinstance(item, dict) or str(item.get("domain") or "").lower().lstrip(".") not in _COOKIE_HOSTS:
-            raise ValueError("invalid_cached_cookie_domain")
-        name, value = item.get("name"), item.get("value")
-        if not isinstance(name, str) or not isinstance(value, str) or not name:
-            raise ValueError("invalid_cached_cookie")
-        expiry = item.get("expires")
-        if expiry is not None:
-            expiry = int(expiry)
-            if expiry <= time.time():
-                continue
-        domain = item["domain"]
-        # curl_cffi Cookies.set lacks expires; the underlying standard CookieJar
-        # retains it and works with both real curl and offline test containers.
-        jar = session.session.cookies
-        getattr(jar, "jar", jar).set_cookie(Cookie(
-            version=0, name=name, value=value, port=None, port_specified=False,
-            domain=domain, domain_specified=True, domain_initial_dot=domain.startswith("."),
-            path=str(item.get("path") or "/"), path_specified=True,
-            secure=bool(item.get("secure", True)), expires=expiry, discard=expiry is None,
-            comment=None, comment_url=None, rest={}, rfc2109=False,
-        ))
+    """Compatibility entry; execution and explicit capabilities live in the kernel."""
+    from core.kernels.protocol.local.refresh_at.v3 import _restore_cookies as execute, RestoreCookiesDependencies
+    dependencies = RestoreCookiesDependencies(
+        Cookie=Cookie,
+        time=time,
+        _COOKIE_HOSTS=_COOKIE_HOSTS,
+    )
+    return execute(session, payload, _deps=dependencies)
 
 
 def _cache_invalidate(account_id, email):
@@ -330,108 +222,35 @@ def _success(session, info, *, email, target, account_id, checked_at, methods, o
 
 
 def _authenticate(session, initial_url, *, email, target, password, secret, progress):
-    url = _follow(session, initial_url)
-    payload = {"continue_url": url}
-    methods, seen = progress["methods"], set()
-    for _ in range(8):
-        context = _client_auth_context(session, payload)
-        if context:
-            payload = {**payload, "oai-client-auth-session": context}
-        url = _continue(payload)
-        page = payload.get("page") or {}
-        kind = str(page.get("type") or "").lower() if isinstance(page, dict) else ""
-        path = urlparse(url).path.rstrip("/").lower() if url else ""
-        if kind in {"about_you", "about-you", "create_account", "create-account"} or path in {"/about-you", "/create-account/password", "/create-account"}:
-            raise _error("account_profile_required", category="account")
-        if "mfa" in kind or path.startswith("/mfa-challenge"):
-            stage = "mfa"
-        elif kind == "workspace" or path == "/workspace":
-            stage = "workspace"
-        elif path == "/log-in/password" or kind in {"password", "login_password", "password_verify"}:
-            stage = "password"
-        elif path == "/email-verification" or kind in {"email_otp", "email_verification"}:
-            stage = "email_otp"
-        elif url:
-            stage = "callback"
-        else:
-            raise _error("auth_page_unknown", category="response")
-        if stage == "email_otp" and account_email_is_invalid(email):
-            if "password" in seen:
-                raise _error("email_verification_required", category="email")
-            if not password:
-                raise _error("password_missing", category="configuration")
-            # Navigation only: the server must actually offer the password page
-            # before a saved password is submitted. Never bypass an email challenge.
-            offered = _follow(session, _AUTH + "/log-in/password", referer=url)
-            if urlparse(offered).path.rstrip("/") != "/log-in/password":
-                raise _error("password_login_unavailable", category="auth")
-            payload = {"continue_url": offered}
-            continue
-        if stage in seen:
-            raise _error("auth_challenge_loop", category="response")
-        seen.add(stage)
-        progress["attempted"] = stage
-        if stage == "password":
-            if not password:
-                raise _error("password_missing", category="configuration")
-            payload = _password_verify(session, password)
-            methods.append("password")
-        elif stage == "email_otp":
-            if account_email_is_invalid(email):
-                raise _error("email_verification_required", category="email")
-            requested_at = time.time()
-            from core.network.at_transport_recovery import current_scope
-
-            if current_scope() is not None:
-                def validate_current_code(code):
-                    # v3 保持原有 POST、禁止跳转及结构化提交回执，不切换到共享验证器。
-                    return _post_json(
-                        session, _AUTH + "/api/accounts/email-otp/validate",
-                        headers=session.get_auth_headers(referer=_AUTH + "/email-verification"),
-                        payload={"code": code}, operation="email_otp_validate",
-                    )
-
-                try:
-                    payload = _validate_with_retry(session, email, requested_at, at_validator=validate_current_code)
-                except (OperationCancelled, OperationLeaseLost, ProtocolV2AuthError):
-                    raise
-                except Exception as exc:
-                    _reraise_control(exc)
-                    error = _error("email_otp_failed", category="email")
-                    error.diagnostics = otp_failure_diagnostics(exc)
-                    raise error from exc
-            else:
-                send_email_otp(session)
-                try:
-                    code = wait_for_otp(email, after_ts=requested_at)
-                except (OperationCancelled, OperationLeaseLost):
-                    raise
-                except Exception as exc:
-                    error = _error("email_otp_failed", category="email")
-                    error.diagnostics = otp_failure_diagnostics(exc)
-                    raise error from None
-                payload = _post_json(session, _AUTH + "/api/accounts/email-otp/validate", headers=session.get_auth_headers(referer=_AUTH + "/email-verification"), payload={"code": code}, operation="email_otp_validate")
-            methods.append("email_otp")
-        elif stage == "mfa":
-            if not secret:
-                raise _error("mfa_secret_missing", category="configuration")
-            factor = _factor(payload, url)
-            _mfa_issue_challenge(session, factor)
-            payload = _mfa_verify(session, factor, _totp_code(secret))
-            methods.append("mfa")
-        elif stage == "workspace":
-            payload = _post_json(session, _AUTH + "/api/accounts/workspace/select", headers=session.get_auth_headers(referer=url or _AUTH + "/workspace"), payload={"workspace_id": _workspace(payload, target)}, operation="workspace_select")
-        else:
-            final = _follow(session, url)
-            final_path = urlparse(final).path.rstrip("/").lower()
-            if final_path in {"/about-you", "/log-in/password", "/email-verification", "/workspace"} or final_path.startswith("/mfa-challenge"):
-                payload = {"continue_url": final}
-                seen.discard("callback")
-                continue
-            if urlparse(final).hostname != "chatgpt.com":
-                raise _error("auth_page_unknown", category="response")
-            return _read_session(session, cached=False), methods or ["existing_session"]
-    raise _error("auth_challenge_loop", category="response")
+    """Compatibility entry; execution and explicit capabilities live in the kernel."""
+    from core.kernels.protocol.local.refresh_at.v3 import _authenticate as execute, AuthenticateDependencies
+    dependencies = AuthenticateDependencies(
+        time=time,
+        urlparse=urlparse,
+        OperationCancelled=OperationCancelled,
+        OperationLeaseLost=OperationLeaseLost,
+        ProtocolV2AuthError=ProtocolV2AuthError,
+        _AUTH=_AUTH,
+        _client_auth_context=_client_auth_context,
+        _continue=_continue,
+        _error=_error,
+        _factor=_factor,
+        _follow=_follow,
+        _mfa_issue_challenge=_mfa_issue_challenge,
+        _mfa_verify=_mfa_verify,
+        _password_verify=_password_verify,
+        _post_json=_post_json,
+        _read_session=_read_session,
+        _reraise_control=_reraise_control,
+        _totp_code=_totp_code,
+        _validate_with_retry=_validate_with_retry,
+        _workspace=_workspace,
+        account_email_is_invalid=account_email_is_invalid,
+        otp_failure_diagnostics=otp_failure_diagnostics,
+        send_email_otp=send_email_otp,
+        wait_for_otp=wait_for_otp,
+    )
+    return execute(session, initial_url, email=email, target=target, password=password, secret=secret, progress=progress, _deps=dependencies)
 
 
 @serialize_email_auth

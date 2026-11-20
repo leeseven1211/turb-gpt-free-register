@@ -572,7 +572,7 @@ REGISTRATION_DRIVER=protocol_oss_2
 
 新注册恢复前置密码流程：验证码落地页或 `passwordless_signup` 分支会先尝试进入创建密码页、提交密码，再重新发码并继续验证；不要求静态 HTML 中存在密码链接。原身份续跑由持久化 Run 的执行类型识别，优先沿本轮实际密码、验证码、资料或回调状态继续，复用原候选密码。CLI 在仅预认证中断或候选密码尚未提交时，重试仍执行前置密码；不按执行次数跳过密码。密码创建明确被拒后仍保留原有邮箱验证回退，同时记录 HTTP 状态和白名单错误码；仅通过 OTP 取得 Token 可以保存账号，但不能视为密码已完成，缺项通过原生账号配置任务补齐。
 
-上游组件与本地适配说明见 [UPSTREAM.md](core/registration/protocol_oss_2/upstream/UPSTREAM.md)。原组件许可证为 AGPL-3.0，保留在该目录的 `LICENSE`；不将其标为主项目的 MIT 代码。上游独立邮箱、代理轮换、SQLite、凭据明文日志、付费套餐检测及内置 Codex OAuth 不接入。
+上游组件与本地适配说明见 [UPSTREAM.md](core/kernels/protocol/protocol_oss_2/upstream/UPSTREAM.md)。原组件许可证为 AGPL-3.0，保留在该目录的 `LICENSE`；不将其标为主项目的 MIT 代码。上游独立邮箱、代理轮换、SQLite、凭据明文日志、付费套餐检测及内置 Codex OAuth 不接入。
 
 失败诊断由外围适配记录；步骤内网络恢复由独立业务协调器控制，诊断写入不参与执行许可。普通模式也保留固定请求类别、HTTP 状态、白名单错误码及异常类型；不会保存凭据或远端正文。任务可区分认证前置传输失败、收到验证码后的传输失败、认证 HTTP 拒绝及资料确认后的会话未完成；资料已成功时，后续失败显示在登录态获取阶段。Roxy 的资料提交明确返回 `registration_disallowed`，或本地未决提交回执阻止新动作时，会显示对应的具体原因；原来的结果未知语义与重跑入口保留。普通和完整抓包均保留 `wrong_email_otp_code` 等固定错误枚举，不凭其他请求的错误推断当前动作失败。远端结果未确认时仍保留原身份和恢复断点；旧记录未保存的细节不会被推测补齐。后置 2FA 错误保留 enroll／activate、HTTP 状态或传输异常类型；配置 schema 不匹配单独显示为本地配置加载错误。
 
@@ -581,6 +581,39 @@ REGISTRATION_DRIVER=protocol_oss_2
 现行注册仅保留 `protocol_oss_2` 和 `roxy`。旧 `protocol`、`protocol_oss`、`roxy_oss` 及历史浏览器注册实现已删除，原始实现与许可证可通过 Git 基线 `a4f20f3` 查看，例如 `git show a4f20f3:core/registration/protocol/__init__.py`。
 
 旧任务与账号的来源标签保留原值供查询；执行和重跑时自动将 `protocol` / `protocol_oss` 映射到 `protocol_oss_2`，将 `roxy_oss` 及旧浏览器标识映射到本地 `roxy`。旧已保存默认配置也按此规则读取，不批量修改历史数据库。新建任务的 API 显式驱动只接受两个现行值。账号查活、刷新 AT、补密码、2FA 和 Codex 的 `protocol` 驱动属于独立账号认证能力，继续使用。
+
+### 驱动扩展与操作隔离
+
+注册、刷新 AT、补密码、2FA、Codex OAuth、普通查活和套餐查询的可选驱动集中登记在
+[`contracts/operation_drivers.py`](contracts/operation_drivers.py)，
+[`config/operation_drivers.py`](config/operation_drivers.py) 保留配置层出口。配置 schema 从目录生成现有选项；
+操作自己的解析入口继续负责配置、任务快照、历史值和能力开关，不能使用其它操作的别名。
+协议版本与驱动分别登记，刷新 AT 的 v1/v2/v3 选择不会改变单版本操作。
+
+代码按“内核 → 实现 → 操作”组织：
+
+| 内核 | 实现 | 操作执行位置 |
+| --- | --- | --- |
+| 浏览器 `browser` | `roxy` | `core/kernels/browser/roxy/` |
+| 协议 `protocol` | `local` | `core/kernels/protocol/local/`，AT 变体位于 `refresh_at/v1.py`、`v2.py`、`v3.py` |
+| 协议 `protocol` | `protocol_oss_2` | `core/kernels/protocol/protocol_oss_2/`，独立注册执行与上游组件 |
+| Rust `rust` | 尚未接入 | 只登记内核类型，没有可执行操作和配置选项 |
+
+[`contracts/kernel_catalog.py`](contracts/kernel_catalog.py) 提供不可变身份和逐操作能力，
+[`core/kernels/registry.py`](core/kernels/registry.py) 按已经解析的绑定懒加载对应入口。
+`auto` 和 `same_as_registration` 是选择策略，由原操作服务按配置快照解析。
+协议刷新 AT 的 `v2` 与注册实现 `protocol_oss_2` 是不同身份。
+
+纯 HTTP、页面和认证状态转换在对应内核实现中；任务、账号保存、会话缓存、邮箱与代理租约、
+回调结算和后处理留在原业务模块。旧公开入口保留兼容委托，通过显式回调把原操作上下文交给执行代码。
+契约目录不初始化配置，不加载浏览器或协议实现；并发额度仍由统一调度管理。
+
+新增实现时，先在所属内核登记实现，再逐操作登记规范值和静态能力，绑定相应执行入口，并补充
+该实现自己的可用性检查，以及选择、快照和结果契约的直接相关验证。登记目录本身不会让新驱动
+自动可用，也不会继承其它驱动的配置要求。公共层共享任务和资源管理，具体请求步骤、重试与恢复不合并。
+`same_as_registration` 通过明确映射选择 Codex 实现，不将注册驱动名称直接视为 OAuth 能力。
+邮箱换绑和 Codex Token 刷新继续使用各自的固定实现，不因本目录新增驱动选项。本轮尚未接入 Rust。
+Rust 后续的来源、子进程通信与恢复边界见 [Rust 内核接入契约](docs/architecture/rust-kernel-bridge.md)。
 
 ---
 
@@ -1619,10 +1652,14 @@ CODEX_PHONE_ENABLED = False
 .
 ├── main.py / web.py / webui.sh      # CLI、WebUI 与托管启动入口
 ├── config/                         # 配置默认值、环境覆盖、运行配置与热加载
+├── contracts/                      # 无初始化副作用的操作选项、内核身份与能力绑定
 ├── core/
+│   ├── kernels/                    # 内核 → 实现 → 操作的执行代码
+│   │   ├── browser/roxy/           # 注册、AT、密码、2FA、Codex 与旧 AT probe
+│   │   └── protocol/              # local/ 账号操作、protocol_oss_2/ 注册与上游源码
 │   ├── registration/               # 注册公共编排、调试、检查点、恢复与后处理
 │   │   ├── service.py / dispatcher.py / standalone.py
-│   │   ├── roxy/ / protocol_oss_2/ # 两种现行注册实现与 protocol-2 upstream 快照
+│   │   ├── roxy/ / protocol_oss_2/ # 两种领域生命周期与旧公开兼容入口
 │   │   └── errors.py / driver_selection.py # 注册错误展示与历史驱动执行映射
 │   ├── accounts/                   # 凭据、补全、导出、AT 刷新与认证上下文清理
 │   │   └── liveness/ / plans/ / inspection/ / email_change/ / deactivation/

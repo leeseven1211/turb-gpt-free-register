@@ -6,7 +6,8 @@
 ## 1. 运行形态与入口
 
 项目以 PostgreSQL 为运行时事实来源，业务模块共享同一核心层。当前源码提供
-`combined`、`web`、`worker` 三种显式模式，生产服务尚未切换到双进程：
+`combined`、`web`、`worker` 三种显式模式；部署可使用 combined 或分离的 Web/Worker，
+实际模式以现役进程管理器为准：
 
 ```text
 CLI main.py
@@ -50,7 +51,7 @@ Web 先停止 HTTP 准入并完成排空，再关闭 runtime。未完成排空�
 的布尔返回值代替真实线程/资源退出。`tools/manage_runtime.py` 与 `webui.sh` 的显式角色
 命令通过 PID、启动时间、目录、release/instance 和 listener 归属绑定本机进程；
 `tools/check_runtime.py` 只读已有状态，不初始化表或执行恢复。服务示例和切换规则见
-[分进程运行说明](../deployment/split-runtime.md)，模板尚未安装，生产服务未切换。
+[分进程运行说明](../deployment/split-runtime.md)。
 
 普通PG连接池按实际连接参数分别计数，默认每池12不是进程/实例总上限；专用owner连接与
 只读probe另计。本批F18只验证当时实际装配的4池键饱和、默认10秒PoolTimeout、owner/probe
@@ -104,9 +105,35 @@ WebUI 只维护现代界面：主模板为 `webui/templates/index.html`。总览
 `webui/static/js/pages/`、`webui/static/js/shared/` 与 `webui/static/css/`。迁移边界、接口类型源与后续顺序见[架构收敛](convergence.md)。旧 `?ui=legacy` 链接和
 `ui_mode=legacy` Cookie 均返回现代页面；相关路由兼容检查属于现代界面的入口验收。
 
-`core/` 内按业务查找：`registration/`、`accounts/`、`codex/`、`email/`、`extract_link/`、`proxy/` 和 `sms/`；域内共用逻辑在各自根部，具体驱动或提供方在子目录。跨业务认证、浏览器、网络、任务和调度分别在 `auth/`、`browser/`、`network/`、`operations/`、`runtime/`，仓储集中于 `storage/<业务>/`。`integrations/` 放外部流程及 sub2api 客户端。
+`core/` 内按业务查找：`registration/`、`accounts/`、`codex/`、`email/`、`extract_link/`、`proxy/` 和 `sms/`。
+执行实现按内核集中在 `kernels/browser/roxy/`、`kernels/protocol/local/` 与
+`kernels/protocol/protocol_oss_2/`。跨业务认证、浏览器资源、网络、任务和调度分别在
+`auth/`、`browser/`、`network/`、`operations/`、`runtime/`，仓储集中于 `storage/<业务>/`。
+`integrations/` 放外部流程及 sub2api 客户端。
 
-注册只保留 `registration/roxy/` 与 `registration/protocol_oss_2/`。protocol-2 的生命周期和后处理位于自身 `lifecycle.py`，错误展示与历史驱动映射使用公共外围模块。旧注册代码可在 Git 基线 `a4f20f3` 查阅；账号协议认证与注册驱动分离。新调用应使用真实实现路径。具体文件索引见 [README 项目结构](../../README.md#项目结构) 和[功能地图](functional-map.md)。
+注册领域只保留 `roxy` 与 `protocol_oss_2` 两种入口。Roxy 的提交观察、OTP 页面、
+Session 身份与资料页面执行归浏览器内核；生命周期、检查点、保留浏览器和保存留在注册领域。
+protocol-2 的独立上游源码和纯执行 runner 归协议内核，领域 `lifecycle.py` 与
+`runtime.py` 继续管理原任务上下文、邮箱、检查点与后处理。旧上游导入路径保留同对象兼容，
+许可证与来源清单位于新上游目录。旧注册代码可在 Git 基线 `a4f20f3` 查阅。
+
+操作驱动的静态目录位于 [`contracts/operation_drivers.py`](../../contracts/operation_drivers.py)，
+[`config/operation_drivers.py`](../../config/operation_drivers.py) 提供配置侧出口。目录按
+`registration`、`refresh_at`、`password_setup`、`twofa`、`codex_oauth`、`live_check` 和
+`plan_check` 分开声明规范选项与历史别名。配置 schema 继续拥有字段及默认值；协议版本能力、
+注册并发类别和注册到 Codex 的纯映射也从目录取得，目录只依赖标准库，不初始化配置或执行服务。
+
+[`contracts/kernel_catalog.py`](../../contracts/kernel_catalog.py) 区分操作、内核、实现与操作内变体；
+浏览器、协议和 Rust 是并列内核，Rust 尚无实现或可执行绑定。`auto`、
+`same_as_registration` 属于策略，不能作为执行器加载。`protocol_oss_2` 不等于 AT `v2`。
+[`core/kernels/registry.py`](../../core/kernels/registry.py) 仅对已解析绑定懒加载入口；
+注册 registry、AT 和 Codex 的选择入口继续保留各自业务解析时机。
+各入口的历史兼容范围不强制合并，
+新 API 的严格校验与历史任务的别名恢复分别处理。任务快照、资源租约、进度、凭据保存与终态
+仍由原服务持有。纯执行模块通过明确的操作上下文回调接受原 helper、取消、OTP 与检查点能力，
+不反向导入领域服务；旧公开函数保留委托和调用时替换点。原自动兜底、重跑、强制动作和
+会话缓存规则不随目录迁移改变。同一 Run 恢复、注册重跑、AT/Codex 新 Run 重跑和批量冻结
+分别沿用各自原规则。Rust 后续接入契约见 [专门说明](rust-kernel-bridge.md)。
 
 配置的模块结构与热加载名称保持不变。工具真实实现归入 `tools/{diagnostics,benchmarks,maintenance,migrations}/`，原命令保留薄入口；测试按业务归组，公共隔离与源码读取帮助文件继续位于 `tests/` 根部。
 

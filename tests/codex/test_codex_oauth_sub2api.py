@@ -203,7 +203,8 @@ class CodexOAuthSub2ApiTests(PostgresTestCase):
         run = {"data": {"config_snapshot": {"auto_upload_sub2api": True}}}
         enabled = {step["id"]: step for step in flow_for("codex_retry", run)}
         self.assertEqual("上传并启用 Sub2API", enabled["sub2api_sync"]["label"])
-        self.assertNotIn("sub2api_sync", {step["id"] for step in flow_for("codex_retry")})
+        self.assertNotIn("sub2api_sync", {step["id"] for step in flow_for("codex_retry", {})})
+        self.assertIn("sub2api_sync", {step["id"] for step in flow_for("codex_retry")})
 
     def test_cancellation_after_upload_preserves_uploaded_fact(self):
         error = service.OperationCancelled("已取消")

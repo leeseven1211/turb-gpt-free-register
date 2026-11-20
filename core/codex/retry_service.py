@@ -8,6 +8,7 @@ from contextlib import ExitStack
 from datetime import datetime
 from pathlib import Path
 
+from config.operation_drivers import operation_driver_values, registration_codex_driver
 from core import db
 from core.operations import run_log as task_run_log
 from core.accounts.credentials import get_account_totp_secret_candidate
@@ -1441,10 +1442,14 @@ def run_twofa_worker(
             if plan_driver_override is not None
             else getattr(account_cfg, "ACCOUNT_PLAN_CHECK_DRIVER", "protocol")
         ).strip().lower()
-        if "password" in requested_steps and password_driver not in {"protocol", "roxy", "roxybrowser", "browser"}:
+        if "password" in requested_steps and password_driver not in operation_driver_values(
+            "password_setup", include_aliases=True
+        ):
             raise RuntimeError(f"账号密码补全不支持当前驱动={password_driver or '-'}")
         protocol_password = "password" in requested_steps and password_driver == "protocol" and not force_password_reset
-        if "plan_check" in requested_steps and plan_driver not in {"protocol", "api", "http"}:
+        if "plan_check" in requested_steps and plan_driver not in operation_driver_values(
+            "plan_check", include_aliases=True
+        ):
             raise RuntimeError(f"套餐补全当前仅支持 protocol 驱动，当前驱动={plan_driver or '-'}")
         if "twofa" in requested_steps:
             selected_twofa_mode = normalize_twofa_mode(str(
@@ -2289,7 +2294,7 @@ def _run_worker_legacy(
         oauth_driver = str(getattr(codex_cfg, "CODEX_OAUTH_DRIVER", "protocol") or "protocol").strip().lower()
         if oauth_driver == "same_as_registration":
             oauth_driver = str(getattr(roxy_cfg, "REGISTRATION_DRIVER", "protocol") or "protocol").strip().lower()
-            oauth_driver = {"protocol_oss": "protocol", "protocol_oss_2": "protocol", "roxy_oss": "roxy"}.get(oauth_driver, oauth_driver)
+            oauth_driver = registration_codex_driver(oauth_driver)
         account_task_store.append_event(
             task_id,
             stage="driver",

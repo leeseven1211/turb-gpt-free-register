@@ -148,6 +148,72 @@ def test_real_upstream_flow_saves_password_before_write_and_reuses_local_mail(up
     assert transport.closed is False
 
 
+def test_explicit_otp_timeout_does_not_read_live_email_default(upstream):
+    session, _transport, wait = upstream
+
+    class EmailConfig:
+        @property
+        def OTP_MAX_WAIT(self):
+            raise AssertionError("explicit OTP timeout must not read the live default")
+
+    with patch("config.email", new=EmailConfig()):
+        result = run_flow(session, options={"proxy_country": "JP", "otp_timeout": 73})
+    assert result["access_token"] == "fixture-at"
+    assert wait.call_args.kwargs["max_wait"] == 73
+
+
+def test_otp_default_is_read_after_initial_progress_and_fingerprint(upstream):
+    from core.kernels.protocol.protocol_oss_2.registration import runner
+
+    session, _transport, wait = upstream
+    fingerprint = runner.generate_fingerprint
+    events = []
+
+    class EmailConfig:
+        @property
+        def OTP_MAX_WAIT(self):
+            assert events == ["progress", "fingerprint"]
+            events.append("default")
+            return 91
+
+    def progress(stage, state, _detail):
+        if (stage, state) == ("browser", "running"):
+            events.append("progress")
+
+    def generate_fingerprint(**kwargs):
+        events.append("fingerprint")
+        return fingerprint(**kwargs)
+
+    with (
+        patch("config.email", new=EmailConfig()),
+        patch("core.registration.service.report_job_progress", side_effect=progress),
+        patch.object(runner, "generate_fingerprint", side_effect=generate_fingerprint),
+    ):
+        result = run_flow(session)
+    assert result["access_token"] == "fixture-at"
+    assert events == ["progress", "fingerprint", "default"]
+    assert wait.call_args.kwargs["max_wait"] == 91
+
+
+def test_initial_cancellation_does_not_read_otp_default(upstream):
+    from core.registration.service import StopRequested
+
+    session, transport, _wait = upstream
+
+    class EmailConfig:
+        @property
+        def OTP_MAX_WAIT(self):
+            raise AssertionError("stopped registration must not read the OTP default")
+
+    with (
+        patch("config.email", new=EmailConfig()),
+        patch("core.registration.service.check_stop_requested", side_effect=StopRequested("unit stop")),
+        pytest.raises(StopRequested),
+    ):
+        run_flow(session)
+    assert transport.requests == []
+
+
 @pytest.mark.parametrize("cancel_type", ["stop", "auth"])
 def test_real_vendor_warmup_does_not_swallow_cancellation_as_a_network_failure(upstream, cancel_type):
     from core.auth.challenge import AuthCancelledError
@@ -707,7 +773,7 @@ def test_otp_resume_persists_core_token_and_keeps_password_for_later_completion(
 
 
 def test_vendor_keeps_license_and_has_no_top_level_config_or_webui_imports():
-    root = Path(__file__).resolve().parents[2] / "core/registration/protocol_oss_2/upstream"
+    root = Path(__file__).resolve().parents[2] / "core/kernels/protocol/protocol_oss_2/upstream"
     assert "GNU AFFERO GENERAL PUBLIC LICENSE" in (root / "LICENSE").read_text()
     for path in root.glob("*.py"):
         text = path.read_text()

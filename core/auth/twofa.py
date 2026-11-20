@@ -4,15 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-
-VALID_TWOFA_MODES = frozenset({"auto", "protocol", "browser"})
-TWOFA_MODE_ALIASES = {
-    "protocol_direct": "auto",
-    "api": "protocol",
-    "http": "protocol",
-    "roxy": "browser",
-    "roxybrowser": "browser",
-}
+from contracts.operation_drivers import (
+    TWOFA_MODE_ALIASES as TWOFA_MODE_ALIASES,
+    VALID_TWOFA_MODES as VALID_TWOFA_MODES,
+    canonical_twofa_executor as canonical_twofa_executor,
+    normalize_twofa_mode as normalize_twofa_mode,
+)
 
 
 @dataclass(frozen=True)
@@ -23,24 +20,6 @@ class TwofaContextPlan:
     executor: str
     auth_source: str
     direct_preferred: bool
-
-
-def normalize_twofa_mode(value: str | None, default: str = "auto") -> str:
-    """Normalize public/legacy values to the three supported 2FA modes."""
-    default_mode = str(default or "auto").strip().lower() or "auto"
-    default_mode = TWOFA_MODE_ALIASES.get(default_mode, default_mode)
-    if default_mode not in VALID_TWOFA_MODES:
-        default_mode = "auto"
-    raw = default_mode if value is None else str(value or "").strip().lower()
-    normalized = TWOFA_MODE_ALIASES.get(raw, raw or default_mode)
-    if normalized not in VALID_TWOFA_MODES:
-        raise ValueError("2FA 驱动只支持 auto、protocol 或 browser")
-    return normalized
-
-
-def canonical_twofa_executor(mode: str | None) -> str:
-    """Return the concrete 2FA executor for a normalized/public mode."""
-    return "browser" if normalize_twofa_mode(mode) == "browser" else "protocol"
 
 
 def plan_twofa_context(

@@ -42,6 +42,8 @@ class PasswordSetupIntegrationTests(unittest.TestCase):
         proxy_country=None,
         route_behavior=None,
         route_requests=None,
+        password_driver="protocol",
+        plan_driver=None,
     ):
         actions = []
         account = {"id": 42, "email": "fixture@example.test", "access_token": "fixture-old-at"}
@@ -168,7 +170,8 @@ class PasswordSetupIntegrationTests(unittest.TestCase):
                 clear_log=False,
                 target_log_path=path,
                 steps=steps or {"password"},
-                password_driver_override="protocol",
+                password_driver_override=password_driver,
+                plan_driver_override=plan_driver,
                 twofa_driver_override="protocol",
                 execution_fence=fence,
                 force_password_reset=force_reset,
@@ -211,6 +214,17 @@ class PasswordSetupIntegrationTests(unittest.TestCase):
         self.assertEqual(["plan", "twofa"], [item[0] for item in actions])
         self.assertTrue(result["ok"], result)
         self.assertFalse(result["browser_opened"])
+
+    def test_completion_accepts_historical_password_and_plan_driver_aliases(self):
+        for password_driver, plan_driver in ((" roxybrowser ", " API "), ("BROWSER", "http")):
+            with self.subTest(password_driver=password_driver, plan_driver=plan_driver):
+                result, actions, *_ = self.run_setup(
+                    steps={"password", "plan_check"},
+                    password_driver=password_driver,
+                    plan_driver=plan_driver,
+                )
+                self.assertTrue(result["ok"], result)
+                self.assertEqual([("plan",), ("browser",)], actions)
 
     def test_plan_failure_keeps_password_and_twofa_results(self):
         result, actions, _account, _fence = self.run_setup(steps={"plan_check", "password", "twofa"}, plan_ok=False)

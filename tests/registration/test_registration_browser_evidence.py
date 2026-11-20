@@ -233,9 +233,10 @@ class RegistrationBrowserEvidenceTests(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("node"), "需要 Node 验证验证码请求观察器")
     def test_direct_fetch_and_xhr_are_observed_before_response_without_rehooking(self):
-        tree = ast.parse(inspect.getsource(_install_email_otp_validate_hook))
-        script = next(node.value for node in ast.walk(tree) if isinstance(node, ast.Constant)
-                      and isinstance(node.value, str) and "__codexEmailOtpValidateHooked" in node.value)
+        driver = SimpleNamespace(execute_script=Mock())
+        _install_email_otp_validate_hook(driver, capture_responses=False)
+        script, capture_responses = driver.execute_script.call_args.args
+        self.assertFalse(capture_responses)
         source = r"""
         const script = SCRIPT;
         let fetches = 0, sends = 0, bodyReads = 0;

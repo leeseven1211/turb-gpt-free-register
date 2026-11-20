@@ -20,6 +20,8 @@ from core.network.response_diagnostics import _auth_payload_from_body
 from core.operations.runtime import OperationCancelled
 from core.operations.task_gateway import OperationLeaseLost
 
+from core.kernels.protocol.local.password_setup import protocol as _protocol_kernel
+
 _CHATGPT = "https://chatgpt.com"
 _AUTH = "https://auth.openai.com"
 _PASSWORD_PAGE = _AUTH + "/reset-password/new-password"
@@ -34,417 +36,205 @@ _OTP_REMOTE_ERROR_CODES = {
 }
 
 
-class ProtocolPasswordSetupError(RuntimeError):
-    """仅携带分类与脱敏说明；未知结果只用于最终密码提交。"""
+ProtocolPasswordSetupError = _protocol_kernel.ProtocolPasswordSetupError
 
-    def __init__(self, code: str, message: str, request_unknown: bool = False,
-                 *, proxy_transport_failed: bool = False):
-        super().__init__(message)
-        self.code = code
-        self.message = message
-        self.request_unknown = request_unknown
-        self.proxy_transport_failed = proxy_transport_failed
+
+def _default_password_otp_provider(email, *, after_ts):
+    source = email_provider.resolve_email_source(email, fallback=False)
+    return email_provider.wait_for_otp(email, after_ts=after_ts, email_source=source)
 
 
 def _check(checkpoint: Callable[[], None] | None) -> None:
-    if checkpoint is not None:
-        checkpoint()
+    return _protocol_kernel._check(checkpoint)
 
 
 def _trusted_url(value: str, *, unknown: bool = False) -> str:
-    try:
-        parsed = urlsplit(str(value or ""))
-        valid = (
-            parsed.scheme == "https" and parsed.hostname in {"chatgpt.com", "auth.openai.com"}
-            and parsed.port in (None, 443) and not parsed.username and not parsed.password
-            and not parsed.fragment
-        )
-    except (ValueError, TypeError):
-        valid = False
-    if not valid:
-        raise ProtocolPasswordSetupError("password_setup_untrusted_redirect", "补密码流程返回了不受信任的跳转地址", unknown)
-    return str(value)
+    return _protocol_kernel._trusted_url(value, unknown=unknown)
 
 
 def _request(session, method: str, url: str, *, checkpoint=None, final: bool = False, **kwargs):
-    _check(checkpoint)
-    try:
-        return getattr(session, method)(url, **kwargs)
-    except _CONTROL_ERRORS:
-        raise
-    except Exception as exc:
-        raise ProtocolPasswordSetupError(
-            "password_setup_request_unknown" if final else "password_setup_network_failed",
-            "密码提交响应未能确认，请保留本次候选密码后核实" if final else "补密码请求未完成，请检查连接后重试",
-            final,
-            proxy_transport_failed=is_proxy_transport_failure(exc),
-        ) from None
+    return _protocol_kernel._request(
+        session,
+        method,
+        url,
+        checkpoint=checkpoint,
+        final=final,
+        _check=_check,
+        is_proxy_transport_failure=is_proxy_transport_failure,
+        **kwargs,
+    )
 
 
 def _payload(response, *, final: bool = False) -> dict:
-    try:
-        data = response.json()
-    except _CONTROL_ERRORS:
-        raise
-    except Exception:
-        data = None
-    status = int(getattr(response, "status_code", 0) or 0)
-    error = data.get("error") if isinstance(data, dict) else None
-    if status < 200 or status >= 300 or error:
-        request_unknown = False
-        details = error if isinstance(error, dict) else {}
-        reason = str(details.get("code") or error or "").lower() + " " + str(details.get("message") or "").lower()
-        if re.search(r"password_(?:already_(?:exists|set|added)|exists)|already (?:has|have|set).{0,20}password|password.{0,20}already", reason):
-            code, message = "password_setup_already_set", "远端账号已设置密码，本操作不会重置已有密码"
-        elif any(item in reason for item in ("invalid_state", "session_expired", "session_invalid", "login_required")) or status == 401:
-            code, message = "password_setup_session_expired", "补密码登录状态已失效，请重新登录后重试"
-        elif any(item in reason for item in ("mfa", "totp")):
-            code, message = "password_setup_mfa_rejected", "补密码 2FA 验证未通过，请检查账号已有的密钥"
-        elif any(item in reason for item in ("wrong_email_otp", "invalid_code", "invalid otp", "wrong code")):
-            code, message = "password_setup_otp_rejected", "补密码邮箱验证码被拒绝，请重新获取本轮验证码"
-        elif status == 429:
-            code, message = "password_setup_rate_limited", "补密码请求受到限流，请稍后重试"
-        elif status == 403:
-            code, message = "password_setup_security_check", "补密码请求未通过安全校验，请检查当前会话和代理"
-        elif final and (status <= 0 or 500 <= status < 600):
-            # 上游错误或缺失 HTTP 状态不能证明密码未落地，仍需保留本次候选密码核实。
-            code, message = "password_setup_request_unknown", "密码提交返回了无法确认结果的上游响应，请保留本次候选密码后核实"
-            request_unknown = True
-        else:
-            code, message = "password_setup_http_rejected", f"补密码接口拒绝了请求（HTTP {status}）"
-        raise ProtocolPasswordSetupError(code, message, request_unknown)
-    if not isinstance(data, dict):
-        raise ProtocolPasswordSetupError("password_setup_response_invalid", "补密码接口返回了无法确认的数据格式", final)
-    return data
+    return _protocol_kernel._payload(response, final=final)
 
 
 def _response_ok(response, *, unknown: bool = False) -> None:
-    status = int(getattr(response, "status_code", 0) or 0)
-    if not 200 <= status < 400:
-        _payload(response, final=unknown)
+    return _protocol_kernel._response_ok(response, unknown=unknown, _payload=_payload)
 
 
 def _follow(session, url: str, *, referer: str, checkpoint=None, final: bool = False) -> str:
-    current = _trusted_url(url, unknown=final)
-    for _ in range(12):
-        chatgpt = urlsplit(current).hostname == "chatgpt.com"
-        headers = (session.get_chatgpt_navigate_headers(referer=referer) if chatgpt
-                   else session.get_auth_navigate_headers(referer=referer))
-        response = _request(session, "get", current, headers=headers, allow_redirects=False, checkpoint=checkpoint, final=final)
-        status = int(getattr(response, "status_code", 0) or 0)
-        if status in (301, 302, 303, 307, 308):
-            location = getattr(response, "headers", {}).get("location") or getattr(response, "headers", {}).get("Location")
-            if not location:
-                raise ProtocolPasswordSetupError("password_setup_redirect_invalid", "补密码跳转响应缺少目标地址", final)
-            referer, current = current, _trusted_url(urljoin(current, location), unknown=final)
-            continue
-        _response_ok(response, unknown=final)
-        return _trusted_url(str(getattr(response, "url", "") or current), unknown=final)
-    raise ProtocolPasswordSetupError("password_setup_redirect_limit", "补密码跳转次数超出限制", final)
+    return _protocol_kernel._follow(
+        session,
+        url,
+        referer=referer,
+        checkpoint=checkpoint,
+        final=final,
+        _request=_request,
+        _response_ok=_response_ok,
+        _trusted_url=_trusted_url,
+    )
 
 
 def _sentinel_headers(session, flow: str, checkpoint=None) -> dict[str, str]:
-    _check(checkpoint)
-    try:
-        challenge = request_sentinel_token(session, flow)
-        _check(checkpoint)
-        if flow in {"email_otp_validate", "authorize_continue"}:
-            token, observer = build_sentinel_header(session, challenge, flow)
-        else:
-            # 共享 runner 尚无 password_reset 页面映射，独立指定页面，不修改注册默认值。
-            profile = dict(getattr(session, "browser_profile", {}) or {})
-            profile["build_id"] = ""
-            output = generate_sentinel_token(
-                challenge=challenge, flow=flow, device_id=session.device_id,
-                user_agent=profile.get("user_agent"), page_url=_PASSWORD_PAGE,
-                browser_profile=profile, sentinel_sid=getattr(session, "sentinel_sid", None),
-                react_listening_key=getattr(session, "react_listening_key", None),
-                react_container_key=getattr(session, "react_container_key", None),
-                react_resources_key=getattr(session, "react_resources_key", None),
-                cookie=session.auth_cookie_header(),
-            )
-            parsed = json.loads(output)
-            observer_value = parsed.pop("_so", None) or parsed.pop("so", None)
-            if (not isinstance(parsed, dict) or not parsed.get("p") or not parsed.get("c")
-                    or parsed.get("id") != session.device_id or parsed.get("flow") != flow):
-                raise ValueError
-            token = json.dumps(parsed, separators=(",", ":"))
-            observer = (json.dumps({"so": observer_value, "c": parsed["c"], "id": session.device_id, "flow": flow}, separators=(",", ":"))
-                        if observer_value else None)
-        if not token:
-            raise ValueError
-    except _CONTROL_ERRORS:
-        raise
-    except Exception as exc:
-        protocol_auth._reraise_control(exc)
-        raise ProtocolPasswordSetupError("password_setup_sentinel_failed", "补密码安全令牌生成失败，尚未提交新密码",
-            proxy_transport_failed=is_proxy_transport_failure(exc)) from None
-    headers = {"openai-sentinel-token": token}
-    if observer:
-        headers["openai-sentinel-so-token"] = observer
-    return headers
+    return _protocol_kernel._sentinel_headers(
+        session,
+        flow,
+        checkpoint,
+        _check=_check,
+        build_sentinel_header=build_sentinel_header,
+        generate_sentinel_token=generate_sentinel_token,
+        is_proxy_transport_failure=is_proxy_transport_failure,
+        request_sentinel_token=request_sentinel_token,
+        reraise_control=protocol_auth._reraise_control,
+    )
 
 
 def _auth_post(session, path: str, payload: dict, *, referer: str, flow: str, checkpoint=None):
-    headers = session.get_auth_headers(referer=referer)
-    headers.update(_sentinel_headers(session, flow, checkpoint))
-    headers["x-access-flow-invocation-id"] = str(uuid.uuid4())
-    return _request(session, "post", _AUTH + path, headers=headers, data=json.dumps(payload), allow_redirects=False, checkpoint=checkpoint)
+    return _protocol_kernel._auth_post(
+        session,
+        path,
+        payload,
+        referer=referer,
+        flow=flow,
+        checkpoint=checkpoint,
+        _request=_request,
+        _sentinel_headers=_sentinel_headers,
+    )
 
 
 def _log_otp_response(operation: str, response) -> None:
-    """只记录固定阶段、HTTP 状态及有限错误枚举，拒绝正文和任意字段值。"""
-    if operation not in _OTP_RESPONSE_OPERATIONS:
-        return
-    try:
-        status = int(getattr(response, "status_code", 0) or 0)
-        status = status if 100 <= status <= 599 else 0
-        data = _auth_payload_from_body(getattr(response, "text", ""))
-    except _CONTROL_ERRORS:
-        raise
-    except Exception as exc:
-        protocol_auth._reraise_control(exc)
-        status, data = 0, {}
-    page = data.get("page")
-    page_type = page.get("type") if isinstance(page, dict) else None
-    page_label = "email_otp_verification" if page_type == "email_otp_verification" else (
-        "other" if isinstance(page, dict) and "type" in page else "missing")
-    error = data.get("error")
-    code = error.get("code") if isinstance(error, dict) else None
-    code_label = code if isinstance(code, str) and code in _OTP_REMOTE_ERROR_CODES else (
-        "other" if isinstance(error, dict) and "code" in error else "missing")
-    logger.info("[补密码] 发码接口响应：operation=%s status=%s page.type=%s remote.error.code=%s",
-        operation, status, page_label, code_label)
+    return _protocol_kernel._log_otp_response(
+        operation,
+        response,
+        _auth_payload_from_body=_auth_payload_from_body,
+        reraise_control=protocol_auth._reraise_control,
+    )
 
 
-def _email_verification_context(session, email: str, *, referer: str, checkpoint=None,
-                                operation: str = "otp_context") -> dict:
-    """按当前客户端契约读取嵌套会话，只保留本轮发码需要的字段。"""
-    headers = session.get_auth_headers(referer=referer)
-    headers.pop("content-type", None)
-    response = _request(session, "get", _AUTH + "/api/accounts/client_auth_session_dump",
-        headers=headers, allow_redirects=False, checkpoint=checkpoint)
-    _log_otp_response(operation, response)
-    payload = _payload(response)
-    context = payload.get("client_auth_session")
-    if not isinstance(context, dict):
-        raise ProtocolPasswordSetupError("password_setup_otp_context_invalid", "补密码发码缺少有效的认证会话上下文")
-    session_id, actual_email = context.get("session_id"), context.get("email")
-    mode, pending = context.get("email_verification_mode"), context.get("passwordless_email_otp_send_pending")
-    if (context.get("is_missing_session") is True or not isinstance(session_id, str) or not session_id
-            or not isinstance(actual_email, str) or actual_email.strip().casefold() != email.strip().casefold()
-            or "email_verification_mode" in context and not isinstance(mode, str)
-            or "passwordless_email_otp_send_pending" in context and not isinstance(pending, bool)):
-        raise ProtocolPasswordSetupError("password_setup_otp_context_invalid", "补密码发码会话尚未与目标账号对应")
-    return {"session_id": session_id, "email": actual_email,
-            **({"email_verification_mode": mode} if "email_verification_mode" in context else {}),
-            "passwordless_email_otp_send_pending": pending}
+def _email_verification_context(
+    session, email: str, *, referer: str, checkpoint=None, operation: str = "otp_context"
+) -> dict:
+    return _protocol_kernel._email_verification_context(
+        session,
+        email,
+        referer=referer,
+        checkpoint=checkpoint,
+        operation=operation,
+        _log_otp_response=_log_otp_response,
+        _payload=_payload,
+        _request=_request,
+    )
 
 
 def _send_email_verification_code(session, email: str, *, referer: str, after_ts: float, checkpoint=None) -> float:
-    """执行验证页初发或明确重发，HTTP 页面跳转不作为发码回执。"""
-    # 授权跳转前已记录时间锚点，兼容服务端或另一请求完成自动发码的情况。
-    rotate = getattr(session, "rotate_document_navigation_id", None)
-    if callable(rotate):
-        rotate()
-    context = _email_verification_context(session, email, referer=referer, checkpoint=checkpoint)
-    pending = context["passwordless_email_otp_send_pending"] is True
-    known_modes = {"passwordless_login", "passwordless_signup", "post_auth_email_verification", "post_signup", "resurrection_login"}
-    raw_mode = context.get("email_verification_mode")
-    mode_label = raw_mode if raw_mode in known_modes else "未提供" if "email_verification_mode" not in context else "其他"
-    logger.info("[补密码] 发码上下文：来源=补密码，模式=%s，待发送=%s", mode_label, "是" if pending else "否")
-    initial = pending and ("email_verification_mode" not in context
-                           or context["email_verification_mode"] in {"passwordless_login", "passwordless_signup"})
-    headers = session.get_auth_headers(referer=referer)
-    # 无正文 POST 仅删键仍会被 libcurl 补成表单类型；None 明确禁止该头，匹配网页请求。
-    headers["content-type"] = None
-    if initial:
-        logger.info("[补密码] 验证页存在待发送状态，正在准备本轮初发请求")
-        headers.update(_sentinel_headers(session, "authorize_continue", checkpoint))
-        current = _email_verification_context(session, email, referer=referer, checkpoint=checkpoint,
-                                              operation="otp_context_recheck")
-        if any(context.get(key) != current.get(key) or (key in context) != (key in current)
-               for key in ("session_id", "email", "email_verification_mode")):
-            raise ProtocolPasswordSetupError("password_setup_otp_context_changed", "补密码发码前认证会话发生变化，尚未发送验证码")
-        if current["passwordless_email_otp_send_pending"] is not True:
-            logger.info("[补密码] 待发送标记已清除，等待本轮邮件")
-            return after_ts
-        path, method_label = "/api/accounts/passwordless/send-otp", "初发"
-    else:
-        logger.info("[补密码] 验证页已有认证挑战，正在明确请求重发本轮验证码")
-        headers.pop("openai-sentinel-token", None)
-        headers.pop("openai-sentinel-so-token", None)
-        path, method_label = "/api/accounts/email-otp/resend", "重发"
-        # 明确重发会开启新的验证码窗口，不能读取授权阶段已到达的旧邮件。
-        after_ts = time.time()
-    headers["x-access-flow-invocation-id"] = str(uuid.uuid4())
-    response = _request(session, "post", _AUTH + path, headers=headers, allow_redirects=False, checkpoint=checkpoint)
-    _log_otp_response("otp_initial_send" if initial else "otp_resend", response)
-    status = int(getattr(response, "status_code", 0) or 0)
-    if initial:
-        data = _payload(response)
-        page = data.get("page")
-        payload = page.get("payload") if isinstance(page, dict) else None
-        if (not isinstance(page, dict) or page.get("type") != "email_otp_verification"
-                or isinstance(payload, dict) and payload.get("errors")):
-            raise ProtocolPasswordSetupError("password_setup_otp_send_unconfirmed", "补密码初发未取得有效的发码回执")
-    elif not 200 <= status < 300:
-        if 300 <= status < 400:
-            raise ProtocolPasswordSetupError("password_setup_otp_send_unconfirmed", "补密码重发未取得有效的发码回执")
-        _payload(response)
-    # 网页重发以 HTTP ok 为成功，允许空响应；初发必须取得明确验证页 JSON。
-    logger.info("[补密码] 验证码%s请求已被接口接受，等待邮件到达", method_label)
-    return after_ts
+    return _protocol_kernel._send_email_verification_code(
+        session,
+        email,
+        referer=referer,
+        after_ts=after_ts,
+        checkpoint=checkpoint,
+        _email_verification_context=_email_verification_context,
+        _log_otp_response=_log_otp_response,
+        _payload=_payload,
+        _request=_request,
+        _sentinel_headers=_sentinel_headers,
+        clock=time,
+    )
 
 
 def _require_password_page(url: str) -> None:
-    parsed = urlsplit(url)
-    if parsed.hostname == "auth.openai.com" and parsed.path.rstrip("/") == "/reset-password/new-password":
-        return
-    path = parsed.path.lower()
-    if "mfa" in path:
-        raise ProtocolPasswordSetupError("password_setup_mfa_secret_missing", "补密码重新验证需要 MFA，请先完成已有 MFA 登录")
-    if path in {"/log-in", "/log-in/password", "/log-in-or-create-account"}:
-        raise ProtocolPasswordSetupError("password_setup_session_expired", "补密码登录状态已失效，请重新登录后重试")
-    raise ProtocolPasswordSetupError("password_setup_page_unexpected", "补密码流程未进入设置新密码页面")
+    return _protocol_kernel._require_password_page(url)
 
 
 def _continuation(data: dict) -> str:
-    page = data.get("page") if isinstance(data.get("page"), dict) else {}
-    payload = page.get("payload") if isinstance(page.get("payload"), dict) else {}
-    return str(data.get("continue_url") or payload.get("url") or "")
+    return _protocol_kernel._continuation(data)
 
 
 def _is_mfa_page(url: str) -> bool:
-    parsed = urlsplit(url)
-    path = parsed.path.rstrip("/")
-    return parsed.hostname == "auth.openai.com" and (path == "/mfa-challenge" or path.startswith("/mfa-challenge/"))
+    return _protocol_kernel._is_mfa_page(url)
 
 
 def _verify_mfa(session, data: dict, url: str, secret: str, *, checkpoint=None) -> str:
-    if not secret:
-        raise ProtocolPasswordSetupError("password_setup_mfa_secret_missing", "补密码重新验证需要账号已有的 2FA 密钥")
-    factor_id = protocol_auth._extract_factor_id(data, url)
-    if not factor_id:
-        raise ProtocolPasswordSetupError("password_setup_mfa_factor_missing", "补密码重新验证未返回有效的 2FA 挑战")
-    logger.info("[补密码] 正在使用账号已有的 2FA 完成重新验证")
-    headers = session.get_auth_headers(referer=url)
-    headers.pop("openai-sentinel-token", None)
-    headers.pop("openai-sentinel-so-token", None)
-    _payload(_request(session, "post", _AUTH + "/api/accounts/mfa/issue_challenge",
-        headers=headers, data=json.dumps({"id": factor_id, "type": "totp", "force_fresh_challenge": False}),
-        allow_redirects=False, checkpoint=checkpoint))
-    _check(checkpoint)
-    try:
-        code = protocol_auth._totp_code(secret)
-    except protocol_auth.ProtocolV2AuthError:
-        raise ProtocolPasswordSetupError("password_setup_mfa_secret_invalid", "账号已有的 2FA 密钥无法生成验证码") from None
-    verified = _payload(_request(session, "post", _AUTH + "/api/accounts/mfa/verify",
-        headers=headers, data=json.dumps({"id": factor_id, "type": "totp", "code": code}),
-        allow_redirects=False, checkpoint=checkpoint))
-    logger.info("[补密码] 2FA 重新验证已通过")
-    return _trusted_url(_continuation(verified))
+    return _protocol_kernel._verify_mfa(
+        session,
+        data,
+        url,
+        secret,
+        checkpoint=checkpoint,
+        _check=_check,
+        _continuation=_continuation,
+        _payload=_payload,
+        _request=_request,
+        _trusted_url=_trusted_url,
+        extract_factor_id=protocol_auth._extract_factor_id,
+        totp_code=protocol_auth._totp_code,
+        mfa_error=protocol_auth.ProtocolV2AuthError,
+    )
 
 
 def _follow_password_page(session, url: str, *, referer: str, checkpoint=None) -> str:
-    parsed = urlsplit(url)
-    if parsed.hostname != "auth.openai.com" or parsed.path.rstrip("/") != "/authorize/continue":
-        _require_password_page(url)
-    landing = _follow(session, url, referer=referer, checkpoint=checkpoint)
-    _require_password_page(landing)
-    return landing
+    return _protocol_kernel._follow_password_page(
+        session,
+        url,
+        referer=referer,
+        checkpoint=checkpoint,
+        _follow=_follow,
+        _require_password_page=_require_password_page,
+    )
 
 
 def _confirm_result(session, data: dict, *, checkpoint=None) -> None:
-    page = data.get("page") if isinstance(data.get("page"), dict) else {}
-    continuation = _continuation(data)
-    if page.get("type") in _PENDING_TYPES or not continuation:
-        raise ProtocolPasswordSetupError("password_setup_result_unconfirmed", "密码提交返回了未完成状态，请保留候选密码后核实", True)
-    parsed = urlsplit(_trusted_url(continuation, unknown=True))
-    query = parse_qs(parsed.query)
-    callback = (parsed.hostname == "chatgpt.com" and parsed.path == "/api/auth/callback/openai"
-                and bool(query.get("code")) and bool(query.get("state")) and not query.get("error"))
-    if page.get("type") == "external_url" and callback:
-        return
-    allowed = (parsed.hostname == "auth.openai.com" and parsed.path.rstrip("/") == "/authorize/continue"
-               or parsed.hostname == "chatgpt.com" and (callback or parsed.path == "/"))
-    if allowed and not query.get("error"):
-        try:
-            landing = urlsplit(_follow(session, continuation, referer=_PASSWORD_PAGE, checkpoint=checkpoint, final=True))
-        except ProtocolPasswordSetupError as exc:
-            # 后续回调失败不能证明先前 password/add 未生效。
-            exc.request_unknown = True
-            raise
-        if landing.hostname == "chatgpt.com" and landing.path == "/" and not parse_qs(landing.query).get("error"):
-            return
-    raise ProtocolPasswordSetupError("password_setup_result_unconfirmed", "密码提交尚未返回受信任的完成状态，请保留候选密码后核实", True)
+    return _protocol_kernel._confirm_result(
+        session, data, checkpoint=checkpoint, _continuation=_continuation, _follow=_follow, _trusted_url=_trusted_url
+    )
 
 
-def add_password(session, email: str, password: str, *, checkpoint=None, on_dispatched=None, on_confirmed=None,
-                 otp_provider=None, totp_secret: str = "") -> dict:
-    """复用已登录会话添加密码；回调均无参数，凭据仅用于当前请求。"""
-    if not isinstance(email, str) or "@" not in email or not isinstance(password, str) or not 12 <= len(password) <= 128:
-        raise ProtocolPasswordSetupError("password_setup_input_invalid", "补密码所需邮箱或新密码格式无效")
-    if not all(re.search(pattern, password) for pattern in (r"[a-z]", r"[A-Z]", r"\d", r"[^A-Za-z0-9]")):
-        raise ProtocolPasswordSetupError("password_setup_input_invalid", "新密码必须包含大小写字母、数字与符号")
-    csrf = _payload(_request(session, "get", _CHATGPT + "/api/auth/csrf", headers=session.get_nextauth_headers(referer=_CHATGPT + "/"), checkpoint=checkpoint))
-    if not isinstance(csrf.get("csrfToken"), str) or not csrf["csrfToken"]:
-        raise ProtocolPasswordSetupError("password_setup_csrf_missing", "补密码流程未取得有效 CSRF 信息")
-    signin_url = _CHATGPT + "/api/auth/signin/openai?" + urlencode({
-        "connection": "password", "login_hint": email, "reauth": "password", "post_login_add_password": "true",
-        "max_age": "0", "ext-oai-did": session.device_id,
-    })
-    headers = session.get_nextauth_headers(referer=_CHATGPT + "/")
-    headers.update({"content-type": "application/x-www-form-urlencoded", "origin": _CHATGPT})
-    signin = _payload(_request(session, "post", signin_url, headers=headers, data=urlencode({"callbackUrl": _CHATGPT + "/", "csrfToken": csrf["csrfToken"], "json": "true"}), allow_redirects=False, checkpoint=checkpoint))
-    authorize_url = _trusted_url(signin.get("url"))
-    _check(checkpoint)
-    otp_after_ts = time.time()
-    landing = _follow(session, authorize_url, referer=_CHATGPT + "/", checkpoint=checkpoint)
-    verification = {}
-    if urlsplit(landing).hostname == "auth.openai.com" and urlsplit(landing).path.rstrip("/") == "/email-verification":
-        _check(checkpoint)
-        requested_at = _send_email_verification_code(session, email, referer=landing, after_ts=otp_after_ts, checkpoint=checkpoint)
-        sent_to = landing
-        try:
-            # 仅补密码采用较长的分段和网络余量，保留原线程取消/租约检查。
-            with use_cooperative_wait(checkpoint or (lambda: None), poll_seconds=5, request_timeout=10):
-                if otp_provider is not None:
-                    otp = otp_provider(email, after_ts=requested_at)
-                else:
-                    source = email_provider.resolve_email_source(email, fallback=False)
-                    otp = email_provider.wait_for_otp(email, after_ts=requested_at, email_source=source)
-        except _CONTROL_ERRORS:
-            raise
-        except Exception:
-            raise ProtocolPasswordSetupError("password_setup_otp_unavailable", "未能取得本轮补密码邮箱验证码") from None
-        if not re.fullmatch(r"\d{6}", str(otp or "")):
-            raise ProtocolPasswordSetupError("password_setup_otp_invalid", "补密码邮箱验证码格式无效")
-        verification = _payload(_auth_post(session, "/api/accounts/email-otp/validate", {"code": str(otp)}, referer=sent_to, flow="email_otp_validate", checkpoint=checkpoint))
-        next_url = _trusted_url(_continuation(verification))
-        if _is_mfa_page(next_url):
-            next_url = _verify_mfa(session, verification, next_url, totp_secret, checkpoint=checkpoint)
-        landing = _follow_password_page(session, next_url, referer=sent_to, checkpoint=checkpoint)
-    elif _is_mfa_page(landing):
-        next_url = _verify_mfa(session, verification, landing, totp_secret, checkpoint=checkpoint)
-        landing = _follow_password_page(session, next_url, referer=landing, checkpoint=checkpoint)
-    _require_password_page(landing)
-    headers = session.get_auth_headers(referer=landing)
-    headers.update(_sentinel_headers(session, "password_reset", checkpoint))
-    headers["x-access-flow-invocation-id"] = str(uuid.uuid4())
-    _check(checkpoint)
-    circuit_check = getattr(session, "_raise_if_circuit_open", None)
-    if callable(circuit_check):
-        try:
-            circuit_check()
-        except Exception:
-            raise ProtocolPasswordSetupError("password_setup_session_cooling_down", "当前会话正在安全冷却，尚未提交新密码") from None
-    if on_dispatched is not None:
-        on_dispatched()
-    response = _request(session, "post", _AUTH + "/api/accounts/password/add", headers=headers, data=json.dumps({"password": password}), allow_redirects=False, final=True)
-    result = _payload(response, final=True)
-    _confirm_result(session, result, checkpoint=checkpoint)
-    if on_confirmed is not None:
-        on_confirmed()
-    _check(checkpoint)
-    return {"ok": True, "status": "success", "password_added": True}
+def add_password(
+    session,
+    email: str,
+    password: str,
+    *,
+    checkpoint=None,
+    on_dispatched=None,
+    on_confirmed=None,
+    otp_provider=None,
+    totp_secret: str = "",
+) -> dict:
+    return _protocol_kernel.add_password(
+        session,
+        email,
+        password,
+        checkpoint=checkpoint,
+        on_dispatched=on_dispatched,
+        on_confirmed=on_confirmed,
+        otp_provider=otp_provider,
+        totp_secret=totp_secret,
+        _auth_post=_auth_post,
+        _check=_check,
+        _confirm_result=_confirm_result,
+        _continuation=_continuation,
+        _follow=_follow,
+        _follow_password_page=_follow_password_page,
+        _is_mfa_page=_is_mfa_page,
+        _payload=_payload,
+        _request=_request,
+        _require_password_page=_require_password_page,
+        _send_email_verification_code=_send_email_verification_code,
+        _sentinel_headers=_sentinel_headers,
+        _trusted_url=_trusted_url,
+        _verify_mfa=_verify_mfa,
+        use_cooperative_wait=use_cooperative_wait,
+        default_otp_provider=_default_password_otp_provider,
+        clock=time,
+    )

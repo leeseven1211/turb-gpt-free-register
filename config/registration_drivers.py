@@ -1,13 +1,22 @@
 """现行注册驱动与历史配置的执行映射。"""
 from __future__ import annotations
 
-REGISTRATION_DRIVERS = frozenset({"protocol_oss_2", "roxy"})
-_REGISTRATION_ALIASES = {
-    "protocol": "protocol_oss_2", "protocol_oss": "protocol_oss_2",
-    "api": "protocol_oss_2", "http": "protocol_oss_2",
-    "roxy_oss": "roxy", "roxybrowser": "roxy", "fingerprint": "roxy", "browser": "roxy",
-    "browser_use": "roxy", "skyvern": "roxy", "cloak": "roxy", "cloakbrowser": "roxy",
-}
+from typing import cast
+
+from config.operation_drivers import (
+    RegistrationDriverDefinition,
+    get_operation_driver,
+    operation_driver_aliases,
+    operation_driver_values,
+)
+
+REGISTRATION_DRIVERS = operation_driver_values("registration")
+_REGISTRATION_ALIASES = operation_driver_aliases("registration")
+
+
+def get_registration_driver(value: str) -> RegistrationDriverDefinition:
+    """读取注册规范值的描述，历史快照由调用方先归一化。"""
+    return cast(RegistrationDriverDefinition, get_operation_driver("registration", value))
 
 
 def normalize_registration_driver(value: object) -> str:

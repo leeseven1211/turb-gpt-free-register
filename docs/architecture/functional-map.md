@@ -6,6 +6,11 @@
 
 每条链路固定记录五类信息：入口、共享组件、可编辑配置、定向测试和验收文档。修改配置 schema 时先在 `config/schema.py` 中确认键，再更新 JSON；修改公共组件时按 `shared_components` 反查所有链路，至少运行这些链路的测试集合。没有改变某条链路行为时，不因为它“相关”就自动执行全量测试。
 
+认证执行按 `core/kernels/<内核>/<实现>/<操作>` 查找，领域入口仍负责任务与保存。
+静态身份在 `contracts/kernel_catalog.py`，原配置选项和别名在
+`contracts/operation_drivers.py`。普通协议查活与套餐原本共用一次 `accounts/check`
+请求，实际请求归 `protocol/local/plan_check.py`；这项共用不引入登录或刷新 AT。
+
 ```mermaid
 flowchart LR
   UI[现代 WebUI / CLI] --> REG[注册主链路]

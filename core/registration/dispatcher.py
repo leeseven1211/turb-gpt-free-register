@@ -3,8 +3,9 @@ from __future__ import annotations
 
 from config import roxybrowser as _roxy_cfg
 from core.auth.email_guard import serialize_email_auth
-from core.registration.driver_selection import normalize_registration_driver
+from core.registration.driver_selection import REGISTRATION_DRIVERS, normalize_registration_driver
 from core.registration.profile_utils import generate_random_birthday
+from core.registration.registry import resolve_registration_runner
 
 
 @serialize_email_auth
@@ -19,15 +20,13 @@ def run_registration(
     driver = normalize_registration_driver(
         options.get("registration_driver") or getattr(_roxy_cfg, "REGISTRATION_DRIVER", "roxy")
     )
-    if driver not in {"protocol_oss_2", "roxy"}:
+    if driver not in REGISTRATION_DRIVERS:
         raise RuntimeError(f"不支持的 REGISTRATION_DRIVER={driver!r}，当前仅支持 protocol_oss_2 / roxy")
     if registration_options is not None:
         options["registration_driver"] = driver
+    runner, entrypoint = resolve_registration_runner(driver)
     if driver == "protocol_oss_2":
-        from core.registration.protocol_oss_2 import run_protocol_oss_2_registration as runner
         options.update(registration_driver=driver, password_enabled=True, password_mode="password")
-    else:
-        from core.registration.roxy import run_roxy_registration as runner
     from core.registration.standalone import run_registration_in_context
 
     kwargs = dict(
@@ -40,5 +39,5 @@ def run_registration(
     if email_source is not None:
         kwargs["email_source"] = email_source
     return run_registration_in_context(
-        runner, kwargs, entrypoint="roxy_cli" if driver == "roxy" else "protocol_cli", driver_name=driver,
+        runner, kwargs, entrypoint=entrypoint, driver_name=driver,
     )

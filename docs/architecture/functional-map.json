@@ -6,36 +6,36 @@
       "id": "registration",
       "name": "注册主链路",
       "entrypoints": ["webui/routes/jobs.py", "core/registration/service.py", "core/registration/dispatcher.py"],
-      "shared_components": ["core/auth/state_machine.py", "core/email/provider.py", "core/proxy/account_routes.py", "core/operations/task_gateway.py"],
+      "shared_components": ["core/auth/state_machine.py", "core/email/provider.py", "core/proxy/account_routes.py", "core/operations/task_gateway.py", "contracts/operation_drivers.py", "contracts/kernel_catalog.py", "core/registration/registry.py", "core/kernels/registry.py", "core/kernels/browser/roxy/registration/runner.py", "core/kernels/protocol/protocol_oss_2/registration/runner.py"],
       "config_keys": ["REGISTRATION_DRIVER", "REGISTRATION_AUTH_MODE", "REGISTRATION_PROXY_MODE", "EMAIL_SOURCE", "OTP_MAX_WAIT", "OTP_POLL_INTERVAL"],
-      "tests": ["tests/registration/test_registration_dispatcher.py", "tests/registration/test_registration_password_flow.py", "tests/registration/test_registration_email_source_compat.py", "tests/registration/test_registration_state_machine_contract.py", "tests/registration/test_registration_storage.py"],
+      "tests": ["tests/registration/test_registration_dispatcher.py", "tests/registration/test_registration_password_flow.py", "tests/registration/test_registration_email_source_compat.py", "tests/registration/test_registration_state_machine_contract.py", "tests/registration/test_registration_storage.py", "tests/contracts/test_kernel_catalog.py", "tests/registration/test_kernel_registration_execution.py"],
       "acceptance": ["docs/development/release-verification.md"]
     },
     {
       "id": "registration_resume",
       "name": "注册续跑与结果不明恢复",
       "entrypoints": ["core/registration/service.py", "core/registration/dispatcher.py", "webui/routes/jobs.py"],
-      "shared_components": ["core/email/provider.py", "core/operations/task_gateway.py", "core/storage/registration/__init__.py", "core/registration/debug.py"],
+      "shared_components": ["core/email/provider.py", "core/operations/task_gateway.py", "core/storage/registration/__init__.py", "core/registration/debug.py", "core/kernels/browser/roxy/registration/runner.py", "core/kernels/protocol/protocol_oss_2/registration/transport.py"],
       "config_keys": ["REGISTRATION_DRIVER", "REGISTRATION_FAILURE_DIAGNOSTICS_ENABLED", "REGISTRATION_DEBUG_RETENTION_DAYS", "REGISTRATION_DEBUG_HOLD_TIMEOUT_SECONDS"],
-      "tests": ["tests/registration/test_registration_deactivation_retry.py", "tests/registration/test_registration_identity_reconciliation.py", "tests/registration/test_registration_driver_email_retention.py", "tests/registration/test_registration_email_release.py", "tests/registration/test_registration_debug.py"],
+      "tests": ["tests/registration/test_registration_deactivation_retry.py", "tests/registration/test_registration_identity_reconciliation.py", "tests/registration/test_registration_driver_email_retention.py", "tests/registration/test_registration_email_release.py", "tests/registration/test_registration_debug.py", "tests/registration/test_kernel_registration_execution.py"],
       "acceptance": ["docs/development/release-verification.md", "docs/architecture/storage-architecture.md"]
     },
     {
       "id": "live_check",
       "name": "账号普通查活",
       "entrypoints": ["core/accounts/liveness/service.py", "core/accounts/liveness/router.py", "webui/routes/accounts.py"],
-      "shared_components": ["core/proxy/account_routes.py", "core/operations/task_gateway.py", "core/accounts/liveness/protocol/v2.py", "core/accounts/liveness/roxy/probe.py"],
+      "shared_components": ["core/proxy/account_routes.py", "core/operations/task_gateway.py", "core/accounts/liveness/protocol/v2.py", "core/accounts/liveness/roxy/probe.py", "core/kernels/browser/roxy/live_check.py", "core/kernels/protocol/local/plan_check.py"],
       "config_keys": ["ACCOUNT_LIVE_CHECK_DRIVER", "ACCOUNT_LIVE_CHECK_BROWSER_ENABLED", "ACCOUNT_LIVE_CHECK_PROXY_MODE", "ACCOUNT_AUTH_PROFILE_MODE"],
-      "tests": ["tests/accounts/test_live_check_router.py", "tests/accounts/test_live_check_browser.py", "tests/accounts/test_live_check_status_ui.py", "tests/proxy/test_account_proxy.py", "tests/operations/test_account_tasks.py"],
+      "tests": ["tests/accounts/test_live_check_router.py", "tests/accounts/test_live_check_browser.py", "tests/accounts/test_live_check_status_ui.py", "tests/proxy/test_account_proxy.py", "tests/operations/test_account_tasks.py", "tests/accounts/test_liveness_kernel_execution.py", "tests/contracts/test_account_action_kernel_boundaries.py"],
       "acceptance": ["README.md", "docs/development/release-verification.md"]
     },
     {
       "id": "at_refresh",
       "name": "ChatGPT access token 自动刷新",
       "entrypoints": ["core/accounts/token_refresh.py", "core/accounts/liveness/service.py"],
-      "shared_components": ["core/runtime/scheduler_state.py", "core/operations/task_gateway.py", "core/proxy/account_routes.py"],
+      "shared_components": ["core/runtime/scheduler_state.py", "core/operations/task_gateway.py", "core/proxy/account_routes.py", "contracts/kernel_catalog.py", "core/kernels/registry.py", "core/kernels/protocol/local/refresh_at/v1.py", "core/kernels/protocol/local/refresh_at/v2.py", "core/kernels/protocol/local/refresh_at/v3.py", "core/kernels/browser/roxy/refresh_at.py"],
       "config_keys": ["AT_AUTO_REFRESH_ENABLED", "AT_REFRESH_SCAN_INTERVAL_SECONDS", "AT_REFRESH_BEFORE_HOURS", "AT_REFRESH_INITIAL_DELAY_SECONDS", "AT_REFRESH_MAX_PER_CYCLE", "ACCOUNT_REFRESH_AT_PROXY_MODE"],
-      "tests": ["tests/runtime/test_scheduler_state.py", "tests/operations/test_account_tasks.py", "tests/accounts/test_protocol_refresh_selection.py"],
+      "tests": ["tests/runtime/test_scheduler_state.py", "tests/operations/test_account_tasks.py", "tests/accounts/test_protocol_refresh_selection.py", "tests/accounts/test_liveness_kernel_execution.py", "tests/contracts/test_kernel_domain_routing.py"],
       "acceptance": ["README.md", "docs/development/release-verification.md"]
     },
     {

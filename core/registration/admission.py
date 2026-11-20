@@ -7,6 +7,7 @@ import threading
 from contextlib import contextmanager
 from typing import Callable, Mapping
 
+from config.registration_drivers import get_registration_driver
 from core import db
 from core.operations import concurrency
 from core.registration.driver_selection import normalize_registration_driver
@@ -47,7 +48,7 @@ def registration_admission_class(job: Mapping | None = None, *, driver: str | No
 
         driver = str((snapshot or {}).get("registration_driver") or configured_registration_driver())
     canonical = normalize_registration_driver(driver)
-    return {"roxy": "registration_roxy", "protocol_oss_2": "registration_proto2"}[canonical]
+    return get_registration_driver(canonical).admission_class
 
 
 def pending_jobs() -> list[dict]:

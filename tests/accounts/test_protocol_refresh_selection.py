@@ -5,6 +5,7 @@ from unittest.mock import patch
 from config import account as account_config
 from config import openai_protocol
 from core.accounts.liveness.service import _resolve_refresh_driver
+from core.auth.protocol.version import normalize_protocol_version
 from core.auth.twofa import plan_twofa_context
 
 
@@ -46,8 +47,21 @@ class ProtocolRefreshSelectionTests(unittest.TestCase):
         self.assertEqual("legacy", _resolve_refresh_driver("protocol_current"))
         with patch.object(account_config, "ACCOUNT_AUTH_V2_ENABLED", False):
             self.assertEqual("legacy", _resolve_refresh_driver("protocol_v2"))
+            self.assertEqual("protocol_v2", _resolve_refresh_driver("v2"))
+            self.assertEqual("protocol_v2", _resolve_refresh_driver("2"))
         with patch.object(account_config, "ACCOUNT_AUTH_V2_ENABLED", True):
             self.assertEqual("protocol_v2", _resolve_refresh_driver("protocol_v2"))
+
+    def test_other_operations_aliases_warn_and_use_legacy_for_explicit_refresh(self):
+        self.assertEqual("v2", normalize_protocol_version("v_2"))
+        self.assertEqual("protocol", plan_twofa_context(
+            "api", has_access_token=True, browser_session_required=False,
+        ).executor)
+
+        for value in ("v_2", "api"):
+            with self.subTest(value=value), self.assertLogs("core.live_check_service", "WARNING") as captured:
+                self.assertEqual("legacy", _resolve_refresh_driver(value))
+                self.assertIn(repr(value), captured.output[0])
 
     def test_shared_protocol_version_v2_selects_v2_for_refresh_at(self):
         with patch.object(openai_protocol, "OPENAI_PROTOCOL_VERSION", "v2", create=True), patch.object(

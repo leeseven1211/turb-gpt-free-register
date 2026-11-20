@@ -1,0 +1,20 @@
+"""配置层的驱动目录兼容出口；静态定义由独立契约模块唯一维护。"""
+from contracts.operation_drivers import (
+    DriverDefinition as DriverDefinition,
+    PROTOCOL_STEP_CAPABILITIES as PROTOCOL_STEP_CAPABILITIES,
+    PROTOCOL_VERSION_ALIASES as PROTOCOL_VERSION_ALIASES,
+    PROTOCOL_VERSION_OPTIONS as PROTOCOL_VERSION_OPTIONS,
+    REFRESH_AT_INTERNAL_DRIVERS as REFRESH_AT_INTERNAL_DRIVERS,
+    REFRESH_AT_VERSION_ALIASES as REFRESH_AT_VERSION_ALIASES,
+    RegistrationDriverDefinition as RegistrationDriverDefinition,
+    TWOFA_MODE_ALIASES as TWOFA_MODE_ALIASES,
+    VALID_TWOFA_MODES as VALID_TWOFA_MODES,
+    canonical_twofa_executor as canonical_twofa_executor,
+    get_operation_driver as get_operation_driver,
+    normalize_twofa_mode as normalize_twofa_mode,
+    operation_driver_aliases as operation_driver_aliases,
+    operation_driver_definitions as operation_driver_definitions,
+    operation_driver_options as operation_driver_options,
+    operation_driver_values as operation_driver_values,
+    registration_codex_driver as registration_codex_driver,
+)

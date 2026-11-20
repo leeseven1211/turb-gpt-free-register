@@ -10,6 +10,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
+from config.operation_drivers import REFRESH_AT_INTERNAL_DRIVERS, REFRESH_AT_VERSION_ALIASES
 from config.schema import get_config_snapshot
 from core.operations.runtime import OperationCancelled
 from core.operations import run_log as task_run_log
@@ -30,6 +31,26 @@ _QUEUE_LIMIT = 500
 _QUEUE_SLOTS = threading.BoundedSemaphore(_QUEUE_LIMIT)  # synchronous inline compatibility only
 _RUNNING: set[int] = set()
 _LOCK = threading.Lock()
+_REFRESH_AT_VERSIONS_BY_INTERNAL_DRIVER = {
+    driver: version for version, driver in REFRESH_AT_INTERNAL_DRIVERS.items()
+}
+
+
+def _refresh_execution_runner(driver: str):
+    """只绑定已经解析的刷新选择；旧 v1 继续接受领域公开 probe 的替换。"""
+    if driver == "legacy":
+        return check_account_liveness
+    from contracts.kernel_catalog import operation_binding
+    from core.kernels import registry
+
+    if driver == "browser_roxy":
+        binding = operation_binding("refresh_at", "browser_roxy")
+    else:
+        binding = operation_binding(
+            "refresh_at", "protocol", protocol_version=_REFRESH_AT_VERSIONS_BY_INTERNAL_DRIVER[driver],
+        )
+    return registry.resolve_operation_runner(binding)
+
 
 # Persist only non-sensitive choices required to execute a native Run.  ATs,
 # passwords, cookies, and proxy URLs remain account/client data and are loaded
@@ -721,19 +742,11 @@ def _resolve_refresh_driver(requested: str | None = None, *, config_snapshot: di
         except ValueError as exc:
             logger.warning("[查活] 协议版本配置无效，刷新 AT 回落 v1：%s", exc)
             version = "v1"
-    elif value in {"v1", "1"}:
-        version = "v1"
-    elif value in {"v2", "2"}:
-        version = "v2"
-    elif value in {"v3", "3", "protocol_v3"}:
-        version = "v3"
-    elif value in {"current", "protocol", "protocol_current", "legacy", ""}:
-        version = "v1"
-    elif legacy_v2_alias:
-        version = "v2"
     else:
-        logger.warning("[查活] 不支持的刷新 AT 版本/驱动 %r，回落 v1", value)
-        version = "v1"
+        version = REFRESH_AT_VERSION_ALIASES.get(value)
+        if version is None:
+            logger.warning("[查活] 不支持的刷新 AT 版本/驱动 %r，回落 v1", value)
+            version = "v1"
 
     # Only the old literal driver name keeps the old kill-switch semantics.
     # The new OPENAI_PROTOCOL_VERSION=v2 is the explicit replacement and must
@@ -742,14 +755,14 @@ def _resolve_refresh_driver(requested: str | None = None, *, config_snapshot: di
         logger.warning("[查活] 旧配置 protocol_v2 未开启兼容开关，刷新 AT 回落 v1")
         version = "v1"
     version = resolve_protocol_version("refresh_at", requested=version)
-    return {"v2": "protocol_v2", "v3": "protocol_v3"}.get(version, "legacy")
+    return REFRESH_AT_INTERNAL_DRIVERS.get(version, REFRESH_AT_INTERNAL_DRIVERS["v1"])
 
 
 def _refresh_protocol_version(refresh_driver: str | None) -> str | None:
     """Expose the stable public version for a legacy internal driver value."""
     if refresh_driver is None or str(refresh_driver).strip().lower() == "browser_roxy":
         return None
-    return {"protocol_v2": "v2", "protocol_v3": "v3"}.get(str(refresh_driver).strip().lower(), "v1")
+    return _REFRESH_AT_VERSIONS_BY_INTERNAL_DRIVER.get(str(refresh_driver).strip().lower(), "v1")
 
 
 def _refresh_driver_request(refresh_driver: str | None) -> str | None:
@@ -1678,7 +1691,7 @@ def _run_live_check(
             result.setdefault("live_check_driver", selected_live_check_driver)
 
         if result is None and selected_refresh_driver == "browser_roxy":
-            from core.accounts.liveness.roxy.flow import refresh_access_token
+            refresh_access_token = _refresh_execution_runner(selected_refresh_driver)
 
             _append_log(email, "[查活][Roxy] 开始浏览器登录刷新 AT")
             _checkpoint(operation_context, "Roxy 登录刷新 AT 前检查取消状态")
@@ -1703,10 +1716,7 @@ def _run_live_check(
             # WebUI 默认调用由账号代理配置选路，重试时允许真正轮换线路。
             _append_log(email, f"[查活] 开始后台执行 trigger={trigger}，网络预检失败时将轮换代理")
             if selected_refresh_driver in {"protocol_v2", "protocol_v3"}:
-                if selected_refresh_driver == "protocol_v3":
-                    from core.accounts.liveness.protocol.v3 import refresh_access_token
-                else:
-                    from core.accounts.liveness.protocol.v2 import refresh_access_token
+                refresh_access_token = _refresh_execution_runner(selected_refresh_driver)
 
                 _checkpoint(operation_context, "刷新 AT 前检查取消状态")
                 result = invoke_refresh(
@@ -1747,10 +1757,7 @@ def _run_live_check(
                 f"fallback_reason={route.get('proxy_fallback_reason') or '-'}",
             )
             if selected_refresh_driver in {"protocol_v2", "protocol_v3"}:
-                if selected_refresh_driver == "protocol_v3":
-                    from core.accounts.liveness.protocol.v3 import refresh_access_token
-                else:
-                    from core.accounts.liveness.protocol.v2 import refresh_access_token
+                refresh_access_token = _refresh_execution_runner(selected_refresh_driver)
 
                 _checkpoint(operation_context, "刷新 AT 前检查取消状态")
                 def run_explicit_refresh(on_remote_request_started):
@@ -1810,7 +1817,8 @@ def _run_live_check(
             and selected_refresh_driver != "browser_roxy"
             and _roxy_fallback_enabled(config_snapshot)
         ):
-            from core.accounts.liveness.roxy.flow import available as roxy_available, refresh_access_token
+            from core.accounts.liveness.roxy.flow import available as roxy_available
+            refresh_access_token = _refresh_execution_runner("browser_roxy")
             if roxy_available():
                 if debug_activation is None and operation_context is not None:
                     from config import account as account_config

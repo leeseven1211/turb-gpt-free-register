@@ -13,6 +13,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, Iterable
 
+from contracts.operation_drivers import registration_codex_driver
 from core.storage import accounts as db
 from core.storage.operations import runtime as operation_task_store
 from core.operations import run_log as task_run_log
@@ -254,7 +255,7 @@ def _legacy_config_snapshot(driver_override: str | None = None) -> dict:
     ).strip().lower()
     if driver == "same_as_registration":
         driver = str(getattr(roxy_cfg, "REGISTRATION_DRIVER", "protocol") or "protocol").strip().lower()
-        driver = {"protocol_oss": "protocol", "protocol_oss_2": "protocol", "roxy_oss": "roxy"}.get(driver, driver)
+        driver = registration_codex_driver(driver)
     return {
         "oauth_driver": driver,
         "auth_source": str(getattr(cfg, "CODEX_AUTH_URL_SOURCE", "cpa") or "cpa").strip().lower(),
@@ -379,8 +380,7 @@ def _project_config_snapshot(
         lower=True,
     )
     if driver == "same_as_registration":
-        driver = _registration_driver_for_snapshot(values)
-        driver = {"protocol_oss": "protocol", "protocol_oss_2": "protocol", "roxy_oss": "roxy"}.get(driver, driver)
+        driver = registration_codex_driver(_registration_driver_for_snapshot(values))
 
     action_proxy = _snapshot_value(
         values,

@@ -14,8 +14,8 @@ TWOFA_DRIVER:
 关掉 2FA 不会影响账号可用性，仅意味着账号没有动态口令保护，且少收一封 OTP 邮件。
 """
 from config.env_loader import apply_env_overrides
+from config.operation_drivers import canonical_twofa_executor, normalize_twofa_mode
 from config.schema import schema_default
-from core.auth.twofa import canonical_twofa_executor, normalize_twofa_mode
 
 ENABLE_2FA = schema_default("ENABLE_2FA")
 TWOFA_DRIVER = schema_default("TWOFA_DRIVER")

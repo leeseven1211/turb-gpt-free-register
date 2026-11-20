@@ -73,9 +73,14 @@ _PROVIDER_KEYS = {"legacy": "EXTRACT_LINK_LEGACY_CONCURRENCY", "lumen_flow": "EX
 def resolve_admission_class(run: Mapping[str, Any] | str) -> AdmissionClass:
     name = str(run if isinstance(run, str) else run.get("task_type") or "").strip()
     if name in {"registration", "registration_resume"}:
+        from contracts.operation_drivers import get_operation_driver
+
         data = run.get("data") or {} if isinstance(run, Mapping) else {}
         driver = str(data.get("registration_driver") or data.get("driver") or "roxy")
-        name = "registration_proto2" if driver == "protocol_oss_2" else "registration_roxy" if driver == "roxy" else f"registration_{driver}"
+        try:
+            name = get_operation_driver("registration", driver).admission_class
+        except KeyError:
+            name = f"registration_{driver}"
     name = _ALIASES.get(name, name)
     if name not in POLICIES:
         raise ConcurrencyPolicyError("concurrency_policy_missing", f"任务类型没有并发策略：{name}")

@@ -5,6 +5,12 @@ from __future__ import annotations
 from typing import Any
 
 from config.deployment import BROWSER_UNAVAILABLE_CODE, browser_enabled, browser_unavailable_reason
+from config.operation_drivers import (
+    get_operation_driver,
+    operation_driver_aliases,
+    operation_driver_values,
+    registration_codex_driver,
+)
 from core.proxy.account_routes import proxy_configuration_status
 
 
@@ -128,19 +134,29 @@ def _historical_mail_readable() -> bool:
 def _registration_driver_status() -> dict[str, Any]:
     from config import roxybrowser as roxy
     driver = str(getattr(roxy, "REGISTRATION_DRIVER", "protocol") or "protocol").strip().lower()
-    if driver in {"protocol", "protocol_oss", "protocol_oss_2", "api", "http"}:
+    # 此入口的历史接受范围比注册执行归一化更窄，保留原边界。
+    historical = {
+        "protocol", "protocol_oss", "api", "http",
+        "roxy_oss", "roxybrowser", "fingerprint", "browser",
+    }
+    if driver not in operation_driver_values("registration") | historical:
+        return _feature(False, f"不支持的注册驱动 {driver}") | {"driver": driver}
+    canonical = operation_driver_aliases("registration").get(driver, driver)
+    definition = get_operation_driver("registration", canonical)
+    # 新实现必须绑定自己的可用性规则，不能继承 Roxy 配置或默认判为可用。
+    if definition.value not in {"protocol_oss_2", "roxy"}:
+        return _feature(False, f"注册驱动 {driver} 尚未接入可用性检查") | {"driver": driver}
+    if not definition.browser_required:
         return _feature(True) | {"driver": driver}
-    if driver in {"roxy", "roxy_oss", "roxybrowser", "fingerprint", "browser"}:
-        unavailable = browser_operation_unavailable(driver)
-        if unavailable:
-            return _feature(False, unavailable["error"]) | {"driver": driver}
-        ok, reason = _all_present([
-            ("ROXY_API_BASE", getattr(roxy, "ROXY_API_BASE", "")),
-            ("ROXY_API_TOKEN", getattr(roxy, "ROXY_API_TOKEN", "")),
-            ("ROXY_WORKSPACE_ID", getattr(roxy, "ROXY_WORKSPACE_ID", "")),
-        ])
-        return _feature(ok, reason) | {"driver": driver}
-    return _feature(False, f"不支持的注册驱动 {driver}") | {"driver": driver}
+    unavailable = browser_operation_unavailable(driver)
+    if unavailable:
+        return _feature(False, unavailable["error"]) | {"driver": driver}
+    ok, reason = _all_present([
+        ("ROXY_API_BASE", getattr(roxy, "ROXY_API_BASE", "")),
+        ("ROXY_API_TOKEN", getattr(roxy, "ROXY_API_TOKEN", "")),
+        ("ROXY_WORKSPACE_ID", getattr(roxy, "ROXY_WORKSPACE_ID", "")),
+    ])
+    return _feature(ok, reason) | {"driver": driver}
 
 
 def _registration_proxy_status() -> dict[str, Any]:
@@ -159,7 +175,7 @@ def _codex_retry_status(driver_override: str | None = None) -> dict[str, Any]:
     driver = str(driver_override if driver_override is not None else getattr(codex, "CODEX_OAUTH_DRIVER", "protocol") or "protocol").strip().lower()
     if driver == "same_as_registration":
         driver = str(getattr(roxy, "REGISTRATION_DRIVER", "protocol") or "protocol").strip().lower()
-        driver = {"protocol_oss": "protocol", "protocol_oss_2": "protocol", "roxy_oss": "roxy"}.get(driver, driver)
+        driver = registration_codex_driver(driver)
     unavailable = browser_operation_unavailable(driver)
     if unavailable:
         return _feature(False, unavailable["error"])

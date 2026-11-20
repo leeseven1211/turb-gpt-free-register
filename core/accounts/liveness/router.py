@@ -10,11 +10,12 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
+from contracts.operation_drivers import operation_driver_aliases, operation_driver_values
 
 DEFAULT_DRIVER = "protocol_current"
 CURRENT_PROTOCOL_DRIVER = "protocol_current"
 BROWSER_ROXY_DRIVER = "browser_roxy"
-SUPPORTED_DRIVERS = frozenset({CURRENT_PROTOCOL_DRIVER, BROWSER_ROXY_DRIVER})
+SUPPORTED_DRIVERS = operation_driver_values("live_check")
 
 
 class LiveCheckDriverError(ValueError):
@@ -43,11 +44,7 @@ def resolve_driver(requested: str | None = None) -> str:
     它们只能解析到当前稳定协议实现，不会悄悄切到新实现。
     """
     value = _configured_driver() if requested is None else str(requested or "").strip().lower()
-    value = {
-        "": DEFAULT_DRIVER,
-        "current": CURRENT_PROTOCOL_DRIVER,
-        "protocol": CURRENT_PROTOCOL_DRIVER,
-    }.get(value, value)
+    value = operation_driver_aliases("live_check").get(value, value)
     if value not in SUPPORTED_DRIVERS:
         supported = ", ".join(sorted(SUPPORTED_DRIVERS))
         raise LiveCheckDriverError(

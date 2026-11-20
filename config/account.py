@@ -5,7 +5,7 @@
 只决定账号管理里的“补全账号”要包含哪些缺失能力，避免把两条链路重新耦合。
 """
 from config.env_loader import apply_env_overrides
-from core.auth.twofa import normalize_twofa_mode
+from config.operation_drivers import normalize_twofa_mode
 from config.schema import schema_default
 
 

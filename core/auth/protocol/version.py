@@ -5,44 +5,26 @@ from __future__ import annotations
 import os
 
 from config import openai_protocol
+from config.operation_drivers import (
+    PROTOCOL_STEP_CAPABILITIES,
+    PROTOCOL_VERSION_ALIASES,
+    PROTOCOL_VERSION_OPTIONS,
+)
 
 
-VALID_PROTOCOL_VERSIONS = frozenset({"v1", "v2", "v3"})
+VALID_PROTOCOL_VERSIONS = frozenset(version for version, _ in PROTOCOL_VERSION_OPTIONS)
 DEFAULT_PROTOCOL_VERSION = "v1"
-
-# A step only consults the global version when multiple implementations exist.
-# Browser steps are intentionally absent: they do not use the Protocol version.
-PROTOCOL_STEP_CAPABILITIES = {
-    "registration": frozenset({"v1"}),
-    "twofa": frozenset({"v1"}),
-    "plan_check": frozenset({"v1"}),
-    "live_check": frozenset({"v1"}),
-    "refresh_at": frozenset({"v1", "v2", "v3"}),
-    "codex_oauth": frozenset({"v1"}),
-}
 
 
 def normalize_protocol_version(value: str | None, default: str = DEFAULT_PROTOCOL_VERSION) -> str:
     """将公开协议版本规范化为 v1、v2 或 v3。"""
     fallback = str(default or DEFAULT_PROTOCOL_VERSION).strip().lower()
-    if fallback in {"1", "v_1"}:
-        fallback = "v1"
-    elif fallback in {"2", "v_2"}:
-        fallback = "v2"
-    elif fallback in {"3", "v_3"}:
-        fallback = "v3"
+    fallback = PROTOCOL_VERSION_ALIASES.get(fallback, fallback)
     if fallback not in VALID_PROTOCOL_VERSIONS:
         fallback = DEFAULT_PROTOCOL_VERSION
 
     raw = fallback if value is None else str(value or "").strip().lower()
-    normalized = {
-        "1": "v1",
-        "v_1": "v1",
-        "2": "v2",
-        "v_2": "v2",
-        "3": "v3",
-        "v_3": "v3",
-    }.get(raw, raw or fallback)
+    normalized = PROTOCOL_VERSION_ALIASES.get(raw, raw or fallback)
     if normalized not in VALID_PROTOCOL_VERSIONS:
         raise ValueError("协议版本只支持 v1、v2 或 v3")
     return normalized

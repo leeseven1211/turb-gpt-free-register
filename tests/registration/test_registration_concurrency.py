@@ -3,11 +3,15 @@ from __future__ import annotations
 
 import multiprocessing
 import os
+import subprocess
+import sys
 import tempfile
 from concurrent.futures import Future
 from pathlib import Path
+from textwrap import dedent
 from unittest.mock import Mock, patch
 
+import pytest
 from cryptography.fernet import Fernet
 
 from core import db
@@ -18,6 +22,44 @@ from core.storage.operations import permits
 from tests.support_pg import PostgresTestCase
 from tests.support_legacy_release import install_legacy_release_fixture
 from tests.support_runtime import standalone_owner_fixture
+
+
+def test_non_registration_capacity_does_not_load_environment_configuration():
+    source = dedent("""
+        import sys
+        from core.operations.concurrency import resolve_admission_class
+
+        assert resolve_admission_class("account_setup_retry").key == "account_setup_retry"
+        assert "config.env_loader" not in sys.modules, "非注册并发分类加载了环境配置"
+    """)
+    process = subprocess.run(
+        [sys.executable, "-c", source], cwd=Path(__file__).resolve().parents[2],
+        capture_output=True, text=True, timeout=20,
+    )
+    assert process.returncode == 0, process.stderr
+
+
+@pytest.mark.parametrize("driver,policy_key,config_key", [
+    ("roxy", "registration_roxy", "REGISTRATION_ROXY_WORKERS"),
+    ("protocol_oss_2", "registration_proto2", "REGISTRATION_PROTO2_WORKERS"),
+])
+def test_registration_and_resume_use_the_same_driver_capacity(driver, policy_key, config_key):
+    run = {"task_type": "registration_resume", "data": {"driver": driver}}
+    spec = concurrency.resolve_admission_class(run)
+    assert admission.registration_admission_class(driver=driver) == spec.key == policy_key
+    assert spec.config_key == config_key
+
+
+def test_generic_registration_capacity_keeps_its_own_legacy_driver_boundary():
+    assert admission.registration_admission_class(driver="protocol") == "registration_proto2"
+    run = {"task_type": "registration_resume", "data": {"driver": "protocol"}}
+    with pytest.raises(concurrency.ConcurrencyPolicyError) as error:
+        concurrency.resolve_admission_class(run)
+    assert error.value.code == "concurrency_policy_missing"
+    assert str(error.value) == "任务类型没有并发策略：registration_protocol"
+
+    run["data"]["driver"] = "proto2"
+    assert concurrency.resolve_admission_class(run).key == "registration_proto2"
 
 
 def _cli_hold_last_slot(start, stop, results):

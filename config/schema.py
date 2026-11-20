@@ -21,6 +21,8 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Iterable, Mapping
 
+from config.operation_drivers import PROTOCOL_VERSION_OPTIONS, operation_driver_options
+
 
 class ConfigValidationError(ValueError):
     """候选配置不符合 schema 时抛出的稳定异常。"""
@@ -1805,28 +1807,15 @@ _OPTIONS: dict[str, tuple[ConfigOption, ...]] = {
     "BROWSER_PUBLIC_ASSET_CACHE_MODE": _options(
         ("off", "关闭"), ("observe", "仅观察"), ("enabled", "启用本地复用"),
     ),
-    "OPENAI_PROTOCOL_VERSION": _options(
-        ("v1", "协议 v1（现有稳定实现）"),
-        ("v2", "协议 v2（已支持的步骤）"),
-        ("v3", "协议 v3（会话复用与增强认证）"),
-    ),
-    "REGISTRATION_DRIVER": _options(
-        ("protocol_oss_2", "开源protocol-2"),
-        ("roxy", "本地 Roxy"),
-    ),
+    "OPENAI_PROTOCOL_VERSION": _options(*PROTOCOL_VERSION_OPTIONS),
+    "REGISTRATION_DRIVER": _options(*operation_driver_options("registration")),
     "REGISTRATION_AUTH_MODE": _options(
         ("password", "优先使用页面密码入口"),
     ),
-    "ACCOUNT_PASSWORD_DRIVER": _options(("roxy", "RoxyBrowser（默认）"), ("protocol", "纯协议（登录后添加密码）")),
-    "ACCOUNT_PLAN_CHECK_DRIVER": _options(("protocol", "纯协议（当前唯一实现）")),
-    "ACCOUNT_LIVE_CHECK_DRIVER": _options(
-        ("protocol_current", "现有协议（保持现状）"),
-        ("browser_roxy", "Roxy 浏览器（旧 AT probe）"),
-    ),
-    "ACCOUNT_AT_REFRESH_DRIVER": _options(
-        ("protocol", "协议刷新"),
-        ("browser_roxy", "Roxy 指纹浏览器"),
-    ),
+    "ACCOUNT_PASSWORD_DRIVER": _options(*operation_driver_options("password_setup")),
+    "ACCOUNT_PLAN_CHECK_DRIVER": _options(*operation_driver_options("plan_check")),
+    "ACCOUNT_LIVE_CHECK_DRIVER": _options(*operation_driver_options("live_check")),
+    "ACCOUNT_AT_REFRESH_DRIVER": _options(*operation_driver_options("refresh_at")),
     "ACCOUNT_AUTH_PROFILE_MODE": _options(
         ("current", "当前会话画像（保持现状）"),
         ("account_stable", "账号稳定 Protocol 画像（懒创建）"),
@@ -1861,26 +1850,10 @@ _OPTIONS: dict[str, tuple[ConfigOption, ...]] = {
         ("registration", "跟随注册线路"), ("direct", "直连"),
         ("pool", "静态代理池"), ("provider:1024proxy", "1024Proxy 独立租约"),
     ),
-    "TWOFA_DRIVER": _options(
-        ("auto", "自动选择（协议优先）"),
-        ("protocol", "协议开通"),
-        ("browser", "浏览器页面（RoxyBrowser）"),
-    ),
-    "ACCOUNT_2FA_DRIVER": _options(
-        ("auto", "自动选择（协议优先）"),
-        ("protocol", "协议开通"),
-        ("browser", "浏览器页面（RoxyBrowser）"),
-    ),
-    "ACCOUNT_CODEX_DRIVER": _options(
-        ("protocol", "纯协议授权"),
-        ("roxy", "RoxyBrowser"),
-        ("same_as_registration", "跟随注册驱动"),
-    ),
-    "CODEX_OAUTH_DRIVER": _options(
-        ("protocol", "纯协议授权"),
-        ("roxy", "RoxyBrowser"),
-        ("same_as_registration", "跟随注册驱动"),
-    ),
+    "TWOFA_DRIVER": _options(*operation_driver_options("twofa")),
+    "ACCOUNT_2FA_DRIVER": _options(*operation_driver_options("twofa")),
+    "ACCOUNT_CODEX_DRIVER": _options(*operation_driver_options("codex_oauth")),
+    "CODEX_OAUTH_DRIVER": _options(*operation_driver_options("codex_oauth")),
     "CLOUDFLARE_AUTH_MODE": _options(
         "none", "bearer", "x-api-key", "x-admin-auth", "query-key"
     ),

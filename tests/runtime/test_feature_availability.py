@@ -2,9 +2,47 @@
 import unittest
 from unittest.mock import patch
 
+from config.operation_drivers import RegistrationDriverDefinition
 from core.runtime import capabilities as feature_availability
 from webui.app import create_app
 from tests.support_pg import PostgresTestCase
+
+
+class RegistrationReadinessTests(unittest.TestCase):
+    def test_new_driver_cannot_reuse_another_drivers_readiness(self):
+        for browser_required in (False, True):
+            definition = RegistrationDriverDefinition(
+                "fixture_driver", "测试驱动", "仅测试", "registration_fixture",
+                True, False, "protocol", browser_required=browser_required,
+            )
+            with (
+                self.subTest(browser_required=browser_required),
+                patch("config.roxybrowser.REGISTRATION_DRIVER", "fixture_driver"),
+                patch.object(feature_availability, "operation_driver_values", return_value={"fixture_driver"}),
+                patch.object(feature_availability, "get_operation_driver", return_value=definition),
+                patch.object(feature_availability, "_all_present") as roxy_check,
+            ):
+                result = feature_availability._registration_driver_status()
+            self.assertFalse(result["enabled"])
+            self.assertIn("尚未接入可用性检查", result["reason"])
+            roxy_check.assert_not_called()
+
+    def test_runtime_readiness_keeps_its_original_legacy_value_boundary(self):
+        for driver in ("protocol", "protocol_oss", "protocol_oss_2", "api", "http"):
+            with self.subTest(driver=driver), patch(
+                "config.roxybrowser.REGISTRATION_DRIVER", driver,
+            ):
+                result = feature_availability._registration_driver_status()
+            self.assertEqual({"enabled": True, "reason": "", "driver": driver}, result)
+
+        for driver in ("browser_use", "skyvern", "cloak", "cloakbrowser", "unknown"):
+            with self.subTest(driver=driver), patch(
+                "config.roxybrowser.REGISTRATION_DRIVER", driver,
+            ):
+                result = feature_availability._registration_driver_status()
+            self.assertFalse(result["enabled"])
+            self.assertEqual(driver, result["driver"])
+            self.assertEqual(f"不支持的注册驱动 {driver}", result["reason"])
 
 
 class CodexReadinessTests(unittest.TestCase):

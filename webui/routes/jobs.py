@@ -27,6 +27,7 @@ from core.operations.errors import classify_task_error
 from core.operations.presentation import public_progress_snapshot, public_result_status
 from core.operations.stages import DIAGNOSTIC_CONTEXT_FIELDS, ERROR_FIELDS, EVENT_BASE_FIELDS, EVENT_TYPES, STAGE_EVENT_FIELDS, WAIT_REASONS
 from config import codex as codex_config
+from config.registration_drivers import get_registration_driver
 from webui import config_editor
 from webui.blueprint import LegacyEndpointBlueprint
 from webui.runtime import WebUIContext
@@ -271,12 +272,11 @@ def create_jobs_blueprint(context: WebUIContext):
         except ValueError as exc:
             return jsonify({"ok": False, "error": str(exc)}), 400
 
-        if debug_enabled:
-            if selected_driver not in {"protocol_oss_2", "roxy"}:
-                return jsonify({
-                    "ok": False,
-                    "error": f"调试抓包当前不支持注册驱动 {selected_driver}",
-                }), 400
+        if debug_enabled and not get_registration_driver(selected_driver).debug_supported:
+            return jsonify({
+                "ok": False,
+                "error": f"调试抓包当前不支持注册驱动 {selected_driver}",
+            }), 400
 
         # 提交前先确认池里有足够可用邮箱，给前端一个温和提示（不阻断）
         from config import email as _email_cfg

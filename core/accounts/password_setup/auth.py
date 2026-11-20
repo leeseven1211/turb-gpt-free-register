@@ -21,6 +21,9 @@ _OTP_REJECTION_CODES = {
 _REMOTE_AUTH_CODES = _OTP_REJECTION_CODES | {"identity_provider_mismatch"}
 
 
+from core.kernels.protocol.local.password_setup import auth as _password_auth_kernel
+
+
 def _remote_auth_code(error: Exception, diagnostics: dict) -> str:
     """仅在共享诊断未归因时，从有界且无歧义的响应读取固定错误枚举。"""
     remote_error = diagnostics.get("auth_error") if isinstance(diagnostics, dict) else None
@@ -100,24 +103,41 @@ def _auth_error(error: Exception) -> ProtocolPasswordSetupError:
     return ProtocolPasswordSetupError(mapped, message, proxy_transport_failed=is_proxy_transport_failure(error))
 
 
-def refresh_access_token(email: str, *, proxy=None, on_authenticated=None, allow_password_email_fallback=True,
-                         proxy_supplier=None, on_network_failure=None, route_recover=None, route_checkpoint=None) -> dict:
+def refresh_access_token(
+    email: str,
+    *,
+    proxy=None,
+    on_authenticated=None,
+    allow_password_email_fallback=True,
+    proxy_supplier=None,
+    on_network_failure=None,
+    route_recover=None,
+    route_checkpoint=None,
+) -> dict:
     """有密码沿用 v2；无密码只完成已有账号的邮箱、MFA 与回调。"""
+
     def adapt_session(session):
         from core.accounts.password_setup.route_recovery import AccountActionSession
 
         return AccountActionSession(
-            session, recover=route_recover, check=route_checkpoint or checkpoint,
-            observe=on_network_failure, signal_control=True,
+            session,
+            recover=route_recover,
+            check=route_checkpoint or checkpoint,
+            observe=on_network_failure,
+            signal_control=True,
         )
 
     password, secret = get_account_login_credentials(email)
     if password:
-        return v2.refresh_access_token(email, proxy=proxy, on_authenticated=on_authenticated,
+        return v2.refresh_access_token(
+            email,
+            proxy=proxy,
+            on_authenticated=on_authenticated,
             allow_password_email_fallback=allow_password_email_fallback,
             **({"proxy_supplier": proxy_supplier} if callable(proxy_supplier) else {}),
             **({"on_network_failure": on_network_failure} if callable(on_network_failure) else {}),
-            **({"session_adapter": adapt_session} if callable(route_recover) else {}))
+            **({"session_adapter": adapt_session} if callable(route_recover) else {}),
+        )
 
     session = None
     progress = {"methods": [], "attempted": ""}
@@ -125,29 +145,29 @@ def refresh_access_token(email: str, *, proxy=None, on_authenticated=None, allow
         try:
             checkpoint()
             target = db.get_account_by_email(email) or {}
-            session, authorize_url = legacy._network_preflight_with_retry(email, proxy or "",
+            session, authorize_url = legacy._network_preflight_with_retry(
+                email,
+                proxy or "",
                 **({"proxy_supplier": proxy_supplier} if callable(proxy_supplier) else {}),
-                **({"on_preflight_failure": on_network_failure} if callable(on_network_failure) else {}))
+                **({"on_preflight_failure": on_network_failure} if callable(on_network_failure) else {}),
+            )
             if callable(route_recover):
                 session = adapt_session(session)
             checkpoint()
-            # 此状态机只提交登录挑战；资料创建页面会明确拒绝。
-            with use_cooperative_wait(checkpoint, poll_seconds=5, request_timeout=10):
-                info, methods = v3._authenticate(session, authorize_url, email=email, target=target,
-                    password="", secret=secret, progress=progress)
-            checkpoint()
-            v3._verify_identity(info, email, target)
-            result = {"ok": True, "status": "live", "checked_at": v2._now(),
-                "access_token": info["accessToken"], "session": info,
-                "proxy_used": getattr(session, "proxy", None) or None,
-                "validation_method": "authenticated_session", "auth_method": "_".join(methods),
-                "password_auth_status": "skipped", "fallback_used": False,
-                "live_check_driver": "protocol_password_setup", "roxy_fallback_allowed": False,
-                "email_otp_status": "success" if "email_otp" in methods else "skipped",
-                "mfa_status": "success" if "mfa" in methods else "skipped"}
-            result["auth"] = auth_result_for_operation(result, auth_method=result["auth_method"]).as_dict()
-            logger.info("[补密码] 已有账号协议认证完成：邮箱验证码=%s，MFA=%s",
-                "已通过" if "email_otp" in methods else "无需验证", "已通过" if "mfa" in methods else "无需验证")
+            result = _password_auth_kernel.authenticate_passwordless_session(
+                session,
+                authorize_url,
+                email=email,
+                target=target,
+                secret=secret,
+                progress=progress,
+                authenticate=v3._authenticate,
+                verify_identity=v3._verify_identity,
+                checkpoint=checkpoint,
+                now=v2._now,
+                cooperative_wait=use_cooperative_wait,
+                project_auth=auth_result_for_operation,
+            )
         except Exception as exc:
             v2._reraise_control(exc)
             if isinstance(exc, AccountUnusableError) or getattr(exc, "code", "") == "account_deactivated":

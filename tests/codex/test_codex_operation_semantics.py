@@ -22,6 +22,25 @@ from tests.support_settlement import install_native_settlement_fixture
 
 
 class CodexCredentialSemanticsTests(unittest.TestCase):
+    def test_follow_registration_does_not_enable_registration_only_driver_alias(self):
+        from core.codex import oauth
+
+        with (
+            patch("config.codex.CODEX_OAUTH_DRIVER", "same_as_registration"),
+            patch("config.roxybrowser.REGISTRATION_DRIVER", " CloakBrowser "),
+            patch.object(oauth, "BrowserSession", side_effect=AssertionError("不应创建协议会话")),
+            patch("core.codex.roxy.oauth.run_roxy_codex_oauth", side_effect=AssertionError("不应执行浏览器授权")),
+        ):
+            legacy = codex_operation_service._legacy_config_snapshot()
+            projected = codex_operation_service._project_config_snapshot({
+                "CODEX_OAUTH_DRIVER": "same_as_registration",
+                "REGISTRATION_DRIVER": " CloakBrowser ",
+            }, 17)
+            self.assertEqual("cloakbrowser", legacy["oauth_driver"])
+            self.assertEqual("cloakbrowser", projected["oauth_driver"])
+            with self.assertRaisesRegex(RuntimeError, "CODEX_OAUTH_DRIVER='cloakbrowser'"):
+                oauth.run_codex_oauth("fixture@example.test", proxy="", force=True)
+
     def test_phone_setting_snapshot_preserves_disabled_choice(self):
         for values in ({"CODEX_PHONE_ENABLED": False}, {"phone_enabled": False}):
             with self.subTest(values=values):

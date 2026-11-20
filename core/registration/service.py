@@ -20,13 +20,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from config.operation_drivers import (
+    operation_driver_aliases,
+    operation_driver_options,
+    registration_codex_driver,
+)
+from config.registration_drivers import get_registration_driver
 from core.codex import retry_service as codex_retry_service
 from core import db
 from core.operations import run_log as task_run_log
 from core.operations import task_gateway as account_task_store
 from core.operations.executor import AccountOperationExecutor
 from core.registration.postprocess import summarize_postprocess, decide_recovery
-from core.registration.driver_selection import normalize_registration_driver
+from core.registration.driver_selection import REGISTRATION_DRIVERS, normalize_registration_driver
 from core.registration.admission import mark_execution_state
 from core.email.remail.client import RemailOrderUncertain
 from core.operations.errors import REGISTRATION_REQUEST_UNKNOWN_CAUSE_CODES
@@ -57,21 +63,11 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-_REGISTRATION_DRIVER_LABELS = {
-    "protocol_oss_2": "开源protocol-2",
-    "roxy": "本地 Roxy",
-}
-_REGISTRATION_DRIVER_HINTS = {
-    "protocol_oss_2": "使用 wangshen233 开源协议流程，邮箱、任务恢复和账号后处理沿用本地服务。",
-    "roxy": "使用本地 RoxyBrowser 注册与账号后处理流程。",
-}
-
-
 def registration_driver_choices() -> list[dict[str, str]]:
     """返回注册页使用的 canonical driver 名称和标签。"""
     return [
-        {"value": value, "label": label, "description": _REGISTRATION_DRIVER_HINTS[value]}
-        for value, label in _REGISTRATION_DRIVER_LABELS.items()
+        {"value": value, "label": label, "description": get_registration_driver(value).description}
+        for value, label in operation_driver_options("registration")
     ]
 
 
@@ -86,7 +82,7 @@ def configured_registration_driver() -> str:
 def validate_registration_driver(value: object) -> str:
     """校验注册批次显式选择的 canonical driver。"""
     driver = str(value or "").strip().lower()
-    if driver not in _REGISTRATION_DRIVER_LABELS:
+    if driver not in REGISTRATION_DRIVERS:
         raise ValueError("registration_driver 只能是 protocol_oss_2 或 roxy")
     return driver
 
@@ -106,18 +102,8 @@ def codex_driver_for_registration(options: dict | None = None) -> str:
             values.get("registration_driver") or configured_registration_driver()
         ).strip().lower()
         registration_driver = normalize_registration_driver(registration_driver)
-        driver = {
-            "protocol_oss": "protocol",
-            "protocol_oss_2": "protocol",
-            "roxy_oss": "roxy",
-        }.get(registration_driver, registration_driver)
-    driver = {
-        "api": "protocol",
-        "http": "protocol",
-        "roxybrowser": "roxy",
-        "fingerprint": "roxy",
-        "browser": "roxy",
-    }.get(driver, driver)
+        driver = registration_codex_driver(registration_driver)
+    driver = operation_driver_aliases("codex_oauth").get(driver, driver)
     if driver not in {"protocol", "roxy"}:
         raise ValueError(f"注册后的 Codex OAuth 不支持 driver {driver}")
     return driver
@@ -127,7 +113,7 @@ def _apply_registration_driver_snapshot(snapshot: dict[str, object], driver: str
     """把所选注册驱动及其固有认证要求写入任务快照。"""
     canonical = normalize_registration_driver(driver)
     snapshot["registration_driver"] = canonical
-    if canonical in {"protocol_oss_2", "roxy"}:
+    if canonical in REGISTRATION_DRIVERS and get_registration_driver(canonical).password_required:
         snapshot["password_enabled"] = True
         snapshot["password_mode"] = "password"
     return snapshot
