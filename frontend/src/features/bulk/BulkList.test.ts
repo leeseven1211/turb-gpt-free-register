@@ -61,7 +61,8 @@ describe('批次列表组件', () => {
   it('真实汇总与两行身份保留，结果和报告入口传完整字符串ID', async () => {
     const h = fixture(example());
     await flushPromises();
-    expect(h.wrapper.text()).toContain('39 个批次');
+    expect(h.wrapper.get('.bl-kpis').text()).toBe('执行中3批已结束7批失败账号2个');
+    expect(h.wrapper.find('.bl-toolbar').exists()).toBe(false);
     expect(h.wrapper.text()).toContain('#9007199254740993');
     expect(h.wrapper.get('.bl-name').text()).toBe('<script>批次</script>');
     expect(h.wrapper.find('script').exists()).toBe(false);
@@ -104,7 +105,7 @@ describe('批次列表组件', () => {
     data.items = [{ id: '25', name: '准备中', action_key: 'token_refresh', target_count: null }];
     const h = fixture(data);
     await flushPromises();
-    expect(h.wrapper.get('.bl-count').text()).toBe('本页 1 个批次');
+    expect(h.wrapper.find('.bl-toolbar').exists()).toBe(false);
     expect(h.wrapper.get('[data-bulk-progress]').text()).toContain('名单准备中');
     expect(h.wrapper.find('progress').exists()).toBe(false);
     expect(h.wrapper.find('.bl-kpis').exists()).toBe(false);
@@ -123,7 +124,10 @@ describe('批次列表组件', () => {
     expect(new URL(h.request.mock.calls.at(-1)![0], 'http://local').searchParams.get('operation_key[]')).toBe(
       'token_refresh',
     );
-    expect(h.wrapper.get('.list-filter-summary').text()).toContain('刷新 AT');
+    const toolbar = h.wrapper.get('.bl-toolbar');
+    expect(toolbar.get('.list-filter-summary').text()).toContain('刷新 AT');
+    expect(toolbar.text()).not.toContain('个批次');
+    expect(toolbar.text()).toContain('清除筛选');
     const stateTrigger = h.wrapper.get<HTMLButtonElement>('thead button[aria-label="筛选状态"]');
     await stateTrigger.trigger('pointerdown', { button: 0 });
     stateTrigger.element.focus();
@@ -173,7 +177,7 @@ describe('批次列表组件', () => {
     await flushPromises();
     expect(h.wrapper.find('[data-bulk-open]').exists()).toBe(false);
     expect(h.wrapper.find('.bl-kpis').exists()).toBe(false);
-    expect(h.wrapper.text()).not.toMatch(/39 个批次|旧范围错误|本页 0 个/);
+    expect(h.wrapper.text()).not.toContain('旧范围错误');
     expect(h.wrapper.text()).toContain('正在加载批次');
     release({ items: [], page: { page_size: 20, has_more: false, next_cursor: null } });
     await flushPromises();

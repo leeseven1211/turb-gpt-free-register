@@ -86,13 +86,6 @@ const rows = computed(() =>
     };
   }),
 );
-const totalBatches = computed(() => count(summary.value.total_batches));
-const countLabel = computed(() => {
-  if (stale.value) return loading.value ? '正在读取批次数量…' : '批次数量未知';
-  return totalBatches.value === null
-    ? `本页 ${items.value.length} 个批次`
-    : `${totalBatches.value.toLocaleString()} 个批次`;
-});
 const kpis = computed(() => {
   const values = [
     { key: 'active_batches', label: '执行中', value: count(summary.value.active_batches), unit: '批' },
@@ -182,12 +175,9 @@ defineExpose({ refresh, setVisible });
         >
       </div>
     </div>
-    <div class="bl-toolbar">
-      <div class="bl-toolbar-main">
-        <span class="bl-count" role="status">{{ countLabel }}</span
-        ><ListFilterSummary :items="chips" @remove="removeFilter" />
-      </div>
-      <button v-if="chips.length" type="button" class="bl-link" @click="list.resetFilters">清除筛选</button>
+    <div v-if="chips.length" class="bl-toolbar">
+      <ListFilterSummary :items="chips" @remove="removeFilter" />
+      <button type="button" class="bl-link" @click="list.resetFilters">清除筛选</button>
     </div>
     <div v-if="error" class="bl-error" role="alert">
       <span>{{ error }}</span
