@@ -180,26 +180,30 @@
 .bulk-pager-actions { display: flex; gap: 8px; align-items: center; }
 .bulk-pager span { color: var(--ui-color-text-muted); font-size: 11px; }
 /* 详情把结果和下一步操作留在首屏。 */
-.bulk-overview { padding: 18px 20px 16px; }
+.bulk-overview { padding: 10px 16px 14px; }
+.bulk-detail-toolbar { flex-wrap: wrap; gap: 6px 12px; }
+.bulk-detail-toolbar > .bulk-actions, .bulk-control-strip > .bulk-actions { gap: 8px; margin-inline-start: auto; }
 .bulk-detail-meta { flex-wrap: wrap; font-size: 12px; color: var(--ui-color-text-muted); gap: 10px; }
 .bulk-detail-settings { margin: 0; position: relative; }
 .bulk-detail-settings[open] dl { position: absolute; z-index: 10; top: 100%; left: 0; width: 300px; padding: 16px; margin: 4px 0 0; border: 1px solid var(--ui-color-border); border-radius: var(--ui-radius-md); background: var(--ui-color-surface); box-shadow: var(--ui-shadow-md); }
 .bulk-projection-note { font-size: 11px; color: var(--ui-color-text-secondary); }
 .bulk-round-picker { min-width: 190px; font-size: 12px; }
+.bulk-round-picker select { display: block; }
 .bulk-menu, .bulk-more-states { position: relative; }
 .bulk-menu > summary { font-size: 12px; }
 .bulk-menu-panel { position: absolute; top: calc(100% + 5px); right: 0; z-index: 12; display: grid; width: 205px; padding: 6px; border: 1px solid var(--ui-color-border); border-radius: var(--ui-radius-md); background: var(--ui-color-surface); box-shadow: var(--ui-shadow-md); }
 .bulk-menu-panel button { border: 0; background: transparent; padding: 10px; text-align: left; color: var(--ui-color-text); border-radius: 4px; font-size: 12px; }
 .bulk-menu-panel button:hover { background: var(--ui-color-surface-subtle); }
 .bulk-menu-separator { height: 1px; margin: 5px 4px; background: var(--ui-color-border); }
-.bulk-summary-grid { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); margin-top: 24px; }
+.bulk-summary-grid { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); margin-top: 12px; }
 .bulk-summary-item { display: grid; gap: 10px; padding-left: 24px; border-left: 1px solid var(--ui-color-border); }
 .bulk-summary-item:first-child { border-left: 0; padding-left: 0; }
 .bulk-summary-item > span { font-size: 12px; color: var(--ui-color-text-secondary); }
 .bulk-summary-item > strong { font-size: 28px; line-height: 1.2; font-weight: 600; font-variant-numeric: tabular-nums; }
 .bulk-summary-item.is-success strong { color: var(--ui-color-success, #126847); }
 .bulk-summary-item.is-warning strong { color: var(--ui-color-warning, #8b570b); }
-.bulk-view-note { margin: 16px 0 0; color: var(--ui-color-text-muted); font-size: 11px; }
+.bulk-view-note { display: flex; flex-wrap: wrap; gap: 2px 10px; margin: 0; color: var(--ui-color-text-secondary); font-size: 12px; }
+.bulk-view-note strong { color: var(--ui-color-text); font-weight: 600; font-variant-numeric: tabular-nums; }
 .bulk-business-details { margin-top: 14px; border-top: 1px solid var(--ui-color-border); padding-top: 12px; }
 .bulk-business-details > summary { display: flex; align-items: center; gap: 8px; color: var(--ui-color-text-secondary); font-size: 12px; }
 .bulk-business-details > summary span { color: var(--ui-color-text-muted); margin-left: auto; font-size: 11px; }
@@ -254,8 +258,6 @@
 @media (max-width:1100px) {
   .bulk-operation-grid { gap: 8px; }
   .bulk-operation { padding: 14px 12px; }
-  .bulk-detail-toolbar { flex-wrap: wrap; }
-  .bulk-detail-toolbar > .bulk-actions { margin-left: auto; }
   .bulk-list-filters > .bulk-field:not(.bulk-search-field) { width: 130px; }
 }
 @media (max-width:760px) {
@@ -270,7 +272,8 @@
   .bulk-back { min-height: 44px; flex-basis: 34px; }
   .bulk-page .jobs-tb-btn, .bulk-field input:not([type="checkbox"]), .bulk-field select, .bulk-round-picker select, .bulk-retry-toolbar select { min-height: 44px; }
   .bulk-field input:not([type="checkbox"]), .bulk-field select { font-size: 16px; }
-  .bulk-card, .bulk-create-card, .bulk-overview { padding: 16px; }
+  .bulk-card, .bulk-create-card { padding: 16px; }
+  .bulk-card.bulk-overview { padding: 10px 12px 14px; }
   .bulk-card + .bulk-card { margin-top: 12px; }
   .bulk-operation-grid { grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px; }
   .bulk-operation { gap: 8px; padding: 12px 10px; min-height: 72px; }
@@ -314,17 +317,15 @@
   .bulk-count-link { min-height: 44px; font-size: 12px; }
   .bulk-result-links { gap: 14px; }
   .bulk-pager { justify-content: space-between; }
-  .bulk-detail-toolbar { align-items: flex-start; gap: 12px; }
+  .bulk-detail-toolbar { align-items: flex-start; }
   .bulk-detail-toolbar > .bulk-actions { width: 100%; margin: 0; gap: 8px; }
-  .bulk-round-picker { min-width: 0; flex: 1; }
-  .bulk-detail-meta { font-size: 11px; }
-  .bulk-detail-settings { margin-left: auto; }
-  .bulk-detail-settings[open] dl { left: auto; right: 0; width: 280px; }
-  .bulk-summary-grid { margin-top: 20px; }
+  .bulk-round-picker { flex: 1 1 128px; min-width: min(128px, 100%); }
+  .bulk-detail-meta { position: relative; width: 100%; font-size: 11px; }
+  .bulk-detail-settings { position: static; }
+  .bulk-detail-settings[open] dl { width: min(280px, 100%); }
   .bulk-summary-item { padding-left: 12px; gap: 8px; }
   .bulk-summary-item > span { font-size: 11px; }
   .bulk-summary-item > strong { font-size: 23px; }
-  .bulk-view-note { font-size: 10px; }
   .bulk-business-groups { grid-template-columns: 1fr; gap: 18px; }
   .bulk-business-details > summary { min-height: 44px; }
   .bulk-menu-panel button { min-height: 44px; }
@@ -381,11 +382,8 @@
 .bulk-create-side [data-bulk-action-error],
 .bulk-create-side [data-bulk-action-notice] { font-size: 12px; padding: 10px 12px; }
 .bulk-create-side [data-bulk-action-notice] { margin: 0; }
-.bulk-control-strip { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-top: 18px; padding: 12px 14px; border: 1px solid var(--ui-color-border); border-radius: var(--ui-radius-sm); background: var(--ui-color-surface-subtle); }
+.bulk-control-strip { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px 12px; margin-top: 8px; padding: 8px 0; border-block: 1px solid var(--ui-color-border); }
 .bulk-control-copy { display: grid; gap: 3px; min-width: 0; }
-.bulk-control-copy strong { color: var(--ui-color-text); font-size: 12px; }
-.bulk-control-copy span { color: var(--ui-color-text-secondary); font-size: 11px; }
-.bulk-control-strip .jobs-tb-btn { min-height: 34px; }
 .bulk-results-heading h3 { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .bulk-results-heading h3 .bulk-link { font-size: 11px; }
 .bulk-confirm { width: min(440px, calc(100vw - 32px)); max-width: 440px; padding: 0; border: 0; background: transparent; color: var(--ui-color-text); }
@@ -417,7 +415,6 @@
   .bulk-side-actions .jobs-tb-btn { min-height: 44px; }
   .bulk-create-side [data-bulk-action-error],
   .bulk-create-side [data-bulk-action-notice] { max-height: 84px; overflow: auto; }
-  .bulk-control-strip { align-items: flex-start; flex-direction: column; }
   .bulk-control-strip .bulk-actions { width: 100%; }
   .bulk-control-strip .bulk-actions .jobs-tb-btn { flex: 1; }
   .bulk-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); row-gap: 18px; }
@@ -484,8 +481,6 @@
 /* 批次设置直接展示，数量统一放在执行摘要。 */
 .bulk-batch-fields { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 16px; }
 .bulk-badge.is-paused { color: var(--ui-color-warning, #8b570b); background: var(--ui-color-warning-soft); }
-.bulk-detail-toolbar > .bulk-actions { flex-wrap: wrap; }
-.bulk-control-strip .bulk-actions { flex-wrap: wrap; }
 @media (max-width: 900px) {
   .bulk-create-form { padding-bottom: 0; }
   .bulk-create-side { position: static; margin-top: 12px; }

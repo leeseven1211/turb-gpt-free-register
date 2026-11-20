@@ -12,6 +12,7 @@ import BulkBusinessStats from './BulkBusinessStats.vue';
 const props=withDefaults(defineProps<{navigation:BulkNavigation;deps:BulkDetailDependencies;visible?:boolean}>(),{visible:undefined});
 const state=useBulkDetail(()=>props.navigation,props.deps,props.visible??props.navigation.view==='detail');
 const {navigation,detail,targets,report,reportOpen,rounds,roundsCursor,selected,pendingRound,loading,targetsLoading,reportLoading,roundsLoading,writing,error,targetError,reportError,actionError,confirmation,counts,ended,paused,hasReport,hasPrevious,nextCursor}=state;
+const batchName=computed(()=>detail.value?.name||detail.value?.title||'批次详情');
 const targetTable=ref<InstanceType<typeof BulkTargets>|null>(null),reportRegion=ref<HTMLElement|null>(null),retryChoice=ref('failed');
 const completedCount=computed(()=>['success','partial_success','failed','not_executed','cancelled'].reduce((n,key)=>n+(counts.value[key]||0),0));
 const activeCount=computed(()=>['pending_submit','waiting_account','queued','running','waiting'].reduce((n,key)=>n+(counts.value[key]||0),0));
@@ -35,16 +36,57 @@ async function showReport(){
 function setVisible(visible:boolean){state.setVisible(visible);if(!visible){targetTable.value?.close();confirmationTrigger=null;}}
 watch(()=>props.visible,value=>{if(value!==undefined)setVisible(value);},{flush:'sync'});
 watch(()=>[navigation.value.batch_id,navigation.value.round_id,navigation.value.result_state,navigation.value.view],()=>{targetTable.value?.close();confirmationTrigger=null;});
-defineExpose({refresh:state.refresh,showReport,setVisible,needsRefresh:state.needsPolling});
+defineExpose({batchName,refresh:state.refresh,showReport,setVisible,needsRefresh:state.needsPolling});
 </script>
 <template>
   <div class="bulk-detail-owner" :aria-busy="loading">
-    <header class="bulk-detail-page-heading"><div><h2>{{detail?.name||detail?.title||'批次详情'}}</h2><p>{{operationLabel(operationKey(detail))}} · #{{navigation.batch_id}}</p></div><button v-if="hasReport" type="button" class="jobs-tb-btn" data-bulk-action="view-report" @click="showReport">查看报告</button></header>
     <p v-if="error" class="bulk-error" role="alert">{{error}} <button type="button" class="bulk-link" @click="state.refresh(true)">重试读取批次</button></p>
     <section v-if="detail" class="bulk-card bulk-overview">
-      <div class="bulk-detail-toolbar"><div class="bulk-detail-meta"><span class="bulk-badge" :class="badgeClass(paused?'paused':object(detail.control).state||detail.control_state||detail.state)">{{label(paused?'paused':object(detail.control).state||detail.control_state||detail.state)}}</span><span>创建于 {{deps.callbacks.formatDateTime(detail.created_at)}}</span><details class="bulk-settings bulk-detail-settings"><summary>范围与设置</summary><dl><dt>名单生成</dt><dd>{{deps.callbacks.formatDateTime(object(detail.selection_summary).selection_at||detail.selection_at)}}</dd><dt>配置版本</dt><dd>{{object(detail.effective_settings).config_revision||detail.config_revision||'—'}}</dd><dt>结果更新</dt><dd>{{deps.callbacks.formatDateTime(detail.projected_at)}}</dd></dl></details><span v-if="object(detail.projection).state && object(detail.projection).state!=='current'" class="bulk-projection-note">汇总同步中</span></div><div class="bulk-actions"><label class="bulk-round-picker"><span class="bulk-sr-only">结果视图</span><select :value="navigation.round_id||'current'" aria-label="结果视图" @change="state.setRound(($event.target as HTMLSelectElement).value)"><option value="current">当前结果</option><option v-for="round in rounds" :key="String(round.id)" :value="String(round.id)">{{Number(round.round_no)===1?'首轮':'重跑 '+(Number(round.round_no)-1)}} · {{label(round.state)}} · {{round.target_count==null?'准备中':number(round.target_count)+' 个'}}</option><option v-if="navigation.round_id&&!selectedRound" :value="navigation.round_id">所选轮次 #{{navigation.round_id}}</option></select></label><button type="button" class="jobs-tb-btn" data-bulk-action="more-rounds" :disabled="!roundsCursor||roundsLoading" @click="state.moreRounds">更多轮次</button><button type="button" class="jobs-tb-btn" data-bulk-action="copy-targets" @click="state.copyBatch(true)">同一名单再次执行</button><button type="button" class="jobs-tb-btn" data-bulk-action="copy-query" :disabled="!canCopyQuery" @click="state.copyBatch(false)">复制条件新建</button></div></div>
-      <div class="bulk-control-strip"><div class="bulk-control-copy"><strong>运行控制</strong><span>{{ended?'批次已结束':paused?'批次已暂停，尚未开始的账号等待继续；已开始账号继续收尾':activeCount+' 个进行中 · 已结束 '+completedCount+' / '+number(detail.target_count)}}</span></div><div class="bulk-actions"><button v-for="[action,title,selector] in controlActions" :key="action" type="button" class="jobs-tb-btn" :class="{'jobs-tb-btn--danger':['cancel','stop'].includes(selector!)}" :data-bulk-action="selector" :disabled="state.controlDisabled(action!)" @click="control(action!,$event)">{{title}}</button></div></div>
-      <p class="bulk-view-note">{{selectedRound?.completion_reason==='cancelled_before_freeze'?'本轮在名单生成前取消，当前结果未改变。':navigation.round_id?'仅展示该轮名单及执行结果。':'已结束 '+completedCount+' / '+number(detail.target_count)+' 个 · 每个账号保留最近一轮结果'}}</p>
+      <div class="bulk-detail-toolbar">
+        <div class="bulk-detail-meta">
+          <span class="bulk-badge" :class="badgeClass(paused?'paused':object(detail.control).state||detail.control_state||detail.state)">{{label(paused?'paused':object(detail.control).state||detail.control_state||detail.state)}}</span>
+          <span>{{operationLabel(operationKey(detail))}}</span>
+          <span>创建于 {{deps.callbacks.formatDateTime(detail.created_at)}}</span>
+          <details class="bulk-settings bulk-detail-settings">
+            <summary>范围与设置</summary>
+            <dl>
+              <dt>名单生成</dt><dd>{{deps.callbacks.formatDateTime(object(detail.selection_summary).selection_at||detail.selection_at)}}</dd>
+              <dt>配置版本</dt><dd>{{object(detail.effective_settings).config_revision||detail.config_revision||'—'}}</dd>
+              <dt>结果更新</dt><dd>{{deps.callbacks.formatDateTime(detail.projected_at)}}</dd>
+            </dl>
+          </details>
+          <span v-if="object(detail.projection).state && object(detail.projection).state!=='current'" class="bulk-projection-note">汇总同步中</span>
+        </div>
+        <div class="bulk-actions">
+          <label class="bulk-round-picker">
+            <span class="bulk-sr-only">结果视图</span>
+            <select :value="navigation.round_id||'current'" aria-label="结果视图" @change="state.setRound(($event.target as HTMLSelectElement).value)">
+              <option value="current">当前结果</option>
+              <option v-for="round in rounds" :key="String(round.id)" :value="String(round.id)">{{Number(round.round_no)===1?'首轮':'重跑 '+(Number(round.round_no)-1)}} · {{label(round.state)}} · {{round.target_count==null?'准备中':number(round.target_count)+' 个'}}</option>
+              <option v-if="navigation.round_id&&!selectedRound" :value="navigation.round_id">所选轮次 #{{navigation.round_id}}</option>
+            </select>
+          </label>
+          <button type="button" class="jobs-tb-btn" data-bulk-action="more-rounds" :disabled="!roundsCursor||roundsLoading" @click="state.moreRounds">更多轮次</button>
+          <button v-if="hasReport" type="button" class="jobs-tb-btn" data-bulk-action="view-report" @click="showReport">查看报告</button>
+          <button type="button" class="jobs-tb-btn" data-bulk-action="copy-targets" @click="state.copyBatch(true)">同一名单再次执行</button>
+          <button type="button" class="jobs-tb-btn" data-bulk-action="copy-query" :disabled="!canCopyQuery" @click="state.copyBatch(false)">复制条件新建</button>
+        </div>
+      </div>
+      <div class="bulk-control-strip">
+        <div class="bulk-control-copy">
+          <p class="bulk-view-note">
+            <strong>已结束 {{number(completedCount)}} / {{number(detail.target_count)}} 个</strong>
+            <span v-if="hasReport && reportOpen && !ended && !paused">{{number(activeCount)}} 个进行中</span>
+            <span v-if="selectedRound?.completion_reason==='cancelled_before_freeze'">本轮在名单生成前取消，当前结果未改变。</span>
+            <span v-else-if="navigation.round_id">仅展示该轮名单及执行结果。</span>
+            <span v-else>每个账号保留最近一轮结果</span>
+          </p>
+          <p v-if="paused && !ended" class="bulk-view-note">未开始的账号等待继续，已开始的账号继续收尾。</p>
+        </div>
+        <div class="bulk-actions" role="group" aria-label="运行控制">
+          <button v-for="[action,title,selector] in controlActions" :key="action" type="button" class="jobs-tb-btn" :class="{'jobs-tb-btn--danger':['cancel','stop'].includes(selector!)}" :data-bulk-action="selector" :disabled="state.controlDisabled(action!)" @click="control(action!,$event)">{{title}}</button>
+        </div>
+      </div>
       <template v-if="!hasReport || !reportOpen"><div class="bulk-summary-grid"><div class="bulk-summary-item"><span>账号总数</span><strong>{{number(detail.target_count)}}</strong></div><div class="bulk-summary-item"><span>进行中</span><strong>{{activeCount}}</strong></div><div class="bulk-summary-item is-success"><span>成功</span><strong>{{counts.success||0}}</strong></div><div class="bulk-summary-item is-warning"><span>未成功</span><strong>{{state.retryCount('unsuccessful')}}</strong></div></div><BulkBusinessStats :metrics="detail.business_summary||detail.metrics"/></template>
     </section>
     <section v-if="hasReport && reportOpen" ref="reportRegion" data-bulk-plan-report class="bulk-report-target" tabindex="-1" role="region" aria-label="批次报告" :aria-busy="reportLoading">
@@ -60,5 +102,5 @@ defineExpose({refresh:state.refresh,showReport,setVisible,needsRefresh:state.nee
   </div>
 </template>
 <style scoped>
-.bulk-detail-page-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px}.bulk-detail-page-heading h2{font-size:20px;margin:0 0 5px}.bulk-detail-page-heading p{font-size:12px;color:var(--ui-color-text-secondary);margin:0}.bulk-detail-owner{min-width:0}.bulk-target-count-row{display:flex;align-items:center;gap:10px;min-width:0;padding:8px 16px}.bulk-target-count{flex:none;font-size:12px;color:var(--ui-color-text-secondary)}.bulk-target-count-row :deep(.list-filter-summary){flex:1}.bulk-results-heading h3{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.bulk-results-heading h3>span{font-size:12px;font-weight:400}.bulk-report-target:focus{outline:2px solid var(--ui-color-brand);outline-offset:4px}@media(max-width:680px){.bulk-detail-page-heading{align-items:flex-start}.bulk-target-count-row{padding:8px 10px;gap:6px}.bulk-target-count{max-width:55%;overflow-wrap:anywhere}.bulk-detail-toolbar,.bulk-results-heading{flex-wrap:wrap}}
+.bulk-detail-owner{min-width:0}.bulk-target-count-row{display:flex;align-items:center;gap:10px;min-width:0;padding:8px 16px}.bulk-target-count{flex:none;font-size:12px;color:var(--ui-color-text-secondary)}.bulk-target-count-row :deep(.list-filter-summary){flex:1}.bulk-results-heading h3{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.bulk-results-heading h3>span{font-size:12px;font-weight:400}.bulk-report-target:focus{outline:2px solid var(--ui-color-brand);outline-offset:4px}@media(max-width:680px){.bulk-target-count-row{padding:8px 10px;gap:6px}.bulk-target-count{max-width:55%;overflow-wrap:anywhere}.bulk-results-heading{flex-wrap:wrap}}
 </style>

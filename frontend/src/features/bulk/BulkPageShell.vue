@@ -26,7 +26,7 @@ const createDeps={...props.deps,intents,callbacks};
 const detailDeps={api:props.deps.api,intents,callbacks,now:props.deps.now};
 const pending=computed(()=>{pendingRevision.value;try{return props.deps.intents.pending();}catch{return[];}});
 const delay=computed(()=>!visible.value?0:navigation.value.view==='list'?7000:navigation.value.view==='create'?(create.value?.needsRefresh?2000:0):(detail.value?.needsRefresh?2000:0));
-const title=computed(()=>navigation.value.view==='list'?'批量任务':navigation.value.view==='create'?'新建批次':`批次 #${navigation.value.batch_id}`);
+const title=computed(()=>navigation.value.view==='list'?'批量任务':navigation.value.view==='create'?'新建批次':detail.value?.batchName||'批次详情');
 function syncVisibility(){
  hostVisible.value=!document.hidden&&(props.deps.isVisible?.()??true);
  if(lastVisible!==visible.value){visibilityEpoch++;lastVisible=visible.value;}
@@ -96,7 +96,10 @@ defineExpose({activate,setVisible,refresh,showReport,navigationState,restoreNavi
 </script>
 <template>
  <div class="bulk-page bulk-page-shell" data-bulk-vue :data-bulk-view="navigation.view">
-  <header class="bulk-page-heading"><h2 data-bulk-title>{{title}}</h2><div class="bulk-actions"><button v-if="navigation.view!=='list'" type="button" class="jobs-tb-btn" @click="navigate('list')">批次列表</button><button type="button" class="jobs-tb-btn" data-bulk-action="refresh" @click="refresh(true)">刷新</button><button type="button" class="jobs-tb-btn jobs-tb-btn--primary" data-bulk-action="new" @click="newBatch">新建批次</button></div></header>
+  <header class="bulk-page-heading">
+   <h2 data-bulk-title>{{title}} <span v-if="navigation.view==='detail'" class="bulk-heading-id">#{{navigation.batch_id}}</span></h2>
+   <div class="bulk-actions"><button v-if="navigation.view!=='list'" type="button" class="jobs-tb-btn" @click="navigate('list')">批次列表</button><button type="button" class="jobs-tb-btn" data-bulk-action="refresh" @click="refresh(true)">刷新</button><button type="button" class="jobs-tb-btn jobs-tb-btn--primary" data-bulk-action="new" @click="newBatch">新建批次</button></div>
+  </header>
   <p v-if="error" class="bulk-error" data-bulk-error role="alert">{{error}}</p>
   <p v-if="notice" class="bulk-notice" data-bulk-notice role="status">{{notice}}</p>
   <div v-if="pending.length&&navigation.view!=='create'" class="bulk-notice bulk-global-recovery" data-bulk-recovery role="status"><span>有 {{pending.length}} 个请求未收到回执，草稿已保留。</span><button type="button" class="jobs-tb-btn" :disabled="recovering" @click="recover">{{recovering?'正在找回…':'找回原请求'}}</button></div>
@@ -109,4 +112,21 @@ defineExpose({activate,setVisible,refresh,showReport,navigationState,restoreNavi
 </template>
 <style scoped>
 .bulk-page-shell{min-width:0}.bulk-page-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}.bulk-page-heading h2{font-size:19px;margin:0}.bulk-global-recovery{display:flex;align-items:center;gap:12px;flex-wrap:wrap}@media(max-width:680px){.bulk-page-heading{align-items:flex-start;flex-wrap:wrap}.bulk-page-heading .bulk-actions{flex-wrap:wrap}}
+.bulk-page-shell[data-bulk-view="detail"] {
+  row-gap: 10px;
+}
+.bulk-page-shell[data-bulk-view="detail"] > .bulk-page-heading {
+  flex-wrap: wrap;
+  margin-bottom: 0;
+}
+.bulk-page-shell[data-bulk-view="detail"] .bulk-page-heading h2 {
+  overflow-wrap: anywhere;
+}
+.bulk-heading-id {
+  margin-inline-start: 4px;
+  color: var(--ui-color-text-secondary);
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+}
 </style>
