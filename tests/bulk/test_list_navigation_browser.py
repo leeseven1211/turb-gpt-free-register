@@ -257,7 +257,7 @@ def test_legacy_routes_history_and_tab_visibility(bulk_browser):
     row = listing.locator(f'tr[data-bulk-row="{BATCH_ID}"]')
     search(page, '合成')
     row.get_by_role('button', name=FIRST_NAME).click()
-    expect(page.locator('.bulk-detail-page-heading h2')).to_have_text(FIRST_NAME)
+    expect(page.get_by_role('heading', name=f'{FIRST_NAME} #{BATCH_ID}', exact=True)).to_be_visible()
     assert not any(path.endswith('/report') for path, _ in calls)
     assert urlsplit(page.url).fragment == f'bulk/detail?batch_id={BATCH_ID}'
     page.go_back()

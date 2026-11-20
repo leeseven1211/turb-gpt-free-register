@@ -436,7 +436,7 @@ class LegacyAccountTaskQueryTests(unittest.TestCase):
                 call("旧错误", stage="complete", task_type="token_refresh", error_code="request_unknown",
                      result_summary={"evidence": [1]}, task_status="failed" if detail else "attention_required"),
                 call("当前错误", stage="network", task_type="token_refresh", error_code="request_unknown",
-                     result_summary={"evidence": [1]}, task_status="attention_required"),
+                     result_summary={"evidence": [1]}, task_status="attention_required", cancel_reason=""),
             ], classify.call_args_list)
             if detail:
                 get_task.assert_called_once_with(7)
