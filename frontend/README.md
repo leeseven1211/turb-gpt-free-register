@@ -8,13 +8,10 @@
 
 ```sh
 npm ci
-npm run generate:api
-npm run generate:labels
-npm run check
 npm run build
 ```
 
-`check` 校验生成契约、TypeScript 和 `src/**/*.test.ts` 行为测试。测试使用合成数据和请求替身，不连接数据库或生产服务。OpenAPI 类型源位于 `contracts/`，生成的 `src/api/*schema.d.ts` 不手工维护。运行时 API 与错误处理集中在 `src/api/`，页面通过显式类型和依赖回调连接外壳。
+`build` 包含生成契约、错误目录和 TypeScript 校验。非重大架构调整使用 `npm test -- <路径>` 运行与改动直接相关的行为测试。测试使用合成数据和请求替身，不连接数据库或生产服务。OpenAPI 类型源位于 `contracts/`，生成的 `src/api/*schema.d.ts` 不手工维护。运行时 API 与错误处理集中在 `src/api/`，页面通过显式类型和依赖回调连接外壳。
 
 错误短语源为 `core/operations/error_labels.py`；修改后运行 `npm run generate:labels`，将生成的 `src/generated/task-error-labels.json` 一同提交。构建会校验目录一致性，依据与覆盖清单见[错误分类目录](../docs/architecture/task-error-catalog.md)。
 
