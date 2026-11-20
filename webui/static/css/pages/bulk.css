@@ -2,6 +2,11 @@
 #tab-bulk { min-width: 0; }
 #bulk-list-root { margin-block-start: 16px; }
 .bulk-page { display: grid; gap: 16px; min-width: 0; }
+.bulk-page[data-bulk-view="create"] { row-gap: var(--ui-space-3); }
+.bulk-page[data-bulk-view="create"] > .bulk-page-heading { margin-bottom: 0; }
+@media (max-width: 860px) {
+  .bulk-page[data-bulk-view="create"] { row-gap: 10px; }
+}
 .bulk-page > [data-bulk-content] { min-width: 0; }
 .bulk-page *, .bulk-page *::before, .bulk-page *::after { box-sizing: border-box; }
 .bulk-page [hidden] { display: none !important; }

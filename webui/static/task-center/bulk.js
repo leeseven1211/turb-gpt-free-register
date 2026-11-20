@@ -3784,10 +3784,7 @@ function qa(e = {}) {
 	return n;
 }
 // src/features/bulk/BulkPageShell.vue?vue&type=script&setup=true&lang.ts
-var Ja = {
-	class: "bulk-page bulk-page-shell",
-	"data-bulk-vue": ""
-}, Ya = { class: "bulk-page-heading" }, Xa = { "data-bulk-title": "" }, Za = { class: "bulk-actions" }, Qa = {
+var Ja = ["data-bulk-view"], Ya = { class: "bulk-page-heading" }, Xa = { "data-bulk-title": "" }, Za = { class: "bulk-actions" }, Qa = {
 	key: 0,
 	class: "bulk-error",
 	"data-bulk-error": "",
@@ -3996,7 +3993,11 @@ var Ja = {
 			fromAccounts: se,
 			recover: ue,
 			restoreSelectionRequest: le
-		}), (e, t) => (i(), L("div", Ja, [
+		}), (e, t) => (i(), L("div", {
+			class: "bulk-page bulk-page-shell",
+			"data-bulk-vue": "",
+			"data-bulk-view": a.value.view
+		}, [
 			S("header", Ya, [S("h2", Xa, b(ee.value), 1), S("div", Za, [
 				a.value.view === "list" ? m("", !0) : (i(), L("button", {
 					key: 0,
@@ -4052,9 +4053,9 @@ var Ja = {
 					visible: I.value && a.value.view === "detail"
 				}, null, 8, ["navigation", "visible"]), [[N, a.value.view === "detail"]])
 			])
-		]));
+		], 8, Ja));
 	}
-}), [["__scopeId", "data-v-1105be8a"]]), io = "turb_bulk_intent:", ao = /* @__PURE__ */ new Set([
+}), [["__scopeId", "data-v-64aa8971"]]), io = "turb_bulk_intent:", ao = /* @__PURE__ */ new Set([
 	400,
 	403,
 	404,

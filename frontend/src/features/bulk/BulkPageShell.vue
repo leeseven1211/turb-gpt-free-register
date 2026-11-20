@@ -95,7 +95,7 @@ onBeforeUnmount(()=>{disposed=true;clearTimeout(timer);document.removeEventListe
 defineExpose({activate,setVisible,refresh,showReport,navigationState,restoreNavigation,navigate,fromAccounts,recover,restoreSelectionRequest});
 </script>
 <template>
- <div class="bulk-page bulk-page-shell" data-bulk-vue>
+ <div class="bulk-page bulk-page-shell" data-bulk-vue :data-bulk-view="navigation.view">
   <header class="bulk-page-heading"><h2 data-bulk-title>{{title}}</h2><div class="bulk-actions"><button v-if="navigation.view!=='list'" type="button" class="jobs-tb-btn" @click="navigate('list')">批次列表</button><button type="button" class="jobs-tb-btn" data-bulk-action="refresh" @click="refresh(true)">刷新</button><button type="button" class="jobs-tb-btn jobs-tb-btn--primary" data-bulk-action="new" @click="newBatch">新建批次</button></div></header>
   <p v-if="error" class="bulk-error" data-bulk-error role="alert">{{error}}</p>
   <p v-if="notice" class="bulk-notice" data-bulk-notice role="status">{{notice}}</p>
