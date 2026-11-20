@@ -20,15 +20,35 @@
 .ac-toolbar #accountsToolbarV2 :is(.account-quick-actions .jobs-tb-btn,.toolbar-overflow>summary){
   box-sizing:border-box;height:28px;min-height:28px;padding:0 8px;
 }
+.ac-toolbar #accountsMoreActionsV2{position:static}
+.ac-toolbar #accountsMoreActionsV2 .toolbar-overflow-menu{
+  position:absolute;inset:calc(100% + 4px) auto auto 12px;box-sizing:border-box;
+  width:min(420px,calc(100% - 24px));max-height:min(60dvh,480px,var(--ac-batch-menu-height,480px));
+  overflow:auto;overscroll-behavior:contain;
+}
+.ac-toolbar #accountsMoreActionsV2 summary:focus-visible{outline:2px solid var(--ui-color-brand);outline-offset:2px}
 .ac-button,.ac-link{min-height:28px;padding:3px 8px;border:1px solid var(--ui-color-border);border-radius:5px;background:var(--ui-color-surface);color:var(--ui-color-text);font:inherit;font-size:12px;cursor:pointer}
 .ac-link{border-color:transparent;background:transparent;color:var(--ui-color-brand)}
 .ac-button:disabled{opacity:.55;cursor:default}
 .ac-root button:focus-visible,.ac-root input:focus-visible,.ac-row-menu button:focus-visible{outline:2px solid var(--ui-color-brand);outline-offset:2px}
 .ac-search{display:flex;align-items:center;gap:6px;font-size:12px;min-width:0}
-.ac-search input{width:clamp(118px,calc(32vw - 285px),220px);min-width:0;height:30px;padding:4px 8px;border:1px solid var(--ui-color-border);border-radius:5px;background:var(--ui-color-surface);color:var(--ui-color-text);font:inherit}
+.ac-search input{
+  width:clamp(118px,calc(32vw - 285px),220px);
+  min-width:0;
+  height:30px;
+  min-height:0;
+  margin:0;
+  padding:4px 8px;
+  border:1px solid var(--ui-color-border);
+  border-radius:5px;
+  background:var(--ui-color-surface);
+  color:var(--ui-color-text);
+  font:inherit;
+}
 .ac-search button{border:0;background:transparent;color:var(--ui-color-text-secondary);min-width:28px;min-height:28px;cursor:pointer}
 .ac-feedback{margin:0;display:flex;align-items:center;gap:8px;padding:8px 12px;color:var(--ui-color-danger);font-size:12px;flex:0 0 auto}
-.ac-table-scroll{flex:1 1 auto;min-height:120px;min-width:0;overflow:auto;overscroll-behavior:contain}
+/* 将固定表头与固定列的层级限定在表格内。 */
+.ac-table-scroll{isolation:isolate;flex:1 1 auto;min-height:120px;min-width:0;overflow:auto;overscroll-behavior:contain}
 .ac-table{table-layout:fixed;border-collapse:separate;border-spacing:0;max-width:none;min-width:0;font-size:12px}
 .ac-table th{position:sticky;top:0;z-index:2;height:36px;padding:6px 8px;text-align:left;background:var(--ui-color-surface-secondary,var(--ui-color-surface));border-bottom:1px solid var(--ui-color-border);font-weight:500}
 .ac-table.accounts-table-v2 td{height:50px;padding:1px 8px;vertical-align:middle;border-bottom:1px solid var(--ui-color-border);overflow:hidden}
@@ -68,9 +88,8 @@
   .ac-toolbar{padding:8px}
   .ac-toolbar-main,.ac-toolbar-main:has(.list-filter-summary){flex-basis:100%}
   .ac-toolbar-utilities{width:100%}
-  .ac-toolbar #accountsMoreActionsV2{position:static}
   .ac-toolbar #accountsMoreActionsV2 .toolbar-overflow-menu{
-    position:absolute;inset:calc(100% + 4px) 8px auto;width:auto;max-height:min(60dvh,480px);
+    inset-inline:8px;width:auto;
   }
   .ac-mobile-filters{display:block}.ac-search{flex:1;min-width:180px}.ac-search input{width:100%}
   .ac-table{display:block;width:100%!important}.ac-table colgroup,.ac-table thead{display:none}.ac-table tbody{display:block}

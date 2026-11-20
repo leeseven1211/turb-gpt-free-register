@@ -9,6 +9,7 @@ function apiFixture():RegistrationApi{
     metadata:vi.fn(async()=>({sources:[],registration_drivers:[]})),
     summary:vi.fn(async()=>({accounts:4,email_supply:{total:2,available:1,used:1,failed:0}})),
     jobs:vi.fn(async()=>({items:[{id:'9007199254740993'}],total:1})),
+    progress:vi.fn(async(id)=>({ok:true,job:{id}})),
     create:vi.fn(async()=>({submitted:1,jobs:[{id:'9007199254740993',batch_id:'b-1'}]})),
     action:vi.fn(async()=>({ok:true,message:'已受理'})),
     log:vi.fn(async()=>({job:{status:'running'},log:'x'})),

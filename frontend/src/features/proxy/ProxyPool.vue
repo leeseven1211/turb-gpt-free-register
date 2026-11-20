@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, ref, watch } from 'vue';
 import ListCell from '../../components/ListCell.vue';
+import ListPagination from '../../components/ListPagination.vue';
 import ListResult from '../../components/ListResult.vue';
 import { formatDateTime } from '../../shared/time';
 import type { ProxyPoolSnapshot } from './contracts';
@@ -8,6 +9,21 @@ import { display, errorPresentation, number, object, status } from './presentati
 const props = defineProps<{ pool: ProxyPoolSnapshot | null; loading: boolean }>();
 const counts = computed(() => props.pool?.counts ?? {}),
   countries = computed(() => props.pool?.country_pools ?? []);
+const inventory = computed(() => props.pool?.items ?? []);
+const page = ref(1);
+const pageSize = ref(20);
+const tableScroll = ref<HTMLElement | null>(null);
+const lastPage = computed(() => Math.max(1, Math.ceil(inventory.value.length / pageSize.value)));
+const pageStart = computed(() => (page.value - 1) * pageSize.value);
+const visibleInventory = computed(() =>
+  inventory.value.slice(pageStart.value, pageStart.value + pageSize.value),
+);
+watch(lastPage, (last) => {
+  if (page.value > last) page.value = last;
+});
+watch([page, pageSize], () => {
+  if (tableScroll.value) tableScroll.value.scrollTop = 0;
+});
 const capacity = computed(
   () =>
     `${['fetching', 'checking', 'ready', 'leased', 'shared', 'rotation_wait'].reduce((sum, key) => sum + (number(counts.value[key]) ?? 0), 0)} / ${props.pool?.policy.max_size || '—'}`,
@@ -45,7 +61,7 @@ const count = (value: unknown) => number(value) ?? '—';
       <header class="pt-pool-header">
         <h3>代理池库存</h3>
         <span v-if="pool" role="status"
-          >显示最近 {{ pool.items?.length || 0 }} 条库存 · 最小可用 {{ pool.policy.min_ready || 0 }} ·
+          >快照包含最近 {{ inventory.length }} 条库存 · 最小可用 {{ pool.policy.min_ready || 0 }} ·
           本进程等待 {{ pool.waiting_local || 0 }} / 维护线程 {{ pool.workers_local || 0
           }}<template v-if="countries.length"> · 分国家 {{ countries.length }} 组</template
           ><template v-if="pool.capacity_warning"> · {{ pool.capacity_warning }}</template></span
@@ -85,7 +101,15 @@ const count = (value: unknown) => number(value) ?? '—';
           </div>
         </div>
       </div>
-      <div class="pt-table-scroll" tabindex="0" aria-label="代理池库存，可横向滚动">
+      <ListPagination
+        v-if="pool"
+        v-model:page="page"
+        v-model:size="pageSize"
+        :total="inventory.length"
+        class="pt-pool-pagination"
+        label="代理池库存分页"
+      />
+      <div ref="tableScroll" class="pt-table-scroll" tabindex="0" aria-label="代理池库存，可横向滚动">
         <table class="pt-table pt-pool-table" data-proxy-table="pool">
           <thead>
             <tr>
@@ -107,7 +131,7 @@ const count = (value: unknown) => number(value) ?? '—';
             </tr>
           </thead>
           <tbody>
-            <tr v-for="(row, index) in pool?.items || []" :key="String(row.resource_id || index)">
+            <tr v-for="(row, index) in visibleInventory" :key="String(row.resource_id || pageStart + index)">
               <td><ListCell :text="display(row.resource_id)" /></td>
               <td>
                 <ListResult
@@ -136,7 +160,7 @@ const count = (value: unknown) => number(value) ?? '—';
                 >
               </td>
             </tr>
-            <tr v-if="!pool?.items?.length">
+            <tr v-if="!inventory.length">
               <td colspan="7">
                 <div class="pt-empty" role="status">
                   <strong>{{
@@ -152,3 +176,8 @@ const count = (value: unknown) => number(value) ?? '—';
     </section>
   </div>
 </template>
+<style scoped>
+.pt-pool-pagination {
+  border-bottom: 1px solid var(--ui-color-border);
+}
+</style>

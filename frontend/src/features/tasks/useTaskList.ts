@@ -13,13 +13,13 @@ export function useTaskList() {
   let requestId = 0, controller: AbortController | null = null;
   let timer: ReturnType<typeof setTimeout> | undefined, debounce: ReturnType<typeof setTimeout> | undefined;
   let queuedRefresh = 0;
-  let metadataAt = 0, metadataQuery = '', revision = '';
+  let metadataAt = 0, metadataFilters = '', revision = '';
   let facetsVisible = false;
   const textFilters = new Set<keyof TaskFilters>(['task_id', 'target', 'batch', 'result']);
   let normalizedDelay: number | undefined;
   const filterSignature = () => JSON.stringify({...filters});
   const facetsNeedRefresh = (signature = filterSignature()) =>
-    facetsVisible && (metadataQuery !== signature || Date.now() - metadataAt >= 30000);
+    facetsVisible && (metadataFilters !== signature || Date.now() - metadataAt >= 30000);
 
   function queueRefresh(delay = 0) {
     clearTimeout(debounce);
@@ -59,7 +59,7 @@ export function useTaskList() {
         selected.value = new Set([...selected.value].filter(value => ids.has(value)));
       }
       if (result.facets) facets.value = result.facets;
-      if (metadata) { metadataAt = Date.now(); metadataQuery = activeFilters; }
+      if (metadata) { metadataAt = Date.now(); metadataFilters = activeFilters; }
       error.value = '';
     } catch (cause) {
       if (id === requestId && !isAbort(cause)) error.value = cause instanceof Error ? cause.message : '任务列表加载失败';
@@ -102,7 +102,7 @@ export function useTaskList() {
     const changed = (Object.keys(filters) as (keyof TaskFilters)[]).filter(key => query[key] !== previous[key]);
     if (changed.length) {
       facets.value = {};
-      metadataQuery = '';
+      metadataFilters = '';
       normalizedDelay = changed.every(key => textFilters.has(key)) && query.page_size === previous.page_size ? 260 : 0;
       // 页码归一后由同一观察入口发起请求，保留文本防抖，避免第二个 page watcher 重复读取。
       if (page.value !== 1) { page.value = 1; return; }

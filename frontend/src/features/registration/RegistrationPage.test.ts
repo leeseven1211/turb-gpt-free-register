@@ -2,18 +2,25 @@ import {flushPromises,mount} from '@vue/test-utils';
 import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
 import RegistrationPage from './RegistrationPage.vue';
 import RegistrationProgress from './RegistrationProgress.vue';
-import type {RegistrationApi} from '../../api/registration';
+import type {JobProgressResponse, RegistrationApi, RegistrationJob} from '../../api/registration';
 const wrappers:ReturnType<typeof mount>[]=[];
 function setup(){
  const api:RegistrationApi={
   metadata:vi.fn(async()=>({sources:[{value:'outlook',label:'Outlook',enabled:true}],registration_drivers:[]})),
   summary:vi.fn(async()=>({accounts:0})),
   jobs:vi.fn(async()=>({items:[{id:'9007199254740993',email:'long-address@example.test',email_source:'outlook',status:'failed',error_message:'raw diagnostic details that must remain available only in expansion'}],total:125})),
+  progress:vi.fn(async(id)=>({ok:true,job:{id,progress:{main_steps:[]}}})),
   create:vi.fn(async()=>({})),action:vi.fn(async()=>({})),log:vi.fn(async()=>({})),debug:vi.fn(async()=>({})),diagnostics:vi.fn(async()=>({})),compare:vi.fn(async()=>({})),
  };
  const wrapper=mount(RegistrationPage,{attachTo:document.body,props:{deps:{api,visible:false,view:'tasks'}}});wrappers.push(wrapper);
  (wrapper.vm as unknown as {setVisible(value:boolean):void}).setVisible(true);
  return {wrapper,api};
+}
+function launchBatch(api: RegistrationApi, id: string, items: RegistrationJob[]) {
+  vi.mocked(api.jobs).mockResolvedValue({progress_batch:{batch_id:id,items}});
+}
+function progressResponse(id: number, label: string, operation_run_id?: string): JobProgressResponse {
+  return {ok:true,job:{id,operation_run_id,progress:{main_steps:[{id:'probe',label,state:'success'}]}}};
 }
 beforeEach(()=>{Object.defineProperty(document,'hidden',{configurable:true,value:false});HTMLDialogElement.prototype.showModal=function(){this.setAttribute('open','');};HTMLDialogElement.prototype.close=function(){this.removeAttribute('open');};vi.spyOn(window,'scrollTo').mockImplementation(()=>{});});
 afterEach(()=>{wrappers.splice(0).forEach(w=>w.unmount());document.body.replaceChildren();});
@@ -38,10 +45,15 @@ describe('registration list standards',()=>{
  });
  it('retains clickable conditional phases, dependency evidence and native log dismissal',async()=>{
   const {wrapper,api}=setup();
-  vi.mocked(api.jobs).mockResolvedValue({items:[],total:0,progress_batch:{batch_id:'batch-test',items:[{id:8,email:'steps@example.test',status:'success',progress:{main_steps:[{id:'prepare',label:'准备',state:'success'},{id:'verify',label:'核验',state:'skipped',depends_on:['prepare'],execution:{kind:'conditional',condition:{label:'已获得凭证',state:'not_met'},dependency_state:'satisfied'}}]}}]}});
+  vi.mocked(api.jobs).mockResolvedValue({items:[],total:0,progress_batch:{batch_id:'batch-test',items:[{id:8,email:'steps@example.test',status:'success'}]}});
+  vi.mocked(api.progress).mockResolvedValue({ok:true,job:{id:8,status:'success',progress:{main_steps:[{id:'prepare',label:'准备',state:'success'},{id:'verify',label:'核验',state:'skipped',depends_on:['prepare'],execution:{kind:'conditional',condition:{label:'已获得凭证',state:'not_met'},dependency_state:'satisfied'}}]}}});
   (wrapper.vm as unknown as {setView(view:'launch'):void}).setView('launch');await (wrapper.vm as unknown as {load():Promise<void>}).load();await flushPromises();
   expect(wrapper.find('.registration-progress').exists()).toBe(false);
+  expect(api.progress).not.toHaveBeenCalled();
+  expect(vi.mocked(api.jobs).mock.lastCall?.[0]).toMatchObject({view:'batch',progress_detail:0});
   await wrapper.get('button[aria-label="查看阶段 · steps@example.test"]').trigger('click');
+  await flushPromises();
+  expect(api.progress).toHaveBeenCalledWith(8,expect.any(AbortSignal));
   const phase=wrapper.findAll('.registration-steps button').find(button=>button.text().includes('核验'))!;
   expect(phase.text()).toContain('条件未满足');expect(wrapper.get('.registration-progress details').text()).toContain('准备');expect(wrapper.get('.registration-progress details').text()).toContain('已获得凭证');
   await phase.trigger('click');await flushPromises();
@@ -56,16 +68,22 @@ describe('registration list standards',()=>{
    progress_batch:{batch_id:'batch-test',total:3,status_counts:{success:1,failed:1,pending:1,active:1},items:[
     {id:7,email:'success@example.test',status:'success'},
     {id:8,email:'failure@example.test',status:'failed',retryable:true,progress:{
-     failure:{step_id:'set_twofa',label:'配置 2FA',message:'校验失败的详细记录'},
-     main_steps:[{id:'set_twofa',label:'配置 2FA',state:'failed',message:'校验失败的详细记录'}],
+     failure:{step_id:'set_twofa',label:'配置 2FA'},
     }},
     {id:9,email:'queued@example.test',status:'pending'},
    ]},
   });
+  vi.mocked(api.progress).mockResolvedValue({ok:true,job:{id:8,status:'failed',progress:{
+   failure:{step_id:'set_twofa',label:'配置 2FA',message:'校验失败的详细记录'},
+   main_steps:[{id:'set_twofa',label:'配置 2FA',state:'failed',message:'校验失败的详细记录'}],
+  }}});
   (wrapper.vm as any).setView('launch');await (wrapper.vm as any).load();await flushPromises();
   expect(wrapper.get('[aria-pressed="false"][data-batch-filter="active"]').text()).toBe('运行 / 排队 1');
   expect(wrapper.get('.registration-batch').text()).not.toContain('校验失败的详细记录');
+  expect(api.progress).not.toHaveBeenCalled();
   await wrapper.get('[data-batch-filter="failed"]').trigger('click');
+  await flushPromises();
+  expect(api.progress).toHaveBeenCalledTimes(1);
   expect(wrapper.findAll('.registration-batch-card')).toHaveLength(1);
   expect(wrapper.get('.registration-batch-card').text()).toContain('failure@example.test');
   expect(wrapper.get('.registration-stage-selected').text()).toContain('配置 2FA');
@@ -74,6 +92,98 @@ describe('registration list standards',()=>{
   await wrapper.get('[data-batch-filter="active"]').trigger('click');
   expect(wrapper.get('.registration-batch-card').text()).toContain('queued@example.test');
   expect(wrapper.find('.registration-progress').exists()).toBe(false);
+ });
+ it('keeps every card in a large batch and opens only the selected job with its exact id',async()=>{
+  const {wrapper,api}=setup();
+  const items: RegistrationJob[]=Array.from({length:205},(_,index)=>({id:index+1,status:'success'}));
+  items.push({id:'9007199254740993',status:'failed',retryable:true});
+  launchBatch(api,'large-batch',items);
+  (wrapper.vm as any).setView('launch');await (wrapper.vm as any).load();await flushPromises();
+  expect(wrapper.findAll('.registration-batch-card')).toHaveLength(206);
+  expect(api.progress).not.toHaveBeenCalled();
+  await wrapper.get('[aria-controls="registration-stages-9007199254740993"]').trigger('click');
+  await flushPromises();
+  expect(api.progress).toHaveBeenCalledExactlyOnceWith('9007199254740993',expect.any(AbortSignal));
+ });
+ it('indicates an in-flight request and lets the same card retry a rejected read',async()=>{
+  const {wrapper,api}=setup();let reject!: (reason:Error)=>void;
+  launchBatch(api,'retry-batch',[{id:8,status:'failed',progress:{current:{label:'摘要'}}}]);
+  vi.mocked(api.progress).mockImplementationOnce(()=>new Promise((_,fail)=>{reject=fail;}))
+   .mockResolvedValueOnce({ok:true,job:{id:8,progress:{current:{label:'只有摘要'}}}})
+   .mockResolvedValueOnce(progressResponse(8,'已读取的阶段'));
+  (wrapper.vm as any).setView('launch');await (wrapper.vm as any).load();await flushPromises();
+  await wrapper.get('[aria-controls="registration-stages-8"]').trigger('click');
+  expect(wrapper.get('[data-progress-state="loading"]').text()).toContain('正在读取阶段详情');
+  expect(wrapper.find('.registration-progress').exists()).toBe(false);
+  reject(new Error('详情请求暂不可用'));await flushPromises();
+  const error=wrapper.get('[data-progress-state="error"]');
+  expect(error.text()).toContain('详情请求暂不可用');
+  await error.get('button').trigger('click');await flushPromises();
+  expect(wrapper.find('.registration-progress').exists()).toBe(false);
+  await wrapper.get('[data-progress-state="error"] button').trigger('click');await flushPromises();
+  expect(wrapper.get('[data-progress-state="ready"] .registration-steps').text()).toContain('已读取的阶段');
+ });
+ it('shows an empty stage history only after a complete detail response',async()=>{
+  const {wrapper,api}=setup();
+  launchBatch(api,'empty-history-batch',[{id:8,status:'success'}]);
+  vi.mocked(api.progress).mockResolvedValueOnce({ok:true,job:{id:8,progress:{main_steps:[]}}});
+  (wrapper.vm as any).setView('launch');await (wrapper.vm as any).load();await flushPromises();
+  await wrapper.get('[aria-controls="registration-stages-8"]').trigger('click');await flushPromises();
+  expect(wrapper.get('[data-progress-state="ready"]').text()).toContain('暂无阶段记录');
+ });
+ it('refreshes an expanded terminal card after explicitly reloading the batch',async()=>{
+  const {wrapper,api}=setup();
+  launchBatch(api,'manual-refresh-batch',[{id:8,status:'success'}]);
+  vi.mocked(api.progress).mockResolvedValueOnce(progressResponse(8,'已保存阶段'))
+   .mockResolvedValueOnce(progressResponse(8,'补齐证据的阶段'));
+  (wrapper.vm as any).setView('launch');await (wrapper.vm as any).load();await flushPromises();
+  await wrapper.get('[aria-controls="registration-stages-8"]').trigger('click');await flushPromises();
+  expect(wrapper.get('[data-progress-state="ready"]').text()).toContain('已保存阶段');
+  await (wrapper.vm as any).load({automatic:true});await flushPromises();
+  expect(api.progress).toHaveBeenCalledTimes(1);
+  await (wrapper.vm as any).load();await flushPromises();
+  expect(wrapper.get('[data-progress-state="ready"]').text()).toContain('补齐证据的阶段');
+  expect(api.progress).toHaveBeenCalledTimes(2);
+ });
+ it('cancels obsolete details on a same-job run change and clears expansion after a retry replaces the current job',async()=>{
+  const {wrapper,api}=setup();let resolve!: (value:JobProgressResponse)=>void;
+  const row={id:8,status:'running',operation_run_id:'5'};
+  launchBatch(api,'changing-batch',[row]);
+  vi.mocked(api.progress).mockImplementationOnce(()=>new Promise(done=>{resolve=done;}))
+   .mockResolvedValueOnce(progressResponse(8,'当前阶段','6'));
+  (wrapper.vm as any).setView('launch');await (wrapper.vm as any).load();await flushPromises();
+  await wrapper.get('[aria-controls="registration-stages-8"]').trigger('click');
+  const firstSignal=vi.mocked(api.progress).mock.calls[0]![1]!;
+  launchBatch(api,'changing-batch',[{...row,operation_run_id:'6'}]);
+  await (wrapper.vm as any).load({automatic:true});await flushPromises();
+  expect(firstSignal.aborted).toBe(true);
+  resolve(progressResponse(8,'旧阶段','5'));await flushPromises();
+  expect(wrapper.get('[data-progress-state="ready"] .registration-steps').text()).toContain('当前阶段');
+  expect(wrapper.text()).not.toContain('旧阶段');
+  launchBatch(api,'changing-batch',[{...row,id:9,operation_run_id:'7'}]);
+  await (wrapper.vm as any).load({automatic:true});await flushPromises();
+  expect(wrapper.get('[aria-controls="registration-stages-9"]').attributes('aria-expanded')).toBe('false');
+  expect(api.progress).toHaveBeenCalledTimes(2);
+ });
+ it('refreshes only the expanded running card on batch polling and cancels it when the batch changes',async()=>{
+  const {wrapper,api}=setup();let resolve!: (value:JobProgressResponse)=>void;
+  const row={id:8,status:'running',operation_run_id:'5'};
+  launchBatch(api,'first-batch',[row,{id:9,status:'running'}]);
+  vi.mocked(api.progress).mockResolvedValueOnce(progressResponse(8,'初始阶段','5'))
+   .mockImplementationOnce(()=>new Promise(done=>{resolve=done;}));
+  (wrapper.vm as any).setView('launch');await (wrapper.vm as any).load();await flushPromises();
+  await wrapper.get('[aria-controls="registration-stages-8"]').trigger('click');await flushPromises();
+  launchBatch(api,'first-batch',[{...row},{id:9,status:'running'}]);
+  await (wrapper.vm as any).load({automatic:true});await flushPromises();
+  expect(vi.mocked(api.progress).mock.calls.map(([id])=>id)).toEqual([8,8]);
+  const signal=vi.mocked(api.progress).mock.calls[1]![1]!;
+  launchBatch(api,'second-batch',[{id:8,status:'running',operation_run_id:'8'}]);
+  await (wrapper.vm as any).setBatch('second-batch');await flushPromises();
+  expect(signal.aborted).toBe(true);
+  resolve(progressResponse(8,'上一批阶段','5'));await flushPromises();
+  expect(wrapper.get('[aria-controls="registration-stages-8"]').attributes('aria-expanded')).toBe('false');
+  expect(wrapper.text()).not.toContain('上一批阶段');
+  expect(api.progress).toHaveBeenCalledTimes(2);
  });
  it('selects manual email mode and shows the server worker count after creation',async()=>{
   const {wrapper,api}=setup();vi.mocked(api.metadata).mockResolvedValue({manual_mode:true,sources:[],registration_drivers:[]});vi.mocked(api.create).mockResolvedValue({submitted:1,workers:2});

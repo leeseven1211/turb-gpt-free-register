@@ -147,7 +147,7 @@ def _step(item: dict[str, Any], *, planned: bool = True) -> dict[str, Any]:
 
 def _child(child_id: str) -> dict[str, Any]:
     return {
-        "id": child_id, "step_id": child_id, "label": _CHILD_LABELS.get(child_id, stage_label(child_id)),
+        "id": child_id, "step_id": child_id, "label": _progress_child_label(child_id),
         "state": "pending", "display_status": "pending", "active": False,
         "reason": "记录不足/未执行", "attempts": [], "event_ids": [], "last_event_id": None,
         "started_at": None, "completed_at": None, "duration_ms": None, "message": None,
@@ -173,12 +173,40 @@ def _child_id(raw_stage: str, detail: dict[str, Any]) -> str | None:
     return None
 
 
+def _progress_child_label(child_id: str) -> str:
+    return _CHILD_LABELS.get(child_id) or stage_label(child_id)
+
+
+def _progress_child_id(task_type: str, step_id: str, stage: str, original_stage: str, detail: dict[str, Any]) -> str | None:
+    child_id = _child_id(stage, detail) if step_id != "result" else None
+    if task_type in {"registration", "registration_resume"} and step_id == "authenticate" and stage in REGISTRATION_AUTH_STAGES:
+        child_id = child_id or stage
+    if step_id == "set_twofa" and stage in {"twofa", "twofa_result"}:
+        return "twofa_remote_confirm" if original_stage == "twofa_result" else (
+            "browser_fallback" if str(detail.get("driver") or "").lower() == "browser_fallback" else "protocol_attempt"
+        )
+    if step_id == "set_password" and detail.get("checkpoint"):
+        return "password_checkpoint"
+    return child_id
+
+
 def _find_step(steps: list[dict[str, Any]], step_id: str) -> dict[str, Any] | None:
     return next((item for item in steps if item["id"] == step_id), None)
 
 
-def _raw_to_main(task_type: str, raw: str, detail: dict[str, Any], steps: list[dict[str, Any]]) -> str | None:
-    resolved = resolve_step(task_type, raw, detail)
+def _raw_to_main(
+    task_type: str, raw: str, detail: dict[str, Any], steps: list[dict[str, Any]],
+    resolutions: dict[tuple[str, str], str | None] | None = None,
+) -> str | None:
+    if resolutions is None:
+        resolved = resolve_step(task_type, raw, detail)
+    else:
+        # 默认模板映射只取原始阶段和显式步骤 ID，当前计划的过滤仍按各自快照执行。
+        explicit = str(detail.get("main_step_id") or detail.get("step_id") or "").strip()
+        key = (raw, explicit)
+        if key not in resolutions:
+            resolutions[key] = resolve_step(task_type, raw, {"main_step_id": explicit})
+        resolved = resolutions[key]
     return resolved if resolved and _find_step(steps, resolved) else None
 
 
@@ -582,6 +610,58 @@ def _unrecovered_failures(attempts: list[dict[str, Any]]) -> list[dict[str, Any]
         if not any(value.get("state") == "success" for value in later):
             candidates.append(attempt)
     return candidates
+
+
+def registration_progress_summary(task_type: str, status: str, run: dict[str, Any]) -> dict[str, Any]:
+    """从当前线路保存的紧凑阶段状态归并卡片位置。"""
+    if status not in {"pending", "running", "stopping", "failed", "partial_success", "stopped", "cancelled"}:
+        return {}
+    labels = {step["id"]: step["label"] for step in flow_for(task_type, run)}
+    observations = []
+    for sequence, item in enumerate(run.get("recorded_progress") or ()):
+        state = normalize_step_state(item.get("state"))
+        if not state or item.get("evidence") in {"unobserved", "not_executed"}:
+            continue
+        original_stage = item["stage"]
+        stage = normalize_stage(original_stage)
+        if is_task_lifecycle_stage(task_type, stage):
+            continue
+        step_id = resolve_step(task_type, stage, item, run)
+        if step_id == "result":
+            continue
+        observations.append({
+            "main_step_id": step_id or f"unknown:{stage}",
+            "raw_stage": stage,
+            "child_step_id": _progress_child_id(task_type, step_id or "", stage, original_stage, item),
+            "state": state,
+            "evidence": item.get("evidence") or "explicit",
+            "sequence": sequence,
+        })
+    if status in {"pending", "running", "stopping"}:
+        if not observations:
+            return {}
+        current = observations[-1]
+        step_id, stage, child_id = (current[key] for key in ("main_step_id", "raw_stage", "child_step_id"))
+        label = _progress_child_label(child_id) if child_id else labels.get(step_id, stage_label(stage))
+        return {"current": {"step_id": step_id, "raw_stage": stage, "label": label}}
+    failures = _unrecovered_failures(observations)
+    if failures:
+        step_id, stage = (failures[-1][key] for key in ("main_step_id", "raw_stage"))
+    elif status == "failed":
+        result = run.get("result_summary")
+        diagnostics = run.get("failure_diagnostics_summary")
+        result = result if isinstance(result, dict) else {}
+        diagnostics = diagnostics if isinstance(diagnostics, dict) else {}
+        stage = next((normalize_stage(value) for value in (
+            run.get("failure_stage"), result.get("failure_stage"), diagnostics.get("failure_stage"),
+            observations[-1]["raw_stage"] if observations else None, run.get("progress_stage"),
+        ) if value and normalize_stage(value) not in {"complete", "result"}), None)
+        if not stage:
+            return {}
+        step_id = resolve_step(task_type, stage, run=run) or stage
+    else:
+        return {}
+    return {"failure": {"step_id": step_id, "stage": stage, "label": labels.get(step_id, stage_label(stage))}}
 
 
 def _roxy_login_failure_error(run: dict[str, Any], chosen: dict[str, Any], events: Iterable[dict[str, Any]]) -> str | None:
@@ -1230,10 +1310,12 @@ def build_progress_snapshot(
     events: Iterable[dict[str, Any]] | None,
     *,
     _include_routes: bool = True,
+    _step_resolutions: dict[tuple[str, str], str | None] | None = None,
 ) -> dict[str, Any]:
     """构建安全的 v2 快照，同时保留 raw stage 证据。"""
     run_value = dict(run or {})
     task_key = str(task_type or "").strip().lower()
+    step_resolutions = {} if _step_resolutions is None else _step_resolutions
     steps = _template(task_key, run_value)
     # 计划过滤不能丢掉真实的子任务引用；只补回已经有引用的稳定阶段。
     if task_key == "account_completion":
@@ -1301,7 +1383,7 @@ def build_progress_snapshot(
                 _record(lifecycle, event, state, raw=_original_stage(event) or raw, child_id=None, order=order)
                 explicit = explicit or bool(_event_id(event))
             continue
-        recorded_id = _raw_to_main(task_key, raw, detail, steps)
+        recorded_id = _raw_to_main(task_key, raw, detail, steps, step_resolutions)
         if recorded_id is None and state is not None and task_key == "account_completion":
             # native child 分派可能不在旧计划列表中；仍复用已定义的分派 ID。
             stable_id = resolve_step(task_key, raw, detail)
@@ -1338,13 +1420,7 @@ def build_progress_snapshot(
         if "legacy_index" in event and item.get("evidence") == "explicit":
             # 旧 progress_steps 只补充缺失证据，不能覆盖 transition 事件事实。
             continue
-        child_id = _child_id(raw, detail) if main_id != "result" else None
-        if task_key in {"registration", "registration_resume"} and main_id == "authenticate" and raw in REGISTRATION_AUTH_STAGES:
-            child_id = child_id or raw
-        if main_id == "set_twofa" and raw in {"twofa", "twofa_result"}:
-            child_id = "twofa_remote_confirm" if _original_stage(event) == "twofa_result" else ("browser_fallback" if str(detail.get("driver") or "").lower() == "browser_fallback" else "protocol_attempt")
-        if main_id == "set_password" and detail.get("checkpoint"):
-            child_id = "password_checkpoint"
+        child_id = _progress_child_id(task_key, main_id, raw, _original_stage(event), detail)
         attempt = _record(item, event, state, raw=_original_stage(event) or raw, child_id=child_id, order=order)
         record = {**attempt, "main_step_id": main_id, "child_step_id": child_id, "label": item["label"], "sequence": order}
         # 废号写回确认只证明账号状态已保存，不能把运行中的任务标成成功。
@@ -1436,6 +1512,9 @@ def build_progress_snapshot(
     current = _current(ordered, current_activity, str(run_value.get("status") or ""))
     debug_pause = _project_debug_pause(ordered, run_value, current)
     structure = _project_execution(ordered, task_key, run_value, attempts)
+    if not _include_routes:
+        # 线路条目只使用步骤和失败信息，修订号由外层快照生成。
+        return {"main_steps": ordered, "failure": failure}
     payload = {"flow_version": 3 if route_numbers else 2, "selected_route_attempt_no": selected_route, "steps": ordered, "run": {"id": run_value.get("id"), "status": run_value.get("status"), "progress_stage": run_value.get("progress_stage"), "result_summary": run_value.get("result_summary") or {}}, "events": attempts, "failure": failure, "history_unknown": [{"event_id": _event_id(value), "reason": value.get("unknown_reason")} for value in unknown_events]}
     payload["debug_pause"] = debug_pause
     payload["task_lifecycle"] = list(task_lifecycle.values())
@@ -1470,7 +1549,7 @@ def build_progress_snapshot(
             }
             for value in unknown_events
         ]
-    if _include_routes and route_numbers:
+    if route_numbers:
         route_items = []
         route_source_events = [dict(value) for value in (events or []) if isinstance(value, dict)]
         route_source_events.extend(_legacy_events(run_value))
@@ -1514,7 +1593,10 @@ def build_progress_snapshot(
                 else history.get("status")
                 or ("running" if route_no == selected_route and str(run_value.get("status") or "").lower() in _ACTIVE_PROGRESS_STATUSES else "failed" if any(_event_state(value) == "failed" for value in route_events) else "success")
             )
-            route_snapshot = build_progress_snapshot(task_id, run_id, task_type, route_run, route_events, _include_routes=False)
+            route_snapshot = build_progress_snapshot(
+                task_id, run_id, task_type, route_run, route_events,
+                _include_routes=False, _step_resolutions=step_resolutions,
+            )
             route_items.append({
                 "route_attempt_no": route_no,
                 "selected": route_no == selected_route,

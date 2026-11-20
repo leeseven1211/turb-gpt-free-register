@@ -1,4 +1,4 @@
-import type {DashboardApi} from '../../api/dashboard';
+import type {DashboardApi,PendingCapabilities} from '../../api/dashboard';
 export interface DashboardDeps {
  visible?:boolean;
  notify?(message:string):void;
@@ -7,7 +7,10 @@ export interface DashboardDeps {
  onCapabilities?(value:any):void;
  onReady?():void;
 }
-export interface DashboardMountDependencies extends DashboardDeps {api?:DashboardApi}
+export interface DashboardMountDependencies extends DashboardDeps {
+ api?:DashboardApi;
+ pendingCapabilities?:PendingCapabilities;
+}
 export interface DashboardHandle {
  setVisible(value:boolean):void;
  load():Promise<void>;

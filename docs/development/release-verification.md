@@ -4,11 +4,11 @@
 
 ## 1. 验证范围
 
-代码改动先运行受影响功能的定向测试，再补相邻回归。小改动不默认执行全量；共享存储、
-运行时、迁移、跨模块契约或发布验收需要扩大验证时，应说明具体风险和新增覆盖范围。
-涉及 PostgreSQL 行为时补充对应的隔离数据库验证。涉及 WebUI 时，还要验证现代界面及
-真实浏览器行为；旧 `?ui=legacy` 链接和 `ui_mode=legacy` Cookie 均返回现代页面，入口
-路由修改应保留这两项兼容检查。文档改动检查标题、相对链接、重复内容和现行代码引用。
+非重大架构调整仅运行与本次改动直接相关的测试。重大架构调整按受影响的模块和契约扩大
+验证范围。涉及 PostgreSQL 行为时运行对应的隔离数据库测试。大多数 UI 改动在部署后
+使用真实浏览器验收受影响的现代页面和交互，业务逻辑或接口契约的改动同时运行直接相关的
+测试。入口路由改动需核对旧 `?ui=legacy` 链接和 `ui_mode=legacy` Cookie 仍返回现代页面。
+文档改动检查标题、相对链接、重复内容和现行代码引用。
 
 统一测试入口是 `python tools/test_isolated.py`，由它启动 pytest 并收集已有的
 `unittest.TestCase`。运行前在进程环境提供独立测试库的 `DATABASE_URL`；入口会禁用项目
@@ -27,16 +27,10 @@ dotenv、清除业务环境配置并探测测试库。`TURB_DB_SCHEMA` 必须以
 混用。
 
 ```bash
-# 功能定向及相邻回归；文件应按本次影响范围选择
+# 按实际改动选择测试文件
 python tools/test_isolated.py --profile all -- tests/config/test_config_ui.py tests/webui/test_dashboard_api.py -q
 
-# 需要更广基础回归时
-python tools/test_isolated.py --profile default -- -q
-
-# 路由契约变更时补充对应扩展测试
-python tools/test_isolated.py --profile extended -- tests/webui/test_route_contract.py -q
-
-# 已说明需要完整发布验收时，才运行整个测试目录
+# 重大架构调整需要覆盖整个测试目录时
 python tools/test_isolated.py --profile all -- -q
 ```
 
@@ -45,27 +39,21 @@ python tools/test_isolated.py --profile all -- -q
 通过。已有测试数量多不是删除依据；先确认其保护的行为、是否重复和耗时来源，再决定
 合并重复检查、缩小 fixture 或调整测试分组，保留关键业务与数据安全约束。
 
-前端验证包含 Vue 工程检查和旧页面 Node 行为回归两部分，CI 的 `frontend` job 分别
-执行。使用 Node >=22.12，在仓库根目录运行：
+本地前端行为测试按实际改动从 Vue 或外壳脚本中选取。以下是仓库根目录下的定向命令示例。
 
 ```bash
-npm --prefix frontend ci
-npm --prefix frontend run check
-node --test tests/*/test_*.cjs
-npm --prefix frontend run build
+npm --prefix frontend test -- src/features/bulk/BulkPageShell.test.ts
+node --test tests/bulk/test_page_bridge.cjs
 ```
 
-Node 命令按目录匹配所有 `test_*.cjs`，排除 `tests/frontend_script_sources.cjs` 等辅助文件；
-记录本次实际文件数及通过、失败、跳过数量，不维护固定测试数量。`npm run check` 不会
-替代这组旧页面行为测试；若共享依赖或展示入口迁移，应更新夹具并把原业务断言迁到
-当前模块，不能仅删除失效测试。两组测试不访问数据库，也不替代真实浏览器验收。
+CI 的 `frontend` job 分别运行 Vue 工程检查、现有 Node 行为回归和前端构建。共享依赖或
+展示入口迁移时，把相关夹具和业务断言迁到当前模块。构建步骤见[前端说明](../../frontend/README.md)。
 
 ## 2. 提交与发布前检查
 
 ```text
-最小相关测试
-  -> 相邻回归/相关隔离测试
-  -> 有风险依据时补充扩展或全量验证
+与改动直接相关的测试
+  -> 重大架构调整按影响补充回归
   -> git diff --check
   -> 检查暂存范围不含私有数据
   -> 确认提交与远端推送状态

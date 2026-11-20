@@ -19,13 +19,15 @@ async function run(name){
    operation_task_id:'9007199254740995',operation_run_id:'9007199254740997'};
   const running=Array.from({length:2},(_,index)=>({id:10+index,status:'running'}));
   const pending=Array.from({length:10},(_,index)=>({id:20+index,status:'pending'}));
-  const batch={batch_id:'synthetic-batch-uuid',items:[job,...running,...pending],total:13,status_counts:{partial_success:1,running:2,pending:10}};
+  const batch={batch_id:'synthetic-batch-uuid',items:[{...job,progress:{}},...running,...pending],total:13,status_counts:{partial_success:1,running:2,pending:10}};
+  const progressCalls=[];
   const api={
    metadata:async()=>({sources:[{value:'outlook',label:'Outlook',enabled:true}],registration_drivers:[{value:'roxy',label:'本地 Roxy'}]}),
    summary:async()=>({accounts:0,email_supply:{status:'known',total:0,available:0,used:0,failed:0}}),
    jobs:async params=>{calls.push(params);return params.view==='table'?{items:[job],total:1,facets:{}}:{progress_batch:batch,progress_batches:[batch],status_counts:{active:12}};},
    create:async()=>{throw Error('contract must not submit registration');},
    action:async()=>{throw Error('contract must not execute a business action');},
+   progress:async id=>{progressCalls.push(id);return {ok:true,job};},
    log:async()=>({job:{id:job.id,status:'success'},log:'saved synthetic log'}),
    debug:async()=>({enabled:false}),diagnostics:async()=>({enabled:false}),compare:async()=>({differences:[]}),
   };
@@ -40,7 +42,9 @@ async function run(name){
    const header=wrapper.get('.registration-batch>header');
    for(const text of ['停止运行','取消排队','重跑失败'])assert.ok(header.findAll('button').some(button=>button.text()===text),text);
    assert.ok(header.find('select[aria-label="选择任务批次"]').exists());
+   assert.deepEqual(progressCalls,[]);
    await wrapper.get('[aria-label="查看阶段 · synthetic@example.invalid"]').trigger('click');await settle();
+   assert.deepEqual(progressCalls,[job.id]);
    const steps=wrapper.findAll('.registration-steps>li');
    assert.equal(steps.length,2);assert.match(steps[0].text(),/分配网络/);
    assert.match(wrapper.text(),/依赖与执行记录/);

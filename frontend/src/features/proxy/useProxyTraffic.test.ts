@@ -32,7 +32,7 @@ function setup() {
       purposes: ['plan-check'],
       lease_states: ['leased', 'released'],
     })),
-    pool: vi.fn(async () => null),
+    pool: vi.fn(async () => ({ policy: {}, counts: { ready: 1 } })),
   };
   const scope = effectScope();
   scopes.push(scope);
@@ -101,6 +101,7 @@ describe('single proxy read owner', () => {
     await settle();
     expect(h.requests.slice(3).map((r) => r.view)).toEqual(['current', 'history', 'traffic']);
     expect(h.owner.summary.value?.total_bytes).toBe(1024);
+    expect(h.api.pool).toHaveBeenCalledTimes(2);
     old.resolve(page([{ id: 99 }]));
     await settle();
     expect(h.owner.pages.current.items[0]?.id).toBe(2);
@@ -214,6 +215,140 @@ describe('single proxy read owner', () => {
     expect(h.requests).toHaveLength(1);
     expect(h.requests[0]!.query).toMatchObject({ page: 1, size: 50 });
   });
+  it('keeps inventory and other records while paging or filtering one table', async () => {
+    const h = setup(),
+      pool = vi.fn(async () => ({ policy: {}, counts: { ready: 9 } }));
+    h.api.pool = pool;
+    h.owner.setVisible(true);
+    await settle();
+    h.requests.length = 0;
+    const inventory = h.owner.pool.value;
+    const traffic = h.owner.pages.traffic.items;
+
+    h.owner.setPage('history', 2);
+    await settle();
+    h.owner.setSize('history', 50);
+    await settle();
+    h.owner.setState('history', 'released');
+    await settle();
+
+    expect(h.requests.map(({ view, query }) => [view, query.page, query.size, query.state])).toEqual([
+      ['history', 2, 20, 'all'],
+      ['history', 1, 50, 'all'],
+      ['history', 1, 50, 'released'],
+    ]);
+    expect(h.owner.pool.value).toBe(inventory);
+    expect(h.owner.pages.traffic.items).toBe(traffic);
+    expect(pool).toHaveBeenCalledTimes(1);
+    expect(h.api.summary).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(30000);
+    await settle();
+    expect(h.requests.slice(3).map(({ view }) => view)).toEqual(['current', 'history', 'traffic']);
+    expect(pool).toHaveBeenCalledTimes(2);
+    expect(h.api.summary).toHaveBeenCalledTimes(2);
+  });
+  it('库存读取失败后在分页时补读库存，恢复后继续局部分页', async () => {
+    const h = setup();
+    vi.mocked(h.api.pool).mockResolvedValueOnce(null);
+    h.owner.setVisible(true);
+    await settle();
+    expect(h.owner.pool.value).toBeNull();
+    expect(h.owner.summary.value?.total_bytes).toBe(1024);
+    h.requests.length = 0;
+
+    h.owner.setPage('history', 2);
+    await settle();
+    expect(h.owner.pool.value?.counts.ready).toBe(1);
+
+    h.owner.setPage('history', 3);
+    await settle();
+    expect(h.requests.map(({ view, query }) => [view, query.page])).toEqual([
+      ['history', 2],
+      ['history', 3],
+    ]);
+    expect(h.api.pool).toHaveBeenCalledTimes(2);
+    expect(h.api.summary).toHaveBeenCalledTimes(1);
+  });
+  it('keeps a pending global filter when an immediate table-specific change cancels its timer', async () => {
+    const h = setup();
+    h.owner.setVisible(true);
+    await settle();
+    h.requests.length = 0;
+
+    h.owner.updateFilters({ search: 'shared' });
+    h.owner.setState('history', 'released');
+    await settle();
+
+    expect(h.requests.map(({ view }) => view)).toEqual(['current', 'history', 'traffic']);
+    expect(h.requests.every(({ query }) => query.search === 'shared')).toBe(true);
+    expect(h.requests[1]?.query.state).toBe('released');
+    expect(h.api.pool).toHaveBeenCalledTimes(2);
+  });
+  it('completes a full refresh after a targeted change aborts it in flight', async () => {
+    const h = setup(),
+      old = deferred<ReturnType<typeof page>>();
+    h.owner.setVisible(true);
+    await settle();
+    h.requests.length = 0;
+    h.setRead(() => old.promise);
+    await vi.advanceTimersByTimeAsync(30000);
+    await settle();
+
+    h.setRead((view) => Promise.resolve(page([{ id: 2, lease_id: view }], 80)));
+    h.owner.setState('history', 'released');
+    await settle();
+    old.resolve(page([{ id: 99 }]));
+    await settle();
+
+    expect(h.requests.slice(0, 3).every(({ signal }) => signal?.aborted)).toBe(true);
+    expect(h.requests.slice(3).map(({ view }) => view)).toEqual(['current', 'history', 'traffic']);
+    expect(h.owner.pages.current.items[0]?.id).toBe(2);
+    expect(h.api.pool).toHaveBeenCalledTimes(3);
+  });
+  it('discards a late targeted response after a new targeted request', async () => {
+    const h = setup(),
+      old = deferred<ReturnType<typeof page>>();
+    h.owner.setVisible(true);
+    await settle();
+    h.requests.length = 0;
+    h.setRead(() => old.promise);
+    h.owner.setPage('history', 2);
+    await settle();
+    h.setRead((_view, q) => Promise.resolve(page([{ id: 50 }], 80, 0, q.size)));
+    h.owner.setSize('history', 50);
+    await settle();
+    old.resolve(page([{ id: 99 }], 80, 20));
+    await settle();
+
+    expect(h.requests.map(({ view }) => view)).toEqual(['history', 'history']);
+    expect(h.requests[0]?.signal?.aborted).toBe(true);
+    expect(h.owner.pages.history.items[0]?.id).toBe(50);
+    expect(h.api.pool).toHaveBeenCalledTimes(1);
+  });
+  it('refreshes only changed tables when switching table before a targeted response arrives', async () => {
+    const h = setup(),
+      old = deferred<ReturnType<typeof page>>();
+    h.owner.setVisible(true);
+    await settle();
+    h.requests.length = 0;
+    h.setRead(() => old.promise);
+    h.owner.setPage('history', 2);
+    await settle();
+    h.setRead((view, q) =>
+      Promise.resolve(page([{ id: q.page, lease_id: view }], 80, (q.page - 1) * q.size, q.size)),
+    );
+    h.owner.setState('traffic', 'available');
+    await settle();
+    old.resolve(page([{ id: 99 }], 80, 20));
+    await settle();
+
+    expect(h.requests[0]?.signal?.aborted).toBe(true);
+    expect(h.requests.slice(1).map(({ view }) => view).sort()).toEqual(['history', 'traffic']);
+    expect(h.owner.pages.history.items[0]?.id).toBe(2);
+    expect(h.owner.pages.traffic.items[0]?.lease_id).toBe('traffic');
+    expect(h.api.pool).toHaveBeenCalledTimes(1);
+  });
   it('freezes the opened record across poll/filter/page and closes on module or subview navigation', async () => {
     const h = setup();
     h.owner.setVisible(true);
@@ -230,14 +365,26 @@ describe('single proxy read owner', () => {
     h.owner.setView('pool');
     expect(h.owner.detail.value).toBeNull();
   });
-  it('clears all mandatory snapshots on a current failure and leaves optional pool unavailable', async () => {
+  it('retains unrelated snapshots on a targeted failure and recovers with a full retry', async () => {
     const h = setup();
+    const inventory = { policy: {}, counts: { ready: 9 } };
+    const pool = vi.fn(async () => inventory);
+    h.api.pool = pool;
     h.owner.setVisible(true);
     await settle();
     h.setRead(() => Promise.reject(new Error('fixture offline')));
     await h.owner.load('history');
-    expect(h.owner.pages.current.items).toEqual([]);
-    expect(h.owner.summary.value).toBeNull();
+    expect(h.owner.pages.history.items).toEqual([]);
+    expect(h.owner.pages.current.items[0]?.lease_id).toBe('current');
+    expect(h.owner.summary.value?.total_bytes).toBe(1024);
     expect(h.owner.error.value).toBe('fixture offline');
+    expect(h.owner.pool.value).toBe(inventory);
+    expect(pool).toHaveBeenCalledTimes(1);
+
+    h.setRead((view) => Promise.resolve(page([{ id: 3, lease_id: view }])));
+    await h.owner.load();
+    expect(h.owner.error.value).toBe('');
+    expect(h.owner.pages.current.items[0]?.id).toBe(3);
+    expect(pool).toHaveBeenCalledTimes(2);
   });
 });

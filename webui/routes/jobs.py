@@ -30,7 +30,7 @@ from config import codex as codex_config
 from webui import config_editor
 from webui.blueprint import LegacyEndpointBlueprint
 from webui.runtime import WebUIContext
-from webui.route_helpers import _compact_job_for_list, _current_progress_jobs, _job_error_info, _latest_progress_batch
+from webui.route_helpers import _compact_job_for_list, _current_progress_jobs, _job_attempts_summary, _job_error_info, _latest_progress_batch
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +128,7 @@ def create_jobs_blueprint(context: WebUIContext):
         date_from = str(request.args.get("date_from", default="") or "").strip()
         date_to = str(request.args.get("date_to", default="") or "").strip()
         progress_batch_id = str(request.args.get("progress_batch_id", default="") or "").strip()
+        progress_detail = view != "batch" or request.args.get("progress_detail", "1").lower() not in {"0", "false", "no"}
         paged = str(request.args.get("paged", default="") or "").lower() in {"1", "true", "yes"}
         page_arg = request.args.get("page", default=None, type=int)
         page_size_arg = request.args.get("page_size", default=None, type=int)
@@ -155,10 +156,11 @@ def create_jobs_blueprint(context: WebUIContext):
             public_status=True,
             **({"view": view} if view else {}),
             **({"include_facets": False} if request.args.get("include_facets", "1").lower() in {"0", "false", "no"} else {}),
+            **({"progress_detail": False} if not progress_detail else {}),
         )
         rows = result.get("items") or []
         progress_rows = result.pop("progress_rows", [])
-        if view != "table":
+        if view != "table" and progress_detail:
             # 完整事件只服务当前卡片；历史尝试保留元数据，详情仍由原接口提供。
             snapshot_rows = _current_progress_jobs(progress_rows) if view == "batch" else [*rows, *progress_rows]
             try:
@@ -174,7 +176,9 @@ def create_jobs_blueprint(context: WebUIContext):
             row["manual_otp_required"] = manual_otp_required
         result["items"] = [_compact_job_for_list(row, include_progress=view != "table", public_status=True) for row in rows]
         if view != "table":
-            result["progress_batch"] = _latest_progress_batch(progress_rows, summarize_routes=view == "batch", public_status=True)
+            result["progress_batch"] = _latest_progress_batch(
+                progress_rows, summarize_routes=view == "batch", public_status=True, progress_detail=progress_detail,
+            )
             result = _attach_projection_status(result)
         else:
             result.pop("progress_batches", None)
@@ -182,6 +186,31 @@ def create_jobs_blueprint(context: WebUIContext):
         if not (view or paged or page_arg is not None or page_size_arg is not None):
             return jsonify(result["items"])
         return jsonify(result)
+
+    @bp.get("/api/jobs/<int:job_id>/progress")
+    def api_job_progress(job_id: int):
+        """读取展开卡片对应的执行和阶段证据。"""
+        job, attempts = admin_repository.registration_progress_history(job_id)
+        if job is None:
+            return jsonify({"ok": False, "error": "注册任务不存在"}), 404
+        retry = svc.get_retry_info_bulk([job])
+        job.update(retry.get(job_id, {}))
+        job["display_status"] = job.get("display_status") or job.get("status")
+        for attempt in attempts:
+            attempt["status"] = public_result_status(attempt.get("status"), attempt)
+        try:
+            snapshots = operation_task_store.get_registration_progress([job_id])
+        except Exception:
+            logger.exception("读取注册任务统一进度失败")
+            snapshots = {}
+        job.update(snapshots.get(job_id, {}))
+        compact = _compact_job_for_list(job, summarize_routes=True, public_status=True)
+        compact["attempts"] = _job_attempts_summary(attempts, job, compact, public_status=True)
+        compact["retry_count"] = max(int(attempt.get("retry_attempt") or 0) for attempt in attempts)
+        compact["root_job_id"] = int(job.get("root_job_id") or job_id)
+        if job.get("effective_batch_id"):
+            compact["batch_id"] = job["effective_batch_id"]
+        return jsonify({"ok": True, "job": compact})
 
     @bp.get("/api/email-sources")
     def api_email_sources():

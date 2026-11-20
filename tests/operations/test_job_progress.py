@@ -873,6 +873,25 @@ class JobProgressTests(PostgresTestCase):
         self.assertEqual(slot["retry_count"], 1)
         self.assertEqual([item["id"] for item in slot["attempts"]], [751, 755])
 
+    def test_progress_batch_reuses_current_attempt_error_classification(self):
+        from webui import route_helpers
+
+        rows = [
+            {"id": 1, "batch_id": "batch", "status": "failed", "error_message": "历史请求失败"},
+            {"id": 2, "root_job_id": 1, "retry_attempt": 1, "batch_id": "batch",
+             "status": "request_unknown", "error_message": "当前请求失败"},
+        ]
+        with patch.object(route_helpers, "_job_error_info", wraps=route_helpers._job_error_info) as error_info:
+            current = _latest_progress_batch(rows, summarize_routes=True, public_status=True)["items"][0]
+
+        attempts = current["attempts"]
+        self.assertEqual([1, 2], [attempt["id"] for attempt in attempts])
+        self.assertEqual("failed", current["status"])
+        self.assertEqual(current["status"], attempts[-1]["status"])
+        self.assertEqual(current["error_message"], attempts[-1]["error_message"])
+        self.assertEqual(current["error_info"], attempts[-1]["error_info"])
+        self.assertEqual([2, 1], [call.args[0]["id"] for call in error_info.call_args_list])
+
     def test_historical_successful_route_retry_hides_unreliable_stage_timing(self):
         compact = _compact_job_for_list({
             "id": 749,
@@ -1133,6 +1152,88 @@ class JobProgressTests(PostgresTestCase):
         self.assertEqual("2026-10-19T08:00:01", otp["started_at"])
         self.assertTrue(otp["attempts"])
         self.assertEqual("authenticate", progress["failure"]["step_id"])
+
+    def test_jobs_batch_summary_preserves_cards_without_building_snapshots(self):
+        from tests.storage.test_admin_repository import _QueryCounter
+
+        app = create_app(auth_code="test-auth")
+        client = app.test_client()
+        headers = {"X-Auth-Code": "test-auth"}
+        failed = db.create_job("icloud_hide", batch_id="summary", batch_index=1)
+        active = db.create_job("icloud_hide", batch_id="summary", batch_index=2)
+        db.update_job_progress(failed["id"], "email_otp", "failed", "邮箱验证码超时")
+        db.update_job(failed["id"], status="failed", error="邮箱验证码超时")
+        db.update_job(active["id"], status="running")
+        db.update_job_progress(active["id"], "email_otp", "running")
+        self._project_job_progress(failed["id"])
+        default_url = "/api/jobs?view=batch&progress_batch_id=summary"
+        full = client.get(default_url, headers=headers).get_json()
+        with _QueryCounter() as counter, patch(
+            "webui.routes.jobs.operation_task_store.get_registration_progress", side_effect=AssertionError("不应读取事件"),
+        ) as get_progress, patch(
+            "core.operations.progress.build_progress_snapshot", side_effect=AssertionError("不应构建步骤"),
+        ) as build_snapshot:
+            response = client.get(f"{default_url}&progress_detail=0", headers=headers)
+
+        self.assertEqual(200, response.status_code)
+        get_progress.assert_not_called()
+        build_snapshot.assert_not_called()
+        self.assertFalse(any("operation_events" in query for query in counter.queries))
+        result = response.get_json()
+        self.assertEqual(full["status_counts"], result["status_counts"])
+        full_batch, batch = full["progress_batch"], result["progress_batch"]
+        self.assertEqual(2, batch["total"])
+        self.assertEqual(full_batch["status_counts"], batch["status_counts"])
+        self.assertEqual(full_batch["failure_stage_counts"], batch["failure_stage_counts"])
+        self.assertEqual([failed["id"], active["id"]], [item["id"] for item in batch["items"]])
+        for detailed, summary in zip(full_batch["items"], batch["items"]):
+            for key in ("id", "status", "display_status", "retryable", "retry_action", "error_info", "operation_run_id"):
+                self.assertEqual(detailed.get(key), summary.get(key))
+            for key in ("attempts", "progress_steps", "route_attempts"):
+                self.assertNotIn(key, summary)
+            self.assertNotIn("main_steps", summary["progress"])
+        current = batch["items"][1]["progress"]["current"]
+        self.assertEqual("验证邮箱验证码", current["label"])
+        self.assertEqual(full_batch["items"][1]["progress"]["current"]["label"], current["label"])
+
+    def test_job_progress_detail_targets_requested_attempt_and_keeps_legacy_evidence(self):
+        from core.storage.operations import store as operation
+
+        app = create_app(auth_code="test-auth")
+        client = app.test_client()
+        headers = {"X-Auth-Code": "test-auth"}
+        with patch.object(db, "_sync_operation_job"):
+            root = db.create_job("icloud_hide", batch_id="detail")
+            db.update_job_progress(root["id"], "email_otp", "failed", "邮箱验证码超时")
+            db.update_job(root["id"], status="failed", error="邮箱验证码超时")
+        # 历史子尝试的存储批次可以和实际展示的根批次不同。
+        retry, _created = db.create_retry_job(
+            root["id"], job_type="registration_resume", email_source="icloud_hide",
+            email="pending@example.com", batch_id="legacy-child", batch_index=1, batch_size=1, batch_workers=1,
+        )
+        db.update_job(retry["id"], status="request_unknown")
+        self._project_job_progress(retry["id"])
+        default = client.get("/api/jobs?view=batch&progress_batch_id=detail", headers=headers).get_json()
+        with patch("webui.routes.jobs.operation_task_store.get_registration_progress",
+                   wraps=operation.get_registration_progress) as get_progress:
+            legacy = client.get(f"/api/jobs/{root['id']}/progress", headers=headers)
+        get_progress.assert_called_once_with([root["id"]])
+        self.assertEqual(200, legacy.status_code)
+        previous = legacy.get_json()["job"]
+        self.assertEqual(root["id"], previous["id"])
+        self.assertEqual("detail", previous["batch_id"])
+        self.assertEqual([root["id"], retry["id"]], [item["id"] for item in previous["attempts"]])
+        self.assertEqual("authenticate", previous["progress"]["failure"]["step_id"])
+        self.assertEqual("failed", previous["progress_steps"]["email_otp"]["state"])
+
+        response = client.get(f"/api/jobs/{retry['id']}/progress", headers=headers)
+        self.assertEqual(200, response.status_code)
+        current = response.get_json()["job"]
+        self.assertEqual(retry["id"], current["id"])
+        self.assertEqual(default["progress_batch"]["items"][0]["status"], current["status"])
+        self.assertGreater(current["operation_run_id"], 0)
+        self.assertIn("main_steps", current["progress"])
+        self.assertEqual(404, client.get("/api/jobs/999999999/progress", headers=headers).status_code)
 
     def test_jobs_api_passes_per_batch_debug_flag_to_service(self):
         app = create_app(auth_code="test-auth")

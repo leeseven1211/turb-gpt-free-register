@@ -79,16 +79,18 @@ def _operation_task_where(
     target_status: str = "", batch: str = "", run_count: str = "",
     stage: str = "", created_from: str = "", created_to: str = "", result: str = "",
     exclude: str = "", run_count_expression: str | None = None, public_status: bool = False,
+    requested_status_expression: str | None = None, only: frozenset[str] | None = None,
 ) -> tuple[list[str], list[Any]]:
     """Build the shared task-list predicate, optionally leaving one facet unfiltered."""
-    where: list[str] = ["COALESCE(t.data->>'deleted_by_user','false') <> 'true'"]
+    where: list[str] = []
     params: list[Any] = []
 
     def add(name: str, expression: str, *values: Any) -> None:
-        if exclude != name:
+        if exclude != name and (only is None or name in only):
             where.append(expression)
             params.extend(values)
 
+    add("visibility", "COALESCE(t.data->>'deleted_by_user','false') <> 'true'")
     if task_type:
         # 并发分类可涵盖多个真实任务类型，保持单值兼容且始终参数化查询。
         selected_types = list(dict.fromkeys(part.strip() for part in str(task_type).split(",") if part.strip()))[:20]
@@ -99,8 +101,12 @@ def _operation_task_where(
     status_expression = "COALESCE(r.effective_status, t.status)"
     target_expression = "t.target_status"
     if public_status:
-        status_expression = public_result_status_sql(status_expression, "r.result_summary")
-        target_expression = public_result_status_sql(target_expression, "r.result_summary")
+        status_expression = public_result_status_sql(
+            status_expression, "r.result_summary", requested_status_expression=requested_status_expression,
+        )
+        target_expression = public_result_status_sql(
+            target_expression, "r.result_summary", requested_status_expression=requested_status_expression,
+        )
     add("status", f"({status_expression})=%s", public_result_status(status) if public_status else str(status)) if status else None
     add("source", "t.source_system=%s", str(source)) if source else None
     add("batch_id", "t.batch_id=%s", int(batch_id)) if batch_id else None
@@ -183,7 +189,10 @@ def _operation_task_run_columns_sql(fields: tuple[str, ...] | None = None) -> st
     """Only internal callers supply field names; source expressions stay shared."""
     if fields is None:
         return f"rr.*, {_common._compatibility_run_projection_sql()}"
-    raw_fields = [f"rr.{field}" for field in fields if not field.startswith("effective_")]
+    raw_fields = [
+        "rr.result_summary->>'requested_status' AS requested_status" if field == "requested_status" else f"rr.{field}"
+        for field in fields if not field.startswith("effective_")
+    ]
     projected_fields = tuple(field for field in fields if field.startswith("effective_"))
     if projected_fields:
         raw_fields.append(_common._compatibility_run_projection_sql(fields=projected_fields))
@@ -228,9 +237,32 @@ def _operation_task_current_run_relation_sql(
         "JOIN running_task_candidates running_runs ON running_runs.id=rr.task_id "
         if running_candidates else ""
     )
+    run_source = (
+        f"FROM {_common._table('operation_runs')} rr {candidate_join}{_common._compatibility_run_joins_sql()}"
+    )
+    if fields and "effective_status" in fields:
+        sort_by_legacy_time = "effective_created_at_sort" in fields
+        winner_fields = tuple(dict.fromkeys(
+            "effective_created_at" if field == "effective_created_at_sort" else field for field in fields
+        ))
+        projected = tuple(dict.fromkeys((*winner_fields, "run_no", "id")))
+        # 先计算兼容状态和所需列。OFFSET 0 保留投影边界，避免将宽 JSON 送入排序。
+        winner_query = (
+            f"SELECT DISTINCT ON (task_id) {','.join(winner_fields)} "
+            f"FROM (SELECT {_operation_task_run_columns_sql(projected)} {run_source} OFFSET 0) projected_run "
+            f"ORDER BY task_id, CASE WHEN effective_status IN ({_common._ACTIVE_RUN_STATUS_SQL}) THEN 0 ELSE 1 END, "
+            "run_no DESC, id DESC"
+        )
+        if sort_by_legacy_time:
+            # 兼容时间只在当前 Run 上解析。废弃历史执行的旧时间可能无法转换。
+            time_expression = _common._compatibility_created_at_sort_sql("effective_created_at")
+            columns = ",".join(f"{time_expression} AS {field}" if field == "effective_created_at_sort" else field
+                               for field in fields)
+            return f"SELECT {columns} FROM ({winner_query}) current_run"
+        return winner_query
     return (
         f"SELECT DISTINCT ON (rr.task_id) {_operation_task_run_columns_sql(fields)} "
-        f"FROM {_common._table('operation_runs')} rr {candidate_join}{_common._compatibility_run_joins_sql()} "
+        f"{run_source} "
         f"ORDER BY rr.task_id, "
         f"CASE WHEN ({_common._compatibility_run_status_sql()}) IN ({_common._ACTIVE_RUN_STATUS_SQL}) THEN 0 ELSE 1 END, "
         f"rr.run_no DESC, rr.id DESC"
@@ -345,14 +377,17 @@ def list_tasks(
         _operation_task_running_candidates_cte_sql() if running_candidates else ""
     )
     count_cte = f"WITH {running_candidates_cte} " if running_candidates else ""
-    where, params = _operation_task_where(
+    requested_status_expression = "r.requested_status" if public_status and not (q or result) else None
+    filters = dict(
         task_type=task_type, status=status, source=source, q=q, batch_id=batch_id,
         task_id=task_id, target=target, target_status=target_status, batch=batch,
         run_count=run_count, stage=stage, created_from=created_from,
         created_to=created_to, result=result,
         run_count_expression="COALESCE(run_counts.run_count, 0)",
         public_status=public_status,
+        requested_status_expression=requested_status_expression,
     )
+    where, params = _operation_task_where(**filters)
     clause = f" WHERE {' AND '.join(where)}" if where else ""
 
     def uses_current_run(*, exclude: str = "", facet_name: str = "") -> bool:
@@ -367,24 +402,22 @@ def list_tasks(
         )
 
     run_count_expression = "COALESCE(run_counts.run_count, 0)"
-    filter_run_fields = ("task_id", "effective_status", "effective_progress_stage", "result_summary")
+    filter_run_fields = ("task_id", "effective_status", "effective_progress_stage")
     if q or result:
-        filter_run_fields += ("effective_error_message",)
+        filter_run_fields += ("result_summary", "effective_error_message")
+    elif requested_status_expression:
+        filter_run_fields += ("requested_status",)
     count_from_sql = _operation_task_query_base(
         include_current_run=uses_current_run(),
         include_run_count=bool(run_count),
         current_run_fields=filter_run_fields,
         running_candidates=running_candidates,
     )
-    page_from_sql = _operation_task_query_base(
-        include_current_run=True, include_run_count=bool(run_count),
-        current_run_fields=_TASK_LIST_RUN_FIELDS,
-    )
     page_run_count_expression = run_count_expression
     page_cte = ""
     page_clause = clause
     page_params = (*params, page_size, (page - 1) * page_size)
-    page_order = "COALESCE(r.effective_created_at_sort, t.created_at) DESC, t.id DESC LIMIT %s OFFSET %s"
+    page_order = "selected.sort_at DESC,t.id DESC"
     if not uses_current_run() and not run_count:
         # 先确定50个任务ID，再加载这些任务的Run/次数/结果。原生任务按任务创建时间，
         # 兼容任务仍按其有效Run来源时间排序，不以last_run_id替代活跃优先选择。
@@ -392,17 +425,25 @@ def list_tasks(
                           f"LEFT JOIN {_common._table('operation_batches')} b ON b.id=t.batch_id ")
         ordinary_clause = (clause + " AND " if clause else " WHERE ") + "t.source_system NOT IN ('registration_jobs','registration_chains','account_action_tasks')"
         legacy_clause = (clause + " AND " if clause else " WHERE ") + "t.source_system IN ('registration_jobs','registration_chains','account_action_tasks')"
+        if len(where) == 1:
+            # 仅有软删除条件的分页一次批量选中兼容 Run，避免为全量历史逐条访问索引。
+            legacy_run_join = _operation_task_current_run_join_sql(
+                fields=("task_id", "effective_status", "effective_created_at_sort"),
+            )
+            legacy_sort = "r.effective_created_at_sort"
+        else:
+            legacy_run_join = _operation_task_indexed_run_join_sql(sort_only=True)
+            legacy_sort = "sort_run.effective_created_at_sort"
         page_cte = (f"WITH page_ids AS MATERIALIZED (SELECT * FROM ("
                     f"SELECT t.id,t.created_at AS sort_at {candidate_from}{ordinary_clause} "
-                    f"UNION ALL SELECT t.id,COALESCE(sort_run.effective_created_at_sort,t.created_at) AS sort_at "
-                    f"{candidate_from}{_operation_task_indexed_run_join_sql(sort_only=True)}{legacy_clause}"
+                    f"UNION ALL SELECT t.id,COALESCE({legacy_sort},t.created_at) AS sort_at "
+                    f"{candidate_from}{legacy_run_join}{legacy_clause}"
                     f") candidates ORDER BY sort_at DESC,id DESC LIMIT %s OFFSET %s) ")
         page_params = (*params, *params, page_size, (page - 1) * page_size)
         page_from_sql = (f"FROM page_ids selected JOIN {_common._table('operation_tasks')} t ON t.id=selected.id "
                          f"LEFT JOIN {_common._table('operation_batches')} b ON b.id=t.batch_id "
                          + _operation_task_indexed_run_join_sql())
         page_clause = ""
-        page_order = "selected.sort_at DESC,t.id DESC"
     else:
         # The same statement chooses/filter/sorts the winning Run once. Load
         # display fields only for selected page IDs, never last_run_id or a
@@ -429,12 +470,11 @@ def list_tasks(
             f"WHERE rr.id=selected.current_run_id LIMIT 1) r ON TRUE "
         )
         page_clause = ""
-        page_order = "selected.sort_at DESC,t.id DESC"
         page_run_count_expression = "selected.run_count"
     with _task_read_connection() as conn, conn.cursor() as cur:
-        if public_status and len(where) == 1 and _common._SETTLEMENT_CONNECTION.get() is None:
-            # 默认列表的兼容 Run 排序和筛选统计会触发秒级 JIT 编译。
-            # 仅在本次查询事务内关闭，连接归还后恢复原设置。
+        if public_status and _common._SETTLEMENT_CONNECTION.get() is None:
+            # 公开列表的兼容 Run 投影和筛选统计会触发秒级 JIT 编译。
+            # 只作用于本次独立读取事务，结算事务沿用调用方的设置。
             cur.execute("SET LOCAL jit = off")
         cur.execute(f"{count_cte}SELECT COUNT(*) AS n {count_from_sql}{clause}", params)
         total = int(cur.fetchone()["n"])
@@ -494,8 +534,13 @@ def list_tasks(
             page_run_counts = {int(row["task_id"]): int(row["n"]) for row in cur.fetchall()}
             for item in items:
                 item["run_count"] = page_run_counts.get(int(item["id"]), 0)
-        public_status_expression = public_result_status_sql("COALESCE(r.effective_status, t.status)", "r.result_summary")
-        public_target_expression = public_result_status_sql("t.target_status", "r.result_summary")
+        public_status_expression = public_result_status_sql(
+            "COALESCE(r.effective_status, t.status)", "r.result_summary",
+            requested_status_expression=requested_status_expression,
+        )
+        public_target_expression = public_result_status_sql(
+            "t.target_status", "r.result_summary", requested_status_expression=requested_status_expression,
+        )
         facet_specs = (
             ("task_type", "t.task_type", "task_type"),
             ("status", public_status_expression if public_status else "COALESCE(r.effective_status, t.status)", "status"),
@@ -514,43 +559,45 @@ def list_tasks(
         )
         facets: dict[str, list[dict[str, Any]]] = {}
         facet_columns = []
+        facet_values = []
+        facet_counts = []
         facet_rows = []
         facet_query_params = []
+        facet_dimensions = frozenset(name for name, _, _ in facet_specs)
         for facet_name, expression, exclude in (facet_specs if include_facets else ()):
             facet_where, facet_params = _operation_task_where(
-                task_type=task_type, status=status, source=source, q=q, batch_id=batch_id,
-                task_id=task_id, target=target, target_status=target_status, batch=batch,
-                run_count=run_count, stage=stage, created_from=created_from,
-                created_to=created_to, result=result, exclude=exclude,
-                run_count_expression=run_count_expression,
-                public_status=public_status,
+                **filters, only=facet_dimensions, exclude=exclude,
             )
-            # Every facet retains its own complete self-excluded predicate.
-            # SQL NULL behaves exactly as WHERE: only TRUE contributes a row.
+            # 每个分面只排除自身的筛选条件。公共条件在候选查询上执行一次。
             facet_columns.extend((f"{expression} AS value_{facet_name}",
-                                  f"({' AND '.join(facet_where)}) AS matches_{facet_name}"))
-            facet_rows.append(
-                f"({facet_name!r},candidate.value_{facet_name},candidate.matches_{facet_name})")
+                                  f"({' AND '.join(facet_where) or 'TRUE'}) AS matches_{facet_name}"))
+            facet_values.append(f"value_{facet_name}")
+            facet_counts.append(f"COUNT(*) FILTER (WHERE matches_{facet_name}) AS count_{facet_name}")
+            facet_rows.append(f"({facet_name!r},candidate.value_{facet_name},candidate.count_{facet_name})")
             facet_query_params.extend(facet_params)
             facets[facet_name] = []
         if facet_rows:
-            error_column = "effective_error_message" if q or result else "NULL::text AS effective_error_message"
-            result_column = "result_summary" if q or result or public_status else "NULL::jsonb AS result_summary"
+            shared_where, shared_params = _operation_task_where(
+                **filters, only=frozenset(filters) - facet_dimensions | {"visibility"},
+            )
             candidate_from = _operation_task_query_base(
                 include_current_run=True, include_run_count=True, facet_cte=True,
             )
+            # 同时计算各分面的命中次数，聚合后展开，避免每个历史任务产生五行。
             cur.execute(
                 f"WITH facet_current_runs AS MATERIALIZED ("
-                f"SELECT task_id,effective_status,effective_progress_stage,{error_column},{result_column} "
-                f"FROM ({_operation_task_current_run_relation_sql(fields=filter_run_fields)}) projected), "
+                f"{_operation_task_current_run_relation_sql(fields=filter_run_fields)}), "
                 f"facet_run_counts AS MATERIALIZED (SELECT task_id,COUNT(*) AS run_count "
                 f"FROM {_common._table('operation_runs')} GROUP BY task_id), "
-                f"facet_candidates AS MATERIALIZED (SELECT {','.join(facet_columns)} {candidate_from}) "
-                f"SELECT expanded.facet,expanded.value,COUNT(*) AS count "
-                f"FROM facet_candidates candidate CROSS JOIN LATERAL "
-                f"(VALUES {','.join(facet_rows)}) expanded(facet,value,matches) "
-                f"WHERE expanded.matches AND NULLIF(expanded.value,'') IS NOT NULL "
-                f"GROUP BY 1,2 ORDER BY 1,2", facet_query_params)
+                f"facet_candidates AS MATERIALIZED (SELECT {','.join(facet_columns)} "
+                f"{candidate_from} WHERE {' AND '.join(shared_where)}), "
+                f"facet_groups AS (SELECT {','.join(facet_values)},{','.join(facet_counts)} "
+                f"FROM facet_candidates GROUP BY {','.join(facet_values)}) "
+                f"SELECT expanded.facet,expanded.value,SUM(expanded.count)::bigint AS count "
+                f"FROM facet_groups candidate CROSS JOIN LATERAL "
+                f"(VALUES {','.join(facet_rows)}) expanded(facet,value,count) "
+                f"WHERE expanded.count > 0 AND NULLIF(expanded.value,'') IS NOT NULL "
+                f"GROUP BY 1,2 ORDER BY 1,2", [*facet_query_params, *shared_params])
             for row in cur.fetchall():
                 name = str(row["facet"])
                 facets[name].append({"value": str(row["value"] or ""), "count": int(row["count"] or 0),

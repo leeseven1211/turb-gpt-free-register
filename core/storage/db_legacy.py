@@ -1747,11 +1747,6 @@ def backfill_account_registration_proxy_context(
     cancelled: Callable[[], bool] | None = None,
 ) -> int:
     """从历史成功注册任务补齐账号的代理来源/实际国家；已有值不覆盖。"""
-    # 启动恢复路径只需要四个代理字段。旧实现把两张表的完整 JSONB
-    # 解码到 Python，再对每个账号线性扫描全部任务；生产库中这会把
-    # 5 秒 owner 探针窗口拖过，甚至在没有任何需要补齐的行时也会阻塞
-    # Worker 启动。让 PostgreSQL 做按账号/邮箱的最新任务匹配，并且只
-    # 传递窄字段，保留原来的 id DESC 优先级和逐字段幂等 claim。
     from psycopg.rows import dict_row
 
     if limit is not None:

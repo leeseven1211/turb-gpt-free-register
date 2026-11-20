@@ -8,7 +8,7 @@ from unittest.mock import patch
 from core import account_task_store, db
 from core.extract_link import service as extract_link_service
 from core.storage import records as record_store
-from core.storage.extract_link import batches as extract_link_batches, jobs as extract_link_jobs
+from core.storage.extract_link import analytics as extract_link_analytics, batches as extract_link_batches, jobs as extract_link_jobs
 from core.storage.operations import store as operation
 from tests.support_pg import PostgresTestCase
 
@@ -345,8 +345,21 @@ class ExtractWorkbenchQueryTests(PostgresTestCase):
                                        if extract_link_service._workbench_status_matches(item, "needs_review")})
 
     def test_page_projects_only_selected_accounts_and_keeps_unfiltered_counts(self):
+        from psycopg import Cursor
+
         tasks = [self.task(status=status) for status in ("queued", "running", "settling", "waiting", "success")]
-        with patch.object(db, "get_accounts_for_jobs", wraps=db.get_accounts_for_jobs) as project_accounts:
+        execute = Cursor.execute
+        projections = []
+
+        def observe(cur, query, *args, **kwargs):
+            if "filtered_tasks AS MATERIALIZED" in str(query):
+                projections.append(str(query))
+            return execute(cur, query, *args, **kwargs)
+
+        with (
+            patch.object(db, "get_accounts_for_jobs", wraps=db.get_accounts_for_jobs) as project_accounts,
+            patch.object(Cursor, "execute", observe),
+        ):
             result = extract_link_service.list_workbench_tasks(status="running", page=2, page_size=1)
         self.assertEqual(2, result["total"])
         self.assertEqual(5, result["counts"]["all"])
@@ -354,6 +367,7 @@ class ExtractWorkbenchQueryTests(PostgresTestCase):
         self.assertEqual(2, result["counts"]["running"])
         self.assertEqual([tasks[1]["id"]], [item["task_id"] for item in result["items"]])
         self.assertEqual(1, len(project_accounts.call_args.args[0]))
+        self.assertEqual(1, len(projections))
         empty = extract_link_service.list_workbench_tasks(status="running", page=20, page_size=1)
         self.assertEqual(2, empty["total"])
         self.assertEqual([], empty["items"])
@@ -372,28 +386,35 @@ class ExtractWorkbenchQueryTests(PostgresTestCase):
         })
         execute = Cursor.execute
         query_settings = []
+        projection_queries = []
 
         def observe(cur, query, *args, **kwargs):
             result = execute(cur, query, *args, **kwargs)
             if str(query).startswith("WITH "):
+                projection_queries.append(str(query))
                 with cur.connection.cursor() as settings:
                     execute(settings, "SHOW jit")
                     query_settings.append(settings.fetchone()["jit"])
             return result
 
-        # 专用单连接池确保三次读取和恢复检查落在同一条连接，不改变共享池配置。
+        # 专用单连接池确保各次读取和恢复检查落在同一条连接，不改变共享池配置。
         with ConnectionPool(postgres.database_url(), min_size=1, max_size=1,
                             kwargs={"row_factory": dict_row, "options": "-c jit=on"}) as pool:
             with patch.object(operation, "_connect", side_effect=pool.connection), patch.object(Cursor, "execute", observe):
-                for read in (
-                    lambda: extract_link_jobs.list_workbench_page(public_status=True),
-                    lambda: extract_link_jobs.workbench_summary(public_status=True),
-                    lambda: extract_link_batches.batch_task_counts([batch["id"]], public_status=True),
+                for read, reads_scanning_progress in (
+                    (lambda: extract_link_jobs.list_workbench_page(public_status=True), True),
+                    (lambda: extract_link_jobs.workbench_summary(public_status=True), False),
+                    (lambda: extract_link_batches.batch_task_counts([batch["id"]], public_status=True), True),
+                    (extract_link_analytics.workbench_analytics, False),
                 ):
                     before = len(query_settings)
                     read()
                     self.assertGreater(len(query_settings), before)
                     self.assertEqual({"off"}, set(query_settings[before:]))
+                    self.assertEqual(
+                        reads_scanning_progress,
+                        any("automatic_payment_status" in query for query in projection_queries[before:]),
+                    )
                     with pool.connection() as conn, conn.cursor() as cur:
                         cur.execute("SHOW jit")
                         self.assertEqual("on", cur.fetchone()["jit"])

@@ -32,7 +32,7 @@ _EMPTY_ROUTE_FILTERS = {
 
 
 class _SqlCaptureCursor:
-    """Only the three native list queries are accepted; no DB is consulted."""
+    """记录列表的只读 SQL，并模拟共用查询返回的总数行。"""
 
     def __init__(self, statements):
         self.statements = statements
@@ -53,6 +53,8 @@ class _SqlCaptureCursor:
         return {"total": 0, "latest": None}
 
     def fetchall(self):
+        if "UNION ALL SELECT NULL, NULL, COUNT(*), MAX(updated_at) FROM base" in self.statements[-1][0]:
+            return [{"facet": None, "value": None, "count": 0, "latest": None}]
         return []
 
 
@@ -95,15 +97,18 @@ class AccountGroupedFacetRoutingTests(unittest.TestCase):
                 admin.PageRequest(page=1, page_size=50, filters=filters or {}),
                 **kwargs,
             )
-        self.assertEqual(len(statements), 3)
         self.assertEqual(result["total"], 0)
-        return statements[-1][0], grouped.call_count
+        facet_queries = [sql for sql, _ in statements if "GROUP BY GROUPING SETS" in sql or
+                         "CROSS JOIN LATERAL (VALUES" in sql]
+        self.assertEqual(len(facet_queries), 0 if kwargs.get("include_facets") is False else 1)
+        return statements, facet_queries[0] if facet_queries else "", grouped.call_count
 
     def test_default_and_all_unfiltered_requests_use_grouping_with_empty_ui_keys(self):
         for kwargs in ({}, {"archived": "0"}, {"archived": "all"}):
             for filters in ({}, _EMPTY_ROUTE_FILTERS):
                 with self.subTest(kwargs=kwargs, filters=filters):
-                    sql, helper_calls = self._capture(filters=filters, **kwargs)
+                    statements, sql, helper_calls = self._capture(filters=filters, **kwargs)
+                    self.assertEqual(len(statements), 3)
                     self.assertEqual(helper_calls, 1)
                     self.assertIn("GROUP BY GROUPING SETS", sql)
                     self.assertNotIn("CROSS JOIN LATERAL (VALUES", sql)
@@ -114,7 +119,8 @@ class AccountGroupedFacetRoutingTests(unittest.TestCase):
             "", " ", "false", "00", None,
         ):
             with self.subTest(archived=archived):
-                sql, helper_calls = self._capture(archived=archived)
+                statements, sql, helper_calls = self._capture(archived=archived)
+                self.assertEqual(len(statements), 3)
                 self.assertEqual(helper_calls, 0)
                 self.assertIn("CROSS JOIN LATERAL (VALUES", sql)
                 self.assertNotIn("GROUP BY GROUPING SETS", sql)
@@ -149,12 +155,19 @@ class AccountGroupedFacetRoutingTests(unittest.TestCase):
         for archived in ("0", "all"):
             for name, filters, kwargs in filtered_requests:
                 with self.subTest(archived=archived, dimension=name):
-                    sql, helper_calls = self._capture(
+                    statements, sql, helper_calls = self._capture(
                         archived=archived, filters=filters, **kwargs,
                     )
+                    self.assertEqual(len(statements), 2 if name in {"search", "search_space"} else 3)
                     self.assertEqual(helper_calls, 0)
                     self.assertIn("CROSS JOIN LATERAL (VALUES", sql)
                     self.assertNotIn("GROUP BY GROUPING SETS", sql)
+
+    def test_search_without_facets_uses_separate_count_and_page(self):
+        statements, _, helper_calls = self._capture(q="备注:fixture", include_facets=False)
+        self.assertEqual(len(statements), 2)
+        self.assertEqual(helper_calls, 0)
+        self.assertIn("COUNT(*) AS total", statements[0][0])
 
 
 class AccountGroupedFacetPayloadTests(PostgresTestCase):

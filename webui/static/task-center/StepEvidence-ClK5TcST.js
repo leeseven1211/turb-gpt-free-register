@@ -1,0 +1,786 @@
+import { C as e, F as t, L as n, S as r, _ as i, d as a, ft as o, h as s, m as c, st as l, t as u, v as d, x as f, z as p } from "./_plugin-vue_export-helper-CtnyMOwL.js";
+import { n as m } from "./time-DOD6oyhP.js";
+import { t as h } from "./taskIds-BlchWwUp.js";
+// src/features/tasks/presentation.ts
+var g = {
+	status: {
+		queued: "排队中",
+		pending: "排队中",
+		running: "运行中",
+		waiting: "等待中",
+		stopping: "停止中",
+		cancelling: "停止中",
+		settling: "收尾中",
+		failed: "失败",
+		partial_success: "部分成功",
+		password_confirmation_pending: "失败",
+		success: "成功",
+		stopped: "已停止",
+		cancelled: "已取消",
+		interrupted: "执行中断",
+		debug_paused: "调试暂停",
+		deactivated: "已停用",
+		unsupported: "不支持",
+		attention_required: "失败",
+		request_unknown: "失败",
+		manual_reconcile: "失败",
+		available: "可用",
+		used: "已使用",
+		pending_sync: "导入处理中",
+		tombstone: "本地已删除",
+		replaced: "换绑后邮箱",
+		disabled: "停用",
+		exported: "已导出",
+		unexported: "未导出",
+		archived: "已归档"
+	},
+	source: {
+		outlook: "Outlook",
+		generic_api: "通用 API",
+		cloudflare_domain: "域名邮箱",
+		cloudflare_temp: "Cloudflare 临时邮箱",
+		icloud_hide: "iCloud 隐藏邮箱",
+		email_butler: "Email Butler",
+		gptmail: "GPTMail",
+		mailnest: "MailNest",
+		remail: "Remail",
+		cloudmail: "CloudMail",
+		mailcode: "域名邮箱 MailCode",
+		xigua: "西瓜邮箱"
+	},
+	registration_driver: {
+		roxy: "roxy",
+		roxy_oss: "roxy-public",
+		protocol: "proto-local",
+		protocol_oss: "proto-public",
+		protocol_oss_2: "proto-sso",
+		cloakbrowser: "CloakBrowser（历史）",
+		unknown: "未记录"
+	},
+	token: {
+		has: "有 Token",
+		none: "无 Token"
+	},
+	account_token: {
+		has: "正常",
+		expired: "过期",
+		invalid_401: "失效 · 401",
+		invalid_403: "失效 · 403",
+		invalid_other: "失效 · 其他",
+		none: "无 Token"
+	},
+	password: {
+		has: "本地已保存",
+		none: "本地未保存"
+	},
+	totp: {
+		enabled: "已启用",
+		disabled: "未启用"
+	},
+	risk: {
+		detected: "已收到",
+		clear: "未发现",
+		pending: "待处理"
+	},
+	promotion: {
+		free_trial: "免费试用",
+		half_price: "半价优惠",
+		other_discount: "其他折扣",
+		discount: "折扣优惠",
+		other_promo: "其他优惠",
+		none: "无优惠",
+		unknown: "历史优惠待复查",
+		pending: "待查询",
+		failed: "查询失败",
+		not_applicable: "不适用"
+	},
+	codex: {
+		success: "已通过",
+		retrying: "进行中",
+		failed: "失败",
+		stopped: "已停止",
+		deactivated: "已停用",
+		skipped: "已跳过",
+		missing: "缺失"
+	},
+	account_status: {
+		active: "未废号",
+		deactivated: "已废号",
+		unknown: "未查活"
+	},
+	task_type: {
+		registration: "注册",
+		registration_resume: "继续邮箱验证",
+		twofa_retry: "2FA 配置补跑",
+		account_setup_retry: "账号配置补跑",
+		password_setup: "补密码",
+		twofa_setup: "补 2FA",
+		account_completion: "补全账号",
+		email_change: "换绑邮箱",
+		password_change: "修改密码",
+		twofa_change: "修改 2FA",
+		codex_retry: "Codex 补跑",
+		codex_token_refresh: "Codex Token 刷新",
+		sub2api_sync: "sub2api 凭据同步",
+		live_check: "查活",
+		token_refresh: "AT 刷新",
+		plan_check: "查套餐",
+		deactivation_mail: "查封号邮件",
+		extract_link: "提炼"
+	},
+	trigger: {
+		manual: "手动",
+		manual_bulk: "手动批量",
+		manual_retry: "失败重跑",
+		scheduled: "定时",
+		registration_auto: "注册后自动",
+		registration_job_retry: "注册任务重试",
+		token_refresh_scheduled: "AT 定时刷新",
+		codex_token_refresh_scheduled: "Codex 定时刷新",
+		sub2api_monitor: "sub2api 异常巡检",
+		sub2api_sync_retry: "sub2api 自动补传"
+	},
+	target_status: {
+		not_created: "尚未创建",
+		in_progress: "处理中",
+		email_verification_pending: "待邮箱验证或资料补全",
+		account_available: "账号可用",
+		credential_valid: "凭证有效",
+		credential_pending_confirmation: "凭据核验缺失",
+		attention_required: "失败",
+		deactivated: "账号已停用",
+		account_deactivated: "账号已停用",
+		cancelled: "已取消",
+		failed: "失败",
+		pending: "等待执行",
+		request_unknown: "失败",
+		manual_reconcile: "失败",
+		completed: "已完成",
+		unknown: "状态记录缺失"
+	},
+	stage: {
+		queued: "进入队列",
+		running: "执行中",
+		preflight: "配置预检",
+		network: "分配网络",
+		network_route: "分配网络",
+		driver: "启动浏览器",
+		email: "准备邮箱",
+		browser: "启动浏览器",
+		page: "打开页面",
+		submit_email: "提交邮箱",
+		auth_redirect: "进入认证",
+		email_otp: "邮箱验证",
+		profile: "账号资料",
+		token: "获取 Token",
+		codex: "Codex 授权",
+		login_password: "账号密码",
+		mfa_challenge: "TOTP 验证",
+		account_setup: "账号配置",
+		access_token: "校验 Token",
+		reauth: "重新登录",
+		roxy_fallback: "浏览器回退",
+		oauth: "Codex 授权",
+		auth_url: "获取授权地址",
+		login: "登录 OpenAI",
+		phone_check: "检查手机验证",
+		phone_acquire: "申请接码号码",
+		phone_otp: "短信验证",
+		consent: "确认授权",
+		callback: "接收 OAuth 回调",
+		credential_confirm: "确认远端凭证",
+		credential_persist: "保存凭证",
+		c2a_safety: "确认 C2A 安全策略",
+		c2a_resolve: "定位 C2A 账号",
+		c2a_update: "更新 C2A AT",
+		cancelling: "正在停止",
+		twofa: "设置 2FA",
+		plan: "套餐信息",
+		plan_check: "查询套餐",
+		plan_request: "请求套餐",
+		refresh_token: "刷新 Token",
+		mailbox_scan: "扫描邮件",
+		extract_link: "提炼",
+		extraction: "平台提链",
+		remote_sync: "原单状态查询",
+		payment: "支付处理",
+		login_mfa: "TOTP 验证",
+		complete: "完成",
+		interrupted: "执行中断",
+		event: "事件"
+	},
+	run_count: {
+		0: "0 次",
+		1: "1 次",
+		2: "2 次",
+		3: "3 次",
+		"4+": "4 次及以上"
+	}
+};
+Object.assign(g.task_type, {
+	account_inspection: "账号巡检",
+	account_inspection_batch: "巡检批次",
+	sub2api_manual_upload: "Sub2API 手动上传",
+	sub2api_scan: "Sub2API 异常扫描",
+	c2a_session_reimport: "C2A 重新导入"
+});
+function _(e, t) {
+	let n = String(t || "");
+	return g[e]?.[n] || n || "—";
+}
+function v(e) {
+	if (e == null || !Number.isFinite(Number(e))) return "—";
+	let t = Math.max(0, Number(e));
+	if (t < 1e3) return `${Math.round(t)} 毫秒`;
+	if (t < 6e4) return `${(t / 1e3).toFixed(1)} 秒`;
+	let n = Math.floor(t / 1e3);
+	return n < 3600 ? `${Math.floor(n / 60)} 分 ${n % 60} 秒` : `${Math.floor(n / 3600)} 小时 ${Math.floor(n % 3600 / 60)} 分`;
+}
+function y(e, t = "") {
+	let n = String(e?.summary || t || "错误原因未记录"), r = String(e?.cause_summary || "").trim();
+	return r && !n.includes(r) ? `${n} · ${r}` : n;
+}
+function b(e) {
+	return [
+		"queued",
+		"running",
+		"stopping",
+		"cancelling",
+		"settling",
+		"waiting"
+	].includes(String(e.status));
+}
+function x(e) {
+	let t = w(e.result_summary), n = e.status === "deactivated" || ["deactivated", "account_deactivated"].includes(String(e.target_status)) || ["status", "requested_status"].some((e) => t[e] === "deactivated");
+	return !b(e) && !n && !!e.next_actions?.length;
+}
+function S(e) {
+	return e.source_system === "native_operations" && b(e) && e.status !== "queued";
+}
+function C(e) {
+	return e.source_system === "native_operations" && (e.status === "queued" || S(e));
+}
+function ee(e, t) {
+	return t === "retry" ? x(e) : t === "cancel" ? e.status === "queued" : t === "delete" ? !b(e) : S(e);
+}
+function te(e) {
+	let t = String(e);
+	return [
+		"success",
+		"completed",
+		"account_available",
+		"credential_valid"
+	].includes(t) ? "success" : [
+		"failed",
+		"attention_required",
+		"request_unknown",
+		"manual_reconcile",
+		"deactivated",
+		"account_deactivated"
+	].includes(t) ? "danger" : ["running", "in_progress"].includes(t) ? "active" : [
+		"queued",
+		"waiting",
+		"partial_success",
+		"stopping",
+		"cancelling",
+		"settling"
+	].includes(t) ? "warning" : "neutral";
+}
+function w(e) {
+	return e && typeof e == "object" && !Array.isArray(e) ? e : {};
+}
+var T = (e) => Array.isArray(e) ? e.map(w) : [];
+function E(e) {
+	let t = e.admission_wait_reasons?.length ? e.admission_wait_reasons : e.admission_wait_reason ? [{ code: e.admission_wait_reason }] : [], n = {
+		executor_capacity: "等待执行承载空位",
+		resource_capacity: "等待业务资源空位",
+		global_capacity: "等待全局空位",
+		type_capacity: "等待本类空位",
+		batch_paused: "等待批次继续",
+		batch_capacity: "等待当前批次空位",
+		provider_capacity: "等待平台空位",
+		account_busy: "账号正由其他任务使用",
+		remote_order_capacity: "等待远端订单名额",
+		not_due: "等待下次平台查询",
+		execution_active: "上一执行仍在退出或清理",
+		fairness_turn: "等待公平调度轮次",
+		concurrency_policy_migration_required: "等待配置并发迁移策略",
+		scheduler_store_unavailable: "调度存储暂不可用",
+		permit_owner_lost: "执行许可归属已变化"
+	};
+	return t.map((e) => {
+		let t = n[String(e.code)], r = w(e).occupied, i = w(e).limit;
+		return t ? t + (r != null && i != null ? `（${r}/${i}）` : "") : `调度等待原因未登记（${e.code || "缺少原因代码"}）`;
+	}).join("；");
+}
+function ne(e) {
+	let t = String(e.plus_promo_kind || "").toLowerCase();
+	if ([
+		"free_trial",
+		"discount",
+		"other_promo",
+		"none",
+		"unknown"
+	].includes(t)) return t;
+	let n = Number(e.plus_promo_discount_percentage ?? e.plus_trial_discount_percentage), r = String(e.plus_promo_campaign_id || e.plus_trial_campaign_id || "").toLowerCase(), i = [
+		r,
+		e.plus_promo_title || e.plus_trial_title,
+		e.plus_promo_promotion_type,
+		e.plus_promo_promotion_type_label || e.plus_trial_promotion_type_label
+	].join(" ").toLowerCase();
+	return n === 100 ? "free_trial" : n > 0 && n < 100 || /pct-off|discount|% off/.test(i) ? "discount" : i.includes("free trial") || r.includes("-free") || r.includes("trial") ? "free_trial" : i.trim() ? "other_promo" : e.plus_discount_eligible === !0 ? "discount" : e.plus_promo_eligible === !0 || e.plus_trial_eligible === !0 ? "unknown" : "none";
+}
+function D(e) {
+	if (Array.isArray(e.account_promotions)) return ["go", "plus"].flatMap((t) => {
+		let n = T(e.account_promotions).filter((e) => String(e.plan).toLowerCase() === t);
+		return n.length ? n.map((e) => ({
+			...e,
+			plan: t
+		})) : [{
+			plan: t,
+			kind: "unknown"
+		}];
+	});
+	let t = String(e.current_plan_type || e.plan_type || "").toLowerCase();
+	return [{
+		plan: "go",
+		kind: "pending"
+	}, {
+		plan: "plus",
+		kind: t && t !== "free" ? "not_applicable" : ne(e),
+		discount_percentage: e.plus_promo_discount_percentage ?? e.plus_trial_discount_percentage,
+		duration_num_periods: e.plus_promo_duration_num_periods ?? e.plus_trial_duration_num_periods,
+		duration_period: e.plus_promo_duration_period || e.plus_trial_duration_period
+	}];
+}
+function O(e) {
+	let t = {
+		month: "个月",
+		year: "年",
+		week: "周",
+		day: "天"
+	}, n = Number(e.duration_num_periods), r = t[String(e.duration_period)], i = n > 0 && r ? ` ${n}${r}` : "";
+	if (e.kind === "free_trial") return `免费${i}`;
+	if (e.kind === "discount") {
+		let t = Number(e.discount_percentage);
+		return `${t === 50 ? "五折" : t > 0 && t < 100 ? `减 ${t}%` : "折扣"}${i}`;
+	}
+	return {
+		other_promo: "其他优惠",
+		none: "无优惠",
+		unknown: "待复查",
+		pending: "待查询",
+		failed: "查询失败",
+		cancelled: "已取消",
+		not_applicable: "不适用"
+	}[String(e.kind)] || "待复查";
+}
+function re(e) {
+	let t = {
+		free_trial: 0,
+		discount: 1,
+		other_promo: 2,
+		unknown: 3,
+		pending: 4,
+		failed: 5,
+		cancelled: 5,
+		none: 6,
+		not_applicable: 7
+	}, n = (e) => Number(e.duration_num_periods || 0) * ({
+		day: 1,
+		week: 7,
+		month: 30,
+		year: 365
+	}[String(e.duration_period)] || 0);
+	return [...e].sort((e, r) => (t[String(e.kind)] ?? 3) - (t[String(r.kind)] ?? 3) || (e.kind === "discount" ? Number(r.discount_percentage || 0) - Number(e.discount_percentage || 0) : 0) || (["free_trial", "discount"].includes(String(e.kind)) ? n(r) - n(e) : 0) || Number(r.plan === "plus") - Number(e.plan === "plus") || Number(!!e.stale) - Number(!!r.stale))[0] || { kind: "pending" };
+}
+function k(e, t) {
+	return t ? ((e) => `${[
+		"free_trial",
+		"discount",
+		"other_promo"
+	].includes(String(e.kind)) ? `${e.plan === "go" ? "Go" : "Plus"} ` : ""}${O(e)}${e.stale ? " · 历史" : ""}`)(re(e)) : e.map((e) => `${e.plan === "go" ? "Go" : "Plus"}: ${O(e)}${e.stale ? "（历史）" : ""}`).join("；");
+}
+function A(e) {
+	if (Array.isArray(e.plan_check_countries) && !e.plan_check_countries.length) return [];
+	let t = /* @__PURE__ */ new Map();
+	for (let n of T(e.account_promotions)) {
+		let e = String(n.country || "").trim().toUpperCase();
+		e && (t.has(e) || t.set(e, []), t.get(e).push({
+			...n,
+			country: e
+		}));
+	}
+	return [...t].map(([e, t]) => ({
+		country: e,
+		items: D({ account_promotions: t })
+	}));
+}
+function j(e, t, n = !1) {
+	let r = e.current_plan_type ? `${n ? "" : "套餐 "}${e.current_plan_type} · ` : "", i = Array.isArray(e.plan_check_countries) && !e.plan_check_countries.length, a = i ? [] : T(e.plan_check_country_results).filter((e) => e.country);
+	if (a.length) {
+		let e = a.filter((e) => e.status === "success").length, i = a.filter((e) => ["failed", "cancelled"].includes(String(e.status))).length, o = a.some((e) => ["queued", "running"].includes(String(e.status))) || ["queued", "running"].includes(t), s = i === a.length ? "全部失败" : ["failed", "cancelled"].includes(t) && o ? t === "cancelled" ? "已取消" : "查询中断" : i && e ? "部分失败" : o ? "查询中" : "", c = a.map((e) => {
+			let n = w(e.result), r = !!Object.keys(n).length && !!e.last_success_at, i = ["queued", "running"].includes(String(e.status)), a = ["failed", "cancelled"].includes(t), o = e.status === "success" ? D(n).map((e) => ({
+				...e,
+				stale: ["queued", "running"].includes(t)
+			})) : i && !a ? [{ kind: "pending" }] : r ? D(n).map((e) => ({
+				...e,
+				stale: !0
+			})) : [{ kind: e.status === "cancelled" || t === "cancelled" ? "cancelled" : "failed" }];
+			return {
+				country: String(e.country).toUpperCase(),
+				items: o
+			};
+		});
+		return r + [s, n ? k(c.flatMap((e) => e.items), !0) : c.map((e) => `${e.country} ${k(e.items, !0)}`).join(" · ")].filter(Boolean).join(" · ");
+	}
+	let o = Number(e.country_total_count || (Array.isArray(e.plan_check_countries) ? e.plan_check_countries.length : 0));
+	if (!i && o > 0) {
+		let i = Array.isArray(e.failed_countries) ? e.failed_countries.map((e) => String(typeof e == "object" ? w(e).country || "" : e || "").trim().toUpperCase()).filter(Boolean) : [], a = Number(e.country_success_count || 0), s = i.length >= o && !a ? "全部失败" : i.length && a ? "部分失败" : ["queued", "running"].includes(t) ? "查询中" : "", c = A(e), l = c.length ? n ? k(c.flatMap((e) => e.items), !0) : c.map((e) => `${e.country} ${k(e.items, !0)}`).join(" · ") : Array.isArray(e.account_promotions) ? k(D(e), n) : "", u = [
+			s,
+			!n && i.length ? `失败国家：${i.join("、")}` : "",
+			l
+		].filter(Boolean).join(" · ");
+		if (u) return r + u;
+	}
+	if (!Array.isArray(e.account_promotions)) {
+		let t = String(e.current_plan_type || "");
+		return t ? t.toLowerCase() === "free" ? `${r}Plus ${O(D(e)[1])}` : `${n ? "" : "套餐 "}${t}` : "查询完成";
+	}
+	return r + k(D(e), n);
+}
+function M(e, t = !1) {
+	let n = String(e.status || "");
+	if (n === "queued") return E(e) ? E(e) : "等待执行";
+	if (n === "running") return "执行中";
+	let r = w(e.result_summary);
+	if (e.task_type === "extract_link") {
+		let t = String(r.extraction_status || "").toLowerCase(), i = String(r.payment_status || "").toLowerCase();
+		if (["succeeded", "success"].includes(t) || !t && r.ok === !0 && r.has_link === !0) {
+			let e = `提链成功${r.link_type ? ` · ${String(r.link_type).toUpperCase()}` : ""}`;
+			return ["failed", "error"].includes(i) ? `${e} · 支付失败` : [
+				"succeeded",
+				"success",
+				"paid"
+			].includes(i) ? `${e} · 支付成功` : [
+				"unknown",
+				"request_unknown",
+				"attention_required"
+			].includes(i) ? `${e} · 支付响应缺失` : [
+				"pending",
+				"pending_payment",
+				"processing"
+			].includes(i) ? `${e} · ${r.mode === "manual_payment" ? "等待手动支付" : "支付处理中"}` : r.mode === "manual_payment" && i === "not_started" ? `${e} · 等待手动支付` : [
+				"request_unknown",
+				"attention_required",
+				"partial_success"
+			].includes(n) ? `${e} · 后续处理失败` : [
+				"cancelled",
+				"stopped",
+				"interrupted"
+			].includes(n) ? `${e} · 任务已中断` : n === "failed" ? `${e} · 后续处理失败` : e;
+		}
+		return ["failed", "error"].includes(t) ? "提链失败" : [
+			"unknown",
+			"request_unknown",
+			"attention_required"
+		].includes(t) ? e.error_info?.summary || "提链失败 · 平台响应记录缺失" : ["pending", "queued"].includes(t) ? "等待提链" : t === "running" ? "提链中" : n === "cancelled" ? "任务已取消" : ["stopped", "interrupted"].includes(n) ? "任务已中断" : [
+			"request_unknown",
+			"attention_required",
+			"partial_success",
+			"unknown"
+		].includes(n) ? e.error_info?.summary || "提链失败 · 平台响应记录缺失" : e.error_message ? y(e.error_info, e.error_message) : Object.prototype.hasOwnProperty.call(r, "ok") ? r.message || r.status || (r.ok ? "提炼完成" : "提炼失败") : r.message || (n === "failed" ? "提链失败" : "提链结果未记录");
+	}
+	if (e.error_message) return y(e.error_info, e.error_message);
+	if (e.task_type === "registration" || e.task_type === "registration_resume") return _("target_status", e.target_status) || "注册执行已结束";
+	if (e.task_type === "plan_check") return j(r, n, t);
+	if (e.task_type === "deactivation_mail") return Object.prototype.hasOwnProperty.call(r, "detected") ? r.detected ? "发现封号邮件" : "未发现封号邮件" : "-";
+	if (e.task_type === "live_check" || e.task_type === "token_refresh") return r.ok ? "账号正常" : e.task_type === "token_refresh" ? "AT 刷新失败" : "查活失败";
+	if (e.task_type === "email_change") return r.email_change_confirmed ? w(r.post_change_live_check).accepted ? "邮箱已换绑 · AT 刷新已排队" : "邮箱已换绑 · AT 刷新待处理" : r.message || r.status || "邮箱换绑未完成";
+	if ([
+		"account_setup_retry",
+		"password_setup",
+		"password_change",
+		"twofa_setup",
+		"twofa_change",
+		"account_completion"
+	].includes(e.task_type)) return r.ok ? r.message || "账号配置操作已完成" : r.message || "账号配置操作失败";
+	if (e.task_type === "codex_retry") {
+		if (r.ok) {
+			let e = w(r.sub2api_sync).status;
+			return e === "success" ? "授权成功 · sub2api 已启用" : e === "failed" ? "授权成功 · sub2api 同步失败" : e === "cancelled" ? "授权成功 · sub2api 同步已停止" : r.credential_confirmed ? "授权成功 · 凭证已确认" : "授权成功";
+		}
+		return ["attention_required", "request_unknown"].includes(String(r.status)) ? "授权失败 · 未取得有效凭据" : r.message || r.status || "补跑失败";
+	}
+	return e.task_type === "codex_token_refresh" ? r.ok ? r.sub2_sync === "failed" ? "Token 已刷新 · sub2 同步失败" : "OAuth Token 已刷新" : "OAuth Token 刷新失败" : e.task_type === "c2a_session_reimport" ? r.ok ? r.message || "C2A AT 已从本地重新导入" : r.error_code || r.message || "C2A 重新导入失败，请查看任务日志" : e.task_type === "sub2api_manual_upload" ? r.ok ? "手动上传 Sub2API 已完成" : r.error_code || r.message || "手动上传失败，请查看任务日志" : e.task_type === "sub2api_scan" ? n === "success" ? "Sub2API 异常扫描已完成" : r.error_code || r.message || "扫描未完成，请查看任务日志" : Object.keys(r).length ? JSON.stringify(r) : "-";
+}
+function N(e, t = !1) {
+	return String(M(e, t));
+}
+function P(e) {
+	if (b(e)) return "";
+	let t = w(e.result_summary), n = w(t.auth_diagnostics), r = String(e.failure_stage || t.failure_stage || ""), i = n.operation === "password_email_fallback" ? n.cause_operation : n.operation, a = ["token_refresh", "live_check"].includes(e.task_type) && e.status !== "success" && ["login_password", "email_otp"].includes(r) && ["mfa_verify", "mfa_issue_challenge"].includes(String(i)), o = e.error_info?.stage, s = a ? "mfa_challenge" : o && ![
+		"unknown",
+		"complete",
+		"result",
+		"event",
+		"queued"
+	].includes(o) ? o : r;
+	return s ? `失败于 ${s === r && e.failure_stage_label ? e.failure_stage_label : _("stage", s.replace(/_result$/, ""))}` : "";
+}
+function F(e) {
+	let t = [`${e.plan === "go" ? "Go" : "Plus"}: ${O(e)}`];
+	if (![
+		"free_trial",
+		"discount",
+		"other_promo"
+	].includes(String(e.kind))) return t.join("；");
+	let n = String(e.checkout_status || ""), r = String(e.country || "").toUpperCase(), i = String(e.checkout_country || "").toUpperCase();
+	if (r && i && r !== i) return `${t[0]}；支付方式: 待查询`;
+	if (["failed", "skipped"].includes(n)) {
+		let r = String(e.checkout_error || "").replace(/https?:\/\/[^\s；，]+/gi, "[链接已隐藏]").replace(/\b(?:cs_(?:live|test)|oaics|(?:pk|sk)_(?:live|test))_[a-z0-9_-]+\b/gi, "[结账标识已隐藏]").replace(/\b[^\s；，]*secret[^\s；，]*\b/gi, "[凭据已隐藏]").slice(0, 240).trim(), i = Number(e.checkout_http_status);
+		return t.push(n === "failed" ? "支付方式查询失败" : "支付方式待查询"), (r || i >= 100 && i <= 599) && t.push(r || `HTTP ${i}`), t.join("；");
+	}
+	let a = Array.isArray(e.payment_method_types) ? e.payment_method_types : [], o = {
+		card: "银行卡",
+		link: "Link",
+		upi: "UPI"
+	}, s = [...new Set(a.filter((e) => typeof e == "string").map((e) => e.trim().toLowerCase()).filter((e) => /^[a-z][a-z0-9_-]{0,63}$/.test(e) && !/^(?:cs_(?:live|test)|oaics|(?:pk|sk)_(?:live|test))(?:_|$)/.test(e) && !e.includes("secret")).map((e) => o[e] || e))], c = e.checkout_amount_due_minor, l = e.checkout_currency_exponent, u = String(e.checkout_currency || "").toUpperCase();
+	if (n === "success" && typeof c == "number" && Number.isSafeInteger(c) && c >= 0 && typeof l == "number" && Number.isInteger(l) && l >= 0 && l <= 3 && /^[A-Z]{3}$/.test(u)) {
+		let e = String(c).padStart(l + 1, "0");
+		t.push(`实际应付: ${l ? `${e.slice(0, -l)}.${e.slice(-l)}`.replace(/\.?0+$/, "") : e} ${u}`);
+	}
+	return n === "success" && ["cs_live", "oaics"].includes(String(e.session_type)) && t.push(`结账会话: ${e.session_type}`), t.push(`支付方式: ${s.join(" ") || (n === "success" ? "未返回" : "待查询")}`), t.join("；");
+}
+function ie(e) {
+	if (e.task_type !== "plan_check") return N(e);
+	let t = w(e.result_summary), n = [N(e), ...T(t.country_failures).map((e) => `${e.country}：${e.summary || "诊断记录不完整"}`)], r = Array.isArray(t.plan_check_countries) && !t.plan_check_countries.length ? [] : T(t.plan_check_country_results).filter((e) => e.country);
+	if (!r.length) {
+		let e = A(t);
+		e.length ? n.push(...e.map((e) => [`${e.country}${e.items.some((e) => e.stale) ? "（历史）" : ""}`, ...e.items.map(F)].join("\n"))) : n.push(...D(t).map(F));
+	}
+	for (let t of r) {
+		let r = w(t.result), i = Object.keys(r).length > 0 && !!t.last_success_at, a = t.status !== "success" && i || ["queued", "running"].includes(String(e.status)), o = [`${String(t.country).toUpperCase()}${a ? "（历史）" : ""}`];
+		t.status === "success" || i ? o.push(...D(r).map((e) => F({
+			...e,
+			country: t.country
+		}))) : o.push(_("status", t.status)), (t.error || t.http_status) && o.push(`本次查询${t.status === "cancelled" ? "取消" : "失败"}: ${t.error || `HTTP ${t.http_status}`}`), t.checked_at && o.push(`查询于 ${m(t.checked_at)}`), i && a && o.push(`显示上次成功快照；上次成功查询: ${m(t.last_success_at)}`), n.push(o.join("\n"));
+	}
+	return n.filter(Boolean).join("\n");
+}
+// src/features/tasks/detail/model.ts
+function I(e) {
+	return typeof e == "object" && e && !Array.isArray(e) ? e : {};
+}
+var L = (e) => e == null ? "" : String(e), ae = (e) => Array.isArray(e) ? e.map(I) : [], R = (e) => Array.isArray(e) ? e.map(L) : [], z = {
+	pending: "未开始",
+	queued: "排队中",
+	waiting: "等待中",
+	running: "执行中",
+	success: "已完成",
+	skipped: "已跳过",
+	failed: "失败",
+	recovered: "重试已恢复",
+	unconfirmed: "响应记录缺失",
+	not_executed: "未执行",
+	request_unknown: "失败",
+	record_incomplete: "记录不完整",
+	debug_paused: "调试暂停",
+	stopped: "已中断",
+	cancelled: "已取消",
+	interrupted: "已中断",
+	attention_required: "失败",
+	partial_success: "部分完成",
+	deferred: "已延后",
+	awaiting_confirmation: "等待响应",
+	manual_reconcile: "失败",
+	unsupported: "不支持",
+	deactivated: "已停用"
+}, B = (e) => L(e.display_status || e.state || "pending").toLowerCase(), V = (e) => z[L(e)] || L(e) || "状态记录缺失", H = (e) => L(e.id || e.step_id), U = (e) => ({
+	authenticate: "登录验证",
+	set_twofa: "配置 2FA"
+})[H(e)] || e.label || e.name || H(e);
+function W(e, t, n, r = !1) {
+	if (!t) return !0;
+	let i = I(r ? e.fields : e.detail), a = n.find((e) => H(e) === t || e.raw_stages?.includes(t)), o = a?.raw_stages || [], s = L(e.main_step_id || i.main_step_id), c = L(e.stage || i.stage), l = r ? "" : L(e.stage_label || i.stage_label), u = L(e.event_id || (r ? i.event_id : e.id));
+	if (s) return s === (a?.id || t) || u === t;
+	if (u === t || a && R(a.event_ids).includes(u)) return !0;
+	let d = [L(e.raw_stage || i.raw_stage), ...R(e.raw_stages || i.raw_stages)], f = [
+		c,
+		l,
+		...d
+	].filter(Boolean), p = n.filter((e) => f.some((t) => e.raw_stages?.includes(t)));
+	return a && p.length > 1 ? !1 : [
+		c,
+		l,
+		...d
+	].includes(t) || f.some((e) => o.includes(e));
+}
+function G(e, t) {
+	let n = new Set(e.map((e) => String(e.id)));
+	return [...e, ...t.filter((e) => !n.has(String(e.id)))];
+}
+function K(e) {
+	return [...e].sort((e, t) => (Date.parse(e.created_at || "") || 0) - (Date.parse(t.created_at || "") || 0) || h(e.id, t.id));
+}
+function q(e) {
+	let t = Object.entries(I(e)).filter(([e, t]) => e !== "step_state" && t != null && t !== "" && (!Array.isArray(t) || t.length > 0) && (typeof t != "object" || Array.isArray(t) || Object.keys(I(t)).length > 0));
+	return t.length ? Object.fromEntries(t) : null;
+}
+function J(e) {
+	let t = L(I(e.detail).step_state || (e.event_type || "").replace(/^stage\./, "")).toLowerCase();
+	return [
+		"pending",
+		"running",
+		"success",
+		"skipped",
+		"failed"
+	].includes(t) ? t : L(e.level).toUpperCase() === "ERROR" ? "failed" : "";
+}
+function oe(e) {
+	let t = e.error_info?.cause_summary || e.error_info?.summary || e.message || "";
+	return !t || /^(?:远端)?(?:结果)?(?:待确认|未确认|待核验|未知)$/.test(t) ? "失败诊断记录缺失" : t;
+}
+function se(e) {
+	let t = I(e.evidence);
+	return e.inferred === !0 || t.inferred === !0 || [
+		"inferred",
+		"legacy",
+		"unobserved"
+	].includes(L(e.evidence)) || t.source === "inferred" || t.kind === "inferred";
+}
+function Y(e, t = Date.now()) {
+	let n = Date.parse(e.started_at || ""), r = Date.parse(e.completed_at || ""), i = Date.parse(L(I(e.debug_pause).paused_at)), a = B(e), o = a === "debug_paused" ? i - n : a === "running" && Number.isFinite(n) ? t - n : e.duration_ms ?? r - n;
+	return Number.isFinite(o) && o >= 0 ? o : null;
+}
+function ce(e) {
+	let t = L(e);
+	return /^\/api\/operations\/\d+\/runs\/\d+\/debug\/(har|page-state|screenshot)(?:\?.*)?$/.test(t) ? t : null;
+}
+// src/features/tasks/detail/flowPresentation.ts
+var X = (e) => (e || []).filter((e) => B(e) !== "skipped" || !!e.execution?.condition || e.execution?.kind === "conditional");
+function Z(e) {
+	let t = e.execution;
+	return t?.condition?.state === "not_met" ? "条件未满足" : t?.dependency_state === "blocked" ? t.waits_for?.length ? "子任务未完成" : "前置阶段失败" : t?.dependency_state === "waiting" ? t.waits_for?.length ? "等待子任务" : "等待前置阶段" : t?.retry?.state === "recovered" ? "重试已恢复" : V(B(e));
+}
+function le(e) {
+	let t = e.execution;
+	return t ? [
+		t.kind === "conditional" ? "条件阶段" : t.kind === "child_task" ? "子任务" : "",
+		t.parallel_group ? "并行分支" : "",
+		t.retry?.state === "observed" ? "有重试记录" : ""
+	].filter(Boolean) : [];
+}
+function ue(e, t = []) {
+	let n = e.execution, r = [], i = e.depends_on || [];
+	if (i.length && r.push({
+		label: "依赖阶段",
+		value: i.map((e) => {
+			let n = t.find((t) => t.id === e);
+			return n ? U(n) : e;
+		}).join("、")
+	}), n?.condition) {
+		let e = {
+			met: "已满足",
+			not_met: "未满足",
+			unknown: "未确认"
+		}[n.condition.state];
+		r.push({
+			label: "触发条件",
+			value: `${n.condition.label} · ${e}`
+		});
+	}
+	return n?.dependency_state && n.dependency_state !== "unknown" && r.push({
+		label: "依赖状态",
+		value: {
+			waiting: n.waits_for?.length ? "等待子任务完成" : "等待前置完成",
+			blocked: n.waits_for?.length ? "子任务未成功完成" : "前置阶段失败",
+			satisfied: "已满足"
+		}[n.dependency_state]
+	}), n?.parallel_group && r.push({
+		label: "并行分组",
+		value: n.parallel_group
+	}), n?.retry && n.retry.state !== "unknown" && r.push({
+		label: "重试",
+		value: `${n.retry.state === "recovered" ? "重试已恢复" : "有重试记录"}${n.retry.attempt_count ? ` · ${n.retry.attempt_count} 次尝试` : ""}`
+	}), n && (r.length || n.waits_for?.length) || r.push({
+		label: "关系记录",
+		value: "没有足够证据确定依赖或并行关系"
+	}), e.observed_order != null && r.push({
+		label: "首次记录",
+		value: `第 ${e.observed_order} 个被记录的阶段`
+	}), r;
+}
+// src/features/tasks/detail/StepRelations.vue?vue&type=script&setup=true&lang.ts
+var de = { class: "tc-step-relations" }, Q = /*#__PURE__*/ u(/* @__PURE__ */ e({
+	__name: "StepRelations",
+	props: {
+		step: {},
+		siblings: {}
+	},
+	setup(e) {
+		let r = e, u = c(() => ue(r.step, r.siblings));
+		return (r, c) => (t(), d("dl", de, [(t(!0), d(a, null, n(u.value, (e) => (t(), d("div", { key: e.label }, [s("dt", null, o(e.label), 1), s("dd", null, o(e.value), 1)]))), 128)), (t(!0), d(a, null, n(e.step.execution?.waits_for || [], (e, n) => (t(), d("div", { key: `${e.task_id}:${e.run_id}:${n}` }, [c[1] ||= s("dt", null, "关联子任务", -1), s("dd", null, [e.task_id ? (t(), d(a, { key: 0 }, [
+			f(o(l(_)("task_type", e.task_type)) + " #" + o(e.task_id), 1),
+			e.run_id ? (t(), d(a, { key: 0 }, [f(" · 运行 #" + o(e.run_id), 1)], 64)) : i("", !0),
+			e.status ? (t(), d(a, { key: 1 }, [f(" · " + o(l(V)(e.status)), 1)], 64)) : i("", !0)
+		], 64)) : (t(), d(a, { key: 1 }, [c[0] ||= f("子任务关联标识未记录", -1), e.status ? (t(), d(a, { key: 0 }, [f(" · " + o(l(V)(e.status)), 1)], 64)) : i("", !0)], 64))])]))), 128))]));
+	}
+}), [["__scopeId", "data-v-7352d546"]]), fe = { class: "tc-step-evidence" }, pe = { key: 0 }, $ = { class: "tc-detail-facts" }, me = { key: 0 }, he = {
+	key: 1,
+	class: "tc-technical"
+}, ge = { class: "tc-attempt-list" }, _e = { key: 0 }, ve = {
+	key: 2,
+	class: "tc-technical"
+}, ye = { class: "tc-attempt-list" }, be = { class: "tc-event-meta" }, xe = {
+	key: 3,
+	class: "tc-technical"
+}, Se = {
+	key: 4,
+	class: "tc-technical"
+}, Ce = /* @__PURE__ */ e({
+	__name: "StepEvidence",
+	props: {
+		step: {},
+		siblings: {}
+	},
+	setup(e) {
+		return (c, u) => {
+			let h = p("StepEvidence", !0);
+			return t(), d("section", fe, [
+				e.step.reason || e.step.message ? (t(), d("p", pe, o(e.step.reason || e.step.message), 1)) : i("", !0),
+				s("dl", $, [
+					s("div", null, [u[0] ||= s("dt", null, "状态", -1), s("dd", null, o(l(Z)(e.step)), 1)]),
+					s("div", null, [u[1] ||= s("dt", null, "开始", -1), s("dd", null, o(l(m)(e.step.started_at)), 1)]),
+					s("div", null, [u[2] ||= s("dt", null, "结束", -1), s("dd", null, o(l(m)(e.step.completed_at)), 1)]),
+					s("div", null, [u[3] ||= s("dt", null, "耗时", -1), s("dd", null, o(l(v)(l(Y)(e.step))), 1)]),
+					e.step.raw_stages?.length ? (t(), d("div", me, [u[4] ||= s("dt", null, "原始阶段", -1), s("dd", null, o(e.step.raw_stages.join("、")), 1)])) : i("", !0)
+				]),
+				r(Q, {
+					step: e.step,
+					siblings: e.siblings
+				}, null, 8, ["step", "siblings"]),
+				e.step.step_instances?.length ? (t(), d("details", he, [s("summary", null, "阶段实例（" + o(e.step.step_instances.length) + "）", 1), s("ol", ge, [(t(!0), d(a, null, n(e.step.step_instances, (e, n) => (t(), d("li", { key: l(L)(e.step_instance_id) || n }, [
+					s("strong", null, "记录 " + o(n + 1) + " · " + o(l(V)(e.state)), 1),
+					s("p", null, o(l(m)(e.started_at)) + " → " + o(l(m)(e.completed_at)), 1),
+					e.message ? (t(), d("p", _e, o(e.message), 1)) : i("", !0)
+				]))), 128))])])) : i("", !0),
+				e.step.attempts?.length ? (t(), d("details", ve, [s("summary", null, "阶段事件（" + o(e.step.attempts.length) + "）", 1), s("ol", ye, [(t(!0), d(a, null, n(e.step.attempts, (e, n) => (t(), d("li", { key: l(L)(e.event_id) || n }, [
+					s("div", be, [s("strong", null, "记录 " + o(n + 1) + " · " + o(l(V)(e.display_status || e.state)), 1), s("time", null, o(!e.created_at && e.event_time_known === !1 ? "发生时间未记录" : l(m)(l(L)(e.created_at))), 1)]),
+					s("p", null, o(e.message || "无补充说明"), 1),
+					s("small", null, [f(o(e.raw_stage_label || e.raw_stage), 1), e.event_id ? (t(), d(a, { key: 0 }, [f(" · 事件 " + o(e.event_id), 1)], 64)) : i("", !0)]),
+					s("details", null, [u[5] ||= s("summary", null, "技术字段", -1), s("pre", null, o(JSON.stringify(e, null, 2)), 1)])
+				]))), 128))])])) : i("", !0),
+				l(X)(e.step.children).length ? (t(), d("details", xe, [s("summary", null, "子步骤（" + o(l(X)(e.step.children).length) + "）", 1), (t(!0), d(a, null, n(l(X)(e.step.children), (n) => (t(), d("section", {
+					key: n.id,
+					class: "tc-child-step"
+				}, [s("h4", null, [f(o(l(U)(n)) + " ", 1), s("span", null, o(l(V)(l(B)(n))), 1)]), r(h, {
+					step: n,
+					siblings: e.step.children
+				}, null, 8, ["step", "siblings"])]))), 128))])) : i("", !0),
+				e.step.evidence && Object.keys(l(I)(e.step.evidence)).length ? (t(), d("details", Se, [u[6] ||= s("summary", null, "步骤证据", -1), s("pre", null, o(JSON.stringify(e.step.evidence, null, 2)), 1)])) : i("", !0)
+			]);
+		};
+	}
+});
+export { _ as A, x as C, P as D, y as E, w as M, ie as N, v as O, te as P, E as S, ee as T, Y as _, X as a, B as b, se as c, q as d, G as f, ae as g, V as h, Z as i, g as j, b as k, oe as l, K as m, Q as n, ce as o, I as p, le as r, J as s, Ce as t, W as u, H as v, C as w, L as x, U as y };

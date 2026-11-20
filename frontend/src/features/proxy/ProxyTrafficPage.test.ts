@@ -84,6 +84,53 @@ describe('complete proxy Vue page', () => {
     expect(wrapper.findAll('.list-result').length).toBeGreaterThan(0);
     expect(wrapper.findAll('[data-proxy-view]')).toHaveLength(3);
   });
+  it('在快照范围内翻页和切换每页条数', async () => {
+    const { wrapper, api } = setup();
+    const items = Array.from({ length: 55 }, (_, index) => ({
+      ...fixturePool.items![0],
+      resource_id: `inventory-${index + 1}`,
+    }));
+    api.pool = vi.fn(async () => ({ ...fixturePool, items }));
+    await flushPromises();
+    const pager = wrapper.get('[aria-label="代理池库存分页"]');
+    const table = wrapper.get('[data-proxy-table="pool"]');
+    const rows = () => table.findAll('tbody tr');
+    expect(rows()).toHaveLength(20);
+    expect(rows()[0]!.text()).toContain('inventory-1');
+    await pager.get('.list-pagination__next').trigger('click');
+    expect(rows()).toHaveLength(20);
+    expect(rows()[0]!.text()).toContain('inventory-21');
+    await pager.get('[aria-label="第 3 页"]').trigger('click');
+    expect(rows()).toHaveLength(15);
+    expect(rows()[0]!.text()).toContain('inventory-41');
+    await pager.get('select').setValue('50');
+    expect(rows()).toHaveLength(50);
+    expect(rows()[0]!.text()).toContain('inventory-1');
+    expect(api.pool).toHaveBeenCalledTimes(1);
+  });
+  it('库存快照缩短后停在有效页', async () => {
+    const { wrapper, api } = setup();
+    const items = Array.from({ length: 41 }, (_, index) => ({
+      ...fixturePool.items![0],
+      resource_id: `inventory-${index + 1}`,
+    }));
+    api.pool = async () => ({ ...fixturePool, items });
+    await flushPromises();
+    const pager = wrapper.get('[aria-label="代理池库存分页"]');
+    await pager.get('[aria-label="第 3 页"]').trigger('click');
+    api.pool = async () => ({ ...fixturePool, items: items.slice(0, 23) });
+    const reload = () => (wrapper.vm as unknown as { load(): Promise<void> }).load();
+    await reload();
+    await flushPromises();
+    const rows = wrapper.get('[data-proxy-table="pool"]').findAll('tbody tr');
+    expect(pager.get('[aria-current="page"]').text()).toBe('2');
+    expect(rows).toHaveLength(3);
+    expect(rows[0]!.text()).toContain('inventory-21');
+    api.pool = async () => ({ ...fixturePool, items });
+    await reload();
+    await flushPromises();
+    expect(pager.get('[aria-current="page"]').text()).toBe('2');
+  });
   it('renders all original records columns and plain task associations with global zero summary', async () => {
     const { wrapper, openTask } = setup('records');
     await flushPromises();

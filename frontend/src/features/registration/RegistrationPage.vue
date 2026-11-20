@@ -132,9 +132,10 @@ onMounted(()=>{void owner.ensureMeta();});
       </section>
 
       <RegistrationBatchPanel v-if="launch" :batch="state.batch" :batches="state.batches" :batch-id="state.batchId"
+        :refresh-generation="state.batchRefreshGeneration"
         :active="owner.active.value" :loading="state.loading" :error="state.error" :actions="owner.batchActions.value"
         :mutating="Object.keys(state.pendingActions).length > 0" :status-label="statusLabel" :source-label="sourceLabel"
-        :driver-label="driverLabel" @select="chooseBatch" @refresh="owner.load()" @batch-action="action($event)"
+        :driver-label="driverLabel" :read-progress="owner.readBatchProgress" @select="chooseBatch" @refresh="owner.load()" @batch-action="action($event)"
         @retry="action('retry',$event)" @log="owner.openLog"/>
     </section>
     <section v-show="tasks" class="registration-tasks">

@@ -1854,7 +1854,6 @@ tr:hover td,
    table body owns the scroll area. */
 #tab-register[data-module-view="tasks"] #jobsPanelV2,
 #tab-accounts:not([data-module-view="tasks"]) #accountsPanelV2,
-#tab-accounts[data-module-view="tasks"] #accountTasksPanel,
 #tab-codex #codexPanelV2,
 #tab-outlook[data-module-view="list"] #outlookPanelV2 {
   min-height: 0;
@@ -1864,6 +1863,24 @@ tr:hover td,
   flex-direction: column;
 }
 
+/* 任务中心复用账号标签容器，空弹窗挂载点无需占用网格行距。 */
+main:has(> #tab-accounts[data-module-view="tasks"]:not(.hidden)) {
+  --task-center-top-gap: var(--ui-space-2);
+  --task-center-bottom-gap: max(var(--ui-space-2), env(safe-area-inset-bottom));
+  margin-block: calc(var(--topbar-height) + var(--task-center-top-gap)) var(--task-center-bottom-gap);
+}
+
+#tab-accounts[data-module-view="tasks"]:not(.hidden) {
+  row-gap: 0;
+}
+
+#tab-accounts[data-module-view="tasks"] #accountTasksPanel {
+  display: flex;
+  flex-direction: column;
+  height: calc(100dvh - var(--topbar-height) - var(--task-center-top-gap) - var(--task-center-bottom-gap));
+  min-height: 0;
+}
+
 #tab-register[data-module-view="tasks"] #jobsPanelV2 > .jobs-toolbar-v2,
 #tab-register[data-module-view="tasks"] #jobsPanelV2 > .task-records-command-deck,
 #tab-register[data-module-view="tasks"] #jobsPanelV2 > .column-filter-summary,
@@ -1871,9 +1888,6 @@ tr:hover td,
 #tab-accounts #accountsPanelV2 > .accounts-command-deck,
 #tab-accounts #accountsPanelV2 > .column-filter-summary,
 #tab-accounts #accountsPanelV2 > .jobs-v2-pager,
-#tab-accounts[data-module-view="tasks"] #accountTasksPanel > .account-tasks-command-deck,
-#tab-accounts[data-module-view="tasks"] #accountTasksPanel > .column-filter-summary,
-#tab-accounts[data-module-view="tasks"] #accountTasksPanel > .jobs-v2-pager,
 #tab-codex #codexPanelV2 > .codex-command-deck,
 #tab-codex #codexPanelV2 > .column-filter-summary,
 #tab-codex #codexPanelV2 > .jobs-v2-pager,
@@ -1885,7 +1899,6 @@ tr:hover td,
 
 #tab-register[data-module-view="tasks"] #jobsPanelV2 > .jobs-table-v2-wrap,
 #tab-accounts:not([data-module-view="tasks"]) #accountsPanelV2 > .accounts-table-v2-wrap,
-#tab-accounts[data-module-view="tasks"] #accountTasksPanel > .account-tasks-table-wrap,
 #tab-codex #codexPanelV2 > .codex-table-v2-wrap,
 #tab-outlook[data-module-view="list"] #outlookPanelV2 > .outlook-table-v2-wrap {
   flex: 1 1 auto;
@@ -2257,7 +2270,6 @@ table[data-resizable-table="codex"] {
 @media (max-width: 860px) {
   #tab-register[data-module-view="tasks"] #jobsPanelV2,
   #tab-accounts:not([data-module-view="tasks"]) #accountsPanelV2,
-  #tab-accounts[data-module-view="tasks"] #accountTasksPanel,
   #tab-codex #codexPanelV2,
   #tab-outlook[data-module-view="list"] #outlookPanelV2 {
     height: calc(100dvh - var(--topbar-height) - 26px);

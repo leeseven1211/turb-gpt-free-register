@@ -38,7 +38,6 @@ defineExpose({setView,setVisible,refreshOverview:overviewRead.refresh,refreshInv
 </script>
 <template>
  <div class="em-page">
-  <h1>邮箱资源池</h1>
   <EmailOverview v-show="view==='overview'" :sources="overview.sources" :expanded="overview.expanded" :loading="overview.loading" :error="overview.error" :butler-label="butlerLabel" @refresh="overviewRead.refresh()" @expand="overview.expanded=!overview.expanded" @source="source" @local-import="openImport('email_butler')" @butler-import="openButlerImport"/>
   <EmailInventory v-show="view==='list'" :owner="inventory" :active="visible&&documentVisible&&view==='list'" :butler-label="butlerLabel" @local-import="openImport()" @butler-import="openButlerImport" @parent="parent"/>
   <EmailHistory v-show="view==='derivations'" :owner="history" :active="visible&&documentVisible&&view==='derivations'"/>

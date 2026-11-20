@@ -56,7 +56,7 @@ def test_current_page_shows_compact_status_and_complete_detail(width):
             reads.append((target.path, query))
         if target.path in ('/api/accounts', '/api/accounts/plan-check-status'):
             number = int(query.get('page', ['1'])[0])
-            size = int(query.get('page_size', ['10'])[0])
+            size = int(query['page_size'][0])
             page_rows = rows if number == 1 else [dict(defaults, id=17, email='page-two@example.test')]
             payload = {
                 'ok': True, 'items': page_rows, 'total': 21, 'page': number, 'page_size': size,
@@ -106,6 +106,23 @@ def test_current_page_shows_compact_status_and_complete_detail(width):
             items = page.locator('#accounts-list-root tr[data-account-row]')
             playwright.expect(items).to_have_count(3)
             assert '/static/task-center/accounts.js' in assets
+            batch_summary = page.locator('#accountsMoreActionsV2 summary')
+            batch_menu = page.locator('#accountsMoreActionsV2 .toolbar-overflow-menu')
+            batch_summary.click()
+            playwright.expect(batch_menu.locator('button')).to_have_count(34)
+            assert batch_menu.evaluate("""menu => {
+                const panel = menu.getBoundingClientRect();
+                const table = document.querySelector('.ac-table-scroll').getBoundingClientRect();
+                const overlapTop = Math.max(panel.top, table.top);
+                return overlapTop + 4 < Math.min(panel.bottom, table.bottom)
+                    && menu.contains(document.elementFromPoint(panel.left + 16, overlapTop + 4));
+            }"""), '表格滚动区与批量菜单重叠时，菜单应当可点击'
+            page.keyboard.press('Escape')
+            playwright.expect(batch_menu).to_be_hidden()
+            playwright.expect(batch_summary).to_be_focused()
+            pagination = page.get_by_role('navigation', name='账号列表分页')
+            playwright.expect(pagination.get_by_label('每页条数')).to_have_value('20')
+            assert next(query['page_size'] for path, query in reads if path == '/api/accounts') == ['20']
             first = items.first
             if width >= 600:
                 assert first.locator('.col-account-status').inner_text().splitlines() == ['Token 异常', 'HTTP 401']
@@ -135,18 +152,19 @@ def test_current_page_shows_compact_status_and_complete_detail(width):
             page.wait_for_function("window.syntheticCopies.length === 1")
             assert page.evaluate('window.syntheticCopies') == ['password-from-secret-api']
             assert ('/api/accounts/7/secret', {'field': ['account_password']}) in reads
-            pagination = page.get_by_role('navigation', name='账号列表分页')
             pagination.get_by_role('button', name='下一页').click()
             playwright.expect(items).to_have_count(1)
             playwright.expect(items.first).to_contain_text('page-two@example.test')
             playwright.expect(pagination).to_contain_text('共 21 条')
             list_reads = [query for path, query in reads if path == '/api/accounts']
             assert list_reads[-1]['page'] == ['2']
+            assert list_reads[-1]['page_size'] == ['20']
             assert list_reads[-1]['include_facets'] == ['0']
             with page.expect_response(lambda response: urlsplit(response.url).path == '/api/accounts') as refreshed:
                 page.locator('#btnRefreshAccountsV2').click()
             refreshed_query = parse_qs(urlsplit(refreshed.value.url).query)
             assert refreshed_query['page'] == ['2']
+            assert refreshed_query['page_size'] == ['20']
             assert 'include_facets' not in refreshed_query
             assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth'), '页面不应横向溢出'
             assert not unexpected, unexpected

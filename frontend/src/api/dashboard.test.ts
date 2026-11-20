@@ -31,4 +31,41 @@ describe('dashboard API',()=>{
   vi.stubGlobal('fetch',vi.fn(async()=>new Response('{"ok":false,"error":{"code":"unavailable","message":"统计暂不可用"}}',{status:503,headers:{'Content-Type':'application/json'}})));
   await expect(createDashboardApi().dashboard()).rejects.toMatchObject({status:503,code:'unavailable',message:'统计暂不可用'});
  });
+ it('shares the pending capability read while each caller can stop waiting independently', async () => {
+  let resolve!: (value: unknown) => void;
+  let pending: Promise<unknown> | undefined = new Promise(done => { resolve = done; });
+  const send = vi.fn(async () => ({ok: true, refreshed: true}));
+  const api = createDashboardApi(send, () => pending);
+  const controller = new AbortController();
+  const cancelled = api.capabilities(controller.signal);
+  const otherPage = api.capabilities();
+
+  controller.abort();
+  await expect(cancelled).rejects.toMatchObject({name: 'AbortError'});
+  const payload = {ok: true, features: {register: {enabled: true}}};
+  resolve(payload);
+  await expect(otherPage).resolves.toEqual(payload);
+  expect(send).not.toHaveBeenCalled();
+
+  pending = undefined;
+  await expect(api.capabilities()).resolves.toEqual({ok: true, refreshed: true});
+  expect(send).toHaveBeenCalledExactlyOnceWith('/api/capabilities', undefined);
+ });
+ it('propagates failures from the pending read and refreshes through the ordinary transport afterwards', async () => {
+  let reject!: (reason: Error) => void;
+  let pending: Promise<unknown> | undefined = new Promise((_resolve, fail) => { reject = fail; });
+  const send = vi.fn(async () => ({ok: true}));
+  const api = createDashboardApi(send, () => pending);
+  const wait = api.capabilities();
+  const failure = new Error('能力检查暂时失败');
+  reject(failure);
+  await expect(wait).rejects.toBe(failure);
+
+  pending = Promise.resolve({ok: false});
+  await expect(api.capabilities()).rejects.toMatchObject({name: 'ApiError'});
+  pending = undefined;
+  const controller = new AbortController();
+  await expect(api.capabilities(controller.signal)).resolves.toEqual({ok: true});
+  expect(send).toHaveBeenCalledExactlyOnceWith('/api/capabilities', {signal: controller.signal});
+ });
 });

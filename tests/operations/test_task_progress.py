@@ -1,4 +1,7 @@
 # -*- coding: utf-8 -*-
+from unittest.mock import patch
+
+from core.operations import progress
 from core.operations.progress import build_progress_snapshot
 from core.operations.stages import flow_for
 
@@ -31,6 +34,37 @@ def _run(status="running", *, progress_stage="", **extra):
 
 def _step(snapshot, step_id):
     return next(item for item in snapshot["main_steps"] if item["id"] == step_id)
+
+
+def test_registration_summary_keeps_last_business_stage_when_closing():
+    steps = {
+        "email_otp": {"state": "running", "started_at": "2026-11-20T01:01:00Z"},
+        "complete": {"state": "running", "started_at": "2026-11-20T01:02:00Z"},
+    }
+    run = _run(progress_stage="complete", progress_steps=steps, recorded_progress=[
+        {"stage": stage, "state": step["state"]} for stage, step in steps.items()
+    ])
+    detailed = build_progress_snapshot(1, 2, "registration", run, [])["current"]
+    summary = progress.registration_progress_summary("registration", run["status"], run)["current"]
+    assert summary["step_id"] == detailed["step_id"] == "authenticate"
+    assert summary["label"] == detailed["label"] == "验证邮箱验证码"
+    assert not progress.registration_progress_summary("registration", "running", _run(progress_stage="email_otp"))
+
+
+def test_registration_summary_excludes_recovered_and_unrecorded_failures():
+    steps = {
+        "email_otp": {"state": "failed", "evidence": "explicit", "started_at": "2026-11-20T01:01:00Z"},
+        "authenticate": {"state": "success", "started_at": "2026-11-20T01:02:00Z"},
+    }
+    run = _run("partial_success", progress_stage="authenticate", progress_steps=steps, recorded_progress=[
+        {"stage": stage, "state": step["state"], "evidence": step.get("evidence")} for stage, step in steps.items()
+    ])
+    events = [_event(1, "email_otp", "failed", created_at=steps["email_otp"]["started_at"]),
+              _event(2, "authenticate", "success", created_at=steps["authenticate"]["started_at"])]
+    assert build_progress_snapshot(1, 2, "registration", run, events)["failure"] is None
+    assert not progress.registration_progress_summary("registration", run["status"], run)
+    for status in ("stopped", "cancelled", "partial_success"):
+        assert not progress.registration_progress_summary("registration", status, _run(status, progress_stage="email_otp"))
 
 
 def test_codex_node_runtime_error_is_not_attributed_to_successful_proxy_allocation():
@@ -804,6 +838,31 @@ def test_route_projection_keeps_old_route_failure_out_of_current_run_step():
     assert {route["route_attempt_no"] for route in snapshot["routes"]} == {1, 2}
     assert next(route for route in snapshot["routes"] if route["route_attempt_no"] == 1)["failure"]["step_id"] == "authenticate"
     assert snapshot["time_basis"]["run_duration_ms"] == 12000
+
+
+def test_route_projection_reuses_default_stage_resolution_and_only_hashes_outer_revision():
+    run = _run("success", route_attempt_no=2)
+    events = [
+        _event("old", "login", "success", detail={"route_attempt_no": 1, "started_at": "2026-10-13T01:00:01Z"}),
+        _event("current", "login", "running", detail={"route_attempt_no": 2, "started_at": "2026-10-13T01:00:02Z"}),
+        _event("finished", "login", "success", detail={"route_attempt_no": 2}),
+        _event("explicit", "login", "success", detail={"route_attempt_no": 2, "main_step_id": "browser"}),
+    ]
+    with (
+        patch.object(progress, "resolve_step", wraps=progress.resolve_step) as resolve_step,
+        patch.object(progress.hashlib, "sha256", wraps=progress.hashlib.sha256) as sha256,
+    ):
+        snapshot = build_progress_snapshot(1, 2, "registration", run, events)
+
+    assert _step(snapshot, "authenticate")["event_ids"] == ["current", "finished"]
+    assert _step(snapshot, "browser")["event_ids"] == ["explicit"]
+    assert len(snapshot["revision"]) == 16
+    assert [route["started_at"] for route in snapshot["routes"]] == [
+        "2026-10-13T01:00:01Z", "2026-10-13T01:00:02Z",
+    ]
+    assert all("execution" in route["steps"][0] for route in snapshot["routes"])
+    assert resolve_step.call_count == 2
+    sha256.assert_called_once()
 
 
 def test_projection_ignores_event_from_another_run_even_when_route_matches():

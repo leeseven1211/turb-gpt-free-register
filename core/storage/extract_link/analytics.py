@@ -63,7 +63,9 @@ def workbench_analytics(*, days: int = 7, provider_id: str | None = None, now: d
     end = datetime.combine(end_date + timedelta(days=1), time.min, _TIMEZONE)
     operation_store.init()
     clauses, params = jobs._workbench_where(provider_id=provider_id)
-    projection = jobs._workbench_projection_sql(clauses, public_status=True, materialized=True)
+    projection = jobs._workbench_projection_sql(
+        clauses, public_status=True, materialized=True, include_payment_processing=False,
+    )
     conditions = jobs.workbench_status_conditions(public_status=True)
     aggregate = ",\n".join([
         "COUNT(*) AS total",
@@ -118,7 +120,7 @@ def workbench_analytics(*, days: int = 7, provider_id: str | None = None, now: d
             WHEN error_text LIKE '%%任务处理失败%%' THEN 'extract_provider_task_failed'
             ELSE stored_failure_code END
         ELSE stored_failure_code END"""
-    sql = f"""WITH {projection}, enriched AS MATERIALIZED (
+    sql = f"""WITH {projection}, scoped AS MATERIALIZED (
         SELECT p.*, (p.task_created_at AT TIME ZONE 'Asia/Shanghai')::date AS task_date,
             EXTRACT(EPOCH FROM (r.completed_at-r.started_at)) AS duration_seconds,
             COALESCE(NULLIF(r.result_summary->>'cause_code',''),
@@ -129,16 +131,13 @@ def workbench_analytics(*, days: int = 7, provider_id: str | None = None, now: d
         JOIN filtered_tasks task ON task.id=p.task_id
         LEFT JOIN {operation_store._table('operation_runs')} r ON r.id=task.last_run_id
         LEFT JOIN {operation_store._table('extract_link_provider_jobs')} job ON job.run_id=r.id
-    ), diagnosed AS (
-        SELECT enriched.*, {provider_failure_code} AS failure_code FROM enriched
-    ), scoped AS MATERIALIZED (
-        SELECT * FROM diagnosed WHERE task_created_at >= %s AND task_created_at < %s
+        WHERE p.task_created_at >= %s AND p.task_created_at < %s
     ), grouped AS (
         SELECT GROUPING(task_date) AS g_date, GROUPING(provider_id) AS g_provider,
             GROUPING(mode) AS g_mode, task_date, provider_id, mode, {aggregate}
         FROM scoped GROUP BY GROUPING SETS ((), (task_date), (provider_id), (mode))
     ), failures AS (
-        SELECT failure_code, {failure_bucket} AS bucket, COUNT(*) AS count
+        SELECT {provider_failure_code} AS failure_code, {failure_bucket} AS bucket, COUNT(*) AS count
         FROM scoped WHERE {conditions['failed']}
         GROUP BY failure_code, bucket
     )
@@ -148,8 +147,9 @@ def workbench_analytics(*, days: int = 7, provider_id: str | None = None, now: d
         'all', COUNT(*),
         'processing', COUNT(*) FILTER (WHERE {conditions['processing']}),
         'awaiting_payment', COUNT(*) FILTER (WHERE {conditions['awaiting_payment']}),
-        'needs_review', COUNT(*) FILTER (WHERE {conditions['needs_review']})) FROM enriched"""
+        'needs_review', COUNT(*) FILTER (WHERE {conditions['needs_review']})) FROM projected"""
     with operation_store._connect() as conn, conn.cursor() as cur:
+        cur.execute("SET LOCAL jit = off")
         cur.execute(sql, (*params, start, end))
         rows = [dict(row) for row in cur.fetchall()]
     totals = _metrics({})

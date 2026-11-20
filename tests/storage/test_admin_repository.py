@@ -244,11 +244,50 @@ class AdminRepositoryTests(PostgresTestCase):
             ("方式:协议 地区:日本", "protocol-jp"), ("浏览器 JP", "browser-jp"),
             ("协议 jp 备注:待整理 邮箱:search.test 来源:outlook", "protocol-jp"),
         ):
+            with self.subTest(query=query, endpoint="account_query_count"):
+                self.assertEqual(repo.account_query_count({"q": query}), 1)
             for query_fn in (repo.list_accounts, repo.list_account_statuses):
                 with self.subTest(query=query, endpoint=query_fn.__name__):
                     result = query_fn(repo.PageRequest(page_size=1), q=query)
                     self.assertEqual(result["total"], 1)
                     self.assertEqual(result["items"][0]["id"], account_ids[expected])
+
+    def test_account_method_search_uses_latest_registration_attempt(self):
+        account_id = rs.insert_row(rs.ACCOUNTS, {
+            "email": "latest-attempt@example.test",
+            "registration_driver": "protocol",
+        })
+        for index, (job_type, driver) in enumerate((
+            ("registration", "protocol"),
+            ("REGISTRATION_RESUME", "API"),
+            ("codex", "roxy"),
+        )):
+            rs.insert_row(rs.JOBS, {
+                "job_uuid": f"latest-attempt-{index}", "account_id": account_id,
+                "job_type": job_type, "data": {"config_snapshot": {"registration_driver": driver}},
+            })
+        self.assertEqual(repo.account_query_count({"q": "方式:协议"}), 1)
+        rs.insert_row(rs.JOBS, {
+            "job_uuid": "latest-attempt-without-driver", "account_id": account_id,
+            "data": {"config_snapshot": {}},
+        })
+        self.assertEqual(repo.account_query_count({"q": "方式:协议"}), 0)
+
+    def test_account_search_reuses_full_scope_for_total_and_facets_on_empty_page(self):
+        for index in range(2):
+            rs.insert_row(rs.ACCOUNTS, {
+                "email": f"shared-search-{index}@example.test",
+                "email_source": "outlook", "updated_at": f"2026-11-1{index}",
+            })
+        with _QueryCounter() as counter:
+            result = repo.list_accounts(repo.PageRequest(page=3, page_size=1), q="邮箱:shared-search")
+
+        self.assertEqual(result["items"], [])
+        self.assertEqual(result["total"], 2)
+        self.assertTrue(result["revision"].startswith("2:2026-11-11:"))
+        self.assertEqual(result["facets"]["source"], [{"value": "outlook", "count": 2}])
+        account_queries = [sql for sql in counter.queries if '"registered_accounts" a' in sql]
+        self.assertEqual(len(account_queries), 2)
 
     def test_combined_account_search_keeps_pagination_archive_and_column_filters(self):
         expected = []
@@ -461,6 +500,32 @@ class AdminRepositoryTests(PostgresTestCase):
         self.assertEqual([], result["progress_batches"])
         self.assertFalse(any("effective_batch_id" in query for query in counter.queries))
 
+    def test_job_table_aggregates_status_and_email_source_from_same_candidates(self):
+        for index, (status, source) in enumerate((
+            ("success", "OUTLOOK"),
+            ("request_unknown", "outlook"),
+            ("request_unknown", "icloud_hide"),
+            ("success", ""),
+        )):
+            rs.insert_row(rs.JOBS, {
+                "job_uuid": f"facet-sample-{index}", "status": status,
+                "email": f"facet-sample-{index}@example.test", "email_source": source,
+                "requested_status": "partial_success" if index == 2 else "",
+            })
+        request = repo.PageRequest(filters={"email": "facet-sample", "status": "failed"})
+        with _QueryCounter() as counter:
+            result = repo.list_jobs(request, view="table", public_status=True)
+
+        self.assertEqual(1, result["total"])
+        self.assertEqual({"success": 2, "failed": 1, "partial_success": 1, "active": 0}, result["status_counts"])
+        self.assertEqual(
+            [{"value": "outlook", "count": 2}, {"value": "icloud_hide", "count": 1}],
+            result["facets"]["email_source"],
+        )
+        facet_queries = [query for query in counter.queries if "AS facet" in query]
+        self.assertEqual(1, len(facet_queries))
+        self.assertEqual(1, facet_queries[0].count('."registration_jobs" j'))
+
     def test_job_batch_summary_uses_active_slot_and_keeps_latest_retry_metadata(self):
         root_id = rs.insert_row(rs.JOBS, {
             "job_uuid": "active-slot-root", "batch_id": "active-slot", "status": "running",
@@ -477,6 +542,65 @@ class AdminRepositoryTests(PostgresTestCase):
         self.assertEqual(0, batch["status_counts"]["failed"])
         self.assertEqual(retry_id, batch["latest_job_id"])
         self.assertTrue(batch["has_retries"])
+
+    def test_job_batch_candidates_preserve_legacy_root_batch_rules_and_order(self):
+        def add(key, batch, index, root=None, explicit_id=None):
+            return rs.insert_row(rs.JOBS, {
+                "id": explicit_id, "job_uuid": key, "status": "success",
+                "batch_id": batch, "batch_index": index, "root_job_id": root,
+            })
+
+        root_id = add("candidate-root", "candidate", 3)
+        retry_id = add("candidate-retry", "other", 3, root=root_id)
+        null_root_id = add("null-batch-root", None, 4)
+        null_root_child = add("null-root-child", "candidate", 2, root=null_root_id)
+        blank_root_id = add("blank-batch-root", "", 4)
+        add("empty-root-child", "candidate", 0, root=blank_root_id)
+        foreign_root_id = add("foreign-batch-root", "other", 4)
+        add("foreign-root-child", "candidate", 0, root=foreign_root_id)
+        missing_root_child = add("missing-root-child", "candidate", None, root=20000)
+        implicit_root_id = add("implicit-root-child", "candidate", 2)
+        self_root_id = add("self-root-child", "candidate", 5, root=30000, explicit_id=30000)
+        latest_child = add("latest-child-uses-root-batch", "other", 1, root=root_id, explicit_id=30001)
+
+        expected = [
+            missing_root_child, latest_child, null_root_child, implicit_root_id,
+            root_id, retry_id, self_root_id,
+        ]
+        for selection in ("candidate", ""):
+            with self.subTest(selection=selection):
+                with _QueryCounter() as counter:
+                    result = repo.list_jobs(repo.PageRequest(), progress_batch_id=selection, view="batch")
+                rows = result["progress_rows"]
+                self.assertEqual(expected, [row["id"] for row in rows])
+                self.assertTrue(all(row["effective_batch_id"] == "candidate" for row in rows))
+                # 只在已选批次的候选行上读取完整进度数据。
+                query = next(sql for sql in counter.queries if "AS effective_batch_id" in sql)
+                self.assertNotIn("WHERE COALESCE(root.batch_id, j.batch_id) =", query)
+
+    def test_job_batch_catalog_limits_effective_batches_before_slot_counts(self):
+        root_id = rs.insert_row(rs.JOBS, {
+            "job_uuid": "catalog-root", "status": "running", "batch_id": "catalog-retry",
+        })
+        for index in range(31):
+            rs.insert_row(rs.JOBS, {
+                "job_uuid": f"catalog-{index}", "status": "success", "batch_id": f"catalog-{index}",
+            })
+        retry_id = rs.insert_row(rs.JOBS, {
+            "job_uuid": "catalog-late-retry", "status": "failed", "batch_id": "catalog-child-batch",
+            "parent_job_id": root_id, "root_job_id": root_id, "retry_attempt": 1,
+        })
+        result = repo.list_jobs(repo.PageRequest(), progress_batch_id="catalog-0", view="batch", public_status=True)
+
+        catalog = result["progress_batches"]
+        self.assertEqual(["catalog-retry", *(f"catalog-{index}" for index in range(30, 1, -1))],
+                         [item["batch_id"] for item in catalog])
+        self.assertEqual(retry_id, catalog[0]["latest_job_id"])
+        self.assertTrue(catalog[0]["has_retries"])
+        self.assertEqual(1, catalog[0]["total"])
+        self.assertEqual(1, catalog[0]["status_counts"]["running"])
+        self.assertEqual(0, catalog[0]["status_counts"]["failed"])
+        self.assertEqual(["catalog-0"], [row["effective_batch_id"] for row in result["progress_rows"]])
 
     def test_job_batch_view_returns_empty_for_missing_or_empty_batch(self):
         missing = repo.list_jobs(repo.PageRequest(), progress_batch_id="missing", view="batch")
@@ -734,6 +858,19 @@ class AdminRepositoryTests(PostgresTestCase):
         self.assertEqual(result["accounts"]["plans"]["free"], 15)
         self.assertEqual(result["jobs"]["total"], 45)
         self.assertEqual(result["codex"]["total"], 1)
+
+    def test_dashboard_skips_email_status_sql_only_when_requested(self):
+        expected_count = rs.count_rows(rs.OUTLOOK_POOL, where="status=%s", params=("available",))
+        default = repo.dashboard_aggregates(public_status=True)
+        pool = default.pop("email_status_rows")
+        self.assertGreater(expected_count, 0)
+        self.assertIn({"source": "outlook", "status": "available", "count": expected_count}, pool)
+
+        with _QueryCounter() as counter:
+            scoped = repo.dashboard_aggregates(public_status=True, include_email_status=False)
+
+        self.assertEqual(scoped, default)
+        self.assertFalse(any("email_pool_" in query for query in counter.queries))
 
     def test_all_admin_reads_have_bounded_query_counts(self):
         cases = {

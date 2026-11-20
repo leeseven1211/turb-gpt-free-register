@@ -194,6 +194,47 @@ class RegistrationProxyBackfillBatchTests(PostgresTestCase):
     def setUp(self):
         records.init()
 
+    def test_account_and_normalized_email_matches_share_one_latest_job(self):
+        with records.transaction() as conn:
+            first = records.insert_row(records.ACCOUNTS, {
+                "email": " FIRST@example.test ",
+            }, conn=conn)
+            second = records.insert_row(records.ACCOUNTS, {
+                "email": "second@example.test",
+            }, conn=conn)
+            for job in (
+                {
+                    "email": "older@example.test", "account_id": first,
+                    "proxy_provider": "older-id", "proxy_region": "US",
+                },
+                {
+                    "email": "first@Example.Test  ",
+                    "proxy_provider": " newest-email ",
+                },
+                {
+                    "email": "first@example.test", "account_id": first,
+                    "proxy_provider": " ", "proxy_region": "invalid",
+                },
+                {
+                    "email": "SECOND@example.test",
+                    "proxy_provider": "older-email",
+                },
+                {
+                    "email": "different@example.test", "account_id": second,
+                    "proxy_region": " ca ",
+                },
+            ):
+                records.insert_row(records.JOBS, job, conn=conn)
+
+        self.assertEqual(2, db_legacy.backfill_account_registration_proxy_context(limit=2))
+        first_account = records.get_row(records.ACCOUNTS, first)
+        second_account = records.get_row(records.ACCOUNTS, second)
+        self.assertEqual("newest-email", first_account["registration_proxy_provider"])
+        self.assertIsNone(first_account.get("registration_proxy_region"))
+        self.assertIsNone(second_account.get("registration_proxy_provider"))
+        self.assertEqual("CA", second_account["registration_proxy_region"])
+        self.assertEqual(0, db_legacy.backfill_account_registration_proxy_context(limit=2))
+
     def test_invalid_regions_do_not_starve_a_later_fillable_account(self):
         with records.transaction() as conn:
             for number in range(101):
