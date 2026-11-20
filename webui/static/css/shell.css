@@ -2874,6 +2874,8 @@
     }
     main > div { min-width: 0; max-width: 100%; width: 100%; }
     main > div:not(.hidden) { grid-template-columns: minmax(0, 1fr); gap: 20px; }
+    /* 弹窗挂载容器由其 fixed 子节点负责布局，不参与页面网格间距。 */
+    main > :is(div, section):not(.hidden) > [id$="Host"] { display: contents; }
     .register-title { display: none; }
     section.card, .jobs-panel-v2, .accounts-panel-v2, .codex-panel-v2, .outlook-panel-v2,
     .config-section-v2, .config-card-v2 {
