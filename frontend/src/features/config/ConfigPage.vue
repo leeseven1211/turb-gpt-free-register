@@ -6,7 +6,7 @@ import ConfigNavigation from './ConfigNavigation.vue';
 import ConfigField from './ConfigField.vue';
 import ConfigChoicePicker from './ConfigChoicePicker.vue';
 import ConfigActionTools from './ConfigActionTools.vue';
-import {destination,domainsFor,extractProviders,fieldDestination,findDestination,menus,menuStorageKey,orderedMenus,schemaOptions,searchText,settingGroups,subsectionsFor,visibleFields,registrationDriverValue,type Destination} from './navigation';
+import {destination,domainsFor,extractProviders,fieldDestination,findDestination,menus,menuStorageKey,orderedMenus,searchText,settingGroups,subsectionsFor,visibleFields,type Destination} from './navigation';
 import './config.css';
 const props=withDefaults(defineProps<{owner:ConfigDraftOwner;actions:ConfigActions;active?:boolean}>(),{active:true});
 const query=ref('');const current=reactive<Destination>({menu:'',domain:'',section:''});const root=ref<HTMLElement>();
@@ -46,11 +46,6 @@ async function focusField(key:string){const field=props.owner.field(key);if(!fie
 function discard(){if(props.owner.dirtyCount.value&&window.confirm('确定撤销全部未保存的配置修改？'))props.owner.reset();}
 function protectDraft(event:BeforeUnloadEvent){if(props.owner.dirtyCount.value){event.preventDefault();event.returnValue='';}}
 async function save(){const result=await props.owner.saveAll();if(result.status==='validation-error'){const key=Object.keys(result.fields||{})[0];if(key)props.owner.navigateField(key);}}
-function summary(key:string){const value=props.owner.readField(key);if(value===undefined||value===null||value==='')return '—';return schemaOptions(props.owner.field(key)).find(item=>item.value===value)?.label || (Array.isArray(value)?value.join('、'):String(value));}
-const codexAuto = computed(() => {
- const value = props.owner.readField('ENABLE_CODEX_AUTO');
- return typeof value === 'boolean' ? `自动授权${value ? '已开启' : '已关闭'}` : '';
-});
 watch(()=>props.owner.navigationTarget.value,target=>{if(target)void focusField(target.key);});
 watch(()=>props.active,active=>props.actions.setPageActive(active),{immediate:true});
 onBeforeUnmount(()=>{props.actions.setPageActive(false);window.removeEventListener('beforeunload',protectDraft);});
@@ -67,12 +62,6 @@ const poolRules=[['注册与账号认证','注册主链路的注册国家；账�
 </script>
 <template>
  <div ref="root" class="config-vue-page">
-  <dl v-if="owner.fields.value.length" class="config-vue-overview" aria-label="配置概览">
-   <div><dt>注册主链路</dt><dd>{{ owner.field('REGISTRATION_DRIVER') ? registrationDriverValue(owner.readField('REGISTRATION_DRIVER')) : '—' }}</dd></div>
-   <div><dt>邮箱来源</dt><dd>{{ summary('EMAIL_SOURCE') }}</dd></div>
-   <div><dt>Codex OAuth</dt><dd>{{ summary('CODEX_OAUTH_DRIVER') }}<small v-if="codexAuto">{{ codexAuto }}</small></dd></div>
-   <div><dt>代理模式</dt><dd>{{ summary('REGISTRATION_PROXY_MODE') }}</dd></div>
-  </dl>
   <p v-if="owner.loading.value" role="status">正在读取配置…</p>
   <p v-if="owner.error.value" class="config-vue-error" role="alert">{{ owner.error.value }}</p>
   <p v-if="owner.refreshError.value" class="config-vue-error" role="status">{{ owner.refreshError.value }} <button type="button" @click="owner.refresh({force:true})">重新读取配置</button></p>
