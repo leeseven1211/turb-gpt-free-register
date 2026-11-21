@@ -144,6 +144,11 @@ def _registration_driver_status() -> dict[str, Any]:
     canonical = operation_driver_aliases("registration").get(driver, driver)
     definition = get_operation_driver("registration", canonical)
     # 新实现必须绑定自己的可用性规则，不能继承 Roxy 配置或默认判为可用。
+    if definition.value == "sentinel_rs":
+        from core.kernels.rust.sentinel_rs.bridge import binary_status
+
+        ok, reason = binary_status()
+        return _feature(ok, reason) | {"driver": driver}
     if definition.value not in {"protocol_oss_2", "roxy"}:
         return _feature(False, f"注册驱动 {driver} 尚未接入可用性检查") | {"driver": driver}
     if not definition.browser_required:

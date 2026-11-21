@@ -1,7 +1,12 @@
-# Rust 内核后续接入契约
+# Rust 内核接入契约
 
-本次结构迁移把 `rust` 与 `browser`、`protocol` 并列登记，但没有 Rust 实现、
-可执行绑定或配置选项。本文定义后续适配边界，不表示已接入、编译或验证真实注册。
+本次接入把 `rust` 与 `browser`、`protocol` 并列登记，并新增实现 `sentinel_rs` 的
+`registration` 绑定。当前是**一次性子进程**接入：Python 交付已分配的邮箱与代理，原生进程
+独立完成注册并写回自己的临时 SQLite，Python 只读取经过身份核验的账号事实。
+
+> 已知限制：只支持 `generic_api` 邮箱来源（该来源本身提供 `email----code_url`）；不支持
+> 原身份续跑、交互式 OTP 和提交前密码检查点；原生进程在成功后才返回密码。上述能力要等
+> 双向 JSON Lines 协议落地后才能开放。
 
 ## 来源与实现位置
 
@@ -11,9 +16,9 @@ README 声明研究用途并对使用范围作出限制；不能据此假定已�
 正式接入前需要确定许可和来源记录，锁定实际采用的提交，保留修改清单。
 本次没有把该源码复制到项目内。
 
-未来 Python 侧放在 `core/kernels/rust/sentinel_rs/`，原生工程放在
-`native/sentinel-rs/`。实现名 `sentinel_rs` 只有在真实 runner 与部署能力检查完成后
-才进入 `IMPLEMENTATIONS` 和操作能力矩阵。
+Python 侧位于 `core/kernels/rust/sentinel_rs/`（`bridge.py` 负责进程边界）。原生工程建议
+构建到 `native/sentinel-rs/`，也可用 `SENTINEL_RS_BIN` 指向任意可执行文件。实现名
+`sentinel_rs` 已进入 `IMPLEMENTATIONS`，但只有 `registration` 操作可用。
 
 当前上游 `srs_register` C ABI 是单次调用，结果含邮箱、密码、AT、TOTP 和上游
 SQLite 账号编号。它不足以表达本项目的密码提交前持久确认、交互式 OTP、取消、
@@ -69,3 +74,17 @@ macOS 与 Oracle Linux 分别构建匹配系统和 CPU 架构的产物；不复�
 `rust / sentinel_rs / registration` 绑定、独立并发策略和可用性检查，并开放配置。
 `same_as_registration` 到 Codex 的映射也必须明确声明。Rust 所用语言本身不能
 证明注册更快；性能应在相同代理、邮箱和远端条件下分别比较总耗时、成功率与资源消耗。
+
+
+## 当前实现的进程边界
+
+Python 侧 `core/kernels/rust/sentinel_rs/bridge.py`：
+
+1. 读取本地已分配的邮箱和代理，确认邮箱来源为 `generic_api` 并取得 `code_url`；
+2. 在临时目录写一行静态邮箱池 `email----code_url`，以 `register --live --count 1` 启动原生进程；
+3. 只把 stdout 映射为阶段进度，stderr 合并后仅保留脱敏尾部诊断；
+4. 进程退出后读取临时 SQLite，要求状态 `registered`、邮箱一致且 Access Token 非空；
+5. 把 Cookie 装入本地会话、核验会话身份，再交回注册生命周期保存和后处理。
+
+原生进程不接触 Turb 数据库、任务队列、代理池或邮箱分配器；临时目录在退出后删除。
+构建与验收步骤见 [sentinel-rs 原生构建](sentinel-rs-build.md)。

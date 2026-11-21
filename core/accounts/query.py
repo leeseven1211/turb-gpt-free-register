@@ -20,7 +20,7 @@ PROMOTION_OFFER_VALUES = tuple(
     f"{plan}_{discount}" for plan in ("plus", "go") for discount in ("100", "50", "other")
 )
 STATIC_VALUES = {
-    "registration_driver": ["roxy", "roxy_oss", "protocol", "protocol_oss", "protocol_oss_2", "cloakbrowser", "unknown"],
+    "registration_driver": ["roxy", "roxy_oss", "protocol", "protocol_oss", "protocol_oss_2", "sentinel_rs", "cloakbrowser", "unknown"],
     "token": ["has", "none", "expired", "invalid_401", "invalid_403", "invalid_other"],
     "password": ["has", "none"],
     "promotion": ["free_trial", "half_price", "other_discount", "other_promo", "none", "unknown", "pending", "failed", "not_applicable", *PROMOTION_OFFER_VALUES],

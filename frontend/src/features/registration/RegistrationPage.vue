@@ -55,7 +55,7 @@ const inventoryMetrics=computed(()=>[
   {label:'本地已用', value:supplyValue('used')},
   {label:'本地失败', value:supplyValue('failed')},
 ]);
-const driverLabel=(value:any)=>state.meta?.registration_drivers?.find(item=>String(item.value)===String(value))?.label||({protocol:'本地优化 Protocol（历史）',protocol_oss:'开源 Protocol（历史）',protocol_oss_2:'开源protocol-2',roxy:'本地 Roxy',roxy_oss:'开源 Roxy（历史）'} as Record<string,string>)[String(value||'')]||String(value||'未知');
+const driverLabel=(value:any)=>state.meta?.registration_drivers?.find(item=>String(item.value)===String(value))?.label||({protocol:'本地优化 Protocol（历史）',protocol_oss:'开源 Protocol（历史）',protocol_oss_2:'开源protocol-2',sentinel_rs:'Rust sentinel-rs',roxy:'本地 Roxy',roxy_oss:'开源 Roxy（历史）'} as Record<string,string>)[String(value||'')]||String(value||'未知');
 const sourceLabel=(value:any)=>filterSourceOptions.value.find(item=>String(item.value)===String(value))?.label||String(value||'-');
 const statusLabel=(value:any)=>({pending:'排队中',running:'运行中',stopping:'停止中',success:'成功',failed:'失败',partial_success:'部分成功',cancelled:'已取消',stopped:'已停止',interrupted:'执行中断',request_unknown:'失败',manual_reconcile:'失败',attention_required:'失败',unsupported:'不支持',deactivated:'已停用',password_confirmation_pending:'失败·密码响应缺失'} as Record<string,string>)[String(value)]||String(value||'等待中');
 const ask=async(message:string)=>props.deps.confirm?await props.deps.confirm(message):window.confirm(message);

@@ -77,3 +77,6 @@ core/用于注册的API邮箱.txt
 
 # Frontend dependencies (directory or local development symlink)
 /frontend/node_modules
+
+# Rust 内核：上游源码按许可另行获取，只保留本地构建产物
+/native/

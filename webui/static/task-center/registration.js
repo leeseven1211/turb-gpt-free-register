@@ -5,7 +5,7 @@ import { t as re } from "./ListResult-ChGvCNvJ.js";
 import { n as M, r as N } from "./client-B5R_MNgP.js";
 import { t as ie } from "./errorLabels-C0VIFLD8.js";
 import { n as P, t as ae } from "./time-DOD6oyhP.js";
-import { O as F, _ as I, a as L, b as R, g as z, h as B, i as V, n as H, p as U, r as W, t as G, v as K, x as q, y as J } from "./StepEvidence-Ty-T9iAJ.js";
+import { O as F, _ as I, a as L, b as R, g as z, h as B, i as V, n as H, p as U, r as W, t as G, v as K, x as q, y as J } from "./StepEvidence-7ocHKXmA.js";
 import { t as Y } from "./useNativeDialog-BgHdu813.js";
 import { t as oe } from "./ListPagination-DDdERjeb.js";
 import { a as se, r as ce } from "./taskIds-BlchWwUp.js";
@@ -1283,6 +1283,7 @@ var Bt = ["data-view"], Vt = { class: "registration-launch" }, Ht = {
 			protocol: "本地优化 Protocol（历史）",
 			protocol_oss: "开源 Protocol（历史）",
 			protocol_oss_2: "开源protocol-2",
+			sentinel_rs: "Rust sentinel-rs",
 			roxy: "本地 Roxy",
 			roxy_oss: "开源 Roxy（历史）"
 		}[String(e || "")] || String(e || "未知"), De = (e) => ve.value.find((t) => String(t.value) === String(e))?.label || String(e || "-"), Oe = (e) => ({

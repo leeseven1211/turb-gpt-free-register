@@ -205,6 +205,7 @@ def _account_registration_driver_filter_sql() -> str:
         WHEN 'protocol' THEN 'protocol'
         WHEN 'protocol_oss' THEN 'protocol_oss'
         WHEN 'protocol_oss_2' THEN 'protocol_oss_2'
+        WHEN 'sentinel_rs' THEN 'sentinel_rs'
         WHEN 'cloakbrowser' THEN 'cloakbrowser'
         ELSE 'unknown'
     END"""

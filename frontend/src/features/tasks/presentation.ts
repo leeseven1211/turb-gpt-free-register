@@ -16,7 +16,7 @@ export const labels: Record<string, Record<string, string>> = {
   },
   registration_driver: {
     roxy:'roxy', roxy_oss:'roxy-public', protocol:'proto-local',
-    protocol_oss:'proto-public', protocol_oss_2:'proto-sso', cloakbrowser:'CloakBrowser（历史）', unknown:'未记录',
+    protocol_oss:'proto-public', protocol_oss_2:'proto-sso', sentinel_rs:'rust-kernel', cloakbrowser:'CloakBrowser（历史）', unknown:'未记录',
   },
   token: {has:'有 Token', none:'无 Token'},
   account_token: {

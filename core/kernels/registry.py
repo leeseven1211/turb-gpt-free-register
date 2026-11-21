@@ -15,6 +15,8 @@ _RUNNER_TARGETS: Mapping[OperationBinding, str] = MappingProxyType({
         "core.registration.roxy:run_roxy_registration",
     OperationBinding("registration", "protocol", "protocol_oss_2"):
         "core.registration.protocol_oss_2:run_protocol_oss_2_registration",
+    OperationBinding("registration", "rust", "sentinel_rs"):
+        "core.registration.sentinel_rs:run_sentinel_rs_registration",
     OperationBinding("refresh_at", "protocol", "local", "v1"):
         "core.accounts.liveness.protocol.legacy:check_account_liveness",
     OperationBinding("refresh_at", "protocol", "local", "v2"):

@@ -44,11 +44,13 @@ IMPLEMENTATIONS: Mapping[tuple[str, str], KernelImplementation] = MappingProxyTy
     ("browser", "roxy"): KernelImplementation("browser", "roxy", "本地 Roxy"),
     ("protocol", "local"): KernelImplementation("protocol", "local", "本地协议"),
     ("protocol", "protocol_oss_2"): KernelImplementation("protocol", "protocol_oss_2", "开源protocol-2"),
+    ("rust", "sentinel_rs"): KernelImplementation("rust", "sentinel_rs", "Rust sentinel-rs"),
 })
 
 _FIXED_BINDINGS: Mapping[tuple[str, str], OperationBinding] = MappingProxyType({
     ("registration", "roxy"): OperationBinding("registration", "browser", "roxy"),
     ("registration", "protocol_oss_2"): OperationBinding("registration", "protocol", "protocol_oss_2"),
+    ("registration", "sentinel_rs"): OperationBinding("registration", "rust", "sentinel_rs"),
     ("refresh_at", "browser_roxy"): OperationBinding("refresh_at", "browser", "roxy"),
     ("password_setup", "roxy"): OperationBinding("password_setup", "browser", "roxy"),
     ("password_setup", "protocol"): OperationBinding("password_setup", "protocol", "local"),

@@ -21,11 +21,11 @@ def run_registration(
         options.get("registration_driver") or getattr(_roxy_cfg, "REGISTRATION_DRIVER", "roxy")
     )
     if driver not in REGISTRATION_DRIVERS:
-        raise RuntimeError(f"不支持的 REGISTRATION_DRIVER={driver!r}，当前仅支持 protocol_oss_2 / roxy")
+        raise RuntimeError(f"不支持的 REGISTRATION_DRIVER={driver!r}，当前仅支持 protocol_oss_2 / roxy / sentinel_rs")
     if registration_options is not None:
         options["registration_driver"] = driver
     runner, entrypoint = resolve_registration_runner(driver)
-    if driver == "protocol_oss_2":
+    if driver in {"protocol_oss_2", "sentinel_rs"}:
         options.update(registration_driver=driver, password_enabled=True, password_mode="password")
     from core.registration.standalone import run_registration_in_context
 
@@ -34,7 +34,7 @@ def run_registration(
         otp_code=otp_code, existing_password=existing_password, existing_totp_secret=existing_totp_secret,
         profile_id=profile_id,
     )
-    if registration_options is not None or driver == "protocol_oss_2":
+    if registration_options is not None or driver in {"protocol_oss_2", "sentinel_rs"}:
         kwargs["registration_options"] = options
     if email_source is not None:
         kwargs["email_source"] = email_source

@@ -12,6 +12,7 @@ import pytest
 _CASES = [
     ("registration", "roxy", "v1", "browser", "roxy", None),
     ("registration", "protocol_oss_2", "v1", "protocol", "protocol_oss_2", None),
+    ("registration", "sentinel_rs", "v1", "rust", "sentinel_rs", None),
     ("refresh_at", "protocol", "v1", "protocol", "local", "v1"),
     ("refresh_at", "protocol", "v2", "protocol", "local", "v2"),
     ("refresh_at", "protocol", "v3", "protocol", "local", "v3"),
@@ -45,14 +46,15 @@ def test_resolved_canonical_choices_keep_their_operation_and_implementation(
     assert catalog.operation_selection_policy(operation, driver) == "fixed"
 
 
-def test_rust_has_no_placeholder_implementation_or_executable_operation():
+def test_rust_kernel_owns_only_its_registration_operation():
     catalog = _catalog()
     assert set(catalog.KERNELS) == {"browser", "protocol", "rust"}
     assert set(catalog.IMPLEMENTATIONS) == {
-        ("browser", "roxy"), ("protocol", "local"), ("protocol", "protocol_oss_2"),
+        ("browser", "roxy"), ("protocol", "local"),
+        ("protocol", "protocol_oss_2"), ("rust", "sentinel_rs"),
     }
-    assert not any(binding.kernel == "rust" for binding in catalog.OPERATION_BINDINGS)
-    assert not any(binding.implementation == "sentinel_rs" for binding in catalog.OPERATION_BINDINGS)
+    rust_bindings = {binding for binding in catalog.OPERATION_BINDINGS if binding.kernel == "rust"}
+    assert rust_bindings == {catalog.OperationBinding("registration", "rust", "sentinel_rs")}
 
 
 @pytest.mark.parametrize("operation,driver,policy", [
@@ -130,6 +132,7 @@ def test_operation_driver_catalog_reexports_the_same_static_projection():
 _TARGETS = [
     ("registration", "roxy", "v1", "core.registration.roxy", "run_roxy_registration"),
     ("registration", "protocol_oss_2", "v1", "core.registration.protocol_oss_2", "run_protocol_oss_2_registration"),
+    ("registration", "sentinel_rs", "v1", "core.registration.sentinel_rs", "run_sentinel_rs_registration"),
     ("refresh_at", "protocol", "v1", "core.accounts.liveness.protocol.legacy", "check_account_liveness"),
     ("refresh_at", "protocol", "v2", "core.accounts.liveness.protocol.v2", "refresh_access_token"),
     ("refresh_at", "protocol", "v3", "core.accounts.liveness.protocol.v3", "refresh_access_token"),
@@ -182,8 +185,9 @@ def test_a_missing_selected_dependency_is_not_replaced_by_a_different_binding(mo
     monkeypatch.setitem(sys.modules, "core.accounts.liveness.protocol.v2", None)
     with pytest.raises(ModuleNotFoundError):
         registry.resolve_operation_runner(catalog.operation_binding("refresh_at", "protocol", protocol_version="v2"))
-    with pytest.raises(KeyError):
-        registry.resolve_operation_runner(catalog.OperationBinding("registration", "rust", "sentinel_rs"))
+    assert registry.resolve_operation_runner(
+        catalog.OperationBinding("registration", "rust", "sentinel_rs")
+    ).__name__ == "run_sentinel_rs_registration"
     with pytest.raises(KeyError):
         registry.resolve_operation_runner(catalog.OperationBinding("twofa", "protocol", "protocol_oss_2"))
 

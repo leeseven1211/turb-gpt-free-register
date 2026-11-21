@@ -614,7 +614,7 @@ REGISTRATION_DRIVER=protocol_oss_2
 | 浏览器 `browser` | `roxy` | `core/kernels/browser/roxy/` |
 | 协议 `protocol` | `local` | `core/kernels/protocol/local/`，AT 变体位于 `refresh_at/v1.py`、`v2.py`、`v3.py` |
 | 协议 `protocol` | `protocol_oss_2` | `core/kernels/protocol/protocol_oss_2/`，独立注册执行与上游组件 |
-| Rust `rust` | 尚未接入 | 只登记内核类型，没有可执行操作和配置选项 |
+| Rust `rust` | `sentinel_rs` | `core/kernels/rust/sentinel_rs/`，原生进程注册与结果核验 |
 
 [`contracts/kernel_catalog.py`](contracts/kernel_catalog.py) 提供不可变身份和逐操作能力，
 [`core/kernels/registry.py`](core/kernels/registry.py) 按已经解析的绑定懒加载对应入口。
@@ -629,8 +629,10 @@ REGISTRATION_DRIVER=protocol_oss_2
 该实现自己的可用性检查，以及选择、快照和结果契约的直接相关验证。登记目录本身不会让新驱动
 自动可用，也不会继承其它驱动的配置要求。公共层共享任务和资源管理，具体请求步骤、重试与恢复不合并。
 `same_as_registration` 通过明确映射选择 Codex 实现，不将注册驱动名称直接视为 OAuth 能力。
-邮箱换绑和 Codex Token 刷新继续使用各自的固定实现，不因本目录新增驱动选项。本轮尚未接入 Rust。
-Rust 后续的来源、子进程通信与恢复边界见 [Rust 内核接入契约](docs/architecture/rust-kernel-bridge.md)。
+邮箱换绑和 Codex Token 刷新继续使用各自的固定实现，不因本目录新增驱动选项。
+Rust 内核当前以一次子进程交付已分配邮箱和代理，只支持 `generic_api` 邮箱来源，未接入
+原身份续跑、交互式 OTP 和预提交密码检查点；来源、进程边界与恢复限制见
+[Rust 内核接入契约](docs/architecture/rust-kernel-bridge.md)。
 
 ---
 
