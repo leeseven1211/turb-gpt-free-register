@@ -41,6 +41,7 @@ core/email/remail/order_coordinator.py  Remail 意图 CAS、原订单恢复和�
 | `codex_callback_receipts` | CPA/sub2 callback 提交回执；与可用 OAuth 凭证分开保存 |
 | `sub2api_sync_jobs` | 凭证行引用、后端摘要、远端目标、代际、补传阶段和重试时间；不复制 Token |
 | `sub2api_monitor_repairs` | 按后端与本地账号保存刷新、重授权、定向补传的接续阶段 |
+| `c2a_monitor_repairs` | 按后端摘要、原 C2A 管理 ID 和本地账号保存 AT 摘要、刷新与定向同步任务引用、幂等提交键、修复阶段和重试时间 |
 | `proxy_leases` | 1024Proxy endpoint、出口 IP、出口代次、所有权和隔离期的跨进程租约 |
 | `proxy_pool_resources` | 独立代理库存的 profile、后台提取/检测状态、容量和生命周期事实；全局容量由数据库协调 |
 | `remail_order_intents` | Remail 付费领取意图、供应商订单关联、CAS 提交状态、核验结果和私有恢复凭据 |

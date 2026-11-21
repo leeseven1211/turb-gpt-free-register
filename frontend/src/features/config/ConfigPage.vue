@@ -21,12 +21,13 @@ const proxyAdvanced=computed(()=>fields.value.filter(field=>!proxyPrimaryKeys.ha
 const providers=computed(()=>extractProviders(props.owner.fields.value));
 const selectedProviders=computed(()=>providers.value.filter(provider=>props.owner.readField(provider.enabledKey)===true).map(provider=>provider.value));
 const errors=computed(()=>Object.entries(props.owner.fieldErrors));
-const tool=computed<'roxy'|'proxy'|'butler'|'sentinel'|'sub2api'|'concurrency'|null>(()=>{
+const tool=computed<'roxy'|'proxy'|'butler'|'sentinel'|'sub2api'|'c2a'|'concurrency'|null>(()=>{
  if(current.domain==='RoxyBrowser')return 'roxy';
  if(current.domain==='代理与网络'&&current.section==='代理来源'&&props.owner.readField('PROXY_POOL_SOURCE')!=='manual')return 'proxy';
  if(current.domain==='邮箱 / OTP'&&current.section==='Email Butler')return 'butler';
  if(current.domain==='通用配置')return 'sentinel';
  if(current.domain==='Codex'&&current.section==='sub2api')return 'sub2api';
+ if(current.domain==='C2A')return 'c2a';
  if(current.domain==='并发控制')return 'concurrency';return null;
 });
 function remember(){try{localStorage.setItem(menuStorageKey,current.domain||current.menu);}catch{/* Navigation storage is optional; no field values are persisted. */}}

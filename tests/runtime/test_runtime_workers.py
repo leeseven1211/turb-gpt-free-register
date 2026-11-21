@@ -52,11 +52,13 @@ class WorkerStoreTests(unittest.TestCase):
         raw = {'state': 'running', 'ready': True, 'password': 'secret', 'config': {'TOKEN': 'secret'},
                'applied_db_revision': 7, 'local_snapshot_revision': 2,
                'components': {'config_observer': {'state': 'applied', 'healthy': True, 'values': 'secret'},
+                              'c2a_monitor': {'started': True, 'alive': True, 'disabled': True, 'api_key': 'secret'},
                               'smtp_password': {'healthy': True}},
                'counts': {'active': 2, 'accepted': 3, 'permits': 123, 'password': 'secret'}}
         self.assertEqual(store.normalize_status(raw), {
             'state': 'running', 'ready': True, 'applied_db_revision': 7, 'local_snapshot_revision': 2,
-            'components': {'config_observer': {'state': 'applied', 'healthy': True}},
+            'components': {'config_observer': {'state': 'applied', 'healthy': True},
+                           'c2a_monitor': {'started': True, 'alive': True, 'disabled': True}},
             'counts': {'active': 2, 'accepted': 3}})
 
     def test_settlement_health_counts_and_age_survive_durable_projection(self):

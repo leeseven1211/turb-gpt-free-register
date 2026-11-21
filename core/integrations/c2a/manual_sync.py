@@ -1,7 +1,9 @@
-"""把本地最新 AT 导入 C2A：同邮箱账号覆盖，缺失账号新建。"""
+"""将本地有效 AT 同步到 C2A，支持手动导入和指定管理 ID 的修复。"""
 from __future__ import annotations
 
+import hashlib
 import logging
+import math
 import time
 import uuid
 from typing import Any
@@ -28,6 +30,7 @@ _TRANSIENT_CODES = frozenset({
 _REJECTED_REMOTE_CODES = frozenset({
     "c2a_auth_rejected",
     "c2a_update_rejected",
+    "c2a_remote_token_conflict",
     "c2a_create_rejected",
     "c2a_remote_account_missing",
 })
@@ -74,9 +77,7 @@ def _normalized_email(value: Any, *, code: str, message: str) -> str:
     return email
 
 
-def queue_account(account: dict[str, Any]) -> dict[str, Any]:
-    """仅入队账号引用，实际 AT 在 worker 获准时读取。"""
-    register_handler()
+def _account_reference(account: dict[str, Any]) -> tuple[int, str]:
     if db.account_is_deactivated(account):
         raise C2AReimportError("c2a_account_deactivated", "关联账号已确认停用，未向 C2A 更新 AT")
     try:
@@ -90,22 +91,62 @@ def queue_account(account: dict[str, Any]) -> dict[str, Any]:
         code="c2a_local_account_identity_invalid",
         message="本地账号缺少有效邮箱，无法导入 C2A",
     )
-    backend = client.configured_backend_identity()
-    request_id = f"c2a-reimport:{uuid.uuid4().hex}"
+    return account_id, email
+
+
+def _queue(account_id: int, email: str, *, trigger: str, request_id: str, data: dict) -> dict[str, Any]:
+    register_handler()
     result = task_gateway.submit_durable_operation(
         task_type=TASK_TYPE,
         account_id=account_id,
         email=email,
-        trigger="c2a_manual_reimport",
+        trigger=trigger,
         source_id=request_id,
         idempotency_key=request_id,
         resource_family=RESOURCE_FAMILY,
-        data={"backend_identity": backend},
+        data=data,
     )
     return {**result, "status": str(result.get("status") or "queued")}
 
 
-def _read_current_account(context) -> tuple[dict[str, Any], str]:
+def queue_account(account: dict[str, Any]) -> dict[str, Any]:
+    """仅入队账号引用，实际 AT 在 worker 获准时读取。"""
+    account_id, email = _account_reference(account)
+    return _queue(
+        account_id, email,
+        trigger="c2a_manual_reimport",
+        request_id=f"c2a-reimport:{uuid.uuid4().hex}",
+        data={"backend_identity": client.configured_backend_identity()},
+    )
+
+
+def queue_target(
+    account: dict[str, Any],
+    remote_id: str,
+    *,
+    expected_backend: str,
+    idempotency_key: str,
+    trigger: str = "c2a_monitor",
+) -> dict[str, Any]:
+    """入队原管理 ID 的 AT 修复，重放同一提交键会复用原任务。"""
+    account_id, email = _account_reference(account)
+    target_id = client.validate_remote_account_id(remote_id)
+    backend = str(expected_backend or "").strip()
+    if not backend:
+        raise C2AReimportError("c2a_config_invalid", "定向修复缺少原 C2A 目标摘要")
+    if client.configured_backend_identity() != backend:
+        raise C2AReimportError("c2a_backend_changed", "C2A 目标已变化，未入队原目标修复")
+    key = str(idempotency_key or "").strip()
+    if not key:
+        raise C2AReimportError("c2a_repair_request_invalid", "定向修复缺少稳定的提交标识")
+    request_digest = hashlib.sha256(f"{backend}\n{target_id}\n{account_id}\n{key}".encode()).hexdigest()
+    return _queue(
+        account_id, email, trigger=trigger, request_id=f"c2a-repair:{request_digest}",
+        data={"backend_identity": backend, "remote_account_id": target_id, "monitor_managed": True},
+    )
+
+
+def _read_current_account(context) -> tuple[str, dict[str, Any]]:
     """读取当前账号和 AT，并阻止队列等待期间发生的身份漂移。"""
     account = db.get_account(int(context.account_id or 0)) if context.account_id else None
     if account is None:
@@ -152,7 +193,7 @@ def _read_current_account(context) -> tuple[dict[str, Any], str]:
         raise C2AReimportError(
             "c2a_local_at_unverified", "本地 AT 的有效期或身份无法解析，请先刷新 AT"
         )
-    return account, access_token
+    return access_token, claims
 
 
 def _wait_before_retry(context, *, stage: str, attempt: int, code: str) -> None:
@@ -182,6 +223,74 @@ def _find_unique_account(context, email: str, backend: str) -> tuple[dict[str, s
                 raise
             _wait_before_retry(context, stage="c2a_resolve", attempt=attempt, code=exc.code)
     raise AssertionError("C2A 账号定位重试循环未返回")
+
+
+def _get_target_account(context, remote_id: str, access_token: str, backend: str) -> tuple[dict[str, Any], int]:
+    for attempt in range(1, _MAX_REMOTE_ATTEMPTS + 1):
+        try:
+            result = client.get_account_sync_state(
+                remote_id, context.email, access_token,
+                expected_backend=backend, checkpoint=context.checkpoint,
+            )
+            return result, attempt
+        except client.C2AError as exc:
+            if exc.code not in _TRANSIENT_CODES or attempt == _MAX_REMOTE_ATTEMPTS:
+                raise
+            _wait_before_retry(context, stage="c2a_resolve", attempt=attempt, code=exc.code)
+    raise AssertionError("C2A 原管理 ID 核验重试循环未返回")
+
+
+def _remote_at_valid(remote_account: dict[str, Any]) -> bool:
+    expires_at = remote_account.get("access_token_expires_at")
+    return (
+        remote_account.get("access_token_status") in {"valid", "expiring"}
+        and type(expires_at) is int and expires_at > time.time()
+        and remote_account.get("backend_status") != "异常"
+        and remote_account.get("status_reason_code") not in {"auth_invalid", "credentials_unavailable"}
+    )
+
+
+def _remote_at_is_newer(remote_account: dict[str, Any], local_claims: dict[str, Any]) -> bool:
+    remote_issued_at = remote_account.get("access_token_issued_at")
+    local_issued_at = local_claims["payload"].get("iat")
+    local_issued_at_is_number = type(local_issued_at) is int or (
+        type(local_issued_at) is float and math.isfinite(local_issued_at)
+    )
+    if (
+        type(remote_issued_at) is int and remote_issued_at > 0
+        and local_issued_at_is_number and local_issued_at > 0
+    ):
+        return remote_issued_at > local_issued_at
+    # C2A 的到期时间已经由 _remote_at_valid 确认。
+    local_expires_at = local_claims.get("exp")
+    return type(local_expires_at) in (int, float) and remote_account["access_token_expires_at"] > local_expires_at
+
+
+def _confirm_target_state(
+    context, remote_account: dict[str, Any], local_claims: dict[str, Any], resolve_attempts: int,
+) -> task_gateway.OperationResult | None:
+    token_matches = remote_account["token_matches"]
+    if not _remote_at_valid(remote_account):
+        if token_matches:
+            raise C2AReimportError(
+                "c2a_remote_at_invalid", "C2A 已保存相同 AT，但凭据仍失效，需要重新刷新 AT",
+                stage="c2a_resolve",
+            )
+        return None
+    if not token_matches and not _remote_at_is_newer(remote_account, local_claims):
+        return None
+    context.checkpoint()
+    return task_gateway.OperationResult.success({
+        "ok": True,
+        "mode": "monitor_repair",
+        "action": "already_synced" if token_matches else "remote_at_newer",
+        "updated": False,
+        "remote_already_synced": token_matches,
+        "c2a_account_id": remote_account["id"],
+        "backend_identity": remote_account["backend_identity"],
+        "resolve_attempts": resolve_attempts,
+        **({} if token_matches else {"reason_code": "c2a_remote_at_newer"}),
+    }, message="C2A 原目标已保存相同的有效 AT" if token_matches else "C2A 原目标已保存更新的有效 AT")
 
 
 def _verify_safe_mutation_policy(context, backend: str) -> tuple[client.SafeMutationPolicy, int]:
@@ -254,12 +363,10 @@ def _record_unknown_write_receipt(context, code: str) -> None:
 
 
 def _handle(context):
-    """执行同邮箱定位，有则覆盖 AT，无则新建账号。
-
-    C2A 通用更新接口本身可能按自身规则清除凭据错误，因此 AT 更新确认后，
-    远端异常状态可能恢复正常。
-    """
+    """执行手动导入或对原管理 ID 的 AT 修复。"""
     data = context.run.get("data") or {}
+    targeted = data.get("monitor_managed") is True or "remote_account_id" in data
+    mode = "monitor_repair" if targeted else "manual_reimport"
     stage = "preflight"
     remote_started = False
     remote_completed = False
@@ -273,32 +380,43 @@ def _handle(context):
                 raise C2AReimportError("c2a_config_invalid", "原任务缺少 C2A 目标摘要，未发起远端更新")
             if client.configured_backend_identity() != backend:
                 raise C2AReimportError("c2a_backend_changed", "C2A 目标已变化，原任务未更新远端账号")
-            _account, access_token = _read_current_account(context)
+            access_token, _claims = _read_current_account(context)
             stage = "c2a_resolve"
             context.report(
                 stage=stage,
-                message="正在按邮箱定位唯一 C2A 账号",
-                detail={"mode": "manual_reimport"},
+                message="正在核对原 C2A 管理 ID 与账号 AT" if targeted else "正在按邮箱定位唯一 C2A 账号",
+                detail={"mode": mode},
             )
-            remote_account, resolve_attempts = _find_unique_account(context, context.email, backend)
-            action = "update" if remote_account is not None else "create"
-
-            # 查询与写入之间再次读取，避免用队列期间已替换的身份或旧 AT 覆盖远端。
-            _account, access_token = _read_current_account(context)
+            if targeted:
+                target_id = client.validate_remote_account_id(data.get("remote_account_id"))
+                remote_account, resolve_attempts = _get_target_account(context, target_id, access_token, backend)
+                current_token, local_claims = _read_current_account(context)
+                if current_token != access_token:
+                    remote_account, extra_attempts = _get_target_account(context, target_id, current_token, backend)
+                    resolve_attempts += extra_attempts
+                access_token = current_token
+                confirmed = _confirm_target_state(context, remote_account, local_claims, resolve_attempts)
+                if confirmed is not None:
+                    return confirmed
+            else:
+                remote_account, resolve_attempts = _find_unique_account(context, context.email, backend)
+                action = "update" if remote_account is not None else "create"
+                # 重新读取当前 AT，避免查询期间身份变化或 AT 被替换。
+                access_token, _claims = _read_current_account(context)
             # 尽量把兼容模式的 C2A 策略读取贴近写入边界。旧版 C2A 没有把
             # settings revision 与更新请求绑定的接口，仍需由部署侧保持策略稳定。
             stage = "c2a_safety"
             context.report(
                 stage=stage,
                 message="正在确认 C2A 自动清理策略已关闭",
-                detail={"mode": "manual_reimport", "resolve_attempts": resolve_attempts},
+                detail={"mode": mode, "resolve_attempts": resolve_attempts},
             )
             safe_mutation_policy, safety_attempts = _verify_safe_mutation_policy(context, backend)
             stage = "c2a_update"
             context.report(
                 stage=stage,
                 message="正在原位更新 C2A 账号 AT" if remote_account is not None else "正在新建 C2A 账号并导入 AT",
-                detail={"mode": "manual_reimport", "action": action, "resolve_attempts": resolve_attempts},
+                detail={"mode": mode, "action": action, "resolve_attempts": resolve_attempts},
             )
             request_id = f"c2a-{action}:{context.run_id}"
             context.remote_request_started(
@@ -365,7 +483,7 @@ def _handle(context):
                 )
             summary = {
                 "ok": True,
-                "mode": "manual_reimport",
+                "mode": mode,
                 "action": "create" if update_result.get("created") else "update",
                 "created": bool(update_result.get("created")),
                 "remote_import_confirmed": remote_import_confirmed,
@@ -387,11 +505,13 @@ def _handle(context):
             if error_stage == "update_account":
                 action = "update"
             error_stage = {
-                "find_account": "c2a_resolve", "update_account": "c2a_update", "create_account": "c2a_update",
+                "find_account": "c2a_resolve", "get_account": "c2a_resolve",
+                "get_account_access_token": "c2a_resolve",
+                "update_account": "c2a_update", "create_account": "c2a_update",
             }.get(error_stage, error_stage)
             summary = {
                 "ok": False,
-                "mode": "manual_reimport",
+                "mode": mode,
                 "action": action,
                 "remote_import_confirmed": remote_import_confirmed,
                 "error_code": code,
@@ -413,7 +533,7 @@ def _handle(context):
             logger.exception("C2A 重新导入异常：阶段=%s 分类=%s", stage, code)
             summary = {
                 "ok": False,
-                "mode": "manual_reimport",
+                "mode": mode,
                 "action": action,
                 "remote_import_confirmed": remote_import_confirmed,
                 "error_code": code,

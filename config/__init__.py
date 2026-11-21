@@ -12,7 +12,11 @@ from config.concurrency import (
     CONCURRENCY_POLICY_REVISION,
 )
 
-from config.c2a import C2A_API_BASE, C2A_API_KEY, C2A_API_TIMEOUT
+from config.c2a import (
+    C2A_API_BASE, C2A_API_KEY, C2A_API_TIMEOUT,
+    C2A_MONITOR_ENABLED, C2A_MONITOR_INTERVAL_SECONDS, C2A_MONITOR_COOLDOWN_SECONDS,
+    C2A_MONITOR_MAX_PER_CYCLE,
+)
 
 # -*- coding: utf-8 -*-
 """
@@ -583,6 +587,8 @@ __all__ = [
     "ACCOUNT_AUTH_RAW_CONTEXT_ENABLED", "ACCOUNT_AUTH_RAW_CONTEXT_RETENTION_DAYS",
     "TASK_CENTER_RETENTION_DAYS", "TASK_CENTER_ARCHIVE_RETENTION_DAYS",
     "C2A_API_BASE", "C2A_API_KEY", "C2A_API_TIMEOUT",
+    "C2A_MONITOR_ENABLED", "C2A_MONITOR_INTERVAL_SECONDS", "C2A_MONITOR_COOLDOWN_SECONDS",
+    "C2A_MONITOR_MAX_PER_CYCLE",
     "ConfigSnapshot", "non_sensitive_snapshot", "get_non_sensitive_snapshot",
     "build_non_sensitive_snapshot",
 ]

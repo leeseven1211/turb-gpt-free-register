@@ -160,8 +160,8 @@ describe('async request ownership', () => {
     expect(actions.states.sentinel.snapshot?.running).toBe(true);
     await vi.advanceTimersByTimeAsync(6000); expect(request).toHaveBeenCalledTimes(2);
   });
-  it('accepted Sentinel and Sub2API receipts remain tracked after hide or dispose and IDs stay exact', async () => {
-    for (const method of ['checkSentinel', 'checkSub2Api'] as const) {
+  it('accepted Sentinel, Sub2API and C2A receipts remain tracked after hide or dispose and IDs stay exact', async () => {
+    for (const method of ['checkSentinel', 'checkSub2Api', 'checkC2a'] as const) {
       const pending = deferred<unknown>(); const onTaskReceipt = vi.fn(); const request = vi.fn<NonNullable<ConfigActionDependencies['request']>>(() => pending.promise);
       const {actions} = setup(request, {onTaskReceipt}); const operation = actions[method](); await flush(); actions.dispose();
       pending.resolve({ok: true, accepted: true, task_id: '9007199254740993', run_id: '9007199254740995', running: true}); await operation;

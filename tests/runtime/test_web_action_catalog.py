@@ -20,7 +20,7 @@ NATIVE_TYPES = {
     "live_check", "token_refresh", "plan_check", "deactivation_mail", "extract_link",
     "email_change", "account_inspection", "account_inspection_batch", "codex_retry",
     "codex_token_refresh", "sentinel_maintenance_check", "sub2api_scan",
-    "sub2api_sync", "sub2api_manual_upload", "c2a_session_reimport",
+    "sub2api_sync", "sub2api_manual_upload", "c2a_session_reimport", "c2a_scan",
 }
 
 
@@ -105,7 +105,7 @@ def probe():
         stack.enter_context(patch.object(bulk_execution, "retry_managed", return_value=None))
         client = app.test_client()
         for kind in ("sub2api_scan", "sub2api_sync", "sub2api_manual_upload",
-                     "c2a_session_reimport", "codex_token_refresh"):
+                     "c2a_session_reimport", "c2a_scan", "codex_token_refresh"):
             for action, status in (("retry", "failed"), ("cancel", "queued"), ("terminate", "running")):
                 task = {"id": 101, "task_type": kind, "source_system": "native_operations",
                         "status": status, "runs": [{"id": 101, "status": status}]}
@@ -114,7 +114,7 @@ def probe():
                 assert response.status_code == (202 if action == "retry" else 200), \
                     (kind, action, response.status_code, response.get_json())
                 assert response.get_json()["ok"] is True
-        assert len(writes) == 15, writes
+        assert len(writes) == 18, writes
         assert not task_gateway.registered_dispatch_types()
         assert not task_gateway.registered_operation_types()
 
@@ -157,7 +157,7 @@ class WebActionCatalogTests(unittest.TestCase):
                                    cwd=ROOT, env=env, capture_output=True, text=True, timeout=45)
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
         result = json.loads(completed.stdout.strip().splitlines()[-1])
-        self.assertEqual(result, {"ok": True, "task_types": 22, "route_actions": 15, "worker_catalog": True})
+        self.assertEqual(result, {"ok": True, "task_types": 23, "route_actions": 18, "worker_catalog": True})
 
 
 if __name__ == "__main__":

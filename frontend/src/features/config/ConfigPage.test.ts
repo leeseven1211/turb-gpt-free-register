@@ -23,6 +23,32 @@ describe('configuration renderer with one draft owner',()=>{
 });
 
 
+it('opens C2A monitor settings from service integrations and submits a check with saved settings', async () => {
+ const {wrapper,request}=setup([
+  field('C2A_API_BASE','C2A','saved-base'),
+  field('C2A_MONITOR_ENABLED','C2A',false,{type:'bool'}),
+  field('C2A_MONITOR_INTERVAL_SECONDS','C2A',300,{type:'int'}),
+  field('C2A_MONITOR_COOLDOWN_SECONDS','C2A',300,{type:'int'}),
+  field('C2A_MONITOR_MAX_PER_CYCLE','C2A',500,{type:'int'}),
+ ]);
+ await flushPromises();
+ await wrapper.get('[data-config-nav="服务集成"]').trigger('click');
+ const tool=wrapper.get('[data-config-tool="c2a"]');
+ expect(wrapper.get('[data-key="C2A_MONITOR_ENABLED"]').element).toHaveProperty('checked',false);
+ expect(wrapper.get('[data-key="C2A_MONITOR_MAX_PER_CYCLE"]').element).toHaveProperty('value','500');
+ await wrapper.get('[data-key="C2A_API_BASE"]').setValue('draft-base');
+ request.mockResolvedValueOnce({ok:true,monitor:{enabled:false,interval_seconds:300,max_per_cycle:500,state_available:true,repair_stages:{}}} as never);
+ await tool.findAll('button').find(button=>button.text()==='查看状态')!.trigger('click');
+ await flushPromises();
+ expect(request).toHaveBeenLastCalledWith('/api/c2a/automation',expect.objectContaining({method:'GET'}));
+ expect(tool.get('[role="status"]').text()).toContain('已关闭');
+ request.mockResolvedValueOnce({ok:true,accepted:true,task_id:'101',run_id:'202'} as never);
+ await tool.get('[data-config-action="check-c2a"]').trigger('click');
+ await flushPromises();
+ expect(request).toHaveBeenLastCalledWith('/api/c2a/automation/check',expect.objectContaining({method:'POST',body:'{}'}));
+ expect(tool.get('[role="status"]').text()).toContain('任务 #101');
+});
+
 it('preserves monitor group ID input, saved group query, multi selection and blank all-groups scope',async()=>{
  const {owner,wrapper,request,api}=setup([field('SUB2API_MONITOR_GROUP_IDS','定时任务','16，99')]);await flushPromises();
  await search(wrapper,'SUB2API_MONITOR_GROUP_IDS');

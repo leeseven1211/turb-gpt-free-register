@@ -44,7 +44,7 @@ export const taskCompletionLabels: Record<string, string> = {
   sub2api_sync: '凭证同步完成', sub2api_manual_upload: '凭证上传完成', sub2api_scan: '异常扫描完成',
   live_check: '查活完成', token_refresh: '刷新完成', plan_check: '套餐查询完成', deactivation_mail: '邮件检查完成',
   extract_link: '提链流程完成', account_inspection: '账号巡检完成', account_inspection_batch: '批次巡检完成',
-  c2a_session_reimport: '令牌导入完成', sentinel_maintenance_check: '维护检查完成',
+  c2a_session_reimport: '令牌导入完成', c2a_scan: '异常扫描完成', sentinel_maintenance_check: '维护检查完成',
 };
 
 function extractionSummary(task: OperationTask, errorLabel: string): TaskResultSummary {
@@ -162,9 +162,13 @@ export function taskResultSummary(task: OperationTask, errorLabel = '执行异�
   if (hasSpecificError(task)) return summary(error, 'danger');
   if (unconfirmed.has(status) || unconfirmed.has(text(task.internal_status)) || unconfirmed.has(text(r.status))) return summary('结果待确认', 'warning');
   if (['deactivated', 'account_deactivated'].includes(text(task.target_status)) || status === 'deactivated') return summary('账号已停用', 'danger');
-  if (task.error_message || task.error_info || failed.has(status) || kind !== 'sub2api_scan' && r.ok === false) return summary(error, 'danger');
+  const scan = kind === 'sub2api_scan' || kind === 'c2a_scan';
+  if (task.error_message || task.error_info || failed.has(status) || !scan && r.ok === false) return summary(error, 'danger');
   if (status === 'partial_success') return summary('部分完成', 'warning');
-  if (kind === 'sub2api_scan') return status === 'success' ? summary(taskCompletionLabels[kind]!, 'success') : summary('扫描未完成', 'warning');
+  if (scan) {
+    if (status !== 'success') return summary('扫描未完成', 'warning');
+    return summary(kind === 'c2a_scan' && r.continuation_only === true ? '接续检查完成' : taskCompletionLabels[kind]!, 'success');
+  }
   if (kind === 'registration' || kind === 'registration_resume') {
     const target = ({account_available: '账号可用', email_verification_pending: '邮箱待验证', credential_valid: '凭证有效', credential_pending_confirmation: '凭证待确认', not_created: '账号未创建', in_progress: '账号处理中'} as Record<string, string>)[text(task.target_status)];
     if (target) return summary(target, ['account_available', 'credential_valid'].includes(text(task.target_status)) ? 'success' : 'warning');

@@ -6,7 +6,7 @@ REQUIRED_COMPONENTS = (
     'registration_dispatcher', 'operation_dispatcher', 'dependency_dispatcher',
     'projection_worker', 'bulk_workers', 'butler_import_dispatcher',
     'config_observer', 'deactivation_scanner', 'at_refresher', 'codex_refresher',
-    'sub2api_sync', 'sub2api_monitor', 'auth_context_cleanup', 'task_retention',
+    'sub2api_sync', 'sub2api_monitor', 'c2a_monitor', 'auth_context_cleanup', 'task_retention',
 )
 
 SETTLEMENT_COUNT_KEYS = (

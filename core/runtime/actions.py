@@ -17,6 +17,7 @@ ACTION_TARGETS = (
     "core.integrations.sub2api.jobs:register_actions",
     "core.integrations.sub2api.manual_upload:register_actions",
     "core.integrations.c2a.manual_sync:register_actions",
+    "core.integrations.c2a.monitor:register_actions",
     "core.maintenance.sentinel:register_actions",
 )
 

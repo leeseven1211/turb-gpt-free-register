@@ -56,16 +56,17 @@ _DEFINITIONS = (
     ("codex_retry", "Codex 授权", "CODEX_OAUTH_WORKERS", 3),
     ("codex_token_refresh", "刷新 Codex Token", "CODEX_TOKEN_REFRESH_WORKERS", 3),
     ("sub2api_sync", "Sub2API 上传与同步", "SUB2API_SYNC_WORKERS", 3),
-    ("c2a_sync", "C2A 重新导入", "C2A_SYNC_WORKERS", 3),
+    ("c2a_sync", "C2A 同步", "C2A_SYNC_WORKERS", 3),
     ("extract_link", "提链", "EXTRACT_LINK_WORKERS", 3),
     ("email_import", "邮箱导入", "EMAIL_IMPORT_WORKERS", 1),
     ("sub2api_scan", "Sub2API 异常扫描", "SUB2API_SCAN_WORKERS", 1),
-    ("maintenance_check", "手动维护检查", "MAINTENANCE_CHECK_WORKERS", 1),
+    ("maintenance_check", "维护检查", "MAINTENANCE_CHECK_WORKERS", 1),
 )
 POLICIES = {row[0]: AdmissionClass(*row) for row in _DEFINITIONS}
 # 旧补全 handler 仍包含真实业务，必须按多步骤账号配置计数。
 _ALIASES = {"twofa_retry": "account_setup_retry", "account_completion": "account_setup_retry",
-            "sub2api_manual_upload": "sub2api_sync", "sentinel_maintenance_check": "maintenance_check"}
+            "sub2api_manual_upload": "sub2api_sync", "sentinel_maintenance_check": "maintenance_check",
+            "c2a_scan": "maintenance_check"}
 _PROVIDER_KEYS = {"legacy": "EXTRACT_LINK_LEGACY_CONCURRENCY", "lumen_flow": "EXTRACT_LINK_LUMEN_FLOW_CONCURRENCY",
                   "huanguang": "EXTRACT_LINK_HUANGUANG_CONCURRENCY", "anguang": "EXTRACT_LINK_ANGUANG_CONCURRENCY"}
 

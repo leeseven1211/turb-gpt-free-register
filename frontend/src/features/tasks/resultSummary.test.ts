@@ -16,6 +16,12 @@ describe('任务列表语义短摘要', () => {
     expect(taskResultSummary(task('sub2api_scan', {ok: false}, {status: 'success'})))
       .toEqual({label: '异常扫描完成', tone: 'success'});
   });
+  it('C2A 扫描完成不代表子任务修复完成', () => {
+    expect(taskResultSummary(task('c2a_scan', {ok: true, refresh_queued: 2, sync_queued: 3})))
+      .toEqual({label: '异常扫描完成', tone: 'success'});
+    expect(taskResultSummary(task('c2a_scan', {ok: true}, {status: 'unsupported'})))
+      .toEqual({label: '扫描未完成', tone: 'warning'});
+  });
   it('为所有登记任务类型及未知类型提供十字以内的结果和终态兜底', () => {
     for (const type of Object.keys(labels.task_type)) expect(taskCompletionLabels[type]).toBeTruthy();
     for (const type of [...Object.keys(taskCompletionLabels), 'future_task_type']) {

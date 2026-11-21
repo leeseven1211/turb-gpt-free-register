@@ -491,6 +491,7 @@ CASES = (
     ("core.operations.retention", "start_periodic_cleanup", "stop_periodic_cleanup"),
     ("core.integrations.sub2api.jobs", "start_periodic_sync", "stop_periodic_sync"),
     ("core.integrations.sub2api.monitor", "start_periodic_monitor", "stop_periodic_monitor"),
+    ("core.integrations.c2a.monitor", "start_periodic_monitor", "stop_periodic_monitor"),
 )
 
 

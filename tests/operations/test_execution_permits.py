@@ -651,13 +651,13 @@ class ExecutionPermitTests(PostgresTestCase):
             task_gateway.stop_dispatcher()
 
     def test_restart_registers_and_executes_existing_peripheral_queue_without_new_requests(self):
-        from core.integrations.c2a import manual_sync
+        from core.integrations.c2a import manual_sync, monitor as c2a_monitor
         from core.integrations.sub2api import manual_upload, monitor
         from core.maintenance import sentinel
         from webui import runtime
 
         self.policy(GLOBAL_TASK_WORKERS=3)
-        types = ("sentinel_maintenance_check", "sub2api_scan", "sub2api_manual_upload", "c2a_session_reimport")
+        types = ("sentinel_maintenance_check", "sub2api_scan", "sub2api_manual_upload", "c2a_session_reimport", "c2a_scan")
         tasks = [store.create_runtime_task(task_type=kind, account_id=None, email="", data={}) for kind in types]
         for kind in types:
             task_gateway.unregister_operation_handler(kind)
@@ -673,6 +673,7 @@ class ExecutionPermitTests(PostgresTestCase):
             "core.accounts.deactivation.mail_scan.start_periodic_scanner",
             "core.accounts.token_refresh.start_periodic_refresher", "core.codex.token_refresh_service.start_periodic_refresher",
             "core.integrations.sub2api.jobs.start_periodic_sync", "core.integrations.sub2api.monitor.start_periodic_monitor",
+            "core.integrations.c2a.monitor.start_periodic_monitor",
             "core.bulk_operations.service.start_workers",
             "core.accounts.auth_context_cleanup.start_periodic_cleanup", "core.operations.retention.start_periodic_cleanup",
             "core.email.email_butler.usage_reports.start_worker",
@@ -685,6 +686,7 @@ class ExecutionPermitTests(PostgresTestCase):
                 stack.enter_context(patch.object(monitor, "_handle_scan", side_effect=handler))
                 stack.enter_context(patch.object(manual_upload, "_handle", side_effect=handler))
                 stack.enter_context(patch.object(manual_sync, "_handle", side_effect=handler))
+                stack.enter_context(patch.object(c2a_monitor, "_handle_scan", side_effect=handler))
                 for target in stop_targets:
                     stack.enter_context(patch(target, return_value={}))
                 service_sync_worker = stack.enter_context(

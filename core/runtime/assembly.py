@@ -21,7 +21,7 @@ from .readiness import (compatibility_status, execution_ready, remote_status,
                         SETTLEMENT_COUNT_KEYS)
 
 _PRODUCERS = ('deactivation_scanner', 'at_refresher', 'codex_refresher', 'sub2api_sync',
-              'sub2api_monitor', 'auth_context_cleanup', 'task_retention',
+              'sub2api_monitor', 'c2a_monitor', 'auth_context_cleanup', 'task_retention',
               'registration_proxy_backfill')
 _CLAIMERS = ('registration_dispatcher', 'operation_dispatcher', 'dependency_dispatcher',
              'butler_import_dispatcher')
@@ -35,6 +35,7 @@ _STOPS = {
  'codex_refresher': 'core.codex.token_refresh_service:stop_periodic_refresher',
  'sub2api_sync': 'core.integrations.sub2api.jobs:stop_periodic_sync',
  'sub2api_monitor': 'core.integrations.sub2api.monitor:stop_periodic_monitor',
+ 'c2a_monitor': 'core.integrations.c2a.monitor:stop_periodic_monitor',
  'auth_context_cleanup': 'core.accounts.auth_context_cleanup:stop_periodic_cleanup',
  'task_retention': 'core.operations.retention:stop_periodic_cleanup',
  'registration_proxy_backfill': 'core.operations.reconciliation:stop_periodic_account_proxy_backfill',
@@ -56,6 +57,7 @@ _STATUS = {
  'codex_refresher': 'core.codex.token_refresh_service:scheduler_status',
  'sub2api_sync': 'core.integrations.sub2api.jobs:scheduler_status',
  'sub2api_monitor': 'core.integrations.sub2api.monitor:scheduler_status',
+ 'c2a_monitor': 'core.integrations.c2a.monitor:scheduler_status',
  'auth_context_cleanup': 'core.accounts.auth_context_cleanup:scheduler_status',
  'task_retention': 'core.operations.retention:scheduler_status',
  'registration_proxy_backfill': 'core.operations.reconciliation:account_proxy_backfill_status',

@@ -19,15 +19,15 @@ _INSTANCE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$')
 _NONCE = re.compile(r'^[A-Za-z0-9_-]{1,128}$')
 COMPONENT_NAMES = frozenset({
     'settlement',
-    'operation_storage', 'bulk_storage', 'recover_before_handlers', 'proxy_pool',
+    'operation_storage', 'bulk_storage', 'c2a_monitor_storage', 'recover_before_handlers', 'proxy_pool',
     'maintenance_handlers', 'account_handlers', 'codex_retry_handler', 'codex_refresh_handler',
-    'sentinel_handler', 'sub2api_monitor_handler', 'sub2api_upload_handler', 'c2a_sync_handler',
+    'sentinel_handler', 'sub2api_monitor_handler', 'sub2api_upload_handler', 'c2a_sync_handler', 'c2a_monitor_handler',
     'verify_handlers', 'recover_before_dispatchers', 'projection_worker',
     'registration_dispatcher', 'operation_dispatcher', 'dependency_handler',
     'dependency_dispatcher', 'bulk_workers', 'recover_ready_dependencies',
     'recover_local_artifacts', 'sms_cancel_worker', 'recover_account_background_state',
     'deactivation_scanner', 'at_refresher', 'codex_refresher', 'sub2api_sync',
-    'sub2api_monitor', 'auth_context_cleanup', 'task_retention', 'email_usage_reports',
+    'sub2api_monitor', 'c2a_monitor', 'auth_context_cleanup', 'task_retention', 'email_usage_reports',
     'registration_proxy_backfill', 'email_service_sync', 'config_observer',
     'account_executor', 'extract_executor',
     'registration_executor', 'butler_import_dispatcher',

@@ -123,6 +123,8 @@ class RuntimeCompositionTests(unittest.TestCase):
         self.assertLess(order.index("operation_storage"), order.index("recover_before_handlers"))
         self.assertLess(order.index("recover_before_handlers"), order.index("proxy_pool"))
         self.assertLess(order.index("maintenance_handlers"), order.index("recover_before_dispatchers"))
+        self.assertLess(order.index("c2a_monitor_storage"), order.index("c2a_monitor_handler"))
+        self.assertLess(order.index("c2a_monitor_handler"), order.index("operation_dispatcher"))
         self.assertLess(order.index("codex_retry_handler"), order.index("operation_dispatcher"))
         self.assertLess(order.index("codex_refresh_handler"), order.index("operation_dispatcher"))
         self.assertLess(order.index("recover_before_dispatchers"), order.index("projection_worker"))
@@ -275,7 +277,7 @@ class RuntimeCompositionTests(unittest.TestCase):
             "account_completion", "registration_resume", "account_inspection", "live_check", "token_refresh",
             "plan_check", "deactivation_mail", "extract_link", "email_change", "codex_retry",
             "codex_token_refresh", "sentinel_maintenance_check", "sub2api_scan", "sub2api_manual_upload",
-            "c2a_session_reimport",
+            "c2a_session_reimport", "c2a_scan",
         )
         calls = []
         def resolve(name):

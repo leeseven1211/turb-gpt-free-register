@@ -1,4 +1,5 @@
 import type {OperationTask, OperationRun, ErrorInfo, TaskAction} from '../../api/tasks';
+import {shortErrorLabel} from '../../shared/errorLabels';
 import {formatDateTime} from '../../shared/time';
 export {formatDateTime} from '../../shared/time';
 
@@ -42,6 +43,7 @@ export const labels: Record<string, Record<string, string>> = {
   trigger: {
     manual:'手动', manual_bulk:'手动批量', manual_retry:'失败重跑', scheduled:'定时',
     registration_auto:'注册后自动', registration_job_retry:'注册任务重试', token_refresh_scheduled:'AT 定时刷新',
+    c2a_monitor:'C2A 异常巡检',
     codex_token_refresh_scheduled:'Codex 定时刷新', sub2api_monitor:'sub2api 异常巡检', sub2api_sync_retry:'sub2api 自动补传',
   },
   target_status: {
@@ -59,12 +61,13 @@ export const labels: Record<string, Record<string, string>> = {
     roxy_fallback:'浏览器回退', oauth:'Codex 授权', auth_url:'获取授权地址', login:'登录 OpenAI',
     phone_check:'检查手机验证', phone_acquire:'申请接码号码', phone_otp:'短信验证', consent:'确认授权',
     callback:'接收 OAuth 回调', credential_confirm:'确认远端凭证', credential_persist:'保存凭证', c2a_safety:'确认 C2A 安全策略', c2a_resolve:'定位 C2A 账号', c2a_update:'更新 C2A AT', cancelling:'正在停止',
+    c2a_scan:'读取 C2A 异常账号', c2a_repair:'调度 C2A 修复',
     twofa:'设置 2FA', plan:'套餐信息', plan_check:'查询套餐', plan_request:'请求套餐', refresh_token:'刷新 Token',
     mailbox_scan:'扫描邮件', extract_link:'提炼', extraction:'平台提链', remote_sync:'原单状态查询', payment:'支付处理', login_mfa:'TOTP 验证', complete:'完成', interrupted:'执行中断', event:'事件',
   },
   run_count: {'0':'0 次', '1':'1 次', '2':'2 次', '3':'3 次', '4+':'4 次及以上'},
 };
-Object.assign(labels.task_type, {account_inspection: '账号巡检', account_inspection_batch: '巡检批次', sub2api_manual_upload: 'Sub2API 手动上传', sub2api_scan: 'Sub2API 异常扫描', c2a_session_reimport: 'C2A 重新导入'});
+Object.assign(labels.task_type, {account_inspection: '账号巡检', account_inspection_batch: '巡检批次', sub2api_manual_upload: 'Sub2API 手动上传', sub2api_scan: 'Sub2API 异常扫描', c2a_session_reimport: 'C2A 重新导入', c2a_scan: 'C2A 异常巡检'});
 
 export function label(group: string, value: unknown): string {
   const key = String(value || '');
@@ -305,6 +308,23 @@ function resultValue(task: OperationTask, compact = false): unknown {
   }
   if (task.task_type === 'c2a_session_reimport') return result.ok ? (result.message || 'C2A AT 已从本地重新导入') : result.error_code || result.message || 'C2A 重新导入失败，请查看任务日志';
   if (task.task_type === 'sub2api_manual_upload') return result.ok ? '手动上传 Sub2API 已完成' : result.error_code || result.message || '手动上传失败，请查看任务日志';
+  if (task.task_type === 'c2a_scan') {
+    if (status !== 'success') return errorText(task.error_info, result.error_code || result.message || 'C2A 异常扫描未完成，请查看任务日志');
+    const parts = result.continuation_only
+      ? ['C2A 修复接续检查已完成']
+      : ['C2A 异常扫描已完成', `异常 ${result.remote_errors ?? 0} 条`];
+    parts.push(`刷新入队 ${result.refresh_queued ?? 0}`, `同步入队 ${result.sync_queued ?? 0}`);
+    const reasonEntries = Array.isArray(result.reasons)
+      ? rows(result.reasons)
+      : Object.entries(record(result.reasons)).map(([code, count]) => ({code, count}));
+    const reasons = reasonEntries.flatMap(({code, count}) => {
+      if (typeof code !== 'string' || !/^[a-z0-9_.-]{1,100}$/i.test(code) || !Number.isSafeInteger(count) || Number(count) <= 0) return [];
+      const label = shortErrorLabel({cause_code: code});
+      return [`${label === shortErrorLabel() ? code : label} ${count}`];
+    });
+    if (reasons.length) parts.push(reasons.join('、'));
+    return parts.join(' · ');
+  }
   if (task.task_type === 'sub2api_scan') return status === 'success' ? 'Sub2API 异常扫描已完成' : result.error_code || result.message || '扫描未完成，请查看任务日志';
   return Object.keys(result).length ? JSON.stringify(result) : '-';
 }

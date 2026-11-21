@@ -28,8 +28,11 @@ class C2AManualSyncTests(PostgresTestCase):
         operation.reset_ready()
         operation.init()
         task_gateway.init()
+        self.local_issued_at = int(time.time()) - 60
+        self.local_expires_at = self.local_issued_at + 3660
         self.local_token = fixture_token({
-            "exp": int(time.time()) + 3600,
+            "iat": self.local_issued_at,
+            "exp": self.local_expires_at,
             "https://api.openai.com/profile": {"email": "manual-c2a@example.test"},
         })
         self.account_id = records.insert_row(records.ACCOUNTS, {
@@ -62,6 +65,12 @@ class C2AManualSyncTests(PostgresTestCase):
         self.assertIsNotNone(account)
         return manual_sync.queue_account(account)
 
+    def queue_target(self, key="c2a-target-test", remote_id="c2a-account-17"):
+        return manual_sync.queue_target(
+            db.get_account(self.account_id), remote_id,
+            expected_backend="fixture-c2a-backend", idempotency_key=key,
+        )
+
     def execute(self, queued):
         run_id = queued["run_id"]
         result = task_gateway._execute_operation_handler(manual_sync.TASK_TYPE, run_id)
@@ -75,6 +84,172 @@ class C2AManualSyncTests(PostgresTestCase):
             "email": "manual-c2a@example.test",
             "backend_identity": "fixture-c2a-backend",
         }
+
+    def target_state(self, *, token_matches=False, **changes):
+        seconds_older = 0 if token_matches else 60
+        return {
+            **self.remote_account(), "enabled": True,
+            "token_matches": token_matches, "access_token_status": "valid",
+            "access_token_issued_at": self.local_issued_at - seconds_older,
+            "access_token_expires_at": self.local_expires_at - seconds_older,
+            "backend_status": "正常", "status_category": "normal", "status_reason_code": "",
+            **changes,
+        }
+
+    def test_target_task_pins_original_id_and_reuses_the_same_submission_key(self):
+        queued = self.queue_target()
+        replay = self.queue_target()
+
+        self.assertTrue(queued["accepted"])
+        self.assertEqual(queued["run_id"], replay["run_id"])
+        self.assertTrue(replay["reused"])
+        run = operation.get_run(queued["run_id"])
+        self.assertEqual({
+            "backend_identity": "fixture-c2a-backend",
+            "remote_account_id": "c2a-account-17",
+            "monitor_managed": True,
+        }, run["data"])
+        self.assertEqual("c2a_sync", concurrency.resolve_admission_class(run).key)
+        self.assertNotIn(self.local_token, repr(run))
+
+    def test_target_can_only_update_the_original_id(self):
+        queued = self.queue_target()
+        with patch.object(client, "get_account_sync_state", create=True, return_value=self.target_state()) as state, \
+                patch.object(client, "find_unique_account") as find, \
+                patch.object(client, "create_account_access_token") as create, \
+                patch.object(client, "update_account_access_token", return_value={
+                    "id": "c2a-account-17", "updated": True, "backend_identity": "fixture-c2a-backend",
+                }) as update:
+            self.assertTrue(self.execute(queued)["ok"])
+
+        self.assertEqual(("c2a-account-17", "manual-c2a@example.test", self.local_token), state.call_args.args)
+        self.assertEqual(("c2a-account-17", self.local_token), update.call_args.args)
+        self.assertEqual("fixture-c2a-backend", update.call_args.kwargs["expected_backend"])
+        find.assert_not_called()
+        create.assert_not_called()
+        run = operation.get_run(queued["run_id"])
+        self.assertEqual("c2a-account-17", run["result_summary"]["c2a_account_id"])
+        self.assertEqual("confirmed", run["data"]["remote_receipt"]["receipt_state"])
+
+    def test_missing_original_id_never_falls_back_to_search_or_creation(self):
+        queued = self.queue_target()
+        missing = client.C2AError("get_account", "c2a_remote_account_missing", "C2A 目标账号已不存在")
+        with patch.object(client, "get_account_sync_state", create=True, side_effect=missing), \
+                patch.object(client, "find_unique_account") as find, \
+                patch.object(client, "create_account_access_token") as create, \
+                patch.object(client, "update_account_access_token") as update:
+            self.assertFalse(self.execute(queued)["ok"])
+
+        find.assert_not_called()
+        create.assert_not_called()
+        update.assert_not_called()
+        run = operation.get_run(queued["run_id"])
+        self.assertEqual("c2a_remote_account_missing", run["result_summary"]["error_code"])
+        self.assertNotIn("remote_intent", run["data"])
+
+    def test_target_retry_reads_back_matching_at_after_a_missing_update_receipt(self):
+        original = self.queue_target()
+        timeout = client.C2AError("update_account", "c2a_timeout", "C2A 请求超时")
+        with patch.object(client, "get_account_sync_state", create=True, side_effect=[
+            self.target_state(), self.target_state(token_matches=True),
+        ]) as state, patch.object(client, "update_account_access_token", side_effect=timeout) as update:
+            self.assertFalse(self.execute(original)["ok"])
+            retried = self.queue_target("another-c2a-target-key")
+            self.assertTrue(retried["accepted"])
+            self.assertNotEqual(original["run_id"], retried["run_id"])
+            self.assertTrue(self.execute(retried)["ok"])
+
+        self.assertEqual(2, state.call_count)
+        update.assert_called_once()
+        failed = operation.get_run(original["run_id"])
+        self.assertEqual("unknown", failed["data"]["remote_receipt"]["receipt_state"])
+        verified = operation.get_run(retried["run_id"])
+        self.assertTrue(verified["result_summary"]["remote_already_synced"])
+        self.assertNotIn("remote_intent", verified["data"])
+
+    def test_matching_but_invalid_at_requires_refresh_without_posting_again(self):
+        cases = (
+            {"access_token_status": "invalid"},
+            {"access_token_expires_at": int(time.time()) - 1},
+            {"backend_status": "异常", "status_reason_code": "auth_invalid"},
+        )
+        for index, changes in enumerate(cases):
+            with self.subTest(changes=changes):
+                queued = self.queue_target(f"invalid-at-{index}")
+                with patch.object(
+                    client, "get_account_sync_state", create=True,
+                    return_value=self.target_state(token_matches=True, **changes),
+                ), patch.object(client, "update_account_access_token") as update:
+                    self.assertFalse(self.execute(queued)["ok"])
+                update.assert_not_called()
+                run = operation.get_run(queued["run_id"])
+                self.assertEqual("c2a_remote_at_invalid", run["result_summary"]["error_code"])
+                self.assertNotIn("remote_intent", run["data"])
+
+    def test_target_keeps_a_newer_valid_c2a_at(self):
+        for issued_at in (self.local_issued_at + 30, None):
+            with self.subTest(issued_at=issued_at):
+                queued = self.queue_target(f"remote-at-newer-{issued_at}")
+                remote_state = self.target_state(
+                    access_token_issued_at=issued_at, access_token_expires_at=self.local_expires_at + 30,
+                )
+                with patch.object(client, "get_account_sync_state", return_value=remote_state), \
+                        patch.object(client, "update_account_access_token") as update, \
+                        patch.object(client, "verify_safe_mutation_policy") as safety:
+                    self.assertTrue(self.execute(queued)["ok"])
+
+                update.assert_not_called()
+                safety.assert_not_called()
+                run = operation.get_run(queued["run_id"])
+                self.assertEqual("c2a_remote_at_newer", run["result_summary"]["reason_code"])
+                self.assertEqual("c2a-account-17", run["result_summary"]["c2a_account_id"])
+                self.assertFalse(run["result_summary"]["updated"])
+                self.assertNotIn("remote_intent", run["data"])
+
+    def test_newer_issued_at_does_not_hide_confirmed_remote_invalidation(self):
+        queued = self.queue_target()
+        remote_state = self.target_state(
+            access_token_issued_at=self.local_issued_at + 30, access_token_expires_at=self.local_expires_at + 30,
+            access_token_status="invalid", status_reason_code="auth_invalid",
+        )
+        with patch.object(client, "get_account_sync_state", return_value=remote_state), \
+                patch.object(client, "update_account_access_token", return_value={
+                    "id": "c2a-account-17", "updated": True, "backend_identity": "fixture-c2a-backend",
+                }) as update:
+            self.assertTrue(self.execute(queued)["ok"])
+
+        update.assert_called_once()
+
+    def test_target_respects_fractional_local_issued_at_even_with_later_local_expiry(self):
+        records.patch_row(records.ACCOUNTS, self.account_id, changes={"access_token": fixture_token({
+            "iat": self.local_issued_at + 0.25,
+            "exp": self.local_expires_at,
+            "https://api.openai.com/profile": {"email": "manual-c2a@example.test"},
+        })})
+        queued = self.queue_target()
+        remote_state = self.target_state(
+            access_token_issued_at=self.local_issued_at + 30,
+            access_token_expires_at=self.local_expires_at - 30,
+        )
+        with patch.object(client, "get_account_sync_state", return_value=remote_state), \
+                patch.object(client, "update_account_access_token") as update:
+            self.assertTrue(self.execute(queued)["ok"])
+
+        run = operation.get_run(queued["run_id"])
+        self.assertEqual("c2a_remote_at_newer", run["result_summary"].get("reason_code"))
+        update.assert_not_called()
+
+    def test_target_records_token_conflict_as_rejected(self):
+        queued = self.queue_target()
+        conflict = client.C2AError("update_account", "c2a_remote_token_conflict", "C2A 其他账号已使用该 AT")
+        with patch.object(client, "get_account_sync_state", return_value=self.target_state()), \
+                patch.object(client, "update_account_access_token", side_effect=conflict):
+            self.assertFalse(self.execute(queued)["ok"])
+
+        run = operation.get_run(queued["run_id"])
+        self.assertEqual("failed", run["status"])
+        self.assertEqual("c2a_remote_token_conflict", run["result_summary"]["error_code"])
+        self.assertEqual("rejected", run["data"]["remote_receipt"]["receipt_state"])
 
     def test_queue_saves_only_account_reference_and_backend_summary(self):
         queued = self.queue()

@@ -45,6 +45,24 @@ describe('任务公开表现和动作资格', () => {
     expect(errorText({summary: '邮箱验证失败', cause_summary: '收码超时'})).toBe('邮箱验证失败 · 收码超时');
     expect(errorText({summary: '邮箱验证失败 · 收码超时', cause_summary: '收码超时'})).toBe('邮箱验证失败 · 收码超时');
   });
+  it('C2A 巡检回执区分扫描完成与下游修复入队', () => {
+    const result_summary = {ok: true, remote_errors: 8, refresh_queued: 2, sync_queued: 3};
+    const scan = task({task_type: 'c2a_scan', status: 'success', result_summary});
+    expect(resultText(scan)).toBe('C2A 异常扫描已完成 · 异常 8 条 · 刷新入队 2 · 同步入队 3');
+    expect(resultText({...scan, status: 'failed', result_summary: {ok: true}})).toBe('C2A 异常扫描未完成，请查看任务日志');
+    const reasons = {account_busy: 2, c2a_remote_account_identity_changed: 1, future_reason: 3, empty_reason: 0};
+    expect(resultText({...scan, result_summary: {...result_summary, reasons}})).toBe(
+      'C2A 异常扫描已完成 · 异常 8 条 · 刷新入队 2 · 同步入队 3 · 账号正被占用 2、远端邮箱已变化 1、future_reason 3',
+    );
+  });
+
+  it('C2A 巡检显示数组格式的凭据冲突计数', () => {
+    const scan = task({task_type: 'c2a_scan', status: 'success', result_summary: {
+      reasons: [{code: 'c2a_remote_token_conflict', count: 2}],
+    }});
+    expect(resultText(scan)).toContain('远端凭据归属冲突 2');
+  });
+
   it('Sub2API 扫描完成只依据任务状态，不依据旧摘要 ok', () => {
     for (const status of ['unsupported', 'failed']) {
       expect(resultText(task({task_type: 'sub2api_scan', status, result_summary: {ok: true}})))

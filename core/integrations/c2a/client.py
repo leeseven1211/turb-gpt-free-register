@@ -1,17 +1,17 @@
 # -*- coding: utf-8 -*-
-"""C2A 3.2.9 管理接口的最小 AT 同步客户端。
+"""C2A 3.2.9 管理接口的账号巡检与 AT 同步客户端。
 
-本模块按邮箱定位账号，覆盖既有账号 AT 或创建缺失账号；不会直接调用删除、启用、
-清错、Refresh Token、分组或代理接口。C2A 通用更新接口仍可能按其自身规则处理
-凭据错误，因此远端异常状态可能随 AT 更新变化。所有异常使用固定错误码，避免把
-Token、管理 Key 或远端响应正文写入任务日志。
+列表只返回巡检所需元数据，定向同步用原管理 ID 校验账号和 AT。
+C2A 通用更新接口会按自身规则处理凭据错误，因此远端异常状态可能随 AT 更新变化。
+异常使用固定原因码，避免把凭据或远端响应正文写入任务日志。
 """
 from __future__ import annotations
 
 import hashlib
 import importlib
 import math
-from collections.abc import Callable
+import re
+from collections.abc import Callable, Iterator
 from contextlib import nullcontext
 from dataclasses import dataclass, field
 from typing import Any
@@ -61,6 +61,10 @@ class SafeMutationPolicy:
 
 _MAX_ACCOUNT_PAGES = 100
 _PAGE_SIZE = 500
+_REMOTE_ID = re.compile(r"[a-zA-Z0-9_-]{1,240}")
+_BACKEND_STATUSES = {"正常", "限流", "异常", "禁用"}
+_STATUS_CATEGORIES = {"normal", "limited", "abnormal", "disabled"}
+_AT_STATUSES = {"valid", "expiring", "invalid", "missing"}
 
 
 def _config_error() -> C2AError:
@@ -188,6 +192,7 @@ def verify_safe_mutation_policy(
         "/api/settings",
         stage="c2a_safety",
         checkpoint=checkpoint,
+        allow_redirects=False,
     )
     settings = body.get("settings")
     if not isinstance(settings, dict):
@@ -223,7 +228,9 @@ def _checkpoint(checkpoint: Callable[[], None] | None) -> None:
 def _http_error(stage: str, status: int, *, remote_account_id: str | None = None) -> C2AError:
     if status in {401, 403}:
         return C2AError(stage, "c2a_auth_rejected", "C2A 管理接口鉴权失败或权限不足", remote_account_id=remote_account_id)
-    if status == 404 and stage == "update_account":
+    if status == 404 and stage == "get_account_access_token":
+        return C2AError(stage, "c2a_remote_access_token_missing", "C2A 原账号的 AT 暂不可读取", remote_account_id=remote_account_id)
+    if status == 404 and stage in {"get_account", "update_account"}:
         return C2AError(stage, "c2a_remote_account_missing", "C2A 目标账号已不存在", remote_account_id=remote_account_id)
     if status == 429:
         return C2AError(stage, "c2a_rate_limited", "C2A 管理接口请求过于频繁，请稍后重试", remote_account_id=remote_account_id)
@@ -246,6 +253,16 @@ def _safe_request_error(stage: str, exc: Exception, *, remote_account_id: str | 
     if isinstance(exc, requests.RequestException):
         return C2AError(stage, "c2a_request_failed", "C2A 网络请求失败，请重试同步", remote_account_id=remote_account_id)
     return C2AError(stage, "c2a_client_error", "C2A 客户端处理失败，请查看同步阶段服务日志", remote_account_id=remote_account_id)
+
+
+def _is_token_conflict(response: requests.Response) -> bool:
+    """识别 C2A 3.2.9 的账号凭据冲突，其他错误正文不参与分类。"""
+    try:
+        payload = response.json()
+    except ValueError:
+        return False
+    detail = payload.get("detail") if isinstance(payload, dict) else None
+    return isinstance(detail, dict) and detail.get("error") == "access token already belongs to another account"
 
 
 def _request_json(
@@ -275,6 +292,8 @@ def _request_json(
         else:
             raise RuntimeError("unsupported C2A request method")
         status = int(response.status_code)
+        if stage == "update_account" and status == 400 and _is_token_conflict(response):
+            raise C2AError(stage, "c2a_remote_token_conflict", "此 AT 已归属 C2A 中的其他管理 ID")
         if not 200 <= status < 300:
             raise _http_error(stage, status, remote_account_id=remote_account_id)
         body = response.json()
@@ -307,6 +326,76 @@ def _account_id(value: Any) -> str:
     return account_id
 
 
+def validate_remote_account_id(remote_id: str) -> str:
+    """校验可作为 C2A 请求路径一段的管理 ID。"""
+    if not isinstance(remote_id, str) or not _REMOTE_ID.fullmatch(remote_id):
+        raise C2AError("get_account", "c2a_remote_account_id_invalid", "C2A 目标账号管理 ID 无效")
+    return remote_id
+
+
+def _invalid_account_response(
+    config: _ClientConfig, stage: str, message: str, *, remote_account_id: str | None = None,
+) -> C2AError:
+    return C2AError(
+        stage, "c2a_response_invalid", message,
+        backend_identity=config.backend_identity, remote_account_id=remote_account_id,
+    )
+
+
+def _account_pages(
+    config: _ClientConfig,
+    *,
+    keyword: str,
+    stage: str,
+    checkpoint: Callable[[], None] | None,
+    verify_full_page: bool = False,
+) -> Iterator[list[dict[str, Any]]]:
+    total: int | None = None
+    for page in range(1, _MAX_ACCOUNT_PAGES + 1):
+        body = _request_json(
+            config,
+            "get",
+            "/api/accounts",
+            stage=stage,
+            checkpoint=checkpoint,
+            params={
+                "page": page,
+                "page_size": _PAGE_SIZE,
+                "keyword": keyword,
+                "status": "all",
+                "group_id": "all",
+                "memory_state": "all",
+            },
+            **({"allow_redirects": False} if verify_full_page else {}),
+        )
+        items = body.get("items")
+        raw_total = body.get("total")
+        if isinstance(raw_total, bool):
+            raise _invalid_account_response(config, stage, "C2A 账号列表分页信息无效")
+        try:
+            current_total = int(raw_total)
+        except (TypeError, ValueError, OverflowError):
+            raise _invalid_account_response(config, stage, "C2A 账号列表分页信息无效") from None
+        if current_total < 0 or not isinstance(items, list):
+            raise _invalid_account_response(config, stage, "C2A 账号列表格式无效")
+        if total is None:
+            total = current_total
+        elif total != current_total:
+            raise _invalid_account_response(config, stage, "C2A 账号列表在查询期间发生变化，请重新同步")
+        if verify_full_page and (
+            type(raw_total) is not int or type(body.get("page")) is not int or body["page"] != page
+            or body.get("page_size") != _PAGE_SIZE
+            or len(items) != min(_PAGE_SIZE, total - (page - 1) * _PAGE_SIZE)
+        ):
+            raise _invalid_account_response(config, stage, "C2A 账号列表分页不完整，请重新扫描")
+        if any(not isinstance(item, dict) for item in items):
+            raise _invalid_account_response(config, stage, "C2A 账号列表包含无效记录")
+        yield items
+        if total <= page * _PAGE_SIZE:
+            return
+    raise C2AError(stage, "c2a_pagination_limit", "C2A 账号查询超过分页保护上限", backend_identity=config.backend_identity)
+
+
 def _list_matching_accounts(
     config: _ClientConfig,
     email: str,
@@ -315,41 +404,8 @@ def _list_matching_accounts(
 ) -> list[dict[str, str]]:
     """按完整邮箱检索所有页面，并仅保留精确同邮箱行。"""
     matched: dict[str, dict[str, str]] = {}
-    page = 1
-    total: int | None = None
-    while page <= _MAX_ACCOUNT_PAGES:
-        body = _request_json(
-            config,
-            "get",
-            "/api/accounts",
-            stage="find_account",
-            checkpoint=checkpoint,
-            params={
-                "page": page,
-                "page_size": _PAGE_SIZE,
-                "keyword": email,
-                "status": "all",
-                "group_id": "all",
-                "memory_state": "all",
-            },
-        )
-        items = body.get("items")
-        raw_total = body.get("total")
-        if isinstance(raw_total, bool):
-            raise C2AError("find_account", "c2a_response_invalid", "C2A 账号列表分页信息无效", backend_identity=config.backend_identity)
-        try:
-            current_total = int(raw_total)
-        except (TypeError, ValueError):
-            raise C2AError("find_account", "c2a_response_invalid", "C2A 账号列表分页信息无效", backend_identity=config.backend_identity) from None
-        if current_total < 0 or not isinstance(items, list):
-            raise C2AError("find_account", "c2a_response_invalid", "C2A 账号列表格式无效", backend_identity=config.backend_identity)
-        if total is None:
-            total = current_total
-        elif total != current_total:
-            raise C2AError("find_account", "c2a_response_invalid", "C2A 账号列表在查询期间发生变化，请重新同步", backend_identity=config.backend_identity)
+    for items in _account_pages(config, keyword=email, stage="find_account", checkpoint=checkpoint):
         for item in items:
-            if not isinstance(item, dict):
-                raise C2AError("find_account", "c2a_response_invalid", "C2A 账号列表包含无效记录", backend_identity=config.backend_identity)
             remote_email = str(item.get("email") or "").strip().casefold()
             if remote_email != email:
                 continue
@@ -358,10 +414,7 @@ def _list_matching_accounts(
             except ValueError:
                 raise C2AError("find_account", "c2a_response_invalid", "C2A 同邮箱账号缺少有效管理 ID", backend_identity=config.backend_identity) from None
             matched[remote_id.casefold()] = {"id": remote_id, "email": remote_email}
-        if total <= page * _PAGE_SIZE:
-            return list(matched.values())
-        page += 1
-    raise C2AError("find_account", "c2a_pagination_limit", "C2A 账号查询超过分页保护上限", backend_identity=config.backend_identity)
+    return list(matched.values())
 
 
 def find_unique_account(
@@ -389,6 +442,131 @@ def find_unique_account(
             backend_identity=config.backend_identity,
         )
     return {**matches[0], "backend_identity": config.backend_identity}
+
+
+def _account_sync_metadata(
+    item: Any, config: _ClientConfig, stage: str, *, remote_account_id: str | None = None,
+) -> dict[str, Any]:
+    """只投影远端账号选择与 AT 巡检需要的字段。"""
+    invalid = _invalid_account_response(
+        config, stage, "C2A 账号状态格式无效", remote_account_id=remote_account_id,
+    )
+    if not isinstance(item, dict):
+        raise invalid
+    try:
+        account_id = validate_remote_account_id(item.get("id"))
+    except C2AError:
+        raise invalid from None
+    email = item.get("email")
+    enabled = item.get("enabled")
+    if not isinstance(email, str) or type(enabled) is not bool:
+        raise invalid
+    statuses = {
+        "backend_status": _BACKEND_STATUSES,
+        "status_category": _STATUS_CATEGORIES,
+        "access_token_status": _AT_STATUSES,
+        "credential_availability": {"usable", "recoverable", "unavailable"},
+    }
+    result = {"id": account_id, "email": email.strip().casefold(), "enabled": enabled}
+    for key, choices in statuses.items():
+        value = item.get(key)
+        if not isinstance(value, str) or value not in choices:
+            raise invalid
+        result[key] = value
+    for key in ("access_token_issued_at", "access_token_expires_at"):
+        value = item.get(key)
+        if key not in item or (value is not None and (type(value) is not int or value <= 0)):
+            raise invalid
+        result[key] = value
+    reason = item.get("status_reason_code")
+    can_refresh = item.get("can_refresh_access_token")
+    group_id = item.get("group_id", "")
+    if not isinstance(reason, str) or not isinstance(group_id, str) or type(can_refresh) is not bool:
+        raise invalid
+    return {
+        **result,
+        "status_reason_code": reason,
+        "can_refresh_access_token": can_refresh,
+        "group_id": group_id,
+    }
+
+
+def list_configured_accounts(
+    *,
+    expected_backend: str | None = None,
+    checkpoint: Callable[[], None] | None = None,
+) -> list[dict[str, Any]]:
+    """读取 C2A 全部分页，包括仍显示正常的 AT 过期账号。"""
+    config = _capture_config(expected_backend)
+    rows: list[dict[str, Any]] = []
+    visited_ids: set[str] = set()
+    stage = "list_accounts"
+    for items in _account_pages(config, keyword="", stage=stage, checkpoint=checkpoint, verify_full_page=True):
+        for item in items:
+            row = _account_sync_metadata(item, config, stage)
+            account_id = row["id"].casefold()
+            if account_id in visited_ids:
+                raise _invalid_account_response(config, stage, "C2A 账号列表在查询期间出现重复管理 ID，请重新扫描")
+            visited_ids.add(account_id)
+            rows.append(row)
+    return rows
+
+
+def get_account_sync_state(
+    remote_id: str,
+    email: str,
+    access_token: str,
+    *,
+    expected_backend: str | None = None,
+    checkpoint: Callable[[], None] | None = None,
+) -> dict[str, Any]:
+    """按原管理 ID 核验邮箱和启用状态，只返回 AT 比对结果。"""
+    account_id = validate_remote_account_id(remote_id)
+    expected_email = _normalized_email(email)
+    token = str(access_token or "").strip()
+    if not token:
+        raise C2AError("get_account", "c2a_local_access_token_missing", "本地账号缺少可比对的 AT", remote_account_id=account_id)
+    config = _capture_config(expected_backend)
+    path = f"/api/accounts/{account_id}"
+    payload = _request_json(
+        config, "get", path, stage="get_account", checkpoint=checkpoint,
+        remote_account_id=account_id, allow_redirects=False,
+    )
+    row = _account_sync_metadata(payload.get("item"), config, "get_account", remote_account_id=account_id)
+    if row["id"] != account_id:
+        raise _invalid_account_response(
+            config, "get_account", "C2A 账号详情与请求的管理 ID 不一致",
+            remote_account_id=account_id,
+        )
+    if row["email"] != expected_email:
+        raise C2AError(
+            "get_account", "c2a_remote_account_identity_changed", "C2A 原管理 ID 的邮箱已变化",
+            backend_identity=config.backend_identity, remote_account_id=account_id,
+        )
+    if row["enabled"] is False or row["backend_status"] == "禁用" or row["status_category"] == "disabled":
+        raise C2AError(
+            "get_account", "c2a_remote_account_disabled", "C2A 原目标账号已禁用",
+            backend_identity=config.backend_identity, remote_account_id=account_id,
+        )
+    state = {**row, "backend_identity": config.backend_identity}
+    if row["access_token_status"] == "missing":
+        return {**state, "token_matches": False}
+    credential = _request_json(
+        config, "get", f"{path}/access-token", stage="get_account_access_token",
+        checkpoint=checkpoint, remote_account_id=account_id, allow_redirects=False,
+    )
+    remote_token = credential.get("access_token")
+    if not isinstance(remote_token, str):
+        raise _invalid_account_response(
+            config, "get_account_access_token", "C2A 账号 AT 响应缺少有效数据",
+            remote_account_id=account_id,
+        )
+    if not remote_token.strip():
+        raise C2AError(
+            "get_account_access_token", "c2a_remote_access_token_missing", "C2A 原账号的 AT 暂不可读取",
+            backend_identity=config.backend_identity, remote_account_id=account_id,
+        )
+    return {**state, "token_matches": remote_token.strip() == token}
 
 
 def _confirmed_update(body: dict[str, Any], remote_id: str) -> bool:
@@ -452,6 +630,7 @@ def update_account_access_token(
         stage="update_account",
         checkpoint=checkpoint,
         remote_account_id=account_id,
+        allow_redirects=False,
         json={"id": account_id, "access_token": token},
     )
     if not _confirmed_update(body, account_id):

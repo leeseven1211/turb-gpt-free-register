@@ -5,7 +5,7 @@ import type {ConfigDraftOwner, ConfigOption, ConfigSaveOutcome} from './contract
 
 export type ConfigActionName = 'extractTypes' | 'roxy' | 'proxy' | 'butler' | 'huanguangExtraction'
   | 'huanguangPayment' | 'huanguangXxsyun' | 'xxsyunBalance' | 'sentinel' | 'sub2api'
-  | 'concurrency' | 'concurrencyPreview' | 'sub2apiGroups';
+  | 'c2a' | 'concurrency' | 'concurrencyPreview' | 'sub2apiGroups';
 export type PollingAction = 'sentinel' | 'concurrency';
 export interface ConfigActionReceipt {accepted: true; task_id: TaskId; run_id?: TaskId | null}
 export interface ConfigActionState {
@@ -40,6 +40,8 @@ export interface ConfigActions {
   checkSentinel(): Promise<void>;
   refreshSub2Api(): Promise<void>;
   checkSub2Api(): Promise<void>;
+  refreshC2a(): Promise<void>;
+  checkC2a(): Promise<void>;
   refreshConcurrency(options?: {details?: boolean}): Promise<void>;
   loadConcurrencyPreview(): Promise<void>;
   applyConcurrencyPreview(): string[];
@@ -50,7 +52,8 @@ export interface ConfigActions {
   dispose(): void;
 }
 
-const NAMES: ConfigActionName[] = ['extractTypes', 'roxy', 'proxy', 'butler', 'huanguangExtraction', 'huanguangPayment', 'huanguangXxsyun', 'xxsyunBalance', 'sentinel', 'sub2api', 'concurrency', 'concurrencyPreview', 'sub2apiGroups'];
+const NAMES: ConfigActionName[] = ['extractTypes', 'roxy', 'proxy', 'butler', 'huanguangExtraction', 'huanguangPayment', 'huanguangXxsyun', 'xxsyunBalance', 'sentinel', 'sub2api', 'c2a', 'concurrency', 'concurrencyPreview', 'sub2apiGroups'];
+const TRACKED_SUBMISSIONS = new Set<ConfigActionName>(['sentinel', 'sub2api', 'c2a', 'proxy']);
 const CREDENTIAL_KEYS: Partial<Record<ConfigActionName, string[]>> = {
   roxy: ['ROXY_API_BASE', 'ROXY_API_TOKEN'],
   proxy: ['PROXY_POOL_SOURCE', 'PROXY_POOL_DEFAULT_COUNTRY', 'PROXY_1024_API_URL', 'PROXY_1024_PROTOCOL', 'PROXY_1024_SESSION_MINUTES', 'PROXY_1024_VALIDATE', 'PROXY_711_API_URL', 'PROXY_711_PROTOCOL', 'PROXY_711_SESSION_MINUTES'],
@@ -124,6 +127,7 @@ export function createConfigActions(owner: ConfigDraftOwner, dependencies: Confi
       if (keys.some(key => event.keys.includes(key))) invalidate(name);
     }
     if(event.keys.some(key=>['SUB2API_API_BASE','SUB2API_API_KEY','SUB2API_API_TIMEOUT'].includes(key)))invalidate('sub2apiGroups');
+    if (event.keys.some(key => key.startsWith('C2A_API_') || key.startsWith('C2A_MONITOR_'))) invalidate('c2a');
     if (event.keys.some(key => owner.field(key)?.group === '并发控制')) invalidate('concurrencyPreview');
   }));
   function publishReceipt(raw: Record<string, unknown>, label: string): ConfigActionReceipt | null {
@@ -149,11 +153,11 @@ export function createConfigActions(owner: ConfigDraftOwner, dependencies: Confi
     if (disposed) return Promise.resolve();
     // A queued refresh may replace the read generation while an accepted
     // submission is still pending. Track the POST independently of that read.
-    const tracksSubmission = behavior.posting && ['sentinel', 'sub2api', 'proxy'].includes(name);
+    const tracksSubmission = behavior.posting && TRACKED_SUBMISSIONS.has(name);
     const submitted = tracksSubmission ? submissions.get(name) : undefined;
     if (submitted) return submitted;
     const previous = inflight.get(name);
-    if (previous?.generation === generations[name] || (previous?.posting && behavior.posting && ['sentinel', 'sub2api', 'proxy'].includes(name))) return previous.promise;
+    if (previous?.generation === generations[name] || (previous?.posting && tracksSubmission)) return previous.promise;
     const generation = ++generations[name];
     const controller = behavior.posting ? undefined : new AbortController();
     states[name].loading = !behavior.posting; states[name].posting = !!behavior.posting; states[name].error = '';
@@ -312,6 +316,33 @@ export function createConfigActions(owner: ConfigDraftOwner, dependencies: Confi
   }
   function refreshSub2Api() {return sub2api(false);}
   function checkSub2Api() {return sub2api(true);}
+  function refreshC2a() {
+    return run('c2a', '/api/c2a/automation', {method: 'GET'}, {apply: response => {
+      const monitor = record(response.monitor);
+      if (typeof monitor.enabled !== 'boolean') invalid();
+      states.c2a.snapshot = monitor;
+      const enabled = `自动巡检${monitor.enabled ? '已开启' : '已关闭'}`;
+      if (monitor.error_code === 'c2a_config_invalid') {
+        states.c2a.text = `${enabled}。请检查并保存 C2A 连接配置。`;
+        return;
+      }
+      if (!monitor.state_available) {
+        states.c2a.text = `${enabled}。修复状态暂不可用，请稍后重试。`;
+        return;
+      }
+      const stages = record(monitor.repair_stages);
+      const stageCount = (key: string) => count(stages[key]) ? stages[key] : 0;
+      states.c2a.text = `${enabled}。待提交刷新 ${stageCount('refresh_pending')}，等待刷新 ${stageCount('refresh_wait')}，刷新冷却 ${stageCount('refresh_retry')}，同步待完成 ${stageCount('sync_wait')}，已结束 ${stageCount('done')}，已取消 ${stageCount('cancelled')}。`;
+    }, error: () => '暂时无法读取 C2A 巡检状态，请稍后重试。'});
+  }
+  function checkC2a() {
+    return run('c2a', '/api/c2a/automation/check', post({}), {posting: true, label: 'C2A 异常巡检', apply: (_response, receipt) => {
+      if (!receipt) invalid();
+      states.c2a.text = `C2A 异常巡检已入队 · 任务 #${receipt.task_id}。扫描结果在任务回执中更新。`;
+    }, error: error => record(error).code === 'c2a_config_invalid' || record(error).error_code === 'c2a_config_invalid'
+      ? 'C2A 连接配置无效，请检查并保存 API 基址和管理员 Key。'
+      : 'C2A 巡检暂时无法入队，请稍后重试。'});
+  }
   function loadConcurrencyPreview() {
     return run('concurrencyPreview', '/api/config/concurrency-preview', {method: 'GET'}, {apply: response => {states.concurrencyPreview.snapshot = response;}, error: () => '迁移预览暂不可用，请刷新重试。'});
   }
@@ -373,5 +404,5 @@ export function createConfigActions(owner: ConfigDraftOwner, dependencies: Confi
     for (const name of NAMES) invalidate(name, true);
   }
   return {states, sub2apiGroups:computed(()=>(states.sub2apiGroups.snapshot?.options||[]) as ConfigOption[]), querySub2ApiGroups, extractTypeOptions: computed(() => (states.extractTypes.snapshot?.options || []) as ConfigOption[]), roxyWorkspaces: computed(() => (states.roxy.snapshot?.items || []) as RoxyWorkspace[]),
-    loadExtractTypes, loadRoxyWorkspaces, saveRoxySelection, testProxy, testButler, queryHuanguangQuota, queryHuanguangXxsyun, queryXxsyunBalance, refreshSentinel, checkSentinel, refreshSub2Api, checkSub2Api, refreshConcurrency, loadConcurrencyPreview, applyConcurrencyPreview, locateConcurrencyTasks, setVisible, setForeground, setPageActive, dispose};
+    loadExtractTypes, loadRoxyWorkspaces, saveRoxySelection, testProxy, testButler, queryHuanguangQuota, queryHuanguangXxsyun, queryXxsyunBalance, refreshSentinel, checkSentinel, refreshSub2Api, checkSub2Api, refreshC2a, checkC2a, refreshConcurrency, loadConcurrencyPreview, applyConcurrencyPreview, locateConcurrencyTasks, setVisible, setForeground, setPageActive, dispose};
 }

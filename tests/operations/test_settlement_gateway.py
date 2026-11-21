@@ -507,6 +507,7 @@ def test_legacy_runtime_starts_owned_settlement_before_recovery_without_implicit
     from webui import runtime
     from core.operations import settlement
     from core.runtime import process,execution_access
+    from core.storage import c2a
     from core.storage.operations import bulk
     events=[]
     def recovery(logger):
@@ -519,20 +520,24 @@ def test_legacy_runtime_starts_owned_settlement_before_recovery_without_implicit
          patch.object(runtime,"_legacy_settlement_atexit_registered",False), \
          patch.object(runtime.operation_task_store,"init",side_effect=lambda:events.append("storage")), \
          patch.object(bulk,"init",side_effect=lambda:events.append("bulk")), \
+         patch.object(c2a,"init",side_effect=lambda:events.append("c2a")), \
          patch.object(settlement,"start_runtime",side_effect=lambda:events.append("settlement") or True), \
          patch.object(runtime.reconciliation,"recover_before_handlers",side_effect=recovery), \
          patch("atexit.register"):
         with pytest.raises(RuntimeError,match="stop synthetic"):
             runtime.start_runtime()
-    assert events == ["storage","bulk","settlement","recovery"]
+    assert events == ["storage","bulk","c2a","settlement","recovery"]
 
 
 def test_legacy_runtime_stop_never_reports_clean_while_legacy_producers_remain():
     from webui import runtime
+    from core.integrations.c2a import monitor
     from core.runtime import process
     with patch.object(process,"get_runtime_context",return_value=None), \
-         patch.object(runtime,"_runtime_started",True):
+         patch.object(runtime,"_runtime_started",True), \
+         patch.object(monitor, "stop_periodic_monitor", return_value=True) as stop_monitor:
         assert runtime.stop_runtime(timeout=0.01) is False
+        stop_monitor.assert_called_once_with(timeout=0.01)
 
 
 def test_context_cancellation_uses_original_domain_even_outside_handler_scope():

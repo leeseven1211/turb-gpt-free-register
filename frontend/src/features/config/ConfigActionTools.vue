@@ -3,7 +3,7 @@ import {computed, onBeforeUnmount, watch} from 'vue';
 import type {ConfigDraftOwner} from './contracts';
 import type {ConfigActions, PollingAction} from './configActions';
 import {formatDateTime} from '../../shared/time';
-const props = withDefaults(defineProps<{owner: ConfigDraftOwner; actions: ConfigActions; tool: 'roxy'|'proxy'|'butler'|'sentinel'|'sub2api'|'concurrency'; active?: boolean}>(), {active: true});
+const props = withDefaults(defineProps<{owner: ConfigDraftOwner; actions: ConfigActions; tool: 'roxy'|'proxy'|'butler'|'sentinel'|'sub2api'|'c2a'|'concurrency'; active?: boolean}>(), {active: true});
 const state = computed(() => props.actions.states[props.tool]);
 const busy = computed(() => state.value.loading || state.value.posting);
 const record = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -78,6 +78,13 @@ const waitReason = (value: unknown) => {
     <template v-else-if="tool === 'sub2api'">
       <strong>同步与异常巡检</strong><p class="hint">使用已保存配置检查远端异常账号，修复进度可在任务中心查看。</p>
       <div class="config-tool-controls"><button type="button" class="btn" :disabled="busy" @click="actions.refreshSub2Api()">查看状态</button><button type="button" class="btn" data-config-action="check-sub2api" :disabled="busy" @click="actions.checkSub2Api()">立即巡检</button></div>
+    </template>
+    <template v-else-if="tool === 'c2a'">
+      <p class="hint">立即巡检使用已保存的 C2A 配置，扫描和修复任务可在任务中心查看。</p>
+      <div class="config-tool-controls">
+        <button type="button" class="btn" :disabled="busy" @click="actions.refreshC2a()">查看状态</button>
+        <button type="button" class="btn" data-config-action="check-c2a" :disabled="busy" @click="actions.checkC2a()">立即巡检</button>
+      </div>
     </template>
     <template v-else-if="tool === 'concurrency'">
       <strong>并发运行状态</strong>

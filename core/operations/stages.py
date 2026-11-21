@@ -91,6 +91,8 @@ STAGES: dict[str, dict[str, str]] = {
     "credential_confirm": {"label": "确认远端凭证", "group": "codex"},
     "credential_persist": {"label": "保存凭证", "group": "codex"},
     "sub2api_sync": {"label": "上传并启用 Sub2API", "group": "codex"},
+    "c2a_scan": {"label": "读取 C2A 异常账号", "group": "account"},
+    "c2a_repair": {"label": "调度 C2A 修复", "group": "account"},
     "c2a_safety": {"label": "确认 C2A 安全策略", "group": "codex"},
     "c2a_resolve": {"label": "定位 C2A 账号", "group": "codex"},
     "c2a_update": {"label": "更新 C2A AT", "group": "codex"},
@@ -205,6 +207,9 @@ TASK_TEMPLATES: _FLOW = {
         _s("refresh_token", depends_on=("authenticate",)), _s("token", depends_on=("refresh_token",)),
     ),
     "codex_token_refresh": _flow(_s("preflight"), _s("refresh_token", depends_on=("preflight",)), _s("credential", "credential_confirm", "credential_persist", depends_on=("refresh_token",))),
+    "c2a_scan": _flow(
+        _s("preflight"), _s("c2a_scan", depends_on=("preflight",)), _s("c2a_repair", depends_on=("c2a_scan",)),
+    ),
     "c2a_session_reimport": _flow(_s("preflight"), _s("c2a_resolve", depends_on=("preflight",)), _s("c2a_safety", depends_on=("c2a_resolve",)), _s("c2a_update", depends_on=("c2a_safety",))),
     "plan_check": _flow(
         _s("preflight"), _s("network", depends_on=("preflight",)),

@@ -1,4 +1,4 @@
-import { $ as e, A as t, C as n, E as r, F as i, H as a, J as o, K as s, L as c, M as l, Q as u, S as d, Z as f, _ as p, d as m, et as h, ft as g, g as _, h as v, j as y, lt as b, m as x, n as S, nt as C, o as w, s as T, st as E, t as D, v as O, x as k } from "./_plugin-vue_export-helper-BSZsFlS8.js";
+import { $ as e, A as t, C as n, E as r, F as i, H as a, J as o, K as s, L as c, M as l, Q as u, S as d, Z as f, _ as p, d as m, et as h, ft as g, g as _, h as v, j as y, lt as b, m as x, n as S, nt as C, o as w, s as T, st as E, t as D, v as O, x as k } from "./_plugin-vue_export-helper-CBsH_ZoE.js";
 import { n as A } from "./time-DOD6oyhP.js";
 import { r as j } from "./client-B5R_MNgP.js";
 import { a as M, n as N, r as P } from "./taskIds-BlchWwUp.js";
@@ -190,7 +190,7 @@ function ne(e) {
 function re(e) {
 	return ["CODEX_OAUTH_DRIVER", "CODEX_AUTH_URL_SOURCE"].includes(e) ? ["基础配置", "Codex 授权驱动和授权地址来源配置"] : e.startsWith("CODEX_TOKEN_") ? ["Token 自动刷新", "使用 refresh_token 提前换新 Codex access token，不重新登录、不消耗邮箱 OTP 或短信"] : e.startsWith("CPA_") ? ["CPA配置", "CPA 授权链接生成、回调上传和管理接口配置"] : e.startsWith("SUB2API_") || e === "CODEX_OAUTH_AUTO_UPLOAD_SUB2API" ? ["sub2api", "sub2api 的 API 基址、鉴权和超时配置；用于 Codex OAuth 授权和凭证上传"] : ["基础配置", ""];
 }
-var V = new Map(z), ie = new Set(L), ae = "gpt_console_config_group", oe = {
+var ie = new Map(z), ae = new Set(L), V = "gpt_console_config_group", oe = {
 	legacy: "虾扯蛋链",
 	lumen_flow: "流光",
 	huanguang: "幻光",
@@ -206,7 +206,7 @@ var V = new Map(z), ie = new Set(L), ae = "gpt_console_config_group", oe = {
 	"711proxy": "PROXY_711_"
 };
 function H(e) {
-	return ie.has(e.key) ? "注册与账号" : V.get(e.key) || e.group || "其他";
+	return ae.has(e.key) ? "注册与账号" : ie.get(e.key) || e.group || "其他";
 }
 function U(e) {
 	if (F[e]) return e;
@@ -359,6 +359,16 @@ function xe(e, t, n) {
 }
 var Se = {
 	...R,
+	C2A: [["C2A 连接", [
+		"C2A_API_BASE",
+		"C2A_API_KEY",
+		"C2A_API_TIMEOUT"
+	]], ["异常巡检", [
+		"C2A_MONITOR_ENABLED",
+		"C2A_MONITOR_INTERVAL_SECONDS",
+		"C2A_MONITOR_COOLDOWN_SECONDS",
+		"C2A_MONITOR_MAX_PER_CYCLE"
+	]]],
 	注册主链路: [["注册基础流程", [
 		"REGISTRATION_DRIVER",
 		"REGISTRATION_COUNTRY",
@@ -1059,19 +1069,19 @@ var Te = {
 }), Et = ["data-config-tool", "aria-busy"], Dt = { class: "config-tool-controls" }, Ot = ["value", "disabled"], kt = ["value"], At = ["value"], jt = ["disabled"], Mt = ["disabled"], Nt = {
 	key: 0,
 	role: "status"
-}, Pt = ["disabled"], Ft = ["disabled"], It = { class: "config-tool-controls" }, Lt = ["disabled"], Rt = ["disabled"], zt = { class: "config-tool-facts" }, Bt = { class: "config-tool-controls" }, Vt = ["disabled"], Ht = ["disabled"], Ut = { class: "config-tool-controls" }, Wt = ["disabled"], Gt = ["disabled"], Kt = {
+}, Pt = ["disabled"], Ft = ["disabled"], It = { class: "config-tool-controls" }, Lt = ["disabled"], Rt = ["disabled"], zt = { class: "config-tool-facts" }, Bt = { class: "config-tool-controls" }, Vt = ["disabled"], Ht = ["disabled"], Ut = { class: "config-tool-controls" }, Wt = ["disabled"], Gt = ["disabled"], Kt = { class: "config-tool-controls" }, qt = ["disabled"], Jt = ["disabled"], Yt = {
 	key: 0,
 	class: "hint"
-}, qt = {
+}, Xt = {
 	key: 1,
 	class: "config-migration-preview"
-}, Jt = ["disabled"], Yt = ["disabled"], Xt = {
+}, Zt = ["disabled"], Qt = ["disabled"], $t = {
 	key: 2,
 	class: "config-concurrency-types"
-}, Zt = { key: 0 }, Qt = { key: 1 }, $t = ["onClick"], en = { key: 3 }, tn = {
+}, en = { key: 0 }, tn = { key: 1 }, nn = ["onClick"], rn = { key: 3 }, an = {
 	key: 4,
 	role: "status"
-}, nn = /*#__PURE__*/ D(/* @__PURE__ */ n({
+}, on = /*#__PURE__*/ D(/* @__PURE__ */ n({
 	__name: "ConfigActionTools",
 	props: {
 		owner: {},
@@ -1140,10 +1150,10 @@ var Te = {
 			"data-config-tool": e.tool,
 			"aria-busy": r.value
 		}, [e.tool === "roxy" ? (i(), O(m, { key: 0 }, [
-			a[12] ||= v("strong", null, "团队 / 项目选择", -1),
-			a[13] ||= v("p", { class: "hint" }, "获取已保存连接中的团队与项目，选择后单独保存。", -1),
+			a[14] ||= v("strong", null, "团队 / 项目选择", -1),
+			a[15] ||= v("p", { class: "hint" }, "获取已保存连接中的团队与项目，选择后单独保存。", -1),
 			v("div", Dt, [
-				v("label", null, [a[11] ||= k("团队 / 项目", -1), v("select", {
+				v("label", null, [a[13] ||= k("团队 / 项目", -1), v("select", {
 					"aria-label": "团队 / 项目",
 					value: u.value,
 					disabled: r.value || !!S.value,
@@ -1172,8 +1182,8 @@ var Te = {
 			]),
 			S.value ? (i(), O("p", Nt, g(S.value), 1)) : p("", !0)
 		], 64)) : e.tool === "proxy" ? (i(), O(m, { key: 1 }, [
-			a[14] ||= v("strong", null, "代理供应商本地联调", -1),
-			a[15] ||= v("p", { class: "hint" }, "会实际提取并检测 1 个 IP，可能产生少量流量或配额消耗。API 请求会绕过系统代理。", -1),
+			a[16] ||= v("strong", null, "代理供应商本地联调", -1),
+			a[17] ||= v("p", { class: "hint" }, "会实际提取并检测 1 个 IP，可能产生少量流量或配额消耗。API 请求会绕过系统代理。", -1),
 			v("button", {
 				type: "button",
 				class: "btn",
@@ -1181,15 +1191,15 @@ var Te = {
 				disabled: r.value,
 				onClick: a[1] ||= (t) => e.actions.testProxy()
 			}, g(r.value ? "正在测试…" : "提取并测试 1 个 IP"), 9, Pt)
-		], 64)) : e.tool === "butler" ? (i(), O(m, { key: 2 }, [a[16] ||= v("strong", null, "Email Butler 连接与权限", -1), v("button", {
+		], 64)) : e.tool === "butler" ? (i(), O(m, { key: 2 }, [a[18] ||= v("strong", null, "Email Butler 连接与权限", -1), v("button", {
 			type: "button",
 			class: "btn",
 			"data-config-action": "test-butler",
 			disabled: r.value,
 			onClick: a[2] ||= (t) => e.actions.testButler()
 		}, g(r.value ? "正在检测…" : "测试连接与权限"), 9, Ft)], 64)) : e.tool === "sentinel" ? (i(), O(m, { key: 3 }, [
-			a[23] ||= v("strong", null, "Sentinel 检查", -1),
-			a[24] ||= v("p", { class: "hint" }, "手动获取候选资源；不自动切换现用版本。", -1),
+			a[25] ||= v("strong", null, "Sentinel 检查", -1),
+			a[26] ||= v("p", { class: "hint" }, "手动获取候选资源；不自动切换现用版本。", -1),
 			v("div", It, [v("button", {
 				type: "button",
 				class: "btn",
@@ -1203,22 +1213,22 @@ var Te = {
 				onClick: a[4] ||= (t) => e.actions.refreshSentinel()
 			}, "刷新状态", 8, Rt)]),
 			v("dl", zt, [
-				a[17] ||= v("dt", null, "当前内置版本", -1),
+				a[19] ||= v("dt", null, "当前内置版本", -1),
 				v("dd", null, g(s(T.value.version, "读取后显示")), 1),
-				a[18] ||= v("dt", null, "发现版本", -1),
+				a[20] ||= v("dt", null, "发现版本", -1),
 				v("dd", null, g(s(w.value.version, "尚未发现")), 1),
-				a[19] ||= v("dt", null, "上次检查时间", -1),
+				a[21] ||= v("dt", null, "上次检查时间", -1),
 				v("dd", null, g(M.value), 1),
-				a[20] ||= v("dt", null, "版本比较", -1),
+				a[22] ||= v("dt", null, "版本比较", -1),
 				v("dd", null, g(D.value), 1),
-				a[21] ||= v("dt", null, "generic 静态检查", -1),
+				a[23] ||= v("dt", null, "generic 静态检查", -1),
 				v("dd", null, g(j(w.value.generic_status)), 1),
-				a[22] ||= v("dt", null, "Proto2 静态检查", -1),
+				a[24] ||= v("dt", null, "Proto2 静态检查", -1),
 				v("dd", null, g(j(w.value.proto2_status)), 1)
 			])
 		], 64)) : e.tool === "sub2api" ? (i(), O(m, { key: 4 }, [
-			a[25] ||= v("strong", null, "同步与异常巡检", -1),
-			a[26] ||= v("p", { class: "hint" }, "使用已保存配置检查远端异常账号，修复进度可在任务中心查看。", -1),
+			a[27] ||= v("strong", null, "同步与异常巡检", -1),
+			a[28] ||= v("p", { class: "hint" }, "使用已保存配置检查远端异常账号，修复进度可在任务中心查看。", -1),
 			v("div", Bt, [v("button", {
 				type: "button",
 				class: "btn",
@@ -1231,108 +1241,119 @@ var Te = {
 				disabled: r.value,
 				onClick: a[6] ||= (t) => e.actions.checkSub2Api()
 			}, "立即巡检", 8, Ht)])
-		], 64)) : e.tool === "concurrency" ? (i(), O(m, { key: 5 }, [
-			a[27] ||= v("strong", null, "并发运行状态", -1),
-			v("div", Ut, [v("button", {
+		], 64)) : e.tool === "c2a" ? (i(), O(m, { key: 5 }, [a[29] ||= v("p", { class: "hint" }, "立即巡检使用已保存的 C2A 配置，扫描和修复任务可在任务中心查看。", -1), v("div", Ut, [v("button", {
+			type: "button",
+			class: "btn",
+			disabled: r.value,
+			onClick: a[7] ||= (t) => e.actions.refreshC2a()
+		}, "查看状态", 8, Wt), v("button", {
+			type: "button",
+			class: "btn",
+			"data-config-action": "check-c2a",
+			disabled: r.value,
+			onClick: a[8] ||= (t) => e.actions.checkC2a()
+		}, "立即巡检", 8, Gt)])], 64)) : e.tool === "concurrency" ? (i(), O(m, { key: 6 }, [
+			a[30] ||= v("strong", null, "并发运行状态", -1),
+			v("div", Kt, [v("button", {
 				type: "button",
 				class: "btn",
 				disabled: r.value,
-				onClick: a[7] ||= (t) => e.actions.refreshConcurrency()
-			}, "刷新状态", 8, Wt), v("button", {
+				onClick: a[9] ||= (t) => e.actions.refreshConcurrency()
+			}, "刷新状态", 8, qt), v("button", {
 				type: "button",
 				class: "btn",
 				disabled: r.value,
-				onClick: a[8] ||= (t) => e.actions.refreshConcurrency({ details: !0 })
-			}, "查看附加限制", 8, Gt)]),
-			n.value.snapshot ? (i(), O("p", Kt, "部署范围 " + g(s(o(n.value.snapshot.scope).label || n.value.snapshot.scope, "当前部署")) + " · 策略版本 " + g(s(n.value.snapshot.policy_revision)) + " · 观察时间 " + g(E(A)(n.value.snapshot.observed_at)), 1)) : p("", !0),
-			a[28] ||= v("p", { class: "config-section-v2-subhelp" }, "各类型上限是上限，不预留配额，合计可以超过全局。内部同步刷新 AT、查套餐与后处理归属巡检、提链或注册父任务，复用父任务许可；独立子任务按实际动作重新排队。", -1),
-			F.value.snapshot?.migration_required || n.value.snapshot?.migration_required ? (i(), O("div", qt, [
+				onClick: a[10] ||= (t) => e.actions.refreshConcurrency({ details: !0 })
+			}, "查看附加限制", 8, Jt)]),
+			n.value.snapshot ? (i(), O("p", Yt, "部署范围 " + g(s(o(n.value.snapshot.scope).label || n.value.snapshot.scope, "当前部署")) + " · 策略版本 " + g(s(n.value.snapshot.policy_revision)) + " · 观察时间 " + g(E(A)(n.value.snapshot.observed_at)), 1)) : p("", !0),
+			a[31] ||= v("p", { class: "config-section-v2-subhelp" }, "各类型上限是上限，不预留配额，合计可以超过全局。内部同步刷新 AT、查套餐与后处理归属巡检、提链或注册父任务，复用父任务许可；独立子任务按实际动作重新排队。", -1),
+			F.value.snapshot?.migration_required || n.value.snapshot?.migration_required ? (i(), O("div", Xt, [
 				v("p", null, "新策略需要完整保存。历史账号池上限：" + g(s(F.value.snapshot?.legacy_account_workers, "未记录")), 1),
 				(i(!0), O(m, null, c(Array.isArray(F.value.snapshot?.notes) ? F.value.snapshot.notes : [], (e, t) => (i(), O("p", { key: t }, g(s(e, "")), 1))), 128)),
 				v("button", {
 					type: "button",
 					class: "btn",
 					disabled: !F.value.snapshot,
-					onClick: a[9] ||= (t) => e.actions.applyConcurrencyPreview()
-				}, "填入迁移建议", 8, Jt),
+					onClick: a[11] ||= (t) => e.actions.applyConcurrencyPreview()
+				}, "填入迁移建议", 8, Zt),
 				F.value.error ? (i(), O("button", {
 					key: 0,
 					type: "button",
 					class: "btn",
 					disabled: F.value.loading,
-					onClick: a[10] ||= (t) => e.actions.loadConcurrencyPreview()
-				}, "重试迁移预览", 8, Yt)) : p("", !0)
+					onClick: a[12] ||= (t) => e.actions.loadConcurrencyPreview()
+				}, "重试迁移预览", 8, Qt)) : p("", !0)
 			])) : p("", !0),
-			N.value.length ? (i(), O("ul", Xt, [(i(!0), O(m, null, c(N.value, (t) => (i(), O("li", { key: s(t.key) }, [v("div", null, [
+			N.value.length ? (i(), O("ul", $t, [(i(!0), O(m, null, c(N.value, (t) => (i(), O("li", { key: s(t.key) }, [v("div", null, [
 				v("strong", null, g(s(t.label || t.key)), 1),
 				v("span", null, "占用 " + g(t.occupied ?? 0) + " / " + g(t.limit ?? "—") + " · 排队 " + g(t.queued ?? 0) + g(t.draining ? " · 等待现有任务结束" : ""), 1),
-				Number(e.owner.readField(s(t.config_key))) > Number(o(n.value.snapshot?.global).limit) ? (i(), O("small", Zt, "当前实际最多受全局 " + g(o(n.value.snapshot?.global).limit) + " 限制；保存后的类型值仍会保留。", 1)) : p("", !0),
-				Array.isArray(t.blocked_by) && t.blocked_by.length ? (i(), O("small", Qt, g(t.blocked_by.map(I).join("；")), 1)) : p("", !0)
+				Number(e.owner.readField(s(t.config_key))) > Number(o(n.value.snapshot?.global).limit) ? (i(), O("small", en, "当前实际最多受全局 " + g(o(n.value.snapshot?.global).limit) + " 限制；保存后的类型值仍会保留。", 1)) : p("", !0),
+				Array.isArray(t.blocked_by) && t.blocked_by.length ? (i(), O("small", tn, g(t.blocked_by.map(I).join("；")), 1)) : p("", !0)
 			]), v("button", {
 				type: "button",
 				class: "btn",
 				onClick: (n) => e.actions.locateConcurrencyTasks(s(t.config_key || t.key))
-			}, "定位任务", 8, $t)]))), 128))])) : p("", !0),
-			P.value.length ? (i(), O("ul", en, [(i(!0), O(m, null, c(P.value, (e, t) => (i(), O("li", { key: t }, g(e.label) + "：" + g(e.occupied) + " / " + g(e.limit), 1))), 128))])) : p("", !0),
-			a[29] ||= v("details", { class: "config-concurrency-details-v2" }, [
+			}, "定位任务", 8, nn)]))), 128))])) : p("", !0),
+			P.value.length ? (i(), O("ul", rn, [(i(!0), O(m, null, c(P.value, (e, t) => (i(), O("li", { key: t }, g(e.label) + "：" + g(e.occupied) + " / " + g(e.limit), 1))), 128))])) : p("", !0),
+			a[32] ||= v("details", { class: "config-concurrency-details-v2" }, [
 				v("summary", null, "业务附加限制与计量说明"),
 				v("p", { class: "hint" }, "注册批次并发填写正整数，提链批次与平台保留 1–50；它们与全局、类型限制同时生效。XXSYUN 未结束订单名额在远端等待时仍占用，本地查询间隔不占执行槽。调试保留、停止清理和已预约执行仍计入占用。"),
 				v("p", { class: "hint" }, "账号补全等待独立子任务时不重复占全局槽；HME 合并扫描按一个扫描 Run 计数；邮箱导入按实际远端交接调用计数。Sub2API 远端账号并发属性在服务集成中维护。")
 			], -1),
-			F.value.text || F.value.error ? (i(), O("p", tn, g(F.value.error || F.value.text), 1)) : p("", !0)
+			F.value.text || F.value.error ? (i(), O("p", an, g(F.value.error || F.value.text), 1)) : p("", !0)
 		], 64)) : p("", !0), v("p", {
 			class: b(["config-action-status", { "config-action-error": n.value.error }]),
 			role: "status",
 			"aria-live": "polite"
 		}, g(n.value.error || n.value.text || (r.value ? "正在请求…" : "尚未查询")), 3)], 8, Et));
 	}
-}), [["__scopeId", "data-v-ecc7ba70"]]), rn = {
+}), [["__scopeId", "data-v-1b08fbba"]]), sn = {
 	key: 0,
 	role: "status"
-}, an = {
+}, cn = {
 	key: 1,
 	class: "config-vue-error",
 	role: "alert"
-}, on = {
+}, ln = {
 	key: 2,
 	class: "config-vue-error",
 	role: "status"
-}, sn = {
+}, un = {
 	key: 3,
 	class: "config-vue-error-summary",
 	role: "alert",
 	tabindex: "-1"
-}, cn = ["onClick"], ln = { class: "config-vue-layout" }, un = {
+}, dn = ["onClick"], fn = { class: "config-vue-layout" }, pn = {
 	key: 0,
 	class: "config-vue-content"
-}, dn = { class: "config-vue-content-header" }, fn = ["aria-label"], pn = [
+}, mn = { class: "config-vue-content-header" }, hn = ["aria-label"], gn = [
 	"data-config-domain-v2",
 	"aria-pressed",
 	"onClick"
-], mn = ["aria-label"], hn = [
+], _n = ["aria-label"], vn = [
 	"data-config-subsection",
 	"aria-pressed",
 	"onClick"
-], gn = ["data-config-section"], _n = {
+], yn = ["data-config-section"], bn = {
 	key: 0,
 	class: "config-vue-pool-rules"
-}, vn = {
+}, xn = {
 	key: 1,
 	class: "config-vue-field"
-}, yn = ["open"], bn = { key: 0 }, xn = {
+}, Sn = ["open"], Cn = { key: 0 }, wn = {
 	key: 4,
 	class: "hint"
-}, Sn = {
+}, Tn = {
 	key: 5,
 	class: "hint"
-}, Cn = {
+}, En = {
 	key: 4,
 	class: "config-vue-savebar"
-}, wn = {
+}, Dn = {
 	class: "config-vue-save-state",
 	role: "status",
 	"aria-live": "polite"
-}, Tn = { key: 0 }, En = { key: 1 }, Dn = { key: 2 }, On = ["disabled"], kn = ["disabled"], An = /* @__PURE__ */ n({
+}, On = { key: 0 }, kn = { key: 1 }, An = { key: 2 }, jn = ["disabled"], Mn = ["disabled"], Nn = /* @__PURE__ */ n({
 	__name: "ConfigPage",
 	props: {
 		owner: {},
@@ -1356,10 +1377,10 @@ var Te = {
 				"PROTOCOL",
 				"SESSION_MINUTES"
 			].map((t) => `${e}${t}`))
-		]), M = x(() => D.value.filter((e) => j.has(e.key))), N = x(() => D.value.filter((e) => !j.has(e.key))), P = x(() => pe(r.owner.fields.value)), I = x(() => P.value.filter((e) => r.owner.readField(e.enabledKey) === !0).map((e) => e.value)), L = x(() => Object.entries(r.owner.fieldErrors)), R = x(() => f.domain === "RoxyBrowser" ? "roxy" : f.domain === "代理与网络" && f.section === "代理来源" && r.owner.readField("PROXY_POOL_SOURCE") !== "manual" ? "proxy" : f.domain === "邮箱 / OTP" && f.section === "Email Butler" ? "butler" : f.domain === "通用配置" ? "sentinel" : f.domain === "Codex" && f.section === "sub2api" ? "sub2api" : f.domain === "并发控制" ? "concurrency" : null);
+		]), M = x(() => D.value.filter((e) => j.has(e.key))), N = x(() => D.value.filter((e) => !j.has(e.key))), P = x(() => pe(r.owner.fields.value)), I = x(() => P.value.filter((e) => r.owner.readField(e.enabledKey) === !0).map((e) => e.value)), L = x(() => Object.entries(r.owner.fieldErrors)), R = x(() => f.domain === "RoxyBrowser" ? "roxy" : f.domain === "代理与网络" && f.section === "代理来源" && r.owner.readField("PROXY_POOL_SOURCE") !== "manual" ? "proxy" : f.domain === "邮箱 / OTP" && f.section === "Email Butler" ? "butler" : f.domain === "通用配置" ? "sentinel" : f.domain === "Codex" && f.section === "sub2api" ? "sub2api" : f.domain === "C2A" ? "c2a" : f.domain === "并发控制" ? "concurrency" : null);
 		function z() {
 			try {
-				localStorage.setItem(ae, f.domain || f.menu);
+				localStorage.setItem(V, f.domain || f.menu);
 			} catch {}
 		}
 		function B() {
@@ -1387,10 +1408,10 @@ var Te = {
 			let t = be(e, r.owner.fields.value, f.menu);
 			!t || f.menu === t.menu && f.domain === t.domain && f.section === t.section || (Object.assign(f, t), B());
 		}
-		function V(e) {
+		function ie(e) {
 			for (let t of P.value) r.owner.setField(t.enabledKey, e.includes(t.value));
 		}
-		async function ie(e) {
+		async function ae(e) {
 			let n = r.owner.field(e);
 			if (!n) return;
 			o.value.trim() && !ye(n, r.owner.fields.value).includes(o.value.trim().toLowerCase()) && (o.value = ""), Object.assign(f, ve(n, r.owner.fields.value)), z(), await t();
@@ -1415,7 +1436,7 @@ var Te = {
 			}
 		}
 		a(() => r.owner.navigationTarget.value, (e) => {
-			e && ie(e.key);
+			e && ae(e.key);
 		}), a(() => r.active, (e) => r.actions.setPageActive(e), { immediate: !0 }), y(() => {
 			r.actions.setPageActive(!1), window.removeEventListener("beforeunload", se);
 		}), a(() => r.owner.fields.value, () => {
@@ -1434,7 +1455,7 @@ var Te = {
 			window.addEventListener("beforeunload", se), r.owner.initialize().catch(() => {}), r.actions.loadExtractTypes();
 		}), n({
 			open: ee,
-			focusField: ie
+			focusField: ae
 		});
 		let H = [
 			[
@@ -1468,17 +1489,17 @@ var Te = {
 			ref: b,
 			class: "config-vue-page"
 		}, [
-			e.owner.loading.value ? (i(), O("p", rn, "正在读取配置…")) : p("", !0),
-			e.owner.error.value ? (i(), O("p", an, g(e.owner.error.value), 1)) : p("", !0),
-			e.owner.refreshError.value ? (i(), O("p", on, [k(g(e.owner.refreshError.value) + " ", 1), v("button", {
+			e.owner.loading.value ? (i(), O("p", sn, "正在读取配置…")) : p("", !0),
+			e.owner.error.value ? (i(), O("p", cn, g(e.owner.error.value), 1)) : p("", !0),
+			e.owner.refreshError.value ? (i(), O("p", ln, [k(g(e.owner.refreshError.value) + " ", 1), v("button", {
 				type: "button",
 				onClick: n[0] ||= (t) => e.owner.refresh({ force: !0 })
 			}, "重新读取配置")])) : p("", !0),
-			L.value.length ? (i(), O("div", sn, [v("strong", null, "请检查 " + g(L.value.length) + " 项配置，草稿已保留", 1), v("ul", null, [(i(!0), O(m, null, c(L.value, ([t, n]) => (i(), O("li", { key: t }, [v("button", {
+			L.value.length ? (i(), O("div", un, [v("strong", null, "请检查 " + g(L.value.length) + " 项配置，草稿已保留", 1), v("ul", null, [(i(!0), O(m, null, c(L.value, ([t, n]) => (i(), O("li", { key: t }, [v("button", {
 				type: "button",
 				onClick: (n) => e.owner.navigateField(t)
-			}, g(e.owner.field(t)?.label || t) + "：" + g(n), 9, cn)]))), 128))])])) : p("", !0),
-			v("div", ln, [d(Me, {
+			}, g(e.owner.field(t)?.label || t) + "：" + g(n), 9, dn)]))), 128))])])) : p("", !0),
+			v("div", fn, [d(Me, {
 				owner: e.owner,
 				active: f.menu,
 				query: o.value,
@@ -1488,7 +1509,7 @@ var Te = {
 				"owner",
 				"active",
 				"query"
-			]), f.domain ? (i(), O("div", un, [v("header", dn, [
+			]), f.domain ? (i(), O("div", pn, [v("header", mn, [
 				v("h2", null, g(f.domain === "注册与账号" ? "查询套餐" : f.domain), 1),
 				s(v("div", {
 					class: "config-vue-tabs config-vue-domains",
@@ -1500,7 +1521,7 @@ var Te = {
 					"data-config-domain-v2": e,
 					"aria-pressed": f.domain === e,
 					onClick: (t) => te(e)
-				}, g(e === "注册与账号" ? "查询套餐" : e), 9, pn))), 128))], 8, fn), [[T, w.value.length > 1]]),
+				}, g(e === "注册与账号" ? "查询套餐" : e), 9, gn))), 128))], 8, hn), [[T, w.value.length > 1]]),
 				E.value.length ? (i(), O("div", {
 					key: 0,
 					class: "config-vue-tabs config-vue-subsections",
@@ -1512,12 +1533,12 @@ var Te = {
 					"data-config-subsection": e,
 					"aria-pressed": f.section === e,
 					onClick: (t) => ne(e)
-				}, g(e), 9, hn))), 128))], 8, mn)) : p("", !0)
+				}, g(e), 9, vn))), 128))], 8, _n)) : p("", !0)
 			]), v("section", {
 				class: "config-vue-editor",
 				"data-config-section": f.domain
 			}, [
-				f.domain === "代理与网络" && f.section === "任务用池" ? (i(), O("table", _n, [
+				f.domain === "代理与网络" && f.section === "任务用池" ? (i(), O("table", bn, [
 					n[1] ||= v("caption", null, "任务用池规则", -1),
 					n[2] ||= v("thead", null, [v("tr", null, [
 						v("th", null, "任务"),
@@ -1526,11 +1547,11 @@ var Te = {
 					])], -1),
 					v("tbody", null, [(i(), O(m, null, c(H, (e) => v("tr", { key: e[0] }, [(i(!0), O(m, null, c(e, (e) => (i(), O("td", { key: e }, g(e), 1))), 128))])), 64))])
 				])) : p("", !0),
-				f.domain === "提链" && f.section === "通用配置" ? (i(), O("div", vn, [n[3] ||= v("div", { class: "config-vue-field-copy" }, [v("label", null, "启用平台"), v("p", { class: "hint" }, "选择允许在提链工作台中使用的平台；取消选择不会清除该平台的地址或 CDK。")], -1), d(He, {
+				f.domain === "提链" && f.section === "通用配置" ? (i(), O("div", xn, [n[3] ||= v("div", { class: "config-vue-field-copy" }, [v("label", null, "启用平台"), v("p", { class: "hint" }, "选择允许在提链工作台中使用的平台；取消选择不会清除该平台的地址或 CDK。")], -1), d(He, {
 					label: "启用平台",
 					values: I.value,
 					options: P.value,
-					onChange: V
+					onChange: ie
 				}, null, 8, ["values", "options"])])) : p("", !0),
 				f.domain === "代理与网络" && f.section === "代理来源" ? (i(), O(m, { key: 2 }, [(i(!0), O(m, null, c(M.value, (t) => (i(), _(Tt, {
 					key: t.key,
@@ -1554,10 +1575,10 @@ var Te = {
 					"owner",
 					"field",
 					"actions"
-				]))), 128))], 8, yn)) : p("", !0)], 64)) : (i(!0), O(m, { key: 3 }, c(A.value, (t) => (i(), O("div", {
+				]))), 128))], 8, Sn)) : p("", !0)], 64)) : (i(!0), O(m, { key: 3 }, c(A.value, (t) => (i(), O("div", {
 					key: t.title,
 					class: "config-vue-setting-group"
-				}, [t.title ? (i(), O("h3", bn, g(t.title), 1)) : p("", !0), (i(!0), O(m, null, c(t.fields, (t) => (i(), _(Tt, {
+				}, [t.title ? (i(), O("h3", Cn, g(t.title), 1)) : p("", !0), (i(!0), O(m, null, c(t.fields, (t) => (i(), _(Tt, {
 					key: t.key,
 					owner: e.owner,
 					field: t,
@@ -1569,9 +1590,9 @@ var Te = {
 					"actions",
 					"legacy"
 				]))), 128))]))), 128)),
-				f.domain === "邮箱 / OTP" && f.section === "iCloud 隐藏邮箱" ? (i(), O("p", xn, "隐藏邮箱的创建、状态与管理请在邮箱服务（Email Butler）中完成。本页只维护已导入与历史邮箱的固定收件连接。")) : p("", !0),
-				f.domain === "注册调试" ? (i(), O("p", Sn, "“调试模式”仍是单个注册批次的现场保留开关，本页只控制失败诊断、保留时长和抓包预算。")) : p("", !0),
-				R.value ? (i(), _(nn, {
+				f.domain === "邮箱 / OTP" && f.section === "iCloud 隐藏邮箱" ? (i(), O("p", wn, "隐藏邮箱的创建、状态与管理请在邮箱服务（Email Butler）中完成。本页只维护已导入与历史邮箱的固定收件连接。")) : p("", !0),
+				f.domain === "注册调试" ? (i(), O("p", Tn, "“调试模式”仍是单个注册批次的现场保留开关，本页只控制失败诊断、保留时长和抓包预算。")) : p("", !0),
+				R.value ? (i(), _(on, {
 					key: R.value,
 					owner: e.owner,
 					actions: e.actions,
@@ -1583,25 +1604,25 @@ var Te = {
 					"tool",
 					"active"
 				])) : p("", !0)
-			], 8, gn)])) : p("", !0)]),
-			e.owner.dirtyCount.value || e.owner.receipt.value ? (i(), O("div", Cn, [
-				v("div", wn, [
+			], 8, yn)])) : p("", !0)]),
+			e.owner.dirtyCount.value || e.owner.receipt.value ? (i(), O("div", En, [
+				v("div", Dn, [
 					v("strong", null, g(L.value.length ? "请检查标记的配置项" : e.owner.error.value ? "保存失败，请重试" : e.owner.dirtyCount.value ? `${e.owner.dirtyCount.value} 项待保存` : "配置已保存"), 1),
-					e.owner.error.value && !L.value.length ? (i(), O("span", Tn, "请检查网络或服务状态后重试")) : p("", !0),
-					e.owner.receipt.value ? (i(), O("span", En, "数据库保存" + g(e.owner.receipt.value.persistedDbRevision === null ? "成功" : `版本 ${e.owner.receipt.value.persistedDbRevision}`) + " · Worker " + g(e.owner.receipt.value.workerApplication.state === "applied" ? "已应用" : e.owner.receipt.value.workerApplication.state === "error" ? "应用异常" : e.owner.receipt.value.workerApplication.state === "pending" ? "等待应用" : "应用状态待确认"), 1)) : p("", !0),
-					e.owner.receipt.value?.restartRequired.length ? (i(), O("span", Dn, "需重启：" + g(e.owner.receipt.value.restartRequired.join("、")), 1)) : p("", !0)
+					e.owner.error.value && !L.value.length ? (i(), O("span", On, "请检查网络或服务状态后重试")) : p("", !0),
+					e.owner.receipt.value ? (i(), O("span", kn, "数据库保存" + g(e.owner.receipt.value.persistedDbRevision === null ? "成功" : `版本 ${e.owner.receipt.value.persistedDbRevision}`) + " · Worker " + g(e.owner.receipt.value.workerApplication.state === "applied" ? "已应用" : e.owner.receipt.value.workerApplication.state === "error" ? "应用异常" : e.owner.receipt.value.workerApplication.state === "pending" ? "等待应用" : "应用状态待确认"), 1)) : p("", !0),
+					e.owner.receipt.value?.restartRequired.length ? (i(), O("span", An, "需重启：" + g(e.owner.receipt.value.restartRequired.join("、")), 1)) : p("", !0)
 				]),
 				v("button", {
 					type: "button",
 					disabled: !e.owner.dirtyCount.value || e.owner.saving.value,
 					onClick: oe
-				}, "撤销修改", 8, On),
+				}, "撤销修改", 8, jn),
 				v("button", {
 					type: "button",
 					class: "primary",
 					disabled: !e.owner.dirtyCount.value || e.owner.saving.value,
 					onClick: ce
-				}, g(e.owner.saving.value ? "正在保存…" : "保存全部配置"), 9, kn)
+				}, g(e.owner.saving.value ? "正在保存…" : "保存全部配置"), 9, Mn)
 			])) : p("", !0)
 		], 512));
 	}
@@ -1612,15 +1633,15 @@ var Te = {
 	constructor(e, t, n = "", r = {}) {
 		super(e), this.status = t, this.code = n, this.fields = r, this.name = "ConfigApiError";
 	}
-}, K = (e) => e && typeof e == "object" && !Array.isArray(e) ? e : {}, jn = (e) => JSON.parse(JSON.stringify(e));
-function Mn(e) {
+}, K = (e) => e && typeof e == "object" && !Array.isArray(e) ? e : {}, Pn = (e) => JSON.parse(JSON.stringify(e));
+function Fn(e) {
 	if (!Array.isArray(e)) throw new G("配置字段响应格式无效", 0, "config_schema_invalid");
 	let t = /* @__PURE__ */ new Set();
 	return e.map((e) => {
 		let n = K(e);
 		if (typeof n.key != "string" || !n.key || typeof n.type != "string" || t.has(n.key)) throw new G("配置字段响应格式无效", 0, "config_schema_invalid");
 		t.add(n.key);
-		let r = jn({
+		let r = Pn({
 			...n,
 			group: String(n.group || "其他"),
 			label: String(n.label || n.key)
@@ -1628,7 +1649,7 @@ function Mn(e) {
 		return r.secret && (r.value = "", "configured_value" in r && (r.configured_value = ""), "published_effective_value" in r && (r.published_effective_value = ""), delete r.default), r;
 	});
 }
-function Nn(e = fetch) {
+function In(e = fetch) {
 	let t = 0, n = null, r = null;
 	async function i(t, n) {
 		let r = await e(t, {
@@ -1656,10 +1677,10 @@ function Nn(e = fetch) {
 	return {
 		async getSchema(e = {}) {
 			if (e.signal?.aborted) throw new DOMException("读取已取消", "AbortError");
-			if (r?.generation === t) return jn(await r.promise);
-			if (!e.force && n && Date.now() - n.at < 3e4) return jn(n.fields);
+			if (r?.generation === t) return Pn(await r.promise);
+			if (!e.force && n && Date.now() - n.at < 3e4) return Pn(n.fields);
 			let a = t, o = i("/api/config", { signal: e.signal }).then((e) => {
-				let r = Mn(e);
+				let r = Fn(e);
 				return t === a && (n = {
 					fields: r,
 					at: Date.now()
@@ -1670,7 +1691,7 @@ function Nn(e = fetch) {
 				promise: o
 			};
 			try {
-				return jn(await o);
+				return Pn(await o);
 			} finally {
 				r?.promise === o && (r = null);
 			}
@@ -1688,7 +1709,7 @@ function Nn(e = fetch) {
 	};
 }
 // src/features/config/configState.ts
-function Pn(e, t) {
+function Ln(e, t) {
 	let n = e.ignored || [];
 	return {
 		savedKeys: [...e.updated ?? t.filter((e) => !n.includes(e))],
@@ -1704,7 +1725,7 @@ function Pn(e, t) {
 		refreshFailed: !1
 	};
 }
-function Fn(e, t) {
+function Rn(e, t) {
 	let n = {}, r = new Map(t.map((e) => [e.key, e]));
 	for (let [t, i] of Object.entries(e)) {
 		let e = r.get(t);
@@ -1716,9 +1737,9 @@ function Fn(e, t) {
 	return n;
 }
 // src/features/config/useConfigDraft.ts
-var q = (e) => e === void 0 ? e : JSON.parse(JSON.stringify(e)), In = (e, t) => JSON.stringify(e) === JSON.stringify(t);
-function Ln(t) {
-	let n = C(Mn(t.initialFields || [])), r = u({}), i = u({}), a = h(!1), o = h(!1), s = h(""), c = h(""), l = h(null), d = h(null), f = /* @__PURE__ */ new Map(), p = /* @__PURE__ */ new Set(), m = /* @__PURE__ */ new Set(), g = !1, _ = 0, v = 0, y = null, b = /* @__PURE__ */ new Set(), S = x(() => new Map(n.value.map((e) => [e.key, e]))), w = x(() => Object.keys(r)), T = x(() => w.value.length), E = (e) => S.value.get(e), D = (e) => {
+var q = (e) => e === void 0 ? e : JSON.parse(JSON.stringify(e)), zn = (e, t) => JSON.stringify(e) === JSON.stringify(t);
+function Bn(t) {
+	let n = C(Fn(t.initialFields || [])), r = u({}), i = u({}), a = h(!1), o = h(!1), s = h(""), c = h(""), l = h(null), d = h(null), f = /* @__PURE__ */ new Map(), p = /* @__PURE__ */ new Set(), m = /* @__PURE__ */ new Set(), g = !1, _ = 0, v = 0, y = null, b = /* @__PURE__ */ new Set(), S = x(() => new Map(n.value.map((e) => [e.key, e]))), w = x(() => Object.keys(r)), T = x(() => w.value.length), E = (e) => S.value.get(e), D = (e) => {
 		let t = (f.get(e) || 0) + 1;
 		return f.set(e, t), t;
 	};
@@ -1762,7 +1783,7 @@ function Ln(t) {
 		let o = D(e);
 		delete i[e];
 		let s = !!n.force || !!r[e]?.forced;
-		!s && !b.has(e) && In(t, a.value) ? delete r[e] : r[e] = {
+		!s && !b.has(e) && zn(t, a.value) ? delete r[e] : r[e] = {
 			value: q(t),
 			generation: o,
 			forced: s
@@ -1800,7 +1821,7 @@ function Ln(t) {
 				signal: i.signal
 			});
 			if (g || r !== _ || i.signal.aborted) return;
-			n.value = Mn(a), c.value = "";
+			n.value = Fn(a), c.value = "";
 		} catch (e) {
 			if (!g && r === _ && !i.signal.aborted) throw c.value = "配置读取失败，当前草稿已保留", e;
 		} finally {
@@ -1814,7 +1835,7 @@ function Ln(t) {
 	}
 	function R(e) {
 		let i = {
-			...Fn(e, n.value),
+			...Rn(e, n.value),
 			...t.validate?.(e, n.value)
 		};
 		for (let t of Object.keys(e)) {
@@ -1844,7 +1865,7 @@ function Ln(t) {
 			let e = await t.api.save(c);
 			if (g) return { status: "disposed" };
 			_++;
-			let o = Pn(e, [...a.keys()]), s = new Set(o.savedKeys);
+			let o = Ln(e, [...a.keys()]), s = new Set(o.savedKeys);
 			n.value = n.value.map((e) => {
 				let t = a.get(e.key);
 				return !t || !s.has(e.key) ? e : e.secret ? {
@@ -1945,7 +1966,7 @@ function Ln(t) {
 	};
 }
 // src/features/config/configActions.ts
-var Rn = [
+var Vn = [
 	"extractTypes",
 	"roxy",
 	"proxy",
@@ -1956,10 +1977,16 @@ var Rn = [
 	"xxsyunBalance",
 	"sentinel",
 	"sub2api",
+	"c2a",
 	"concurrency",
 	"concurrencyPreview",
 	"sub2apiGroups"
-], zn = {
+], Hn = /* @__PURE__ */ new Set([
+	"sentinel",
+	"sub2api",
+	"c2a",
+	"proxy"
+]), Un = {
 	roxy: ["ROXY_API_BASE", "ROXY_API_TOKEN"],
 	proxy: [
 		"PROXY_POOL_SOURCE",
@@ -1984,19 +2011,19 @@ function J(e) {
 function Y(e, t = "") {
 	return typeof e == "string" || typeof e == "number" ? String(e).slice(0, 1e3) : t;
 }
-function X(e) {
+function Wn(e) {
 	return typeof e == "string" ? e.trim() : "";
 }
-function Z(e) {
+function X(e) {
 	return Array.isArray(e) ? e : [];
 }
-function Bn(e) {
+function Gn(e) {
 	return typeof e == "number" && Number.isFinite(e) && e >= 0;
 }
-function Q(e) {
+function Z(e) {
 	return Number.isSafeInteger(e) && Number(e) >= 0;
 }
-function Vn() {
+function Q() {
 	throw { code: "invalid_response" };
 }
 function $(e) {
@@ -2006,7 +2033,7 @@ function $(e) {
 		body: JSON.stringify(e)
 	};
 }
-function Hn(e, t = !1, n = "CDK") {
+function Kn(e, t = !1, n = "CDK") {
 	let r = Y(J(e).code || J(e).error_code).toLowerCase();
 	return {
 		key_missing: "未配置 XXSYUN API Key，请填写后重试",
@@ -2030,25 +2057,25 @@ function Hn(e, t = !1, n = "CDK") {
 		insufficient_quota: "XXSYUN 积分不足，请在平台检查积分余额"
 	}[r] || (t ? "查询积分失败，请检查 XXSYUN 配置或稍后重试" : "查询失败，请稍后重试");
 }
-function Un(e, t = {}) {
-	let n = t.request || ((e, t) => j(e, t, P)), r = u(Object.fromEntries(Rn.map((e) => [e, {
+function qn(e, t = {}) {
+	let n = t.request || ((e, t) => j(e, t, P)), r = u(Object.fromEntries(Vn.map((e) => [e, {
 		loading: !1,
 		posting: !1,
 		text: "",
 		error: "",
 		snapshot: null,
 		receipt: null
-	}]))), i = Object.fromEntries(Rn.map((e) => [e, 0])), o = /* @__PURE__ */ new Map(), s = /* @__PURE__ */ new Map(), c = {
+	}]))), i = Object.fromEntries(Vn.map((e) => [e, 0])), o = /* @__PURE__ */ new Map(), s = /* @__PURE__ */ new Map(), c = {
 		sentinel: !1,
 		concurrency: !1
 	}, l = /* @__PURE__ */ new Map(), d = !0, f = !0, p = !1, m = [], h = (t, n = "") => e.readField(t) ?? n;
 	function g(t) {
 		let n = e.secretDraft(t);
-		return n.mode === "set" ? X(n.value) : n.mode === "clear" ? "" : X(h(t));
+		return n.mode === "set" ? Wn(n.value) : n.mode === "clear" ? "" : Wn(h(t));
 	}
 	function _(t) {
 		let n = e.secretDraft(t);
-		return n.mode === "clear" ? { api_key: "" } : n.mode === "set" ? { api_key: X(n.value) } : e.isDirty(t) ? { api_key: X(h(t)) } : {};
+		return n.mode === "clear" ? { api_key: "" } : n.mode === "set" ? { api_key: Wn(n.value) } : e.isDirty(t) ? { api_key: Wn(h(t)) } : {};
 	}
 	function v(e) {
 		let t = l.get(e);
@@ -2059,7 +2086,7 @@ function Un(e, t = {}) {
 		let n = o.get(e);
 		n?.posting || n?.controller?.abort(), r[e].loading = !1, r[e].posting = !1, r[e].error = "", r[e].text = "", t || (r[e].snapshot = null, r[e].receipt = null);
 	}
-	for (let [t, n] of Object.entries(zn)) m.push(a(() => n.map((t) => [
+	for (let [t, n] of Object.entries(Un)) m.push(a(() => n.map((t) => [
 		e.readField(t),
 		e.isDirty(t),
 		e.secretDraft(t)
@@ -2068,12 +2095,12 @@ function Un(e, t = {}) {
 		flush: "sync"
 	}));
 	m.push(e.subscribeSaved((t) => {
-		for (let [e, n] of Object.entries(zn)) n.some((e) => t.keys.includes(e)) && y(e);
+		for (let [e, n] of Object.entries(Un)) n.some((e) => t.keys.includes(e)) && y(e);
 		t.keys.some((e) => [
 			"SUB2API_API_BASE",
 			"SUB2API_API_KEY",
 			"SUB2API_API_TIMEOUT"
-		].includes(e)) && y("sub2apiGroups"), t.keys.some((t) => e.field(t)?.group === "并发控制") && y("concurrencyPreview");
+		].includes(e)) && y("sub2apiGroups"), t.keys.some((e) => e.startsWith("C2A_API_") || e.startsWith("C2A_MONITOR_")) && y("c2a"), t.keys.some((t) => e.field(t)?.group === "并发控制") && y("concurrencyPreview");
 	}));
 	function b(e, n) {
 		if (e.accepted !== !0) return null;
@@ -2094,18 +2121,10 @@ function Un(e, t = {}) {
 	}
 	function C(e, t, a, c) {
 		if (p) return Promise.resolve();
-		let l = c.posting && [
-			"sentinel",
-			"sub2api",
-			"proxy"
-		].includes(e), u = l ? s.get(e) : void 0;
+		let l = c.posting && Hn.has(e), u = l ? s.get(e) : void 0;
 		if (u) return u;
 		let d = o.get(e);
-		if (d?.generation === i[e] || d?.posting && c.posting && [
-			"sentinel",
-			"sub2api",
-			"proxy"
-		].includes(e)) return d.promise;
+		if (d?.generation === i[e] || d?.posting && l) return d.promise;
 		let f = ++i[e], m = c.posting ? void 0 : new AbortController();
 		r[e].loading = !c.posting, r[e].posting = !!c.posting, r[e].error = "", (e === "sentinel" || e === "concurrency") && v(e);
 		let h = () => !p && i[e] === f, g = (async () => {
@@ -2140,14 +2159,14 @@ function Un(e, t = {}) {
 		return C("extractTypes", "/api/extract-link/types", { method: "GET" }, {
 			apply: (e) => {
 				let t = /* @__PURE__ */ new Set(), n = [];
-				for (let r of Z(e.items)) {
+				for (let r of X(e.items)) {
 					let e = J(r), i = Y(e.type).trim().toLowerCase();
 					i && !t.has(i) && e.visible !== !1 && e.enabled !== !1 && (t.add(i), n.push({
 						value: i,
 						label: Y(e.label, i) || i
 					}));
 				}
-				n.length || Vn(), r.extractTypes.snapshot = { options: n };
+				n.length || Q(), r.extractTypes.snapshot = { options: n };
 			},
 			error: () => "提链类型读取失败，保留当前选择。"
 		});
@@ -2155,7 +2174,7 @@ function Un(e, t = {}) {
 	function E() {
 		return C("roxy", "/api/roxy/workspaces", { method: "GET" }, {
 			apply: (e) => {
-				let t = Z(e.items).map((e) => {
+				let t = X(e.items).map((e) => {
 					let t = J(e);
 					return {
 						id: Y(t.id),
@@ -2163,7 +2182,7 @@ function Un(e, t = {}) {
 						label: Y(t.label) || `${Y(t.name)} (${Y(t.id)})`
 					};
 				}).filter((e) => e.id);
-				t.length || Vn(), r.roxy.snapshot = { items: t }, r.roxy.text = `已获取 ${t.length} 个团队/项目`;
+				t.length || Q(), r.roxy.snapshot = { items: t }, r.roxy.text = `已获取 ${t.length} 个团队/项目`;
 			},
 			error: () => "获取团队/项目失败，请检查已保存的 Roxy 连接配置后重试。"
 		});
@@ -2215,12 +2234,12 @@ function Un(e, t = {}) {
 	}
 	function k() {
 		return C("butler", "/api/email-butler/test-connection", $({
-			api_base: X(h("EMAIL_BUTLER_API_BASE")),
+			api_base: Wn(h("EMAIL_BUTLER_API_BASE")),
 			api_key: g("EMAIL_BUTLER_API_KEY")
 		}), {
 			posting: !0,
 			apply: (e) => {
-				let t = Z(e.missing_permissions).map((e) => Y(e)).filter(Boolean);
+				let t = X(e.missing_permissions).map((e) => Y(e)).filter(Boolean);
 				r.butler.snapshot = {
 					name: Y(e.name, "Email Butler"),
 					consumer: Y(e.consumer),
@@ -2238,27 +2257,27 @@ function Un(e, t = {}) {
 		return e.isDirty(i) || e.isDirty("EXTRACT_LINK_HUANGUANG_API_BASE") ? w(n, "请先保存此 CDK 或服务地址的更改，再查询剩余次数") : C(n, `/api/extract-link/huanguang/cdk-quota/${t}`, { method: "GET" }, {
 			apply: (e) => {
 				let t = J(e.quota);
-				(typeof t.required != "boolean" || !(t.remaining === null || Q(t.remaining)) || !(t.reserved === null || Q(t.reserved)) || t.active !== null && typeof t.active != "boolean") && Vn(), r[n].snapshot = {
+				(typeof t.required != "boolean" || !(t.remaining === null || Z(t.remaining)) || !(t.reserved === null || Z(t.reserved)) || t.active !== null && typeof t.active != "boolean") && Q(), r[n].snapshot = {
 					required: t.required,
 					remaining: t.remaining,
 					reserved: t.reserved,
 					active: t.active
 				}, r[n].text = t.required ? `剩余 ${t.remaining ?? "未知"} 次 · 占用 ${t.reserved ?? "未知"} · ${t.active === !1 ? "已停用" : t.active === !0 ? "已启用" : "可用状态未知"}` : "平台免计次";
 			},
-			error: (e) => Hn(e, !1, t === "extraction" ? "幻光提链 CDK" : "幻光支付扫码 CDK")
+			error: (e) => Kn(e, !1, t === "extraction" ? "幻光提链 CDK" : "幻光支付扫码 CDK")
 		});
 	}
 	function F() {
 		return e.isDirty("EXTRACT_LINK_HUANGUANG_API_BASE") ? w("huanguangXxsyun", "请先保存服务地址的更改，再查询剩余次数") : C("huanguangXxsyun", "/api/extract-link/huanguang/xxsyun-quota", $(_("EXTRACT_LINK_HUANGUANG_XXSYUN_API_KEY")), {
 			posting: !0,
 			apply: (e) => {
-				Q(e.remainingUses) && (e.totalUses == null || Q(e.totalUses)) && (e.reservedUses == null || Q(e.reservedUses)) || Vn(), r.huanguangXxsyun.snapshot = {
+				Z(e.remainingUses) && (e.totalUses == null || Z(e.totalUses)) && (e.reservedUses == null || Z(e.reservedUses)) || Q(), r.huanguangXxsyun.snapshot = {
 					remainingUses: e.remainingUses,
 					totalUses: e.totalUses ?? null,
 					reservedUses: e.reservedUses ?? null
 				}, r.huanguangXxsyun.text = `剩余 ${e.remainingUses} 次 · 总次数 ${e.totalUses ?? "未知"} · 占用 ${e.reservedUses ?? "未知"}`;
 			},
-			error: (e) => Hn(e)
+			error: (e) => Kn(e)
 		});
 	}
 	function I() {
@@ -2271,11 +2290,11 @@ function Un(e, t = {}) {
 					"used_points",
 					"cost_points"
 				];
-				e.balance && !Array.isArray(e.balance) && n.every((e) => t[e] == null || Bn(t[e])) || Vn(), r.xxsyunBalance.snapshot = Object.fromEntries(n.map((e) => [e, t[e] ?? null]));
+				e.balance && !Array.isArray(e.balance) && n.every((e) => t[e] == null || Gn(t[e])) || Q(), r.xxsyunBalance.snapshot = Object.fromEntries(n.map((e) => [e, t[e] ?? null]));
 				let i = (e) => e == null ? "未知" : `${e} 积分`;
 				r.xxsyunBalance.text = `可用 ${i(t.available_points)} · 预占 ${i(t.pending_points)} · 已用 ${i(t.used_points)} · 每单 ${i(t.cost_points)}`;
 			},
-			error: (e) => Hn(e, !0)
+			error: (e) => Kn(e, !0)
 		});
 	}
 	function L(e) {
@@ -2316,10 +2335,10 @@ function Un(e, t = {}) {
 						remote_transient_error: "远端网络或限流错误",
 						needs_reconciliation: "上次请求结果待核实",
 						repair_in_progress: "修复进行中"
-					}, i = Object.entries(J(e.reasons)).filter(([, e]) => Q(e)).map(([e, t]) => `${n[e] || "其他原因"} ${t}`).join("，");
+					}, i = Object.entries(J(e.reasons)).filter(([, e]) => Z(e)).map(([e, t]) => `${n[e] || "其他原因"} ${t}`).join("，");
 					r.sub2api.text = `本轮检查 ${e.remote_errors ?? 0} 条异常记录，已调度同步 ${e.sync_queued ?? 0}、刷新 ${e.refresh_queued ?? 0}、重授权 ${e.reauth_queued ?? 0}。${i ? `处理说明：${i}。` : ""}`;
 				} else {
-					let e = J(t.sync), n = J(t.monitor), i = J(e.counts), a = Z(n.group_ids).map((e) => Y(e)).filter(Boolean), o = a.length ? `分组 ID ${a.join("、")}` : "全部分组";
+					let e = J(t.sync), n = J(t.monitor), i = J(e.counts), a = X(n.group_ids).map((e) => Y(e)).filter(Boolean), o = a.length ? `分组 ID ${a.join("、")}` : "全部分组";
 					r.sub2api.text = `自动补传${e.enabled ? "已开启" : "已关闭"}；异常巡检${n.enabled ? "已开启" : "已关闭"}；巡检范围：${o}。待同步 ${i.pending ?? 0}，排队 ${i.queued ?? 0}，执行 ${i.running ?? 0}。`;
 				}
 			},
@@ -2355,6 +2374,36 @@ function Un(e, t = {}) {
 		return B(!0);
 	}
 	function re() {
+		return C("c2a", "/api/c2a/automation", { method: "GET" }, {
+			apply: (e) => {
+				let t = J(e.monitor);
+				typeof t.enabled != "boolean" && Q(), r.c2a.snapshot = t;
+				let n = `自动巡检${t.enabled ? "已开启" : "已关闭"}`;
+				if (t.error_code === "c2a_config_invalid") {
+					r.c2a.text = `${n}。请检查并保存 C2A 连接配置。`;
+					return;
+				}
+				if (!t.state_available) {
+					r.c2a.text = `${n}。修复状态暂不可用，请稍后重试。`;
+					return;
+				}
+				let i = J(t.repair_stages), a = (e) => Z(i[e]) ? i[e] : 0;
+				r.c2a.text = `${n}。待提交刷新 ${a("refresh_pending")}，等待刷新 ${a("refresh_wait")}，刷新冷却 ${a("refresh_retry")}，同步待完成 ${a("sync_wait")}，已结束 ${a("done")}，已取消 ${a("cancelled")}。`;
+			},
+			error: () => "暂时无法读取 C2A 巡检状态，请稍后重试。"
+		});
+	}
+	function ie() {
+		return C("c2a", "/api/c2a/automation/check", $({}), {
+			posting: !0,
+			label: "C2A 异常巡检",
+			apply: (e, t) => {
+				t || Q(), r.c2a.text = `C2A 异常巡检已入队 · 任务 #${t.task_id}。扫描结果在任务回执中更新。`;
+			},
+			error: (e) => J(e).code === "c2a_config_invalid" || J(e).error_code === "c2a_config_invalid" ? "C2A 连接配置无效，请检查并保存 API 基址和管理员 Key。" : "C2A 巡检暂时无法入队，请稍后重试。"
+		});
+	}
+	function ae() {
 		return C("concurrencyPreview", "/api/config/concurrency-preview", { method: "GET" }, {
 			apply: (e) => {
 				r.concurrencyPreview.snapshot = e;
@@ -2363,7 +2412,7 @@ function Un(e, t = {}) {
 		});
 	}
 	async function V(e = {}) {
-		let t = r.concurrencyPreview.snapshot ? Promise.resolve() : re();
+		let t = r.concurrencyPreview.snapshot ? Promise.resolve() : ae();
 		await Promise.all([t, C("concurrency", `/api/operations/concurrency${e.details ? "?details=1" : ""}`, { method: "GET" }, {
 			apply: (e) => {
 				r.concurrency.snapshot = e;
@@ -2373,43 +2422,43 @@ function Un(e, t = {}) {
 			error: () => "状态读取失败，请重试；显示的数据为上次观察结果。"
 		})]);
 	}
-	function ie() {
+	function oe() {
 		if (p) return [];
 		let t = [];
 		for (let [n, i] of Object.entries(J(r.concurrencyPreview.snapshot?.proposed_values))) {
 			let r = e.field(n);
-			!r || r.group !== "并发控制" || r.type !== "int" || e.isDirty(n) || !Q(i) || Number(i) <= 0 || (e.setField(n, Number(i), { force: !0 }), t.push(n));
+			!r || r.group !== "并发控制" || r.type !== "int" || e.isDirty(n) || !Z(i) || Number(i) <= 0 || (e.setField(n, Number(i), { force: !0 }), t.push(n));
 		}
 		return r.concurrencyPreview.text = "迁移建议已填入草稿；核对全局和各类型上限后点击保存。", t;
 	}
-	function ae(e) {
+	function se(e) {
 		if (p) return;
 		if (e.startsWith("REGISTRATION_")) {
 			t.onNavigateTasks?.({ registration: !0 });
 			return;
 		}
-		let n = Z(r.concurrency.snapshot?.types).map(J).find((t) => t.config_key === e || t.key === e), i = n ? Z(n.task_types).length ? Z(n.task_types).map((e) => Y(e)) : [Y(n.key)] : [];
+		let n = X(r.concurrency.snapshot?.types).map(J).find((t) => t.config_key === e || t.key === e), i = n ? X(n.task_types).length ? X(n.task_types).map((e) => Y(e)) : [Y(n.key)] : [];
 		t.onNavigateTasks?.({ types: [...new Set(i.filter(Boolean))] });
 	}
-	function oe(e, t) {
+	function ce(e, t) {
 		p || c[e] === t || (c[e] = t, t ? d && f && (e === "sentinel" ? R() : V()) : (v(e), y(e, !0), e === "concurrency" && y("concurrencyPreview", !0)));
 	}
-	function se(e) {
+	function H(e) {
 		if (!(p || d === e)) {
 			d = e;
 			for (let t of ["sentinel", "concurrency"]) v(t), e ? f && c[t] && (t === "sentinel" ? R() : V()) : (y(t, !0), t === "concurrency" && y("concurrencyPreview", !0));
 		}
 	}
-	function ce(e) {
+	function U(e) {
 		if (!(p || f === e)) {
 			if (f = e, v("sentinel"), v("concurrency"), e) d && (c.sentinel && R(), c.concurrency && V());
-			else for (let e of Rn) y(e, !0);
+			else for (let e of Vn) y(e, !0);
 		}
 	}
-	function H() {
+	function W() {
 		if (!p) {
 			p = !0, m.forEach((e) => e()), v("sentinel"), v("concurrency");
-			for (let e of Rn) y(e, !0);
+			for (let e of Vn) y(e, !0);
 		}
 	}
 	return {
@@ -2430,29 +2479,31 @@ function Un(e, t = {}) {
 		checkSentinel: z,
 		refreshSub2Api: te,
 		checkSub2Api: ne,
+		refreshC2a: re,
+		checkC2a: ie,
 		refreshConcurrency: V,
-		loadConcurrencyPreview: re,
-		applyConcurrencyPreview: ie,
-		locateConcurrencyTasks: ae,
-		setVisible: oe,
-		setForeground: se,
-		setPageActive: ce,
-		dispose: H
+		loadConcurrencyPreview: ae,
+		applyConcurrencyPreview: oe,
+		locateConcurrencyTasks: se,
+		setVisible: ce,
+		setForeground: H,
+		setPageActive: U,
+		dispose: W
 	};
 }
 // src/features/config/useConfigActions.ts
-function Wn(e, t = {}) {
-	let n = Un(e, t), r = () => n.setForeground(!document.hidden);
+function Jn(e, t = {}) {
+	let n = qn(e, t), r = () => n.setForeground(!document.hidden);
 	return typeof document < "u" && (r(), document.addEventListener("visibilitychange", r)), f(() => {
 		typeof document < "u" && document.removeEventListener("visibilitychange", r), n.dispose();
 	}), n;
 }
 // src/config.ts
-function Gn(e, t) {
-	let n = Ln({ api: Nn() }), i = o(), s = i.run(() => Wn(n, {
+function Yn(e, t) {
+	let n = Bn({ api: In() }), i = o(), s = i.run(() => Jn(n, {
 		onTaskReceipt: t.onTaskReceipt,
 		onNavigateTasks: t.onNavigateTasks
-	})), c = h(t.visible !== !1), l = null, u = a(n.fields, (e) => t.onSavedFields(e), { immediate: !0 }), d = n.subscribeSaved(() => t.onSaved?.()), f = S({ render: () => r(An, {
+	})), c = h(t.visible !== !1), l = null, u = a(n.fields, (e) => t.onSavedFields(e), { immediate: !0 }), d = n.subscribeSaved(() => t.onSaved?.()), f = S({ render: () => r(Nn, {
 		owner: n,
 		actions: s,
 		active: c.value,
@@ -2472,4 +2523,4 @@ function Gn(e, t) {
 		}
 	};
 }
-export { Gn as mountConfig };
+export { Yn as mountConfig };

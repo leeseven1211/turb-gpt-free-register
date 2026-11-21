@@ -89,6 +89,40 @@ def create_integrations_blueprint(context: WebUIContext):
             return jsonify({"ok": False, "error_code": "sub2api_check_failed", "error": "巡检未完成，请查看任务状态后重试"}), 503
 
 
+    @bp.get("/api/c2a/automation")
+    def api_c2a_automation():
+        """读取已保存的巡检配置和修复状态。"""
+        from core.integrations.c2a import monitor
+
+        try:
+            return jsonify({"ok": True, "monitor": monitor.status()})
+        except Exception as exc:
+            logger.warning("读取 C2A 巡检状态失败：%s", type(exc).__name__)
+            return jsonify({"ok": False, "error_code": "c2a_status_unavailable",
+                            "error": "暂时无法读取 C2A 巡检状态，请稍后重试"}), 503
+
+    @bp.post("/api/c2a/automation/check")
+    def api_c2a_automation_check():
+        """使用已保存的 C2A 连接提交巡检任务。"""
+        if request.query_string or request.get_json(silent=True) != {}:
+            return jsonify({"ok": False, "error_code": "config_invalid",
+                            "error": "立即巡检仅使用已保存配置，请提交空 JSON 对象"}), 400
+        from core.integrations.c2a import monitor
+
+        try:
+            result = monitor.run_once(force=True)
+            if result.get("accepted"):
+                return jsonify({"ok": True, "accepted": True, "task_id": result["task_id"],
+                                "run_id": result["run_id"], "status": result["status"],
+                                "message": "C2A 异常巡检已入队"}), 202
+            if result.get("error_code") == "c2a_config_invalid":
+                return jsonify({"ok": False, "error_code": "c2a_config_invalid",
+                                "error": "C2A 连接配置无效，请检查并保存 API 基址和管理员 Key"}), 503
+        except Exception as exc:
+            logger.warning("提交 C2A 巡检失败：%s", type(exc).__name__)
+        return jsonify({"ok": False, "error_code": "c2a_scan_queue_failed",
+                        "error": "C2A 巡检暂时无法入队，请稍后重试"}), 503
+
     @bp.get("/api/roxy/workspaces")
     def api_roxy_workspaces():
         from core.runtime.capabilities import browser_operation_unavailable

@@ -11,6 +11,9 @@ class ReadinessTests(unittest.TestCase):
   c=self.statuses();self.assertTrue(m.execution_ready(state='running',admission_open=True,owner_valid=True,components=c))
   for name in m.REQUIRED_COMPONENTS:
    bad=dict(c);bad.pop(name);self.assertFalse(m.execution_ready(state='running',admission_open=True,owner_valid=True,components=bad),name)
+ def test_missing_c2a_scheduler_is_not_ready_to_resume_repairs(self):
+  c=self.statuses();c['c2a_monitor']={'started':True,'alive':False,'disabled':True}
+  self.assertFalse(m.execution_ready(state='running',admission_open=True,owner_valid=True,components=c))
  def test_disabled_periodic_is_healthy_only_if_thread_alive(self):
   self.assertTrue(m.component_ready('at_refresher',{'started':True,'alive':True,'disabled':True}))
   self.assertFalse(m.component_ready('at_refresher',{'started':True,'alive':False,'disabled':True}))

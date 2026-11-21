@@ -84,6 +84,9 @@ class WebUIRuntimeTests(unittest.TestCase):
             start_settlement = stack.enter_context(patch.object(runtime, "_start_legacy_settlement"))
             start_sub2api_sync = stack.enter_context(patch("core.integrations.sub2api.jobs.start_periodic_sync"))
             start_sub2api_monitor = stack.enter_context(patch("core.integrations.sub2api.monitor.start_periodic_monitor"))
+            init_c2a_storage = stack.enter_context(patch("core.storage.c2a.init"))
+            register_c2a_monitor = stack.enter_context(patch("core.integrations.c2a.monitor.register_handler"))
+            start_c2a_monitor = stack.enter_context(patch("core.integrations.c2a.monitor.start_periodic_monitor"))
             recover_jobs = stack.enter_context(
                 patch.object(runtime.db, "recover_interrupted_registration_jobs", return_value=2)
             )
@@ -176,6 +179,9 @@ class WebUIRuntimeTests(unittest.TestCase):
             start_settlement,
             start_sub2api_sync,
             start_sub2api_monitor,
+            init_c2a_storage,
+            register_c2a_monitor,
+            start_c2a_monitor,
             init_bulk,
             start_bulk,
             recover_jobs,

@@ -7,6 +7,42 @@ from core.operations.errors import _C2A_ERROR_DETAILS, classify_task_error
 
 
 class C2AErrorClassificationTests(unittest.TestCase):
+    def test_bulk_refresh_rejections_have_specific_short_labels(self):
+        from core.operations.error_labels import short_error_label
+
+        for code, label in (
+            ("selection_expired", "批量名单已过期"),
+            ("config_revision_changed", "配置版本已变化"),
+        ):
+            with self.subTest(code=code):
+                self.assertEqual(label, short_error_label({"cause_code": code}))
+
+    def test_monitor_failures_keep_their_actual_cause_and_short_label(self):
+        from core.operations.error_labels import short_error_label
+
+        cases = (
+            ("c2a_remote_account_disabled", "external.c2a.local_policy", "远端账号已禁用"),
+            ("c2a_remote_account_identity_changed", "external.c2a.identity", "远端邮箱已变化"),
+            ("c2a_remote_at_invalid", "external.c2a.credential", "远端凭据仍失效"),
+            ("c2a_repair_request_invalid", "external.c2a.local_policy", "修复请求标识缺失"),
+            ("c2a_scan_storage_unavailable", "external.c2a.local_execution", "巡检存储不可用"),
+            ("c2a_refresh_result_missing", "external.c2a.contract", "刷新结果缺失"),
+            ("c2a_upload_request_unknown", "external.c2a.confirmation", "上传回执未确认"),
+            ("c2a_remote_diagnostic_missing", "external.c2a.contract", "远端诊断缺失"),
+        )
+        for code, category, label in cases:
+            with self.subTest(code=code):
+                result = classify_task_error(
+                    "巡检修复未完成",
+                    task_type="c2a_scan",
+                    result_summary={"error_code": code, "stage": "c2a_resolve"},
+                    task_status="failed",
+                )
+                self.assertEqual(category, result["code"])
+                self.assertEqual(code, result["cause_code"])
+                self.assertEqual("c2a_resolve", result["stage"])
+                self.assertEqual(label, short_error_label(result))
+
     def test_every_registered_code_has_specific_category_and_stage(self):
         for code, (category, display, _message) in _C2A_ERROR_DETAILS.items():
             with self.subTest(code=code):

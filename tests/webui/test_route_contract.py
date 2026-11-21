@@ -66,6 +66,8 @@ class FlaskRouteContractTests(PostgresTestCase):
         "/api/email-butler/imports/<batch_id>/cancel\tPOST\tapi_butler_import_cancel",
         "/api/sub2api/automation\tGET\tapi_sub2api_automation",
         "/api/sub2api/automation/check\tPOST\tapi_sub2api_automation_check",
+        "/api/c2a/automation\tGET\tapi_c2a_automation",
+        "/api/c2a/automation/check\tPOST\tapi_c2a_automation_check",
         "/api/maintenance/sentinel\tGET\tapi_sentinel_maintenance",
         "/api/maintenance/sentinel/check\tPOST\tapi_sentinel_maintenance_check",
         "/api/accounts/<int:acc_id>/registration-retry\tPOST\tapi_account_registration_retry",

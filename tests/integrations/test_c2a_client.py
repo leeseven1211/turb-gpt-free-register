@@ -42,6 +42,174 @@ class C2AClientTests(unittest.TestCase):
     def safe_mutation_policy(self):
         return client.SafeMutationPolicy(client.configured_backend_identity())
 
+    @staticmethod
+    def remote_sync_row(*, account_id="acct-target", **updates):
+        return {
+            "id": account_id,
+            "email": "User@Example.test",
+            "enabled": True,
+            "backend_status": "正常",
+            "status_category": "normal",
+            "status_reason_code": "access_token_refresh_required",
+            "access_token_status": "invalid",
+            "access_token_issued_at": 1000,
+            "access_token_expires_at": 2000,
+            "credential_availability": "recoverable",
+            "can_refresh_access_token": True,
+            "group_id": "account-group",
+            **updates,
+        }
+
+    @patch("core.integrations.c2a.client.requests.get")
+    def test_scan_reads_every_page_and_projects_only_known_metadata(self, get):
+        first_page = [
+            self.remote_sync_row(account_id=f"acct-{index}")
+            for index in range(500)
+        ]
+        last_row = self.remote_sync_row(
+            access_token=PRIVATE_TOKEN, status_raw_error="private-remote-response",
+            refresh_token=PRIVATE_KEY,
+        )
+        get.side_effect = [
+            self.response({"items": first_page, "total": 501, "page": 1, "page_size": 500}),
+            self.response({"items": [last_row], "total": 501, "page": 2, "page_size": 500}),
+        ]
+
+        rows = client.list_configured_accounts(expected_backend=client.configured_backend_identity())
+
+        self.assertEqual(501, len(rows))
+        self.assertEqual({
+            "id": "acct-target",
+            "email": "user@example.test",
+            "enabled": True,
+            "backend_status": "正常",
+            "status_category": "normal",
+            "status_reason_code": "access_token_refresh_required",
+            "access_token_status": "invalid",
+            "access_token_issued_at": 1000,
+            "access_token_expires_at": 2000,
+            "credential_availability": "recoverable",
+            "can_refresh_access_token": True,
+            "group_id": "account-group",
+        }, rows[-1])
+        self.assertEqual([1, 2], [call.kwargs["params"]["page"] for call in get.call_args_list])
+        self.assertTrue(all(call.kwargs["params"]["status"] == "all" for call in get.call_args_list))
+        self.assertTrue(all(call.kwargs.get("allow_redirects") is False for call in get.call_args_list))
+        self.assert_safe(rows)
+
+    @patch("core.integrations.c2a.client.requests.get")
+    def test_scan_never_returns_a_partial_snapshot_on_a_short_page(self, get):
+        get.return_value = self.response({
+            "items": [self.remote_sync_row()], "total": 501, "page": 1, "page_size": 500,
+        })
+
+        with self.assertRaises(client.C2AError) as raised:
+            client.list_configured_accounts()
+
+        self.assertEqual("c2a_response_invalid", raised.exception.code)
+        self.assert_safe(raised.exception)
+
+    @patch("core.integrations.c2a.client.requests.get")
+    def test_target_state_compares_at_in_memory_using_the_management_id(self, get):
+        checkpoint = Mock()
+        for remote_at, token_matches in ((PRIVATE_TOKEN, True), ("other-fixture-at", False)):
+            with self.subTest(token_matches=token_matches):
+                get.reset_mock()
+                checkpoint.reset_mock()
+                get.side_effect = [
+                    self.response({"item": self.remote_sync_row()}),
+                    self.response({"access_token": remote_at}),
+                ]
+
+                result = client.get_account_sync_state(
+                    "acct-target", "user@example.test", PRIVATE_TOKEN, checkpoint=checkpoint,
+                )
+
+                self.assertIs(token_matches, result["token_matches"])
+                self.assertTrue(result["enabled"])
+                self.assertEqual("invalid", result["access_token_status"])
+                self.assertEqual([
+                    "https://c2a.example.test/prefix/api/accounts/acct-target",
+                    "https://c2a.example.test/prefix/api/accounts/acct-target/access-token",
+                ], [call.args[0] for call in get.call_args_list])
+                self.assertEqual(2, checkpoint.call_count)
+                self.assert_safe(result)
+                self.assertNotIn(remote_at, str(result))
+
+    @patch("core.integrations.c2a.client.requests.get")
+    def test_target_conflict_stops_before_credential_read(self, get):
+        for response, code in (
+            (self.response({}, status=404), "c2a_remote_account_missing"),
+            (self.response({"item": self.remote_sync_row(enabled=False)}), "c2a_remote_account_disabled"),
+            (
+                self.response({"item": self.remote_sync_row(email="changed@example.test")}),
+                "c2a_remote_account_identity_changed",
+            ),
+            (self.response({"item": self.remote_sync_row(account_id="acct-different")}), "c2a_response_invalid"),
+        ):
+            with self.subTest(code=code):
+                get.reset_mock()
+                get.return_value = response
+
+                with self.assertRaises(client.C2AError) as raised:
+                    client.get_account_sync_state("acct-target", "user@example.test", PRIVATE_TOKEN)
+
+                self.assertEqual(code, raised.exception.code)
+                self.assertEqual(1, get.call_count)
+                self.assert_safe(raised.exception)
+
+    @patch("core.integrations.c2a.client.requests.get")
+    def test_missing_access_token_field_is_not_a_confirmed_different_token(self, get):
+        get.side_effect = [
+            self.response({"item": self.remote_sync_row()}),
+            self.response({"detail": PRIVATE_TOKEN}),
+        ]
+
+        with self.assertRaises(client.C2AError) as raised:
+            client.get_account_sync_state("acct-target", "user@example.test", PRIVATE_TOKEN)
+
+        self.assertEqual("c2a_response_invalid", raised.exception.code)
+        self.assert_safe(raised.exception)
+
+    @patch("core.integrations.c2a.client.requests.get")
+    def test_confirmed_missing_at_keeps_the_original_target_for_update(self, get):
+        get.return_value = self.response({"item": self.remote_sync_row(
+            access_token_status="missing", access_token_issued_at=None, access_token_expires_at=None,
+        )})
+
+        result = client.get_account_sync_state("acct-target", "user@example.test", PRIVATE_TOKEN)
+
+        self.assertEqual("acct-target", result["id"])
+        self.assertIs(False, result["token_matches"])
+        self.assertEqual("missing", result["access_token_status"])
+        self.assertEqual(1, get.call_count)
+
+    @patch("core.integrations.c2a.client.requests.get")
+    def test_missing_credential_subresource_does_not_report_account_missing(self, get):
+        for response in (self.response({}, status=404), self.response({"access_token": ""})):
+            with self.subTest(status=response.status_code):
+                get.side_effect = [self.response({"item": self.remote_sync_row()}), response]
+
+                with self.assertRaises(client.C2AError) as raised:
+                    client.get_account_sync_state("acct-target", "user@example.test", PRIVATE_TOKEN)
+
+                self.assertEqual("c2a_remote_access_token_missing", raised.exception.code)
+                self.assert_safe(raised.exception)
+
+    @patch("core.integrations.c2a.client.requests.get")
+    def test_target_read_rejects_non_id_path_segments_and_backend_changes(self, get):
+        for remote_id, backend, code in (
+            ("acct-target/access-token", None, "c2a_remote_account_id_invalid"),
+            ("acct-target", "other-backend", "c2a_backend_changed"),
+        ):
+            with self.subTest(code=code):
+                with self.assertRaises(client.C2AError) as raised:
+                    client.get_account_sync_state(
+                        remote_id, "user@example.test", PRIVATE_TOKEN, expected_backend=backend,
+                    )
+                self.assertEqual(code, raised.exception.code)
+        get.assert_not_called()
+
     def test_normalizes_base_and_hashes_only_normalized_target(self):
         self.assertEqual(
             "https://c2a.example.test/prefix",
@@ -210,6 +378,7 @@ class C2AClientTests(unittest.TestCase):
                 "Content-Type": "application/json",
             },
             timeout=17,
+            allow_redirects=False,
             json={"id": "acct-target", "access_token": PRIVATE_TOKEN},
         )
         self.assertNotIn(PRIVATE_TOKEN, str(result))
@@ -386,6 +555,24 @@ class C2AClientTests(unittest.TestCase):
                 self.assertEqual(code, raised.exception.code)
                 self.assert_safe(raised.exception)
 
+    @patch("core.integrations.c2a.client.requests.post")
+    def test_update_classifies_only_the_official_token_conflict_detail(self, post):
+        conflict_detail = "access token already belongs to another account"
+        for error, code in (
+            (conflict_detail, "c2a_remote_token_conflict"),
+            (f"{conflict_detail}: {PRIVATE_TOKEN}", "c2a_update_rejected"),
+        ):
+            with self.subTest(code=code):
+                post.return_value = self.response({"detail": {"error": error}}, status=400)
+
+                with self.assertRaises(client.C2AError) as raised:
+                    client.update_account_access_token(
+                        "acct-target", PRIVATE_TOKEN, safe_mutation_policy=self.safe_mutation_policy(),
+                    )
+
+                self.assertEqual(code, raised.exception.code)
+                self.assert_safe(raised.exception)
+
     def test_success_http_with_invalid_json_is_a_response_error_for_get_and_post(self):
         response = requests.Response()
         response.status_code = 200
@@ -452,7 +639,25 @@ class C2AClientTests(unittest.TestCase):
                 "User-Agent": "turb-gpt-free-register/c2a",
             },
             timeout=17,
+            allow_redirects=False,
         )
+
+    @patch("core.integrations.c2a.client.requests.get")
+    def test_redirected_settings_cannot_confirm_the_configured_backends_policy(self, get):
+        def request_settings(*args, **kwargs):
+            if kwargs.get("allow_redirects") is False:
+                return self.response({}, status=307)
+            return self.response({"settings": {
+                "auto_remove_invalid_accounts": False, "auto_remove_rate_limited_accounts": False,
+            }})
+
+        get.side_effect = request_settings
+
+        with self.assertRaises(client.C2AError) as raised:
+            client.verify_safe_mutation_policy()
+
+        self.assertEqual("c2a_safety", raised.exception.stage)
+        self.assert_safe(raised.exception)
 
     def test_unsafe_or_unverified_policy_never_reaches_update_post(self):
         for settings, code in (
