@@ -42,6 +42,7 @@ def test_non_registration_capacity_does_not_load_environment_configuration():
 @pytest.mark.parametrize("driver,policy_key,config_key", [
     ("roxy", "registration_roxy", "REGISTRATION_ROXY_WORKERS"),
     ("protocol_oss_2", "registration_proto2", "REGISTRATION_PROTO2_WORKERS"),
+    ("sentinel_rs", "registration_rust", "REGISTRATION_RUST_WORKERS"),
 ])
 def test_registration_and_resume_use_the_same_driver_capacity(driver, policy_key, config_key):
     run = {"task_type": "registration_resume", "data": {"driver": driver}}

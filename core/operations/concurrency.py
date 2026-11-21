@@ -42,6 +42,7 @@ class AdmissionClass:
 _DEFINITIONS = (
     ("registration_roxy", "Roxy 注册", "REGISTRATION_ROXY_WORKERS", 3),
     ("registration_proto2", "Proto2 注册", "REGISTRATION_PROTO2_WORKERS", 3),
+    ("registration_rust", "Rust 注册", "REGISTRATION_RUST_WORKERS", 3),
     ("live_check", "查活", "ACCOUNT_LIVE_CHECK_WORKERS", 3),
     ("token_refresh", "刷新 AT", "ACCOUNT_TOKEN_REFRESH_WORKERS", 3),
     ("plan_check", "查套餐", "ACCOUNT_PLAN_CHECK_WORKERS", 3),

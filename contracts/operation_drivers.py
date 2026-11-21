@@ -42,6 +42,11 @@ _DRIVERS: Mapping[str, tuple[DriverDefinition, ...]] = MappingProxyType({
             "roxy", "本地 Roxy", "使用本地 RoxyBrowser 注册与账号后处理流程。",
             "registration_roxy", True, True, "roxy", browser_required=True,
         ),
+        RegistrationDriverDefinition(
+            "sentinel_rs", "Rust sentinel-rs",
+            "调用本地编译的 sentinel-rs 原生进程完成注册；邮箱、任务恢复和账号后处理沿用本地服务。",
+            "registration_rust", True, False, "protocol",
+        ),
     ),
     "refresh_at": (
         DriverDefinition("protocol", "协议刷新"),
@@ -76,6 +81,7 @@ _ALIASES: Mapping[str, Mapping[str, str]] = MappingProxyType({
         "api": "protocol_oss_2", "http": "protocol_oss_2",
         "roxy_oss": "roxy", "roxybrowser": "roxy", "fingerprint": "roxy", "browser": "roxy",
         "browser_use": "roxy", "skyvern": "roxy", "cloak": "roxy", "cloakbrowser": "roxy",
+        "rust": "sentinel_rs", "sentinel-rs": "sentinel_rs", "sentinel": "sentinel_rs",
     }),
     "refresh_at": MappingProxyType({"roxy": "browser_roxy"}),
     "password_setup": MappingProxyType({"roxybrowser": "roxy", "browser": "roxy"}),

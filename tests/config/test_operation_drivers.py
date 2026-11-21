@@ -19,7 +19,7 @@ from config.operation_drivers import (
 
 
 def test_registration_history_and_explicit_api_values_remain_separate():
-    assert operation_driver_values("registration") == frozenset({"roxy", "protocol_oss_2"})
+    assert operation_driver_values("registration") == frozenset({"roxy", "protocol_oss_2", "sentinel_rs"})
     assert operation_driver_aliases("registration")["protocol"] == "protocol_oss_2"
     with pytest.raises(KeyError):
         get_operation_driver("registration", "protocol")
@@ -27,6 +27,9 @@ def test_registration_history_and_explicit_api_values_remain_separate():
     assert isinstance(definition, RegistrationDriverDefinition)
     assert definition.admission_class == "registration_proto2"
     assert definition.password_required is True
+    rust = get_operation_driver("registration", "sentinel_rs")
+    assert rust.admission_class == "registration_rust"
+    assert rust.browser_required is False
 
 
 def test_aliases_only_apply_to_their_own_operation():
@@ -48,6 +51,7 @@ def test_metadata_is_immutable_for_concurrent_callers():
     assert isinstance(operation_driver_definitions("registration"), tuple)
     assert operation_driver_options("registration") == (
         ("protocol_oss_2", "开源protocol-2"), ("roxy", "本地 Roxy"),
+        ("sentinel_rs", "Rust sentinel-rs"),
     )
 
 

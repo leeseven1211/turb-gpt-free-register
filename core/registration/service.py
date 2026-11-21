@@ -83,7 +83,7 @@ def validate_registration_driver(value: object) -> str:
     """校验注册批次显式选择的 canonical driver。"""
     driver = str(value or "").strip().lower()
     if driver not in REGISTRATION_DRIVERS:
-        raise ValueError("registration_driver 只能是 protocol_oss_2 或 roxy")
+        raise ValueError("registration_driver 只能是 protocol_oss_2、roxy 或 sentinel_rs")
     return driver
 
 
@@ -2974,14 +2974,15 @@ def _submit_registration_account_setup(
     }
     settings = {key: value for key, value in base_settings.items() if key in setting_keys}
     driver = str(snapshot.get("registration_driver") or "protocol_oss_2")
-    password_required = driver == "protocol_oss_2" or bool(snapshot.get("password_enabled", True))
+    protocol_account = driver in {"protocol_oss_2", "sentinel_rs"}
+    password_required = protocol_account or bool(snapshot.get("password_enabled", True))
     twofa_required = bool(snapshot.get("twofa_enabled", True))
     plan_required = bool(snapshot.get("plan_check_enabled", True))
     settings.update(
         password_enabled=password_required, twofa_enabled=twofa_required,
         plan_check_enabled=plan_required,
-        password_driver="protocol" if driver == "protocol_oss_2" else "roxy",
-        twofa_driver="protocol" if driver == "protocol_oss_2" else str(snapshot.get("twofa_driver") or "browser"),
+        password_driver="protocol" if protocol_account else "roxy",
+        twofa_driver="protocol" if protocol_account else str(snapshot.get("twofa_driver") or "browser"),
     )
     steps = set()
     if password_required and not password_is_confirmed(account):

@@ -10,7 +10,7 @@ export const accountFilters:readonly AccountColumn[] = [
   {key:'id',label:'ID',kind:'text',placeholder:'#'},
   {key:'email',label:'邮箱 / 姓名',kind:'text',placeholder:'邮箱或姓名'},
   {key:'source',label:'来源',kind:'enum',group:'source'},
-  {key:'registration_driver',label:'注册驱动',kind:'enum',group:'registration_driver',order:['roxy','roxy_oss','protocol','protocol_oss','protocol_oss_2','cloakbrowser','unknown']},
+  {key:'registration_driver',label:'注册驱动',kind:'enum',group:'registration_driver',order:['roxy','roxy_oss','protocol','protocol_oss','protocol_oss_2','sentinel_rs','cloakbrowser','unknown']},
   {key:'token',label:'Token',kind:'enum',group:'account_token',order:['has','expired','invalid_401','invalid_403','invalid_other','none']},
   {key:'account_status',label:'账号状态',kind:'enum',group:'account_status',order:['active','deactivated']},
   {key:'password',label:'账号密码',kind:'enum',group:'password'},

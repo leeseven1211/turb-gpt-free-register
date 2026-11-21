@@ -9,6 +9,7 @@ from core.kernels import registry
 _ENTRYPOINTS = {
     "protocol_oss_2": "protocol_cli",
     "roxy": "roxy_cli",
+    "sentinel_rs": "rust_cli",
 }
 
 

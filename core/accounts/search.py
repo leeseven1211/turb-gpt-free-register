@@ -13,6 +13,7 @@ REGISTRATION_DRIVERS = {
     "protocol": frozenset({"protocol", "api", "http"}),
     "protocol_oss": frozenset({"protocol_oss"}),
     "protocol_oss_2": frozenset({"protocol_oss_2"}),
+    "sentinel_rs": frozenset({"sentinel_rs", "rust"}),
     "roxy": frozenset({"roxy", "roxybrowser", "fingerprint", "browser"}),
     "roxy_oss": frozenset({"roxy_oss"}),
     "browser": frozenset({
@@ -25,6 +26,7 @@ _METHOD_ALIASES = {
     **dict.fromkeys(("优化协议", "本地优化协议"), "protocol"),
     **dict.fromkeys(("开源协议", "开源协议注册", "protocol_oss"), "protocol_oss"),
     **dict.fromkeys(("开源protocol-2", "protocol-2", "开源协议2", "protocol_oss_2"), "protocol_oss_2"),
+    **dict.fromkeys(("rust", "sentinel_rs", "sentinel-rs", "Rust 内核"), "sentinel_rs"),
     **dict.fromkeys((
         "roxy", "roxy注册", "本地roxy", "本地roxy注册", "本地浏览器", "roxybrowser", "roxybrowser注册", "fingerprint",
     ), "roxy"),
@@ -84,6 +86,7 @@ class AccountSearchTerm:
                 "protocol": "本地优化协议",
                 "protocol_oss": "开源协议",
                 "protocol_oss_2": "开源protocol-2",
+                "sentinel_rs": "Rust sentinel-rs",
                 "roxy": "本地 Roxy",
                 "roxy_oss": "开源 Roxy",
                 "browser": "浏览器",

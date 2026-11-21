@@ -159,6 +159,7 @@ CONCURRENCY_WORKER_DEFAULTS = {
     "GLOBAL_TASK_WORKERS": 3,
     "REGISTRATION_ROXY_WORKERS": 3,
     "REGISTRATION_PROTO2_WORKERS": 3,
+    "REGISTRATION_RUST_WORKERS": 3,
     "ACCOUNT_LIVE_CHECK_WORKERS": 3,
     "ACCOUNT_TOKEN_REFRESH_WORKERS": 3,
     "ACCOUNT_PLAN_CHECK_WORKERS": 3,
@@ -200,6 +201,9 @@ _DEFAULTS: dict[str, Any] = {
     "OPENAI_PROTOCOL_VERSION": "v1",
     "OPENAI_CF_PREFLIGHT_ENABLED": False,
     "REGISTRATION_DRIVER": "roxy",
+    "SENTINEL_RS_BIN": "",
+    "SENTINEL_RS_TIMEOUT_SECONDS": 1200,
+    "SENTINEL_RS_LOG_LEVEL": "info",
     "REGISTRATION_AUTH_MODE": "password",
     "REGISTRATION_COUNTRY": "JP",
     "REGISTRATION_PASSWORD_TRANSITION_TIMEOUT_SECONDS": 60,
@@ -552,6 +556,7 @@ _FIELD_DEFINITIONS = [
           ("GLOBAL_TASK_WORKERS", "全局业务并发上限", "同一部署全部受管业务执行的合计上限；不限制调度、心跳、代理供给等支撑线程。填写不小于 1 的整数，无固定上限。"),
           ("REGISTRATION_ROXY_WORKERS", "Roxy 注册", "Roxy 完整注册与原身份续跑共用此类型上限；另受注册批次上限约束。"),
           ("REGISTRATION_PROTO2_WORKERS", "Proto2 注册", "protocol_oss_2 完整注册与原身份续跑共用此类型上限；另受注册批次上限约束。"),
+          ("REGISTRATION_RUST_WORKERS", "Rust 注册", "sentinel_rs 完整注册与原身份续跑共用此类型上限；另受注册批次上限约束。"),
           ("ACCOUNT_LIVE_CHECK_WORKERS", "查活", "独立查活任务上限。"),
           ("ACCOUNT_TOKEN_REFRESH_WORKERS", "刷新 AT", "独立刷新 AT 任务上限；巡检、提链和注册内部同步刷新归属其父任务。"),
           ("ACCOUNT_PLAN_CHECK_WORKERS", "查套餐", "独立查套餐任务上限；巡检、提链和注册内部同步查询归属其父任务。"),
@@ -661,7 +666,19 @@ _FIELD_DEFINITIONS = [
     },
     {
         "key": "REGISTRATION_DRIVER", "file": "roxybrowser.py", "type": "str", "group": "注册主链路",
-        "label": "注册主流程驱动", "help": "选择注册实现：roxy=本地 Roxy，protocol_oss_2=开源protocol-2；历史驱动自动映射到现行实现",
+        "label": "注册主流程驱动", "help": "选择注册实现：roxy=本地 Roxy，protocol_oss_2=开源protocol-2，sentinel_rs=Rust 原生内核；历史驱动自动映射到现行实现",
+    },
+    {
+        "key": "SENTINEL_RS_BIN", "file": "sentinel_rs.py", "type": "str", "group": "注册主链路",
+        "label": "sentinel-rs 二进制", "help": "留空时自动查找 native/sentinel-rs/target/release/sentinel-rs、/srv/apps/sentinel-rs/target/release/sentinel-rs 或 PATH 中的 sentinel-rs",
+    },
+    {
+        "key": "SENTINEL_RS_TIMEOUT_SECONDS", "file": "sentinel_rs.py", "type": "int", "group": "注册主链路",
+        "label": "Rust 注册总时限（秒）", "help": "单次 sentinel-rs 原生进程的总时限，包含取码等待和回调；默认 1200 秒",
+    },
+    {
+        "key": "SENTINEL_RS_LOG_LEVEL", "file": "sentinel_rs.py", "type": "str", "group": "注册主链路",
+        "label": "sentinel-rs 日志级别", "help": "传给原生进程的日志级别；Turb 只保留脱敏后的失败尾部诊断，不转发正文",
     },
     {
         "key": "REGISTRATION_COUNTRY", "file": "register.py", "type": "str", "group": "注册主链路",
@@ -1809,6 +1826,10 @@ _OPTIONS: dict[str, tuple[ConfigOption, ...]] = {
     ),
     "OPENAI_PROTOCOL_VERSION": _options(*PROTOCOL_VERSION_OPTIONS),
     "REGISTRATION_DRIVER": _options(*operation_driver_options("registration")),
+    "SENTINEL_RS_LOG_LEVEL": _options(
+        ("trace", "trace"), ("debug", "debug"), ("info", "info"),
+        ("warn", "warn"), ("error", "error"), ("off", "off"),
+    ),
     "REGISTRATION_AUTH_MODE": _options(
         ("password", "优先使用页面密码入口"),
     ),
@@ -1937,6 +1958,7 @@ _ALIASES: dict[str, Mapping[str, str]] = {
 
 _RANGES: dict[str, tuple[int | float | None, int | float | None]] = {
     "TWOFA_REAUTH_MAX_ATTEMPTS": (1, 8),
+    "SENTINEL_RS_TIMEOUT_SECONDS": (60, 7200),
     "TWOFA_REAUTH_RETRY_DELAY": (0, 60),
     "BROWSER_PUBLIC_ASSET_CACHE_MAX_MB": (16, 4096),
     "BROWSER_TRAFFIC_DETAIL_MAX_ENTRIES": (1, 10000),
