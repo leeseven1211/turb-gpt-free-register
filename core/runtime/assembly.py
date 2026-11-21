@@ -298,6 +298,7 @@ def install(bootstrap: RuntimeBootstrap, *, logger=None):
         heartbeat.owner_pause_changed()
 
     pause_hooks = dict(
+        probe_timeout=30.0,
         on_pause=pause,
         can_resume=lambda: _idle_for_owner_retry(context),
         on_resume=resume,

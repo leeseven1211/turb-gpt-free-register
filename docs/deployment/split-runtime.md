@@ -43,6 +43,8 @@ Waitress 仍完整缓冲请求体，保留 1 GiB 上限；Web spool 位于 `<run
 
 独立 Worker 在执行归属永久丢失后停止接单，并沿原总停止预算收尾，以非零状态退出，由托管服务启动新进程；当前进程不重新获取归属。配置监听或心跳的临时阻塞继续按各自恢复规则处理。归属丢失和心跳失败首次发生或原因变化时记录固定原因码，异常只记录类名，便于区分连接断开、探针超时和状态采集失败。历史账号代理上下文由独立维护线程分批补齐，受准入、取消和数据库等待预算约束，在排空任务前停止并确认线程退出。
 
+独立 Worker 的执行归属探针间隔为 1 秒。距最近一次成功验证满 30 秒时暂停接单，满 60 秒仍未恢复则判定归属永久丢失。确认专用连接断开或执行锁丢失时仍立即判定丢失。心跳与配置新鲜度保留各自时限；combined 与 standalone 的归属验证默认时限仍为 5 秒。
+
 ## 未安装的模板
 
 新增 `turb-web@.service` 和 `turb-worker@.service` 使用 `/srv/turb/<instance>/current`、`/etc/turb/<instance>/bootstrap.env`、独立角色与同一稳定运行目录。模板没有 BindsTo/PartOf/Requires，停止 Web 不传播到 Worker。`Type=exec` 只证明 exec 成功；`After=network-online.target` 不证明应用 readiness。manager 直接运行前台 Python，失败重启、90 秒硬停止、UMask0077；原 combined unit 未被覆盖。
