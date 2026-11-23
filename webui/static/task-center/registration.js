@@ -553,7 +553,7 @@ var X = { class: "registration-filter-fields" }, de = { key: 0 }, fe = ["value"]
 					class: "registration-batch-card",
 					"data-tone": i
 				}, [_("div", ot, [
-					_("div", st, [_("strong", null, h(n.email || "准备邮箱中…"), 1), _("small", null, h(u), 1)]),
+					_("div", st, [_("strong", null, h(n.email || (n.status === "pending" ? "等待执行…" : "准备邮箱中…")), 1), _("small", null, h(u), 1)]),
 					_("div", ct, [_("span", {
 						class: "registration-state",
 						"data-tone": i

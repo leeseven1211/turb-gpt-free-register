@@ -244,7 +244,7 @@ onBeforeUnmount(resetProgress);
       <article v-for="{job, tone, result, identity, elapsed, started, completed} in rowSummaries" :key="String(job.id)" class="registration-batch-card" :data-tone="tone">
         <div class="registration-batch-row">
           <div class="registration-batch-identity">
-            <strong>{{ job.email || '准备邮箱中…' }}</strong>
+            <strong>{{ job.email || (job.status === 'pending' ? '等待执行…' : '准备邮箱中…') }}</strong>
             <small>{{ identity }}</small>
           </div>
           <div class="registration-batch-result">
