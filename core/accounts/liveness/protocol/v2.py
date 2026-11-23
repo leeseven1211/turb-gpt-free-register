@@ -463,7 +463,13 @@ def _start_email_session(
     return execute(email, proxy, identity=identity, context_recorder=context_recorder, session_adapter=session_adapter, _deps=dependencies)
 
 
-def _open_offered_password_login(session, final_url: str, *, allow_standard_route: bool = True) -> str:
+def _open_offered_password_login(
+    session,
+    final_url: str,
+    *,
+    allow_standard_route: bool = True,
+    require_standard_route: bool = True,
+) -> str:
     """Compatibility entry; execution and explicit capabilities live in the kernel."""
     from core.kernels.protocol.local.refresh_at.v2 import _open_offered_password_login as execute, OpenOfferedPasswordLoginDependencies
     dependencies = OpenOfferedPasswordLoginDependencies(
@@ -477,7 +483,13 @@ def _open_offered_password_login(session, final_url: str, *, allow_standard_rout
         _response_status=_response_status,
         logger=logger,
     )
-    return execute(session, final_url, allow_standard_route=allow_standard_route, _deps=dependencies)
+    return execute(
+        session,
+        final_url,
+        allow_standard_route=allow_standard_route,
+        require_standard_route=require_standard_route,
+        _deps=dependencies,
+    )
 
 
 def _refresh_with_password(

@@ -237,7 +237,7 @@ def workbench_task_item(row: dict, *, account: dict | None = None, public_status
     reconcile_halt = {
         "halted": halted,
         "reason": halt_reason[:60],
-        "label": _RECONCILE_HALT_LABELS.get(halt_reason, "已停止自动续查，待核对") if halted else "",
+        "label": _RECONCILE_HALT_LABELS.get(halt_reason, "已停止自动续查") if halted else "",
     }
     prepare_state = {"passed": "done", "success": "done", "failed": "failed", "skipped": "skipped"}.get(preflight, "pending")
     run_state = {"success": "done", "failed": "failed", "running": "running", "queued": "queued"}.get(extraction, "pending")

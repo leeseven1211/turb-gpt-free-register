@@ -63,15 +63,15 @@ const registrationProxyDisabled=computed(()=>caps.value?.proxy?.registration?.en
 const proxyTone=computed(()=>num(proxy.value.active_leases)>0?'ok':'idle');
 
 const extractData=computed<any>(()=>extract.value||{});
-const extractTone=computed(()=>num(extractData.value.needs_review)>0?'warn':num(extractData.value.processing)>0?'active':'idle');
-const extractEmpty=computed(()=>num(extractData.value.all)===0&&num(extractData.value.today_extracted)===0&&num(extractData.value.processing)===0&&num(extractData.value.needs_review)===0&&num(extractData.value.awaiting_payment)===0);
+const extractTone=computed(()=>num(extractData.value.processing)>0?'active':'idle');
+const extractEmpty=computed(()=>num(extractData.value.all)===0&&num(extractData.value.today_extracted)===0&&num(extractData.value.processing)===0&&num(extractData.value.awaiting_payment)===0);
 
 const pulse=computed(()=>[
   {id:'email',label:'邮箱',value:emailNumber.value,hint:num(email.value?.available)===0?'库存耗尽':`邮箱总量 ${fmt(emailTotal.value)}`,tone:emailTone.value,tab:'outlook'},
   {id:'accounts',label:'账号',value:fmt(accounts.value.active),hint:`归档 ${fmt(accounts.value.archived)}`,tone:'ok',tab:'accounts'},
   {id:'codex',label:'Codex',value:fmt(codex.value.total),hint:`待导出 ${fmt(codex.value.pending)}`,tone:codexTone.value,tab:'codex'},
   {id:'plans',label:'套餐',value:fmt(plans.value.length),hint:`${fmt(planTotal.value)} 个已归类`,tone:'ok',tab:'accounts'},
-  {id:'extract',label:'提炼',value:fmt(extractData.value.today_extracted),hint:num(extractData.value.needs_review)>0?`待核对 ${fmt(extractData.value.needs_review)}`:'今日已提炼',tone:extractTone.value,tab:'extract-workbench'},
+  {id:'extract',label:'提炼',value:fmt(extractData.value.today_extracted),hint:'今日已提炼',tone:extractTone.value,tab:'extract-workbench'},
   {id:'proxy',label:'代理',value:fmt(proxy.value.active_leases),hint:proxyLabel(proxy.value.platform),tone:proxyTone.value,tab:'proxy-traffic'},
   {id:'jobs',label:'任务',value:fmt(activeJobs.value),hint:`累计 ${fmt(jobs.value.total)}`,tone:jobTone.value,tab:'tasks'},
 ]);
@@ -80,7 +80,6 @@ const alerts=computed(()=>{
   const list:Array<{tone:string;text:string;tab:string;label:string}>=[];
   if(email.value?.status==='error')list.push({tone:'danger',text:'邮箱池统计读取失败，暂时无法判断可用库存。',tab:'outlook',label:'检查邮箱池'});
   else if(emailTotal.value>0&&num(email.value?.available)===0)list.push({tone:'warning',text:`邮箱池已用完（已用 ${fmt(emailUsed.value)} / 邮箱总量 ${fmt(emailTotal.value)}），新的注册任务取不到邮箱。`,tab:'outlook',label:'添加邮箱库存'});
-  if(num(extractData.value.needs_review)>0)list.push({tone:'warning',text:`提炼工作台有 ${fmt(extractData.value.needs_review)} 个任务待核对。`,tab:'extract-workbench',label:'去核对'});
   return list.slice(0,2);
 });
 
@@ -223,13 +222,12 @@ defineExpose({
      </header>
      <div class="ov-figure">
       <strong>{{fmt(extractData.today_extracted)}}</strong><span>今日已提炼</span>
-      <em class="ov-chip" :class="`is-${extractTone}`">{{extractTone==='idle'?'空闲':extractTone==='warn'?'待核对':'处理中'}}</em>
+      <em class="ov-chip" :class="`is-${extractTone}`">{{extractTone==='idle'?'空闲':'处理中'}}</em>
      </div>
-     <div v-if="!extractEmpty" class="ov-mini-grid ov-mini-grid--4">
+     <div v-if="!extractEmpty" class="ov-mini-grid ov-mini-grid--3">
       <div><span>Plus 已确认</span><strong>{{fmt(extractData.today_plus_confirmed)}}</strong></div>
       <div><span>处理中</span><strong>{{fmt(extractData.processing)}}</strong></div>
       <div><span>待支付</span><strong>{{fmt(extractData.awaiting_payment)}}</strong></div>
-      <div><span>待核对</span><strong class="is-warn">{{fmt(extractData.needs_review)}}</strong></div>
      </div>
      <p v-if="extractEmpty" class="ov-empty">今日还没有提炼任务，进入工作台即可发起。</p>
      <p class="ov-foot">{{extractEmpty?'提链工作台空闲':`累计 ${fmt(extractData.all)} 个提炼任务`}}</p>

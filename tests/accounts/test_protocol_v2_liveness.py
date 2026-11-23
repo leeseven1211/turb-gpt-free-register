@@ -247,6 +247,7 @@ class ProtocolV2LivenessTests(unittest.TestCase):
             patch.object(v2, "get_account_login_credentials", return_value=("saved-password", "")),
             patch.object(v2, "_network_preflight_with_retry", return_value=(session, "authorize")),
             patch.object(v2, "follow_authorize", return_value="https://auth.openai.com/email-verification"),
+            patch.object(v2, "_open_offered_password_login", return_value="https://auth.openai.com/email-verification"),
             patch.object(v2, "send_email_otp", side_effect=RuntimeError("private response body")),
             patch.object(v2, "_complete_email_otp") as wait,
         ):
@@ -267,6 +268,7 @@ class ProtocolV2LivenessTests(unittest.TestCase):
             patch.object(v2, "get_account_login_credentials", return_value=("saved-password", "")),
             patch.object(v2, "_network_preflight_with_retry", return_value=(_Session(), "authorize")),
             patch.object(v2, "follow_authorize", return_value="https://auth.openai.com/email-verification"),
+            patch.object(v2, "_open_offered_password_login", return_value="https://auth.openai.com/email-verification"),
             patch.object(v2, "send_email_otp", side_effect=openai_auth.EmailOtpSendError("rejected", 200)),
         ):
             result = v2.refresh_access_token("account@example.com", proxy="")
@@ -340,6 +342,7 @@ class ProtocolV2LivenessTests(unittest.TestCase):
             patch.object(v2, "_network_preflight_with_retry", return_value=(_Session(), "authorize")),
             patch.object(v2, "follow_authorize", return_value="https://auth.openai.com/email-verification"),
             patch.object(v2, "_password_verify") as password,
+            patch.object(v2, "_open_offered_password_login", return_value="https://auth.openai.com/email-verification"),
             patch.object(v2, "send_email_otp"),
             patch.object(v2, "_complete_email_otp", side_effect=v2.ProtocolV2AuthError("email_otp_failed", category="email", roxy_fallback_allowed=False)),
         ):
