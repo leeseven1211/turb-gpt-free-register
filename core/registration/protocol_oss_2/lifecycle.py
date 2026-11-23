@@ -159,7 +159,10 @@ def _run_local_postprocessing(
     twofa_error = None
     twofa_route_recovery = None
     if twofa_enabled and totp_secret:
-        report_job_progress("twofa", "success", "已复用原任务确认的 Authenticator 2FA")
+        if not existing_totp_secret:
+            # 内核在注册流程里已完成 enroll+activate，这里只落库。
+            save_protocol_totp_checkpoint(email=email, secret=totp_secret, confirmed=True)
+        report_job_progress("twofa", "success", "已复用内核确认的 Authenticator 2FA")
     elif twofa_enabled:
         report_job_progress("twofa", "running", "正在设置 Authenticator 2FA")
         try:
@@ -392,7 +395,8 @@ def run_protocol_oss_2_lifecycle(
             options=options,
             password_confirmed=password_confirmed,
             password_diagnostics=flow_result.get("password_diagnostics"),
-            **({"existing_totp_secret": existing_totp_secret} if existing_totp_secret else {}),
+            **({"existing_totp_secret": existing_totp_secret or flow_result.get("totp_secret")}
+               if (existing_totp_secret or flow_result.get("totp_secret")) else {}),
         )
         postprocess_success = bool(local_result.get("postprocess_success"))
         return {

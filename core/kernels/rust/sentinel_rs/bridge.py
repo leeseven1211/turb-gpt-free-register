@@ -265,6 +265,7 @@ def run_registration_protocol(
     on_progress: Callable[[str, str, str | None], None] | None = None,
     check_cancel: Callable[[], None] | None = None,
     hooks: dict | None = None,
+    enable_2fa: bool = True,
 ) -> BridgeAccount:
     """协议模式：JSON Lines 双向通信，密码落库后才允许内核发 user/register。"""
     hooks = hooks or {}
@@ -280,7 +281,7 @@ def run_registration_protocol(
         "REG_MAIL_ALLOW_INSECURE": "1",
         "SENTINEL_DB_PATH": str(db_path),
         "SENTINEL_LOG": request.log_level,
-        "SENTINEL_ENABLE_2FA": "0",
+        "SENTINEL_ENABLE_2FA": "1" if enable_2fa else "0",
         "SENTINEL_FP_GEO_PROBE": "1",
         "SENTINEL_PROTOCOL": "1",
         "OTP_MAX_WAIT": str(min(request.timeout_seconds, 300)),
@@ -495,12 +496,13 @@ def run_registration(
     on_progress: Callable[[str, str, str | None], None] | None = None,
     check_cancel: Callable[[], None] | None = None,
     protocol_hooks: dict | None = None,
+    enable_2fa: bool = True,
 ) -> BridgeAccount:
     """运行一次真实注册并返回已落库账号；任何成功判断都必须有 AT 和身份证据。"""
     if protocol_enabled():
         return run_registration_protocol(
             request, on_progress=on_progress, check_cancel=check_cancel,
-            hooks=protocol_hooks or {},
+            hooks=protocol_hooks or {}, enable_2fa=enable_2fa,
         )
     email_pool = _write_email_pool(request)
     db_path = request.workdir / "accounts.db"
@@ -514,7 +516,7 @@ def run_registration(
         "REG_MAIL_ALLOW_INSECURE": "1",
         "SENTINEL_DB_PATH": str(db_path),
         "SENTINEL_LOG": request.log_level,
-        "SENTINEL_ENABLE_2FA": "0",
+        "SENTINEL_ENABLE_2FA": "1" if enable_2fa else "0",
         "SENTINEL_FP_GEO_PROBE": "1",
         "OTP_MAX_WAIT": str(min(request.timeout_seconds, 300)),
     }

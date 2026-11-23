@@ -216,9 +216,10 @@ def _run_sentinel_rs_flow(
             "email_source": source,
             "otp_wait_seconds": otp_wait,
         } if protocol_enabled() else None
+        enable_2fa = bool(options.get("twofa_enabled", True))
         account = run_registration(
             request, on_progress=on_progress, check_cancel=check_cancel,
-            protocol_hooks=protocol_hooks,
+            protocol_hooks=protocol_hooks, enable_2fa=enable_2fa,
         )
     except BaseException as exc:
         # 内核可能已经建号（pending_otp）；超时、取消或异常退出都要先保住密码。
@@ -235,6 +236,7 @@ def _run_sentinel_rs_flow(
         "access_token": account.access_token,
         "session_info": session_info,
         "registration_password": account.password or None,
+        "totp_secret": account.totp_secret or None,
         # Rust 的 user/register 成功且内核写回了密码，等价于密码创建已被接受；
         # 不再强制二次登录校验，否则所有 Rust 注册都会被标成 partial_success。
         "password_validated": bool(str(account.password or "").strip()),

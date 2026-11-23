@@ -116,6 +116,9 @@ def _apply_registration_driver_snapshot(snapshot: dict[str, object], driver: str
     if canonical in REGISTRATION_DRIVERS and get_registration_driver(canonical).password_required:
         snapshot["password_enabled"] = True
         snapshot["password_mode"] = "password"
+    if canonical == "sentinel_rs":
+        # Rust 内核没有套餐/优惠查询；不要为它安排 Python 套餐检查。
+        snapshot["plan_check_enabled"] = False
     return snapshot
 
 
