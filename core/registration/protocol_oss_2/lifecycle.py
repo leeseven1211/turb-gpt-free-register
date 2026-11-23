@@ -515,6 +515,7 @@ def run_protocol_oss_2_lifecycle(
             error = f"{kernel_summary}：{error}"
         from core.accounts.password_evidence import registration_password_extra
 
+        salvaged_core = False
         salvaged_account = getattr(exc, "kernel_account", None)
         if salvaged_account is not None and str(getattr(salvaged_account, "access_token", "") or "").strip():
             # 内核在 2FA 之前已写回 AT：即使整单失败也要把账号保存下来。
@@ -538,6 +539,7 @@ def run_protocol_oss_2_lifecycle(
                         "registration_driver": _driver_name,
                     },
                 )
+                salvaged_core = True
                 error = f"{error}；账号已保存（AT 已写入），可单独补跑 2FA"
             except Exception:
                 logger.exception("[Job] 保存内核已写回的账号失败")
@@ -560,13 +562,17 @@ def run_protocol_oss_2_lifecycle(
         except Exception:
             logger.exception("开源protocol-2 邮箱状态收口失败")
         return {
-            "success": False,
+            "success": True if salvaged_core else False,
+            **({"registration_success": True, "partial_success": True,
+                "postprocess_success": False,
+                "access_token": getattr(salvaged_account, "access_token", None)}
+               if salvaged_core else {}),
             "core_persisted": bool(account_id),
             "email": email,
             "account_id": account_id,
             "request_unknown": request_unknown,
             "manual_reconcile": manual_reconcile,
-            "registration_pending": bool(request_unknown and flow_result is None),
+            "registration_pending": False if salvaged_core else bool(request_unknown and flow_result is None),
             "register_response_confirmed": core_persistence_started or (
                 request_unknown and exc.register_response_confirmed
             ),
