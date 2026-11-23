@@ -713,6 +713,7 @@ _DISPLAY_CODES = {
     "internal.browser": "SYS-BROWSER-001",
     "internal.request_prepare": "SYS-REQ-001",
     "sentinel_rs_binary_unavailable": "SYS-KERNEL-001",
+    "sentinel_rs_remote_account_exists": "SYS-KERNEL-005",
     "sentinel_rs_result_invalid": "SYS-KERNEL-002",
     "sentinel_rs_otp_timeout": "SYS-KERNEL-003",
     "sentinel_rs_registration_failed": "SYS-KERNEL-004",
@@ -766,6 +767,7 @@ _DISPLAY_SUMMARIES = {
     "internal.browser": "浏览器自动化异常",
     "internal.request_prepare": "请求在本地准备阶段失败",
     "sentinel_rs_binary_unavailable": "Rust 内核不可用",
+    "sentinel_rs_remote_account_exists": "远端已存在该邮箱账号",
     "sentinel_rs_result_invalid": "Rust 内核未返回可核验的账号结果",
     "sentinel_rs_otp_timeout": "Rust 内核等待邮箱验证码超时",
     "sentinel_rs_registration_failed": "Rust 内核注册进程失败",
@@ -1396,6 +1398,7 @@ _CAUSE_DETAILS: dict[str, tuple[str, str]] = {
     "protocol_failure_evidence_missing": ("FLOW-REG-EVIDENCE", "协议失败未保留足够请求证据，无法确认具体原因"),
     "local_config_schema_mismatch": ("SYS-CONFIG-SCHEMA", "配置 schema 不匹配，请重启后重跑"),
     "sentinel_rs_binary_unavailable": ("SYS-KERNEL-001", "Rust 内核不可用，请检查二进制与执行权限"),
+    "sentinel_rs_remote_account_exists": ("SYS-KERNEL-005", "远端已存在该邮箱账号，不能重复注册"),
     "sentinel_rs_result_invalid": ("SYS-KERNEL-002", "Rust 内核退出但未写回可核验的账号结果"),
     "sentinel_rs_otp_timeout": ("SYS-KERNEL-003", "Rust 内核在等待窗口内未收到邮箱验证码"),
     "sentinel_rs_registration_failed": ("SYS-KERNEL-004", "Rust 内核注册进程失败，详见内核诊断"),
@@ -1976,6 +1979,10 @@ def _sentinel_rs_error_cause(raw: str) -> dict[str, str] | None:
         return _specific_error_cause({"cause_code": "sentinel_rs_binary_unavailable"})
     if "SentinelRsResultInvalid" in text:
         return _specific_error_cause({"cause_code": "sentinel_rs_result_invalid"})
+    if ("invalid_auth_step" in text or "落地判定为已有账号" in text
+            or "已有账号" in text and "SentinelRs" in text):
+        # 邮箱已在远端建过号：重跑注册只会再次被拒。
+        return _specific_error_cause({"cause_code": "sentinel_rs_remote_account_exists"})
     if "SentinelRsFailed" in text or "sentinel-rs 注册超时" in text:
         if any(marker in text for marker in _SENTINEL_RS_OTP_MARKERS):
             return _specific_error_cause({"cause_code": "sentinel_rs_otp_timeout"})

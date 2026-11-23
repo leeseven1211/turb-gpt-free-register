@@ -3783,6 +3783,13 @@ def _build_retry_info(
     if "remail_order_request_unknown" in error or ("Remail" in error and "订单结果待核验" in error):
         info["retry_reason"] = "邮箱订单结果待核验，不能重复下单；需先恢复原订单邮箱"
         return info
+    remote_account_exists = account is None and any(
+        marker in error for marker in ("invalid_auth_step", "落地判定为已有账号")
+    )
+    if remote_account_exists:
+        info["display_status"] = "failed"
+        info["retry_reason"] = "远端已存在该邮箱账号且本地没有密码，不能重新执行注册；需人工处理或标记邮箱不可用"
+        return info
     pre_account_retryable = account is None and _pre_account_retry_facts_match(
         job, resume_root, attempt,
     )
