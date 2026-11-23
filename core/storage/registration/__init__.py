@@ -1254,6 +1254,40 @@ def recover_interrupted_runs(
     return recovered
 
 
+def close_jobs_for_interrupted_runs(*, limit: int = 200) -> int:
+    """把仍有 interrupted Run 但旧任务行仍 running 的记录收口为失败。
+
+    崩溃恢复只关闭 Run/Attempt；旧任务行若不一起收口，前端会永远显示“运行中”。
+    """
+    init()
+    from core.storage import db_legacy
+
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT DISTINCT rr.job_id
+            FROM {_table('registration_runs')} rr
+            JOIN {_table('registration_jobs')} j ON j.id = rr.job_id
+            WHERE rr.status = 'interrupted'
+              AND rr.job_id IS NOT NULL
+              AND j.status IN ('queued', 'running')
+            ORDER BY rr.job_id
+            LIMIT %s
+            """,
+            (max(1, int(limit)),),
+        )
+        job_ids = [int(row[0]) for row in cur.fetchall()]
+    closed = 0
+    for job_id in job_ids:
+        if db_legacy.transition_job_status(
+            job_id, ("queued", "running"), "failed",
+            error="worker_interrupted: 执行进程中断，未写入终态",
+            completed_at=_now(),
+        ):
+            closed += 1
+    return closed
+
+
 def _require_current_execution(cur, attempt: dict, *, run_id, execution_id, email: str) -> None:
     """凭据写入必须来自持有原身份的当前执行实例。"""
     execution = str(execution_id or "").strip()

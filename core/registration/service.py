@@ -1889,12 +1889,21 @@ def start_dispatcher(*, interval_seconds: float = 0.5) -> bool:
         _DISPATCH_STOP.clear()
 
         def loop():
+            ticks = 0
             while not _DISPATCH_STOP.is_set():
                 _DISPATCH_WAKE.clear()
                 try:
                     dispatch_pending_once()
                 except Exception:
                     logger.exception("[Service] scheduler_store_unavailable：暂停本轮注册准入")
+                ticks += 1
+                if ticks % 60 == 0:
+                    try:
+                        from core.storage import registration as registration_store
+
+                        registration_store.close_jobs_for_interrupted_runs()
+                    except Exception:
+                        logger.exception("[Service] 收口中断任务行失败")
                 _DISPATCH_WAKE.wait(_DISPATCH_INTERVAL)
 
         _DISPATCH_THREAD = threading.Thread(target=loop, name="registration-dispatcher", daemon=True)
@@ -2830,6 +2839,17 @@ def _run_one_job(job_id: int, log_file: str) -> None:
             final_status = "failed"
         if final_status in {"queued", "running"}:
             final_status = "failed"
+            # 工作线程若在写终态前退出，Run 收口不能只改内存变量：任务行也必须
+            # 从 running 落成 interrupted，否则前端会永远显示“运行中”。
+            try:
+                db.transition_job_status(
+                    job_id, ("queued", "running"), "failed",
+                    error="worker_interrupted: 工作线程未写入终态，已由收口兜底",
+                    completed_at=_now_iso(),
+                )
+            except Exception:
+                logger.exception("[Job %s] 兜底工作线程终态失败", job_id)
+            final_job = db.get_job(job_id) or final_job
         _finish_registration_run(
             final_status,
             error_message=str(final_job.get("error") or "")[:2000] or None,
