@@ -1283,7 +1283,7 @@ def recover_stale_runs(*, stale_seconds: int = 180) -> int:
     return len(items)
 
 
-def close_stuck_running_jobs(*, stale_seconds: int = 1200, limit: int = 50) -> int:
+def close_stuck_running_jobs(*, stale_seconds: int = 900, limit: int = 50) -> int:
     """收口长时间没有任何进展的 running 任务（HTTP 卡死等）。
 
     阈值远高于正常等码窗口（300s），避免误杀；只是最后的安全网。
@@ -1316,10 +1316,10 @@ def close_stuck_running_jobs(*, stale_seconds: int = 1200, limit: int = 50) -> i
     for job_id in job_ids:
         if db_legacy.transition_job_status(
             job_id, ("running",), "failed",
-            error="worker_stuck: 执行超过 20 分钟无进展，已终止",
+            error="worker_stuck: 执行超过 15 分钟无进展，已终止",
             completed_at=_now().isoformat(timespec="seconds"),
         ):
-            db_legacy.update_job(job_id, error="worker_stuck: 执行超过 20 分钟无进展，已终止")
+            db_legacy.update_job(job_id, error="worker_stuck: 执行超过 15 分钟无进展，已终止")
             closed += 1
     return closed
 
