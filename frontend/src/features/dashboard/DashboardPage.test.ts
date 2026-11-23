@@ -37,6 +37,8 @@ describe('dashboard Vue owner',()=>{
   expect(wrapper.get('[data-overview-card="accounts"]').text()).toContain('10');
   expect(wrapper.get('[data-overview-card="codex"]').text()).toContain('4');
   expect(wrapper.get('[data-overview-card="extract"]').text()).toContain('7');
+  expect(wrapper.get('[data-overview-card="extract"]').text()).not.toContain('待核对');
+  expect(wrapper.findAll('.ov-pulse-item')[4].text()).not.toContain('待核对');
   expect(wrapper.get('[data-overview-card="plans"]').text()).toContain('Plus');
   expect(wrapper.get('[data-overview-card="proxy"]').text()).toContain('1024Proxy');
   expect(wrapper.get('[data-overview-card="jobs"]').text()).toContain('今天');

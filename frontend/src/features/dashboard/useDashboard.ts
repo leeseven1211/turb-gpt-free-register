@@ -12,7 +12,6 @@ function normalizeExtract(payload:any){
     today_extracted:num(payload.today_extracted),
     today_plus_confirmed:num(payload.today_plus_confirmed),
     awaiting_payment:num(payload.awaiting_payment),
-    needs_review:num(payload.needs_review),
     processing:num(payload.processing),
     all:num(payload.all),
     providers:Array.isArray(payload.providers)?payload.providers.filter((item:any)=>item&&typeof item==='object'):[],

@@ -3,8 +3,8 @@ export const providerLabels:Record<string,string>={legacy:'虾扯蛋链',lumen:'
 export const modeLabels:Record<string,string>={extract_only:'仅提链',manual_payment:'手动支付',auto_payment:'自动支付'};
 export const typeLabels:Record<string,string>={pix:'PIX',upi:'UPI',gopay:'GoPay',momo:'MOMO',gcash:'GCash',paypal:'PayPal',ideal:'iDEAL',ideal_short:'iDEAL Short',kakao_pay:'Kakao Pay',ph_short:'PH Short'};
 export const promotionLabels:Record<string,string>={eligible:'全部可提链优惠',all:'全部（有无优惠）',free_trial:'免费试用',half_price:'半价',other_discount:'其他折扣',other_promo:'其他优惠',none:'无优惠'};
-export const statusOptions=[['','全部'],['queued','排队中'],['extracting','进行中'],['scanning','扫码中'],['paused','已暂停'],['cancelled','已停止'],['extraction_succeeded','已出链'],['payment_succeeded','扫码完成'],['failed','失败'],['needs_review','待核对']];
-const statuses:Record<string,string>={pending:'等待执行',queued:'排队中',running:'运行中',success:'已完成',failed:'失败',passed:'预检通过',succeeded:'已完成',waiting:'等待中',settling:'收尾中',cancelling:'取消中',cancelled:'已取消',skipped:'已跳过',paid:'支付成功',unpaid:'未支付',pending_payment:'待支付',confirmed:'Plus 已确认',plus:'Plus 已确认',not_confirmed:'Plus 未到账',unknown:'响应记录缺失',request_unknown:'待核对',attention_required:'待核对',unavailable:'无法确认',not_applicable:'不适用',query_stopped:'已停止查询',waiting_sync:'等待平台同步',awaiting_payment:'待支付',processing_payment:'支付中',expired:'已过期',not_started:'未开始',checking:'核验中',partial_success:'部分成功',partial:'部分完成',partial_submission:'部分入队',completed:'已完成'};
+export const statusOptions=[['','全部'],['queued','排队中'],['extracting','进行中'],['scanning','扫码中'],['paused','已暂停'],['cancelled','已停止'],['extraction_succeeded','已出链'],['payment_succeeded','扫码完成'],['failed','失败']];
+const statuses:Record<string,string>={pending:'等待执行',queued:'排队中',running:'运行中',success:'已完成',failed:'失败',passed:'预检通过',succeeded:'已完成',waiting:'等待中',settling:'收尾中',cancelling:'取消中',cancelled:'已取消',skipped:'已跳过',paid:'支付成功',unpaid:'未支付',pending_payment:'待支付',confirmed:'Plus 已确认',plus:'Plus 已确认',not_confirmed:'Plus 未到账',unknown:'响应记录缺失',request_unknown:'响应记录缺失',attention_required:'响应记录缺失',unavailable:'无法确认',not_applicable:'不适用',query_stopped:'已停止查询',waiting_sync:'等待平台同步',awaiting_payment:'待支付',processing_payment:'支付中',expired:'已过期',not_started:'未开始',checking:'核验中',partial_success:'部分成功',partial:'部分完成',partial_submission:'部分入队',completed:'已完成'};
 export const paymentLabels:Record<string,string>={not_started:'未开始',awaiting_payment:'待支付',processing:'支付中',paid:'已支付',failed:'支付失败',expired:'已过期',unknown:'支付响应缺失'};
 export const plusLabels:Record<string,string>={unknown:'未核验',checking:'核验中',confirmed:'已到账',not_confirmed:'未到账',unavailable:'无法确认'};
 export const label=(value:unknown,fallback='状态记录缺失')=>statuses[String(value||'').toLowerCase()]||String(value||'')||fallback;
@@ -28,9 +28,9 @@ export function outcome(task:ExtractTask):{label:string;tone:'neutral'|'success'
  if(paid&&confirmed)return{label:'支付成功 · Plus 已到账',tone:'success',detail:task.payment_confirmation_source==='local_plan_check'?'独立套餐查询已确认 Plus 到账':task.payment_confirmation_source==='platform_order_check'?'支付平台已核验 Plus 到账':'平台状态与本地套餐核实分别记录'};
  if(paid)return{label:'支付成功 · 待核验',tone:'warning',detail:'已记录支付成功，等待本地 Plus 到账核验'};
  if(extracted&&confirmed&&task.mode!=='extract_only')return{label:'Plus 已到账 · 支付响应缺失',tone:'success',detail:'本地套餐已核实，平台支付响应记录缺失'};
- if(extracted)return{label:task.payment_status==='failed'?'已出链 · 支付失败':['failed','cancelled','stopped','request_unknown','attention_required'].includes(task.task_status||'')?'已出链 · 后续待处理':'已出链',tone:task.payment_status==='failed'||uncertain(task)?'warning':'success',detail:task.error_info?.summary||task.error||task.message||(task.mode==='extract_only'?'仅提链已完成，未发起支付':'支付链接已生成，支付与套餐结果分别记录')};
- if(syncState(task))return{label:label(syncState(task)),tone:'warning',detail:'原远端任务已保留，可同步原任务状态'};
- if(uncertain(task))return{label:'待核对',tone:'warning',detail:task.error_info?.summary||'平台响应记录缺失，请同步原任务状态'};
+ if(extracted)return{label:task.payment_status==='failed'?'已出链 · 支付失败':syncState(task)==='query_stopped'?'已出链 · 已停止查询':['failed','cancelled','stopped','request_unknown','attention_required'].includes(task.task_status||'')?'已出链 · 后续未完成':'已出链',tone:task.payment_status==='failed'||uncertain(task)?'warning':'success',detail:task.error_info?.summary||task.error||task.message||(task.mode==='extract_only'?'仅提链已完成，未发起支付':'支付链接已生成，支付与套餐结果分别记录')};
+ if(syncState(task))return{label:label(syncState(task)),tone:'warning',detail:task.reconcile_halt?.label||task.error_info?.summary||task.error||task.message||'原远端任务记录已保留'};
+ if(uncertain(task))return{label:'结果记录缺失',tone:'warning',detail:task.error_info?.summary||task.error||task.message||'未取得平台有效响应'};
  if(['failed','cancelled','stopped'].includes(task.task_status||'')||task.extraction_status==='failed')return{label:task.task_status==='cancelled'?'已取消':'提链未完成',tone:'danger',detail:task.error_info?.summary||task.error||task.message||'可查看详情确认原因'};
  return{label:task.task_status==='running'?'运行中':'排队中',tone:task.task_status==='running'?'active':'neutral',detail:task.progress?.label||task.message||'等待开始提链'};
 }
@@ -45,7 +45,7 @@ export function download(blob:Blob,name:string){const url=URL.createObjectURL(bl
 /** Compact labels preserve facts; detailed reasoning remains available through outcome(). */
 export function listOutcome(task:ExtractTask){
  const value=outcome(task),paid=task.payment_status==='paid',plus=['confirmed','plus'].includes(task.plus_status||'');
- const text=paid&&plus?'支付与Plus确认':paid?'已支付待核验':plus?'Plus已到账':syncState(task)?'等待原单同步':uncertain(task)?'待核对':['success','succeeded'].includes(task.extraction_status||'')?task.payment_status==='failed'?'已出链支付失败':'已出链':['failed','cancelled','stopped'].includes(task.task_status||'')?task.task_status==='cancelled'?'已取消':'提链未完成':active(task)?'执行中':'排队中';
+ const text=paid&&plus?'支付与Plus确认':paid?'已支付待核验':plus?'Plus已到账':syncState(task)?label(syncState(task)):uncertain(task)?'结果记录缺失':['success','succeeded'].includes(task.extraction_status||'')?task.payment_status==='failed'?'已出链支付失败':'已出链':['failed','cancelled','stopped'].includes(task.task_status||'')?task.task_status==='cancelled'?'已取消':'提链未完成':active(task)?'执行中':'排队中';
  return {...value,label:text,detail:value.detail};
 }
 export function expiryDeadline(value:unknown){if(value==null||value==='')return null;const n=Number(value);if(Number.isFinite(n)&&n>100000000000)return n;const date=Date.parse(String(value));return Number.isFinite(date)?date:null;}
