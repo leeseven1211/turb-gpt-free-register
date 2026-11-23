@@ -42,6 +42,7 @@ function activityDetail(row:EmailRow){return`${row.used_at?'最近使用':row.la
  <section class="ui-list em-list em-inventory" aria-label="邮箱池" :aria-busy="state.loading">
   <ListToolbar class="em-toolbar" :filtered="chips.length>0">
    <span v-if="state.selected.size" class="ui-list-count">已选 {{ state.selected.size }} 个邮箱</span>
+   <div v-if="state.selected.size" class="em-bulk-actions" role="group" aria-label="选中邮箱批量操作"><button class="ui-button" :disabled="state.busy" @click="owner.bulkStatus('available')">标记未使用</button><button class="ui-button" :disabled="state.busy" @click="owner.bulkStatus('disabled')">停用选中</button><button class="ui-button" :disabled="state.busy" @click="owner.bulkStatus('failed')">标失败</button><button class="ui-button ui-button--danger" :disabled="state.busy" @click="owner.bulkDelete()">删除选中</button></div>
    <ListFilterSummary :items="chips" @remove="removeFilter"/>
    <template #actions>
     <button v-if="chips.length" class="ui-link" @click="owner.resetFilters()">清筛</button>
@@ -52,7 +53,6 @@ function activityDetail(row:EmailRow){return`${row.used_at?'最近使用':row.la
     <button class="ui-button" :disabled="state.loading" @click="owner.refresh()">刷新</button>
    </template>
   </ListToolbar>
-  <div v-if="state.selected.size" class="ui-list-bulkbar" role="group" aria-label="选中邮箱批量操作"><button class="ui-button" :disabled="state.busy" @click="owner.bulkStatus('available')">标记未使用</button><button class="ui-button" :disabled="state.busy" @click="owner.bulkStatus('disabled')">停用选中</button><button class="ui-button" :disabled="state.busy" @click="owner.bulkStatus('failed')">标失败</button><button class="ui-button ui-button--danger" :disabled="state.busy" @click="owner.bulkDelete()">删除选中</button></div>
   <div v-if="state.error" class="ui-list-feedback is-error" role="alert">{{ state.error }} <button class="ui-link" @click="owner.refresh()">重试</button></div>
   <div v-if="state.summaryError" class="ui-list-feedback is-error" role="alert">{{ state.summaryError }} <button class="ui-link" @click="owner.refreshDerivationSummary()">重试</button></div>
   <EmailReceipt :receipt="state.receipt"/>

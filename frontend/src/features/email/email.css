@@ -69,3 +69,20 @@ body.em-native-dialog-lock {position:fixed;left:0;right:0;width:100%;overflow:hi
 .em-preserve-lines {white-space:pre-wrap}
 .em-recovery {position:fixed;right:20px;bottom:20px;z-index:1000;max-width:calc(100vw - 40px);white-space:normal;text-align:left;border-color:var(--ui-color-brand);box-shadow:0 6px 24px #0002}
 @media(max-width:680px){.em-heading,.em-import-prompt{flex-direction:column;align-items:stretch}.em-dialog{max-width:calc(100vw - 20px);max-height:calc(100dvh - 24px)}.em-dialog-head,.em-dialog-body{padding:14px}.em-dialog-foot{padding:12px 14px}.em-dialog-fields{grid-template-columns:1fr}.em-button{min-height:38px}.em-field input,.em-field select,.em-field textarea{font-size:16px}.em-source-cards{grid-template-columns:1fr}.em-recovery{right:12px;bottom:12px;max-width:calc(100vw - 24px)}}
+
+/* 选中邮箱后的批量操作并入顶部工具栏，避免再占一行。 */
+.em-toolbar .ui-list-toolbar__main { flex-wrap: wrap; }
+.em-bulk-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+  margin-left: 2px;
+  padding-left: 10px;
+  border-left: 1px solid var(--ui-color-border);
+}
+.em-bulk-actions .ui-button { min-height: 28px; padding: 3px 9px; font-size: 12px; }
+@media (max-width: 680px) {
+  .em-bulk-actions { flex-basis: 100%; margin-left: 0; padding-left: 0; border-left: 0; }
+}

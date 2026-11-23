@@ -31,6 +31,8 @@ describe('complete email page owner',()=>{
   expect(calls.filter(c=>c.path.startsWith('/api/outlook?')).at(-1)?.path).toContain('status=used');
   await inventory.get('input[aria-label="选择邮箱 resource@example.test"]').setValue(true);
   expect(toolbar.text()).toContain('已选 1 个邮箱');
+  expect(toolbar.text()).toContain('标记未使用');
+  expect(inventory.find('.ui-list-bulkbar').exists()).toBe(false);
   expect(toolbar.text()).not.toContain('45');
   expect(w.find('.list-pagination__jump').exists()).toBe(true);
   expect(inventory.get('.list-pagination__range').text()).toContain('共 45 条');

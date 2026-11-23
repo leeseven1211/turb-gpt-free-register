@@ -1114,17 +1114,17 @@ var _e = ["aria-busy"], ve = { class: "em-heading" }, ye = ["disabled"], be = {
 }), Ve = ["aria-busy"], He = {
 	key: 0,
 	class: "ui-list-count"
-}, Ue = ["disabled"], We = ["disabled"], Ge = {
-	key: 0,
-	class: "ui-list-bulkbar",
+}, Ue = {
+	key: 1,
+	class: "em-bulk-actions",
 	role: "group",
 	"aria-label": "选中邮箱批量操作"
-}, Ke = ["disabled"], qe = ["disabled"], Je = ["disabled"], Ye = ["disabled"], Xe = {
-	key: 1,
+}, We = ["disabled"], Ge = ["disabled"], Ke = ["disabled"], qe = ["disabled"], Je = ["disabled"], Ye = ["disabled"], Xe = {
+	key: 0,
 	class: "ui-list-feedback is-error",
 	role: "alert"
 }, Ze = {
-	key: 2,
+	key: 1,
 	class: "ui-list-feedback is-error",
 	role: "alert"
 }, Qe = { class: "ui-col-check" }, $e = [
@@ -1225,60 +1225,63 @@ var _e = ["aria-busy"], ve = { class: "em-heading" }, ye = ["disabled"], be = {
 					k.value.length ? (n(), T("button", {
 						key: 0,
 						class: "ui-link",
-						onClick: i[0] ||= (t) => e.owner.resetFilters()
+						onClick: i[4] ||= (t) => e.owner.resetFilters()
 					}, "清筛")) : u("", !0),
 					g("button", {
 						class: "ui-button",
 						disabled: w(_).busy || !w(_).items.length,
-						onClick: i[1] ||= (t) => e.owner.copyPage()
-					}, "复制当前页", 8, Ue),
+						onClick: i[5] ||= (t) => e.owner.copyPage()
+					}, "复制当前页", 8, Je),
 					g("button", {
 						class: "ui-button",
 						"data-butler-opener": "",
-						onClick: i[2] ||= (e) => l("butlerImport")
+						onClick: i[6] ||= (e) => l("butlerImport")
 					}, m(e.butlerLabel), 1),
 					g("button", {
 						class: "ui-button ui-button--primary",
-						onClick: i[3] ||= (e) => l("localImport")
+						onClick: i[7] ||= (e) => l("localImport")
 					}, "导入邮箱"),
 					g("button", {
 						class: "ui-link",
-						onClick: i[4] ||= (...e) => w(D).resetColumns && w(D).resetColumns(...e)
+						onClick: i[8] ||= (...e) => w(D).resetColumns && w(D).resetColumns(...e)
 					}, "恢复列宽"),
 					g("button", {
 						class: "ui-button",
 						disabled: w(_).loading,
-						onClick: i[5] ||= (t) => e.owner.refresh()
-					}, "刷新", 8, We)
+						onClick: i[9] ||= (t) => e.owner.refresh()
+					}, "刷新", 8, Ye)
 				]),
-				default: r(() => [w(_).selected.size ? (n(), T("span", He, "已选 " + m(w(_).selected.size) + " 个邮箱", 1)) : u("", !0), c(N, {
-					items: k.value,
-					onRemove: q
-				}, null, 8, ["items"])]),
+				default: r(() => [
+					w(_).selected.size ? (n(), T("span", He, "已选 " + m(w(_).selected.size) + " 个邮箱", 1)) : u("", !0),
+					w(_).selected.size ? (n(), T("div", Ue, [
+						g("button", {
+							class: "ui-button",
+							disabled: w(_).busy,
+							onClick: i[0] ||= (t) => e.owner.bulkStatus("available")
+						}, "标记未使用", 8, We),
+						g("button", {
+							class: "ui-button",
+							disabled: w(_).busy,
+							onClick: i[1] ||= (t) => e.owner.bulkStatus("disabled")
+						}, "停用选中", 8, Ge),
+						g("button", {
+							class: "ui-button",
+							disabled: w(_).busy,
+							onClick: i[2] ||= (t) => e.owner.bulkStatus("failed")
+						}, "标失败", 8, Ke),
+						g("button", {
+							class: "ui-button ui-button--danger",
+							disabled: w(_).busy,
+							onClick: i[3] ||= (t) => e.owner.bulkDelete()
+						}, "删除选中", 8, qe)
+					])) : u("", !0),
+					c(N, {
+						items: k.value,
+						onRemove: q
+					}, null, 8, ["items"])
+				]),
 				_: 1
 			}, 8, ["filtered"]),
-			w(_).selected.size ? (n(), T("div", Ge, [
-				g("button", {
-					class: "ui-button",
-					disabled: w(_).busy,
-					onClick: i[6] ||= (t) => e.owner.bulkStatus("available")
-				}, "标记未使用", 8, Ke),
-				g("button", {
-					class: "ui-button",
-					disabled: w(_).busy,
-					onClick: i[7] ||= (t) => e.owner.bulkStatus("disabled")
-				}, "停用选中", 8, qe),
-				g("button", {
-					class: "ui-button",
-					disabled: w(_).busy,
-					onClick: i[8] ||= (t) => e.owner.bulkStatus("failed")
-				}, "标失败", 8, Je),
-				g("button", {
-					class: "ui-button ui-button--danger",
-					disabled: w(_).busy,
-					onClick: i[9] ||= (t) => e.owner.bulkDelete()
-				}, "删除选中", 8, Ye)
-			])) : u("", !0),
 			w(_).error ? (n(), T("div", Xe, [E(m(w(_).error) + " ", 1), g("button", {
 				class: "ui-link",
 				onClick: i[10] ||= (t) => e.owner.refresh()
