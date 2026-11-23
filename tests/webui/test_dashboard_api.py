@@ -125,31 +125,31 @@ class DashboardUiScriptTests(unittest.TestCase):
         self._run_dashboard_vue_contract("dashboard proxy labels preserve current and historical identities")
 
     def test_dashboard_proxy_summary_displays_at_most_three_exit_leases(self):
-        self._run_dashboard_vue_contract("dashboard proxy summary keeps at most three rendered exit leases and full compact total")
+        self._run_dashboard_vue_contract("dashboard proxy summary keeps at most three rendered exit leases and explains remaining exits")
 
-    def test_dashboard_hides_unavailable_cards_and_email_sources(self):
-        self._run_dashboard_vue_contract("dashboard unavailable capabilities and empty inventory suppress their cards")
+    def test_dashboard_fixed_areas_keep_history_and_show_disabled_capabilities(self):
+        self._run_dashboard_vue_contract("dashboard fixed areas retain historical data while showing disabled capabilities")
 
-    def test_dashboard_preferences_keep_order_and_remove_unknown_cards(self):
-        self._run_dashboard_vue_contract("dashboard layout normalization preserves order and prunes unknown hidden ids")
+    def test_dashboard_fixed_order_ignores_obsolete_preferences(self):
+        self._run_dashboard_vue_contract("dashboard fixed order ignores obsolete custom layout preferences")
 
-    def test_overview_card_sizes_are_saved_and_bounded(self):
-        self._run_dashboard_vue_contract("dashboard layout restores bounded widths and heights without unknown cards")
+    def test_overview_legacy_layout_entrypoints_keep_fixed_areas(self):
+        self._run_dashboard_vue_contract("dashboard legacy layout entrypoints remain harmless and preserve all areas")
 
-    def test_overview_card_reorder_can_place_card_after_target(self):
-        self._run_dashboard_vue_contract("dashboard customizer drag reorders within a region without crossing regions")
+    def test_overview_area_actions_keep_current_navigation(self):
+        self._run_dashboard_vue_contract("dashboard every area action navigates to its current page")
 
-    def test_overview_drag_uses_vertical_midpoint_across_grid_rows(self):
-        self._run_dashboard_vue_contract("dashboard pointer sorting uses vertical midpoint across grid rows and saves after target")
+    def test_overview_pulse_navigation_preserves_destination_identities(self):
+        self._run_dashboard_vue_contract("dashboard pulse navigation preserves all seven destination identities")
 
     def test_overview_exposes_new_aggregate_cards(self):
-        self._run_dashboard_vue_contract("dashboard exposes all aggregate queue history health and Codex progress cards")
+        self._run_dashboard_vue_contract("dashboard fixed areas retain aggregate queue history health and Codex progress")
 
-    def test_overview_data_rich_cards_explain_compact_hidden_rows(self):
-        self._run_dashboard_vue_contract("dashboard rich cards retain compact and minimal overflow summaries")
+    def test_overview_uses_local_inventory_and_keeps_nonempty_sources_and_plans(self):
+        self._run_dashboard_vue_contract("dashboard inventory uses local supply and renders every nonempty source and plan")
 
-    def test_overview_compact_cards_keep_full_counts_and_priority_rows(self):
-        self._run_dashboard_vue_contract("dashboard compact priority rows keep nonzero results visible through summary evidence")
+    def test_overview_fixed_cards_keep_full_counts_and_priority_rows(self):
+        self._run_dashboard_vue_contract("dashboard priority results remain visible without compact clipping")
 
     def test_task_error_ui_uses_short_code_and_summary_instead_of_raw_message(self):
         source = self.MODERN_COMMON_JS.read_text(encoding="utf-8")
@@ -811,9 +811,12 @@ console.log('ok');
     def test_navigation_avoids_unnecessary_vertical_scrolling(self):
         response = self.client.get("/", headers=self.headers)
         html = self._modern_page_source(response)
-        self.assertIn("min-height: 0; padding-left: var(--sidebar-width);", html)
+        self.assertIn("padding-left: var(--sidebar-width);", html)
+        self.assertIn("main > div { min-width: 0; max-width: 100%; width: 100%; }", html)
         self.assertIn("overscroll-behavior-y: contain;", html)
-        self.assertIn("#tab-config .config-nav-v2-item { min-height: 32px; padding: 6px 10px; }", html)
+        config_css = (Path(__file__).resolve().parents[2]
+                      / "frontend/src/features/config/config.css").read_text(encoding="utf-8")
+        self.assertIn(".config-vue-navigation { height: 100%; overflow-y: auto; overscroll-behavior: contain;", config_css)
         self.assertIn("var(--page-gutter) 28px;", html)
         self.assertIn("function containVerticalScroll(el)", html)
         self.assertIn("event.preventDefault();", html)

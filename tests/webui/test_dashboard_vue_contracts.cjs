@@ -1,50 +1,59 @@
 const test=require('node:test'),assert=require('node:assert/strict');
 const {h,model,dashboard,mountDashboard,settle}=require('./dashboard_vue_fixture.cjs');
+const cards=['email','accounts','codex','extract','plans','proxy','jobs'];
+const card=(wrapper,id)=>wrapper.get(`[data-overview-card="${id}"]`);
 test.after(()=>h.close());
 test('dashboard proxy labels preserve current and historical identities',async()=>{
- for(const [platform,label,available]of [['1024proxy','1024Proxy',true],['711proxy','711Proxy',true],['manual','手动代理池',true],['1024','1024Proxy',true],['pool','静态代理池',true],['none','直连',false],['direct','直连',false]]){
-  const {wrapper}=await mountDashboard(dashboard({proxy:{platform,active_leases:0,leases:[]}}));assert.equal(model.proxyLabel(platform),label);assert.equal(wrapper.find('[data-dashboard-card="panel-proxy"]').exists(),available);if(available){assert.match(wrapper.get('[data-dashboard-card="metric-proxy"]').text(),new RegExp(label));assert.match(wrapper.get('[data-dashboard-card="panel-proxy"]').text(),new RegExp(label));}
+ for(const [platform,label]of [['1024proxy','1024Proxy'],['711proxy','711Proxy'],['manual','手动代理池'],['1024','1024Proxy'],['pool','静态代理池'],['none','直连'],['direct','直连']]){
+  const {wrapper}=await mountDashboard(dashboard({proxy:{platform,active_leases:1,leases:[{provider:'old-provider',endpoint:'old-exit'}]}}));
+  assert.equal(model.proxyLabel(platform),label);assert.match(card(wrapper,'proxy').text(),new RegExp(label));assert.match(card(wrapper,'proxy').text(),/old-exit/);
  }
  assert.equal(model.proxyLabel(' 711PROXY '),'711Proxy');
 });
-test('dashboard proxy summary keeps at most three rendered exit leases and full compact total',async()=>{const {wrapper}=await mountDashboard();assert.equal(wrapper.findAll('.overview-exit-row').length,3);assert.match(wrapper.get('[data-dashboard-card="panel-proxy"]').text(),/另有 3 个出口/);});
-test('dashboard unavailable capabilities and empty inventory suppress their cards',async()=>{
- const data=dashboard({accounts:{total:0,plans:{}},email:{sources:[{source:'outlook',label:'Outlook',enabled:false,available:4},{source:'generic_api',label:'API',enabled:true,available:0}]},jobs:{total:0,counts:{}},proxy:{platform:'none'},codex:{total:0}});
- const {wrapper}=await mountDashboard(data,{email_sources:{generic_api:{enabled:false}},features:{register:{enabled:false}},proxy:{registration:{enabled:false}}});assert.equal(wrapper.findAll('[data-dashboard-card]').length,0);assert.doesNotMatch(wrapper.text(),/Outlook|API/);
+test('dashboard proxy summary keeps at most three rendered exit leases and explains remaining exits',async()=>{
+ const {wrapper}=await mountDashboard();assert.equal(wrapper.findAll('.ov-lease-list li').length,3);assert.match(card(wrapper,'proxy').text(),/另有 1 个活跃出口/);assert.equal(card(wrapper,'proxy').get('.ov-figure strong').text(),'4');
 });
-test('dashboard layout normalization preserves order and prunes unknown hidden ids',()=>{
- const p=model.normalizePreferences({order:{metrics:['metric-jobs','gone'],panels:['panel-email']},hidden:['panel-email','gone']},{metrics:['metric-accounts','metric-jobs'],panels:['panel-email','panel-proxy']});assert.deepEqual(p.order,{metrics:['metric-jobs','metric-accounts'],panels:['panel-email','panel-proxy']});assert.deepEqual(p.hidden,['panel-email']);
+test('dashboard fixed areas retain historical data while showing disabled capabilities',async()=>{
+ const {wrapper}=await mountDashboard(dashboard(),{email_sources:{icloud_hide:{enabled:false}},features:{register:{enabled:false}},proxy:{registration:{enabled:false}}});
+ assert.deepEqual(wrapper.findAll('[data-overview-card]').map(row=>row.attributes('data-overview-card')),cards);
+ assert.match(card(wrapper,'jobs').text(),/注册功能未启用/);assert.match(card(wrapper,'jobs').text(),/停止中1/);
+ assert.match(card(wrapper,'proxy').text(),/注册代理未启用/);assert.match(card(wrapper,'email').text(),/icloud_hide/);assert.match(card(wrapper,'email').text(),/可用 12/);
 });
-test('dashboard layout restores bounded widths and heights without unknown cards',async()=>{
- const available={metrics:['metric-accounts'],panels:['panel-email','panel-proxy']};const p=model.normalizePreferences({sizes:{'metric-accounts':'wide','panel-email':'invalid','panel-proxy':'full',missing:'full'},heights:{'panel-email':210,'panel-proxy':999}},available);assert.equal(p.sizes['metric-accounts'],'wide');assert.equal(p.sizes['panel-email'],'normal');assert.equal(p.sizes['panel-proxy'],'full');assert.equal(p.heights['panel-email'],210);assert.equal(p.heights['panel-proxy'],undefined);assert.equal(p.sizes.missing,undefined);
- const {wrapper}=await mountDashboard(dashboard(),{},p);assert.equal(wrapper.findAll('[data-overview-resize]').length,13);assert.equal(wrapper.findAll('.overview-card-drag').length,13);
- assert.equal(wrapper.get('[data-dashboard-card="panel-email"]').attributes('data-overview-size'),'normal');assert.equal(wrapper.get('[data-dashboard-card="panel-proxy"]').attributes('data-overview-size'),'full');assert.equal(wrapper.get('[data-dashboard-card="metric-accounts"]').attributes('data-overview-size'),'wide');assert.match(wrapper.get('[data-dashboard-card="panel-email"]').attributes('style'),/min-height: 210px/);
+test('dashboard fixed order ignores obsolete custom layout preferences',async()=>{
+ const old={order:{metrics:['metric-jobs'],panels:['panel-proxy']},hidden:['metric-accounts','panel-email'],sizes:{'panel-email':'full'},heights:{'panel-proxy':999}};
+ const {wrapper}=await mountDashboard(dashboard(),{},old);
+ assert.deepEqual(wrapper.findAll('[data-overview-card]').map(row=>row.attributes('data-overview-card')),cards);
+ assert.deepEqual(wrapper.findAll('.ov-pulse-top').map(row=>row.text()),['邮箱','账号','Codex','套餐','提炼','代理','任务']);
+ assert.deepEqual(JSON.parse(localStorage.getItem('gpt_console_overview_preferences_v1')),old);
+ assert.equal(wrapper.find('[data-overview-resize]').exists(),false);assert.equal(wrapper.find('[draggable="true"]').exists(),false);
 });
-test('dashboard customizer drag reorders within a region without crossing regions',async()=>{
- const {wrapper}=await mountDashboard();const a=wrapper.get('[data-dashboard-custom-card="panel-email"]'),b=wrapper.get('[data-dashboard-custom-card="panel-jobs"]');await a.trigger('dragstart');await b.trigger('drop');await settle();const order=JSON.parse(localStorage.getItem(model.OVERVIEW_PREFERENCE_KEY)).order.panels;assert.deepEqual(order.slice(0,3),['panel-proxy','panel-email','panel-jobs']);
- await wrapper.get('[data-dashboard-custom-card="metric-email"]').trigger('dragstart');await b.trigger('drop');assert.equal(JSON.parse(localStorage.getItem(model.OVERVIEW_PREFERENCE_KEY)).order.panels.includes('metric-email'),false);
+test('dashboard legacy layout entrypoints remain harmless and preserve all areas',async()=>{
+ const {wrapper}=await mountDashboard();for(const name of ['openCustomizer','closeCustomizer','resetLayout']){assert.equal(typeof wrapper.vm[name],'function');wrapper.vm[name]();}
+ await settle();assert.deepEqual(wrapper.findAll('[data-overview-card]').map(row=>row.attributes('data-overview-card')),cards);assert.equal(wrapper.find('dialog').exists(),false);
 });
-test('dashboard pointer sorting uses vertical midpoint across grid rows and saves after target',async()=>{
- const rect=(left,top,width=100)=>({left,top,width,height:100,right:left+width,bottom:top+100});
- for(const {box,x,y,full,after} of [
-  {box:rect(120,0),x:180,y:10,after:true},
-  {box:rect(0,120),x:90,y:140,after:false},
-  {box:rect(0,120),x:10,y:180,after:true},
-  {box:rect(0,0,220),x:200,y:10,full:true,after:false},
- ]){
-  const {wrapper}=await mountDashboard();const source=wrapper.get('[data-dashboard-card="metric-accounts"]'),target=wrapper.get('[data-dashboard-card="metric-jobs"]');
-  source.element.getBoundingClientRect=()=>rect(0,0);target.element.getBoundingClientRect=()=>box;source.element.parentElement.style.gridTemplateColumns='100px 100px';if(full)target.element.dataset.overviewSize='full';h.document.elementFromPoint=()=>target.element;
-  await source.get('.overview-card-drag').trigger('pointerdown',{button:0,pointerId:1,clientX:5,clientY:5});
-  const move=new MouseEvent('pointermove',{clientX:x,clientY:y});Object.defineProperty(move,'pointerId',{value:1});window.dispatchEvent(move);
-  const up=new MouseEvent('pointerup');Object.defineProperty(up,'pointerId',{value:1});window.dispatchEvent(up);await settle();
-  assert.deepEqual(JSON.parse(localStorage.getItem(model.OVERVIEW_PREFERENCE_KEY)).order.metrics.slice(0,3),after?['metric-email','metric-jobs','metric-accounts']:['metric-email','metric-accounts','metric-jobs']);
- }
+test('dashboard every area action navigates to its current page',async()=>{
+ const {wrapper,navigations}=await mountDashboard();for(const id of ['email','accounts','codex','extract','plans','proxy','jobs'])await wrapper.get(`[data-overview-action="${id}"]`).trigger('click');
+ assert.deepEqual(navigations,['outlook','accounts','codex','extract-workbench','accounts','proxy-traffic','tasks']);
 });
-test('dashboard exposes all aggregate queue history health and Codex progress cards',async()=>{const {wrapper}=await mountDashboard();for(const id of ['panel-task-queue','panel-job-history','panel-email-health','panel-codex-progress'])assert.equal(wrapper.find(`[data-dashboard-card="${id}"]`).exists(),true);assert.match(wrapper.get('[data-dashboard-card="panel-email-health"]').text(),/可用邮箱12/);assert.match(wrapper.get('[data-dashboard-card="panel-codex-progress"]').text(),/已导出3/);});
-test('dashboard rich cards retain compact and minimal overflow summaries',async()=>{const {wrapper}=await mountDashboard();const email=wrapper.get('[data-dashboard-card="panel-email"]');assert.match(email.get('.overview-more-summary--compact').text(),/另有 3 个来源/);assert.match(email.get('.overview-more-summary--minimal').text(),/另有 4 个来源/);const plans=wrapper.get('[data-dashboard-card="panel-accounts"]');assert.match(plans.text(),/另有 2 种套餐/);assert.match(plans.text(),/另有 3 种套餐/);});
-test('dashboard compact priority rows keep nonzero results visible through summary evidence',async()=>{const {wrapper}=await mountDashboard();for(const[id,phrase]of [['panel-task-queue','停止中 1'],['panel-job-history','部分成功 3'],['panel-jobs','部分成功 3']]){const card=wrapper.get(`[data-dashboard-card="${id}"]`);assert.match(card.get('.overview-more-summary--compact').text(),new RegExp(phrase));assert.ok(card.findAll('.overview-density-secondary').some(row=>row.text().includes(phrase.split(' ')[0])),`${id} priority row lost its secondary density class`);}});
-test('dashboard single owner coalesces pending refreshes and stops fifteen-second polling while hidden',async()=>{
+test('dashboard pulse navigation preserves all seven destination identities',async()=>{
+ const {wrapper,navigations}=await mountDashboard();for(const button of wrapper.findAll('.ov-pulse-item'))await button.trigger('click');
+ assert.deepEqual(navigations,['outlook','accounts','codex','accounts','extract-workbench','proxy-traffic','tasks']);
+});
+test('dashboard fixed areas retain aggregate queue history health and Codex progress',async()=>{
+ const {wrapper}=await mountDashboard();assert.match(card(wrapper,'email').text(),/可用.*邮箱总量20.*已使用6.*停用 \/ 失败2/);
+ const jobs=card(wrapper,'jobs');assert.match(jobs.text(),/当前队列.*运行中2.*待处理3.*停止中1/);assert.match(jobs.text(),/今日结果.*成功10.*部分成功3.*失败2/);assert.match(jobs.text(),/累计结果.*成功 10.*部分成功 3.*失败 2.*停止\/取消 2/);
+ assert.match(card(wrapper,'codex').text(),/已导出3.*待导出1.*账号就绪4/);
+});
+test('dashboard inventory uses local supply and renders every nonempty source and plan',async()=>{
+ const data=dashboard({email:{supply:{status:'known',total:5,available:3,used:2,sources:[{source:'local-a',label:'Local A',kind:'local_pool',total:3,available:2},{source:'local-b',label:'Local B',kind:'local_pool',total:2,available:1}]},sources:[{source:'remote',label:'Remote 999',enabled:true,available:999}]}});
+ const {wrapper}=await mountDashboard(data);assert.equal(card(wrapper,'email').get('.ov-figure strong').text(),'3');assert.match(card(wrapper,'email').text(),/Local A.*Local B/);assert.doesNotMatch(card(wrapper,'email').text(),/Remote|999/);assert.equal(card(wrapper,'plans').findAll('.ov-bars li').length,5);
+ const fallback=await mountDashboard(dashboard({email:{sources:[{source:'remote',label:'Remote 999',enabled:true,available:999,total:999}]}}));assert.doesNotMatch(card(fallback.wrapper,'email').text(),/Remote|999/);
+});
+test('dashboard priority results remain visible without compact clipping',async()=>{
+ const {wrapper}=await mountDashboard();const blocks=card(wrapper,'jobs').findAll('.ov-task-block');assert.equal(blocks.length,3);assert.match(blocks[0].text(),/停止中1/);assert.match(blocks[1].text(),/部分成功3/);assert.match(blocks[2].text(),/部分成功 3/);assert.equal(card(wrapper,'plans').findAll('.ov-bars li').length,5);
+});
+test('dashboard single owner coalesces pending refreshes and stops twenty-second polling while hidden',async()=>{
  h.cleanup();Object.defineProperty(h.document,'hidden',{configurable:true,value:false});const priorSet=window.setInterval,priorClear=window.clearInterval,timers=new Map();let timerId=0,resolve,calls=0;window.setInterval=(fn,ms)=>{const id=++timerId;timers.set(id,{fn,ms});return id;};window.clearInterval=id=>timers.delete(id);
- try{const component=h.load('src/features/dashboard/DashboardPage.vue').default;const wrapper=h.mount(component,{props:{api:{dashboard:()=>{calls++;return new Promise(done=>{resolve=done;});},capabilities:async()=>({})},deps:{visible:false}}});await wrapper.vm.load();assert.equal(calls,0);wrapper.vm.setVisible(true);const a=wrapper.vm.load(),b=wrapper.vm.load();assert.equal(calls,1);assert.equal([...timers.values()][0].ms,15000);resolve(dashboard());await Promise.all([a,b]);await settle();[...timers.values()][0].fn();assert.equal(calls,2);wrapper.vm.setVisible(false);assert.equal(timers.size,0);resolve(dashboard({accounts:{total:99,active:99}}));await settle();assert.notEqual(wrapper.get('[data-dashboard-card="metric-accounts"] strong').text(),'99');}
+ try{const component=h.load('src/features/dashboard/DashboardPage.vue').default;const wrapper=h.mount(component,{props:{api:{dashboard:()=>{calls++;return new Promise(done=>{resolve=done;});},capabilities:async()=>({})},deps:{visible:false}}});await wrapper.vm.load();assert.equal(calls,0);wrapper.vm.setVisible(true);const a=wrapper.vm.load(),b=wrapper.vm.load();assert.equal(calls,1);assert.equal([...timers.values()][0].ms,20000);resolve(dashboard());await Promise.all([a,b]);await settle();[...timers.values()][0].fn();assert.equal(calls,2);wrapper.vm.setVisible(false);assert.equal(timers.size,0);resolve(dashboard({accounts:{total:99,active:99}}));await settle();assert.notEqual(card(wrapper,'accounts').get('.ov-figure strong').text(),'99');}
  finally{h.cleanup();window.setInterval=priorSet;window.clearInterval=priorClear;}
 });

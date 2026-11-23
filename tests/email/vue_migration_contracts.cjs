@@ -64,8 +64,9 @@ async function run(name) {
         assert.ok(view.findAll('button').some(button => button.text() === label), label);
       }
       assert.equal(view.findAll('thead th').filter(th => th.find('button[aria-haspopup]').exists()).length >= 3, true);
-      assert.match(view.get('[data-email-count-row]').text(), /300000/);
-      assert.ok(view.find('[aria-label="邮箱资源分页"]').exists());
+      assert.match(view.get('.ui-list-toolbar').text(), /已选 1 个邮箱/);
+      assert.match(view.get('[aria-label="邮箱资源分页"]').text(), /共 300,000 条/);
+      assert.equal(view.findAll('thead .ui-table__resize').length,9);
       assert.equal(view.find('[data-resizable-table]').exists(), false, 'legacy resizer does not own the Vue table');
       return;
     }

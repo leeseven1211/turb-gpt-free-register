@@ -178,6 +178,27 @@ class AccountMultiFilterTests(PostgresTestCase):
         self.assertEqual(by_id["total"], 0)
         self.assertEqual(by_id["facets"]["source"], [{"value": "outlook", "count": 1}])
 
+    def test_bulk_preview_counts_selected_email_status_and_keeps_alternative_facets(self):
+        rs.patch_row(rs.ACCOUNTS, self.ids["free"], {"user_name": "目标姓名", "email_invalid": True})
+        cases = (
+            ({"filters": {"email": "目标姓名"}}, 1),
+            ({"filters": {"email": "不存在的邮箱和姓名"}}, 0),
+            ({"archived": "only", "filters": {"email": "archived%"}}, 1),
+            ({"filters": {"email": "example.test", "source": ["outlook"], "email_status": ["invalid"]}}, 1),
+        )
+        for query, expected in cases:
+            with self.subTest(query=query):
+                response = self.client.get(
+                    "/api/bulk/query-facets",
+                    query_string={"query": json.dumps(query)},
+                    headers=self.headers,
+                )
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.get_json()["data"]["matched"], expected)
+        self.assertEqual(response.get_json()["data"]["facets"]["email_status"], [
+            {"value": "invalid", "count": 1}, {"value": "unmarked", "count": 1},
+        ])
+
     def test_plus_variants_and_promotion_aliases_restrict_other_facets(self):
         rs.insert_row(rs.ACCOUNTS, {
             "email": "plus-variant@example.test", "current_plan_type": "chatgpt_plus",

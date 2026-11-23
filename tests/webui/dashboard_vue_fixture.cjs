@@ -15,7 +15,7 @@ function prepare(){
 }
 async function mountDashboard(data=dashboard(),capabilities={},preferences){
  prepare();const calls=[],navigations=[],configs=[],ready=[],toasts=[],api={dashboard:async()=>{calls.push('/api/dashboard');return data;},capabilities:async()=>{calls.push('/api/capabilities');return capabilities;}};
- if(preferences)localStorage.setItem(model.OVERVIEW_PREFERENCE_KEY,JSON.stringify(preferences));
+ if(preferences)localStorage.setItem('gpt_console_overview_preferences_v1',JSON.stringify(preferences));
  const wrapper=h.mount(Dashboard,{props:{api,deps:{visible:true,onReady:()=>ready.push('overview'),notify:value=>toasts.push(value),onNavigate:value=>navigations.push(value),onConfig:value=>configs.push(value)}}});
  await settle();return {wrapper,calls,navigations,configs,ready,toasts,api};
 }

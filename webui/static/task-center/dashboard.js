@@ -181,21 +181,24 @@ var te = { class: "ov-section-head" }, ne = { class: "ov-section-actions" }, re 
 	key: 0,
 	class: "ov-stack",
 	"aria-hidden": "true"
-}, _t = { class: "ov-stack-legend" }, vt = { key: 0 }, E = /*#__PURE__*/ _(/* @__PURE__ */ e({
+}, _t = { class: "ov-stack-legend" }, vt = { key: 0 }, yt = {
+	key: 0,
+	class: "ov-foot"
+}, E = /*#__PURE__*/ _(/* @__PURE__ */ e({
 	__name: "DashboardPage",
 	props: {
 		api: {},
 		deps: {}
 	},
 	setup(e, { expose: n }) {
-		let f = e, h = ee(f.api, f.deps), { data: _, extract: b, loading: x, error: S, updatedAt: C } = h, w = l(!1);
+		let f = e, h = ee(f.api, f.deps), { data: _, extract: b, caps: x, loading: S, error: C, updatedAt: w } = h, E = l(!1);
 		i(() => {
-			w.value = !0;
+			E.value = !0;
 		});
-		let E = (e) => new Intl.NumberFormat("zh-CN").format(Number(e || 0)), D = (e) => Number(e || 0), O = (e, t) => {
-			let n = D(t);
-			return n > 0 ? Math.max(2, Math.min(100, Math.round(D(e) / n * 100))) : 0;
-		}, k = (e) => ({
+		let D = (e) => new Intl.NumberFormat("zh-CN").format(Number(e || 0)), O = (e) => Number(e || 0), k = (e, t) => {
+			let n = O(t);
+			return n > 0 ? Math.max(0, Math.min(100, Math.round(O(e) / n * 100))) : 0;
+		}, bt = (e) => ({
 			free: "Free",
 			free_trial_eligible: "Free · 试用资格",
 			free_half_price_eligible: "Free · 半价资格",
@@ -206,92 +209,92 @@ var te = { class: "ov-section-head" }, ne = { class: "ov-section-actions" }, re 
 			team: "Team",
 			go: "Go",
 			unknown: "未检测"
-		})[e] || e, A = m(() => _.value?.accounts || {}), j = m(() => _.value?.email?.supply || {}), M = m(() => Array.isArray(j.value?.sources) ? j.value.sources : Array.isArray(_.value?.email?.sources) ? _.value.email.sources : []), N = m(() => M.value.filter((e) => D(e.total) > 0 || D(e.available) > 0)), P = m(() => Math.max(0, M.value.length - N.value.length)), yt = m(() => j.value?.status === "error" ? "读取失败" : D(j.value?.available)), F = m(() => j.value?.status === "error" ? "—" : E(yt.value)), I = m(() => D(j.value?.total)), L = m(() => D(j.value?.used)), bt = m(() => D(j.value?.failed) + D(j.value?.disabled)), R = m(() => j.value?.status === "error" ? "danger" : I.value > 0 && D(j.value?.available) === 0 ? "warn" : D(j.value?.available) > 0 ? "ok" : "idle"), xt = m(() => j.value?.status === "error" ? "读取失败" : I.value === 0 ? "未配置" : D(j.value?.available) === 0 ? "库存耗尽" : "库存正常"), z = m(() => _.value?.codex || {}), B = m(() => D(z.value.pending) > 0 ? "warn" : D(z.value.total) > 0 ? "ok" : "idle"), V = m(() => Object.entries(A.value?.plans || {}).map(([e, t]) => ({
+		})[e] || e, A = m(() => _.value?.accounts || {}), j = m(() => _.value?.email?.supply || {}), M = m(() => (Array.isArray(j.value?.sources) ? j.value.sources : Array.isArray(_.value?.email?.sources) ? _.value.email.sources : []).filter((e) => e?.kind === "local_pool")), N = m(() => M.value.filter((e) => O(e.total) > 0 || O(e.available) > 0)), P = m(() => Math.max(0, M.value.length - N.value.length)), xt = m(() => j.value?.status === "error" ? "读取失败" : O(j.value?.available)), F = m(() => j.value?.status === "error" ? "—" : D(xt.value)), I = m(() => O(j.value?.total)), L = m(() => O(j.value?.used)), St = m(() => O(j.value?.failed) + O(j.value?.disabled)), R = m(() => j.value?.status === "error" ? "danger" : I.value > 0 && O(j.value?.available) === 0 ? "warn" : O(j.value?.available) > 0 ? "ok" : "idle"), Ct = m(() => j.value?.status === "error" ? "读取失败" : I.value === 0 ? "未配置" : O(j.value?.available) === 0 ? "库存耗尽" : "库存正常"), z = m(() => _.value?.codex || {}), B = m(() => O(z.value.pending) > 0 ? "warn" : O(z.value.total) > 0 ? "ok" : "idle"), V = m(() => Object.entries(A.value?.plans || {}).map(([e, t]) => ({
 			key: e,
-			label: k(e),
-			count: D(t)
-		})).sort((e, t) => t.count - e.count)), St = m(() => Math.max(1, ...V.value.map((e) => e.count))), H = m(() => V.value.reduce((e, t) => e + t.count, 0)), U = m(() => _.value?.jobs || {}), W = m(() => ({ ...U.value?.counts || {} })), G = m(() => ({ ...U.value?.today_counts || {} })), Ct = m(() => D(W.value.pending) + D(W.value.running) + D(W.value.stopping));
-		m(() => D(G.value.success) + D(G.value.partial_success) + D(G.value.failed));
+			label: bt(e),
+			count: O(t)
+		})).sort((e, t) => t.count - e.count)), wt = m(() => Math.max(1, ...V.value.map((e) => e.count))), H = m(() => V.value.reduce((e, t) => e + t.count, 0)), U = m(() => _.value?.jobs || {}), Tt = m(() => x.value?.features?.register?.enabled === !1), W = m(() => ({ ...U.value?.counts || {} })), G = m(() => ({ ...U.value?.today_counts || {} })), Et = m(() => O(W.value.pending) + O(W.value.running) + O(W.value.stopping));
+		m(() => O(G.value.success) + O(G.value.partial_success) + O(G.value.failed));
 		let K = m(() => [
 			{
 				key: "success",
 				label: "成功",
-				value: D(W.value.success),
+				value: O(W.value.success),
 				color: "#1f9d75"
 			},
 			{
 				key: "partial_success",
 				label: "部分成功",
-				value: D(W.value.partial_success),
+				value: O(W.value.partial_success),
 				color: "#d99a2b"
 			},
 			{
 				key: "failed",
 				label: "失败",
-				value: D(W.value.failed),
+				value: O(W.value.failed),
 				color: "#d9534f"
 			},
 			{
 				key: "cancelled",
 				label: "停止/取消",
-				value: D(W.value.stopped) + D(W.value.cancelled),
+				value: O(W.value.stopped) + O(W.value.cancelled),
 				color: "#98a2b3"
 			}
-		].filter((e) => e.value > 0)), wt = m(() => Ct.value > 0 ? "active" : D(G.value.failed) > 0 ? "warn" : "idle"), q = m(() => _.value?.proxy || {}), J = m(() => Array.isArray(q.value.leases) ? q.value.leases.slice(0, 3) : []), Tt = m(() => D(q.value.active_leases) > 0 ? "ok" : "idle"), Y = m(() => b.value || {}), X = m(() => D(Y.value.needs_review) > 0 ? "warn" : D(Y.value.processing) > 0 ? "active" : "idle"), Z = m(() => D(Y.value.all) === 0 && D(Y.value.today_extracted) === 0 && D(Y.value.processing) === 0 && D(Y.value.needs_review) === 0 && D(Y.value.awaiting_payment) === 0), Et = m(() => [
+		].filter((e) => e.value > 0)), Dt = m(() => Et.value > 0 ? "active" : O(G.value.failed) > 0 ? "warn" : "idle"), q = m(() => _.value?.proxy || {}), J = m(() => Array.isArray(q.value.leases) ? q.value.leases.slice(0, 3) : []), Ot = m(() => Math.max(0, O(q.value.active_leases) - J.value.length)), kt = m(() => x.value?.proxy?.registration?.enabled === !1), At = m(() => O(q.value.active_leases) > 0 ? "ok" : "idle"), Y = m(() => b.value || {}), X = m(() => O(Y.value.needs_review) > 0 ? "warn" : O(Y.value.processing) > 0 ? "active" : "idle"), Z = m(() => O(Y.value.all) === 0 && O(Y.value.today_extracted) === 0 && O(Y.value.processing) === 0 && O(Y.value.needs_review) === 0 && O(Y.value.awaiting_payment) === 0), jt = m(() => [
 			{
 				id: "email",
 				label: "邮箱",
 				value: F.value,
-				hint: D(j.value?.available) === 0 ? "库存耗尽" : `邮箱总量 ${E(I.value)}`,
+				hint: O(j.value?.available) === 0 ? "库存耗尽" : `邮箱总量 ${D(I.value)}`,
 				tone: R.value,
 				tab: "outlook"
 			},
 			{
 				id: "accounts",
 				label: "账号",
-				value: E(A.value.active),
-				hint: `归档 ${E(A.value.archived)}`,
+				value: D(A.value.active),
+				hint: `归档 ${D(A.value.archived)}`,
 				tone: "ok",
 				tab: "accounts"
 			},
 			{
 				id: "codex",
 				label: "Codex",
-				value: E(z.value.total),
-				hint: `待导出 ${E(z.value.pending)}`,
+				value: D(z.value.total),
+				hint: `待导出 ${D(z.value.pending)}`,
 				tone: B.value,
 				tab: "codex"
 			},
 			{
 				id: "plans",
 				label: "套餐",
-				value: E(V.value.length),
-				hint: `${E(H.value)} 个已归类`,
+				value: D(V.value.length),
+				hint: `${D(H.value)} 个已归类`,
 				tone: "ok",
 				tab: "accounts"
 			},
 			{
 				id: "extract",
 				label: "提炼",
-				value: E(Y.value.today_extracted),
-				hint: D(Y.value.needs_review) > 0 ? `待核对 ${E(Y.value.needs_review)}` : "今日已提炼",
+				value: D(Y.value.today_extracted),
+				hint: O(Y.value.needs_review) > 0 ? `待核对 ${D(Y.value.needs_review)}` : "今日已提炼",
 				tone: X.value,
 				tab: "extract-workbench"
 			},
 			{
 				id: "proxy",
 				label: "代理",
-				value: E(q.value.active_leases),
+				value: D(q.value.active_leases),
 				hint: T(q.value.platform),
-				tone: Tt.value,
+				tone: At.value,
 				tab: "proxy-traffic"
 			},
 			{
 				id: "jobs",
 				label: "任务",
-				value: E(Ct.value),
-				hint: `累计 ${E(U.value.total)}`,
-				tone: wt.value,
+				value: D(Et.value),
+				hint: `累计 ${D(U.value.total)}`,
+				tone: Dt.value,
 				tab: "tasks"
 			}
 		]), Q = m(() => {
@@ -301,35 +304,35 @@ var te = { class: "ov-section-head" }, ne = { class: "ov-section-actions" }, re 
 				text: "邮箱池统计读取失败，暂时无法判断可用库存。",
 				tab: "outlook",
 				label: "检查邮箱池"
-			}) : I.value > 0 && D(j.value?.available) === 0 && e.push({
+			}) : I.value > 0 && O(j.value?.available) === 0 && e.push({
 				tone: "warning",
-				text: `邮箱池已用完（已用 ${E(L.value)} / 邮箱总量 ${E(I.value)}），新的注册任务取不到邮箱。`,
+				text: `邮箱池已用完（已用 ${D(L.value)} / 邮箱总量 ${D(I.value)}），新的注册任务取不到邮箱。`,
 				tab: "outlook",
 				label: "添加邮箱库存"
-			}), D(Y.value.needs_review) > 0 && e.push({
+			}), O(Y.value.needs_review) > 0 && e.push({
 				tone: "warning",
-				text: `提炼工作台有 ${E(Y.value.needs_review)} 个任务待核对。`,
+				text: `提炼工作台有 ${D(Y.value.needs_review)} 个任务待核对。`,
 				tab: "extract-workbench",
 				label: "去核对"
 			}), e.slice(0, 2);
-		}), Dt = m(() => C.value ? `数据更新 ${new Date(C.value).toLocaleTimeString("zh-CN", { hour12: !1 })}` : x.value ? "正在读取…" : "尚未读取"), $ = (e) => f.deps.onNavigate?.(e);
+		}), Mt = m(() => w.value ? `数据更新 ${new Date(w.value).toLocaleTimeString("zh-CN", { hour12: !1 })}` : S.value ? "正在读取…" : "尚未读取"), $ = (e) => f.deps.onNavigate?.(e);
 		return n({
 			load: h.load,
 			setVisible: h.setVisible,
 			openCustomizer: () => {},
 			closeCustomizer: () => {},
 			resetLayout: () => {}
-		}), (e, n) => (t(), v("div", { class: p(["ov-page", { "is-mounted": w.value }]) }, [
-			d("div", te, [n[11] ||= d("div", { class: "ov-section-title" }, [d("h2", null, "服务脉搏"), d("p", null, "邮箱 · 账号 · Codex · 套餐 · 提炼 · 代理 · 任务")], -1), d("div", ne, [d("span", re, [n[9] ||= d("i", { "aria-hidden": "true" }, null, -1), y(u(Dt.value), 1)]), d("button", {
+		}), (e, n) => (t(), v("div", { class: p(["ov-page", { "is-mounted": E.value }]) }, [
+			d("div", te, [n[11] ||= d("div", { class: "ov-section-title" }, [d("h2", null, "服务脉搏"), d("p", null, "邮箱 · 账号 · Codex · 套餐 · 提炼 · 代理 · 任务")], -1), d("div", ne, [d("span", re, [n[9] ||= d("i", { "aria-hidden": "true" }, null, -1), y(u(Mt.value), 1)]), d("button", {
 				type: "button",
 				class: "ov-refresh",
-				disabled: g(x),
+				disabled: g(S),
 				onClick: n[0] ||= (...e) => g(h).load && g(h).load(...e)
 			}, [n[10] ||= d("svg", {
 				viewBox: "0 0 24 24",
 				"aria-hidden": "true"
-			}, [d("path", { d: "M20 11a8 8 0 1 0-2.3 6.7" }), d("path", { d: "M20 4v7h-7" })], -1), y(" " + u(g(x) ? "刷新中" : "刷新"), 1)], 8, ie)])]),
-			g(S) ? (t(), v("div", ae, [d("div", null, [n[12] ||= d("strong", null, "总览加载失败", -1), d("span", null, u(g(S)), 1)]), d("button", {
+			}, [d("path", { d: "M20 11a8 8 0 1 0-2.3 6.7" }), d("path", { d: "M20 4v7h-7" })], -1), y(" " + u(g(S) ? "刷新中" : "刷新"), 1)], 8, ie)])]),
+			g(C) ? (t(), v("div", ae, [d("div", null, [n[12] ||= d("strong", null, "总览加载失败", -1), d("span", null, u(g(C)), 1)]), d("button", {
 				type: "button",
 				onClick: n[1] ||= (...e) => g(h).load && g(h).load(...e)
 			}, "重试")])) : a("", !0),
@@ -351,13 +354,13 @@ var te = { class: "ov-section-head" }, ne = { class: "ov-section-actions" }, re 
 					onClick: (t) => $(e.tab)
 				}, u(e.label), 9, se)
 			], 2))), 128))])) : a("", !0),
-			!g(_) && g(x) ? (t(), v("section", ce, [...n[14] ||= [d("div", { class: "ov-skeleton-pulse" }, null, -1), d("div", { class: "ov-skeleton-grid" }, [
+			!g(_) && g(S) ? (t(), v("section", ce, [...n[14] ||= [d("div", { class: "ov-skeleton-pulse" }, null, -1), d("div", { class: "ov-skeleton-grid" }, [
 				d("i"),
 				d("i"),
 				d("i"),
 				d("i")
 			], -1)]])) : a("", !0),
-			g(_) ? (t(), v(s, { key: 3 }, [d("nav", le, [(t(!0), v(s, null, r(Et.value, (e) => (t(), v("button", {
+			g(_) ? (t(), v(s, { key: 3 }, [d("nav", le, [(t(!0), v(s, null, r(jt.value, (e) => (t(), v("button", {
 				key: e.id,
 				type: "button",
 				class: p(["ov-pulse-item", [`is-${e.tone}`, { "is-zero": e.value === "0" }]]),
@@ -365,7 +368,7 @@ var te = { class: "ov-section-head" }, ne = { class: "ov-section-actions" }, re 
 				onClick: (t) => $(e.tab)
 			}, [d("span", de, [n[15] ||= d("i", { "aria-hidden": "true" }, null, -1), y(u(e.label), 1)]), d("strong", null, u(e.value), 1)], 10, ue))), 128))]), d("div", fe, [
 				d("article", pe, [
-					d("header", me, [n[17] ||= o("<div class=\"ov-card-title\" data-v-e6a377e9><span class=\"ov-icon\" data-v-e6a377e9><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\" data-v-e6a377e9><rect x=\"3\" y=\"5\" width=\"18\" height=\"14\" rx=\"2\" data-v-e6a377e9></rect><path d=\"m3 7 9 6 9-6\" data-v-e6a377e9></path></svg></span><div data-v-e6a377e9><h3 data-v-e6a377e9>邮箱池</h3><p data-v-e6a377e9>本地库存与来源</p></div></div>", 1), d("button", {
+					d("header", me, [n[17] ||= o("<div class=\"ov-card-title\" data-v-2c95205f><span class=\"ov-icon\" data-v-2c95205f><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\" data-v-2c95205f><rect x=\"3\" y=\"5\" width=\"18\" height=\"14\" rx=\"2\" data-v-2c95205f></rect><path d=\"m3 7 9 6 9-6\" data-v-2c95205f></path></svg></span><div data-v-2c95205f><h3 data-v-2c95205f>邮箱池</h3><p data-v-2c95205f>本地库存与来源</p></div></div>", 1), d("button", {
 						type: "button",
 						class: "ov-link",
 						"data-overview-action": "email",
@@ -380,18 +383,18 @@ var te = { class: "ov-section-head" }, ne = { class: "ov-section-actions" }, re 
 						R.value === "ok" ? a("", !0) : (t(), v("em", {
 							key: 0,
 							class: p(["ov-chip", `is-${R.value}`])
-						}, u(xt.value), 3))
+						}, u(Ct.value), 3))
 					]),
 					d("div", ge, [
-						d("div", null, [n[19] ||= d("span", null, "邮箱总量", -1), d("strong", null, u(E(I.value)), 1)]),
-						d("div", null, [n[20] ||= d("span", null, "已使用", -1), d("strong", null, u(E(L.value)), 1)]),
-						d("div", null, [n[21] ||= d("span", null, "停用 / 失败", -1), d("strong", null, u(E(bt.value)), 1)])
+						d("div", null, [n[19] ||= d("span", null, "邮箱总量", -1), d("strong", null, u(D(I.value)), 1)]),
+						d("div", null, [n[20] ||= d("span", null, "已使用", -1), d("strong", null, u(D(L.value)), 1)]),
+						d("div", null, [n[21] ||= d("span", null, "停用 / 失败", -1), d("strong", null, u(D(St.value)), 1)])
 					]),
-					N.value.length ? (t(), v("ul", _e, [(t(!0), v(s, null, r(N.value, (e) => (t(), v("li", { key: e.source }, [d("div", ve, [d("span", null, u(e.label), 1), d("small", null, u(D(e.available) === 0 ? "已用尽" : `可用 ${E(e.available)}`) + " / " + u(E(e.total)), 1)]), d("div", { class: p(["ov-bar", { "is-spent": D(e.available) === 0 && D(e.total) > 0 }]) }, [d("i", { style: c({ width: O(e.available, e.total) + "%" }) }, null, 4)], 2)]))), 128))])) : (t(), v("p", ye, "还没有可统计的邮箱库存。")),
-					P.value ? (t(), v("p", be, "另有 " + u(P.value) + " 个来源未启用 · 仅统计本地库存", 1)) : (t(), v("p", xe, "仅统计本地库存，用完后需手动导入"))
+					N.value.length ? (t(), v("ul", _e, [(t(!0), v(s, null, r(N.value, (e) => (t(), v("li", { key: e.source }, [d("div", ve, [d("span", null, u(e.label), 1), d("small", null, u(O(e.available) === 0 ? "已用尽" : `可用 ${D(e.available)}`) + " / " + u(D(e.total)), 1)]), d("div", { class: p(["ov-bar", { "is-spent": O(e.available) === 0 && O(e.total) > 0 }]) }, [d("i", { style: c({ width: k(e.available, e.total) + "%" }) }, null, 4)], 2)]))), 128))])) : (t(), v("p", ye, "还没有可统计的邮箱库存。")),
+					P.value ? (t(), v("p", be, "另有 " + u(P.value) + " 个来源暂无库存 · 仅统计本地库存", 1)) : (t(), v("p", xe, "仅统计本地库存，用完后需手动导入"))
 				]),
 				d("article", Se, [
-					d("header", Ce, [n[23] ||= o("<div class=\"ov-card-title\" data-v-e6a377e9><span class=\"ov-icon\" data-v-e6a377e9><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\" data-v-e6a377e9><path d=\"M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2\" data-v-e6a377e9></path><circle cx=\"9\" cy=\"7\" r=\"4\" data-v-e6a377e9></circle><path d=\"M22 21v-2a4 4 0 0 0-3-3.9\" data-v-e6a377e9></path></svg></span><div data-v-e6a377e9><h3 data-v-e6a377e9>账号</h3><p data-v-e6a377e9>账号资产</p></div></div>", 1), d("button", {
+					d("header", Ce, [n[23] ||= o("<div class=\"ov-card-title\" data-v-2c95205f><span class=\"ov-icon\" data-v-2c95205f><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\" data-v-2c95205f><path d=\"M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2\" data-v-2c95205f></path><circle cx=\"9\" cy=\"7\" r=\"4\" data-v-2c95205f></circle><path d=\"M22 21v-2a4 4 0 0 0-3-3.9\" data-v-2c95205f></path></svg></span><div data-v-2c95205f><h3 data-v-2c95205f>账号</h3><p data-v-2c95205f>账号资产</p></div></div>", 1), d("button", {
 						type: "button",
 						class: "ov-link",
 						"data-overview-action": "accounts",
@@ -400,24 +403,24 @@ var te = { class: "ov-section-head" }, ne = { class: "ov-section-actions" }, re 
 						viewBox: "0 0 24 24",
 						"aria-hidden": "true"
 					}, [d("path", { d: "m9 6 6 6-6 6" })], -1)]])]),
-					d("div", we, [d("strong", null, u(E(A.value.active)), 1), n[24] ||= d("span", null, "活跃账号", -1)]),
+					d("div", we, [d("strong", null, u(D(A.value.active)), 1), n[24] ||= d("span", null, "活跃账号", -1)]),
 					d("div", Te, [d("i", {
 						class: "is-active",
-						style: c({ width: O(A.value.active, A.value.total) + "%" })
+						style: c({ width: k(A.value.active, A.value.total) + "%" })
 					}, null, 4), d("i", {
 						class: "is-idle",
-						style: c({ width: O(A.value.archived, A.value.total) + "%" })
+						style: c({ width: k(A.value.archived, A.value.total) + "%" })
 					}, null, 4)]),
-					d("div", Ee, [d("span", null, [n[25] ||= d("i", { style: { background: "#5b5ce2" } }, null, -1), y("活跃 " + u(E(A.value.active)), 1)]), d("span", null, [n[26] ||= d("i", { style: { background: "#d7dbe5" } }, null, -1), y("归档 " + u(E(A.value.archived)), 1)])]),
-					d("div", De, [d("div", null, [n[27] ||= d("span", null, "账号总数", -1), d("strong", null, u(E(A.value.total)), 1)]), d("div", null, [n[28] ||= d("span", null, "Codex 就绪", -1), d("strong", null, u(E(A.value.codex_ready)), 1)])]),
+					d("div", Ee, [d("span", null, [n[25] ||= d("i", { style: { background: "#5b5ce2" } }, null, -1), y("活跃 " + u(D(A.value.active)), 1)]), d("span", null, [n[26] ||= d("i", { style: { background: "#d7dbe5" } }, null, -1), y("归档 " + u(D(A.value.archived)), 1)])]),
+					d("div", De, [d("div", null, [n[27] ||= d("span", null, "账号总数", -1), d("strong", null, u(D(A.value.total)), 1)]), d("div", null, [n[28] ||= d("span", null, "Codex 就绪", -1), d("strong", null, u(D(A.value.codex_ready)), 1)])]),
 					d("div", Oe, [
 						n[29] ||= d("span", null, "Codex 就绪率", -1),
-						d("div", ke, [d("i", { style: c({ width: O(A.value.codex_ready, A.value.active) + "%" }) }, null, 4)]),
-						d("strong", null, u(O(A.value.codex_ready, A.value.active)) + "%", 1)
+						d("div", ke, [d("i", { style: c({ width: k(A.value.codex_ready, A.value.active) + "%" }) }, null, 4)]),
+						d("strong", null, u(k(A.value.codex_ready, A.value.active)) + "%", 1)
 					])
 				]),
 				d("article", Ae, [
-					d("header", je, [n[31] ||= o("<div class=\"ov-card-title\" data-v-e6a377e9><span class=\"ov-icon\" data-v-e6a377e9><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\" data-v-e6a377e9><rect x=\"3\" y=\"11\" width=\"18\" height=\"10\" rx=\"2\" data-v-e6a377e9></rect><path d=\"M7 11V7a5 5 0 0 1 10 0v4\" data-v-e6a377e9></path></svg></span><div data-v-e6a377e9><h3 data-v-e6a377e9>Codex</h3><p data-v-e6a377e9>授权凭证</p></div></div>", 1), d("button", {
+					d("header", je, [n[31] ||= o("<div class=\"ov-card-title\" data-v-2c95205f><span class=\"ov-icon\" data-v-2c95205f><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\" data-v-2c95205f><rect x=\"3\" y=\"11\" width=\"18\" height=\"10\" rx=\"2\" data-v-2c95205f></rect><path d=\"M7 11V7a5 5 0 0 1 10 0v4\" data-v-2c95205f></path></svg></span><div data-v-2c95205f><h3 data-v-2c95205f>Codex</h3><p data-v-2c95205f>授权凭证</p></div></div>", 1), d("button", {
 						type: "button",
 						class: "ov-link",
 						"data-overview-action": "codex",
@@ -427,21 +430,21 @@ var te = { class: "ov-section-head" }, ne = { class: "ov-section-actions" }, re 
 						"aria-hidden": "true"
 					}, [d("path", { d: "m9 6 6 6-6 6" })], -1)]])]),
 					d("div", Me, [
-						d("strong", null, u(E(z.value.total)), 1),
+						d("strong", null, u(D(z.value.total)), 1),
 						n[32] ||= d("span", null, "已导出凭证", -1),
 						B.value === "warn" ? (t(), v("em", Ne, "待导出")) : a("", !0)
 					]),
-					d("div", Pe, [n[33] ||= d("span", null, "导出进度", -1), d("small", null, u(E(z.value.exported)) + " / " + u(E(z.value.total)), 1)]),
-					d("div", Fe, [d("i", { style: c({ width: O(z.value.exported, z.value.total) + "%" }) }, null, 4)]),
+					d("div", Pe, [n[33] ||= d("span", null, "导出进度", -1), d("small", null, u(D(z.value.exported)) + " / " + u(D(z.value.total)), 1)]),
+					d("div", Fe, [d("i", { style: c({ width: k(z.value.exported, z.value.total) + "%" }) }, null, 4)]),
 					d("div", Ie, [
-						d("div", null, [n[34] ||= d("span", null, "已导出", -1), d("strong", null, u(E(z.value.exported)), 1)]),
-						d("div", null, [n[35] ||= d("span", null, "待导出", -1), d("strong", null, u(E(z.value.pending)), 1)]),
-						d("div", null, [n[36] ||= d("span", null, "账号就绪", -1), d("strong", null, u(E(A.value.codex_ready)), 1)])
+						d("div", null, [n[34] ||= d("span", null, "已导出", -1), d("strong", null, u(D(z.value.exported)), 1)]),
+						d("div", null, [n[35] ||= d("span", null, "待导出", -1), d("strong", null, u(D(z.value.pending)), 1)]),
+						d("div", null, [n[36] ||= d("span", null, "账号就绪", -1), d("strong", null, u(D(A.value.codex_ready)), 1)])
 					]),
-					d("p", Le, "账号 Codex 就绪 " + u(E(A.value.codex_ready)) + " · 覆盖 " + u(O(z.value.total, A.value.active)) + "% 活跃账号", 1)
+					d("p", Le, "账号 Codex 就绪 " + u(D(A.value.codex_ready)) + " · 覆盖 " + u(k(z.value.total, A.value.active)) + "% 活跃账号", 1)
 				]),
 				d("article", Re, [
-					d("header", ze, [n[38] ||= o("<div class=\"ov-card-title\" data-v-e6a377e9><span class=\"ov-icon\" data-v-e6a377e9><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\" data-v-e6a377e9><path d=\"m12 3 1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9L12 3Z\" data-v-e6a377e9></path><path d=\"M19 15.5 20 18l2.5 1-2.5 1L19 22l-1-2-2.5-1 2.5-1 1-2.5Z\" data-v-e6a377e9></path></svg></span><div data-v-e6a377e9><h3 data-v-e6a377e9>提炼</h3><p data-v-e6a377e9>提链工作台</p></div></div>", 1), d("button", {
+					d("header", ze, [n[38] ||= o("<div class=\"ov-card-title\" data-v-2c95205f><span class=\"ov-icon\" data-v-2c95205f><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\" data-v-2c95205f><path d=\"m12 3 1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9L12 3Z\" data-v-2c95205f></path><path d=\"M19 15.5 20 18l2.5 1-2.5 1L19 22l-1-2-2.5-1 2.5-1 1-2.5Z\" data-v-2c95205f></path></svg></span><div data-v-2c95205f><h3 data-v-2c95205f>提炼</h3><p data-v-2c95205f>提链工作台</p></div></div>", 1), d("button", {
 						type: "button",
 						class: "ov-link",
 						"data-overview-action": "extract",
@@ -451,20 +454,20 @@ var te = { class: "ov-section-head" }, ne = { class: "ov-section-actions" }, re 
 						"aria-hidden": "true"
 					}, [d("path", { d: "m9 6 6 6-6 6" })], -1)]])]),
 					d("div", Be, [
-						d("strong", null, u(E(Y.value.today_extracted)), 1),
+						d("strong", null, u(D(Y.value.today_extracted)), 1),
 						n[39] ||= d("span", null, "今日已提炼", -1),
 						d("em", { class: p(["ov-chip", `is-${X.value}`]) }, u(X.value === "idle" ? "空闲" : X.value === "warn" ? "待核对" : "处理中"), 3)
 					]),
 					Z.value ? a("", !0) : (t(), v("div", Ve, [
-						d("div", null, [n[40] ||= d("span", null, "Plus 已确认", -1), d("strong", null, u(E(Y.value.today_plus_confirmed)), 1)]),
-						d("div", null, [n[41] ||= d("span", null, "处理中", -1), d("strong", null, u(E(Y.value.processing)), 1)]),
-						d("div", null, [n[42] ||= d("span", null, "待支付", -1), d("strong", null, u(E(Y.value.awaiting_payment)), 1)]),
-						d("div", null, [n[43] ||= d("span", null, "待核对", -1), d("strong", He, u(E(Y.value.needs_review)), 1)])
+						d("div", null, [n[40] ||= d("span", null, "Plus 已确认", -1), d("strong", null, u(D(Y.value.today_plus_confirmed)), 1)]),
+						d("div", null, [n[41] ||= d("span", null, "处理中", -1), d("strong", null, u(D(Y.value.processing)), 1)]),
+						d("div", null, [n[42] ||= d("span", null, "待支付", -1), d("strong", null, u(D(Y.value.awaiting_payment)), 1)]),
+						d("div", null, [n[43] ||= d("span", null, "待核对", -1), d("strong", He, u(D(Y.value.needs_review)), 1)])
 					])),
 					Z.value ? (t(), v("p", Ue, "今日还没有提炼任务，进入工作台即可发起。")) : a("", !0),
-					d("p", We, u(Z.value ? "提链工作台空闲" : `累计 ${E(Y.value.all)} 个提炼任务`), 1)
+					d("p", We, u(Z.value ? "提链工作台空闲" : `累计 ${D(Y.value.all)} 个提炼任务`), 1)
 				]),
-				d("article", Ge, [d("header", Ke, [n[45] ||= o("<div class=\"ov-card-title\" data-v-e6a377e9><span class=\"ov-icon\" data-v-e6a377e9><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\" data-v-e6a377e9><path d=\"M12 2 2 7l10 5 10-5-10-5Z\" data-v-e6a377e9></path><path d=\"m2 12 10 5 10-5\" data-v-e6a377e9></path><path d=\"m2 17 10 5 10-5\" data-v-e6a377e9></path></svg></span><div data-v-e6a377e9><h3 data-v-e6a377e9>套餐</h3><p data-v-e6a377e9>账号套餐分布</p></div></div>", 1), d("button", {
+				d("article", Ge, [d("header", Ke, [n[45] ||= o("<div class=\"ov-card-title\" data-v-2c95205f><span class=\"ov-icon\" data-v-2c95205f><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\" data-v-2c95205f><path d=\"M12 2 2 7l10 5 10-5-10-5Z\" data-v-2c95205f></path><path d=\"m2 12 10 5 10-5\" data-v-2c95205f></path><path d=\"m2 17 10 5 10-5\" data-v-2c95205f></path></svg></span><div data-v-2c95205f><h3 data-v-2c95205f>套餐</h3><p data-v-2c95205f>账号套餐分布</p></div></div>", 1), d("button", {
 					type: "button",
 					class: "ov-link",
 					"data-overview-action": "plans",
@@ -472,9 +475,9 @@ var te = { class: "ov-section-head" }, ne = { class: "ov-section-actions" }, re 
 				}, [...n[44] ||= [y("账号", -1), d("svg", {
 					viewBox: "0 0 24 24",
 					"aria-hidden": "true"
-				}, [d("path", { d: "m9 6 6 6-6 6" })], -1)]])]), V.value.length ? (t(), v(s, { key: 0 }, [d("div", qe, [d("strong", null, u(E(V.value.length)), 1), d("span", null, "种套餐 · " + u(E(H.value)) + " 个账号", 1)]), d("ul", Je, [(t(!0), v(s, null, r(V.value, (e) => (t(), v("li", { key: e.key }, [d("div", Ye, [d("span", null, u(e.label), 1), d("small", null, u(E(e.count)) + " · " + u(O(e.count, H.value)) + "%", 1)]), d("div", Xe, [d("i", { style: c({ width: Math.max(4, Math.round(e.count / St.value * 100)) + "%" }) }, null, 4)])]))), 128))])], 64)) : (t(), v("p", Ze, "还没有可用的套餐数据。"))]),
+				}, [d("path", { d: "m9 6 6 6-6 6" })], -1)]])]), V.value.length ? (t(), v(s, { key: 0 }, [d("div", qe, [d("strong", null, u(D(V.value.length)), 1), d("span", null, "种套餐 · " + u(D(H.value)) + " 个账号", 1)]), d("ul", Je, [(t(!0), v(s, null, r(V.value, (e) => (t(), v("li", { key: e.key }, [d("div", Ye, [d("span", null, u(e.label), 1), d("small", null, u(D(e.count)) + " · " + u(k(e.count, H.value)) + "%", 1)]), d("div", Xe, [d("i", { style: c({ width: Math.max(4, Math.round(e.count / wt.value * 100)) + "%" }) }, null, 4)])]))), 128))])], 64)) : (t(), v("p", Ze, "还没有可用的套餐数据。"))]),
 				d("article", Qe, [
-					d("header", $e, [n[47] ||= o("<div class=\"ov-card-title\" data-v-e6a377e9><span class=\"ov-icon\" data-v-e6a377e9><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\" data-v-e6a377e9><circle cx=\"12\" cy=\"12\" r=\"9\" data-v-e6a377e9></circle><path d=\"M3 12h18\" data-v-e6a377e9></path><path d=\"M12 3c2.4 2.5 3.7 5.5 3.7 9s-1.3 6.5-3.7 9c-2.4-2.5-3.7-5.5-3.7-9S9.6 5.5 12 3Z\" data-v-e6a377e9></path></svg></span><div data-v-e6a377e9><h3 data-v-e6a377e9>代理</h3><p data-v-e6a377e9>网络出口</p></div></div>", 1), d("button", {
+					d("header", $e, [n[47] ||= o("<div class=\"ov-card-title\" data-v-2c95205f><span class=\"ov-icon\" data-v-2c95205f><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\" data-v-2c95205f><circle cx=\"12\" cy=\"12\" r=\"9\" data-v-2c95205f></circle><path d=\"M3 12h18\" data-v-2c95205f></path><path d=\"M12 3c2.4 2.5 3.7 5.5 3.7 9s-1.3 6.5-3.7 9c-2.4-2.5-3.7-5.5-3.7-9S9.6 5.5 12 3Z\" data-v-2c95205f></path></svg></span><div data-v-2c95205f><h3 data-v-2c95205f>代理</h3><p data-v-2c95205f>网络出口</p></div></div>", 1), d("button", {
 						type: "button",
 						class: "ov-link",
 						"data-overview-action": "proxy",
@@ -484,7 +487,7 @@ var te = { class: "ov-section-head" }, ne = { class: "ov-section-actions" }, re 
 						"aria-hidden": "true"
 					}, [d("path", { d: "m9 6 6 6-6 6" })], -1)]])]),
 					d("div", et, [
-						d("strong", null, u(E(q.value.active_leases)), 1),
+						d("strong", null, u(D(q.value.active_leases)), 1),
 						n[48] ||= d("span", null, "活跃出口", -1),
 						d("em", tt, u(g(T)(q.value.platform)), 1)
 					]),
@@ -492,44 +495,48 @@ var te = { class: "ov-section-head" }, ne = { class: "ov-section-actions" }, re 
 						n[49] ||= d("i", { "aria-hidden": "true" }, null, -1),
 						d("span", null, u(e.endpoint || e.exit_ip || "活跃出口"), 1),
 						d("small", null, u(e.region || e.provider || ""), 1)
-					]))), 128))])) : (t(), v("p", rt, "当前没有活跃的代理租约，新任务会走 " + u(g(T)(q.value.platform)) + "。", 1)),
-					J.value.length ? (t(), v("p", it, "代理平台 " + u(g(T)(q.value.platform)), 1)) : a("", !0)
+					]))), 128))])) : (t(), v("p", rt, u(kt.value ? "注册代理未启用，当前没有活跃租约。" : `当前没有活跃的代理租约，新任务会走 ${g(T)(q.value.platform)}。`), 1)),
+					J.value.length ? (t(), v("p", it, [y(u(kt.value ? "注册代理未启用，已有租约仍保留" : `代理平台 ${g(T)(q.value.platform)}`), 1), Ot.value ? (t(), v(s, { key: 0 }, [y(" · 另有 " + u(Ot.value) + " 个活跃出口", 1)], 64)) : a("", !0)])) : a("", !0)
 				]),
-				d("article", at, [d("header", ot, [n[51] ||= o("<div class=\"ov-card-title\" data-v-e6a377e9><span class=\"ov-icon\" data-v-e6a377e9><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\" data-v-e6a377e9><path d=\"M9 5h11\" data-v-e6a377e9></path><path d=\"M9 12h11\" data-v-e6a377e9></path><path d=\"M9 19h11\" data-v-e6a377e9></path><circle cx=\"4\" cy=\"5\" r=\"1\" data-v-e6a377e9></circle><circle cx=\"4\" cy=\"12\" r=\"1\" data-v-e6a377e9></circle><circle cx=\"4\" cy=\"19\" r=\"1\" data-v-e6a377e9></circle></svg></span><div data-v-e6a377e9><h3 data-v-e6a377e9>任务</h3><p data-v-e6a377e9>注册流水线与队列</p></div></div>", 1), d("button", {
-					type: "button",
-					class: "ov-link",
-					"data-overview-action": "jobs",
-					onClick: n[8] ||= (e) => $("tasks")
-				}, [...n[50] ||= [y("任务中心", -1), d("svg", {
-					viewBox: "0 0 24 24",
-					"aria-hidden": "true"
-				}, [d("path", { d: "m9 6 6 6-6 6" })], -1)]])]), d("div", st, [
-					d("section", ct, [n[55] ||= d("h4", null, "当前队列", -1), d("div", lt, [
-						d("div", null, [n[52] ||= d("span", null, "运行中", -1), d("strong", null, u(E(W.value.running)), 1)]),
-						d("div", null, [n[53] ||= d("span", null, "待处理", -1), d("strong", null, u(E(W.value.pending)), 1)]),
-						d("div", null, [n[54] ||= d("span", null, "停止中", -1), d("strong", null, u(E(W.value.stopping)), 1)])
-					])]),
-					d("section", ut, [d("h4", null, [n[56] ||= y("今日结果 ", -1), d("small", null, u(U.value.today), 1)]), d("div", dt, [
-						d("div", null, [n[57] ||= d("span", null, "成功", -1), d("strong", ft, u(E(G.value.success)), 1)]),
-						d("div", null, [n[58] ||= d("span", null, "部分成功", -1), d("strong", pt, u(E(G.value.partial_success)), 1)]),
-						d("div", null, [n[59] ||= d("span", null, "失败", -1), d("strong", mt, u(E(G.value.failed)), 1)])
-					])]),
-					d("section", ht, [
-						d("h4", null, [n[60] ||= y("累计结果 ", -1), d("small", null, u(E(U.value.total)) + " 个任务", 1)]),
-						K.value.length ? (t(), v("div", gt, [(t(!0), v(s, null, r(K.value, (e) => (t(), v("i", {
-							key: e.key,
-							style: c({
-								width: e.value / Math.max(1, U.value.total) * 100 + "%",
-								background: e.color
-							})
-						}, null, 4))), 128))])) : a("", !0),
-						d("div", _t, [(t(!0), v(s, null, r(K.value, (e) => (t(), v("span", { key: e.key }, [d("i", { style: c({ background: e.color }) }, null, 4), y(u(e.label) + " " + u(E(e.value)), 1)]))), 128)), K.value.length ? a("", !0) : (t(), v("span", vt, "暂无累计结果"))])
-					])
-				])])
+				d("article", at, [
+					d("header", ot, [n[51] ||= o("<div class=\"ov-card-title\" data-v-2c95205f><span class=\"ov-icon\" data-v-2c95205f><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\" data-v-2c95205f><path d=\"M9 5h11\" data-v-2c95205f></path><path d=\"M9 12h11\" data-v-2c95205f></path><path d=\"M9 19h11\" data-v-2c95205f></path><circle cx=\"4\" cy=\"5\" r=\"1\" data-v-2c95205f></circle><circle cx=\"4\" cy=\"12\" r=\"1\" data-v-2c95205f></circle><circle cx=\"4\" cy=\"19\" r=\"1\" data-v-2c95205f></circle></svg></span><div data-v-2c95205f><h3 data-v-2c95205f>任务</h3><p data-v-2c95205f>注册流水线与队列</p></div></div>", 1), d("button", {
+						type: "button",
+						class: "ov-link",
+						"data-overview-action": "jobs",
+						onClick: n[8] ||= (e) => $("tasks")
+					}, [...n[50] ||= [y("任务中心", -1), d("svg", {
+						viewBox: "0 0 24 24",
+						"aria-hidden": "true"
+					}, [d("path", { d: "m9 6 6 6-6 6" })], -1)]])]),
+					d("div", st, [
+						d("section", ct, [n[55] ||= d("h4", null, "当前队列", -1), d("div", lt, [
+							d("div", null, [n[52] ||= d("span", null, "运行中", -1), d("strong", null, u(D(W.value.running)), 1)]),
+							d("div", null, [n[53] ||= d("span", null, "待处理", -1), d("strong", null, u(D(W.value.pending)), 1)]),
+							d("div", null, [n[54] ||= d("span", null, "停止中", -1), d("strong", null, u(D(W.value.stopping)), 1)])
+						])]),
+						d("section", ut, [d("h4", null, [n[56] ||= y("今日结果 ", -1), d("small", null, u(U.value.today), 1)]), d("div", dt, [
+							d("div", null, [n[57] ||= d("span", null, "成功", -1), d("strong", ft, u(D(G.value.success)), 1)]),
+							d("div", null, [n[58] ||= d("span", null, "部分成功", -1), d("strong", pt, u(D(G.value.partial_success)), 1)]),
+							d("div", null, [n[59] ||= d("span", null, "失败", -1), d("strong", mt, u(D(G.value.failed)), 1)])
+						])]),
+						d("section", ht, [
+							d("h4", null, [n[60] ||= y("累计结果 ", -1), d("small", null, u(D(U.value.total)) + " 个任务", 1)]),
+							K.value.length ? (t(), v("div", gt, [(t(!0), v(s, null, r(K.value, (e) => (t(), v("i", {
+								key: e.key,
+								style: c({
+									width: e.value / Math.max(1, U.value.total) * 100 + "%",
+									background: e.color
+								})
+							}, null, 4))), 128))])) : a("", !0),
+							d("div", _t, [(t(!0), v(s, null, r(K.value, (e) => (t(), v("span", { key: e.key }, [d("i", { style: c({ background: e.color }) }, null, 4), y(u(e.label) + " " + u(D(e.value)), 1)]))), 128)), K.value.length ? a("", !0) : (t(), v("span", vt, "暂无累计结果"))])
+						])
+					]),
+					Tt.value ? (t(), v("p", yt, "注册功能未启用，历史任务仍可查看。")) : a("", !0)
+				])
 			])], 64)) : a("", !0)
 		], 2));
 	}
-}), [["__scopeId", "data-v-e6a377e9"]]);
+}), [["__scopeId", "data-v-2c95205f"]]);
 // src/api/dashboard.ts
 async function D(e, t) {
 	if (!t) return e;

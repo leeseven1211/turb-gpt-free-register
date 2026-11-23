@@ -43,6 +43,18 @@ describe('dashboard Vue owner',()=>{
   expect(wrapper.findAll('.ov-pulse-item')).toHaveLength(7);
  });
 
+ it.each([0,1])('shows an actual ready rate for %i of 100 accounts',async ready=>{
+  const api=createDashboardApi(async path=>path==='/api/dashboard'
+   ?{...sample,accounts:{...sample.accounts,total:100,active:100,archived:0,codex_ready:ready,plans:{free:99,plus:1}}}
+   :path==='/api/extract-workbench/summary'?extractSample:{});
+  const wrapper=mount(DashboardPage,{attachTo:document.body,props:{api,deps:{visible:true}}});wrappers.push(wrapper);await flushPromises();
+  const meter=wrapper.get('[data-overview-card="accounts"] .ov-meter');
+  expect(meter.get('strong').text()).toBe(`${ready}%`);
+  expect(meter.get('.ov-bar > i').attributes('style')).toContain(`width: ${ready}%`);
+  const plus=wrapper.get('[data-overview-card="plans"]').findAll('.ov-bars li').find(row=>row.text().includes('Plus'))!;
+  expect(plus.text()).toContain('1 · 1%');
+ });
+
  it('surfaces an exhausted email pool as a warning instead of hiding it',async()=>{
   const api=createDashboardApi(async path=>path==='/api/dashboard'
    ?{...sample,email:{supply:{...sample.email.supply,available:0,used:20,sources:[{source:'outlook',label:'Outlook',kind:'local_pool',total:20,available:0,used:20}]},sources:[]}}

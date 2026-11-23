@@ -5,18 +5,21 @@ import type {DashboardDeps} from './contracts';
 
 const props=defineProps<{api:any;deps:DashboardDeps}>();
 const owner=useDashboard(props.api,props.deps);
-const {data,extract,loading,error,updatedAt}=owner;
+const {data,extract,caps,loading,error,updatedAt}=owner;
 const mounted=ref(false);
 onMounted(()=>{mounted.value=true;});
 
 const fmt=(value:any)=>new Intl.NumberFormat('zh-CN').format(Number(value||0));
 const num=(value:any)=>Number(value||0);
-const pct=(part:any,total:any)=>{const all=num(total);return all>0?Math.max(2,Math.min(100,Math.round(num(part)/all*100))):0;};
+const pct=(part:any,total:any)=>{const all=num(total);return all>0?Math.max(0,Math.min(100,Math.round(num(part)/all*100))):0;};
 const planLabel=(plan:string)=>({free:'Free',free_trial_eligible:'Free · 试用资格',free_half_price_eligible:'Free · 半价资格',free_discount_eligible:'Free · 折扣资格',free_promo_unknown:'Free · 优惠待查',plus:'Plus',pro:'Pro',team:'Team',go:'Go',unknown:'未检测'} as Record<string,string>)[plan]||plan;
 
 const accounts=computed<any>(()=>data.value?.accounts||{});
 const email=computed<any>(()=>data.value?.email?.supply||{});
-const emailSourcesAll=computed<any[]>(()=>Array.isArray(email.value?.sources)?email.value.sources:Array.isArray(data.value?.email?.sources)?data.value.email.sources:[]);
+const emailSourcesAll=computed<any[]>(()=>{
+ const sources=Array.isArray(email.value?.sources)?email.value.sources:Array.isArray(data.value?.email?.sources)?data.value.email.sources:[];
+ return sources.filter((source:any)=>source?.kind==='local_pool');
+});
 const emailSources=computed<any[]>(()=>emailSourcesAll.value.filter((source:any)=>num(source.total)>0||num(source.available)>0));
 const emailIdle=computed(()=>Math.max(0,emailSourcesAll.value.length-emailSources.value.length));
 const emailAvailable=computed(()=>email.value?.status==='error'?'读取失败':num(email.value?.available));
@@ -40,6 +43,7 @@ const planMax=computed(()=>Math.max(1,...plans.value.map(plan=>plan.count)));
 const planTotal=computed(()=>plans.value.reduce((total,plan)=>total+plan.count,0));
 
 const jobs=computed<any>(()=>data.value?.jobs||{});
+const registrationDisabled=computed(()=>caps.value?.features?.register?.enabled===false);
 const jobCounts=computed<any>(()=>({...jobs.value?.counts||{}}));
 const todayCounts=computed<any>(()=>({...jobs.value?.today_counts||{}}));
 const activeJobs=computed(()=>num(jobCounts.value.pending)+num(jobCounts.value.running)+num(jobCounts.value.stopping));
@@ -54,6 +58,8 @@ const jobTone=computed(()=>activeJobs.value>0?'active':num(todayCounts.value.fai
 
 const proxy=computed<any>(()=>data.value?.proxy||{});
 const leases=computed<any[]>(()=>Array.isArray(proxy.value.leases)?proxy.value.leases.slice(0,3):[]);
+const remainingLeases=computed(()=>Math.max(0,num(proxy.value.active_leases)-leases.value.length));
+const registrationProxyDisabled=computed(()=>caps.value?.proxy?.registration?.enabled===false);
 const proxyTone=computed(()=>num(proxy.value.active_leases)>0?'ok':'idle');
 
 const extractData=computed<any>(()=>extract.value||{});
@@ -161,7 +167,7 @@ defineExpose({
       </li>
      </ul>
      <p v-else class="ov-empty">还没有可统计的邮箱库存。</p>
-     <p v-if="emailIdle" class="ov-foot">另有 {{emailIdle}} 个来源未启用 · 仅统计本地库存</p>
+     <p v-if="emailIdle" class="ov-foot">另有 {{emailIdle}} 个来源暂无库存 · 仅统计本地库存</p>
      <p v-else class="ov-foot">仅统计本地库存，用完后需手动导入</p>
     </article>
 
@@ -264,8 +270,8 @@ defineExpose({
      <ul v-if="leases.length" class="ov-lease-list">
       <li v-for="(lease,index) in leases" :key="index"><i aria-hidden="true"></i><span>{{lease.endpoint||lease.exit_ip||'活跃出口'}}</span><small>{{lease.region||lease.provider||''}}</small></li>
      </ul>
-     <p v-else class="ov-empty">当前没有活跃的代理租约，新任务会走 {{proxyLabel(proxy.platform)}}。</p>
-     <p v-if="leases.length" class="ov-foot">代理平台 {{proxyLabel(proxy.platform)}}</p>
+     <p v-else class="ov-empty">{{registrationProxyDisabled?'注册代理未启用，当前没有活跃租约。':`当前没有活跃的代理租约，新任务会走 ${proxyLabel(proxy.platform)}。`}}</p>
+     <p v-if="leases.length" class="ov-foot">{{registrationProxyDisabled?'注册代理未启用，已有租约仍保留':`代理平台 ${proxyLabel(proxy.platform)}`}}<template v-if="remainingLeases"> · 另有 {{remainingLeases}} 个活跃出口</template></p>
     </article>
 
     <article class="ov-card ov-card--jobs" data-overview-card="jobs" style="--accent:#475569;--accent-soft:#eef1f5">
@@ -304,6 +310,7 @@ defineExpose({
        </div>
       </section>
      </div>
+     <p v-if="registrationDisabled" class="ov-foot">注册功能未启用，历史任务仍可查看。</p>
     </article>
    </div>
   </template>
