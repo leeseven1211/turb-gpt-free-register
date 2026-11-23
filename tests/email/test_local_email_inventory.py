@@ -65,6 +65,25 @@ class LocalEmailInventoryTests(PostgresTestCase):
                 self.assertEqual(inv.summary(source)['available'], 0)
             self.assertEqual(inv.summary()['used'], 5)
 
+    def test_availability_uses_read_only_exists_and_matches_eligibility(self):
+        inv = self.inventory()
+        self.add('generic_api', 'available@example.test')
+        self.add('generic_api', 'invalid@example.test', email_invalid=True)
+
+        with patch.object(inv, 'summary', side_effect=AssertionError('资格查询不能读取汇总计数')):
+            self.assertTrue(inv.availability('generic_api'))
+            self.assertEqual(
+                inv.availability(),
+                {source: source == 'generic_api' for source in inv.TABLES},
+            )
+
+        record_store.patch_row(
+            inv.TABLES['generic_api'],
+            1,
+            {'status': 'disabled'},
+        )
+        self.assertFalse(inv.availability('generic_api'))
+
     def test_fixed_butler_inventory_without_confirmed_handoff_is_not_new_supply(self):
         inv = self.inventory()
         for source in ['email_butler', 'icloud_hide']:

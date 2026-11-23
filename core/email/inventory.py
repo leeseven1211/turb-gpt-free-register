@@ -148,6 +148,22 @@ def _eligibility(source: str, *, alias: str = 'p', batch_id: str = '') -> tuple[
     return ' AND '.join(conditions), params
 
 
+def availability(source: str | None = None, *, conn=None) -> bool | dict[str, bool]:
+    """只读检查本地库存是否存在一行可领取邮箱，不读取汇总计数。"""
+    selected = [source] if source is not None else list(TABLES)
+    result: dict[str, bool] = {}
+    with _connection(conn) as current, current.cursor() as cursor:
+        for item in selected:
+            table = postgres_store.qualified(_table(item).name)
+            eligible, params = _eligibility(item)
+            cursor.execute(
+                f"SELECT EXISTS (SELECT 1 FROM {table} p WHERE {eligible}) AS available",
+                params,
+            )
+            result[item] = bool(cursor.fetchone()["available"])
+    return result[source] if source is not None else result
+
+
 def summary(source: str | None = None, *, include_next_expiry: bool = False) -> dict:
     """只汇总本地五池；available 使用与领取一致的健康和占用过滤。"""
     selected = [source] if source is not None else list(TABLES)

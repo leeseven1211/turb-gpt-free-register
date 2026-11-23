@@ -22,6 +22,7 @@
 | 本地邮箱库存、Butler 交接与严格取码 | [邮箱资源](workflows/email-resources.md) |
 | 隔离测试、验证范围和交付检查 | [发布与验证](development/release-verification.md) |
 | 已有大库预建列表查询索引 | [账号邮箱索引](deployment/codex-email-index.md) |
+| 邮箱来源资格查询、库存统计索引与增量升级 | [邮箱库存索引](deployment/email-inventory-indexes.md) |
 | 托管服务、备份、配置和收件迁移 | [部署与维护](deployment/operations.md) |
 | 协议会话一致性及离线 HAR 排查 | [协议参考](reference/protocol-fingerprint-har-analysis.md) |
 

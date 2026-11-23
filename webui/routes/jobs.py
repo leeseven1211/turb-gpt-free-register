@@ -221,12 +221,21 @@ def create_jobs_blueprint(context: WebUIContext):
         """返回注册页可选择的邮箱来源、注册驱动和各自默认值。"""
         from config import email as _email_cfg
         from core.email.provider import EMAIL_SOURCE_LABELS, parse_email_sources
-        from core.runtime.capabilities import email_source_availability
+        from core.runtime.capabilities import email_source_readiness, registration_feature_status
 
         use_service = bool(getattr(_email_cfg, "USE_EMAIL_SERVICE", True))
         from core.email.inventory import TABLES
         sources = list(TABLES) if use_service else []
-        availability = email_source_availability() if use_service else {}
+        try:
+            availability = email_source_readiness() if use_service else {}
+            register_feature = registration_feature_status(email_sources=availability)
+        except Exception:
+            logger.exception("读取本地邮箱实时资格失败")
+            return jsonify({
+                "ok": False,
+                "error_code": "local_inventory_query_failed",
+                "error": "读取本地邮箱库存失败，注册资格未确认，请稍后重试",
+            }), 503
         return jsonify({
             "ok": True,
             "manual_mode": not use_service,
@@ -241,6 +250,7 @@ def create_jobs_blueprint(context: WebUIContext):
                 }
                 for source in sources
             ],
+            "capabilities": {"features": {"register": register_feature}},
         })
 
     @bp.post("/api/jobs")

@@ -73,6 +73,45 @@ class CodexReadinessTests(unittest.TestCase):
 
 
 class FeatureAvailabilityTests(PostgresTestCase):
+    def test_default_email_source_features_keep_exact_summary_counts(self):
+        from core.storage import records as record_store
+
+        for index in range(3):
+            record_store.insert_row(
+                record_store.GENERIC_API_POOL,
+                {"email": f"exact-{index}@example.test", "status": "available"},
+            )
+
+        result = feature_availability._email_source_features()
+
+        self.assertEqual(result["generic_api"]["available"], 3)
+        self.assertTrue(result["generic_api"]["enabled"])
+
+    def test_injected_source_readiness_is_not_mutated_by_display_counts(self):
+        source = {
+            "generic_api": {"enabled": True, "reason": "", "available": 1},
+        }
+        with patch.object(
+            feature_availability,
+            "_registration_driver_status",
+            return_value={"enabled": True, "reason": ""},
+        ), patch.object(
+            feature_availability,
+            "_registration_proxy_status",
+            return_value={"enabled": True, "reason": ""},
+        ), patch.multiple(
+            "config.email",
+            USE_EMAIL_SERVICE=True,
+        ):
+            result = feature_availability.feature_availability(
+                email_sources=source,
+                email_supply={"sources": [{"source": "generic_api", "available": 0}]},
+            )
+
+        self.assertEqual(source["generic_api"]["available"], 1)
+        self.assertEqual(result["email_sources"]["generic_api"]["available"], 0)
+        self.assertTrue(result["features"]["register"]["enabled"])
+
     def test_retired_management_capabilities_are_disabled(self):
         result = feature_availability.feature_availability()
         for name in ('cloudmail_token', 'cloudmail_domains', 'icloud_hme'):

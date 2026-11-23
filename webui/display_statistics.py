@@ -52,3 +52,12 @@ class DisplayStatisticsCache:
             with self._lock:
                 self._loading.pop(key, None)
                 pending.set()
+
+
+def display_statistics_cache(app, *, ttl: float = 15) -> DisplayStatisticsCache:
+    """返回每个 Flask app 共享的展示统计缓存。"""
+    key = "turb_display_statistics_cache"
+    cache = app.extensions.get(key)
+    if cache is None:
+        cache = app.extensions[key] = DisplayStatisticsCache(ttl=ttl)
+    return cache

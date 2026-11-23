@@ -41,10 +41,7 @@ export interface RegistrationApi {
 const json=(payload:unknown):RequestInit=>({method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload ?? {})});
 export function createRegistrationApi():RegistrationApi {
   return {
-    metadata:signal=>Promise.all([
-      request<RegistrationMeta>('/api/email-sources',{signal}),
-      request<Record<string,any>>('/api/capabilities',{signal}),
-    ]).then(([value,capabilities])=>({...value,capabilities})),
+    metadata:signal=>request<RegistrationMeta>('/api/email-sources',{signal}),
     summary:signal=>request<RegistrationSummary>('/api/summary',{signal}),
     jobs:(params,signal)=>request<JobsResponse>(`/api/jobs?${new URLSearchParams(Object.entries(params).map(([k,v])=>[k,String(v)]))}`,{signal}),
     progress:(id,signal)=>request<JobProgressResponse>(`/api/jobs/${encodeURIComponent(String(id))}/progress`,{signal}),

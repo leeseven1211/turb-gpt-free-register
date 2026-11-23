@@ -32,8 +32,17 @@ _LOCK = threading.RLock()
 _READY_KEY = ""
 _FORCE_SCHEMA_CHECK = False
 # 修改记录表定义、索引或兼容回填时递增版本。每个 schema 独立记录迁移结果。
-_SCHEMA_VERSION = 1
+_BASE_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 _SCHEMA_MIGRATIONS = "record_store_schema_migrations"
+
+
+def _record_schema_lock_key() -> str:
+    return f"record-store-schema:{postgres_store.schema_name()}"
+
+
+def _record_schema_online_gate_key() -> str:
+    return f"record-store-schema-online-gate:{postgres_store.schema_name()}"
 
 
 def _now() -> str:
@@ -878,13 +887,14 @@ def _ensure_account_normalized_email_index(cur) -> None:
     cur.execute(f"ANALYZE {_qualified(ACCOUNTS)}")
 
 
-def _migration_completed(conn) -> bool:
+def _migration_completed(conn, version: int | None = None) -> bool:
     table = postgres_store.qualified(_SCHEMA_MIGRATIONS)
+    version = _SCHEMA_VERSION if version is None else int(version)
     with conn.cursor() as cur:
         cur.execute("SELECT to_regclass(%s) AS migration_table", (table,))
         if cur.fetchone()["migration_table"] is None:
             return False
-        cur.execute(f"SELECT 1 FROM {table} WHERE version = %s", (_SCHEMA_VERSION,))
+        cur.execute(f"SELECT 1 FROM {table} WHERE version = %s", (version,))
         return cur.fetchone() is not None
 
 
@@ -1008,16 +1018,44 @@ def ensure_record_schema(conn) -> None:
     postgres_store._guard_production_schema()
     if not _FORCE_SCHEMA_CHECK and _migration_completed(conn):
         return
-    advisory_xact_lock(conn, f"record-store-schema:{postgres_store.schema_name()}")
+    # 在线 CONCURRENTLY 构建持有会话级排他 gate；启动迁移在进入可阻塞
+    # schema 锁前只尝试共享 gate，避免等待者保留快照并与第二次扫描形成死锁。
+    if not try_advisory_xact_lock_shared(conn, _record_schema_online_gate_key()):
+        raise RuntimeError("邮箱库存索引在线迁移进行中，请稍后重试")
+    advisory_xact_lock(conn, _record_schema_lock_key())
     # 等锁期间可能已有其他进程完成迁移，取锁后再次读取已提交的版本。
     if not _FORCE_SCHEMA_CHECK and _migration_completed(conn):
         return
     postgres_store.ensure_collection_schema(conn)
+    has_base_schema = _migration_completed(conn, _BASE_SCHEMA_VERSION)
+    has_current_schema = _migration_completed(conn, _SCHEMA_VERSION)
+    if has_base_schema and not has_current_schema:
+        # v1 已完成时只补邮箱库存资格索引；不能再次运行会重扫/回填的旧 schema。
+        from core.storage.email.inventory_indexes import ensure_indexes
+        ensure_indexes(conn, concurrent=False)
+    elif not has_current_schema:
+        with conn.cursor() as cur:
+            _apply_record_schema(cur)
+            table = postgres_store.qualified(_SCHEMA_MIGRATIONS)
+            cur.execute(f"CREATE TABLE IF NOT EXISTS {table} (version INTEGER PRIMARY KEY)")
+            cur.execute(
+                f"INSERT INTO {table} (version) VALUES (%s) ON CONFLICT DO NOTHING",
+                (_BASE_SCHEMA_VERSION,),
+            )
+        from core.storage.email.inventory_indexes import ensure_indexes
+        ensure_indexes(conn, concurrent=False)
+    elif _FORCE_SCHEMA_CHECK:
+        # 保留 reset_ready() 对 v2 以前序列/列检查的语义；不影响已完成的 v2 索引。
+        with conn.cursor() as cur:
+            _apply_record_schema(cur)
+
     with conn.cursor() as cur:
-        _apply_record_schema(cur)
         table = postgres_store.qualified(_SCHEMA_MIGRATIONS)
         cur.execute(f"CREATE TABLE IF NOT EXISTS {table} (version INTEGER PRIMARY KEY)")
-        cur.execute(f"INSERT INTO {table} (version) VALUES (%s) ON CONFLICT DO NOTHING", (_SCHEMA_VERSION,))
+        cur.execute(
+            f"INSERT INTO {table} (version) VALUES (%s) ON CONFLICT DO NOTHING",
+            (_SCHEMA_VERSION,),
+        )
 
 
 def init() -> None:
@@ -1686,6 +1724,17 @@ def try_advisory_xact_lock(conn, key: str) -> bool:
     """只用于可跳过的重复工作；容量预留等权威写入仍使用阻塞事务锁。"""
     with conn.cursor() as cur:
         cur.execute("SELECT pg_try_advisory_xact_lock(hashtextextended(%s, 0)) AS acquired", (str(key),))
+        row = cur.fetchone()
+        return bool(row["acquired"] if isinstance(row, dict) else row[0])
+
+
+def try_advisory_xact_lock_shared(conn, key: str) -> bool:
+    """尝试取得共享迁移 gate，失败时不等待也不保留锁等待快照。"""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT pg_try_advisory_xact_lock_shared(hashtextextended(%s, 0)) AS acquired",
+            (str(key),),
+        )
         row = cur.fetchone()
         return bool(row["acquired"] if isinstance(row, dict) else row[0])
 

@@ -6,7 +6,7 @@ import type {JobProgressResponse, RegistrationApi, RegistrationJob} from '../../
 const wrappers:ReturnType<typeof mount>[]=[];
 function setup(){
  const api:RegistrationApi={
-  metadata:vi.fn(async()=>({sources:[{value:'outlook',label:'Outlook',enabled:true}],registration_drivers:[]})),
+  metadata:vi.fn(async()=>({sources:[{value:'outlook',label:'Outlook',enabled:true}],registration_drivers:[],capabilities:{features:{register:{enabled:true}}}})),
   summary:vi.fn(async()=>({accounts:0})),
   jobs:vi.fn(async()=>({items:[{id:'9007199254740993',email:'long-address@example.test',email_source:'outlook',status:'failed',error_message:'raw diagnostic details that must remain available only in expansion'}],total:125})),
   progress:vi.fn(async(id)=>({ok:true,job:{id,progress:{main_steps:[]}}})),
@@ -217,14 +217,14 @@ describe('registration list standards',()=>{
   expect(api.progress).toHaveBeenCalledTimes(2);
  });
  it('selects manual email mode and shows the server worker count after creation',async()=>{
-  const {wrapper,api}=setup();vi.mocked(api.metadata).mockResolvedValue({manual_mode:true,sources:[],registration_drivers:[]});vi.mocked(api.create).mockResolvedValue({submitted:1,workers:2});
+  const {wrapper,api}=setup();await flushPromises();vi.mocked(api.metadata).mockResolvedValue({manual_mode:true,sources:[],registration_drivers:[],capabilities:{features:{register:{enabled:true}}}});vi.mocked(api.create).mockResolvedValue({submitted:1,workers:2});
   await (wrapper.vm as unknown as {ensureMeta(force?:boolean):Promise<void>}).ensureMeta(true);await flushPromises();
   expect((wrapper.get('.registration-launcher select').element as HTMLSelectElement).value).toBe('manual');
   await wrapper.get('.registration-launcher button').trigger('click');await flushPromises();
   expect(vi.mocked(api.create).mock.calls.at(-1)?.[0]).toMatchObject({email_source:'manual'});expect((wrapper.get('.registration-launcher input[type="number"][step]').element as HTMLInputElement).value).toBe('2');
  });
  it('keeps disabled historical source labels while excluding them from new registration',async()=>{
-  const {wrapper,api}=setup();vi.mocked(api.metadata).mockResolvedValue({sources:[{value:'outlook',label:'Outlook',enabled:true},{value:'email_butler',label:'Email Butler',enabled:false}],registration_drivers:[]});
+  const {wrapper,api}=setup();await flushPromises();vi.mocked(api.metadata).mockResolvedValue({sources:[{value:'outlook',label:'Outlook',enabled:true},{value:'email_butler',label:'Email Butler',enabled:false}],registration_drivers:[],capabilities:{features:{register:{enabled:true}}}});
   vi.mocked(api.jobs).mockResolvedValue({items:[{id:7,email:'history@example.test',email_source:'email_butler',status:'success'}],total:1});
   await (wrapper.vm as any).ensureMeta(true);await (wrapper.vm as any).load();await flushPromises();
   expect(wrapper.get('tbody tr').text()).toContain('Email Butler');expect(wrapper.get('.registration-launcher select').text()).not.toContain('Email Butler');
@@ -241,9 +241,35 @@ describe('registration list standards',()=>{
   expect(wrapper.text()).toContain('验证码未接受');expect((code.element as HTMLInputElement).value).toBe('123456');expect(api.action).toHaveBeenCalledTimes(1);
  });
  it('shows the explicit disabled registration reason and prevents a launch click',async()=>{
-  const {wrapper,api}=setup();vi.mocked(api.metadata).mockResolvedValue({sources:[{value:'outlook',label:'Outlook',enabled:true}],registration_drivers:[],capabilities:{features:{register:{enabled:false,reason:'synthetic unavailable'}}}});
+  const {wrapper,api}=setup();await flushPromises();vi.mocked(api.metadata).mockResolvedValue({sources:[{value:'outlook',label:'Outlook',enabled:true}],registration_drivers:[],capabilities:{features:{register:{enabled:false,reason:'synthetic unavailable'}}}});
   await (wrapper.vm as any).ensureMeta(true);await flushPromises();await wrapper.get('.registration-launcher select').setValue('outlook');const button=wrapper.get('.registration-launcher button');
   expect(button.attributes()).toHaveProperty('disabled');expect(button.attributes('title')).toContain('synthetic unavailable');expect(wrapper.get('.registration-launch').text()).toContain('synthetic unavailable');await button.trigger('click');expect(api.create).not.toHaveBeenCalled();
+ });
+ it('keeps a selected source when a fresh read returns the same source',async()=>{
+  const {wrapper,api}=setup();await flushPromises();
+  await wrapper.get('.registration-launcher select').setValue('outlook');
+  vi.mocked(api.metadata).mockResolvedValueOnce({sources:[{value:'outlook',label:'Outlook',enabled:true}],registration_drivers:[],capabilities:{features:{register:{enabled:true}}}});
+  await (wrapper.vm as any).loadSources();await flushPromises();
+  expect((wrapper.get('.registration-launcher select').element as HTMLSelectElement).value).toBe('outlook');
+ });
+ it('fails closed when metadata omits the register eligibility result',async()=>{
+  const {wrapper,api}=setup();await flushPromises();
+  vi.mocked(api.metadata).mockResolvedValueOnce({sources:[{value:'outlook',label:'Outlook',enabled:true}],registration_drivers:[]});
+  await (wrapper.vm as any).ensureMeta(true);await flushPromises();
+  const button=wrapper.get('.registration-launcher button[type="submit"]');
+  expect(button.attributes('disabled')).toBeDefined();
+  expect(wrapper.get('.registration-launch').text()).toContain('注册资格未确认');
+  await button.trigger('click');
+  expect(api.create).not.toHaveBeenCalled();
+ });
+ it('shows a recoverable source read error instead of staying in the loading message',async()=>{
+  const {wrapper,api}=setup();await flushPromises();
+  vi.mocked(api.metadata).mockRejectedValueOnce(new Error('邮箱来源服务暂不可用'));
+  await (wrapper.vm as any).ensureMeta(true);
+  await flushPromises();
+  expect(wrapper.get('.registration-launch').text()).toContain('邮箱来源服务暂不可用');
+  expect(wrapper.get('.registration-launch').text()).not.toContain('正在读取邮箱来源');
+  expect(wrapper.get('[data-registration-source-retry]').text()).toContain('重试');
  });
  it('restores legacy ratio widths, supports keyboard resizing and resets only registration widths',async()=>{
   localStorage.setItem('gpt_console_table_widths_jobs',JSON.stringify(Array(11).fill(1)));localStorage.setItem('gpt_console_table_total_jobs','2200');localStorage.setItem('gpt_console_table_total_accounts','1900');

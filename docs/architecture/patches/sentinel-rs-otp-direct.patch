@@ -17,7 +17,7 @@ index 3f62ecc..407c753 100644
      let mail = cfg
          .email_api
 @@ -875,7 +882,7 @@ async fn live_register(
- 
+
      // 6) 取码（静态池 / API 同一条路径：GET {code_url} + HTML 卡片解析）
      let code = email::poll_otp_url(
 -        &http,

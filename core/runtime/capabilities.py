@@ -100,6 +100,56 @@ def email_source_availability() -> dict[str, dict[str, Any]]:
     return _email_source_features()
 
 
+def email_source_readiness() -> dict[str, dict[str, Any]]:
+    """读取来源实时可领取资格；只做 EXISTS，不读取汇总计数。"""
+    from core.email.provider import EMAIL_SOURCE_LABELS
+    from core.email import inventory as local_email_inventory
+
+    available = local_email_inventory.availability()
+    results = {}
+    for source, label in EMAIL_SOURCE_LABELS.items():
+        local = source in local_email_inventory.TABLES
+        ready = bool(available.get(source)) if local else False
+        reason = '本地邮箱库存为空，请先手动导入' if local else '新注册只使用本地邮箱库存；历史账号收码保留'
+        results[source] = {'label': label, **_feature(local and ready, reason),
+                           'available': int(ready) if local else 0}
+    return results
+
+
+def registration_feature_status(
+    *,
+    email_sources: dict[str, dict[str, Any]] | None = None,
+    driver_status: dict[str, Any] | None = None,
+    proxy_status: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """按注册现有校验顺序组合实时注册资格，不读取展示汇总缓存。"""
+    from config import email, register
+
+    email_sources = (
+        {source: dict(item) for source, item in email_sources.items()}
+        if email_sources is not None else _email_source_features()
+    )
+    driver = driver_status if driver_status is not None else _registration_driver_status()
+    registration_proxy = proxy_status if proxy_status is not None else _registration_proxy_status()
+    manual_mode = not bool(getattr(email, "USE_EMAIL_SERVICE", True))
+    if manual_mode:
+        email_ready, email_reason = _all_present([
+            ("REGISTER_EMAIL", getattr(register, "REGISTER_EMAIL", "")),
+        ])
+    else:
+        email_ready = any(item.get("enabled") for item in email_sources.values())
+        email_reason = "没有已配置且可用的邮箱来源"
+    register_ok = bool(driver.get("enabled") and registration_proxy.get("enabled") and email_ready)
+    register_reason = next((
+        reason for ready, reason in (
+            (driver.get("enabled"), driver.get("reason")),
+            (registration_proxy.get("enabled"), registration_proxy.get("reason")),
+            (email_ready, email_reason),
+        ) if not ready
+    ), "")
+    return _feature(register_ok, register_reason)
+
+
 def require_email_source(source: str) -> tuple[bool, str]:
     """Validate that a source is configured and currently able to allocate."""
     key = str(source or "").strip().lower()
@@ -222,7 +272,11 @@ def _codex_retry_status(driver_override: str | None = None) -> dict[str, Any]:
     return _feature(True)
 
 
-def feature_availability() -> dict[str, Any]:
+def feature_availability(
+    *,
+    email_supply: dict[str, Any] | None = None,
+    email_sources: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     from config import c2a, codex, email, extract_link, sub2api, roxybrowser
     from core.accounts.liveness import service as live_service
     from core.accounts.liveness.router import resolve_driver, LiveCheckDriverError
@@ -248,26 +302,24 @@ def feature_availability() -> dict[str, Any]:
         not refresh_unavailable and bool(refresh_proxy.get("ok")),
         refresh_unavailable["error"] if refresh_unavailable else str(refresh_proxy.get("reason") or ""),
     )
-    email_sources = _email_source_features()
-    driver = _registration_driver_status()
+    email_sources = (
+        {source: dict(item) for source, item in email_sources.items()}
+        if email_sources is not None else _email_source_features()
+    )
     registration_proxy = _registration_proxy_status()
-    manual_mode = not bool(getattr(email, "USE_EMAIL_SERVICE", True))
-    if manual_mode:
-        manual_ok, manual_reason = _all_present([("REGISTER_EMAIL", __import__("config.register", fromlist=["REGISTER_EMAIL"]).REGISTER_EMAIL)])
-        email_ready = manual_ok
-        email_reason = manual_reason
-    else:
-        enabled_sources = [item for item in email_sources.values() if item.get("enabled")]
-        email_ready = bool(enabled_sources)
-        email_reason = "没有已配置且可用的邮箱来源"
-    register_ok = bool(driver.get("enabled") and registration_proxy.get("enabled") and email_ready)
-    register_reason = next((
-        reason for ready, reason in (
-            (driver.get("enabled"), driver.get("reason")),
-            (registration_proxy.get("enabled"), registration_proxy.get("reason")),
-            (email_ready, email_reason),
-        ) if not ready
-    ), "")
+    register_feature = registration_feature_status(
+        email_sources=email_sources,
+        driver_status=_registration_driver_status(),
+        proxy_status=registration_proxy,
+    )
+    if isinstance(email_supply, dict):
+        display_rows = {
+            row.get("source"): row
+            for row in email_supply.get("sources", [])
+            if isinstance(row, dict)
+        }
+        for source, item in email_sources.items():
+            item["available"] = int(display_rows.get(source, {}).get("available", 0) or 0)
 
     extract_ok, extract_reason = _all_present([
         ("EXTRACT_LINK_API_BASE", getattr(extract_link, "EXTRACT_LINK_API_BASE", "")),
@@ -310,7 +362,7 @@ def feature_availability() -> dict[str, Any]:
     }
     setup_unavailable = account_setup_unavailable(setup_steps, setup_settings)
     features = {
-        "register": _feature(register_ok, register_reason),
+        "register": register_feature,
         "plan_check": dict(account_proxy_feature),
         "live_check": dict(live_proxy_feature),
         "token_refresh": refresh_feature,

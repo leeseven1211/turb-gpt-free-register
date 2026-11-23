@@ -50,7 +50,7 @@ class EmailSourceSelectionTests(PostgresTestCase):
         with patch.object(email_config, "USE_EMAIL_SERVICE", True), patch.object(
             email_config, "EMAIL_SOURCE", "email_butler,icloud_hide"
         ), patch(
-            "core.runtime.capabilities.email_source_availability",
+            "core.runtime.capabilities.email_source_readiness",
             return_value={
                 "email_butler": {"label": "Email Butler", "enabled": False, "reason": "API Key 未配置"},
                 "icloud_hide": {"label": "iCloud 隐藏邮箱", "enabled": True, "reason": ""},
@@ -63,6 +63,20 @@ class EmailSourceSelectionTests(PostgresTestCase):
         self.assertEqual(set(choices), {'outlook', 'generic_api', 'cloudflare_domain', 'icloud_hide', 'email_butler'})
         self.assertFalse(choices['email_butler']['enabled'])
         self.assertTrue(choices['icloud_hide']['enabled'])
+        self.assertEqual(
+            response.get_json()["capabilities"]["features"]["register"].keys(),
+            {"enabled", "reason"},
+        )
+
+    def test_email_sources_reports_realtime_inventory_query_failure(self):
+        with patch.object(email_config, "USE_EMAIL_SERVICE", True), patch(
+            "core.runtime.capabilities.email_source_readiness",
+            side_effect=RuntimeError("数据库不可用"),
+        ):
+            response = self.client.get("/api/email-sources")
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.get_json()["error_code"], "local_inventory_query_failed")
 
     @patch("webui.app.svc.submit_registration")
     def test_jobs_require_explicit_source_in_automatic_mode(self, submit_registration):
