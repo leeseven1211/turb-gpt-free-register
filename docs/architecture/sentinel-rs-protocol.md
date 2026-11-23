@@ -76,7 +76,17 @@ start → ready → landing → checkpoint_prepare → checkpoint_ack(persisted)
 | P1 | `start/ready/progress/checkpoint_prepare/ack/result_partial` | 失败任务 100% 有本地密码；请求序列与 CLI 模式逐条一致 |
 | P2 | `otp_request/otp_response` | 取码窗口可配；不再出现"300 秒到点即失败" |
 | P3 | `landing` + Python 侧服务事实 | 已建号邮箱不再出现在"重新执行注册"入口 |
-| P4 | `resume` | 有密码的失败任务可继续，不重复建号 |
+| P4 | `resume`（已落地：跨内核） | 有密码的失败任务可继续，不重复建号；Rust 无续跑入口，续跑自动交给 `protocol_oss_2` |
+
+## 跨内核续跑（P4 实现说明）
+
+Rust 内核没有原身份续跑入口，因此 `registration_resume` 在源驱动为 `sentinel_rs` 时自动改用
+`protocol_oss_2` 执行：复用 Attempt 已保存密码，按真实上游步骤（authorize → 已有账号登录 →
+邮箱验证码 → create_account → 会话）继续，不重新创建账号。实测该场景下上游会直接要求邮箱验证码，
+只有验证码通过与资料完成后才发会话；不再出现“重复建号被拒 400”。
+
+续跑成功时，如果本地检查点的密码状态本来就是 `confirmed`（即密码曾由 `user/register` 接受），
+不再把同一密码降级成“未确认”。
 
 ## 兼容与回滚
 
