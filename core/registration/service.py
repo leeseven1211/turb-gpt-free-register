@@ -863,6 +863,9 @@ def recover_registration_attempts(*, limit: int = 100) -> list[dict]:
     """
     from core.storage import registration
 
+    # 启动时上一进程的 worker 已全部死亡：把残留 running Run 一律收口，
+    # 再走原有的 interrupted 恢复；运行期不再按心跳清扫，避免误杀等码任务。
+    registration.recover_stale_runs(stale_seconds=0)
     registration.recover_interrupted_runs()
     decisions = []
     for attempt in registration.list_attempts(limit=limit):
@@ -1966,7 +1969,6 @@ def start_dispatcher(*, interval_seconds: float = 0.5) -> bool:
                     try:
                         from core.storage import registration as registration_store
 
-                        registration_store.recover_stale_runs()
                         registration_store.close_jobs_for_interrupted_runs()
                         close_jobs_for_completed_account_tasks()
                     except Exception:

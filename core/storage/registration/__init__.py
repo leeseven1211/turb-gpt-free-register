@@ -1317,6 +1317,9 @@ def close_jobs_for_interrupted_runs(*, limit: int = 200) -> int:
             error="worker_interrupted: 执行进程中断，未写入终态",
             completed_at=_now().isoformat(timespec="seconds"),
         ):
+            db_legacy.update_job(
+                job_id, error="worker_interrupted: 执行进程中断，未写入终态",
+            )
             closed += 1
     return closed
 

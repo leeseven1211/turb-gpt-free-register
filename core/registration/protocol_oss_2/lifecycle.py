@@ -447,6 +447,8 @@ def run_protocol_oss_2_lifecycle(
     except AuthCancelledError as exc:
         raise StopRequested("用户停止开源protocol-2 注册") from exc
     except Exception as exc:
+        if core_persistence_started and account_id is None:
+            logger.exception("[Job] 核心账号持久化失败：%s", type(exc).__name__)
         from core.registration.errors import (
             _protocol_registration_cause_code,
             _safe_protocol_registration_error,
