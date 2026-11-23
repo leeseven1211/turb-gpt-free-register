@@ -98,6 +98,38 @@ class C2AMonitorTests(PostgresTestCase):
         })
         bulk.project_pending()
 
+    def _fail_refresh(self, batch_id, *, receipt_unknown=False):
+        from core.bulk_operations.adapters import submit_chunk
+
+        self.assertEqual(bulk.process_batch(batch_id, submit_chunk)["submitted"], 1)
+        target = bulk.list_targets(batch_id)["items"][0]
+        run_id = target["run_id"]
+        run = runtime.claim_run(run_id, execution_id=f"c2a-test-failure-{run_id}", worker_pid=os.getpid())
+        self.assertEqual(run["status"], "running")
+        if receipt_unknown:
+            self._set_refresh_receipt(run_id, "started")
+        finished = runtime.finish_run(run_id, status="failed", result_summary={"error_code": "invalid_credentials"})
+        if receipt_unknown:
+            self.assertEqual(finished["status"], "attention_required")
+            self.assertEqual(finished["result_summary"]["outcome"], "request_unknown")
+        bulk.project_pending()
+        self.assertEqual(bulk.list_targets(batch_id)["items"][0]["outcome"], "failed")
+        return target
+
+    def _fail_second_refresh(self, *, receipt_unknown=False):
+        retry_at = self.store.list_repairs(self.backend)[0]["next_attempt_at"]
+        with patch.object(self.monitor.time, "time", return_value=retry_at + 1):
+            batch_id = self._start_refresh(self.remote_list.return_value)
+            target = self._fail_refresh(batch_id, receipt_unknown=receipt_unknown)
+            self._scan()
+        return batch_id, target
+
+    def _selection_count(self):
+        selections = postgres.qualified("operation_selections")
+        with postgres.connect() as conn, conn.cursor() as cur:
+            cur.execute(f"SELECT count(*) FROM {selections}")
+            return cur.fetchone()[0]
+
     def test_batches_expired_accounts_and_syncs_confirmed_item_while_batch_active(self):
         from core.bulk_operations.adapters import submit_chunk
 
@@ -218,8 +250,14 @@ class C2AMonitorTests(PostgresTestCase):
     def test_cancelling_running_bulk_refresh_preserves_unknown_receipt_and_stops_automatic_login(self):
         from core.bulk_operations.adapters import submit_chunk
 
-        self._seed_account("cancel-refresh@example.test")
-        batch_id = self._start_refresh([remote("original", "cancel-refresh@example.test")])
+        email = "cancel-refresh@example.test"
+        self._seed_account(email)
+        first_batch = self._start_refresh([remote("original", email)])
+        self._fail_refresh(first_batch)
+        self._scan()
+        retry_at = self.store.list_repairs(self.backend)[0]["next_attempt_at"]
+        with patch.object(self.monitor.time, "time", return_value=retry_at + 1):
+            batch_id = self._start_refresh(self.remote_list.return_value)
         self.assertEqual(bulk.process_batch(batch_id, submit_chunk)["submitted"], 1)
         run_id = bulk.list_targets(batch_id)["items"][0]["run_id"]
         self.assertEqual(runtime.claim_run(run_id, execution_id="c2a-test-cancel", worker_pid=os.getpid())["status"], "running")
@@ -230,25 +268,110 @@ class C2AMonitorTests(PostgresTestCase):
         self.assertEqual(bulk.list_targets(batch_id)["items"][0]["outcome"], "failed")
         self.assertEqual(self._scan()["reasons"], {"c2a_repair_cancelled": 1})
         self.assertFalse(self.store.has_pending(self.backend))
-        self.assertEqual(self.store.list_repairs(self.backend)[0]["stage"], "cancelled")
+        row = self.store.list_repairs(self.backend)[0]
+        self.assertEqual(row["stage"], "cancelled")
+        self.assertEqual(row.get("refresh_failure_count"), 1)
         self._scan()
         self.assertFalse(self.store.has_pending(self.backend))
         self._scan(force=True)
         self.assertTrue(self.store.has_pending(self.backend))
+        self.assertEqual(self.store.list_repairs(self.backend)[0]["refresh_failure_count"], 1)
 
-    def test_user_retry_of_managed_batch_reuses_persisted_target_and_new_at(self):
+    def test_two_failed_refresh_runs_stop_automatic_submission_even_on_manual_scan(self):
+        email = "refresh-limit@example.test"
+        self._seed_account(email)
+        first_batch = self._start_refresh([remote("original", email)])
+        first = self._fail_refresh(first_batch)
+        for scan in range(3):
+            self._scan()
+            row = self.store.list_repairs(self.backend)[0]
+            with self.subTest(first_run=first["run_id"], scan=scan):
+                self.assertEqual(row.get("refresh_failure_count"), 1)
+                self.assertEqual(row.get("refresh_observed_run_id"), first["run_id"])
+        second_batch, second = self._fail_second_refresh(receipt_unknown=True)
+        self.assertNotEqual(second["run_id"], first["run_id"])
+        exhausted = self.store.list_repairs(self.backend)[0]
+        later = max(exhausted["next_attempt_at"], self.now + 600) + 1
+        self.assertEqual(self._selection_count(), 2)
+
+        with patch.object(self.monitor.time, "time", return_value=later):
+            for force in (False, True):
+                with self.subTest(force=force):
+                    self._scan(force=force)
+                    self.assertEqual(self._selection_count(), 2, "巡检不得创建第三次刷新名单")
+                    self.assertEqual(
+                        {row["id"] for row in bulk.list_batches()["items"]},
+                        {first_batch, second_batch},
+                    )
+                    row = self.store.list_repairs(self.backend)[0]
+                    self.assertEqual(row["stage"], "refresh_exhausted")
+                    self.assertEqual(row.get("refresh_failure_count"), 2)
+                    self.assertEqual(row.get("refresh_observed_run_id"), second["run_id"])
+        self.assertFalse(self.queued_upload.called)
+
+    def test_refresh_failures_before_execution_do_not_consume_remaining_attempt(self):
+        from core.bulk_operations.adapters import submit_chunk
+
+        email = "refresh-setup@example.test"
+        self._seed_account(email)
+        batch_id = self._start_refresh([remote("original", email)])
+        first = self._fail_refresh(batch_id)
+        self._scan()
+        row = self.store.list_repairs(self.backend)[0]
+
+        with patch.object(self.monitor.time, "time", return_value=row["next_attempt_at"] + 1):
+            self._scan()
+            pending = self.store.list_repairs(self.backend)[0]
+            self.assertTrue(bulk.fail_selection(pending["selection_id"], error_code="selection_failed"))
+            self._scan()
+        selection_failure = self.store.list_repairs(self.backend)[0]
+        self.assertEqual(selection_failure["last_code"], "selection_failed")
+        self.assertIsNone(selection_failure["batch_id"])
+
+        with patch.object(self.monitor.time, "time", return_value=selection_failure["next_attempt_at"] + 1):
+            self._scan()
+            pending = self.store.list_repairs(self.backend)[0]
+            bulk.freeze_selection(pending["selection_id"])
+            with patch.object(
+                self.monitor.bulk_service, "create_batch",
+                side_effect=bulk.BulkError("config_revision_changed", "合成批次受理错误"),
+            ):
+                self._scan()
+        batch_failure = self.store.list_repairs(self.backend)[0]
+        self.assertEqual(batch_failure["last_code"], "config_revision_changed")
+        self.assertIsNone(batch_failure["batch_id"])
+        self.assertEqual([row["id"] for row in bulk.list_batches()["items"]], [batch_id])
+
+        with patch.object(self.monitor.time, "time", return_value=batch_failure["next_attempt_at"] + 1):
+            unexecuted_batch = self._start_refresh(self.remote_list.return_value)
+            self.assertEqual(bulk.process_batch(unexecuted_batch, submit_chunk)["submitted"], 1)
+            run_id = bulk.list_targets(unexecuted_batch)["items"][0]["run_id"]
+            runtime.finish_run(run_id, status="unsupported")
+            bulk.project_pending()
+            self.assertEqual(bulk.list_targets(unexecuted_batch)["items"][0]["outcome"], "not_executed")
+            self._scan()
+        not_executed = self.store.list_repairs(self.backend)[0]
+        for row in (selection_failure, batch_failure, not_executed):
+            with self.subTest(failed_stage=row["last_code"]):
+                self.assertEqual(row["stage"], "refresh_retry")
+                self.assertEqual(row.get("refresh_failure_count"), 1)
+        for row in (selection_failure, batch_failure):
+            self.assertEqual(row.get("refresh_observed_run_id"), first["run_id"])
+
+    def _assert_user_retry_syncs_original_target(self, *, exhausted):
         from core.bulk_operations.adapters import submit_chunk
 
         email = "retry-batch@example.test"
         account_id = self._seed_account(email)
         batch_id = self._start_refresh([remote("original", email)])
-        self.assertEqual(bulk.process_batch(batch_id, submit_chunk)["submitted"], 1)
-        first = bulk.list_targets(batch_id)["items"][0]
-        runtime.finish_run(first["run_id"], status="failed", result_summary={"error_code": "invalid_credentials"})
-        bulk.project_pending()
+        failed = self._fail_refresh(batch_id)
         self._scan()
-        self.assertEqual(self.store.list_repairs(self.backend)[0]["stage"], "refresh_retry")
-        retry = self.monitor.bulk_service.retry_managed_task(first["task_id"], request_key="c2a-test-user-retry")
+        if exhausted:
+            batch_id, failed = self._fail_second_refresh()
+        row = self.store.list_repairs(self.backend)[0]
+        self.assertEqual(row["stage"], "refresh_exhausted" if exhausted else "refresh_retry")
+        self.assertEqual(row["refresh_failure_count"], 2 if exhausted else 1)
+        retry = self.monitor.bulk_service.retry_managed_task(failed["task_id"], request_key="c2a-test-user-retry")
         retry_round = int(retry["round_id"])
         bulk.freeze_round(retry_round)
         self._scan()
@@ -265,6 +388,31 @@ class C2AMonitorTests(PostgresTestCase):
         result = self._scan()
         self.assertEqual(self.queued_upload.call_args.args[1], "original")
         self.assertEqual(result["batch_refs"], [{"batch_id": str(batch_id), "round_id": str(retry_round)}])
+        self.assertEqual(self.store.list_repairs(self.backend)[0]["refresh_failure_count"], 0)
+
+    def test_user_retry_of_managed_batch_reuses_persisted_target_and_new_at(self):
+        self._assert_user_retry_syncs_original_target(exhausted=False)
+
+    def test_user_retry_of_exhausted_managed_batch_syncs_the_original_target(self):
+        self._assert_user_retry_syncs_original_target(exhausted=True)
+
+    def test_exhausted_account_can_sync_a_new_local_at_without_refreshing(self):
+        email = "external-refresh@example.test"
+        account_id = self._seed_account(email)
+        first_batch = self._start_refresh([remote("original", email)])
+        self._fail_refresh(first_batch)
+        self._scan()
+        self._fail_second_refresh()
+        self.assertEqual(self.store.list_repairs(self.backend)[0]["stage"], "refresh_exhausted")
+        records.patch_row(records.ACCOUNTS, account_id, changes={
+            "access_token": at(email, issued=self.now, expires=self.now + 7200),
+        })
+        self._scan()
+        self.assertEqual(self._selection_count(), 2)
+        self.assertEqual(self.queued_upload.call_args.args[1], "original")
+        row = self.store.list_repairs(self.backend)[0]
+        self.assertEqual(row["stage"], "sync_wait")
+        self.assertEqual(row["refresh_failure_count"], 0)
 
     def test_result_summary_keeps_reason_codes_after_persistence(self):
         self._seed_account("unchanged@example.test")
@@ -273,6 +421,7 @@ class C2AMonitorTests(PostgresTestCase):
 
         bulk.process_batch(batch_id, submit_chunk)
         run_id = bulk.list_targets(batch_id)["items"][0]["run_id"]
+        runtime.claim_run(run_id, execution_id="c2a-test-unchanged", worker_pid=os.getpid())
         self._set_refresh_receipt(run_id, "confirmed")
         runtime.finish_run(run_id, status="success", result_summary={"ok": True, "remote_receipt_state": "confirmed"})
         bulk.project_pending()
@@ -285,6 +434,7 @@ class C2AMonitorTests(PostgresTestCase):
         self.assertEqual(runtime.get_run(scan_id)["result_summary"]["reasons"], [{
             "code": "c2a_refresh_token_unchanged", "count": 1,
         }])
+        self.assertEqual(self.store.list_repairs(self.backend)[0].get("refresh_failure_count"), 1)
 
     def test_pending_retry_uses_recent_local_at_without_submitting_another_batch(self):
         account_id = self._seed_account("newer@example.test")

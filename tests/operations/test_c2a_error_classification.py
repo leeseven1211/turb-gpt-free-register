@@ -27,6 +27,7 @@ class C2AErrorClassificationTests(unittest.TestCase):
             ("c2a_repair_request_invalid", "external.c2a.local_policy", "修复请求标识缺失"),
             ("c2a_scan_storage_unavailable", "external.c2a.local_execution", "巡检存储不可用"),
             ("c2a_refresh_result_missing", "external.c2a.contract", "刷新结果缺失"),
+            ("c2a_refresh_attempts_exhausted", "external.c2a.local_policy", "刷新失败已达上限"),
             ("c2a_upload_request_unknown", "external.c2a.confirmation", "上传回执未确认"),
             ("c2a_remote_diagnostic_missing", "external.c2a.contract", "远端诊断缺失"),
         )
