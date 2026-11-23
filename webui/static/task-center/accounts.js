@@ -3,7 +3,7 @@ import { a as z, c as B, i as V, n as H, o as U, r as W, s as G, t as ee } from 
 import { t as K } from "./ListPagination-DURVj-Kj.js";
 import { a as q, c as J, i as Y, n as X, r as te, s as ne, t as re } from "./queryAdapter-BorDKfhY.js";
 import { n as ie, t as ae } from "./ColumnResizer-CPJ9UuoZ.js";
-import { t as oe } from "./errorLabels-BWpfwuWJ.js";
+import { t as oe } from "./errorLabels-Byl2EONI.js";
 import { n as se, r as ce, t as le } from "./client-B5R_MNgP.js";
 import { a as ue, n as de } from "./taskIds-BlchWwUp.js";
 // src/features/accounts/accountToolbar.ts
