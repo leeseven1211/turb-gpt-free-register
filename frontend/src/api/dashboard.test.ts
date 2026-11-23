@@ -10,7 +10,8 @@ describe('dashboard API',()=>{
   const controller=new AbortController();
   await expect(api.dashboard(controller.signal)).resolves.toEqual({path:'/api/dashboard',signal:controller.signal});
   await expect(api.capabilities(controller.signal)).resolves.toEqual({path:'/api/capabilities',signal:controller.signal});
-  expect(send).toHaveBeenCalledTimes(2);
+  await expect(api.extractSummary?.(controller.signal)).resolves.toEqual({path:'/api/extract-workbench/summary',signal:controller.signal});
+  expect(send).toHaveBeenCalledTimes(3);
  });
  it('uses only same-origin GET requests with no mutation payload through the default transport',async()=>{
   const fetch=vi.fn(async()=>new Response('{"ok":true}',{headers:{'Content-Type':'application/json'}}));
@@ -18,7 +19,8 @@ describe('dashboard API',()=>{
   const api=createDashboardApi(),controller=new AbortController();
   await api.dashboard(controller.signal);
   await api.capabilities(controller.signal);
-  expect(fetch.mock.calls.map(call=>(call as unknown[])[0])).toEqual(['/api/dashboard','/api/capabilities']);
+  await api.extractSummary?.(controller.signal);
+  expect(fetch.mock.calls.map(call=>(call as unknown[])[0])).toEqual(['/api/dashboard','/api/capabilities','/api/extract-workbench/summary']);
   for(const call of fetch.mock.calls){
    const options=(call as unknown[])[1] as RequestInit;
    expect(options.credentials).toBe('same-origin');

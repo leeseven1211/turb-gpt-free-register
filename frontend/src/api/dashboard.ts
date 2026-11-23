@@ -5,6 +5,7 @@ export type PendingCapabilities=()=>Promise<unknown>|undefined;
 export interface DashboardApi {
  dashboard(signal?:AbortSignal):Promise<any>;
  capabilities(signal?:AbortSignal):Promise<any>;
+ extractSummary?(signal?:AbortSignal):Promise<any>;
 }
 
 async function waitForSharedCapabilities(pending:Promise<unknown>, signal?:AbortSignal):Promise<unknown> {
@@ -29,6 +30,7 @@ export function createDashboardApi(
  const get=<T>(path:string,signal?:AbortSignal)=>send(path,signal?{signal}:undefined) as Promise<T>;
  return {
   dashboard:(signal)=>get('/api/dashboard',signal),
+  extractSummary:(signal)=>get('/api/extract-workbench/summary',signal),
   async capabilities(signal){
    const pending = pendingCapabilities?.();
    if (!pending) return get('/api/capabilities', signal);
