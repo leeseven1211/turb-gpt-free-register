@@ -7,6 +7,7 @@ import {clearColumnFilter, filterColumns, filterSummary, isFilterActive} from '.
 import TaskTable from './TaskTable.vue';
 import ListPagination from '../../components/ListPagination.vue';
 import ListFilterSummary from '../../components/ListFilterSummary.vue';
+import ListToolbar from '../../components/ListToolbar.vue';
 import StatusBadge from '../../components/StatusBadge.vue';
 import {eligible, isActive, record} from './presentation';
 import {useTaskList} from './useTaskList';
@@ -108,20 +109,23 @@ defineExpose({open, refresh, track, closeDetail, setVisible});
 <template>
   <section v-show="visible" class="tc-root" aria-label="统一任务中心">
     <section v-if="receiptItems.length" class="tc-receipts" aria-label="本次提交的任务回执">
-      <div class="tc-receipts-header"><div><strong>本次提交</strong><span role="status">共 {{ receiptItems.length }} 项 · 等待/执行 {{ pendingReceipts.length }} · 成功 {{ receiptItems.filter(item => item.status === 'success').length }} · 失败或待处理 {{ receiptItems.length - pendingReceipts.length - receiptItems.filter(item => item.status === 'success').length }}</span></div><button type="button" class="tc-button" :disabled="receiptsLoading || !pendingReceipts.length" @click="receipts.refresh()">刷新回执</button></div>
+      <div class="tc-receipts-header"><div><strong>本次提交</strong><span role="status">共 {{ receiptItems.length }} 项 · 等待/执行 {{ pendingReceipts.length }} · 成功 {{ receiptItems.filter(item => item.status === 'success').length }} · 失败或待处理 {{ receiptItems.length - pendingReceipts.length - receiptItems.filter(item => item.status === 'success').length }}</span></div><button type="button" class="ui-button" :disabled="receiptsLoading || !pendingReceipts.length" @click="receipts.refresh()">刷新回执</button></div>
       <p v-if="receiptError" class="tc-text-danger" role="alert">{{ receiptError }}</p>
-      <details><summary>查看任务与最终结果</summary><ul class="tc-receipt-list"><li v-for="item in receiptItems" :key="`${item.task_id}:${item.run_id}`"><button type="button" class="tc-link" @click="openDetail(item.task_id, item.run_id)">{{ item.label }} #{{ item.task_id }}</button><StatusBadge :value="item.status"/><span>{{ item.message }}</span></li></ul></details>
+      <details><summary>查看任务与最终结果</summary><ul class="tc-receipt-list"><li v-for="item in receiptItems" :key="`${item.task_id}:${item.run_id}`"><button type="button" class="ui-link" @click="openDetail(item.task_id, item.run_id)">{{ item.label }} #{{ item.task_id }}</button><StatusBadge :value="item.status"/><span>{{ item.message }}</span></li></ul></details>
     </section>
-    <div class="tc-workspace">
-      <div class="tc-toolbar" :class="{'tc-toolbar--filtered': activeFilters.length}">
-        <div class="tc-toolbar-main">
-          <div class="tc-selection" role="status">{{ selectedRows.length ? `已选 ${selectedRows.length} 项` : `${total.toLocaleString()} 个任务` }}</div>
-          <ListFilterSummary :items="filterChips" @remove="removeFilter"/>
-        </div>
-        <div v-if="selectedRows.length" class="tc-bulk-actions"><button v-for="kind in (['retry', 'cancel', 'terminate', 'delete'] as TaskAction[])" :key="kind" type="button" class="tc-button" :class="{'tc-button-danger': kind === 'delete' || kind === 'terminate'}" :disabled="busy || !counts[kind]" @click="bulk(kind)">{{ labels[kind] }}{{ counts[kind] ? `（${counts[kind]}）` : '' }}</button></div>
-        <div class="tc-toolbar-end"><TaskFiltersMenu :model-value="filters" :facets="facets" :open="openFilter === 'mobile'" @update:model-value="updateFilters" @update:open="openFilter = $event ? 'mobile' : null"/><button v-if="activeFilters.length" type="button" class="tc-link" @click="list.applyFilters({})">清除全部筛选</button><span class="tc-timezone" :title="timezone">时间按 {{ timezone }} 显示</span><button type="button" class="tc-link" @click="table?.resetColumns()">恢复列宽</button></div>
-      </div>
-      <div v-if="notice || actionError || (error && items.length)" class="tc-feedback" :class="{'tc-feedback-error': actionError || error}" :role="actionError || error ? 'alert' : 'status'">{{ actionError || error || notice }}<button v-if="error" type="button" class="tc-link" @click="list.refresh()">重试</button><details v-if="skipped.length"><summary>查看跳过原因</summary><ul><li v-for="item in skipped" :key="item.id">#{{ item.id }}：{{ item.message }}</li></ul></details></div>
+    <div class="ui-list tc-workspace">
+      <ListToolbar :filtered="activeFilters.length > 0">
+        <div class="ui-list-count tc-selection" role="status">{{ selectedRows.length ? `已选 ${selectedRows.length} 项` : `${total.toLocaleString()} 个任务` }}</div>
+        <ListFilterSummary :items="filterChips" @remove="removeFilter"/>
+        <template #actions>
+          <TaskFiltersMenu :model-value="filters" :facets="facets" :open="openFilter === 'mobile'" @update:model-value="updateFilters" @update:open="openFilter = $event ? 'mobile' : null"/>
+          <button v-if="activeFilters.length" type="button" class="ui-link" @click="list.applyFilters({})">清除全部筛选</button>
+          <span class="tc-timezone" :title="timezone">时间按 {{ timezone }} 显示</span>
+          <button type="button" class="ui-link" @click="table?.resetColumns()">恢复列宽</button>
+        </template>
+      </ListToolbar>
+      <div v-if="selectedRows.length" class="ui-list-bulkbar tc-bulk-actions" role="group" aria-label="选中任务批量操作"><button v-for="kind in (['retry', 'cancel', 'terminate', 'delete'] as TaskAction[])" :key="kind" type="button" class="ui-button" :class="{'ui-button--danger': kind === 'delete' || kind === 'terminate'}" :disabled="busy || !counts[kind]" @click="bulk(kind)">{{ labels[kind] }}{{ counts[kind] ? `（${counts[kind]}）` : '' }}</button></div>
+      <div v-if="notice || actionError || (error && items.length)" class="ui-list-feedback tc-feedback" :class="{'is-error': actionError || error}" :role="actionError || error ? 'alert' : 'status'">{{ actionError || error || notice }}<button v-if="error" type="button" class="ui-link" @click="list.refresh()">重试</button><details v-if="skipped.length"><summary>查看跳过原因</summary><ul><li v-for="item in skipped" :key="item.id">#{{ item.id }}：{{ item.message }}</li></ul></details></div>
       <TaskTable ref="table" :filters="filters" :facets="facets" v-model:open-filter="openFilter" @update:filters="updateFilters" :items="items" :selected="selected" :loading="loading" :error="error" :busy="busy" @select="list.toggle" @select-page="list.togglePage" @detail="openDetail" @action="action" @batch="(id, round) => emit('batch', id, round)" @retry="list.refresh()"/>
       <ListPagination v-model:page="page" v-model:size="size" :pages="pages" :total="total" :busy="loading"/>
     </div>

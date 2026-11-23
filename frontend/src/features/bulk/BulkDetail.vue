@@ -2,7 +2,7 @@
 import {computed,nextTick,ref,watch} from 'vue';
 import {AlertDialogRoot,AlertDialogPortal,AlertDialogOverlay,AlertDialogContent,AlertDialogTitle,AlertDialogDescription,AlertDialogCancel} from 'reka-ui';
 import type {BulkDetailDependencies,BulkNavigation} from './contracts';
-import {object,label,number,operationKey,operationLabel,badgeClass} from './bulkDetailPresentation';
+import {object,label,number,operationKey,operationLabel,badgeClass,badgeTone} from './bulkDetailPresentation';
 import {useBulkDetail} from './useBulkDetail';
 import CursorPagination from '../../components/CursorPagination.vue';
 import ListFilterSummary from '../../components/ListFilterSummary.vue';
@@ -44,7 +44,7 @@ defineExpose({batchName,refresh:state.refresh,showReport,setVisible,needsRefresh
     <section v-if="detail" class="bulk-card bulk-overview">
       <div class="bulk-detail-toolbar">
         <div class="bulk-detail-meta">
-          <span class="bulk-badge" :class="badgeClass(paused?'paused':object(detail.control).state||detail.control_state||detail.state)">{{label(paused?'paused':object(detail.control).state||detail.control_state||detail.state)}}</span>
+          <span class="ui-badge bulk-badge" :class="`ui-badge--${badgeTone(paused?'paused':object(detail.control).state||detail.control_state||detail.state)}`">{{label(paused?'paused':object(detail.control).state||detail.control_state||detail.state)}}</span>
           <span>{{operationLabel(operationKey(detail))}}</span>
           <span>创建于 {{deps.callbacks.formatDateTime(detail.created_at)}}</span>
           <details class="bulk-settings bulk-detail-settings">

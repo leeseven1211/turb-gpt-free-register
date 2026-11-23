@@ -5,6 +5,8 @@ import type {AccountFacets} from '../../api/accounts';
 import type {AccountQuerySpec} from './queryAdapter';
 import type {AccountViewRow} from './useAccounts';
 import ListCell from '../../components/ListCell.vue';
+import ColumnResizer from '../../components/ColumnResizer.vue';
+import TableState from '../../components/TableState.vue';
 import {useColumnWidths} from '../../shared/useColumnWidths';
 import AccountFilters from './AccountFilters.vue';
 import {accountFilters,type AccountFilterField} from './filterDefinitions';
@@ -57,7 +59,7 @@ defineExpose({resetColumns,closeMenu});
         <input v-if="column.key==='selection'" id="accountsSelectAllV2" type="checkbox" aria-label="全选当前页账号" :checked="pageSelected" :indeterminate="pageIndeterminate" :disabled="stale||!items.length" @change="emit('selectPage',($event.target as HTMLInputElement).checked)">
         <AccountFilters v-else-if="column.filter" :column="filterFor(column.filter)" :query="query" :facets="facets" :label="presentation.facetLabel" :open="visible&&openFilter===column.filter" @update:open="emit('update:openFilter',$event?column.filter:null)" @change="(key,value)=>emit('filter',key,value)" @clear="emit('clearFilter',$event)"/>
         <template v-else>{{ column.label }}</template>
-        <button v-if="index" type="button" class="ac-column-resize" :aria-label="`调整${column.label}列宽，方向键调整`" @pointerdown.prevent="resize(index,$event)" @keydown.left.prevent="resizeWithKeyboard(index,-10)" @keydown.right.prevent="resizeWithKeyboard(index,10)"></button>
+        <ColumnResizer v-if="index" :label="column.label" @start="resize(index,$event)" @nudge="resizeWithKeyboard(index,$event)"/>
       </th></tr></thead>
       <tbody id="accountsBodyV2"><tr v-for="entry in rows" :key="entry.id" :data-account-row="entry.id" :class="{'ac-row-selected':selected.has(entry.id)}" @click="handleRowClick($event,entry.row)">
         <td class="col-check"><input type="checkbox" class="account-row-check" :data-account-id="entry.id" :aria-label="`选择账号 ${entry.row.email||entry.id}`" :checked="selected.has(entry.id)" :disabled="stale" @change="emit('select',entry.id,($event.target as HTMLInputElement).checked)"></td>
@@ -69,7 +71,7 @@ defineExpose({resetColumns,closeMenu});
         <td class="col-actions"><div class="account-cell-lines acc-v2-actions"><button type="button" class="acc-v2-detail" :disabled="stale" :data-account-detail-id="entry.id">详情</button>
           <PopoverRoot :open="visible&&!stale&&openAction===entry.id" :modal="false" @update:open="openAction=$event?entry.id:null"><PopoverTrigger as-child><button type="button" class="acc-v2-more-btn" :disabled="stale" aria-label="更多账号操作">更多</button></PopoverTrigger><PopoverPortal><PopoverContent class="ac-row-menu accounts-table-v2" :data-account-menu="entry.id" side="bottom" align="end" :side-offset="4" :collision-padding="8" @open-auto-focus.prevent><div class="acc-v2-more-menu ac-menu-content" @click="handleRowClick($event,entry.row)" v-html="entry.menu"></div></PopoverContent></PopoverPortal></PopoverRoot>
         </div></td>
-      </tr><tr v-if="!rows.length"><td colspan="16" class="ac-empty"><strong>{{ loading?'正在加载账号':invalidSearch?'搜索条件有误':error?'账号加载失败':'暂无匹配账号' }}</strong><p>{{ loading?'正在同步账号状态和授权信息':invalidSearch?'请按输入框旁的提示修改，或清空高级搜索。':error||'可移除部分搜索条件，或切换活跃与归档账号视图。' }}</p><button v-if="error&&!invalidSearch" type="button" class="ac-button" @click="emit('retry')">重试</button></td></tr></tbody>
+      </tr><TableState v-if="!rows.length" class="ac-empty" :colspan="16" :loading="loading" :error="invalidSearch ? '' : error" loading-title="正在加载账号" loading-text="正在同步账号状态和授权信息" error-title="账号加载失败" :title="invalidSearch ? '搜索条件有误' : '暂无匹配账号'" :text="invalidSearch ? '请按输入框旁的提示修改，或清空高级搜索。' : '可移除部分搜索条件，或切换活跃与归档账号视图。'" retry-label="重试" @retry="emit('retry')"/></tbody>
     </table>
   </div>
 </template>

@@ -126,6 +126,7 @@
   border: 1px solid var(--config-muted);
   border-radius: 20px;
   background: var(--config-subtle);
+  box-shadow: none !important;
   cursor: inherit;
 }
 .config-vue-switch input::before { content: ''; width: 13px; height: 13px; margin-left: 3px; border-radius: 50%; background: var(--config-muted); }

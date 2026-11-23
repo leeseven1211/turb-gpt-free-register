@@ -17,96 +17,9 @@
 #accountTaskStageProgress .account-task-failure-brief {
   min-height: 26px;
 }
-#accountTaskStageProgress .account-task-failure-brief :is(strong, span),
-#accountTaskDetailSummary {
+#accountTaskStageProgress .account-task-failure-brief :is(strong, span) {
   text-overflow: ellipsis;
-}
-#accountTaskLogErrorSummary {
-  padding: 5px 8px;
-  margin: 0 0 6px;
-}
-#accountTaskLogErrorSummary details {
-  width: 100%;
-  min-width: 0;
-}
-#accountTaskLogErrorSummary summary {
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  cursor: pointer;
-}
-#accountTaskLogErrorSummary .task-error-badge {
-  margin-right: 6px;
-}
-#accountTaskLogErrorSummary pre {
-  max-height: min(18vh, 9rem);
-  overflow: auto;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-#accountTaskProgressFilter {
-  margin-bottom: 4px;
-}
-#accountTaskProgressFilter .account-task-selected-timing {
-  flex-basis: auto;
-}
-#accountTaskLogPanel .account-task-detail-tabs {
-  margin-bottom: 4px;
 }
 @media (min-width: 701px) {
-  #accountTaskLogPanel:not(.hidden) {
-    display: grid;
-    grid-template-columns: max-content minmax(0, 1fr);
-    grid-template-rows: auto auto auto auto auto minmax(0, 1fr);
-    grid-template-areas:
-      "title toolbar"
-      "error error"
-      "steps steps"
-      "filter filter"
-      "tabs tabs"
-      "content content";
-    column-gap: 12px;
-  }
-  #accountTaskLogTitle { grid-area: title; }
-  #accountTaskLogPanel > .account-task-detail-toolbar {
-    grid-area: toolbar;
-    margin: 0 0 6px;
-    padding-right: 64px;
-  }
-  #accountTaskLogPanel > h3 { align-self: center; margin: 0 0 6px; }
-  #btnCloseAccountTaskLog { position: absolute; top: 16px; right: 16px; }
-  #accountTaskDetailSummary { flex: 1; }
-  #accountTaskLogErrorSummary { grid-area: error; }
   #accountTaskStageProgress { grid-area: steps; }
-  #accountTaskProgressFilter { grid-area: filter; }
-  #accountTaskLogPanel > .account-task-detail-tabs { grid-area: tabs; }
-  #accountTaskLogPanel > .account-task-detail-content { grid-area: content; }
-}
-@media (max-width: 700px) {
-  #accountTaskLogPanel > h3 { margin: 0 0 4px; }
-  #accountTaskLogPanel .account-task-detail-toolbar {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    gap: 2px 6px;
-    align-items: center;
-    margin-bottom: 6px;
-  }
-  #accountTaskLogPanel .account-task-run-picker {
-    grid-column: 2;
-    grid-row: 1 / span 2;
-    width: auto;
-  }
-  #accountTaskLogPanel .account-task-run-picker select {
-    min-width: 0;
-    width: auto;
-    max-width: 38vw;
-  }
-  #accountTaskLogPanel .account-task-timezone-hint {
-    grid-column: 1;
-    overflow-wrap: anywhere;
-  }
-}
-@media (max-height: 500px) {
-  #accountTaskLogPanel:not(.hidden) { overflow-y: auto; }
-  #accountTaskLogPanel > .account-task-detail-content { min-height: 8rem; }
 }

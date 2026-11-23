@@ -1,18 +1,18 @@
-import { $ as e, A as t, C as n, F as r, G as i, H as a, K as o, L as s, M as c, N as l, P as u, R as d, S as f, X as p, Z as m, _ as h, a as g, c as _, d as v, dt as y, et as b, f as x, ft as S, g as C, h as w, j as T, k as E, l as D, lt as O, m as k, n as A, nt as j, o as M, s as N, st as P, t as F, tt as I, v as L, x as R } from "./_plugin-vue_export-helper-CBsH_ZoE.js";
-import { a as z, i as B, n as V, o as H, r as U, s as W, t as G } from "./ListFilterSummary-0POqp2Om.js";
-import { t as ee } from "./ListPagination-DDdERjeb.js";
-import { a as K, c as q, i as J, n as Y, r as te, s as ne, t as re } from "./queryAdapter-BcWFQcKm.js";
-import { t as ie } from "./useColumnWidths-CUEzVga1.js";
-import { t as ae } from "./errorLabels-C0VIFLD8.js";
-import { n as oe, r as X, t as Z } from "./client-B5R_MNgP.js";
-import { a as se, n as ce } from "./taskIds-BlchWwUp.js";
+import { $ as e, A as t, C as n, F as r, G as i, H as a, K as o, L as s, M as c, N as l, P as u, R as d, S as f, X as p, Z as m, _ as h, a as g, c as _, d as v, dt as y, et as b, f as x, ft as S, g as C, h as w, j as T, k as E, l as D, lt as O, m as k, n as A, nt as j, o as M, s as N, st as P, t as F, tt as I, v as L, x as R } from "./_plugin-vue_export-helper-CbB61E6q.js";
+import { a as z, c as B, i as V, n as H, o as U, r as W, s as G, t as ee } from "./ListFilterSummary-DlR4RU2b.js";
+import { t as K } from "./ListPagination-Bj3Fp49w.js";
+import { a as q, c as J, i as Y, n as X, r as te, s as ne, t as re } from "./queryAdapter-BcWFQcKm.js";
+import { n as ie, t as ae } from "./ColumnResizer-DEY0rId6.js";
+import { t as oe } from "./errorLabels-C0VIFLD8.js";
+import { n as se, r as ce, t as le } from "./client-B5R_MNgP.js";
+import { a as ue, n as de } from "./taskIds-BlchWwUp.js";
 // src/features/accounts/accountToolbar.ts
-var le = Object.freeze([
+var fe = Object.freeze([
 	"操作",
 	"批次与巡检",
 	"复制与导出",
 	"资产管理"
-]), ue = Object.freeze([
+]), pe = Object.freeze([
 	Object.freeze({
 		id: "btnCheckSelectedLiveV2",
 		label: "查活",
@@ -331,23 +331,23 @@ var le = Object.freeze([
 		title: "",
 		selection: !1
 	})
-]), de = "turb_account_action_usage_v1", fe = Object.freeze([
+]), me = "turb_account_action_usage_v1", he = Object.freeze([
 	"btnCheckSelectedLiveV2",
 	"btnCheckSelectedPlansV2",
 	"btnRefreshSelectedTokenV2",
 	"btnExtractSelectedLinksV2",
 	"btnAddTwofaSelectedAccountsV2"
 ]);
-function pe(e, t) {
-	let n = [...fe, ...e.filter((e) => !fe.includes(e))];
+function ge(e, t) {
+	let n = [...he, ...e.filter((e) => !he.includes(e))];
 	return [...e].sort((e, r) => (t[r] || 0) - (t[e] || 0) || n.indexOf(e) - n.indexOf(r)).slice(0, 5);
 }
-function me(t, n, r) {
-	let i = j({}), a = j(pe(t, {})), o, s = !1;
+function _e(t, n, r) {
+	let i = j({}), a = j(ge(t, {})), o, s = !1;
 	function c() {
 		let e = i.value;
 		try {
-			let t = n.storage.getItem(de);
+			let t = n.storage.getItem(me);
 			t !== null && (e = JSON.parse(t));
 		} catch {}
 		return Object.fromEntries(t.map((t) => {
@@ -358,7 +358,7 @@ function me(t, n, r) {
 	function l() {
 		if (s || r()) return;
 		i.value = c();
-		let e = pe(t, i.value);
+		let e = ge(t, i.value);
 		e.join(",") !== a.value.join(",") && (a.value = e);
 	}
 	function u() {
@@ -371,7 +371,7 @@ function me(t, n, r) {
 		let r = c();
 		r[e] = Math.min(2 ** 53 - 1, r[e] + 1), i.value = r;
 		try {
-			n.storage.setItem(de, JSON.stringify(r));
+			n.storage.setItem(me, JSON.stringify(r));
 		} catch {}
 		u();
 	}
@@ -389,19 +389,19 @@ function me(t, n, r) {
 	};
 }
 // src/features/accounts/AccountsToolbar.vue?vue&type=script&setup=true&lang.ts
-var he = {
+var ve = {
 	class: "accounts-command-deck",
 	id: "accountsCommandDeck"
-}, ge = {
+}, ye = {
 	class: "list-selection-hint",
 	id: "accountsSelectedHintV2"
-}, _e = { class: "toolbar-overflow-menu" }, ve = { class: "toolbar-overflow-section-title" }, ye = ["id", "onClick"], be = {
+}, be = { class: "toolbar-overflow-menu" }, xe = { class: "toolbar-overflow-section-title" }, Se = ["id", "onClick"], Ce = {
 	class: "acc-v2-btn-group account-quick-actions",
 	id: "accountsQuickActionsV2",
 	role: "group",
 	"aria-label": "常用账号操作，按此浏览器使用次数排序",
 	title: "显示此浏览器使用次数最多的五项操作，批量操作一次算一次"
-}, xe = ["data-account-shortcut", "onClick"], Se = /* @__PURE__ */ n({
+}, we = ["data-account-shortcut", "onClick"], Te = /* @__PURE__ */ n({
 	__name: "AccountsToolbar",
 	props: {
 		state: {},
@@ -412,10 +412,10 @@ var he = {
 		notify: { type: Function }
 	},
 	setup(e, { expose: t }) {
-		let n = e, i = b(), a = b(), o = b(), l = le.map((e) => ({
+		let n = e, i = b(), a = b(), o = b(), l = fe.map((e) => ({
 			title: e,
-			items: ue.filter((t) => t.section === e)
-		})), u = new Map(ue.map((e) => [e.id, e])), d = j(/* @__PURE__ */ new Set()), f = me(ue.map((e) => e.id), n.runtime, () => {
+			items: pe.filter((t) => t.section === e)
+		})), u = new Map(pe.map((e) => [e.id, e])), d = j(/* @__PURE__ */ new Set()), f = _e(pe.map((e) => e.id), n.runtime, () => {
 			let e = i.value, t = e?.ownerDocument;
 			return !!(a.value?.open || t?.querySelector("dialog[open]") || e?.contains(t?.activeElement ?? null));
 		}), p = k(() => f.quickIds.value.map((e) => u.get(e))), m = (e) => e.feature ? n.capabilities[e.feature] : void 0, h = (e) => m(e)?.enabled === !1, g = (e) => e.selection && n.state.selectedCount === 0 || d.value.has(e.action) || !!n.state.pending?.[e.action], y = (e) => n.state.labels?.[e.action] || (e.id === "btnArchiveSelectedAccountsV2" && n.state.archived ? "恢复选中" : e.label), x = (e) => e.id === "btnArchiveSelectedAccountsV2" && n.state.archived ? "把选中的归档账号恢复到默认账号列表" : e.title;
@@ -464,14 +464,14 @@ var he = {
 		}), T(() => {
 			let e = F?.defaultView;
 			e?.removeEventListener("resize", A), e?.removeEventListener("scroll", A), F?.removeEventListener("close", f.schedule, !0);
-		}), t({ refreshQuickActions: f.refresh }), (t, n) => (r(), L("div", he, [w("div", {
+		}), t({ refreshQuickActions: f.refresh }), (t, n) => (r(), L("div", ve, [w("div", {
 			ref_key: "toolbar",
 			ref: i,
 			class: O(["jobs-toolbar-v2 list-action-toolbar", { "has-selection": e.state.selectedCount > 0 }]),
 			id: "accountsToolbarV2",
 			onFocusout: n[0] ||= (...e) => P(f).schedule && P(f).schedule(...e)
 		}, [
-			w("span", ge, S(e.state.selectedCount ? `已选 ${e.state.selectedCount} 个账号` : "选择账号后批量操作"), 1),
+			w("span", ye, S(e.state.selectedCount ? `已选 ${e.state.selectedCount} 个账号` : "选择账号后批量操作"), 1),
 			w("details", {
 				ref_key: "more",
 				ref: a,
@@ -482,38 +482,38 @@ var he = {
 			}, [w("summary", {
 				ref_key: "summary",
 				ref: o
-			}, "批量操作", 512), w("div", _e, [(r(!0), L(v, null, s(P(l), (e) => (r(), L("div", {
+			}, "批量操作", 512), w("div", be, [(r(!0), L(v, null, s(P(l), (e) => (r(), L("div", {
 				key: e.title,
 				class: "toolbar-overflow-section toolbar-overflow-section--wide"
-			}, [w("span", ve, S(e.title), 1), (r(!0), L(v, null, s(e.items, (e) => (r(), L("button", E({
+			}, [w("span", xe, S(e.title), 1), (r(!0), L(v, null, s(e.items, (e) => (r(), L("button", E({
 				key: e.id,
 				id: e.id,
 				type: "button"
-			}, { ref_for: !0 }, C(e), { onClick: (t) => N(e, t) }), S(y(e)), 17, ye))), 128))]))), 128))])], 544),
-			w("div", be, [(r(!0), L(v, null, s(p.value, (e) => (r(), L("button", E({
+			}, { ref_for: !0 }, C(e), { onClick: (t) => N(e, t) }), S(y(e)), 17, Se))), 128))]))), 128))])], 544),
+			w("div", Ce, [(r(!0), L(v, null, s(p.value, (e) => (r(), L("button", E({
 				key: e.id,
 				"data-account-shortcut": e.id,
 				type: "button"
-			}, { ref_for: !0 }, C(e), { onClick: (t) => N(e, t) }), S(y(e)), 17, xe))), 128))])
+			}, { ref_for: !0 }, C(e), { onClick: (t) => N(e, t) }), S(y(e)), 17, we))), 128))])
 		], 34)]));
 	}
-}), Ce = { class: "ac-filter-fields" }, we = {
+}), Ee = { class: "ac-filter-fields" }, De = {
 	key: 0,
 	class: "ac-filter-field"
-}, Te = ["value"], Ee = {
+}, Oe = ["value"], ke = {
 	key: 1,
 	class: "list-filter-options"
-}, De = { class: "ac-sr-only" }, Oe = { class: "list-filter-option" }, ke = ["checked"], Ae = [
+}, Ae = { class: "ac-sr-only" }, je = { class: "list-filter-option" }, Me = ["checked"], Ne = [
 	"value",
 	"checked",
 	"onChange"
-], je = { key: 0 }, Me = [
+], Pe = { key: 0 }, Fe = [
 	"type",
 	"inputmode",
 	"value",
 	"placeholder",
 	"onInput"
-], Ne = { class: "list-filter-actions" }, Pe = /* @__PURE__ */ n({
+], Ie = { class: "list-filter-actions" }, Le = /* @__PURE__ */ n({
 	__name: "AccountFilters",
 	props: {
 		query: {},
@@ -528,7 +528,7 @@ var he = {
 		"clear"
 	],
 	setup(e, { emit: t }) {
-		let n = e, a = t, c = b("id"), l = k(() => n.column || Y.find((e) => e.key === c.value) || Y[0]), u = k(() => n.column ? te(n.query, n.column) : Y.some((e) => te(n.query, e))), d = k(() => K(n.query, n.label).find((e) => e.key === l.value.key)?.label || ""), f = k(() => J(n.query, n.facets, l.value, n.label)), p = k(() => ne(n.query, l.value.key)), m = k(() => l.value.kind === "date-range" ? ["date_from", "date_to"] : [l.value.key]);
+		let n = e, a = t, c = b("id"), l = k(() => n.column || X.find((e) => e.key === c.value) || X[0]), u = k(() => n.column ? te(n.query, n.column) : X.some((e) => te(n.query, e))), d = k(() => q(n.query, n.label).find((e) => e.key === l.value.key)?.label || ""), f = k(() => Y(n.query, n.facets, l.value, n.label)), p = k(() => ne(n.query, l.value.key)), m = k(() => l.value.kind === "date-range" ? ["date_from", "date_to"] : [l.value.key]);
 		function y(e, t) {
 			let n = new Set(p.value);
 			t ? n.add(e) : n.delete(e), a("change", l.value.key, [...n]);
@@ -536,7 +536,7 @@ var he = {
 		function x() {
 			a("clear", l.value.key), a("update:open", !1);
 		}
-		return (t, n) => (r(), C(U, {
+		return (t, n) => (r(), C(V, {
 			label: e.column?.label || "账号",
 			"trigger-label": e.column ? void 0 : "筛选",
 			active: u.value,
@@ -544,21 +544,21 @@ var he = {
 			open: e.open,
 			"onUpdate:open": n[4] ||= (e) => a("update:open", e)
 		}, {
-			default: i(() => [w("div", Ce, [
-				e.column ? h("", !0) : (r(), L("label", we, [n[5] ||= R("筛选列", -1), o(w("select", {
+			default: i(() => [w("div", Ee, [
+				e.column ? h("", !0) : (r(), L("label", De, [n[5] ||= R("筛选列", -1), o(w("select", {
 					"onUpdate:modelValue": n[0] ||= (e) => c.value = e,
 					"aria-label": "选择账号筛选列"
-				}, [(r(!0), L(v, null, s(P(Y), (e) => (r(), L("option", {
+				}, [(r(!0), L(v, null, s(P(X), (e) => (r(), L("option", {
 					key: e.key,
 					value: e.key
-				}, S(e.label), 9, Te))), 128))], 512), [[g, c.value]])])),
-				l.value.kind === "enum" ? (r(), L("fieldset", Ee, [
-					w("legend", De, S(l.value.label) + "，可多选", 1),
-					w("label", Oe, [w("input", {
+				}, S(e.label), 9, Oe))), 128))], 512), [[g, c.value]])])),
+				l.value.kind === "enum" ? (r(), L("fieldset", ke, [
+					w("legend", Ae, S(l.value.label) + "，可多选", 1),
+					w("label", je, [w("input", {
 						type: "checkbox",
 						checked: !p.value.length,
 						onChange: n[1] ||= (e) => a("change", l.value.key, [])
-					}, null, 40, ke), n[6] ||= w("span", null, "全部", -1)]),
+					}, null, 40, Me), n[6] ||= w("span", null, "全部", -1)]),
 					(r(!0), L(v, null, s(f.value, (e) => (r(), L("label", {
 						class: "list-filter-option",
 						key: e.value
@@ -568,9 +568,9 @@ var he = {
 							value: e.value,
 							checked: p.value.includes(e.value),
 							onChange: (t) => y(e.value, t.target.checked)
-						}, null, 40, Ae),
+						}, null, 40, Ne),
 						w("span", null, S(e.label), 1),
-						e.count === null ? h("", !0) : (r(), L("small", je, S(e.count), 1))
+						e.count === null ? h("", !0) : (r(), L("small", Pe, S(e.count), 1))
 					]))), 128))
 				])) : (r(!0), L(v, { key: 2 }, s(m.value, (t, i) => (r(), L("label", {
 					key: t,
@@ -578,13 +578,13 @@ var he = {
 				}, [R(S(l.value.kind === "date-range" ? i ? "截止日期" : "开始日期" : l.value.label), 1), w("input", {
 					type: l.value.kind === "date-range" ? "date" : "text",
 					inputmode: l.value.key === "id" ? "numeric" : void 0,
-					value: P(q)(e.query, t),
+					value: P(J)(e.query, t),
 					placeholder: l.value.placeholder,
 					autocomplete: "off",
 					onInput: (e) => a("change", t, e.target.value),
 					onKeydown: n[2] ||= _(D((e) => a("update:open", !1), ["prevent"]), ["enter"])
-				}, null, 40, Me)]))), 128)),
-				w("div", Ne, [w("button", {
+				}, null, 40, Fe)]))), 128)),
+				w("div", Ie, [w("button", {
 					type: "button",
 					onClick: x
 				}, "清除此列"), w("button", {
@@ -602,7 +602,7 @@ var he = {
 			"open"
 		]));
 	}
-}), Fe = [
+}), Re = [
 	{
 		key: "selection",
 		label: "选择",
@@ -706,7 +706,7 @@ var he = {
 		label: "操作",
 		className: "col-actions"
 	}
-], Ie = [
+], ze = [
 	36,
 	72,
 	160,
@@ -723,9 +723,9 @@ var he = {
 	72,
 	96,
 	108
-], Le = Ie.map((e) => e / Ie.reduce((e, t) => e + t, 0) * 1500);
-function Re(e) {
-	let t = (e, t = "") => `<div class="account-cell-lines"><div class="account-cell-line">${e}</div>${t ? `<div class="account-cell-line account-cell-line--sub">${t}</div>` : ""}</div>`, n = (e) => Array.from(e).length <= 10 ? e : ae();
+], Be = ze.map((e) => e / ze.reduce((e, t) => e + t, 0) * 1500);
+function Ve(e) {
+	let t = (e, t = "") => `<div class="account-cell-lines"><div class="account-cell-line">${e}</div>${t ? `<div class="account-cell-line account-cell-line--sub">${t}</div>` : ""}</div>`, n = (e) => Array.from(e).length <= 10 ? e : oe();
 	function r(t) {
 		let r = document.createElement("template");
 		r.innerHTML = e.cells.account_status(t);
@@ -812,7 +812,7 @@ function Re(e) {
 		}
 	};
 }
-var ze = [
+var He = [
 	"account-registration-retry",
 	"account-registration-task",
 	"account-email-change",
@@ -836,11 +836,11 @@ var ze = [
 	"codex-retry",
 	"copy-id"
 ];
-function Be(e) {
+function Ue(e) {
 	if (!(e instanceof Element)) return;
 	let t = e.closest("button,[data-copy-id]");
 	if (!t || t.hasAttribute("disabled") || t.getAttribute("aria-disabled") === "true" || t.classList.contains("feature-unavailable")) return;
-	let n = ze.find((e) => t.hasAttribute(`data-${e}`));
+	let n = He.find((e) => t.hasAttribute(`data-${e}`));
 	if (!n) return;
 	let r = [
 		"account-registration-task",
@@ -855,28 +855,21 @@ function Be(e) {
 	};
 }
 // src/features/accounts/AccountsTable.vue?vue&type=script&setup=true&lang.ts
-var Ve = ["aria-busy"], He = ["data-stale"], Ue = [
+var We = ["aria-busy"], Ge = ["data-stale"], Ke = [
 	"checked",
 	"indeterminate",
 	"disabled"
-], We = [
-	"aria-label",
-	"onPointerdown",
-	"onKeydown"
-], Ge = { id: "accountsBodyV2" }, Ke = ["data-account-row", "onClick"], qe = { class: "col-check" }, Je = [
+], qe = { id: "accountsBodyV2" }, Je = ["data-account-row", "onClick"], Ye = { class: "col-check" }, Xe = [
 	"data-account-id",
 	"aria-label",
 	"checked",
 	"disabled",
 	"onChange"
-], Ye = { class: "col-id" }, Xe = { class: "col-email" }, Ze = ["disabled", "data-account-detail-id"], Qe = { class: "acc-v2-email" }, $e = {
+], Ze = { class: "col-id" }, Qe = { class: "col-email" }, $e = ["disabled", "data-account-detail-id"], et = { class: "acc-v2-email" }, tt = {
 	key: 0,
 	class: "pill status-used",
 	title: "该账号已归档"
-}, et = { class: "acc-v2-sub account-cell-line account-cell-line--sub account-email-meta" }, tt = { class: "account-email-name" }, nt = ["innerHTML"], rt = { class: "acc-mobile-meta" }, it = { class: "col-source" }, at = { class: "col-registration-driver" }, ot = ["data-label"], st = ["innerHTML"], ct = { class: "col-actions" }, lt = { class: "account-cell-lines acc-v2-actions" }, ut = ["disabled", "data-account-detail-id"], dt = ["disabled"], ft = ["onClick", "innerHTML"], pt = { key: 0 }, mt = {
-	colspan: "16",
-	class: "ac-empty"
-}, ht = /* @__PURE__ */ n({
+}, nt = { class: "acc-v2-sub account-cell-line account-cell-line--sub account-email-meta" }, rt = { class: "account-email-name" }, it = ["innerHTML"], at = { class: "acc-mobile-meta" }, ot = { class: "col-source" }, st = { class: "col-registration-driver" }, ct = ["data-label"], lt = ["innerHTML"], ut = { class: "col-actions" }, dt = { class: "account-cell-lines acc-v2-actions" }, ft = ["disabled", "data-account-detail-id"], pt = ["disabled"], mt = ["onClick", "innerHTML"], ht = /* @__PURE__ */ n({
 	__name: "AccountsTable",
 	props: {
 		items: {},
@@ -905,8 +898,8 @@ var Ve = ["aria-busy"], He = ["data-stale"], Ue = [
 		"rendered"
 	],
 	setup(e, { expose: t, emit: n }) {
-		let o = e, l = n, { widths: d, total: p, resize: m, resizeWithKeyboard: g, resetColumns: x } = ie({
-			defaults: Le,
+		let o = e, l = n, { widths: d, total: p, resize: m, resizeWithKeyboard: g, resetColumns: _ } = ie({
+			defaults: Be,
 			storageKey: "gpt_console_table_widths_accounts",
 			totalStorageKey: "gpt_console_table_total_accounts",
 			min: 28,
@@ -923,23 +916,23 @@ var Ve = ["aria-busy"], He = ["data-stale"], Ue = [
 					localStorage.removeItem("gpt_console_accounts_columns_v2");
 				} catch {}
 			}
-		}), E = b(), A = b(null);
-		function j(e) {
+		}), x = b(), E = b(null);
+		function A(e) {
 			if (!o.stale) return e;
 			let t = document.createElement("template");
 			return t.innerHTML = e, t.content.querySelectorAll("button,input,select,textarea").forEach((e) => e.setAttribute("disabled", "")), t.content.querySelectorAll("a,[role=\"button\"],[data-copy-id]").forEach((e) => {
 				e.setAttribute("aria-disabled", "true"), e.setAttribute("tabindex", "-1");
 			}), t.innerHTML;
 		}
-		let M = k(() => (o.stale && o.loading ? [] : o.items).map((e) => ({
+		let j = k(() => (o.stale && o.loading ? [] : o.items).map((e) => ({
 			row: e,
 			id: String(e.id),
-			cells: Object.fromEntries(Fe.filter((e) => e.cell).map((t) => [t.cell, j(o.presentation.cell(t.cell, e))])),
+			cells: Object.fromEntries(Re.filter((e) => e.cell).map((t) => [t.cell, A(o.presentation.cell(t.cell, e))])),
 			menu: o.presentation.menu(e),
 			mobile: o.presentation.mobileSummary(e),
 			tone: o.presentation.rowTone(e)
-		}))), N = (e) => Y.find((t) => t.key === e);
-		function F(e, t) {
+		}))), M = (e) => X.find((t) => t.key === e);
+		function N(e, t) {
 			if (o.stale || !o.visible) {
 				e.preventDefault(), e.stopPropagation();
 				return;
@@ -949,38 +942,38 @@ var Ve = ["aria-busy"], He = ["data-stale"], Ue = [
 				e.preventDefault(), e.stopPropagation(), l("detail", String(t.id), r);
 				return;
 			}
-			let i = Be(e.target);
-			i ? (e.preventDefault(), e.stopPropagation(), A.value = null, l("action", i.action, String(t.id), i.trigger)) : window.matchMedia("(max-width:860px)").matches && !n?.closest("button,a,input,label,[role=\"dialog\"]") && l("detail", String(t.id), null);
+			let i = Ue(e.target);
+			i ? (e.preventDefault(), e.stopPropagation(), E.value = null, l("action", i.action, String(t.id), i.trigger)) : window.matchMedia("(max-width:860px)").matches && !n?.closest("button,a,input,label,[role=\"dialog\"]") && l("detail", String(t.id), null);
 		}
-		function I() {
-			A.value = null;
+		function F() {
+			E.value = null;
 		}
-		function U(e) {
-			e.target instanceof Element && e.target.closest(".ac-row-menu") || I();
+		function I(e) {
+			e.target instanceof Element && e.target.closest(".ac-row-menu") || F();
 		}
 		return a(() => o.visible, (e) => {
-			e || I();
+			e || F();
 		}), a(() => o.stale, (e) => {
-			e && I();
+			e && F();
 		}), a(() => o.items, (e) => {
-			A.value && !e.some((e) => String(e.id) === A.value) && I();
+			E.value && !e.some((e) => String(e.id) === E.value) && F();
 		}), c(() => {
-			window.addEventListener("resize", I), window.addEventListener("scroll", U, !0), E.value && l("rendered", E.value);
+			window.addEventListener("resize", F), window.addEventListener("scroll", I, !0), x.value && l("rendered", x.value);
 		}), u(() => {
-			E.value && l("rendered", E.value);
+			x.value && l("rendered", x.value);
 		}), T(() => {
-			window.removeEventListener("resize", I), window.removeEventListener("scroll", U, !0);
+			window.removeEventListener("resize", F), window.removeEventListener("scroll", I, !0);
 		}), t({
-			resetColumns: x,
-			closeMenu: I
+			resetColumns: _,
+			closeMenu: F
 		}), (t, n) => (r(), L("div", {
 			ref_key: "root",
-			ref: E,
+			ref: x,
 			class: "accounts-table-v2-wrap ac-table-scroll",
 			tabindex: "0",
 			"aria-label": "账号列表，可横向滚动",
 			"aria-busy": e.loading,
-			onScroll: I
+			onScroll: F
 		}, [w("table", {
 			class: "accounts-table-v2 ac-table",
 			style: y({ width: `${P(p)}px` }),
@@ -991,7 +984,7 @@ var Ve = ["aria-busy"], He = ["data-stale"], Ue = [
 				key: t,
 				style: y({ width: `${e}px` })
 			}, null, 4))), 128))]),
-			w("thead", null, [w("tr", null, [(r(!0), L(v, null, s(P(Fe), (t, i) => (r(), L("th", {
+			w("thead", null, [w("tr", null, [(r(!0), L(v, null, s(P(Re), (t, i) => (r(), L("th", {
 				key: t.key,
 				scope: "col",
 				class: O(t.className)
@@ -1004,9 +997,9 @@ var Ve = ["aria-busy"], He = ["data-stale"], Ue = [
 				indeterminate: e.pageIndeterminate,
 				disabled: e.stale || !e.items.length,
 				onChange: n[0] ||= (e) => l("selectPage", e.target.checked)
-			}, null, 40, Ue)) : t.filter ? (r(), C(Pe, {
+			}, null, 40, Ke)) : t.filter ? (r(), C(Le, {
 				key: 1,
-				column: N(t.filter),
+				column: M(t.filter),
 				query: e.query,
 				facets: e.facets,
 				label: e.presentation.facetLabel,
@@ -1021,21 +1014,23 @@ var Ve = ["aria-busy"], He = ["data-stale"], Ue = [
 				"label",
 				"open",
 				"onUpdate:open"
-			])) : (r(), L(v, { key: 2 }, [R(S(t.label), 1)], 64)), i ? (r(), L("button", {
+			])) : (r(), L(v, { key: 2 }, [R(S(t.label), 1)], 64)), i ? (r(), C(ae, {
 				key: 3,
-				type: "button",
-				class: "ac-column-resize",
-				"aria-label": `调整${t.label}列宽，方向键调整`,
-				onPointerdown: D((e) => P(m)(i, e), ["prevent"]),
-				onKeydown: [_(D((e) => P(g)(i, -10), ["prevent"]), ["left"]), _(D((e) => P(g)(i, 10), ["prevent"]), ["right"])]
-			}, null, 40, We)) : h("", !0)], 2))), 128))])]),
-			w("tbody", Ge, [(r(!0), L(v, null, s(M.value, (t) => (r(), L("tr", {
+				label: t.label,
+				onStart: (e) => P(m)(i, e),
+				onNudge: (e) => P(g)(i, e)
+			}, null, 8, [
+				"label",
+				"onStart",
+				"onNudge"
+			])) : h("", !0)], 2))), 128))])]),
+			w("tbody", qe, [(r(!0), L(v, null, s(j.value, (t) => (r(), L("tr", {
 				key: t.id,
 				"data-account-row": t.id,
 				class: O({ "ac-row-selected": e.selected.has(t.id) }),
-				onClick: (e) => F(e, t.row)
+				onClick: (e) => N(e, t.row)
 			}, [
-				w("td", qe, [w("input", {
+				w("td", Ye, [w("input", {
 					type: "checkbox",
 					class: "account-row-check",
 					"data-account-id": t.id,
@@ -1043,9 +1038,9 @@ var Ve = ["aria-busy"], He = ["data-stale"], Ue = [
 					checked: e.selected.has(t.id),
 					disabled: e.stale,
 					onChange: (e) => l("select", t.id, e.target.checked)
-				}, null, 40, Je)]),
-				w("td", Ye, [f(V, { text: `#${t.id}` }, null, 8, ["text"])]),
-				w("td", Xe, [
+				}, null, 40, Xe)]),
+				w("td", Ze, [f(W, { text: `#${t.id}` }, null, 8, ["text"])]),
+				w("td", Qe, [
 					w("button", {
 						type: "button",
 						class: "acc-v2-email-link account-cell-line",
@@ -1055,40 +1050,40 @@ var Ve = ["aria-busy"], He = ["data-stale"], Ue = [
 					}, [w("span", {
 						class: O(["acc-mobile-dot", `is-${t.tone}`]),
 						"aria-hidden": "true"
-					}, null, 2), w("span", Qe, [R(S(t.row.email), 1), t.row.archived ? (r(), L("span", $e, "归档")) : h("", !0)])], 8, Ze),
-					w("div", et, [w("span", tt, S(t.row.user_name || "-"), 1), w("span", { innerHTML: e.presentation.emailInvalidBadge(t.row) }, null, 8, nt)]),
-					w("div", rt, S(t.mobile), 1)
+					}, null, 2), w("span", et, [R(S(t.row.email), 1), t.row.archived ? (r(), L("span", tt, "归档")) : h("", !0)])], 8, $e),
+					w("div", nt, [w("span", rt, S(t.row.user_name || "-"), 1), w("span", { innerHTML: e.presentation.emailInvalidBadge(t.row) }, null, 8, it)]),
+					w("div", at, S(t.mobile), 1)
 				]),
-				w("td", it, [f(V, { text: t.row.email_source || "-" }, null, 8, ["text"])]),
-				w("td", at, [f(V, { text: e.presentation.registrationDriverLabel(t.row.registration_driver) }, null, 8, ["text"])]),
-				(r(!0), L(v, null, s(P(Fe).filter((e) => e.cell), (e) => (r(), L("td", {
+				w("td", ot, [f(W, { text: t.row.email_source || "-" }, null, 8, ["text"])]),
+				w("td", st, [f(W, { text: e.presentation.registrationDriverLabel(t.row.registration_driver) }, null, 8, ["text"])]),
+				(r(!0), L(v, null, s(P(Re).filter((e) => e.cell), (e) => (r(), L("td", {
 					key: e.key,
 					class: O(e.className),
 					"data-label": e.label
 				}, [w("div", {
 					class: "ac-legacy-cell",
 					innerHTML: t.cells[e.cell]
-				}, null, 8, st)], 10, ot))), 128)),
-				w("td", ct, [w("div", lt, [w("button", {
+				}, null, 8, lt)], 10, ct))), 128)),
+				w("td", ut, [w("div", dt, [w("button", {
 					type: "button",
 					class: "acc-v2-detail",
 					disabled: e.stale,
 					"data-account-detail-id": t.id
-				}, "详情", 8, ut), f(P(W), {
-					open: e.visible && !e.stale && A.value === t.id,
+				}, "详情", 8, ft), f(P(B), {
+					open: e.visible && !e.stale && E.value === t.id,
 					modal: !1,
-					"onUpdate:open": (e) => A.value = e ? t.id : null
+					"onUpdate:open": (e) => E.value = e ? t.id : null
 				}, {
-					default: i(() => [f(P(B), { "as-child": "" }, {
+					default: i(() => [f(P(z), { "as-child": "" }, {
 						default: i(() => [w("button", {
 							type: "button",
 							class: "acc-v2-more-btn",
 							disabled: e.stale,
 							"aria-label": "更多账号操作"
-						}, "更多", 8, dt)]),
+						}, "更多", 8, pt)]),
 						_: 1
-					}), f(P(z), null, {
-						default: i(() => [f(P(H), {
+					}), f(P(U), null, {
+						default: i(() => [f(P(G), {
 							class: "ac-row-menu accounts-table-v2",
 							"data-account-menu": t.id,
 							side: "bottom",
@@ -1099,26 +1094,35 @@ var Ve = ["aria-busy"], He = ["data-stale"], Ue = [
 						}, {
 							default: i(() => [w("div", {
 								class: "acc-v2-more-menu ac-menu-content",
-								onClick: (e) => F(e, t.row),
+								onClick: (e) => N(e, t.row),
 								innerHTML: t.menu
-							}, null, 8, ft)]),
+							}, null, 8, mt)]),
 							_: 2
 						}, 1032, ["data-account-menu"])]),
 						_: 2
 					}, 1024)]),
 					_: 2
 				}, 1032, ["open", "onUpdate:open"])])])
-			], 10, Ke))), 128)), M.value.length ? h("", !0) : (r(), L("tr", pt, [w("td", mt, [
-				w("strong", null, S(e.loading ? "正在加载账号" : e.invalidSearch ? "搜索条件有误" : e.error ? "账号加载失败" : "暂无匹配账号"), 1),
-				w("p", null, S(e.loading ? "正在同步账号状态和授权信息" : e.invalidSearch ? "请按输入框旁的提示修改，或清空高级搜索。" : e.error || "可移除部分搜索条件，或切换活跃与归档账号视图。"), 1),
-				e.error && !e.invalidSearch ? (r(), L("button", {
-					key: 0,
-					type: "button",
-					class: "ac-button",
-					onClick: n[4] ||= (e) => l("retry")
-				}, "重试")) : h("", !0)
-			])]))])
-		], 12, He)], 40, Ve));
+			], 10, Je))), 128)), j.value.length ? h("", !0) : (r(), C(H, {
+				key: 0,
+				class: "ac-empty",
+				colspan: 16,
+				loading: e.loading,
+				error: e.invalidSearch ? "" : e.error,
+				"loading-title": "正在加载账号",
+				"loading-text": "正在同步账号状态和授权信息",
+				"error-title": "账号加载失败",
+				title: e.invalidSearch ? "搜索条件有误" : "暂无匹配账号",
+				text: e.invalidSearch ? "请按输入框旁的提示修改，或清空高级搜索。" : "可移除部分搜索条件，或切换活跃与归档账号视图。",
+				"retry-label": "重试",
+				onRetry: n[4] ||= (e) => l("retry")
+			}, null, 8, [
+				"loading",
+				"error",
+				"title",
+				"text"
+			]))])
+		], 12, Ge)], 40, We));
 	}
 }), gt = 3e4, _t = [
 	"source",
@@ -1133,14 +1137,14 @@ var Ve = ["aria-busy"], He = ["data-stale"], Ue = [
 	"account_status",
 	"email_status"
 ];
-function Q(e) {
-	return Array.isArray(e) ? e.map(Q) : e && typeof e == "object" ? Object.fromEntries(Object.entries(e).map(([e, t]) => [e, Q(t)])) : e;
+function Z(e) {
+	return Array.isArray(e) ? e.map(Z) : e && typeof e == "object" ? Object.fromEntries(Object.entries(e).map(([e, t]) => [e, Z(t)])) : e;
 }
 function vt(e) {
 	return e && typeof e == "object" && (Object.values(e).forEach(vt), Object.freeze(e)), e;
 }
 function yt(e) {
-	return vt(Q(e));
+	return vt(Z(e));
 }
 function bt(e) {
 	let t = String(e);
@@ -1151,7 +1155,7 @@ function xt() {
 	throw new DOMException("读取已失效", "AbortError");
 }
 function St(e) {
-	return Q({
+	return Z({
 		account_promotions: e.account_promotions ?? null,
 		promotion_query_snapshot: e.promotion_query_snapshot ?? null,
 		plan_check_country_results: e.plan_check_country_results ?? []
@@ -1170,19 +1174,19 @@ function Ct(n, r) {
 		let e = /* @__PURE__ */ new Set([...a.value.map((e) => String(e.id)), ...G.values()]);
 		for (let [t, n] of W) e.has(t) || (n.request?.controller.abort(), W.delete(t));
 	}
-	function te() {
+	function X() {
 		for (let e of W.values()) e.request?.controller.abort(), e.request = void 0, ++e.version;
 	}
-	function ne() {
+	function te() {
 		++O, ++A, I?.abort(), L?.abort(), I = L = void 0, clearTimeout(R), clearTimeout(B), R = B = void 0, f.value = p.value = !1;
 	}
-	function re() {
+	function ne() {
 		clearTimeout(R), R = void 0, K() && H !== i.value.q && (R = setTimeout(() => {
-			le();
+			ue();
 		}, 5e3));
 	}
-	function ie(e) {
-		let t = Q(e);
+	function re(e) {
+		let t = Z(e);
 		for (let e of _t) {
 			let n = e === "plan" ? i.value.plan : i.value.filters[e];
 			if (!n.length) continue;
@@ -1194,8 +1198,8 @@ function Ct(n, r) {
 		}
 		return t;
 	}
-	function ae(e) {
-		a.value = Q(e);
+	function ie(e) {
+		a.value = Z(e);
 		for (let e of a.value) {
 			let t = String(e.id), n = W.get(t);
 			n?.request?.controller.abort(), W.set(t, {
@@ -1206,15 +1210,15 @@ function Ct(n, r) {
 		}
 		Y();
 	}
-	async function X(e) {
-		if (ne(), !K()) return;
+	async function ae(e) {
+		if (te(), !K()) return;
 		let t = O, c = new AbortController(), p = n.toLegacy(i.value).toString(), m = !e || U?.filter !== p || Date.now() - U.readAt >= gt;
 		m && (U = void 0), I = c, f.value = !0;
 		try {
 			for (let e = 0; e < 2; e++) {
-				let n = w.value, a = Q(i.value), f = u.value, h = d.value, v = m && !U, y = await r.list(a, f, h, c.signal, { includeFacets: v });
+				let n = w.value, a = Z(i.value), f = u.value, h = d.value, v = m && !U, y = await r.list(a, f, h, c.signal, { includeFacets: v });
 				if (!q(t, n)) return;
-				v && (o.value = ie(y.facets), U = {
+				v && (o.value = re(y.facets), U = {
 					filter: p,
 					readAt: Date.now()
 				});
@@ -1224,23 +1228,23 @@ function Ct(n, r) {
 					g.value = "列表范围已变化，请刷新后重试";
 					return;
 				}
-				ae(y.items), l.value = y.total, s.value = Q(y.search_terms), S.value = n, V = "", g.value = "", _.value = !1, H = void 0;
+				ie(y.items), l.value = y.total, s.value = Z(y.search_terms), S.value = n, V = "", g.value = "", _.value = !1, H = void 0;
 				return;
 			}
 		} catch (e) {
-			if (t !== O || !K() || oe(e)) return;
-			g.value = e instanceof Error ? e.message : "加载账号失败", e instanceof Z && e.code === "account_search_invalid" && (H = i.value.q, _.value = !0, U = void 0, a.value = [], l.value = 0, s.value = [], o.value = {}, Y());
+			if (t !== O || !K() || se(e)) return;
+			g.value = e instanceof Error ? e.message : "加载账号失败", e instanceof le && e.code === "account_search_invalid" && (H = i.value.q, _.value = !0, U = void 0, a.value = [], l.value = 0, s.value = [], o.value = {}, Y());
 		} finally {
-			t === O && (f.value = !1, I = void 0, re());
+			t === O && (f.value = !1, I = void 0, ne());
 		}
 	}
-	function se() {
-		return X(!1);
+	function oe() {
+		return ae(!1);
 	}
 	function ce(e, t, n) {
-		let r = Q(e);
+		let r = Z(e);
 		for (let e of n) delete r[e];
-		Object.assign(r, Q(t));
+		Object.assign(r, Z(t));
 		let i = String(e.id), a = W.get(i);
 		if (!a || a.revision !== t.plan_details_revision) {
 			a?.request?.controller.abort(), W.set(i, {
@@ -1261,97 +1265,97 @@ function Ct(n, r) {
 		}
 		return r;
 	}
-	async function le() {
+	async function ue() {
 		if (clearTimeout(R), R = void 0, !K() || f.value || p.value || T.value || H === i.value.q) {
-			re();
+			ne();
 			return;
 		}
 		let e = O, t = w.value, n = new AbortController();
 		L = n, p.value = !0;
 		try {
-			let o = await r.statuses(Q(i.value), u.value, d.value, n.signal);
+			let o = await r.statuses(Z(i.value), u.value, d.value, n.signal);
 			if (!q(e, t)) return;
 			let s = new Map(a.value.map((e) => [String(e.id), e]));
 			if (o.total !== l.value || o.items.length !== a.value.length || o.items.some((e, t) => String(e.id) !== String(a.value[t]?.id)) || new Set(o.items.map((e) => e.id)).size !== o.items.length) {
-				await se();
+				await oe();
 				return;
 			}
-			if (c.value = Q(o.queue), V === o.revision) return;
+			if (c.value = Z(o.queue), V === o.revision) return;
 			let f = (e) => e === "queued" || e === "running", p = !1;
 			a.value = o.items.map((e) => {
 				let t = s.get(String(e.id));
 				return (f(t.plan_check_status) && !f(e.plan_check_status) || f(t.extract_link_status) && !f(e.extract_link_status)) && (p = !0), ce(t, e, o.status_fields);
-			}), V = o.revision, p && await se();
+			}), V = o.revision, p && await oe();
 		} catch (n) {
-			q(e, t) && n instanceof Z && n.code === "account_search_invalid" && (H = i.value.q, _.value = !0, g.value = n instanceof Error ? n.message : "筛选语法无效", U = void 0, a.value = [], l.value = 0, o.value = {}, s.value = [], Y());
+			q(e, t) && n instanceof le && n.code === "account_search_invalid" && (H = i.value.q, _.value = !0, g.value = n instanceof Error ? n.message : "筛选语法无效", U = void 0, a.value = [], l.value = 0, o.value = {}, s.value = [], Y());
 		} finally {
-			e === O && (p.value = !1, L = void 0, re());
+			e === O && (p.value = !1, L = void 0, ne());
 		}
 	}
-	function ue(e = 0, n = !1) {
-		if (ne(), !K()) return;
+	function de(e = 0, n = !1) {
+		if (te(), !K()) return;
 		let r = A, i = () => {
-			r === A && K() && X(n);
+			r === A && K() && ae(n);
 		};
 		e ? B = setTimeout(i, e) : t(i);
 	}
-	function de() {
+	function fe() {
 		y.value = /* @__PURE__ */ new Set(), x.value = {}, ++M;
 	}
-	function fe(e, t = 0) {
+	function pe(e, t = 0) {
 		if (P) return;
 		let r = n.normalize(e);
-		clearTimeout(z), z = void 0, n.toLegacy(r).toString() === n.toLegacy(i.value).toString() && r.limit === i.value.limit ? v.value = r.q : (i.value = Q(r), v.value = r.q, u.value = 1, de(), _.value = !1, g.value = "", H = void 0, ue(t));
-	}
-	function pe(e, t = 0) {
-		fe({
-			...Q(i.value),
-			...Q(e)
-		}, t);
+		clearTimeout(z), z = void 0, n.toLegacy(r).toString() === n.toLegacy(i.value).toString() && r.limit === i.value.limit ? v.value = r.q : (i.value = Z(r), v.value = r.q, u.value = 1, fe(), _.value = !1, g.value = "", H = void 0, de(t));
 	}
 	function me(e, t = 0) {
-		pe({ filters: {
-			...Q(i.value.filters),
-			...Q(e)
+		pe({
+			...Z(i.value),
+			...Z(e)
+		}, t);
+	}
+	function he(e, t = 0) {
+		me({ filters: {
+			...Z(i.value.filters),
+			...Z(e)
 		} }, t);
 	}
-	function he(e) {
-		pe({ archived: e ? "only" : "0" });
+	function ge(e) {
+		me({ archived: e ? "only" : "0" });
 	}
-	function ge() {
-		fe(n.normalize({ archived: i.value.archived }));
-	}
-	function _e(e) {
-		if (P || !Number.isFinite(e)) return;
-		let t = Math.min(C.value, Math.max(1, Math.floor(e)));
-		t !== u.value && (u.value = t, ue(0, !0));
+	function _e() {
+		pe(n.normalize({ archived: i.value.archived }));
 	}
 	function ve(e) {
-		if (P || !Number.isFinite(e) || e < 1) return;
-		let t = Math.min(500, Math.floor(e));
-		t !== d.value && (d.value = t, u.value = 1, ue(0, !0));
+		if (P || !Number.isFinite(e)) return;
+		let t = Math.min(C.value, Math.max(1, Math.floor(e)));
+		t !== u.value && (u.value = t, de(0, !0));
 	}
 	function ye(e) {
+		if (P || !Number.isFinite(e) || e < 1) return;
+		let t = Math.min(500, Math.floor(e));
+		t !== d.value && (d.value = t, u.value = 1, de(0, !0));
+	}
+	function be(e) {
 		v.value = e, clearTimeout(z), z = void 0, !F && !P && (z = setTimeout(() => {
-			pe({ q: v.value });
+			me({ q: v.value });
 		}, 250));
 	}
-	function be() {
+	function xe() {
 		F = !0, clearTimeout(z), z = void 0;
 	}
-	function xe(e) {
-		F = !1, ye(e);
-	}
-	function Se() {
-		F || (clearTimeout(z), pe({ q: v.value }));
+	function Se(e) {
+		F = !1, be(e);
 	}
 	function Ce() {
-		F = !1, clearTimeout(z), pe({ q: "" });
+		F || (clearTimeout(z), me({ q: v.value }));
 	}
-	function we(e) {
-		pe({ q: e.query_without });
+	function we() {
+		F = !1, clearTimeout(z), me({ q: "" });
 	}
-	function Te(e, t) {
+	function Te(e) {
+		me({ q: e.query_without });
+	}
+	function Ee(e, t) {
 		if (P) return;
 		if (t && (T.value || _.value)) throw Error("当前筛选结果尚未加载");
 		let n = bt(e), r = a.value.find((e) => String(e.id) === n);
@@ -1359,13 +1363,13 @@ function Ct(n, r) {
 		let i = new Set(y.value), o = { ...x.value };
 		t ? (i.add(n), r?.email?.trim() ? o[n] = r.email : delete o[n]) : (i.delete(n), delete o[n]), y.value = i, x.value = o, ++M;
 	}
-	function Ee(e) {
-		for (let t of a.value) Te(String(t.id), e);
-	}
 	function De(e) {
-		for (let t of e) Te(t, !1);
+		for (let t of a.value) Ee(String(t.id), e);
 	}
-	function Oe(e = {}) {
+	function Oe(e) {
+		for (let t of e) Ee(t, !1);
+	}
+	function ke(e = {}) {
 		let t = [...new Set((e.ids ?? [...y.value]).map(bt))], n = {}, r = new Map(a.value.map((e) => [String(e.id), e]));
 		for (let e of t) {
 			let t = r.has(e) ? r.get(e)?.email : x.value[e];
@@ -1381,8 +1385,8 @@ function Ct(n, r) {
 			generation: M
 		});
 	}
-	function ke(e = {}) {
-		let t = Oe(e), n = new Set(t.ids);
+	function Ae(e = {}) {
+		let t = ke(e), n = new Set(t.ids);
 		return yt({
 			accountIds: t.ids,
 			expectedEmails: t.expectedEmails,
@@ -1391,11 +1395,11 @@ function Ct(n, r) {
 			rowHints: a.value.filter((e) => n.has(String(e.id)))
 		});
 	}
-	function Ae(e) {
+	function je(e) {
 		let t = a.value.find((t) => String(t.id) === e);
 		return t ? yt(t) : void 0;
 	}
-	async function je(e) {
+	async function Me(e) {
 		K() && J(e) || xt();
 		let t = W.get(e);
 		if (t || xt(), t.details) return yt({
@@ -1407,9 +1411,9 @@ function Ct(n, r) {
 		let n = new AbortController(), i = t.version, o = r.planDetails(e, n.signal).then(async (n) => {
 			K() && J(e) || xt();
 			let r = W.get(e);
-			return r || xt(), r !== t || r.version !== i ? je(e) : (r.details = Q(n.item), a.value = a.value.map((t) => String(t.id) === e ? {
+			return r || xt(), r !== t || r.version !== i ? Me(e) : (r.details = Z(n.item), a.value = a.value.map((t) => String(t.id) === e ? {
 				...t,
-				...Q(n.item)
+				...Z(n.item)
 			} : t), yt({
 				accountId: e,
 				revision: r.revision,
@@ -1418,7 +1422,7 @@ function Ct(n, r) {
 		}, (n) => {
 			K() && J(e) || xt();
 			let r = W.get(e);
-			if (r && (r !== t || r.version !== i)) return je(e);
+			if (r && (r !== t || r.version !== i)) return Me(e);
 			throw n;
 		}).finally(() => {
 			t.request?.promise === o && (t.request = void 0), Y();
@@ -1429,25 +1433,25 @@ function Ct(n, r) {
 			promise: o
 		}, o;
 	}
-	async function Me(e, t) {
+	async function Ne(e, t) {
 		let n = bt(e);
 		for (;;) {
 			G.get(t) === n && K() || xt();
 			let e = W.get(n), r = e?.version, i;
 			try {
-				i = await je(n);
+				i = await Me(n);
 			} catch (e) {
 				throw G.get(t) === n && K() || xt(), e;
 			}
 			if (G.get(t) === n && K() || xt(), W.get(n) === e && e?.version === r) return i;
 		}
 	}
-	function Ne(e) {
+	function Pe(e) {
 		let t = bt(e), n = ++N;
 		if (!W.has(t)) throw Error("账号详情已失效，请刷新列表");
 		return G.set(n, t), {
 			openGeneration: n,
-			loadPlanDetails: Me,
+			loadPlanDetails: Ne,
 			release() {
 				if (G.delete(n)) {
 					if (!J(t)) {
@@ -1459,14 +1463,14 @@ function Ct(n, r) {
 			}
 		};
 	}
-	function Pe(e) {
-		P || e === h.value || (h.value = e, e ? ue() : (ne(), te(), G.clear(), Y()));
+	function Fe(e) {
+		P || e === h.value || (h.value = e, e ? de() : (te(), X(), G.clear(), Y()));
 	}
-	function Fe() {
-		ee() ? h.value && ue() : (ne(), te());
+	function Ie() {
+		ee() ? h.value && de() : (te(), X());
 	}
-	return typeof document < "u" && document.addEventListener("visibilitychange", Fe), m(() => {
-		P = !0, ne(), clearTimeout(z), te(), G.clear(), W.clear(), typeof document < "u" && document.removeEventListener("visibilitychange", Fe);
+	return typeof document < "u" && document.addEventListener("visibilitychange", Ie), m(() => {
+		P = !0, te(), clearTimeout(z), X(), G.clear(), W.clear(), typeof document < "u" && document.removeEventListener("visibilitychange", Ie);
 	}), {
 		query: e(i),
 		items: e(a),
@@ -1490,31 +1494,31 @@ function Ct(n, r) {
 		stale: T,
 		pageSelected: E,
 		pageIndeterminate: D,
-		refresh: se,
-		pollStatuses: le,
-		setVisible: Pe,
-		setPage: _e,
-		setSize: ve,
-		setArchived: he,
-		commitQuery: fe,
-		updateQuery: pe,
-		updateFilters: me,
-		resetFilters: ge,
-		setSearchDraft: ye,
-		compositionStart: be,
-		compositionEnd: xe,
-		submitSearch: Se,
-		clearSearch: Ce,
-		removeSearchTerm: we,
-		toggle: Te,
-		togglePage: Ee,
-		clearSelection: de,
-		removeAcknowledgedSelection: De,
-		getAccountSelectionSnapshot: Oe,
-		getActionContext: ke,
-		getRowSnapshot: Ae,
-		openPlanDetailsConsumer: Ne,
-		loadPlanDetails: Me
+		refresh: oe,
+		pollStatuses: ue,
+		setVisible: Fe,
+		setPage: ve,
+		setSize: ye,
+		setArchived: ge,
+		commitQuery: pe,
+		updateQuery: me,
+		updateFilters: he,
+		resetFilters: _e,
+		setSearchDraft: be,
+		compositionStart: xe,
+		compositionEnd: Se,
+		submitSearch: Ce,
+		clearSearch: we,
+		removeSearchTerm: Te,
+		toggle: Ee,
+		togglePage: De,
+		clearSelection: fe,
+		removeAcknowledgedSelection: Oe,
+		getAccountSelectionSnapshot: ke,
+		getActionContext: Ae,
+		getRowSnapshot: je,
+		openPlanDetailsConsumer: Pe,
+		loadPlanDetails: Ne
 	};
 }
 // src/features/accounts/AccountsList.vue?vue&type=script&setup=true&lang.ts
@@ -1546,13 +1550,13 @@ var wt = {
 		callbacks: {}
 	},
 	setup(e, { expose: t }) {
-		let n = e, i = Ct(n.adapter, n.api), { query: s, items: c, facets: l, searchTerms: u, total: p, page: m, size: g, pages: v, selected: y, loading: x, error: C, visible: E, invalidSearch: O, draftSearch: A, stale: j, pageSelected: M, pageIndeterminate: F } = i, I = b(), R = b(), z = b(null), B = b(typeof document > "u" || !document.hidden), V = b(""), H = /* @__PURE__ */ new Set(), U = Y.find((e) => e.key === "email_status"), W = k(() => [...K(s.value, n.presentation.facetLabel), ...u.value.map((e, t) => ({
+		let n = e, i = Ct(n.adapter, n.api), { query: s, items: c, facets: l, searchTerms: u, total: p, page: m, size: g, pages: v, selected: y, loading: x, error: C, visible: E, invalidSearch: O, draftSearch: A, stale: j, pageSelected: M, pageIndeterminate: F } = i, I = b(), R = b(), z = b(null), B = b(typeof document > "u" || !document.hidden), V = b(""), H = /* @__PURE__ */ new Set(), U = X.find((e) => e.key === "email_status"), W = k(() => [...q(s.value, n.presentation.facetLabel), ...u.value.map((e, t) => ({
 			key: `search:${t}`,
 			label: `${e.label}：${e.display_value}`,
 			title: `高级搜索 · 同时满足：${e.label}：${e.display_value}`,
 			removeLabel: `移除${e.label}：${e.display_value}`
 		}))]);
-		function q(e, t) {
+		function G(e, t) {
 			e === "plan" ? i.updateQuery({ plan: [...t] }) : e === "date_from" || e === "date_to" ? i.updateQuery({ [e]: String(t) }) : e === "id" || e === "email" ? i.updateFilters({ [e]: String(t) }, 250) : i.updateFilters({ [e]: [...t] });
 		}
 		function J(e) {
@@ -1568,13 +1572,13 @@ var wt = {
 				});
 				return;
 			}
-			let t = Y.find((t) => t.key === e);
-			t && q(t.key, t.kind === "text" ? "" : []);
+			let t = X.find((t) => t.key === e);
+			t && G(t.key, t.kind === "text" ? "" : []);
 		}
-		function te(e) {
+		function Y(e) {
 			V.value = e instanceof Error ? e.message : "账号操作暂不可用", n.callbacks.notify?.(V.value);
 		}
-		async function ne(e, t, r) {
+		async function te(e, t, r) {
 			if (j.value || !E.value || !B.value) return;
 			let a = JSON.stringify([t, e]);
 			if (!H.has(a)) {
@@ -1586,37 +1590,37 @@ var wt = {
 					});
 					await n.callbacks.invoke(e, a, r);
 				} catch (e) {
-					te(e);
+					Y(e);
 				} finally {
 					H.delete(a);
 				}
 			}
 		}
-		function re(e, t) {
+		function ne(e, t) {
 			if (j.value || !E.value || !B.value) return;
 			V.value = "";
 			let r = i.getRowSnapshot(e);
 			if (!r) {
-				te(/* @__PURE__ */ Error("账号详情暂不可用，请先刷新列表"));
+				Y(/* @__PURE__ */ Error("账号详情暂不可用，请先刷新列表"));
 				return;
 			}
 			let a;
 			try {
 				a = i.openPlanDetailsConsumer(e), n.callbacks.openDetail(e, r, a, t);
 			} catch (e) {
-				a?.release(), te(e);
+				a?.release(), Y(e);
 			}
 		}
-		function ie(e) {
+		function re(e) {
 			e || (z.value = null, n.callbacks.closeConsumers?.(!1)), i.setVisible(e);
 		}
-		function ae(e) {
+		function ie(e) {
 			z.value = null, i.setArchived(e);
 		}
-		function oe() {
+		function ae() {
 			i.clearSearch(), R.value?.focus();
 		}
-		function X() {
+		function oe() {
 			I.value?.resetColumns();
 		}
 		a([
@@ -1641,24 +1645,24 @@ var wt = {
 			immediate: !0,
 			flush: "post"
 		});
-		let Z = () => {
+		let se = () => {
 			B.value = !document.hidden, document.hidden && (z.value = null, n.callbacks.closeConsumers?.());
 		};
-		return typeof document < "u" && document.addEventListener("visibilitychange", Z), T(() => {
-			typeof document < "u" && document.removeEventListener("visibilitychange", Z), n.callbacks.closeConsumers?.();
+		return typeof document < "u" && document.addEventListener("visibilitychange", se), T(() => {
+			typeof document < "u" && document.removeEventListener("visibilitychange", se), n.callbacks.closeConsumers?.();
 		}), t({
 			refresh: i.refresh,
 			pollStatuses: i.pollStatuses,
-			setVisible: ie,
-			setArchived: ae,
-			openDetail: re,
+			setVisible: re,
+			setArchived: ie,
+			openDetail: ne,
 			setPage: i.setPage,
 			setSize: i.setSize,
 			closeMoreMenus: () => I.value?.closeMenu(),
 			updateQuery: i.updateQuery,
 			updateFilters: i.updateFilters,
 			resetFilters: i.resetFilters,
-			resetColumns: X,
+			resetColumns: oe,
 			getAccountSelectionSnapshot: i.getAccountSelectionSnapshot,
 			getActionContext: i.getActionContext,
 			getRowSnapshot: i.getRowSnapshot,
@@ -1667,19 +1671,19 @@ var wt = {
 			clearSelection: i.clearSelection
 		}), (t, n) => o((r(), L("section", wt, [
 			w("div", Tt, [
-				W.value.length ? (r(), L("div", Et, [f(G, {
+				W.value.length ? (r(), L("div", Et, [f(ee, {
 					items: W.value,
 					onRemove: J
 				}, null, 8, ["items"])])) : h("", !0),
 				d(t.$slots, "actions"),
 				w("div", Dt, [
-					w("div", Ot, [f(Pe, {
+					w("div", Ot, [f(Le, {
 						query: P(s),
 						facets: P(l),
 						label: e.presentation.facetLabel,
 						open: B.value && z.value === "all",
 						"onUpdate:open": n[0] ||= (e) => z.value = e ? "all" : null,
-						onChange: q,
+						onChange: G,
 						onClear: J
 					}, null, 8, [
 						"query",
@@ -1687,14 +1691,14 @@ var wt = {
 						"label",
 						"open"
 					])]),
-					f(Pe, {
+					f(Le, {
 						column: P(U),
 						query: P(s),
 						facets: P(l),
 						label: e.presentation.facetLabel,
 						open: B.value && z.value === "email_status",
 						"onUpdate:open": n[1] ||= (e) => z.value = e ? "email_status" : null,
-						onChange: q,
+						onChange: G,
 						onClear: J
 					}, null, 8, [
 						"column",
@@ -1719,7 +1723,7 @@ var wt = {
 							autocomplete: "off",
 							"aria-describedby": "accountAdvancedSearchHintV2 accountAdvancedSearchErrorV2",
 							"aria-invalid": P(O) || void 0,
-							onKeydown: _(D(oe, ["prevent"]), ["esc"]),
+							onKeydown: _(D(ae, ["prevent"]), ["esc"]),
 							onInput: n[2] ||= (e) => P(i).setSearchDraft(e.target.value),
 							onCompositionstart: n[3] ||= (...e) => P(i).compositionStart && P(i).compositionStart(...e),
 							onCompositionend: n[4] ||= (e) => P(i).compositionEnd(e.target.value)
@@ -1729,7 +1733,7 @@ var wt = {
 							type: "button",
 							"aria-label": "清空高级搜索",
 							title: "清空高级搜索",
-							onClick: oe
+							onClick: ae
 						}, "×")) : h("", !0)
 					], 32),
 					n[12] ||= w("span", {
@@ -1748,7 +1752,7 @@ var wt = {
 						type: "button",
 						class: "ac-link",
 						title: "恢复账号列表默认列宽",
-						onClick: X
+						onClick: oe
 					}, "恢复列宽"),
 					w("button", {
 						id: "btnRefreshAccountsV2",
@@ -1783,12 +1787,12 @@ var wt = {
 				"page-indeterminate": P(F),
 				"open-filter": z.value,
 				"onUpdate:openFilter": n[9] ||= (e) => z.value = e,
-				onFilter: q,
+				onFilter: G,
 				onClearFilter: J,
 				onSelect: P(i).toggle,
 				onSelectPage: P(i).togglePage,
-				onAction: ne,
-				onDetail: re,
+				onAction: te,
+				onDetail: ne,
 				onRetry: P(i).refresh,
 				onRendered: n[10] ||= (t) => e.callbacks.afterRender?.(t)
 			}, null, 8, [
@@ -1809,7 +1813,7 @@ var wt = {
 				"onSelectPage",
 				"onRetry"
 			]),
-			f(ee, {
+			f(K, {
 				compact: "",
 				page: P(m),
 				size: P(g),
@@ -2170,47 +2174,47 @@ var Zt = ["data-archived"], Qt = { class: "modal-header" }, $t = { id: "accountI
 		function Y(e, t) {
 			q[e].value || G.set(e, t ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null));
 		}
-		function te(e, t) {
-			Y("start", t), c.openStart(e), Z("start");
+		function X(e, t) {
+			Y("start", t), c.openStart(e), se("start");
 		}
-		function ne(e) {
-			Y("history", e), c.openHistory(), Z("history");
+		function te(e) {
+			Y("history", e), c.openHistory(), se("history");
 		}
-		function re(e, t) {
-			Y("failures", t), c.openFailures(e), Z("failures");
+		function ne(e, t) {
+			Y("failures", t), c.openFailures(e), se("failures");
 		}
-		function ie(e) {
+		function re(e) {
 			c.close(e);
 			let t = G.get(e);
 			if (G.delete(e), J) return;
 			let n = V.value?.open ? V.value.querySelector("button:not([disabled])") : i.deps.fallbackFocus?.();
 			(t?.isConnected ? t : n)?.focus({ preventScroll: !0 });
 		}
+		function ie(e) {
+			ee[e] ? --ee[e] : K[e].value?.open || re(e);
+		}
 		function ae(e) {
-			ee[e] ? --ee[e] : K[e].value?.open || ie(e);
+			let t = K[e].value;
+			t?.open && (++ee[e], t.close(), re(e));
 		}
 		function oe(e) {
-			let t = K[e].value;
-			t?.open && (++ee[e], t.close(), ie(e));
-		}
-		function X(e) {
 			c.close(e);
 			for (let t of [
 				"failures",
 				"history",
 				"start"
-			]) e && e !== t || oe(t);
+			]) e && e !== t || ae(t);
 		}
-		async function Z(e) {
+		async function se(e) {
 			await t();
 			let n = K[e].value, r = q[e].value;
-			n && !J && (r && !n.open ? (G.has(e) || G.set(e, document.activeElement instanceof HTMLElement ? document.activeElement : null), n.showModal()) : !r && n.open && oe(e));
+			n && !J && (r && !n.open ? (G.has(e) || G.set(e, document.activeElement instanceof HTMLElement ? document.activeElement : null), n.showModal()) : !r && n.open && ae(e));
 		}
 		for (let e of [
 			"start",
 			"history",
 			"failures"
-		]) a(q[e], () => Z(e), { flush: "post" });
+		]) a(q[e], () => se(e), { flush: "post" });
 		a(y, () => {
 			if (U.value) {
 				U.value.scrollTop = 0;
@@ -2224,10 +2228,10 @@ var Zt = ["data-archived"], Qt = { class: "modal-header" }, $t = { id: "accountI
 				e && (e.scrollLeft = 0);
 			}
 		});
-		function se(e) {
-			X("history"), i.deps.openTask(Number(e.task_id));
-		}
 		function ce(e) {
+			oe("history"), i.deps.openTask(Number(e.task_id));
+		}
+		function le(e) {
 			return Number(e.live_failed_count || 0) + Number(e.deactivated_skipped_count || 0);
 		}
 		return T(() => {
@@ -2235,10 +2239,10 @@ var Zt = ["data-archived"], Qt = { class: "modal-header" }, $t = { id: "accountI
 			for (let e of Object.values(K)) e.value?.open && e.value.close();
 			G.clear();
 		}), n({
-			openStart: te,
-			openHistory: ne,
-			openFailures: re,
-			close: X,
+			openStart: X,
+			openHistory: te,
+			openFailures: ne,
+			close: oe,
 			refreshHistory: c.refreshHistory,
 			refreshFailures: c.refreshFailures,
 			changeHistoryPage: c.changeHistoryPage,
@@ -2252,12 +2256,12 @@ var Zt = ["data-archived"], Qt = { class: "modal-header" }, $t = { id: "accountI
 				id: "accountInspectionStart",
 				"aria-labelledby": "accountInspectionStartTitle",
 				"data-archived": P(f),
-				onClose: n[3] ||= (e) => ae("start")
+				onClose: n[3] ||= (e) => ie("start")
 			}, [w("div", Qt, [n[14] ||= w("h2", { id: "accountInspectionStartTitle" }, "启动账号巡检", -1), w("button", {
 				type: "button",
 				class: "jobs-tb-btn",
 				"aria-label": "关闭启动巡检",
-				onClick: n[0] ||= (e) => X("start")
+				onClick: n[0] ||= (e) => oe("start")
 			}, "关闭")]), w("form", { onSubmit: n[2] ||= D((...e) => P(c).submit && P(c).submit(...e), ["prevent"]) }, [
 				w("p", $t, "本次范围：" + S(P(Wt)(P(f))), 1),
 				n[15] ||= w("p", null, "该归档范围内全部账号，不限当前页，不受勾选、搜索或其他筛选条件影响。", -1),
@@ -2287,7 +2291,7 @@ var Zt = ["data-archived"], Qt = { class: "modal-header" }, $t = { id: "accountI
 				class: "proxy-traffic-detail-dialog ac-inspection",
 				id: "accountInspectionHistory",
 				"aria-labelledby": "accountInspectionHistoryTitle",
-				onClose: n[8] ||= (e) => ae("history")
+				onClose: n[8] ||= (e) => ie("history")
 			}, [
 				w("div", nn, [
 					n[19] ||= w("h2", { id: "accountInspectionHistoryTitle" }, "账号巡检历史", -1),
@@ -2299,7 +2303,7 @@ var Zt = ["data-archived"], Qt = { class: "modal-header" }, $t = { id: "accountI
 					w("button", {
 						type: "button",
 						class: "jobs-tb-btn",
-						onClick: n[5] ||= (e) => X("history")
+						onClick: n[5] ||= (e) => oe("history")
 					}, "关闭")
 				]),
 				n[20] ||= w("p", null, "每 5 秒刷新。进度包含跳过；完成表示本轮处理结束，查活和套餐结果分别统计。", -1),
@@ -2326,18 +2330,18 @@ var Zt = ["data-archived"], Qt = { class: "modal-header" }, $t = { id: "accountI
 						type: "button",
 						class: "jobs-tb-btn",
 						"data-inspection-task": Number(t.id),
-						onClick: (e) => se(t)
+						onClick: (e) => ce(t)
 					}, "#" + S(Number(t.id)), 9, on)]),
 					w("td", null, S(P(Wt)(String(t.archived))), 1),
 					w("td", null, [R(S(P(Gt)(t.status)), 1), w("div", sn, S(e.deps.formatDateTime(t.created_at)), 1)]),
 					w("td", null, S(Number(t.workers)), 1),
 					w("td", null, [R(S(Number(t.checked_count) + Number(t.skipped_count)) + " / " + S(Number(t.total_count)), 1), w("div", cn, "跳过 " + S(Number(t.skipped_count)) + "（已废 " + S(Number(t.deactivated_skipped_count)) + "）", 1)]),
 					w("td", null, S(Number(t.invalid_count)), 1),
-					w("td", null, [R(S(Number(t.live_success_count)) + " / " + S(Number(t.live_failed_count)), 1), ce(t) ? (r(), L("div", ln, [w("button", {
+					w("td", null, [R(S(Number(t.live_success_count)) + " / " + S(Number(t.live_failed_count)), 1), le(t) ? (r(), L("div", ln, [w("button", {
 						type: "button",
 						class: "jobs-tb-btn",
-						onClick: (e) => re(Number(t.id), e.currentTarget)
-					}, "失败详情 " + S(ce(t)), 9, un)])) : h("", !0)]),
+						onClick: (e) => ne(Number(t.id), e.currentTarget)
+					}, "失败详情 " + S(le(t)), 9, un)])) : h("", !0)]),
 					w("td", null, S(Number(t.plan_success_count)) + " / " + S(Number(t.plan_failed_count)), 1),
 					w("td", null, [t.status === "running" ? (r(), L("button", {
 						key: 0,
@@ -2370,7 +2374,7 @@ var Zt = ["data-archived"], Qt = { class: "modal-header" }, $t = { id: "accountI
 				class: "proxy-traffic-detail-dialog ac-inspection",
 				id: "accountInspectionFailures",
 				"aria-labelledby": "accountInspectionFailuresTitle",
-				onClose: n[13] ||= (e) => ae("failures")
+				onClose: n[13] ||= (e) => ie("failures")
 			}, [
 				w("div", _n, [
 					w("h2", vn, S(P(C) ? `巡检 #${P(C)} · 失败详情` : "巡检失败详情"), 1),
@@ -2382,7 +2386,7 @@ var Zt = ["data-archived"], Qt = { class: "modal-header" }, $t = { id: "accountI
 					w("button", {
 						type: "button",
 						class: "jobs-tb-btn",
-						onClick: n[10] ||= (e) => X("failures")
+						onClick: n[10] ||= (e) => oe("failures")
 					}, "关闭")
 				]),
 				n[21] ||= w("p", null, "保留本轮原始执行快照，后续重跑或删除账号不会改写；含已废跳过，套餐单独失败不计为查活失败。", -1),
@@ -3085,7 +3089,7 @@ var tr = { class: "c2a-reimport-confirm-head" }, nr = ["disabled"], rr = { class
 		}
 		let x = k(() => {
 			g.value;
-			let e = a.value?.getActionContext(), t = e ? Object.fromEntries(ue.map((t) => [t.action, n.actions.isPending(t.action, e)])) : {};
+			let e = a.value?.getActionContext(), t = e ? Object.fromEntries(pe.map((t) => [t.action, n.actions.isPending(t.action, e)])) : {};
 			return t.reimportSelectedC2a = l.value?.isSubmitting === !0, {
 				selectedCount: p.value?.selectedIds.length || 0,
 				archived: p.value?.archived === "only",
@@ -3181,7 +3185,7 @@ var tr = { class: "c2a-reimport-confirm-head" }, nr = ["disabled"], rr = { class
 				presentation: e.presentation,
 				callbacks: w
 			}, {
-				actions: i(() => [f(Se, {
+				actions: i(() => [f(Te, {
 					ref_key: "toolbar",
 					ref: u,
 					state: x.value,
@@ -3248,7 +3252,7 @@ function Dr(e) {
 	return Tr(e) && e.ok === !0 && Array.isArray(e.items) && Er(e.total, 0) && Er(e.page, 1) && Er(e.page_size, 1) && Er(e.offset, 0) && Er(e.limit, 1) && typeof e.revision == "string";
 }
 function Or() {
-	throw new Z("账号查询返回了无效的响应，请刷新后重试。", 200, "account_response_invalid");
+	throw new le("账号查询返回了无效的响应，请刷新后重试。", 200, "account_response_invalid");
 }
 function kr(e) {
 	return {
@@ -3259,7 +3263,7 @@ function kr(e) {
 				page_size: r
 			});
 			a?.includeFacets === !1 && o.set("include_facets", "0");
-			let s = await X(`/api/accounts?${o}`, { signal: i });
+			let s = await ce(`/api/accounts?${o}`, { signal: i });
 			return Dr(s) && s.compact === !0 && Tr(s.facets) && Array.isArray(s.search_terms) || Or(), s;
 		},
 		async statuses(t, n, r, i) {
@@ -3269,12 +3273,12 @@ function kr(e) {
 				page_size: r
 			});
 			a.set("compact", "1");
-			let o = await X(`/api/accounts/plan-check-status?${a}`, { signal: i });
+			let o = await ce(`/api/accounts/plan-check-status?${a}`, { signal: i });
 			return Dr(o) && Tr(o.queue) && Array.isArray(o.status_fields) && o.status_fields.every((e) => typeof e == "string") || Or(), o;
 		},
 		async planDetails(e, t) {
 			if (!/^[1-9]\d*$/.test(e)) throw Error("账号 ID 无效");
-			let n = await X(`/api/accounts/${encodeURIComponent(e)}/plan-details`, { signal: t });
+			let n = await ce(`/api/accounts/${encodeURIComponent(e)}/plan-details`, { signal: t });
 			return Tr(n) && n.ok === !0 && Tr(n.item) && Object.hasOwn(n.item, "account_promotions") && Object.hasOwn(n.item, "promotion_query_snapshot") && Array.isArray(n.item.plan_check_country_results) || Or(), n;
 		}
 	};
@@ -3283,8 +3287,8 @@ function kr(e) {
 function Ar() {
 	return { async roxyProfile(e, t) {
 		if (!/^[1-9]\d*$/.test(e)) throw Error("账号 ID 无效");
-		let n = await X(`/api/accounts/${encodeURIComponent(e)}/roxy-profile`, { signal: t });
-		if (!n || typeof n != "object" || Array.isArray(n) || !("ok" in n) || n.ok !== !0 || !("profile_id" in n) || n.profile_id !== null && typeof n.profile_id != "string" || !("window_name" in n) || n.window_name !== null && typeof n.window_name != "string") throw new Z("账号详情返回了无效的响应，请重新打开详情重试。", 200, "account_response_invalid");
+		let n = await ce(`/api/accounts/${encodeURIComponent(e)}/roxy-profile`, { signal: t });
+		if (!n || typeof n != "object" || Array.isArray(n) || !("ok" in n) || n.ok !== !0 || !("profile_id" in n) || n.profile_id !== null && typeof n.profile_id != "string" || !("window_name" in n) || n.window_name !== null && typeof n.window_name != "string") throw new le("账号详情返回了无效的响应，请重新打开详情重试。", 200, "account_response_invalid");
 		return {
 			ok: !0,
 			profile_id: n.profile_id,
@@ -3340,9 +3344,9 @@ function Rr(t, n) {
 			}), t = await Promise.race([i(o), e]);
 			return a(o), t;
 		} catch (n) {
-			if (n instanceof Z && (n.unavailableFeature || n.status >= 400 && n.status < 500 && n.status !== 408)) throw a(o), n;
+			if (n instanceof le && (n.unavailableFeature || n.status >= 400 && n.status < 500 && n.status !== 408)) throw a(o), n;
 			r.value = [Lr(s), ...r.value];
-			let i = n instanceof Z ? `。${n.message}` : "";
+			let i = n instanceof le ? `。${n.message}` : "";
 			t.notify(`${e}受理结果未确认，可在账号页查询回执${i}`);
 			return;
 		} finally {
@@ -3361,8 +3365,8 @@ function Rr(t, n) {
 				});
 				if (n?.ok !== !0 || typeof n.found != "boolean" || !Array.isArray(n.items) || n.found !== n.items.length > 0) throw Error("回执格式无效");
 				let r = n.items.map((e) => ({
-					task_id: se(e.task_id),
-					run_id: ce(e.run_id)
+					task_id: ue(e.task_id),
+					run_id: de(e.run_id)
 				}));
 				i(e, {
 					items: r,
@@ -3464,7 +3468,7 @@ function Wr(e) {
 		return e;
 	});
 }
-function $(e) {
+function Q(e) {
 	let t = Number(e || 0);
 	if (!Number.isSafeInteger(t) || t < 0) throw Error("服务端响应格式无效");
 	return t;
@@ -3603,7 +3607,7 @@ function Zr(e, t) {
 					return;
 				}
 				if (!n) return;
-				e.notify(f.single ? String(n.message || "套餐查询已加入后台队列") : `已入队 ${$(n.started_count)} 个，查询中跳过 ${$(n.busy_count)} 个，入队失败 ${$(n.failed_count)} 个${Wr(n.skipped).length ? `，跳过 ${Wr(n.skipped).length} 个` : ""}${Jr(n)}`), m(() => t.pollStatuses(s), v);
+				e.notify(f.single ? String(n.message || "套餐查询已加入后台队列") : `已入队 ${Q(n.started_count)} 个，查询中跳过 ${Q(n.busy_count)} 个，入队失败 ${Q(n.failed_count)} 个${Wr(n.skipped).length ? `，跳过 ${Wr(n.skipped).length} 个` : ""}${Jr(n)}`), m(() => t.pollStatuses(s), v);
 			} else if (f.kind === "live") {
 				let n = t.operationWorkers(), r = f.single ? "确定查活这个账号吗？\n\n只在线验证现有 accessToken，不会发送邮箱验证码，也不会刷新 AT。" : `确定查活选中的 ${o.length} 个账号吗？\n\n只在线验证现有 accessToken，不会发送邮箱验证码，也不会刷新 AT。\n\n并发线程数：${n}`;
 				if (!await e.confirm(r)) return;
@@ -3614,7 +3618,7 @@ function Zr(e, t) {
 				});
 				if (!i) return;
 				let a = Wr(i.skipped).length, l = Wr(i.started);
-				e.notify(`查活已入队 ${$(i.started_count)} 个，忙碌 ${$(i.busy_count)} 个，失败 ${$(i.failed_count)}${a ? `，跳过 ${a}` : ""}（配置驱动：${t.configuredLiveCheckDriver() || "默认"}，实际驱动：${i.live_check_driver || "未知"}）${Jr(i)}`), l[0]?.email && m(() => t.openLiveLog(String(l[0].email)), v), m(() => t.refresh(s), v), m(() => t.refreshSummary(), v);
+				e.notify(`查活已入队 ${Q(i.started_count)} 个，忙碌 ${Q(i.busy_count)} 个，失败 ${Q(i.failed_count)}${a ? `，跳过 ${a}` : ""}（配置驱动：${t.configuredLiveCheckDriver() || "默认"}，实际驱动：${i.live_check_driver || "未知"}）${Jr(i)}`), l[0]?.email && m(() => t.openLiveLog(String(l[0].email)), v), m(() => t.refresh(s), v), m(() => t.refreshSummary(), v);
 			} else if (f.kind === "token") {
 				let n = t.operationWorkers(), i = t.fallbackConfig(), a = Array.isArray(i) && i.some((e) => e?.key === "ACCOUNT_AT_REFRESH_DRIVER");
 				if (c(a ? "刷新 AT…" : "读取配置…"), !a) try {
@@ -3628,12 +3632,12 @@ function Zr(e, t) {
 				let f = await y("token", "/api/accounts/refresh-token-bulk", { account_ids: o });
 				if (!f) return;
 				let p = Wr(f.skipped).length, h = Wr(f.started)[0];
-				e.notify(`刷新AT已入队 ${$(f.started_count)} 个，忙碌 ${$(f.busy_count)} 个，失败 ${$(f.failed_count)}${p ? `，跳过 ${p}` : ""}${Jr(f)}`), h?.task_id ? m(() => t.openAccountTaskLog(se(h.task_id), ce(h.run_id)), v) : h?.email && m(() => t.openLiveLog(String(h.email)), v), m(() => t.refresh(s), v), m(() => t.refreshSummary(), v);
+				e.notify(`刷新AT已入队 ${Q(f.started_count)} 个，忙碌 ${Q(f.busy_count)} 个，失败 ${Q(f.failed_count)}${p ? `，跳过 ${p}` : ""}${Jr(f)}`), h?.task_id ? m(() => t.openAccountTaskLog(ue(h.task_id), de(h.run_id)), v) : h?.email && m(() => t.openLiveLog(String(h.email)), v), m(() => t.refresh(s), v), m(() => t.refreshSummary(), v);
 			} else if (f.kind === "mail") {
 				c("扫描中…");
 				let t = await y("mail", f.single ? `/api/accounts/${o[0]}/check-deactivation-mail` : "/api/accounts/check-deactivation-mail-bulk", f.single ? void 0 : { account_ids: o });
 				if (!t) return;
-				e.notify(f.single ? "封号邮件扫描已入队；不会刷新 AT" : `已入队 ${$(t.started_count)} 个，跳过 ${$(t.skipped_count)} 个；不会刷新 AT`), m(() => p(f.single || $(t.started_count) > 0 ? o : [], s, _), v);
+				e.notify(f.single ? "封号邮件扫描已入队；不会刷新 AT" : `已入队 ${Q(t.started_count)} 个，跳过 ${Q(t.skipped_count)} 个；不会刷新 AT`), m(() => p(f.single || Q(t.started_count) > 0 ? o : [], s, _), v);
 			} else if (f.kind === "extract") {
 				if (f.single) {
 					let t = a.rowHints.find((e) => String(e.id) === String(o[0]));
@@ -3653,8 +3657,8 @@ function Zr(e, t) {
 					let t = n.fallback_from && n.link_type ? `；${String(n.fallback_from).toUpperCase()} 已失败，改用 ${String(n.link_type).toUpperCase()}` : "";
 					e.notify(`提炼任务已入队${n.task_id ? ` · 任务 #${n.task_id}` : ""}${t}，可在任务中心查看日志`);
 				} else {
-					let t = $(n.skipped_count) + $(n.busy_count) + $(n.failed_count), r = Wr(n.started).filter((e) => e.fallback_from).length;
-					e.notify(`已入队 ${$(n.started_count)} 个${t ? `，跳过/失败 ${t} 个` : ""}${r ? `，其中 ${r} 个已自动跳过失败类型` : ""}`);
+					let t = Q(n.skipped_count) + Q(n.busy_count) + Q(n.failed_count), r = Wr(n.started).filter((e) => e.fallback_from).length;
+					e.notify(`已入队 ${Q(n.started_count)} 个${t ? `，跳过/失败 ${t} 个` : ""}${r ? `，其中 ${r} 个已自动跳过失败类型` : ""}`);
 				}
 				await m(async () => {
 					await t.reloadTasks(), await t.pollStatuses(s);
@@ -3744,17 +3748,17 @@ function ai(e) {
 	if (!Array.isArray(e)) throw Error("服务端响应格式无效");
 	return e.map((e) => ii(e));
 }
-function oi(e) {
+function $(e) {
 	let t = Number(e || 0);
 	if (!Number.isSafeInteger(t) || t < 0) throw Error("服务端响应格式无效");
 	return t;
 }
-function si(e) {
-	return Array.isArray(e) ? Object.freeze(e.map(si)) : e && typeof e == "object" ? Object.freeze(Object.fromEntries(Object.entries(e).map(([e, t]) => [e, si(t)]))) : e;
+function oi(e) {
+	return Array.isArray(e) ? Object.freeze(e.map(oi)) : e && typeof e == "object" ? Object.freeze(Object.fromEntries(Object.entries(e).map(([e, t]) => [e, oi(t)]))) : e;
 }
-function ci(e) {
+function si(e) {
 	if (!Array.isArray(e?.accountIds)) throw Error("账号动作上下文不可用，请刷新后重试");
-	return si({
+	return oi({
 		accountIds: [...new Set(e.accountIds.map((e) => {
 			if (typeof e != "string" || !/^[1-9]\d*$/.test(e) || !Number.isSafeInteger(Number(e))) throw Error("账号 ID 无效");
 			return e;
@@ -3765,23 +3769,23 @@ function ci(e) {
 		rowHints: e.rowHints
 	});
 }
-function li(e) {
+function ci(e) {
 	let t = ai(e.started), n = ai(e.reused), r = ai(e.skipped);
-	return si({
+	return oi({
 		started: t,
 		reused: n,
 		skipped: r,
-		started_count: oi(e.started_count ?? t.length),
-		reused_count: oi(e.reused_count ?? n.length),
-		skipped_count: oi(e.skipped_count ?? r.length)
+		started_count: $(e.started_count ?? t.length),
+		reused_count: $(e.reused_count ?? n.length),
+		skipped_count: $(e.skipped_count ?? r.length)
 	});
 }
-function ui(e) {
+function li(e) {
 	return `注册重跑：已创建 ${e.started_count} 个，进行中 ${e.reused_count} 个，跳过 ${e.skipped_count} 个`;
 }
-var di = (e) => e instanceof Error ? e.message : "请求失败，请稍后重试。", fi = (e) => e === "account-registration-retry" || e === "retryAccountRegistration", pi = (e) => e.startsWith("account-") || e.startsWith("codex-");
-function mi(e, t) {
-	let n = /* @__PURE__ */ new Set(), r = /* @__PURE__ */ new Set(), i = (e, t) => pi(ni(e).name) ? JSON.stringify([e, ...t]) : e;
+var ui = (e) => e instanceof Error ? e.message : "请求失败，请稍后重试。", di = (e) => e === "account-registration-retry" || e === "retryAccountRegistration", fi = (e) => e.startsWith("account-") || e.startsWith("codex-");
+function pi(e, t) {
+	let n = /* @__PURE__ */ new Set(), r = /* @__PURE__ */ new Set(), i = (e, t) => fi(ni(e).name) ? JSON.stringify([e, ...t]) : e;
 	async function a(e, n) {
 		let r = e.length === 1 ? e[0] : void 0, i = r && n.rowHints.find((e) => String(e.id) === String(r.account_id)), a = r?.task_id || r?.operation_task_id;
 		await t.openTasks({
@@ -3794,7 +3798,7 @@ function mi(e, t) {
 		try {
 			await t();
 		} catch (t) {
-			e.notify(`请求已处理，但页面更新失败: ${di(t)}`);
+			e.notify(`请求已处理，但页面更新失败: ${ui(t)}`);
 		}
 	}
 	function s(e, n) {
@@ -3805,12 +3809,12 @@ function mi(e, t) {
 		if (e.canInvoke?.(c, u) === !1) return;
 		let { name: d, value: f } = ni(c), p = d === "account-action" ? f : ti($r, d) ? $r[d] : void 0, m = p ? Qr[p] : void 0, h, g, _ = [], v = !1, y = m ? `${m.label}失败: ` : d.includes("setup") || d === "setupSelectedAccounts" ? "补齐账号配置失败: " : d === "codex-stop" ? "停止失败: " : d === "codex-reset-retrying" ? "重置失败: " : d === "codex-retry" ? "触发补跑失败: " : d === "stopSelectedCodex" ? "停止选中补跑失败: " : d === "retrySelectedCodex" ? "批量补跑失败: " : d === "uploadSelectedCodexSub2" ? "批量上传 sub2 失败: " : "注册重跑提交失败: ";
 		try {
-			let y = ci(l), b = y.accountIds.map(Number), x = b[0];
+			let y = si(l), b = y.accountIds.map(Number), x = b[0];
 			if (!b.length) {
 				e.notify("请先选择账号");
 				return;
 			}
-			if (pi(d) && b.length !== 1) throw Error("此操作只能选择一个账号");
+			if (fi(d) && b.length !== 1) throw Error("此操作只能选择一个账号");
 			let S = y.rowHints.find((e) => String(e.id) === String(x)), C = y.expectedEmails[String(x)] || S?.email || "", w = S?.email || C || `账号 #${x}`;
 			if (d === "account-registration-task") {
 				await a([{
@@ -3820,7 +3824,7 @@ function mi(e, t) {
 				}], y);
 				return;
 			}
-			if (fi(d) && y.accountIds.some((e) => r.has(e))) {
+			if (di(d) && y.accountIds.some((e) => r.has(e))) {
 				e.notify("所选账号的注册重跑正在提交，请稍后查看结果");
 				return;
 			}
@@ -3828,13 +3832,13 @@ function mi(e, t) {
 				h = void 0;
 				return;
 			}
-			if (n.add(h), fi(d) && (_ = y.accountIds, _.forEach((e) => r.add(e))), p && !pi(d) && ["password_change", "twofa_change"].includes(p) && b.length > 20) {
+			if (n.add(h), di(d) && (_ = y.accountIds, _.forEach((e) => r.add(e))), p && !fi(d) && ["password_change", "twofa_change"].includes(p) && b.length > 20) {
 				e.notify("修改密码或修改 2FA 单次最多操作 20 个账号");
 				return;
 			}
 			let T;
-			if (T = d === "account-setup" ? `补齐账号配置？\n\n${w}\n\n只执行账号密码、套餐查询和 Authenticator 2FA，不执行 Codex 授权。` : d === "setupSelectedAccounts" ? `确定补齐选中的 ${b.length} 个账号配置吗？\n\n只执行：账号密码、套餐查询、Authenticator 2FA。\n不会执行 Codex 授权。` : m ? pi(d) ? `${m.label}？\n\n${w}` : `确定${m.label}选中的 ${b.length} 个账号吗？` : d === "codex-stop" ? `确定停止该账号的 Codex 补跑吗？\n\n${C}\n\n会发送停止信号并将状态标记为“已停止”。` : d === "codex-reset-retrying" ? `确定重置该账号的 Codex「补跑中」状态吗？\n\n${C}\n\n重置后状态会变为“失败”，可再次点击“补跑 Codex”。` : d === "codex-retry" ? `重新跑 Codex 授权？\n\n${C}\n\n按实际验证要求使用邮箱 OTP（自动收）。手机接码仅在开关开启且遇到手机验证时使用；关闭后遇到手机验证会报错退出。\n\n补跑会在后台进行，完成后状态自动更新。` : d === "stopSelectedCodex" ? `确定停止选中的 ${b.length} 个账号的 Codex 补跑吗？\n\n会向正在补跑的任务发送停止信号，并将状态标记为“已停止”；未在补跑的账号会自动跳过。` : d === "retrySelectedCodex" ? `批量补跑选中的 ${b.length} 个账号 Codex 授权？\n\n并发线程数：${t.operationWorkers()}\n\n按实际验证要求使用邮箱 OTP。手机接码仅在开关开启且遇到手机验证时使用；关闭后遇到手机验证会报错退出。\n\n补跑中和已废号账号会自动跳过。` : d === "uploadSelectedCodexSub2" ? `确定上传选中的 ${b.length} 个账号的 Codex OAuth 凭证到 sub2api 吗？\n\n未完成 Codex OAuth 的账号会自动跳过。` : `确定为${b.length === 1 ? `账号 #${x}` : `选中的 ${b.length} 个账号`}${b.length === 1 && S?.registration_retry?.label || "重跑原注册任务"}吗？\n\n复用原注册记录，按当前进度重跑或补齐缺失步骤。正在执行、已完成或没有原任务的账号会显示对应结果。`, !await e.confirm(T)) return;
-			g = e.beginBusy?.(c, u, fi(d) ? "提交中…" : d === "uploadSelectedCodexSub2" ? "提交上传…" : void 0) || void 0;
+			if (T = d === "account-setup" ? `补齐账号配置？\n\n${w}\n\n只执行账号密码、套餐查询和 Authenticator 2FA，不执行 Codex 授权。` : d === "setupSelectedAccounts" ? `确定补齐选中的 ${b.length} 个账号配置吗？\n\n只执行：账号密码、套餐查询、Authenticator 2FA。\n不会执行 Codex 授权。` : m ? fi(d) ? `${m.label}？\n\n${w}` : `确定${m.label}选中的 ${b.length} 个账号吗？` : d === "codex-stop" ? `确定停止该账号的 Codex 补跑吗？\n\n${C}\n\n会发送停止信号并将状态标记为“已停止”。` : d === "codex-reset-retrying" ? `确定重置该账号的 Codex「补跑中」状态吗？\n\n${C}\n\n重置后状态会变为“失败”，可再次点击“补跑 Codex”。` : d === "codex-retry" ? `重新跑 Codex 授权？\n\n${C}\n\n按实际验证要求使用邮箱 OTP（自动收）。手机接码仅在开关开启且遇到手机验证时使用；关闭后遇到手机验证会报错退出。\n\n补跑会在后台进行，完成后状态自动更新。` : d === "stopSelectedCodex" ? `确定停止选中的 ${b.length} 个账号的 Codex 补跑吗？\n\n会向正在补跑的任务发送停止信号，并将状态标记为“已停止”；未在补跑的账号会自动跳过。` : d === "retrySelectedCodex" ? `批量补跑选中的 ${b.length} 个账号 Codex 授权？\n\n并发线程数：${t.operationWorkers()}\n\n按实际验证要求使用邮箱 OTP。手机接码仅在开关开启且遇到手机验证时使用；关闭后遇到手机验证会报错退出。\n\n补跑中和已废号账号会自动跳过。` : d === "uploadSelectedCodexSub2" ? `确定上传选中的 ${b.length} 个账号的 Codex OAuth 凭证到 sub2api 吗？\n\n未完成 Codex OAuth 的账号会自动跳过。` : `确定为${b.length === 1 ? `账号 #${x}` : `选中的 ${b.length} 个账号`}${b.length === 1 && S?.registration_retry?.label || "重跑原注册任务"}吗？\n\n复用原注册记录，按当前进度重跑或补齐缺失步骤。正在执行、已完成或没有原任务的账号会显示对应结果。`, !await e.confirm(T)) return;
+			g = e.beginBusy?.(c, u, di(d) ? "提交中…" : d === "uploadSelectedCodexSub2" ? "提交上传…" : void 0) || void 0;
 			let E = async (t, n) => {
 				let r = ii(await e.request(t, {
 					method: "POST",
@@ -3845,7 +3849,7 @@ function mi(e, t) {
 			};
 			if (d === "account-setup" || d === "setupSelectedAccounts") {
 				let t = d === "account-setup", n = await E(t ? `/api/accounts/${x}/setup` : "/api/accounts/setup-bulk", t ? {} : { account_ids: b }), r = ai(n.skipped).length;
-				e.notify(t ? String(n.message || "已开始补齐账号配置") : r ? `已开始补齐 ${oi(n.started_count)} 个，跳过 ${r} 个` : `已开始补齐 ${oi(n.started_count)} 个账号配置`), s(y, { filters: {
+				e.notify(t ? String(n.message || "已开始补齐账号配置") : r ? `已开始补齐 ${$(n.started_count)} 个，跳过 ${r} 个` : `已开始补齐 ${$(n.started_count)} 个账号配置`), s(y, { filters: {
 					target: t ? w : "",
 					type: "account_setup_retry"
 				} });
@@ -3854,7 +3858,7 @@ function mi(e, t) {
 					account_ids: b,
 					action: p
 				}), r = ai(n.skipped).length, i = ai(n.started);
-				e.notify(t ? String(n.message || `${m.label}已入队`) : r ? `已开始 ${oi(n.started_count)} 个，跳过 ${r} 个` : String(n.message || `${m.label}已入队`));
+				e.notify(t ? String(n.message || `${m.label}已入队`) : r ? `已开始 ${$(n.started_count)} 个，跳过 ${r} 个` : String(n.message || `${m.label}已入队`));
 				let a = t ? !!n.registration_resume : i.length > 0 && i.every((e) => e.registration_resume);
 				s(y, { filters: t ? {
 					target: w,
@@ -3871,23 +3875,23 @@ function mi(e, t) {
 				} } : void 0);
 			} else if (d === "stopSelectedCodex" || d === "retrySelectedCodex") {
 				let t = d === "stopSelectedCodex", n = await E(`/api/codex/${t ? "stop" : "retry"}-bulk`, { account_ids: b }), r = ai(n.skipped).length;
-				e.notify(t ? `已停止 ${oi(n.stopped_count)} 个${r ? `，跳过 ${r} 个` : ""}` : r ? `已开始 ${oi(n.started_count)} 个，跳过 ${r} 个` : String(n.message || "已开始批量补跑")), s(y, t ? void 0 : { filters: {
+				e.notify(t ? `已停止 ${$(n.stopped_count)} 个${r ? `，跳过 ${r} 个` : ""}` : r ? `已开始 ${$(n.started_count)} 个，跳过 ${r} 个` : String(n.message || "已开始批量补跑")), s(y, t ? void 0 : { filters: {
 					target: "",
 					type: "codex_retry"
 				} });
 			} else if (d === "uploadSelectedCodexSub2") {
-				let n = await E("/api/accounts/codex/upload-sub2-bulk", { account_ids: b }), r = oi(n.skipped_count ?? ai(n.skipped).length) + oi(n.failed_count ?? ai(n.failed).length), i = r ? Qn(n) : "";
-				n.accepted ? e.notify(`手动上传已入队 ${oi(n.queued_count ?? ai(n.queued).length)} 个，未入队 ${r} 个，请在任务中心查看结果${i}`) : (e.notify(`已上传 ${oi(n.uploaded_count)} 个${r ? `，跳过/失败 ${r} 个${i}` : ""}`), await o(() => t.pollStatuses(y)));
-			} else if (fi(d)) {
-				let n = li(await E(b.length === 1 ? `/api/accounts/${x}/registration-retry` : "/api/accounts/registration-retry-bulk", b.length === 1 ? {} : { account_ids: b }));
-				if (e.notify(ui(n)), t.showRegistrationResult(n, y, (e) => a(e, y)), b.length === 1) {
+				let n = await E("/api/accounts/codex/upload-sub2-bulk", { account_ids: b }), r = $(n.skipped_count ?? ai(n.skipped).length) + $(n.failed_count ?? ai(n.failed).length), i = r ? Qn(n) : "";
+				n.accepted ? e.notify(`手动上传已入队 ${$(n.queued_count ?? ai(n.queued).length)} 个，未入队 ${r} 个，请在任务中心查看结果${i}`) : (e.notify(`已上传 ${$(n.uploaded_count)} 个${r ? `，跳过/失败 ${r} 个${i}` : ""}`), await o(() => t.pollStatuses(y)));
+			} else if (di(d)) {
+				let n = ci(await E(b.length === 1 ? `/api/accounts/${x}/registration-retry` : "/api/accounts/registration-retry-bulk", b.length === 1 ? {} : { account_ids: b }));
+				if (e.notify(li(n)), t.showRegistrationResult(n, y, (e) => a(e, y)), b.length === 1) {
 					let e = n.started[0] || n.reused[0];
 					e && await a([e], y);
 				}
 				await t.refresh(y);
 			}
 		} catch (t) {
-			v && (y = fi(d) ? "注册重跑请求已处理，页面更新失败: " : "请求已处理，但页面更新失败: "), e.notify(y + di(t));
+			v && (y = di(d) ? "注册重跑请求已处理，页面更新失败: " : "请求已处理，但页面更新失败: "), e.notify(y + ui(t));
 		} finally {
 			h && n.delete(h), _.forEach((e) => r.delete(e)), g?.();
 		}
@@ -3895,20 +3899,20 @@ function mi(e, t) {
 	return {
 		isSupported: ri,
 		invoke: c,
-		isPending: (e, t) => fi(ni(e).name) ? t.accountIds.some((e) => r.has(e)) : n.has(i(e, t.accountIds))
+		isPending: (e, t) => di(ni(e).name) ? t.accountIds.some((e) => r.has(e)) : n.has(i(e, t.accountIds))
 	};
 }
 // src/features/accounts/localMutations.ts
-var hi = (e) => e === "only" ? "已归档账号" : e === "all" ? "全部账号" : "未归档账号", gi = (e) => e && typeof e == "object" && "message" in e ? String(e.message) : "请求失败，请稍后重试。";
-function _i(e) {
+var mi = (e) => e === "only" ? "已归档账号" : e === "all" ? "全部账号" : "未归档账号", hi = (e) => e && typeof e == "object" && "message" in e ? String(e.message) : "请求失败，请稍后重试。";
+function gi(e) {
 	let t = e.indexOf(":");
 	return {
 		name: t < 0 ? e : e.slice(0, t),
 		value: t < 0 ? void 0 : e.slice(t + 1)
 	};
 }
-function vi(e) {
-	let { name: t, value: n } = _i(e);
+function _i(e) {
+	let { name: t, value: n } = gi(e);
 	return ["account-archive", "account-email-invalid"].includes(t) ? n === "0" || n === "1" : t === "setAccountsEmailInvalid" ? n === void 0 || n === "0" || n === "1" : n === void 0 && [
 		"account-delete",
 		"account-restore",
@@ -3917,34 +3921,34 @@ function vi(e) {
 		"deleteDeactivatedAccounts"
 	].includes(t);
 }
-function yi(e) {
+function vi(e) {
 	if (!e || typeof e != "object" || Array.isArray(e)) throw Error("服务端响应格式无效");
 	let t = e;
 	if (t.ok === !1) throw Error(typeof t.error == "string" ? t.error : "请求失败");
 	return t;
 }
-function bi(e) {
+function yi(e) {
 	let t = Number(e);
 	if (e == null || e === "" || typeof e == "boolean" || !Number.isSafeInteger(t) || t < 0) throw Error("服务端响应格式无效");
 	return t;
 }
-function xi(e) {
+function bi(e) {
 	if (!Array.isArray(e?.accountIds)) throw Error("账号动作上下文不可用，请刷新后重试");
 	return [...new Set(e.accountIds.map((e) => {
 		if (typeof e != "string" || !/^[1-9]\d*$/.test(e) || !Number.isSafeInteger(Number(e))) throw Error("账号 ID 无效");
 		return Number(e);
 	}))];
 }
-function Si(e, t) {
+function xi(e, t) {
 	if (!Array.isArray(e)) throw Error("服务端响应格式无效");
-	return [...new Set(e.map((e) => yi(e).id).filter((e) => (typeof e == "number" || typeof e == "string") && t.includes(Number(e))).map(String))];
+	return [...new Set(e.map((e) => vi(e).id).filter((e) => (typeof e == "number" || typeof e == "string") && t.includes(Number(e))).map(String))];
 }
-function Ci(e) {
-	let t = /* @__PURE__ */ new Set(), n = (e, t) => e.startsWith("account-") ? JSON.stringify([e, ...t.accountIds]) : _i(e).name;
+function Si(e) {
+	let t = /* @__PURE__ */ new Set(), n = (e, t) => e.startsWith("account-") ? JSON.stringify([e, ...t.accountIds]) : gi(e).name;
 	async function r(t, n, r = !1) {
 		let i = r ? new AbortController() : void 0, a = i ? setTimeout(() => i.abort(), 3e4) : void 0;
 		try {
-			return yi(await e.request(t, {
+			return vi(await e.request(t, {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify(n),
@@ -3956,14 +3960,14 @@ function Ci(e) {
 	}
 	async function i(t, n, r) {
 		let i = (await Promise.allSettled([Promise.resolve().then(() => e.refresh(t)), ...n ? [Promise.resolve().then(() => e.refreshSummary())] : []])).find((e) => e.status === "rejected");
-		i && e.notify(`${r ? "操作已处理，" : ""}页面刷新失败: ${gi(i.reason)}`);
+		i && e.notify(`${r ? "操作已处理，" : ""}页面刷新失败: ${hi(i.reason)}`);
 	}
 	async function a(a, o, s = null) {
-		if (!vi(a)) throw Error(`未支持的账号动作：${_i(a).name}`);
+		if (!_i(a)) throw Error(`未支持的账号动作：${gi(a).name}`);
 		if (e.canInvoke?.(a, s) === !1) return;
-		let { name: c, value: l } = _i(a), u = c === "deleteDeactivatedAccounts", d = c === "account-email-invalid" || c === "setAccountsEmailInvalid", f, p, m = !1, h = !1, g = !1, _ = u ? "删除请求失败，请刷新核实：" : d ? "更新邮箱失效标记失败: " : c === "account-restore" ? "恢复账号失败: " : c === "deleteSelectedAccounts" ? "批量删除失败: " : "删除失败: ";
+		let { name: c, value: l } = gi(a), u = c === "deleteDeactivatedAccounts", d = c === "account-email-invalid" || c === "setAccountsEmailInvalid", f, p, m = !1, h = !1, g = !1, _ = u ? "删除请求失败，请刷新核实：" : d ? "更新邮箱失效标记失败: " : c === "account-restore" ? "恢复账号失败: " : c === "deleteSelectedAccounts" ? "批量删除失败: " : "删除失败: ";
 		try {
-			let i = u ? [] : xi(o), v = o.archived;
+			let i = u ? [] : bi(o), v = o.archived;
 			if (!u && !i.length) {
 				e.notify("请先选择账号");
 				return;
@@ -4004,7 +4008,7 @@ function Ci(e) {
 					invalid: n,
 					reason: c,
 					expected_emails: t
-				}), d = bi(u.updated_count), f = Array.isArray(u.skipped) ? u.skipped.length : 0;
+				}), d = yi(u.updated_count), f = Array.isArray(u.skipped) ? u.skipped.length : 0;
 				h = !0, e.notify(`${n ? "已标记邮箱失效" : "已清除本地邮箱失效标记"} ${d} 个${f ? `，跳过 ${f} 个（邮箱可能已变更）` : ""}`);
 			} else if (u) {
 				if (![
@@ -4012,9 +4016,9 @@ function Ci(e) {
 					"only",
 					"all"
 				].includes(v)) throw Error("归档范围无效");
-				if (!await e.confirm(`确定删除「${hi(v)}」范围内全部已废账号？\n\n不限当前页，不受勾选、搜索或其他筛选影响。仅删除本地账号记录，保留邮箱池和巡检历史。此操作不可撤销。`)) return;
+				if (!await e.confirm(`确定删除「${mi(v)}」范围内全部已废账号？\n\n不限当前页，不受勾选、搜索或其他筛选影响。仅删除本地账号记录，保留邮箱池和巡检历史。此操作不可撤销。`)) return;
 				p = e.beginBusy?.(a, s) || void 0, m = !0, g = !0;
-				let t = bi((await r("/api/accounts/delete-deactivated", { archived: v }, !0)).deleted_count);
+				let t = yi((await r("/api/accounts/delete-deactivated", { archived: v }, !0)).deleted_count);
 				h = !0, e.clearSelection(o), e.notify(`已删除 ${t} 个已废账号`);
 			} else if (c === "account-restore") {
 				if (![
@@ -4041,8 +4045,8 @@ function Ci(e) {
 					...t ? { archived: u } : {}
 				} : t ? { archived: u } : {}), S, C;
 				if (n) {
-					S = Si(b[t ? "updated" : "deleted"], i);
-					let e = bi(b[t ? "updated_count" : "deleted_count"]), n = Array.isArray(b.skipped) ? b.skipped.length : 0;
+					S = xi(b[t ? "updated" : "deleted"], i);
+					let e = yi(b[t ? "updated_count" : "deleted_count"]), n = Array.isArray(b.skipped) ? b.skipped.length : 0;
 					C = `已${d} ${e} 个${n ? `，跳过 ${n} 个` : ""}`;
 				} else {
 					if (b[t ? "updated" : "deleted"] !== !0 || (t || b.id !== void 0) && String(b.id) !== String(y)) throw Error("服务端未确认账号操作结果");
@@ -4051,7 +4055,7 @@ function Ci(e) {
 				h = !0, g = !0, S.length && e.removeAcknowledgedSelection(S, o), e.notify(C);
 			}
 		} catch (t) {
-			e.notify(`${h ? "操作已处理，页面更新失败: " : _}${gi(t)}`);
+			e.notify(`${h ? "操作已处理，页面更新失败: " : _}${hi(t)}`);
 		} finally {
 			(h || u && m) && await i(o, g || u, h);
 			try {
@@ -4066,13 +4070,13 @@ function Ci(e) {
 		}
 	}
 	return {
-		isSupported: vi,
+		isSupported: _i,
 		invoke: a,
 		isPending: (e, r) => t.has(n(e, r))
 	};
 }
 // src/features/accounts/actions.ts
-var wi = {
+var Ci = {
 	copySelectedAccountTokens: {
 		field: "access_token",
 		empty: "选中账号没有可复制 Token",
@@ -4113,18 +4117,18 @@ var wi = {
 		success: (e) => `已复制 ${e} 个 2FA 密钥；未设置 2FA 的账号已跳过`,
 		error: "复制 2FA 失败: "
 	}
-}, Ti = {
+}, wi = {
 	copy_line: "账号整行已复制",
 	chatgpt_session: "ChatGPT session 已复制",
 	account_password: "账号密码已复制",
 	totp_secret: "TOTP 密钥已复制",
 	access_token: "Token 已复制"
-}, Ei = {
+}, Ti = {
 	downloadSelectedAccountTxt: "生成 TXT 失败: ",
 	downloadSelectedAccountSessions: "下载 Session 失败: ",
 	downloadSelectedCpa: "下载 CPA 失败: "
-}, Di = (e, t) => Object.prototype.hasOwnProperty.call(e, t);
-function Oi(e) {
+}, Ei = (e, t) => Object.prototype.hasOwnProperty.call(e, t);
+function Di(e) {
 	let t = e.indexOf(":");
 	return t < 0 ? {
 		name: e,
@@ -4136,27 +4140,27 @@ function Oi(e) {
 		hasValue: !0
 	};
 }
-function ki(e) {
-	let { name: t, value: n, hasValue: r } = Oi(e);
-	return t === "account-copy-secret" ? r && Di(Ti, n) : !r && (t === "account-totp-copy" || Di(wi, t) || Di(Ei, t));
+function Oi(e) {
+	let { name: t, value: n, hasValue: r } = Di(e);
+	return t === "account-copy-secret" ? r && Ei(wi, n) : !r && (t === "account-totp-copy" || Ei(Ci, t) || Ei(Ti, t));
 }
-function Ai(e) {
+function ki(e) {
 	if (!e || typeof e != "object" || Array.isArray(e)) throw Error("服务端响应格式无效");
 	let t = e;
 	if (t.ok === !1) throw Error(typeof t.error == "string" ? t.error : "请求失败");
 	return t;
 }
-function ji(e) {
+function Ai(e) {
 	if (!e) return "";
 	if (typeof e != "string") throw Error("服务端响应格式无效");
 	return e;
 }
-function Mi(e) {
+function ji(e) {
 	let t = Number(e || 0);
 	if (!Number.isFinite(t) || !Number.isInteger(t) || t < 0) throw Error("服务端响应格式无效");
 	return t;
 }
-function Ni(e) {
+function Mi(e) {
 	if (e.download_url == null || e.download_url === "") throw Error("服务端未返回下载地址");
 	if (typeof e.download_url != "string" || e.filename != null && typeof e.filename != "string") throw Error("服务端响应格式无效");
 	if (!e.download_url.trim()) throw Error("服务端未返回下载地址");
@@ -4165,7 +4169,7 @@ function Ni(e) {
 		filename: e.filename || ""
 	};
 }
-function Pi(e) {
+function Ni(e) {
 	if (!Array.isArray(e?.accountIds)) throw Error("账号动作上下文不可用，请刷新后重试");
 	let t = e.accountIds.map((e) => {
 		if (typeof e != "string" || !/^[1-9]\d*$/.test(e) || !Number.isSafeInteger(Number(e))) throw Error("账号 ID 无效");
@@ -4173,18 +4177,18 @@ function Pi(e) {
 	});
 	return Object.freeze([...new Set(t)]);
 }
-function Fi(e) {
+function Pi(e) {
 	return e instanceof Error ? e.message : "请求失败，请稍后重试。";
 }
-function Ii(e) {
-	let t = e.queued ? Zr(e, e.queued) : void 0, n = e.setup ? mi(e, e.setup) : void 0, r = e.local ? Ci({
+function Fi(e) {
+	let t = e.queued ? Zr(e, e.queued) : void 0, n = e.setup ? pi(e, e.setup) : void 0, r = e.local ? Si({
 		...e.local,
 		request: e.request,
 		notify: e.notify,
 		confirm: e.confirm,
 		canInvoke: e.canInvoke,
 		beginBusy: e.beginBusy
-	}) : void 0, i = /* @__PURE__ */ new Set(), a = (e, t) => e.startsWith("account-") ? JSON.stringify([e, ...t.map(String)]) : e, o = async (t, n) => Ai(await e.request(t, {
+	}) : void 0, i = /* @__PURE__ */ new Set(), a = (e, t) => e.startsWith("account-") ? JSON.stringify([e, ...t.map(String)]) : e, o = async (t, n) => ki(await e.request(t, {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
 		body: JSON.stringify(n)
@@ -4195,21 +4199,21 @@ function Ii(e) {
 			field: t
 		});
 		if (!Array.isArray(n.values)) throw Error("服务端响应格式无效");
-		return n.values.map((e) => ji(Ai(e).value)).filter(Boolean);
+		return n.values.map((e) => Ai(ki(e).value)).filter(Boolean);
 	}
 	async function c(c, l, u = null) {
 		if (t?.isSupported(c)) return t.invoke(c, l, u);
 		if (n?.isSupported(c)) return n.invoke(c, l, u);
 		if (r?.isSupported(c)) return r.invoke(c, l, u);
-		if (!ki(c)) throw Error(`未支持的账号动作：${Oi(c).name}`);
+		if (!Oi(c)) throw Error(`未支持的账号动作：${Di(c).name}`);
 		if (e.canInvoke?.(c, u) === !1) return;
-		let { name: d, value: f } = Oi(c), p = Di(wi, d) ? wi[d] : void 0, m = p?.error ?? Ei[d] ?? (d === "account-totp-copy" ? "复制验证码失败: " : "复制失败: "), h, g, _ = !1, v = () => {
+		let { name: d, value: f } = Di(c), p = Ei(Ci, d) ? Ci[d] : void 0, m = p?.error ?? Ti[d] ?? (d === "account-totp-copy" ? "复制验证码失败: " : "复制失败: "), h, g, _ = !1, v = () => {
 			h && i.delete(h);
 			let e = g;
 			g = void 0, e?.();
 		};
 		try {
-			let t = Pi(l);
+			let t = Ni(l);
 			if (!t.length) {
 				e.notify("请先选择账号");
 				return;
@@ -4230,16 +4234,16 @@ function Ii(e) {
 				let r = p.feedback === !1 ? await e.clipboard(n.join("\n"), !1) : await e.clipboard(n.join("\n"));
 				e.notify(p.copyFailed && !r ? p.copyFailed : p.success(n.length));
 			} else if (d === "account-copy-secret") {
-				let n = ji(Ai(await e.request(`/api/accounts/${t[0]}/secret?field=${encodeURIComponent(f)}`)).value);
+				let n = Ai(ki(await e.request(`/api/accounts/${t[0]}/secret?field=${encodeURIComponent(f)}`)).value);
 				if (!n) {
 					e.notify("可复制内容为空");
 					return;
 				}
-				await e.clipboard(n), e.notify(Ti[f]);
+				await e.clipboard(n), e.notify(wi[f]);
 			} else if (d === "account-totp-copy") {
-				let n = Ai(await e.request(`/api/accounts/${t[0]}/totp-code`)), r = ji(n.code);
+				let n = ki(await e.request(`/api/accounts/${t[0]}/totp-code`)), r = Ai(n.code);
 				if (!r) throw Error("验证码为空");
-				let i = Mi(n.remaining_seconds), a = await e.clipboard(r, !1);
+				let i = ji(n.remaining_seconds), a = await e.clipboard(r, !1);
 				e.notify(a ? `验证码已复制，剩余 ${i} 秒` : "验证码已查询，但复制失败");
 			} else if (d === "downloadSelectedAccountTxt") {
 				let n = await s(t, "copy_line");
@@ -4253,25 +4257,25 @@ function Ii(e) {
 				let n = await o("/api/accounts/download-session-bulk", {
 					account_ids: t,
 					prepare: !0
-				}), { url: r, filename: i } = Ni(n), a = Mi(n.added_count), s = Mi(n.skipped_count);
+				}), { url: r, filename: i } = Mi(n), a = ji(n.added_count), s = ji(n.skipped_count);
 				await e.downloadUrl(r, i), e.notify(a === 0 ? `没有可下载的 Session，已生成结果清单，跳过 ${s} 个；开始下载，分类原因见 ZIP 内 manifest.json；Session 缺失或无效的账号请先刷新 AT，读取失败的账号请重试` : `已打包 ${a} 个账号 Session，跳过 ${s} 个；开始下载，结果见 ZIP 内 manifest.json`);
 			} else if (d === "downloadSelectedCpa") {
 				let n = await o("/api/accounts/download-cpa-bulk", {
 					account_ids: t,
 					prepare: !0
-				}), { url: r, filename: i } = Ni(n), a = Mi(n.error_count);
+				}), { url: r, filename: i } = Mi(n), a = ji(n.error_count);
 				await e.downloadUrl(r, i), e.notify(`已生成 ZIP，开始下载${a ? `（${a} 个失败见 manifest）` : ""}`), e.schedule(() => {
-					Promise.resolve().then(() => e.reloadCodex()).catch((t) => e.notify(`下载已开始，但 Codex 列表刷新失败: ${Fi(t)}`));
+					Promise.resolve().then(() => e.reloadCodex()).catch((t) => e.notify(`下载已开始，但 Codex 列表刷新失败: ${Pi(t)}`));
 				}, 1200);
 			}
 		} catch (t) {
-			e.notify(m + Fi(t));
+			e.notify(m + Pi(t));
 		} finally {
 			_ ? e.schedule(v, 1200) : v();
 		}
 	}
 	return {
-		isSupported: (e) => ki(e) || t?.isSupported(e) === !0 || n?.isSupported(e) === !0 || r?.isSupported(e) === !0,
+		isSupported: (e) => Oi(e) || t?.isSupported(e) === !0 || n?.isSupported(e) === !0 || r?.isSupported(e) === !0,
 		invoke: c,
 		isPending: (e, o) => i.has(a(e, o.accountIds)) || t?.isPending(e, o) === !0 || n?.isPending(e, o) === !0 || r?.isPending(e, o) === !0,
 		receipts: t?.receipts,
@@ -4280,7 +4284,7 @@ function Ii(e) {
 	};
 }
 // src/features/accounts/browserDownloads.ts
-function Li(e) {
+function Ii(e) {
 	function t(t, n, r, i) {
 		let a, o = () => {
 			try {
@@ -4313,15 +4317,15 @@ function Li(e) {
 	};
 }
 // src/accounts.ts
-function Ri(e, t) {
-	let n = re(t.query), r = Li({
+function Li(e, t) {
+	let n = re(t.query), r = Ii({
 		document,
 		origin: window.location.origin,
 		urls: URL,
 		schedule: (e, t) => setTimeout(e, t)
-	}), i = Ii({
+	}), i = Fi({
 		...t.actionDependencies,
-		request: X,
+		request: ce,
 		...r,
 		now: () => /* @__PURE__ */ new Date(),
 		schedule: (e, t) => setTimeout(e, t)
@@ -4337,7 +4341,7 @@ function Ri(e, t) {
 	return A(wr, {
 		adapter: n,
 		api: kr(n),
-		presentation: Re(t.presentation),
+		presentation: Ve(t.presentation),
 		callbacks: t.callbacks,
 		detailApi: Ar(),
 		detailPresentation: t.detailPresentation,
@@ -4345,18 +4349,18 @@ function Ri(e, t) {
 		actions: i,
 		inspectionDependencies: {
 			...t.inspectionDependencies,
-			request: X
+			request: ce
 		},
 		emailChangeDependencies: {
 			...t.emailChangeDependencies,
-			request: X
+			request: ce
 		},
 		c2aDependencies: {
 			...t.c2aDependencies,
-			request: X
+			request: ce
 		},
 		initialCapabilities: t.capabilities,
 		toolbarRuntime: a
 	}).mount(e);
 }
-export { Ri as mountAccounts };
+export { Li as mountAccounts };

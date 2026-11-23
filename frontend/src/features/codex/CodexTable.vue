@@ -4,6 +4,8 @@ import {PopoverContent, PopoverPortal, PopoverRoot, PopoverTrigger} from 'reka-u
 import type {CodexFacets, CodexFilters as FilterValues, CodexRow} from '../../api/codex';
 import type {CodexAction} from './actions';
 import ListCell from '../../components/ListCell.vue';
+import ColumnResizer from '../../components/ColumnResizer.vue';
+import TableState from '../../components/TableState.vue';
 import {useColumnWidths} from '../../shared/useColumnWidths';
 import {dateTimeLines} from '../../shared/time';
 import CodexFilters from './CodexFilters.vue';
@@ -38,33 +40,33 @@ function display(value: unknown) { return value == null || value === '' ? '—' 
 defineExpose({resetColumns});
 </script>
 <template>
-  <div class="cx-table-scroll" tabindex="0" aria-label="Codex 凭证列表，可横向滚动" :aria-busy="loading">
-    <table class="cx-table" :style="{'--cx-table-width':`${total}px`}">
-      <caption class="cx-sr-only">Codex 凭证，支持跨页选择</caption>
+  <div class="ui-table-scroll cx-table-scroll" tabindex="0" aria-label="Codex 凭证列表，可横向滚动" :aria-busy="loading">
+    <table class="ui-table ui-table--sticky-end cx-table" :style="{'--ui-table-width':`${total}px`}">
+      <caption class="ui-sr-only">Codex 凭证，支持跨页选择</caption>
       <colgroup><col v-for="(width,index) in widths" :key="index" :style="{width:`${width}px`}"></colgroup>
       <thead><tr>
-        <th scope="col"><input type="checkbox" aria-label="全选当前页 Codex 凭证" :checked="allChecked" :indeterminate="partial" :disabled="!items.length || busy" @change="emit('selectPage',($event.target as HTMLInputElement).checked)"></th>
+        <th scope="col" class="ui-col-check"><input type="checkbox" aria-label="全选当前页 Codex 凭证" :checked="allChecked" :indeterminate="partial" :disabled="!items.length || busy" @change="emit('selectPage',($event.target as HTMLInputElement).checked)"></th>
         <th v-for="(column,index) in codexColumns" :key="column.key" scope="col">
           <CodexFilters :column="column" :model-value="filters" :facets="facets" :open="visible && openFilter === column.key" @update:model-value="emit('update:filters',$event)" @update:open="emit('update:openFilter',$event ? column.key : null)"/>
-          <button type="button" class="cx-column-resize" :aria-label="`调整${column.label}列宽，方向键调整`" @pointerdown.prevent="resize(index+1,$event)" @keydown.left.prevent="resizeWithKeyboard(index+1,-10)" @keydown.right.prevent="resizeWithKeyboard(index+1,10)"></button>
+          <ColumnResizer :label="column.label" @start="resize(index+1,$event)" @nudge="resizeWithKeyboard(index+1,$event)"/>
         </th>
         <th scope="col">操作</th>
       </tr></thead>
       <tbody>
-        <tr v-for="{row,key,credential,oauth} in rows" :key="key" :class="{'cx-row-selected':selected.has(row.filename)}">
-          <td class="cx-check" data-label="选择"><input type="checkbox" :aria-label="`选择凭证 ${row.filename}`" :checked="selected.has(row.filename)" :disabled="busy" @change="emit('select',row.filename,($event.target as HTMLInputElement).checked)"></td>
+        <tr v-for="{row,key,credential,oauth} in rows" :key="key" :class="{'is-selected':selected.has(row.filename)}">
+          <td class="ui-col-check cx-check" data-label="选择"><input type="checkbox" :aria-label="`选择凭证 ${row.filename}`" :checked="selected.has(row.filename)" :disabled="busy" @change="emit('select',row.filename,($event.target as HTMLInputElement).checked)"></td>
           <td class="cx-identity" data-label="邮箱 / 文件"><ListCell :text="row.email || row.filename" :secondary="row.email ? row.filename : undefined" :title="`${row.email || ''} · 文件：${row.filename}${row.archived ? ' · 已归档' : ''}`"/><div class="cx-mobile-summary" :title="[display(row.plan),credential.title,oauth.title].join('；')">{{ [display(row.plan),credential.label,oauth.label].join(' · ') }}</div></td>
           <td class="cx-extra" data-label="Plan"><ListCell :text="display(row.plan)"/></td>
-          <td class="cx-extra" data-label="凭证状态"><ListCell :text="credential.label" :title="credential.title" :tone="credential.tone"><span class="cx-badge" :class="`cx-badge--${credential.tone}`">{{ credential.label }}</span></ListCell></td>
-          <td class="cx-extra" data-label="OAuth 状态"><ListCell :text="oauth.label" :title="oauth.title" :tone="oauth.tone"><span class="cx-badge" :class="`cx-badge--${oauth.tone}`">{{ oauth.label }}</span></ListCell></td>
+          <td class="cx-extra" data-label="凭证状态"><ListCell :text="credential.label" :title="credential.title" :tone="credential.tone"><span class="ui-badge cx-badge" :class="`ui-badge--${credential.tone}`">{{ credential.label }}</span></ListCell></td>
+          <td class="cx-extra" data-label="OAuth 状态"><ListCell :text="oauth.label" :title="oauth.title" :tone="oauth.tone"><span class="ui-badge cx-badge" :class="`ui-badge--${oauth.tone}`">{{ oauth.label }}</span></ListCell></td>
           <td class="cx-extra" data-label="Account ID"><ListCell :text="display(row.account_id)"/></td>
           <td class="cx-extra" data-label="Sub2API ID"><ListCell :text="display(row.sub2api_account_id)"/></td>
-          <td class="cx-extra cx-time" data-label="更新时间"><ListCell v-bind="dateTimeLines(row.mtime)" :title="display(row.mtime)"/></td>
-          <td class="cx-extra cx-time" data-label="过期时间"><ListCell v-bind="dateTimeLines(row.expired)" :title="display(row.expired)"/></td>
-          <td class="cx-actions" data-label="操作"><div class="cx-row-actions">
-            <button type="button" class="cx-link cx-direct-download" :data-codex-download="row.filename" :disabled="busy" @click="action('download',row)">下载凭证</button>
+          <td class="cx-extra ui-time" data-label="更新时间"><ListCell v-bind="dateTimeLines(row.mtime)" :title="display(row.mtime)"/></td>
+          <td class="cx-extra ui-time" data-label="过期时间"><ListCell v-bind="dateTimeLines(row.expired)" :title="display(row.expired)"/></td>
+          <td class="cx-actions" data-label="操作"><div class="ui-row-actions cx-row-actions">
+            <button type="button" class="ui-link cx-direct-download" :data-codex-download="row.filename" :disabled="busy" @click="action('download',row)">下载凭证</button>
             <PopoverRoot :open="visible && openAction === key" :modal="false" @update:open="setActionOpen(key,$event)">
-              <PopoverTrigger as-child><button type="button" class="cx-button" :aria-label="`更多操作 ${row.filename}`" :disabled="busy">更多</button></PopoverTrigger>
+              <PopoverTrigger as-child><button type="button" class="ui-button" :aria-label="`更多操作 ${row.filename}`" :disabled="busy">更多</button></PopoverTrigger>
               <PopoverPortal><PopoverContent class="cx-row-menu" :aria-label="`${row.email || row.filename} 的凭证详情与操作`" side="bottom" align="end" :side-offset="6" :collision-padding="10" hide-when-detached>
                 <dl class="cx-row-details"><dt>邮箱 / 文件</dt><dd>{{ row.email || '—' }}<br>{{ row.filename }}</dd><dt>Plan</dt><dd>{{ display(row.plan) }}</dd><dt>凭证状态</dt><dd>{{ credential.title }}</dd><dt>OAuth 状态</dt><dd>{{ oauth.label }} · {{ oauth.title }}</dd><dt>Account ID</dt><dd>{{ display(row.account_id) }}</dd><dt>Sub2API ID</dt><dd>{{ display(row.sub2api_account_id) }}</dd><dt>更新时间</dt><dd>{{ display(row.mtime) }}</dd><dt>过期时间</dt><dd>{{ display(row.expired) }}</dd></dl>
                 <div class="cx-menu-actions" role="group" aria-label="凭证操作">
@@ -81,7 +83,7 @@ defineExpose({resetColumns});
             </PopoverRoot>
           </div></td>
         </tr>
-        <tr v-if="!items.length" class="cx-empty-row"><td colspan="10"><div class="cx-empty" :role="error ? 'alert' : 'status'"><strong>{{ loading ? '正在加载授权凭证' : error ? '凭证列表加载失败' : '没有匹配的凭证' }}</strong><p>{{ error || (loading ? '正在同步 OAuth 与导出状态' : '可调整筛选条件，或清除全部筛选。') }}</p><button v-if="error" type="button" class="cx-button" @click="emit('retry')">重新加载</button></div></td></tr>
+        <TableState v-if="!items.length" :colspan="10" :loading="loading" :error="error" loading-title="正在加载授权凭证" loading-text="正在同步 OAuth 与导出状态" error-title="凭证列表加载失败" title="没有匹配的凭证" text="可调整筛选条件，或清除全部筛选。" retry-label="重新加载" @retry="emit('retry')"/>
       </tbody>
     </table>
   </div>

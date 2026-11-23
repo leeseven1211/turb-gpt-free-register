@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue';
 import ListCell from '../../components/ListCell.vue';
 import ListPagination from '../../components/ListPagination.vue';
+import TableState from '../../components/TableState.vue';
 import ListResult from '../../components/ListResult.vue';
 import { formatDateTime } from '../../shared/time';
 import type { ProxyPoolSnapshot } from './contracts';
@@ -57,8 +58,8 @@ const count = (value: unknown) => number(value) ?? '—';
         ><strong :data-proxy-summary="key">{{ pool ? counts[state!] || 0 : '—' }}</strong>
       </div>
     </div>
-    <section class="pt-panel" aria-label="独立代理池库存">
-      <header class="pt-pool-header">
+    <section class="ui-list pt-panel" aria-label="独立代理池库存">
+      <header class="ui-list-toolbar pt-pool-header">
         <h3>代理池库存</h3>
         <span v-if="pool" role="status"
           >快照包含最近 {{ inventory.length }} 条库存 · 最小可用 {{ pool.policy.min_ready || 0 }} ·
@@ -101,16 +102,8 @@ const count = (value: unknown) => number(value) ?? '—';
           </div>
         </div>
       </div>
-      <ListPagination
-        v-if="pool"
-        v-model:page="page"
-        v-model:size="pageSize"
-        :total="inventory.length"
-        class="pt-pool-pagination"
-        label="代理池库存分页"
-      />
-      <div ref="tableScroll" class="pt-table-scroll" tabindex="0" aria-label="代理池库存，可横向滚动">
-        <table class="pt-table pt-pool-table" data-proxy-table="pool">
+        <div ref="tableScroll" class="ui-table-scroll pt-table-scroll" tabindex="0" aria-label="代理池库存，可横向滚动">
+          <table class="ui-table pt-table pt-pool-table" data-proxy-table="pool">
           <thead>
             <tr>
               <th
@@ -160,19 +153,18 @@ const count = (value: unknown) => number(value) ?? '—';
                 >
               </td>
             </tr>
-            <tr v-if="!inventory.length">
-              <td colspan="7">
-                <div class="pt-empty" role="status">
-                  <strong>{{
-                    loading && !pool ? '正在加载代理池库存' : pool ? '暂无脱敏库存' : '暂时没有代理池快照'
-                  }}</strong>
-                  <p>{{ pool ? '等待后台补货或复检' : '代理池服务或旧版本接口暂未返回脱敏库存' }}</p>
-                </div>
-              </td>
-            </tr>
+              <TableState v-if="!inventory.length" :colspan="7" :loading="loading && !pool" loading-title="正在加载代理池库存" :title="pool ? '暂无脱敏库存' : '暂时没有代理池快照'" :text="pool ? '等待后台补货或复检' : '代理池服务或旧版本接口暂未返回脱敏库存'"/>
           </tbody>
         </table>
       </div>
+        <ListPagination
+          v-if="pool"
+          v-model:page="page"
+          v-model:size="pageSize"
+          :total="inventory.length"
+          class="pt-pool-pagination"
+          label="代理池库存分页"
+        />
     </section>
   </div>
 </template>

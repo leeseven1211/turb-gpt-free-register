@@ -1,9 +1,9 @@
-import { $ as e, A as t, C as n, E as r, F as i, G as a, H as o, K as s, L as c, M as l, R as u, S as d, T as f, Z as p, _ as m, a as h, c as g, d as _, dt as v, et as y, ft as b, g as x, h as S, it as C, j as w, k as T, l as E, lt as D, m as O, n as k, nt as A, o as j, r as M, s as N, st as P, t as F, ut as I, v as L, x as R } from "./_plugin-vue_export-helper-CBsH_ZoE.js";
-import { _ as z, b as B, c as V, d as H, f as U, g as W, h as ee, l as G, m as K, n as q, p as J, r as Y, t as te, u as ne, v as re, x as ie, y as ae } from "./ListFilterSummary-0POqp2Om.js";
-import { a as oe, c as se, n as ce, o as le, s as ue, t as de } from "./queryAdapter-BcWFQcKm.js";
-import { t as fe } from "./errorLabels-C0VIFLD8.js";
-// ../../../../../code/personal/gpt/turb-gpt-free-register/frontend/node_modules/reka-ui/dist/Dialog/DialogRoot.js
-var [pe, me] = /*#__PURE__*/ ie("DialogRoot"), he = /* @__PURE__ */ n({
+import { $ as e, A as t, C as n, E as r, F as i, G as a, H as o, K as s, L as c, M as l, R as u, S as d, T as f, Z as p, _ as m, a as h, c as g, d as _, dt as v, et as y, ft as b, g as x, h as S, it as C, j as w, k as T, l as E, lt as D, m as O, n as k, nt as A, o as j, r as M, s as N, st as P, t as F, ut as I, v as L, x as R } from "./_plugin-vue_export-helper-CbB61E6q.js";
+import { S as z, _ as B, b as V, d as H, f as U, g as W, h as ee, i as G, l as K, m as q, n as J, p as Y, r as te, t as ne, u as re, v as ie, x as ae, y as oe } from "./ListFilterSummary-DlR4RU2b.js";
+import { a as se, c as ce, n as le, o as ue, s as de, t as fe } from "./queryAdapter-BcWFQcKm.js";
+import { t as pe } from "./errorLabels-C0VIFLD8.js";
+// ../../../../../../../home/ubuntu/turb-ui-redesign/wt/frontend/node_modules/reka-ui/dist/Dialog/DialogRoot.js
+var [me, he] = /*#__PURE__*/ z("DialogRoot"), ge = /* @__PURE__ */ n({
 	inheritAttrs: !1,
 	__name: "DialogRoot",
 	props: {
@@ -30,11 +30,11 @@ var [pe, me] = /*#__PURE__*/ ie("DialogRoot"), he = /* @__PURE__ */ n({
 	},
 	emits: ["update:open"],
 	setup(e, { emit: t }) {
-		let n = e, r = ae(n, "open", t, {
+		let n = e, r = V(n, "open", t, {
 			defaultValue: n.defaultOpen,
 			passive: n.open === void 0
 		}), i = y(), a = y(), { modal: o, unmountOnHide: s } = C(n);
-		return me({
+		return he({
 			open: r,
 			modal: o,
 			unmountOnHide: s,
@@ -57,7 +57,7 @@ var [pe, me] = /*#__PURE__*/ ie("DialogRoot"), he = /* @__PURE__ */ n({
 			close: () => r.value = !1
 		});
 	}
-}), ge = /* @__PURE__ */ n({
+}), _e = /* @__PURE__ */ n({
 	__name: "DialogClose",
 	props: {
 		asChild: {
@@ -72,9 +72,9 @@ var [pe, me] = /*#__PURE__*/ ie("DialogRoot"), he = /* @__PURE__ */ n({
 	},
 	setup(e) {
 		let t = e;
-		W();
-		let n = pe();
-		return (r, o) => (i(), x(P(H), T(t, {
+		B();
+		let n = me();
+		return (r, o) => (i(), x(P(U), T(t, {
 			type: e.as === "button" ? "button" : void 0,
 			onClick: o[0] ||= (e) => P(n).onOpenChange(!1)
 		}), {
@@ -82,21 +82,21 @@ var [pe, me] = /*#__PURE__*/ ie("DialogRoot"), he = /* @__PURE__ */ n({
 			_: 3
 		}, 16, ["type"]));
 	}
-}), _e = ["Enter", " "], ve = [
+}), ve = ["Enter", " "], ye = [
 	"ArrowDown",
 	"PageUp",
 	"Home"
-], ye = [
+], be = [
 	"ArrowUp",
 	"PageDown",
 	"End"
 ];
-[...ve, ...ye], [..._e], [..._e];
-function be(e) {
+[...ye, ...be], [...ve], [...ve];
+function xe(e) {
 	return e ? "open" : "closed";
 }
-// ../../../../../code/personal/gpt/turb-gpt-free-register/frontend/node_modules/reka-ui/dist/Dialog/DialogContentImpl.js
-var xe = /* @__PURE__ */ n({
+// ../../../../../../../home/ubuntu/turb-ui-redesign/wt/frontend/node_modules/reka-ui/dist/Dialog/DialogContentImpl.js
+var Se = /* @__PURE__ */ n({
 	__name: "DialogContentImpl",
 	props: {
 		forceMount: {
@@ -133,10 +133,10 @@ var xe = /* @__PURE__ */ n({
 		"closeAutoFocus"
 	],
 	setup(e, { emit: t }) {
-		let n = e, r = t, o = pe(), { forwardRef: s, currentElement: c } = W();
-		return o.titleId ||= J(void 0, "reka-dialog-title"), o.descriptionId ||= J(void 0, "reka-dialog-description"), l(() => {
-			o.contentElement = c, B() !== document.body && (o.triggerElement.value = B());
-		}), (t, c) => (i(), x(P(G), {
+		let n = e, r = t, o = me(), { forwardRef: s, currentElement: c } = B();
+		return o.titleId ||= q(void 0, "reka-dialog-title"), o.descriptionId ||= q(void 0, "reka-dialog-description"), l(() => {
+			o.contentElement = c, ae() !== document.body && (o.triggerElement.value = ae());
+		}), (t, c) => (i(), x(P(re), {
 			"as-child": "",
 			loop: "",
 			trapped: n.trapFocus,
@@ -144,7 +144,7 @@ var xe = /* @__PURE__ */ n({
 			onMountAutoFocus: c[5] ||= (e) => r("openAutoFocus", e),
 			onUnmountAutoFocus: c[6] ||= (e) => r("closeAutoFocus", e)
 		}, {
-			default: a(() => [d(P(ne), T({
+			default: a(() => [d(P(H), T({
 				id: P(o).contentId,
 				ref: P(s),
 				as: e.as,
@@ -154,7 +154,7 @@ var xe = /* @__PURE__ */ n({
 				role: "dialog",
 				"aria-describedby": P(o).descriptionId,
 				"aria-labelledby": P(o).titleId,
-				"data-state": P(be)(P(o).open.value)
+				"data-state": P(xe)(P(o).open.value)
 			}, t.$attrs, {
 				onDismiss: c[0] ||= (e) => P(o).onOpenChange(!1),
 				onEscapeKeyDown: c[1] ||= (e) => r("escapeKeyDown", e),
@@ -177,7 +177,7 @@ var xe = /* @__PURE__ */ n({
 			_: 3
 		}, 8, ["trapped", "present"]));
 	}
-}), Se = /* @__PURE__ */ n({
+}), Ce = /* @__PURE__ */ n({
 	__name: "DialogContentModal",
 	props: {
 		forceMount: {
@@ -215,15 +215,15 @@ var xe = /* @__PURE__ */ n({
 		"closeAutoFocus"
 	],
 	setup(e, { emit: t }) {
-		let n = e, r = t, s = pe(), c = z(r), { forwardRef: l, currentElement: d } = W(), f = O(() => n.present ? d.value : void 0);
-		K(f);
+		let n = e, r = t, s = me(), c = ie(r), { forwardRef: l, currentElement: d } = B(), f = O(() => n.present ? d.value : void 0);
+		ee(f);
 		let p = O(() => {
 			let { present: e, ...t } = n;
 			return t;
 		});
 		return o(() => n.present, (e, t) => {
 			!e && t && s.triggerElement.value?.focus();
-		}), (t, r) => (i(), x(xe, T({
+		}), (t, r) => (i(), x(Se, T({
 			...p.value,
 			...P(c)
 		}, {
@@ -250,7 +250,7 @@ var xe = /* @__PURE__ */ n({
 			"disable-outside-pointer-events"
 		]));
 	}
-}), Ce = /* @__PURE__ */ n({
+}), we = /* @__PURE__ */ n({
 	__name: "DialogContentNonModal",
 	props: {
 		forceMount: {
@@ -287,15 +287,15 @@ var xe = /* @__PURE__ */ n({
 		"closeAutoFocus"
 	],
 	setup(e, { emit: t }) {
-		let n = e, r = z(t);
-		W();
-		let s = pe(), c = y(!1), l = y(!1), d = O(() => {
+		let n = e, r = ie(t);
+		B();
+		let s = me(), c = y(!1), l = y(!1), d = O(() => {
 			let { present: e, ...t } = n;
 			return t;
 		});
 		return o(() => n.present, (e, t) => {
 			!e && t && (c.value || s.triggerElement.value?.focus(), c.value = !1, l.value = !1);
-		}), (t, n) => (i(), x(xe, T({
+		}), (t, n) => (i(), x(Se, T({
 			...d.value,
 			...P(r)
 		}, {
@@ -315,7 +315,7 @@ var xe = /* @__PURE__ */ n({
 			_: 3
 		}, 16, ["present"]));
 	}
-}), we = /* @__PURE__ */ n({
+}), Te = /* @__PURE__ */ n({
 	__name: "DialogContent",
 	props: {
 		forceMount: {
@@ -345,12 +345,12 @@ var xe = /* @__PURE__ */ n({
 		"closeAutoFocus"
 	],
 	setup(e, { emit: t }) {
-		let n = e, r = t, o = pe(), c = z(r), { forwardRef: l } = W(), d = O(() => n.forceMount || !o.unmountOnHide.value);
-		return (t, r) => (i(), x(P(U), {
+		let n = e, r = t, o = me(), c = ie(r), { forwardRef: l } = B(), d = O(() => n.forceMount || !o.unmountOnHide.value);
+		return (t, r) => (i(), x(P(Y), {
 			present: P(o).open.value,
 			"force-mount": d.value
 		}, {
-			default: a(({ present: r }) => [P(o).modal.value ? s((i(), x(Se, T({
+			default: a(({ present: r }) => [P(o).modal.value ? s((i(), x(Ce, T({
 				key: 0,
 				ref: P(l),
 				present: !d.value || r
@@ -361,7 +361,7 @@ var xe = /* @__PURE__ */ n({
 			}), {
 				default: a(() => [u(t.$slots, "default")]),
 				_: 3
-			}, 16, ["present"])), [[N, e.forceMount || P(o).unmountOnHide.value || r]]) : s((i(), x(Ce, T({
+			}, 16, ["present"])), [[N, e.forceMount || P(o).unmountOnHide.value || r]]) : s((i(), x(we, T({
 				key: 1,
 				ref: P(l),
 				present: !d.value || r
@@ -376,7 +376,7 @@ var xe = /* @__PURE__ */ n({
 			_: 3
 		}, 8, ["present", "force-mount"]));
 	}
-}), Te = /* @__PURE__ */ n({
+}), Ee = /* @__PURE__ */ n({
 	__name: "DialogDescription",
 	props: {
 		asChild: {
@@ -391,14 +391,14 @@ var xe = /* @__PURE__ */ n({
 	},
 	setup(e) {
 		let t = e;
-		W();
-		let n = pe();
-		return (e, r) => (i(), x(P(H), T(t, { id: P(n).descriptionId }), {
+		B();
+		let n = me();
+		return (e, r) => (i(), x(P(U), T(t, { id: P(n).descriptionId }), {
 			default: a(() => [u(e.$slots, "default")]),
 			_: 3
 		}, 16, ["id"]));
 	}
-}), Ee = /* @__PURE__ */ n({
+}), De = /* @__PURE__ */ n({
 	__name: "DialogOverlayImpl",
 	props: {
 		asChild: {
@@ -416,8 +416,8 @@ var xe = /* @__PURE__ */ n({
 		}
 	},
 	setup(e) {
-		let t = e, n = pe(), r = re(t.present);
-		return o(() => t.present, (e) => r.value = e), W(), (t, r) => (i(), x(P(H), {
+		let t = e, n = me(), r = oe(t.present);
+		return o(() => t.present, (e) => r.value = e), B(), (t, r) => (i(), x(P(U), {
 			as: e.as,
 			"as-child": e.asChild,
 			"data-state": P(n).open.value ? "open" : "closed",
@@ -436,7 +436,7 @@ var xe = /* @__PURE__ */ n({
 			"data-state"
 		]));
 	}
-}), De = /* @__PURE__ */ n({
+}), Oe = /* @__PURE__ */ n({
 	__name: "DialogOverlay",
 	props: {
 		forceMount: {
@@ -453,13 +453,13 @@ var xe = /* @__PURE__ */ n({
 		}
 	},
 	setup(e) {
-		let t = e, n = pe(), { forwardRef: r } = W(), o = O(() => t.forceMount || !n.unmountOnHide.value);
-		return (t, c) => P(n)?.modal.value ? (i(), x(P(U), {
+		let t = e, n = me(), { forwardRef: r } = B(), o = O(() => t.forceMount || !n.unmountOnHide.value);
+		return (t, c) => P(n)?.modal.value ? (i(), x(P(Y), {
 			key: 0,
 			present: P(n).open.value,
 			"force-mount": o.value
 		}, {
-			default: a(({ present: i }) => [s(d(Ee, T(t.$attrs, {
+			default: a(({ present: i }) => [s(d(De, T(t.$attrs, {
 				ref: P(r),
 				as: e.as,
 				"as-child": e.asChild,
@@ -475,7 +475,7 @@ var xe = /* @__PURE__ */ n({
 			_: 3
 		}, 8, ["present", "force-mount"])) : m("v-if", !0);
 	}
-}), Oe = /* @__PURE__ */ n({
+}), ke = /* @__PURE__ */ n({
 	__name: "DialogPortal",
 	props: {
 		to: {
@@ -497,12 +497,12 @@ var xe = /* @__PURE__ */ n({
 	},
 	setup(e) {
 		let t = e;
-		return (e, n) => (i(), x(P(V), I(f(t)), {
+		return (e, n) => (i(), x(P(K), I(f(t)), {
 			default: a(() => [u(e.$slots, "default")]),
 			_: 3
 		}, 16));
 	}
-}), ke = /* @__PURE__ */ n({
+}), Ae = /* @__PURE__ */ n({
 	__name: "DialogTitle",
 	props: {
 		asChild: {
@@ -516,13 +516,13 @@ var xe = /* @__PURE__ */ n({
 		}
 	},
 	setup(e) {
-		let t = e, n = pe();
-		return W(), (e, r) => (i(), x(P(H), T(t, { id: P(n).titleId }), {
+		let t = e, n = me();
+		return B(), (e, r) => (i(), x(P(U), T(t, { id: P(n).titleId }), {
 			default: a(() => [u(e.$slots, "default")]),
 			_: 3
 		}, 16, ["id"]));
 	}
-}), [Ae, je] = /*#__PURE__*/ ie("AlertDialogContent"), Me = /* @__PURE__ */ n({
+}), [je, Me] = /*#__PURE__*/ z("AlertDialogContent"), Ne = /* @__PURE__ */ n({
 	__name: "AlertDialogContent",
 	props: {
 		forceMount: {
@@ -552,12 +552,12 @@ var xe = /* @__PURE__ */ n({
 		"closeAutoFocus"
 	],
 	setup(e, { emit: n }) {
-		let r = e, o = z(n);
-		W();
+		let r = e, o = ie(n);
+		B();
 		let s = y();
-		return je({ onCancelElementChange: (e) => {
+		return Me({ onCancelElementChange: (e) => {
 			s.value = e;
-		} }), (e, n) => (i(), x(P(we), T({
+		} }), (e, n) => (i(), x(P(Te), T({
 			...r,
 			...P(o)
 		}, {
@@ -574,7 +574,7 @@ var xe = /* @__PURE__ */ n({
 			_: 3
 		}, 16));
 	}
-}), Ne = /* @__PURE__ */ n({
+}), Pe = /* @__PURE__ */ n({
 	__name: "AlertDialogCancel",
 	props: {
 		asChild: {
@@ -588,15 +588,15 @@ var xe = /* @__PURE__ */ n({
 		}
 	},
 	setup(e) {
-		let t = e, n = Ae(), { forwardRef: r, currentElement: o } = W();
+		let t = e, n = je(), { forwardRef: r, currentElement: o } = B();
 		return l(() => {
 			n.onCancelElementChange(o.value);
-		}), (e, n) => (i(), x(P(ge), T(t, { ref: P(r) }), {
+		}), (e, n) => (i(), x(P(_e), T(t, { ref: P(r) }), {
 			default: a(() => [u(e.$slots, "default")]),
 			_: 3
 		}, 16));
 	}
-}), Pe = /* @__PURE__ */ n({
+}), Fe = /* @__PURE__ */ n({
 	__name: "AlertDialogDescription",
 	props: {
 		asChild: {
@@ -611,12 +611,12 @@ var xe = /* @__PURE__ */ n({
 	},
 	setup(e) {
 		let t = e;
-		return W(), (e, n) => (i(), x(P(Te), I(f(t)), {
+		return B(), (e, n) => (i(), x(P(Ee), I(f(t)), {
 			default: a(() => [u(e.$slots, "default")]),
 			_: 3
 		}, 16));
 	}
-}), Fe = /* @__PURE__ */ n({
+}), Ie = /* @__PURE__ */ n({
 	__name: "AlertDialogOverlay",
 	props: {
 		forceMount: {
@@ -634,12 +634,12 @@ var xe = /* @__PURE__ */ n({
 	},
 	setup(e) {
 		let t = e;
-		return W(), (e, n) => (i(), x(P(De), I(f(t)), {
+		return B(), (e, n) => (i(), x(P(Oe), I(f(t)), {
 			default: a(() => [u(e.$slots, "default")]),
 			_: 3
 		}, 16));
 	}
-}), Ie = /* @__PURE__ */ n({
+}), Le = /* @__PURE__ */ n({
 	__name: "AlertDialogPortal",
 	props: {
 		to: {
@@ -661,12 +661,12 @@ var xe = /* @__PURE__ */ n({
 	},
 	setup(e) {
 		let t = e;
-		return (e, n) => (i(), x(P(V), I(f(t)), {
+		return (e, n) => (i(), x(P(K), I(f(t)), {
 			default: a(() => [u(e.$slots, "default")]),
 			_: 3
 		}, 16));
 	}
-}), Le = /* @__PURE__ */ n({
+}), Re = /* @__PURE__ */ n({
 	__name: "AlertDialogRoot",
 	props: {
 		open: {
@@ -684,13 +684,13 @@ var xe = /* @__PURE__ */ n({
 	},
 	emits: ["update:open"],
 	setup(e, { emit: t }) {
-		let n = ee(e, t);
-		return W(), (e, t) => (i(), x(P(he), T(P(n), { modal: !0 }), {
+		let n = W(e, t);
+		return B(), (e, t) => (i(), x(P(ge), T(P(n), { modal: !0 }), {
 			default: a((t) => [u(e.$slots, "default", I(f(t)))]),
 			_: 3
 		}, 16));
 	}
-}), Re = /* @__PURE__ */ n({
+}), ze = /* @__PURE__ */ n({
 	__name: "AlertDialogTitle",
 	props: {
 		asChild: {
@@ -705,15 +705,15 @@ var xe = /* @__PURE__ */ n({
 	},
 	setup(e) {
 		let t = e;
-		return W(), (e, n) => (i(), x(P(ke), I(f(t)), {
+		return B(), (e, n) => (i(), x(P(Ae), I(f(t)), {
 			default: a(() => [u(e.$slots, "default")]),
 			_: 3
 		}, 16));
 	}
-}), ze = ["aria-label", "aria-busy"], Be = { class: "cursor-pagination__layout" }, Ve = {
+}), Be = ["aria-label", "aria-busy"], Ve = { class: "cursor-pagination__layout" }, He = {
 	class: "cursor-pagination__count",
 	"aria-live": "polite"
-}, He = { class: "cursor-pagination__actions" }, Ue = ["disabled"], We = ["disabled"], Ge = ["disabled"], Ke = /*#__PURE__*/ F(/* @__PURE__ */ n({
+}, Ue = { class: "cursor-pagination__actions" }, We = ["disabled"], Ge = ["disabled"], Ke = ["disabled"], qe = /*#__PURE__*/ F(/* @__PURE__ */ n({
 	__name: "CursorPagination",
 	props: {
 		hasPrevious: { type: Boolean },
@@ -749,7 +749,7 @@ var xe = /* @__PURE__ */ n({
 			class: "cursor-pagination",
 			"aria-label": e.label,
 			"aria-busy": e.busy
-		}, [S("div", Be, [S("span", Ve, "本页 " + b(e.itemCount) + " 个", 1), S("div", He, [
+		}, [S("div", Ve, [S("span", He, "本页 " + b(e.itemCount) + " 个", 1), S("div", Ue, [
 			e.hasCursor ? (i(), L("button", {
 				key: 0,
 				type: "button",
@@ -757,20 +757,20 @@ var xe = /* @__PURE__ */ n({
 				"data-cursor-first": "",
 				disabled: e.busy,
 				onClick: s
-			}, "返回首页", 8, Ue)) : m("", !0),
+			}, "返回首页", 8, We)) : m("", !0),
 			S("button", {
 				type: "button",
 				"data-cursor-previous": "",
 				disabled: e.busy || !e.hasPrevious,
 				onClick: a
-			}, "上一页", 8, We),
+			}, "上一页", 8, Ge),
 			S("button", {
 				type: "button",
 				"data-cursor-next": "",
 				disabled: e.busy || !e.nextCursor,
 				onClick: o
-			}, "下一页", 8, Ge)
-		])])], 8, ze));
+			}, "下一页", 8, Ke)
+		])])], 8, Be));
 	}
 }), [["__scopeId", "data-v-7fd57e6e"]]);
 // src/features/bulk/contracts.ts
@@ -778,61 +778,61 @@ function X(e) {
 	if (typeof e != "string" || !/^[1-9]\d*$/.test(e)) throw Error("任务标识无效");
 	return e;
 }
-function qe(e) {
+function Je(e) {
 	if (!e || typeof e != "object" || Array.isArray(e)) throw Error("批次列表响应格式无效");
 	return e;
 }
-function Je(e) {
-	let t = qe(e);
+function Ye(e) {
+	let t = Je(e);
 	if (!Array.isArray(t.items)) throw Error("批次列表响应格式无效");
 	let n = t.items.map((e) => {
-		let t = qe(e), n = Number.isSafeInteger(t.id) ? String(t.id) : t.id;
+		let t = Je(e), n = Number.isSafeInteger(t.id) ? String(t.id) : t.id;
 		if (typeof n != "string" || !/^[1-9]\d*$/.test(n)) throw Error("批次编号无效");
 		return {
 			...t,
 			id: n
 		};
-	}), r = t.next_cursor ?? (t.page == null ? null : qe(t.page).next_cursor);
+	}), r = t.next_cursor ?? (t.page == null ? null : Je(t.page).next_cursor);
 	if (r != null && typeof r != "string") throw Error("批次分页响应格式无效");
 	return {
 		items: n,
-		summary: t.summary == null ? {} : qe(t.summary),
+		summary: t.summary == null ? {} : Je(t.summary),
 		nextCursor: r || null
 	};
 }
 // src/features/bulk/useBulkList.ts
-var Ye = [
+var Xe = [
 	"q",
 	"operation",
 	"state",
 	"created_from",
 	"created_to"
 ];
-function Xe(e) {
+function Ze(e) {
 	let t = {
 		tab: "bulk",
 		view: "list",
 		cursor: e.cursor || ""
 	};
-	for (let n of Ye) t[n] = e[n] || "";
+	for (let n of Xe) t[n] = e[n] || "";
 	return t;
 }
-function Ze(e, t) {
+function Qe(e, t) {
 	let n = /* @__PURE__ */ new Date(`${e}T00:00:00`), [r, i, a] = e.split("-").map(Number);
 	if (!/^\d{4}-\d{2}-\d{2}$/.test(e) || n.getFullYear() !== r || n.getMonth() + 1 !== i || n.getDate() !== a) throw Error("创建日期无效，请调整筛选条件");
 	return t && n.setDate(n.getDate() + 1), n.toISOString();
 }
-function Qe(e) {
+function $e(e) {
 	let t = new URLSearchParams({ page_size: "20" });
-	return e.cursor && t.set("cursor", e.cursor), e.q && t.set("q", e.q), e.operation && t.set("operation_key[]", e.operation), e.state && t.set("control_state[]", e.state), e.created_from && t.set("created_from", Ze(e.created_from, !1)), e.created_to && t.set("created_before", Ze(e.created_to, !0)), t;
+	return e.cursor && t.set("cursor", e.cursor), e.q && t.set("q", e.q), e.operation && t.set("operation_key[]", e.operation), e.state && t.set("control_state[]", e.state), e.created_from && t.set("created_from", Qe(e.created_from, !1)), e.created_to && t.set("created_before", Qe(e.created_to, !0)), t;
 }
-function $e(t, n) {
-	let r = A(Xe(t())), i = A(null), a = A([]), s = O(() => a.value.length > 0), c = y(!1), l = y(!1), u = y(""), d = !1, f, m;
+function et(t, n) {
+	let r = A(Ze(t())), i = A(null), a = A([]), s = O(() => a.value.length > 0), c = y(!1), l = y(!1), u = y(""), d = !1, f, m;
 	function h() {
 		f?.abort(), f = void 0, m = void 0, l.value = !1;
 	}
 	function g(e) {
-		return e.cursor === r.value.cursor && Ye.every((t) => e[t] === r.value[t]) ? !1 : (h(), r.value = e, i.value = null, u.value = "", !0);
+		return e.cursor === r.value.cursor && Xe.every((t) => e[t] === r.value[t]) ? !1 : (h(), r.value = e, i.value = null, u.value = "", !0);
 	}
 	function _(e = !1, a) {
 		if (d || !c.value || t().view !== "list") return Promise.resolve();
@@ -840,12 +840,12 @@ function $e(t, n) {
 		let o = new AbortController();
 		return f = o, l.value = !0, m = (async () => {
 			try {
-				let t = await n.api.request(`/batches?${Qe(r.value)}`, {
+				let t = await n.api.request(`/batches?${$e(r.value)}`, {
 					method: "GET",
 					signal: o.signal
 				});
 				if (o.signal.aborted || a && !a()) return;
-				let s = i.value, c = Je(t);
+				let s = i.value, c = Ye(t);
 				i.value = c, u.value = "", e && s && (s.items.length !== c.items.length || s.items.some((e, t) => e.id !== c.items[t]?.id)) && n.callbacks.notify?.("批次列表已更新");
 			} catch (e) {
 				if (o.signal.aborted || e instanceof Error && e.name === "AbortError") return;
@@ -856,7 +856,7 @@ function $e(t, n) {
 		}), m;
 	}
 	function v(e) {
-		return g(Xe({
+		return g(Ze({
 			...r.value,
 			...e
 		})), n.callbacks.updateNavigation(e), _();
@@ -883,7 +883,7 @@ function $e(t, n) {
 		c.value = e, e || h();
 	}
 	return o(t, (e) => {
-		e.view === "list" ? g(Xe(e)) && (a.value = [], c.value && _()) : h();
+		e.view === "list" ? g(Ze(e)) && (a.value = [], c.value && _()) : h();
 	}, { deep: !0 }), p(() => {
 		d = !0, h();
 	}), {
@@ -912,97 +912,98 @@ function $e(t, n) {
 	};
 }
 // src/features/bulk/BulkList.vue?vue&type=script&setup=true&lang.ts
-var et = ["aria-busy"], tt = {
+var tt = ["aria-busy"], nt = {
 	key: 0,
 	class: "bl-kpis"
-}, nt = {
-	key: 1,
-	class: "bl-toolbar"
 }, rt = {
+	key: 1,
+	class: "ui-list-toolbar bl-toolbar"
+}, it = { class: "ui-list-toolbar__main bl-toolbar-main" }, at = { class: "ui-list-toolbar__actions" }, ot = {
 	key: 2,
-	class: "bl-error",
+	class: "ui-list-feedback is-error bl-error",
 	role: "alert"
-}, it = ["disabled"], at = ["disabled"], ot = ["disabled"], st = { class: "bl-table" }, ct = { class: "bl-col-name" }, lt = { class: "list-filter-actions" }, ut = { class: "list-filter-options" }, dt = { class: "list-filter-option" }, ft = ["checked"], pt = [
+}, st = ["disabled"], ct = ["disabled"], lt = ["disabled"], ut = { class: "ui-table ui-table--sticky-end bl-table" }, dt = { class: "bl-col-name" }, ft = { class: "list-filter-actions" }, pt = { class: "list-filter-options" }, mt = { class: "list-filter-option" }, ht = ["checked"], gt = [
 	"value",
 	"checked",
 	"onChange"
-], mt = { class: "list-filter-options" }, ht = { class: "list-filter-option" }, gt = ["checked"], _t = [
+], _t = { class: "list-filter-options" }, vt = { class: "list-filter-option" }, yt = ["checked"], bt = [
 	"value",
 	"checked",
 	"onChange"
-], vt = { class: "bl-filter-fields" }, yt = ["value"], bt = ["value"], xt = { class: "list-filter-actions" }, St = ["data-bulk-row"], Ct = { class: "bl-col-name" }, wt = [
+], xt = { class: "bl-filter-fields" }, St = ["value"], Ct = ["value"], wt = { class: "list-filter-actions" }, Tt = ["data-bulk-row"], Et = { class: "bl-col-name" }, Dt = [
 	"disabled",
 	"title",
 	"onClick"
-], Tt = ["title"], Et = { "data-bulk-progress": "" }, Dt = { class: "bl-progress-copy" }, Ot = [
+], Ot = ["title"], kt = { "data-bulk-progress": "" }, At = { class: "bl-progress-copy" }, jt = [
 	"value",
 	"max",
 	"aria-label"
-], kt = {
+], Mt = {
 	key: 1,
 	class: "bl-secondary"
-}, At = { class: "bl-results" }, jt = ["disabled", "onClick"], Mt = ["disabled", "onClick"], Nt = { class: "bl-date" }, Pt = ["disabled", "onClick"], Ft = { key: 0 }, It = { colspan: "7" }, Lt = {
-	class: "bl-empty",
-	role: "status"
-}, Rt = /*#__PURE__*/ F(/* @__PURE__ */ n({
+}, Nt = { class: "bl-results" }, Pt = ["disabled", "onClick"], Ft = ["disabled", "onClick"], It = { class: "bl-date" }, Lt = ["disabled", "onClick"], Rt = /*#__PURE__*/ F(/* @__PURE__ */ n({
 	__name: "BulkList",
 	props: {
 		navigation: {},
 		deps: {}
 	},
 	setup(e, { expose: t }) {
-		let n = e, r = $e(() => n.navigation, n.deps), { navigation: l, items: u, summary: f, nextCursor: p, loading: h, visible: g, error: v, hasPrevious: C, stale: w } = r, T = y(null), k = y(""), A = y(), M = {
+		let n = e, r = et(() => n.navigation, n.deps), { navigation: l, items: u, summary: f, nextCursor: p, loading: h, visible: g, error: v, hasPrevious: C, stale: w } = r, T = y(null), k = y(""), A = y(), M = {
 			plan_check: "查询套餐",
 			token_refresh: "刷新 AT",
 			password_setup: "补密码",
 			twofa_setup: "补 2FA",
 			codex_retry: "补 Codex",
 			account_completion: "组合补全"
-		}, N = {
+		}, N = (e) => e === "active" || e === "settling" ? "active" : [
+			"paused",
+			"cancel_requested",
+			"stop_requested"
+		].includes(e) ? "warning" : "neutral", F = {
 			active: "执行中",
 			paused: "已暂停",
 			cancel_requested: "取消中",
 			stop_requested: "停止中",
 			ended: "已结束"
-		}, F = {
-			...N,
+		}, I = {
+			...F,
 			settling: "汇总中",
 			completed: "已完成",
 			preparing: "准备中"
-		}, I = [
+		}, z = [
 			"success",
 			"partial_success",
 			"failed",
 			"not_executed",
 			"cancelled"
-		], z = [
+		], B = [
 			"attention_required",
 			"request_unknown",
 			"manual_reconcile",
 			"unknown",
 			"unconfirmed"
 		];
-		function B(e) {
+		function V(e) {
 			return e && typeof e == "object" && !Array.isArray(e) ? e : {};
 		}
-		function V(e) {
+		function H(e) {
 			return typeof e == "number" && Number.isFinite(e) && e >= 0 ? e : null;
 		}
-		function H(e, t = "—") {
+		function U(e, t = "—") {
 			return e == null || e === "" ? t : String(e);
 		}
-		let U = O(() => u.value.map((e) => {
-			let t = B(e.summary ?? e.counts), r = {};
-			for (let [e, n] of Object.entries(t)) V(n) !== null && (r[e] = n);
-			let i = V(e.target_count), a = i === 0 || Object.keys(r).length > 0;
-			for (let e of z) e in r && (r.failed = (r.failed || 0) + r[e], delete r[e]);
-			let o = B(e.control), s = B(e.operation), c = o.paused ?? e.is_paused ? "paused" : H(o.state ?? e.control_state ?? e.state, "preparing"), l = H(s.key ?? e.operation_key ?? e.action_key), u = e.id, d = a ? I.reduce((e, t) => e + (r[t] || 0), 0) : null, f = i === null || d === null ? null : i === 0 ? 0 : Math.min(100, Math.round(100 * d / i));
+		let W = O(() => u.value.map((e) => {
+			let t = V(e.summary ?? e.counts), r = {};
+			for (let [e, n] of Object.entries(t)) H(n) !== null && (r[e] = n);
+			let i = H(e.target_count), a = i === 0 || Object.keys(r).length > 0;
+			for (let e of B) e in r && (r.failed = (r.failed || 0) + r[e], delete r[e]);
+			let o = V(e.control), s = V(e.operation), c = o.paused ?? e.is_paused ? "paused" : U(o.state ?? e.control_state ?? e.state, "preparing"), l = U(s.key ?? e.operation_key ?? e.action_key), u = e.id, d = a ? z.reduce((e, t) => e + (r[t] || 0), 0) : null, f = i === null || d === null ? null : i === 0 ? 0 : Math.min(100, Math.round(100 * d / i));
 			return {
 				id: u,
-				name: H(e.name ?? e.title, `批次 #${u}`),
+				name: U(e.name ?? e.title, `批次 #${u}`),
 				operation: M[l] || l,
 				state: c,
-				status: F[c] || c,
+				status: I[c] || c,
 				counts: r,
 				known: a,
 				done: d,
@@ -1010,34 +1011,34 @@ var et = ["aria-busy"], tt = {
 				percent: f,
 				createdAt: n.deps.callbacks.formatDateTime(e.created_at)
 			};
-		})), W = O(() => {
+		})), ee = O(() => {
 			let e = [
 				{
 					key: "active_batches",
 					label: "执行中",
-					value: V(f.value.active_batches),
+					value: H(f.value.active_batches),
 					unit: "批"
 				},
 				{
 					key: "ended_batches",
 					label: "已结束",
-					value: V(f.value.ended_batches),
+					value: H(f.value.ended_batches),
 					unit: "批"
 				},
 				{
 					key: "failed_targets",
 					label: "失败账号",
-					value: V(f.value.failed_targets),
+					value: H(f.value.failed_targets),
 					unit: "个"
 				}
-			], t = V(f.value.attention_targets);
+			], t = H(f.value.attention_targets);
 			return t != null && e[2].value != null && (e[2].value += t), e.filter((e) => e.value !== null);
-		}), ee = O(() => {
+		}), K = O(() => {
 			let e = l.value;
 			return [
 				["q", e.q ? `批次：${e.q}` : ""],
 				["operation", e.operation ? `操作：${M[e.operation] || e.operation}` : ""],
-				["state", e.state ? `状态：${N[e.state] || e.state}` : ""],
+				["state", e.state ? `状态：${F[e.state] || e.state}` : ""],
 				["date", e.created_from || e.created_to ? `创建日期：${e.created_from || "不限"} 至 ${e.created_to || "不限"}` : ""]
 			].filter(([, e]) => e).map(([e, t]) => ({
 				key: e,
@@ -1050,89 +1051,89 @@ var et = ["aria-busy"], tt = {
 		}, { immediate: !0 }), o(() => n.navigation.view, () => {
 			T.value = null;
 		});
-		function G(e) {
+		function q(e) {
 			e === "date" ? r.applyFilters({
 				created_from: "",
 				created_to: ""
 			}) : r.applyFilters({ [e]: "" });
 		}
-		function K(e, t) {
+		function Y(e, t) {
 			r.applyFilters({ [e]: t });
 		}
-		function q() {
+		function te() {
 			r.applyFilters({ q: k.value.trim() }), T.value = null;
 		}
-		function J(e, t) {
+		function re(e, t) {
 			g.value && !w.value && n.deps.callbacks.navigate("detail", {
 				batch_id: e,
 				...t ? { result_state: t } : {}
 			});
 		}
-		function ne(e) {
+		function ie(e) {
 			g.value && !w.value && n.deps.callbacks.navigate("detail", { batch_id: e }, !0);
 		}
-		function re() {
+		function ae() {
 			let e = window.getSelection();
 			return w.value || !(e?.toString() && A.value?.contains(e.anchorNode));
 		}
-		async function ie(e = !1) {
-			re() && await r.refresh(e, re);
+		async function oe(e = !1) {
+			ae() && await r.refresh(e, ae);
 		}
-		function ae(e) {
+		function se(e) {
 			e || (T.value = null), r.setVisible(e);
 		}
 		return t({
-			refresh: ie,
-			setVisible: ae
+			refresh: oe,
+			setVisible: se
 		}), (t, n) => (i(), L("section", {
-			class: "bl-root",
+			class: "ui-list bl-root",
 			"aria-label": "批次列表",
 			"aria-busy": P(h)
 		}, [
-			W.value.length ? (i(), L("div", tt, [(i(!0), L(_, null, c(W.value, (e) => (i(), L("div", {
+			ee.value.length ? (i(), L("div", nt, [(i(!0), L(_, null, c(ee.value, (e) => (i(), L("div", {
 				key: e.key,
 				class: D(["bl-kpi", { "is-warning": e.key === "failed_targets" && !!e.value }])
 			}, [S("span", null, b(e.label), 1), S("strong", null, [R(b(e.value), 1), S("small", null, b(e.unit), 1)])], 2))), 128))])) : m("", !0),
-			ee.value.length ? (i(), L("div", nt, [d(te, {
-				items: ee.value,
-				onRemove: G
-			}, null, 8, ["items"]), S("button", {
+			K.value.length ? (i(), L("div", rt, [S("div", it, [d(ne, {
+				items: K.value,
+				onRemove: q
+			}, null, 8, ["items"])]), S("div", at, [S("button", {
 				type: "button",
-				class: "bl-link",
+				class: "ui-link",
 				onClick: n[0] ||= (...e) => P(r).resetFilters && P(r).resetFilters(...e)
-			}, "清除筛选")])) : m("", !0),
-			P(v) ? (i(), L("div", rt, [
+			}, "清除筛选")])])) : m("", !0),
+			P(v) ? (i(), L("div", ot, [
 				S("span", null, b(P(v)), 1),
 				S("button", {
 					type: "button",
-					class: "bl-link",
+					class: "ui-link",
 					disabled: P(h),
 					onClick: n[1] ||= (e) => P(r).refresh()
-				}, "重试", 8, it),
+				}, "重试", 8, st),
 				P(w) && P(l).cursor ? (i(), L("button", {
 					key: 0,
-					class: "bl-link",
+					class: "ui-link",
 					type: "button",
 					disabled: P(h),
 					onClick: n[2] ||= (...e) => P(r).first && P(r).first(...e)
-				}, " 返回首页", 8, at)) : m("", !0),
+				}, " 返回首页", 8, ct)) : m("", !0),
 				P(w) && P(C) ? (i(), L("button", {
 					key: 1,
-					class: "bl-link",
+					class: "ui-link",
 					type: "button",
 					disabled: P(h),
 					onClick: n[3] ||= (...e) => P(r).previous && P(r).previous(...e)
-				}, " 上一页 ", 8, ot)) : m("", !0)
+				}, " 上一页 ", 8, lt)) : m("", !0)
 			])) : m("", !0),
 			S("div", {
 				ref_key: "tableHost",
 				ref: A,
-				class: "bl-table-wrap",
+				class: "ui-table-scroll bl-table-wrap",
 				tabindex: "0",
 				role: "region",
 				"aria-label": "批次列表内容"
-			}, [S("table", st, [S("thead", null, [S("tr", null, [
-				S("th", ct, [d(Y, {
+			}, [S("table", ut, [S("thead", null, [S("tr", null, [
+				S("th", dt, [d(G, {
 					label: "批次名称或编号",
 					"trigger-label": "批次",
 					active: !!P(l).q,
@@ -1142,15 +1143,15 @@ var et = ["aria-busy"], tt = {
 				}, {
 					default: a(() => [S("form", {
 						class: "bl-filter-fields",
-						onSubmit: E(q, ["prevent"])
+						onSubmit: E(te, ["prevent"])
 					}, [S("label", null, [n[16] ||= R("名称或批次号", -1), s(S("input", {
 						"onUpdate:modelValue": n[4] ||= (e) => k.value = e,
 						type: "search",
 						placeholder: "搜索批次名称或编号",
 						autocomplete: "off"
-					}, null, 512), [[j, k.value]])]), S("div", lt, [S("button", {
+					}, null, 512), [[j, k.value]])]), S("div", ft, [S("button", {
 						type: "button",
-						onClick: n[5] ||= (e) => G("q")
+						onClick: n[5] ||= (e) => q("q")
 					}, "清除此列"), n[17] ||= S("button", {
 						class: "list-filter-primary",
 						type: "submit"
@@ -1161,22 +1162,22 @@ var et = ["aria-busy"], tt = {
 					"summary",
 					"open"
 				])]),
-				S("th", null, [d(Y, {
+				S("th", null, [d(G, {
 					label: "操作类型",
 					active: !!P(l).operation,
 					summary: M[P(l).operation || ""] || P(l).operation,
 					open: T.value === "operation",
 					"onUpdate:open": n[8] ||= (e) => T.value = e ? "operation" : null
 				}, {
-					default: a(() => [S("fieldset", ut, [
-						n[19] ||= S("legend", { class: "bl-sr-only" }, "操作类型", -1),
-						S("label", dt, [S("input", {
+					default: a(() => [S("fieldset", pt, [
+						n[19] ||= S("legend", { class: "ui-sr-only" }, "操作类型", -1),
+						S("label", mt, [S("input", {
 							type: "radio",
 							name: "bulk-list-operation",
 							value: "",
 							checked: !P(l).operation,
-							onChange: n[7] ||= (e) => K("operation", "")
-						}, null, 40, ft), n[18] ||= R("全部操作", -1)]),
+							onChange: n[7] ||= (e) => Y("operation", "")
+						}, null, 40, ht), n[18] ||= R("全部操作", -1)]),
 						(i(), L(_, null, c(M, (e, t) => S("label", {
 							class: "list-filter-option",
 							key: t
@@ -1185,8 +1186,8 @@ var et = ["aria-busy"], tt = {
 							name: "bulk-list-operation",
 							value: t,
 							checked: P(l).operation === t,
-							onChange: (e) => K("operation", t)
-						}, null, 40, pt), R(b(e), 1)])), 64))
+							onChange: (e) => Y("operation", t)
+						}, null, 40, gt), R(b(e), 1)])), 64))
 					])]),
 					_: 1
 				}, 8, [
@@ -1194,23 +1195,23 @@ var et = ["aria-busy"], tt = {
 					"summary",
 					"open"
 				])]),
-				S("th", null, [d(Y, {
+				S("th", null, [d(G, {
 					label: "状态",
 					active: !!P(l).state,
-					summary: N[P(l).state || ""] || P(l).state,
+					summary: F[P(l).state || ""] || P(l).state,
 					open: T.value === "state",
 					"onUpdate:open": n[10] ||= (e) => T.value = e ? "state" : null
 				}, {
-					default: a(() => [S("fieldset", mt, [
-						n[21] ||= S("legend", { class: "bl-sr-only" }, "运行状态", -1),
-						S("label", ht, [S("input", {
+					default: a(() => [S("fieldset", _t, [
+						n[21] ||= S("legend", { class: "ui-sr-only" }, "运行状态", -1),
+						S("label", vt, [S("input", {
 							type: "radio",
 							name: "bulk-list-state",
 							value: "",
 							checked: !P(l).state,
-							onChange: n[9] ||= (e) => K("state", "")
-						}, null, 40, gt), n[20] ||= R("全部状态", -1)]),
-						(i(), L(_, null, c(N, (e, t) => S("label", {
+							onChange: n[9] ||= (e) => Y("state", "")
+						}, null, 40, yt), n[20] ||= R("全部状态", -1)]),
+						(i(), L(_, null, c(F, (e, t) => S("label", {
 							class: "list-filter-option",
 							key: t
 						}, [S("input", {
@@ -1218,8 +1219,8 @@ var et = ["aria-busy"], tt = {
 							name: "bulk-list-state",
 							value: t,
 							checked: P(l).state === t,
-							onChange: (e) => K("state", t)
-						}, null, 40, _t), R(b(e), 1)])), 64))
+							onChange: (e) => Y("state", t)
+						}, null, 40, bt), R(b(e), 1)])), 64))
 					])]),
 					_: 1
 				}, 8, [
@@ -1229,27 +1230,27 @@ var et = ["aria-busy"], tt = {
 				])]),
 				n[24] ||= S("th", null, "完成进度", -1),
 				n[25] ||= S("th", null, "当前结果", -1),
-				S("th", null, [d(Y, {
+				S("th", null, [d(G, {
 					label: "创建时间",
 					active: !!(P(l).created_from || P(l).created_to),
 					summary: `${P(l).created_from || "不限"} 至 ${P(l).created_to || "不限"}`,
 					open: T.value === "date",
 					"onUpdate:open": n[14] ||= (e) => T.value = e ? "date" : null
 				}, {
-					default: a(() => [S("div", vt, [
+					default: a(() => [S("div", xt, [
 						S("label", null, [n[22] ||= R("开始日期", -1), S("input", {
 							type: "date",
 							value: P(l).created_from,
-							onChange: n[11] ||= (e) => K("created_from", e.target.value)
-						}, null, 40, yt)]),
+							onChange: n[11] ||= (e) => Y("created_from", e.target.value)
+						}, null, 40, St)]),
 						S("label", null, [n[23] ||= R("截止日期", -1), S("input", {
 							type: "date",
 							value: P(l).created_to,
-							onChange: n[12] ||= (e) => K("created_to", e.target.value)
-						}, null, 40, bt)]),
-						S("div", xt, [S("button", {
+							onChange: n[12] ||= (e) => Y("created_to", e.target.value)
+						}, null, 40, Ct)]),
+						S("div", wt, [S("button", {
 							type: "button",
-							onClick: n[13] ||= (e) => G("date")
+							onClick: n[13] ||= (e) => q("date")
 						}, "清除此列")])
 					])]),
 					_: 1
@@ -1258,57 +1259,74 @@ var et = ["aria-busy"], tt = {
 					"summary",
 					"open"
 				])]),
-				n[26] ||= S("th", null, [S("span", { class: "bl-sr-only" }, "操作")], -1)
-			])]), S("tbody", null, [(i(!0), L(_, null, c(U.value, (e) => (i(), L("tr", {
+				n[26] ||= S("th", null, [S("span", { class: "ui-sr-only" }, "操作")], -1)
+			])]), S("tbody", null, [(i(!0), L(_, null, c(W.value, (e) => (i(), L("tr", {
 				key: e.id,
 				"data-bulk-row": e.id
 			}, [
-				S("td", Ct, [S("button", {
+				S("td", Et, [S("button", {
 					type: "button",
-					class: "bl-name",
+					class: "ui-link bl-name",
 					"data-bulk-open": "",
 					disabled: P(w),
 					title: e.name,
-					onClick: (t) => J(e.id)
-				}, b(e.name), 9, wt), S("span", {
+					onClick: (t) => re(e.id)
+				}, b(e.name), 9, Dt), S("span", {
 					class: "bl-secondary",
 					title: `批次 #${e.id}`
-				}, "#" + b(e.id), 9, Tt)]),
+				}, "#" + b(e.id), 9, Ot)]),
 				S("td", null, b(e.operation), 1),
-				S("td", null, [S("span", { class: D(["bl-status", `is-${e.state}`]) }, b(e.status), 3)]),
-				S("td", Et, [e.total !== null && e.done !== null ? (i(), L(_, { key: 0 }, [S("span", Dt, [R(b(e.done) + " / " + b(e.total) + " ", 1), S("span", null, b(e.percent) + "%", 1)]), S("progress", {
+				S("td", null, [S("span", { class: D(["ui-badge bl-status", `ui-badge--${N(e.state)}`]) }, b(e.status), 3)]),
+				S("td", kt, [e.total !== null && e.done !== null ? (i(), L(_, { key: 0 }, [S("span", At, [R(b(e.done) + " / " + b(e.total) + " ", 1), S("span", null, b(e.percent) + "%", 1)]), S("progress", {
 					value: e.done,
 					max: Math.max(1, e.total),
 					"aria-label": `已结束 ${e.done} 个，共 ${e.total} 个`
-				}, null, 8, Ot)], 64)) : (i(), L("span", kt, b(e.total === null ? "名单准备中" : "结果待汇总"), 1))]),
-				S("td", null, [S("div", At, [S("button", {
+				}, null, 8, jt)], 64)) : (i(), L("span", Mt, b(e.total === null ? "名单准备中" : "结果待汇总"), 1))]),
+				S("td", null, [S("div", Nt, [S("button", {
 					type: "button",
 					class: "bl-result is-success",
 					"data-bulk-result": "success",
 					disabled: P(w) || !e.counts.success,
-					onClick: (t) => J(e.id, "success")
-				}, " 成功 " + b(e.known ? e.counts.success || 0 : "—"), 9, jt), S("button", {
+					onClick: (t) => re(e.id, "success")
+				}, " 成功 " + b(e.known ? e.counts.success || 0 : "—"), 9, Pt), S("button", {
 					type: "button",
 					class: "bl-result is-failed",
 					"data-bulk-result": "failed",
 					disabled: P(w) || !e.counts.failed,
-					onClick: (t) => J(e.id, "failed")
-				}, " 失败 " + b(e.known ? e.counts.failed || 0 : "—"), 9, Mt)])]),
-				S("td", Nt, b(e.createdAt), 1),
+					onClick: (t) => re(e.id, "failed")
+				}, " 失败 " + b(e.known ? e.counts.failed || 0 : "—"), 9, Ft)])]),
+				S("td", It, b(e.createdAt), 1),
 				S("td", null, [S("button", {
 					type: "button",
-					class: "bl-button",
+					class: "ui-link",
 					"data-bulk-report": "",
 					disabled: P(w),
-					onClick: (t) => ne(e.id)
-				}, " 查看报告 ", 8, Pt)])
-			], 8, St))), 128)), U.value.length ? m("", !0) : (i(), L("tr", Ft, [S("td", It, [S("div", Lt, [S("strong", null, b(P(h) ? "正在加载批次…" : P(v) ? "暂时无法读取批次" : ee.value.length ? "没有匹配的批次" : "还没有批次"), 1), !P(h) && !P(v) ? (i(), L(_, { key: 0 }, [n[27] ||= S("p", null, "选择操作和账号范围，即可集中执行与追踪结果。", -1), S("button", {
-				type: "button",
-				class: "bl-button",
-				"data-bulk-create": "",
-				onClick: n[15] ||= (t) => e.deps.callbacks.navigate("create")
-			}, " 新建批次 ")], 64)) : m("", !0)])])]))])])], 512),
-			P(w) ? m("", !0) : (i(), x(Ke, {
+					onClick: (t) => ie(e.id)
+				}, " 查看报告 ", 8, Lt)])
+			], 8, Tt))), 128)), W.value.length ? m("", !0) : (i(), x(J, {
+				key: 0,
+				colspan: 7,
+				loading: P(h),
+				error: P(v) ? " " : "",
+				"loading-title": "正在加载批次…",
+				"error-title": "暂时无法读取批次",
+				title: K.value.length ? "没有匹配的批次" : "还没有批次",
+				text: "选择操作和账号范围，即可集中执行与追踪结果。"
+			}, {
+				default: a(() => [!P(h) && !P(v) ? (i(), L("button", {
+					key: 0,
+					type: "button",
+					class: "ui-button ui-button--primary",
+					"data-bulk-create": "",
+					onClick: n[15] ||= (t) => e.deps.callbacks.navigate("create")
+				}, "新建批次")) : m("", !0)]),
+				_: 1
+			}, 8, [
+				"loading",
+				"error",
+				"title"
+			]))])])], 512),
+			P(w) ? m("", !0) : (i(), x(qe, {
 				key: 3,
 				"has-previous": P(C),
 				"next-cursor": P(p),
@@ -1329,9 +1347,9 @@ var et = ["aria-busy"], tt = {
 				"onNext",
 				"onFirst"
 			]))
-		], 8, et));
+		], 8, tt));
 	}
-}), [["__scopeId", "data-v-694121cb"]]), zt = class extends Error {
+}), [["__scopeId", "data-v-6491fc92"]]), zt = class extends Error {
 	status;
 	code;
 	details;
@@ -1479,10 +1497,10 @@ function Gt(e) {
 	function ae(e) {
 		ie(), clearTimeout(D), ee(Ut(e), null), s.value = null, G(), S && re();
 	}
-	function se(e, t) {
+	function oe(e, t) {
 		l.value || (e === "name" ? r.value.name = String(t) : r.value.max_concurrency = Number(t), V());
 	}
-	function de(e) {
+	function ce(e) {
 		l.value || r.value.operation_key === e || (r.value.operation_key = e, ie(), G(), V());
 	}
 	function fe(t) {
@@ -1529,18 +1547,18 @@ function Gt(e) {
 				label: n.label || ge(e === "token" ? "account_token" : e, n.value)
 			});
 		}
-		if (e === "promotion") for (let t of le) c.has(t) || c.set(t, {
+		if (e === "promotion") for (let t of ue) c.has(t) || c.set(t, {
 			value: t,
 			label: ge(e, t)
 		});
-		for (let t of ue(r.value.query, e)) c.has(t) || c.set(t, {
+		for (let t of de(r.value.query, e)) c.has(t) || c.set(t, {
 			value: t,
 			label: ge(e === "token" ? "account_token" : e, t)
 		});
 		return [...c.values()];
 	}
 	let ve = O(() => [
-		...oe(r.value.query, ge),
+		...se(r.value.query, ge),
 		...r.value.query.q ? [{
 			key: "q",
 			label: `搜索：${r.value.query.q}`,
@@ -1778,7 +1796,7 @@ function Gt(e) {
 		hint: z,
 		availabilityWarning: B,
 		chips: ve,
-		accountFilters: ce,
+		accountFilters: le,
 		initialize: xe,
 		refresh: Te,
 		recover: De,
@@ -1786,8 +1804,8 @@ function Gt(e) {
 		loadFacets: ne,
 		applySeed: ae,
 		setVisible: J,
-		setDraftField: se,
-		setOperation: de,
+		setDraftField: oe,
+		setOperation: ce,
 		setQueryField: pe,
 		clearFilter: me,
 		clearFilters: he,
@@ -1932,7 +1950,7 @@ var Kt = {
 			return e.target.value;
 		}
 		function q(e, t, n) {
-			let r = new Set(ue(u.value.query, e));
+			let r = new Set(de(u.value.query, e));
 			n ? r.add(t) : r.delete(t), a.setQueryField(e, [...r]);
 		}
 		function J(e) {
@@ -2128,13 +2146,13 @@ var Kt = {
 					]),
 					S("div", Nn, [(i(!0), L(_, null, c(P(W), (e) => (i(), L("details", {
 						key: e.key,
-						class: D(["bulk-filter-popover", { "has-value": e.kind === "text" ? !!P(se)(P(u).query, e.key) : !!P(ue)(P(u).query, e.key).length }]),
+						class: D(["bulk-filter-popover", { "has-value": e.kind === "text" ? !!P(ce)(P(u).query, e.key) : !!P(de)(P(u).query, e.key).length }]),
 						"data-filter-field": e.key,
 						open: H.value === e.key,
 						onFocusout: te
 					}, [S("summary", { onClick: E((t) => Y(e.key, t), ["prevent"]) }, [
 						R(b(e.label), 1),
-						e.kind === "enum" && P(ue)(P(u).query, e.key).length ? (i(), L("span", In, b(P(ue)(P(u).query, e.key).length), 1)) : m("", !0),
+						e.kind === "enum" && P(de)(P(u).query, e.key).length ? (i(), L("span", In, b(P(de)(P(u).query, e.key).length), 1)) : m("", !0),
 						n[38] ||= S("svg", {
 							viewBox: "0 0 16 16",
 							"aria-hidden": "true"
@@ -2145,7 +2163,7 @@ var Kt = {
 						onClick: n[14] ||= (e) => J(e)
 					}, "完成", 8, zn)]), e.kind === "text" ? (i(), L("label", Bn, [R(b(e.label), 1), S("input", {
 						"data-query-filter": e.key,
-						value: P(se)(P(u).query, e.key),
+						value: P(ce)(P(u).query, e.key),
 						inputmode: "numeric",
 						placeholder: "输入账号 ID",
 						disabled: U.value,
@@ -2154,7 +2172,7 @@ var Kt = {
 						type: "checkbox",
 						"data-query-filter": e.key,
 						value: t.value,
-						checked: P(ue)(P(u).query, e.key).includes(t.value),
+						checked: P(de)(P(u).query, e.key).includes(t.value),
 						disabled: U.value,
 						onChange: (n) => q(e.key, t.value, n.target.checked)
 					}, null, 40, Un), S("span", null, b(t.label), 1)]))), 128)), P(a).filterOptions(e.key).length ? m("", !0) : (i(), L("span", Wn, "暂无可用选项"))]))])], 42, Pn))), 128))]),
@@ -2392,8 +2410,19 @@ var Tr = {
 	"manual_reconcile",
 	"unknown",
 	"unconfirmed"
-], Dr = (e) => "is-" + (Er.includes(String(e)) ? "failed" : String(e || "preparing")), Or = (e) => Tr[Er.includes(String(e)) ? "failed" : String(e)] || String(e || "—"), kr = (e) => String(Z(e?.operation).key || e?.operation_key || e?.action_key || "");
-function Ar(e) {
+], Dr = (e) => "is-" + (Er.includes(String(e)) ? "failed" : String(e || "preparing")), Or = (e) => {
+	let t = Dr(e).slice(3);
+	return t === "success" ? "success" : t === "failed" ? "danger" : [
+		"attention_required",
+		"partial_success",
+		"paused"
+	].includes(t) ? "warning" : [
+		"running",
+		"active",
+		"preparing"
+	].includes(t) ? "active" : "neutral";
+}, kr = (e) => Tr[Er.includes(String(e)) ? "failed" : String(e)] || String(e || "—"), Ar = (e) => String(Z(e?.operation).key || e?.operation_key || e?.action_key || "");
+function jr(e) {
 	let t = {};
 	for (let [n, r] of Object.entries(Z(e))) {
 		let e = Er.includes(n) ? "failed" : n;
@@ -2401,11 +2430,11 @@ function Ar(e) {
 	}
 	return t;
 }
-var jr = (e) => X(e.canonical_target_id || e.target_id || e.id);
-function Mr(e) {
+var Mr = (e) => X(e.canonical_target_id || e.target_id || e.id);
+function Nr(e) {
 	return e == null || e === "" ? null : X(e);
 }
-function Nr(e) {
+function Pr(e) {
 	if (e.refresh_outcome) return {
 		pending: "等待本轮 AT 刷新",
 		success: "本轮 AT 刷新成功",
@@ -2416,7 +2445,7 @@ function Nr(e) {
 	if (e.query_outcome) {
 		if (e.query_outcome === "pending") return "等待本轮查询结果";
 		if (e.query_outcome === "not_executed") return "本轮未执行";
-		let t = [`查询${Or(e.query_outcome)}`];
+		let t = [`查询${kr(e.query_outcome)}`];
 		return e.account_plan_type && t.push(`套餐 ${e.account_plan_type}`), e.confirmed_no_offer ? t.push("本次确认无优惠") : e.plus_offer_kind && e.plus_offer_kind !== "unknown" && t.push(xr(e.plus_offer_kind)), e.comparison && e.comparison !== "not_comparable" && t.push({
 			unchanged: "优惠未变化",
 			new_offer: "新增优惠",
@@ -2438,33 +2467,33 @@ function Nr(e) {
 	}
 	return "";
 }
-function Pr(e) {
-	let t = Z(e.result), n = Z(t.result || e.result_summary || t), r = Z(e.reason || t.reason || e.error || e.error_info), i = Z(e.display_snapshot || e.display), a = Z(e.execution), o = pr(e.owned_runs)[0] || {}, s = jr(e), c = Mr(e.account_id || i.account_id || i.id || e.entity_id) || s, l = String(i.email || e.email || `账号 #${c}`), u = String(n.summary || n.message || e.result_label || e.summary_text || Nr(n) || "等待本轮结果"), d = String(r.summary || r.cause_summary || r.label || r.message || e.reason_label || e.reason_code || r.code || ""), f = [r.summary || r.cause_summary || r.message || e.error_message || d, r.display_code || r.code || e.reason_code].filter(Boolean).join("\n"), p = String(e.stage_label || e.current_stage_label || e.stage || "").trim(), m = Object.entries(Z(n.capabilities)).map(([e, t]) => `${mr(e)}：${Or(Z(t).state || Z(t).status)}`).join("\n"), h = e.state || e.outcome || e.status;
+function Fr(e) {
+	let t = Z(e.result), n = Z(t.result || e.result_summary || t), r = Z(e.reason || t.reason || e.error || e.error_info), i = Z(e.display_snapshot || e.display), a = Z(e.execution), o = pr(e.owned_runs)[0] || {}, s = Mr(e), c = Nr(e.account_id || i.account_id || i.id || e.entity_id) || s, l = String(i.email || e.email || `账号 #${c}`), u = String(n.summary || n.message || e.result_label || e.summary_text || Pr(n) || "等待本轮结果"), d = String(r.summary || r.cause_summary || r.label || r.message || e.reason_label || e.reason_code || r.code || ""), f = [r.summary || r.cause_summary || r.message || e.error_message || d, r.display_code || r.code || e.reason_code].filter(Boolean).join("\n"), p = String(e.stage_label || e.current_stage_label || e.stage || "").trim(), m = Object.entries(Z(n.capabilities)).map(([e, t]) => `${mr(e)}：${kr(Z(t).state || Z(t).status)}`).join("\n"), h = e.state || e.outcome || e.status;
 	return {
 		id: s,
 		accountId: c,
 		account: l,
 		summary: u,
-		summaryShort: Fr(n, h, u),
+		summaryShort: Ir(n, h, u),
 		reason: d,
-		reasonShort: d ? fe({
+		reasonShort: d ? pe({
 			...r,
 			code: r.code || e.reason_code
-		}) === "执行异常" && [...d].length <= 10 ? d : fe({
+		}) === "执行异常" && [...d].length <= 10 ? d : pe({
 			...r,
 			code: r.code || e.reason_code
 		}) : "",
 		reasonContent: f,
 		stage: p,
 		capabilities: m,
-		state: Or(h),
+		state: kr(h),
 		stateKey: h,
-		taskId: Mr(e.task_id || e.owned_task_id || a.task_id || o.task_id),
-		runId: Mr(e.owned_run_id || e.run_id || a.run_id || o.run_id),
-		blockerTaskId: Mr(e.blocker_task_id)
+		taskId: Nr(e.task_id || e.owned_task_id || a.task_id || o.task_id),
+		runId: Nr(e.owned_run_id || e.run_id || a.run_id || o.run_id),
+		blockerTaskId: Nr(e.blocker_task_id)
 	};
 }
-function Fr(e, t, n) {
+function Ir(e, t, n) {
 	if ([...n].length <= 10) return n;
 	if (e.refresh_outcome) return {
 		success: "AT刷新成功",
@@ -2487,17 +2516,17 @@ function Fr(e, t, n) {
 		pending: "等待授权结果"
 	}[String(e.credential_confirmation)] || (e.existing_asset_preserved ? "授权失败已保留" : "授权失败");
 	if (Array.isArray(e.required_steps)) return "补全结果见详情";
-	let r = Or(t);
+	let r = kr(t);
 	return [...r].length <= 10 && r !== "—" ? r : "结果见详情";
 }
 // src/features/bulk/useBulkDetail.ts
-var Ir = [
+var Lr = [
 	"failed",
 	"partial_success",
 	"not_executed",
 	"cancelled"
 ];
-function Lr(e, t, n = e().view === "detail") {
+function Rr(e, t, n = e().view === "detail") {
 	let r = y({ ...e() }), i = y(n), a = A(null), s = A(null), c = A(null), l = A([]), u = y(null), d = y(/* @__PURE__ */ new Set()), f = y([]), m = y(null), h = y(!1), g = y(!1), _ = y(!1), v = y(!1), b = y(!1), x = y(!1), S = y(""), C = y(""), w = y(""), T = y(""), E = A(null), D = !1, k = 0, j = !1, M, N = null, P = "", F = /* @__PURE__ */ new Map(), I = () => `${r.value.batch_id || ""}:${r.value.round_id || ""}`, L = () => `${I()}:${r.value.result_state || ""}`, R = () => `${L()}:${r.value.cursor || ""}`;
 	function z(e) {
 		let t = F.get(e);
@@ -2533,7 +2562,7 @@ function Lr(e, t, n = e().view === "detail") {
 		}
 		l.value = [...t.values()].sort((e, t) => Number(t.round_no) - Number(e.round_no));
 	}
-	let G = O(() => Ar(a.value?.summary || a.value?.counts)), K = O(() => Z(a.value?.control)), q = O(() => K.value.revision ?? a.value?.control_revision), J = O(() => ["ended", "completed"].includes(String(K.value.state || a.value?.control_state))), Y = O(() => !!(K.value.paused || a.value?.is_paused)), te = O(() => f.value.length > 0), ne = O(() => s.value?.page?.has_more && s.value.page.next_cursor || null), re = O(() => i.value && r.value.view === "detail" && (!J.value || !!m.value || !!K.value.pending)), ie = O(() => Object.hasOwn(fr, kr(a.value)));
+	let G = O(() => jr(a.value?.summary || a.value?.counts)), K = O(() => Z(a.value?.control)), q = O(() => K.value.revision ?? a.value?.control_revision), J = O(() => ["ended", "completed"].includes(String(K.value.state || a.value?.control_state))), Y = O(() => !!(K.value.paused || a.value?.is_paused)), te = O(() => f.value.length > 0), ne = O(() => s.value?.page?.has_more && s.value.page.next_cursor || null), re = O(() => i.value && r.value.view === "detail" && (!J.value || !!m.value || !!K.value.pending)), ie = O(() => Object.hasOwn(fr, Ar(a.value)));
 	function ae(e) {
 		return !a.value || x.value || E.value || J.value || K.value.pending ? !0 : e === "pause" ? Y.value : e === "resume" ? !Y.value : Z(a.value.capabilities || Z(a.value.operation).capabilities)[e] === !1;
 	}
@@ -2546,7 +2575,7 @@ function Lr(e, t, n = e().view === "detail") {
 			n.set("page_size", "50"), r.value.cursor && n.set("cursor", r.value.cursor), r.value.result_state && n.set("state[]", r.value.result_state);
 			let i = await t.api.request(`${U("/targets")}?${n}`, { signal: e.controller.signal });
 			if (B("targets", e)) {
-				for (let e of i.items) jr(e);
+				for (let e of i.items) Mr(e);
 				s.value = i;
 			}
 		} catch (t) {
@@ -2652,13 +2681,13 @@ function Lr(e, t, n = e().view === "detail") {
 		t ? n.add(X(e)) : n.delete(e), d.value = n;
 	}
 	function ye(e) {
-		for (let t of s.value?.items || []) ve(jr(t), e);
+		for (let t of s.value?.items || []) ve(Mr(t), e);
 	}
 	function be() {
 		d.value = /* @__PURE__ */ new Set();
 	}
 	function xe(e) {
-		return (e === "unsuccessful" ? Ir : [e]).reduce((e, t) => e + (G.value[t] || 0), 0);
+		return (e === "unsuccessful" ? Lr : [e]).reduce((e, t) => e + (G.value[t] || 0), 0);
 	}
 	function Se() {
 		E.value = null;
@@ -2686,7 +2715,7 @@ function Lr(e, t, n = e().view === "detail") {
 		e && await Ce(e);
 	}
 	async function Te(e = !1, t = "failed") {
-		if (!a.value || x.value || E.value || !Ir.includes(t) && t !== "unsuccessful") return;
+		if (!a.value || x.value || E.value || !Lr.includes(t) && t !== "unsuccessful") return;
 		let n = [...d.value], i = e ? n.length : xe(t);
 		if (!i) return;
 		let o = X(r.value.batch_id), s = r.value.round_id ? X(r.value.round_id) : null, c = {
@@ -2711,7 +2740,7 @@ function Lr(e, t, n = e().view === "detail") {
 					target_ids: n
 				} : {
 					kind: "result_filter",
-					states: t === "unsuccessful" ? [...Ir] : [t]
+					states: t === "unsuccessful" ? [...Lr] : [t]
 				},
 				retry_mode: "automatic"
 			}
@@ -2758,7 +2787,7 @@ function Lr(e, t, n = e().view === "detail") {
 			kind: "batch_targets",
 			batch_id: X(r.value.batch_id),
 			selection: { kind: "all" }
-		} : null, kr(a.value));
+		} : null, Ar(a.value));
 	}
 	function Oe(e) {
 		i.value = e, e || (V("detail", "targets", "report", "rounds"), g.value = !1, _.value = !1, v.value = !1, b.value = !1, E.value = null);
@@ -2833,13 +2862,13 @@ function Lr(e, t, n = e().view === "detail") {
 	};
 }
 // src/features/bulk/BulkBusinessStats.vue?vue&type=script&setup=true&lang.ts
-var Rr = {
+var zr = {
 	key: 0,
 	class: "bulk-business-groups"
-}, zr = { class: "bulk-business-metrics" }, Br = {
+}, Br = { class: "bulk-business-metrics" }, Vr = {
 	key: 1,
 	class: "bulk-report-empty"
-}, Vr = /* @__PURE__ */ n({
+}, Hr = /* @__PURE__ */ n({
 	__name: "BulkBusinessStats",
 	props: {
 		metrics: {},
@@ -2847,47 +2876,47 @@ var Rr = {
 	},
 	setup(e) {
 		let t = e, n = O(() => t.groups ?? wr(t.metrics));
-		return (e, t) => n.value.length ? (i(), L("div", Rr, [(i(!0), L(_, null, c(n.value, (e) => (i(), L("section", {
+		return (e, t) => n.value.length ? (i(), L("div", zr, [(i(!0), L(_, null, c(n.value, (e) => (i(), L("section", {
 			key: e.title,
 			class: "bulk-business-group"
-		}, [S("h4", null, b(e.title) + " · " + b(e.title === "国家查询项" ? "项" : "账号数"), 1), S("dl", zr, [(i(!0), L(_, null, c(e.items, (e) => (i(), L("div", { key: e.title }, [S("dt", null, b(e.title), 1), S("dd", null, b(P($)(e.value)), 1)]))), 128))])]))), 128))])) : (i(), L("p", Br, "暂无已确认的功能统计。"));
+		}, [S("h4", null, b(e.title) + " · " + b(e.title === "国家查询项" ? "项" : "账号数"), 1), S("dl", Br, [(i(!0), L(_, null, c(e.items, (e) => (i(), L("div", { key: e.title }, [S("dt", null, b(e.title), 1), S("dd", null, b(P($)(e.value)), 1)]))), 128))])]))), 128))])) : (i(), L("p", Vr, "暂无已确认的功能统计。"));
 	}
-}), Hr = ["aria-label"], Ur = { role: "status" }, Wr = {
+}), Ur = ["aria-label"], Wr = { role: "status" }, Gr = {
 	key: 1,
 	class: "bulk-plan-report",
 	"aria-labelledby": "bulkPlanReportTitle"
-}, Gr = { class: "bulk-report-header" }, Kr = { class: "bulk-report-heading-line" }, qr = { id: "bulkPlanReportTitle" }, Jr = { class: "bulk-report-updated" }, Yr = {
+}, Kr = { class: "bulk-report-header" }, qr = { class: "bulk-report-heading-line" }, Jr = { id: "bulkPlanReportTitle" }, Yr = { class: "bulk-report-updated" }, Xr = {
 	key: 0,
 	class: "bulk-report-sync",
 	role: "status"
-}, Xr = { class: "bulk-report-outcomes" }, Zr = { class: "bulk-report-outcome-note" }, Qr = { class: "bulk-report-execution" }, $r = { "aria-label": "账号执行耗时" }, ei = { class: "bulk-report-section-head" }, ti = { class: "bulk-report-durations" }, ni = { class: "is-average" }, ri = { class: "bulk-report-note" }, ii = {
+}, Zr = { class: "bulk-report-outcomes" }, Qr = { class: "bulk-report-outcome-note" }, $r = { class: "bulk-report-execution" }, ei = { "aria-label": "账号执行耗时" }, ti = { class: "bulk-report-section-head" }, ni = { class: "bulk-report-durations" }, ri = { class: "is-average" }, ii = { class: "bulk-report-note" }, ai = {
 	key: 0,
 	"aria-label": "AT 检查与自动刷新"
-}, ai = { class: "bulk-report-at-causes" }, oi = { class: "bulk-report-at-results" }, si = { class: "bulk-report-note" }, ci = {
+}, oi = { class: "bulk-report-at-causes" }, si = { class: "bulk-report-at-results" }, ci = { class: "bulk-report-note" }, li = {
 	key: 1,
 	"aria-label": "功能统计"
-}, li = {
+}, ui = {
 	key: 1,
 	class: "bulk-report-distributions"
-}, ui = {
+}, di = {
 	class: "bulk-report-offers",
 	"aria-label": "优惠结果"
-}, di = { class: "bulk-report-offer-totals" }, fi = { class: "bulk-report-offer-list" }, pi = { class: "bulk-report-offer-line" }, mi = {
+}, fi = { class: "bulk-report-offer-totals" }, pi = { class: "bulk-report-offer-list" }, mi = { class: "bulk-report-offer-line" }, hi = {
 	class: "bulk-report-rail",
 	"aria-hidden": "true"
-}, hi = { class: "bulk-report-kind-list" }, gi = {
+}, gi = { class: "bulk-report-kind-list" }, _i = {
 	key: 0,
 	class: "bulk-report-empty"
-}, _i = {
+}, vi = {
 	class: "bulk-report-plans",
 	"aria-label": "当前订阅套餐"
-}, vi = { class: "bulk-report-plan-list" }, yi = {
+}, yi = { class: "bulk-report-plan-list" }, bi = {
 	key: 0,
 	class: "bulk-report-empty"
-}, bi = {
+}, xi = {
 	key: 2,
 	class: "bulk-business-details"
-}, xi = /* @__PURE__ */ n({
+}, Si = /* @__PURE__ */ n({
 	__name: "BulkReport",
 	props: {
 		report: {},
@@ -2961,46 +2990,46 @@ var Rr = {
 			key: 0,
 			class: "bulk-plan-report bulk-report-placeholder",
 			"aria-label": P(mr)(e.report.operation_key) + "报告"
-		}, [S("h3", null, b(P(mr)(e.report.operation_key)) + "报告", 1), S("p", Ur, b(P(gr)(e.report)) + " · " + b(e.report.phase === "preparing" ? "账号名单准备中，固定后生成报告。" : "该轮名单未固定，无法生成账号统计。"), 1)], 8, Hr)) : n.value ? (i(), L("section", Wr, [
-			S("header", Gr, [S("div", null, [S("div", Kr, [S("h3", qr, b(P(mr)(e.report.operation_key)) + b(l.value ? "完成报告" : "实时报告"), 1), S("span", { class: D(["bulk-report-phase", { "is-completed": l.value }]) }, b(l.value ? "已完成" : e.report.phase === "preparing" ? "名单准备中" : "统计更新中"), 3)]), S("p", null, b(P(gr)(e.report)) + " · " + b(P($)(r.value.accounts)) + " 个账号", 1)]), S("span", Jr, "更新于 " + b(e.formatDateTime(e.report.generated_at)), 1)]),
-			P(Z)(e.report.projection).state && P(Z)(e.report.projection).state !== "current" ? (i(), L("p", Yr, b(P(Z)(e.report.projection).state === "failed" ? "结果汇总暂时失败，以下统计尚未收齐，请稍后刷新。" : "执行结果正在汇总，以下统计尚未收齐。"), 1)) : m("", !0),
-			S("dl", Xr, [(i(), L(_, null, c(x, ([e, t, n]) => S("div", {
+		}, [S("h3", null, b(P(mr)(e.report.operation_key)) + "报告", 1), S("p", Wr, b(P(gr)(e.report)) + " · " + b(e.report.phase === "preparing" ? "账号名单准备中，固定后生成报告。" : "该轮名单未固定，无法生成账号统计。"), 1)], 8, Ur)) : n.value ? (i(), L("section", Gr, [
+			S("header", Kr, [S("div", null, [S("div", qr, [S("h3", Jr, b(P(mr)(e.report.operation_key)) + b(l.value ? "完成报告" : "实时报告"), 1), S("span", { class: D(["bulk-report-phase", { "is-completed": l.value }]) }, b(l.value ? "已完成" : e.report.phase === "preparing" ? "名单准备中" : "统计更新中"), 3)]), S("p", null, b(P(gr)(e.report)) + " · " + b(P($)(r.value.accounts)) + " 个账号", 1)]), S("span", Yr, "更新于 " + b(e.formatDateTime(e.report.generated_at)), 1)]),
+			P(Z)(e.report.projection).state && P(Z)(e.report.projection).state !== "current" ? (i(), L("p", Xr, b(P(Z)(e.report.projection).state === "failed" ? "结果汇总暂时失败，以下统计尚未收齐，请稍后刷新。" : "执行结果正在汇总，以下统计尚未收齐。"), 1)) : m("", !0),
+			S("dl", Zr, [(i(), L(_, null, c(x, ([e, t, n]) => S("div", {
 				key: t,
 				class: D(["bulk-report-metric", n])
 			}, [S("dt", null, b(e), 1), S("dd", null, [R(b(P($)(r.value[t])), 1), E[0] ||= S("span", null, "个", -1)])], 2)), 64))]),
-			S("div", Zr, [
+			S("div", Qr, [
 				S("span", null, "已结束 " + b(P($)(r.value.completed)) + " / " + b(P($)(r.value.accounts)) + " 个", 1),
 				S("span", null, "未执行 " + b(P($)(r.value.not_executed)) + " 个", 1),
 				S("span", null, "已取消 " + b(P($)(r.value.cancelled)) + " 个", 1)
 			]),
-			S("div", Qr, [S("section", $r, [
-				S("div", ei, [E[1] ||= S("h4", null, "账号执行耗时", -1), S("span", null, "已结束样本 " + b(P($)(a.value.sample_count)) + " 个", 1)]),
-				S("dl", ti, [
-					S("div", ni, [E[2] ||= S("dt", null, "平均耗时", -1), S("dd", null, b(P(hr)(a.value.avg_seconds)), 1)]),
+			S("div", $r, [S("section", ei, [
+				S("div", ti, [E[1] ||= S("h4", null, "账号执行耗时", -1), S("span", null, "已结束样本 " + b(P($)(a.value.sample_count)) + " 个", 1)]),
+				S("dl", ni, [
+					S("div", ri, [E[2] ||= S("dt", null, "平均耗时", -1), S("dd", null, b(P(hr)(a.value.avg_seconds)), 1)]),
 					S("div", null, [E[3] ||= S("dt", null, "最快", -1), S("dd", null, b(P(hr)(a.value.min_seconds)), 1)]),
 					S("div", null, [E[4] ||= S("dt", null, "最慢", -1), S("dd", null, b(P(hr)(a.value.max_seconds)), 1)])
 				]),
-				S("p", ri, [R(" 从账号开始执行到结束，" + b(u.value ? "含自动刷新及链内等待" : "含链内等待") + "，不含开始前排队。", 1), (P(Q)(a.value.missing_count) || 0) > 0 ? (i(), L(_, { key: 0 }, [R(b(P($)(a.value.missing_count)) + " 个已结束账号缺少有效耗时，未计入均值。", 1)], 64)) : P(Q)(a.value.sample_count) === 0 ? (i(), L(_, { key: 1 }, [R(" 暂无有效耗时样本。")], 64)) : m("", !0)])
-			]), u.value ? (i(), L("section", ii, [
+				S("p", ii, [R(" 从账号开始执行到结束，" + b(u.value ? "含自动刷新及链内等待" : "含链内等待") + "，不含开始前排队。", 1), (P(Q)(a.value.missing_count) || 0) > 0 ? (i(), L(_, { key: 0 }, [R(b(P($)(a.value.missing_count)) + " 个已结束账号缺少有效耗时，未计入均值。", 1)], 64)) : P(Q)(a.value.sample_count) === 0 ? (i(), L(_, { key: 1 }, [R(" 暂无有效耗时样本。")], 64)) : m("", !0)])
+			]), u.value ? (i(), L("section", ai, [
 				E[8] ||= S("div", { class: "bulk-report-section-head" }, [S("h4", null, "AT 检查与自动刷新"), S("span", null, "按账号去重")], -1),
-				S("dl", ai, [(i(), L(_, null, c(C, ([e, t]) => S("div", {
+				S("dl", oi, [(i(), L(_, null, c(C, ([e, t]) => S("div", {
 					key: t,
 					class: "bulk-report-minor"
 				}, [S("dt", null, b(e), 1), S("dd", null, [R(b(P($)(o.value[t])), 1), E[5] ||= S("span", null, "个", -1)])])), 64))]),
-				S("dl", oi, [(i(), L(_, null, c(w, ([e, t, n]) => S("div", {
+				S("dl", si, [(i(), L(_, null, c(w, ([e, t, n]) => S("div", {
 					key: t,
 					class: D(["bulk-report-minor", n])
 				}, [S("dt", null, b(e), 1), S("dd", null, [R(b(P($)(o.value[t])), 1), E[6] ||= S("span", null, "个", -1)])], 2)), 64))]),
-				S("p", si, [
+				S("p", ci, [
 					P(Q)(o.value.not_needed_accounts) === null ? m("", !0) : (i(), L(_, { key: 0 }, [R("未触发刷新 " + b(P($)(o.value.not_needed_accounts)) + " 个 · ", 1)], 64)),
 					R("刷新状态待确认 " + b(P($)(o.value.unknown_accounts)) + " 个", 1),
 					P(Q)(o.value.not_executed_accounts) === null ? m("", !0) : (i(), L(_, { key: 1 }, [R(" · 未开始执行 " + b(P($)(o.value.not_executed_accounts)) + " 个", 1)], 64)),
 					E[7] ||= R("。待确认含执行中尚无结果及历史证据缺失；触发原因可能重叠，远端拒绝不等于本地过期。 ", -1)
 				])
-			])) : (i(), L("section", ci, [E[9] ||= S("div", { class: "bulk-report-section-head" }, [S("h4", null, "功能统计"), S("span", null, "当前查看范围")], -1), d(Vr, { groups: y.value }, null, 8, ["groups"])]))]),
-			u.value ? (i(), L("div", li, [S("section", ui, [
+			])) : (i(), L("section", li, [E[9] ||= S("div", { class: "bulk-report-section-head" }, [S("h4", null, "功能统计"), S("span", null, "当前查看范围")], -1), d(Hr, { groups: y.value }, null, 8, ["groups"])]))]),
+			u.value ? (i(), L("div", ui, [S("section", di, [
 				E[13] ||= S("div", { class: "bulk-report-section-head" }, [S("div", null, [S("h4", null, "优惠结果"), S("p", null, "统计本次查到的可用优惠，按账号去重")])], -1),
-				S("dl", di, [(i(), L(_, null, c(T, ([e, t, n]) => S("div", {
+				S("dl", fi, [(i(), L(_, null, c(T, ([e, t, n]) => S("div", {
 					key: t,
 					class: D(["bulk-report-metric", { "is-accent": t === "with_offer_accounts" }])
 				}, [
@@ -3008,39 +3037,39 @@ var Rr = {
 					S("dd", null, [R(b(P($)(s.value[t])), 1), E[10] ||= S("span", null, "个", -1)]),
 					S("small", null, b(n), 1)
 				], 2)), 64))]),
-				S("div", fi, [(i(!0), L(_, null, c(p.value, (e) => (i(), L("div", {
+				S("div", pi, [(i(!0), L(_, null, c(p.value, (e) => (i(), L("div", {
 					key: String(e.plan),
 					class: "bulk-report-offer-row"
 				}, [
-					S("div", pi, [S("strong", null, b(P(br)(e.plan)), 1), S("span", null, [S("b", null, b(P($)(e.accounts)), 1), E[11] ||= R(" 个账号", -1)])]),
-					S("span", mi, [S("span", { style: v({ width: P(Sr)(e.accounts, g.value) }) }, null, 4)]),
-					S("dl", hi, [(i(!0), L(_, null, c(P(pr)(e.kinds), (e) => (i(), L("div", { key: String(e.kind) }, [S("dt", null, b(P(xr)(e.kind)), 1), S("dd", null, [R(b(P($)(e.accounts)), 1), E[12] ||= S("span", null, "个", -1)])]))), 128))])
-				]))), 128)), p.value.length ? m("", !0) : (i(), L("p", gi, b(P(Q)(s.value.with_offer_accounts) === 0 ? "本次尚未查到可用优惠。" : "暂无优惠套餐明细。"), 1))]),
+					S("div", mi, [S("strong", null, b(P(br)(e.plan)), 1), S("span", null, [S("b", null, b(P($)(e.accounts)), 1), E[11] ||= R(" 个账号", -1)])]),
+					S("span", hi, [S("span", { style: v({ width: P(Sr)(e.accounts, g.value) }) }, null, 4)]),
+					S("dl", gi, [(i(!0), L(_, null, c(P(pr)(e.kinds), (e) => (i(), L("div", { key: String(e.kind) }, [S("dt", null, b(P(xr)(e.kind)), 1), S("dd", null, [R(b(P($)(e.accounts)), 1), E[12] ||= S("span", null, "个", -1)])]))), 128))])
+				]))), 128)), p.value.length ? m("", !0) : (i(), L("p", _i, b(P(Q)(s.value.with_offer_accounts) === 0 ? "本次尚未查到可用优惠。" : "暂无优惠套餐明细。"), 1))]),
 				E[14] ||= S("p", { class: "bulk-report-note" }, "同一账号可符合多个套餐或优惠，分项数量可能重叠。", -1)
-			]), S("section", _i, [
+			]), S("section", vi, [
 				E[16] ||= S("div", { class: "bulk-report-section-head" }, [S("div", null, [S("h4", null, "当前订阅套餐"), S("p", null, "本次查询确认的套餐状态")])], -1),
-				S("dl", vi, [(i(!0), L(_, null, c(f.value, (e) => (i(), L("div", {
+				S("dl", yi, [(i(!0), L(_, null, c(f.value, (e) => (i(), L("div", {
 					key: String(e.plan),
 					class: D({ "is-unknown": e.plan === "unknown" })
 				}, [S("dt", null, b(P(br)(e.plan)), 1), S("dd", null, [S("span", null, [R(b(P($)(e.accounts)), 1), E[15] ||= S("small", null, "个", -1)]), S("span", {
 					class: D(["bulk-report-rail", { "is-muted": e.plan === "unknown" }]),
 					"aria-hidden": "true"
-				}, [S("span", { style: v({ width: P(Sr)(e.accounts, h.value) }) }, null, 4)], 2)])], 2))), 128)), f.value.length ? m("", !0) : (i(), L("div", yi, "暂无套餐结果。"))]),
+				}, [S("span", { style: v({ width: P(Sr)(e.accounts, h.value) }) }, null, 4)], 2)])], 2))), 128)), f.value.length ? m("", !0) : (i(), L("div", bi, "暂无套餐结果。"))]),
 				E[17] ||= S("p", { class: "bulk-report-note" }, "“尚未确认”包含待完成、失败或缺少套餐记录的账号。", -1)
 			])])) : m("", !0),
-			u.value && y.value.length ? (i(), L("details", bi, [E[18] ||= S("summary", null, [R("更多查询统计"), S("span", null, "展开查看")], -1), d(Vr, { groups: y.value }, null, 8, ["groups"])])) : m("", !0)
+			u.value && y.value.length ? (i(), L("details", xi, [E[18] ||= S("summary", null, [R("更多查询统计"), S("span", null, "展开查看")], -1), d(Hr, { groups: y.value }, null, 8, ["groups"])])) : m("", !0)
 		])) : m("", !0);
 	}
-}), Si = ["aria-label"], Ci = {
+}), Ci = ["aria-label"], wi = {
 	key: 0,
 	role: "status"
-}, wi = {
+}, Ti = {
 	key: 2,
 	class: "bulk-report-load-error"
-}, Ti = {
+}, Ei = {
 	class: "bulk-error",
 	role: "alert"
-}, Ei = ["disabled"], Di = /* @__PURE__ */ n({
+}, Di = ["disabled"], Oi = /* @__PURE__ */ n({
 	__name: "BulkReportView",
 	props: {
 		operationKey: {},
@@ -3052,7 +3081,7 @@ var Rr = {
 	},
 	setup(e) {
 		let t = e, n = O(() => Object.hasOwn(fr, t.operationKey)), r = O(() => `${fr[t.operationKey]}报告`);
-		return (t, a) => n.value ? (i(), L(_, { key: 0 }, [e.report && e.report.operation_key === e.operationKey ? (i(), x(xi, {
+		return (t, a) => n.value ? (i(), L(_, { key: 0 }, [e.report && e.report.operation_key === e.operationKey ? (i(), x(Si, {
 			key: 0,
 			report: e.report,
 			"format-date-time": e.formatDateTime
@@ -3060,68 +3089,65 @@ var Rr = {
 			key: 1,
 			class: "bulk-plan-report bulk-report-placeholder",
 			"aria-label": r.value
-		}, [S("h3", null, b(r.value), 1), e.error ? m("", !0) : (i(), L("p", Ci, "正在汇总本次执行结果…"))], 8, Si)), e.error ? (i(), L("div", wi, [S("p", Ti, b(e.error), 1), S("button", {
+		}, [S("h3", null, b(r.value), 1), e.error ? m("", !0) : (i(), L("p", wi, "正在汇总本次执行结果…"))], 8, Ci)), e.error ? (i(), L("div", Ti, [S("p", Ei, b(e.error), 1), S("button", {
 			type: "button",
 			class: "jobs-tb-btn",
 			"data-bulk-action": "report-refresh",
 			disabled: e.loading,
 			onClick: a[0] ||= E((t) => e.onRetry(), ["stop"])
-		}, " 重新读取报告 ", 8, Ei)])) : m("", !0)], 64)) : m("", !0);
+		}, " 重新读取报告 ", 8, Di)])) : m("", !0)], 64)) : m("", !0);
 	}
-}), Oi = ["aria-busy"], ki = {
+}), ki = ["aria-busy"], Ai = {
 	key: 0,
-	class: "bulk-error",
+	class: "ui-list-feedback is-error bulk-error",
 	role: "alert"
-}, Ai = {
-	class: "bulk-target-scroll",
+}, ji = {
+	class: "ui-table-scroll bulk-target-scroll",
 	role: "region",
 	"aria-label": "账号明细内容",
 	tabindex: "0"
-}, ji = { class: "bulk-table bulk-target-table" }, Mi = [
+}, Mi = { class: "ui-table ui-table--sticky-end bulk-table bulk-target-table" }, Ni = { class: "ui-col-check" }, Pi = [
 	"disabled",
 	"checked",
 	"indeterminate"
-], Ni = { class: "bulk-target-filter" }, Pi = ["checked"], Fi = [
+], Fi = { class: "bulk-target-filter" }, Ii = ["checked"], Li = [
 	"value",
 	"checked",
 	"onChange"
-], Ii = ["data-bulk-row-target"], Li = {
-	class: "bulk-target-check",
+], Ri = ["data-bulk-row-target"], zi = {
+	class: "ui-col-check bulk-target-check",
 	"data-label": "选择"
-}, Ri = [
+}, Bi = [
 	"data-bulk-target",
 	"aria-label",
 	"checked",
 	"onChange"
-], zi = {
+], Vi = {
 	class: "bulk-target-id",
 	"data-label": "ID"
-}, Bi = ["aria-label", "onClick"], Vi = {
+}, Hi = ["aria-label", "onClick"], Ui = {
 	class: "bulk-target-account",
 	"data-label": "账号"
-}, Hi = ["title", "onClick"], Ui = {
+}, Wi = ["title", "onClick"], Gi = {
 	class: "bulk-target-state",
 	"data-label": "结果 / 阶段"
-}, Wi = { class: "bulk-target-status-line" }, Gi = ["onClick"], Ki = {
+}, Ki = { class: "bulk-target-status-line" }, qi = ["onClick"], Ji = {
 	class: "bulk-target-summary",
 	"data-label": "结果摘要"
-}, qi = [
+}, Yi = [
 	"title",
 	"aria-label",
 	"onClick"
-], Ji = {
+], Xi = {
 	class: "bulk-target-reason",
 	"data-label": "错误分类"
-}, Yi = ["title", "onClick"], Xi = {
+}, Zi = ["title", "onClick"], Qi = {
 	class: "bulk-target-actions",
 	"data-label": "操作"
-}, Zi = { class: "bulk-target-action-line" }, Qi = ["onClick"], $i = { key: 1 }, ea = ["onClick"], ta = { key: 0 }, na = { colspan: "7" }, ra = {
-	class: "bulk-empty",
-	role: "status"
-}, ia = {
+}, $i = { class: "bulk-target-action-line" }, ea = ["onClick"], ta = { key: 1 }, na = ["onClick"], ra = {
 	key: 0,
 	class: "bulk-vue-result-details"
-}, aa = /* @__PURE__ */ n({
+}, ia = /* @__PURE__ */ n({
 	__name: "BulkTargets",
 	props: {
 		items: {},
@@ -3142,7 +3168,7 @@ var Rr = {
 		"filter"
 	],
 	setup(e, { expose: t, emit: n }) {
-		let r = e, s = n, u = y(null), f = A(r.items), p = O(() => f.value.map(Pr)), h = O(() => p.value.filter((e) => r.selected.has(e.id)).length), g = y(!1), v = O(() => [.../* @__PURE__ */ new Set([...r.resultStates, ...r.resultState ? [r.resultState] : []])]);
+		let r = e, s = n, u = y(null), f = A(r.items), p = O(() => f.value.map(Fr)), h = O(() => p.value.filter((e) => r.selected.has(e.id)).length), g = y(!1), v = O(() => [.../* @__PURE__ */ new Set([...r.resultStates, ...r.resultState ? [r.resultState] : []])]);
 		function C(e) {
 			g.value = !1, s("filter", e);
 		}
@@ -3187,12 +3213,12 @@ var Rr = {
 			ref: u,
 			class: "bulk-targets",
 			"aria-busy": e.loading
-		}, [e.error ? (i(), L("div", ki, [R(b(e.error) + " ", 1), S("button", {
+		}, [e.error ? (i(), L("div", Ai, [R(b(e.error) + " ", 1), S("button", {
 			type: "button",
-			class: "bulk-link",
+			class: "ui-link",
 			onClick: n[0] ||= (e) => s("retry")
-		}, "重试读取明细")])) : m("", !0), S("div", Ai, [S("table", ji, [S("thead", null, [S("tr", null, [
-			S("th", null, [S("input", {
+		}, "重试读取明细")])) : m("", !0), S("div", ji, [S("table", Mi, [S("thead", null, [S("tr", null, [
+			S("th", Ni, [S("input", {
 				type: "checkbox",
 				"data-select-page": "",
 				"aria-label": "选择当前页目标",
@@ -3200,20 +3226,20 @@ var Rr = {
 				checked: p.value.length > 0 && h.value === p.value.length,
 				indeterminate: h.value > 0 && h.value < p.value.length,
 				onChange: n[1] ||= (e) => s("selectPage", z(e))
-			}, null, 40, Mi)]),
+			}, null, 40, Pi)]),
 			n[7] ||= S("th", null, "ID", -1),
 			n[8] ||= S("th", null, "账号", -1),
-			S("th", null, [e.resultStates.length ? (i(), x(Y, {
+			S("th", null, [e.resultStates.length ? (i(), x(G, {
 				key: 0,
 				label: "结果状态",
 				"trigger-label": "结果 / 阶段",
 				active: !!e.resultState,
-				summary: P(Or)(e.resultState),
+				summary: P(kr)(e.resultState),
 				open: g.value,
 				"onUpdate:open": n[3] ||= (e) => g.value = e
 			}, {
-				default: a(() => [S("fieldset", Ni, [
-					n[6] ||= S("legend", { class: "bulk-sr-only" }, "结果状态", -1),
+				default: a(() => [S("fieldset", Fi, [
+					n[6] ||= S("legend", { class: "ui-sr-only" }, "结果状态", -1),
 					S("label", null, [
 						S("input", {
 							type: "radio",
@@ -3221,7 +3247,7 @@ var Rr = {
 							value: "",
 							checked: !e.resultState,
 							onChange: n[2] ||= (e) => C("")
-						}, null, 40, Pi),
+						}, null, 40, Ii),
 						n[5] ||= S("span", null, "全部", -1),
 						S("strong", null, b(P($)(e.resultTotal)), 1)
 					]),
@@ -3232,8 +3258,8 @@ var Rr = {
 							value: t,
 							checked: e.resultState === t,
 							onChange: (e) => C(t)
-						}, null, 40, Fi),
-						S("span", null, b(P(Or)(t)), 1),
+						}, null, 40, Li),
+						S("span", null, b(P(kr)(t)), 1),
 						S("strong", null, b(e.resultCounts[t] || 0), 1)
 					]))), 128))
 				])]),
@@ -3250,32 +3276,32 @@ var Rr = {
 			key: t.id,
 			"data-bulk-row-target": t.id
 		}, [
-			S("td", Li, [S("input", {
+			S("td", zi, [S("input", {
 				type: "checkbox",
 				"data-bulk-target": t.id,
 				"aria-label": "选择账号 " + t.account,
 				checked: e.selected.has(t.id),
 				onChange: (e) => s("toggle", t.id, z(e))
-			}, null, 40, Ri)]),
-			S("td", zi, [S("button", {
+			}, null, 40, Bi)]),
+			S("td", Vi, [S("button", {
 				type: "button",
 				class: "bulk-cell-detail",
 				"aria-label": "查看完整账号 ID：" + t.accountId,
 				onClick: (e) => N(t, e)
-			}, "#" + b(t.accountId), 9, Bi)]),
-			S("td", Vi, [S("button", {
+			}, "#" + b(t.accountId), 9, Hi)]),
+			S("td", Ui, [S("button", {
 				type: "button",
 				class: "bulk-cell-detail",
 				title: t.account,
 				onClick: (e) => N(t, e)
-			}, b(t.account), 9, Hi)]),
-			S("td", Ui, [S("div", Wi, [S("span", { class: D(["bulk-badge", P(Dr)(t.stateKey)]) }, b(t.state), 3), t.stage && !["—", "-"].includes(t.stage) ? (i(), L("button", {
+			}, b(t.account), 9, Wi)]),
+			S("td", Gi, [S("div", Ki, [S("span", { class: D(["ui-badge bulk-badge", `ui-badge--${P(Or)(t.stateKey)}`]) }, b(t.state), 3), t.stage && !["—", "-"].includes(t.stage) ? (i(), L("button", {
 				key: 0,
 				type: "button",
 				class: "bulk-cell-detail bulk-target-stage",
 				onClick: (e) => N(t, e)
-			}, b(t.stage), 9, Gi)) : m("", !0)])]),
-			S("td", Ki, [d(q, {
+			}, b(t.stage), 9, qi)) : m("", !0)])]),
+			S("td", Ji, [d(te, {
 				text: t.summaryShort,
 				title: t.summary
 			}, {
@@ -3286,10 +3312,10 @@ var Rr = {
 					title: t.summary,
 					"aria-label": "查看完整结果摘要：" + t.summary,
 					onClick: (e) => N(t, e)
-				}, b(t.summaryShort), 9, qi)]),
+				}, b(t.summaryShort), 9, Yi)]),
 				_: 2
 			}, 1032, ["text", "title"])]),
-			S("td", Ji, [t.reason ? (i(), x(q, {
+			S("td", Xi, [t.reason ? (i(), x(te, {
 				key: 0,
 				text: t.reasonShort,
 				title: t.reason
@@ -3299,42 +3325,49 @@ var Rr = {
 					class: "bulk-cell-detail",
 					title: t.reason,
 					onClick: (e) => N(t, e)
-				}, b(t.reasonShort), 9, Yi)]),
+				}, b(t.reasonShort), 9, Zi)]),
 				_: 2
 			}, 1032, ["text", "title"])) : (i(), L(_, { key: 1 }, [R("—")], 64))]),
-			S("td", Xi, [S("div", Zi, [t.taskId ? (i(), L("button", {
+			S("td", Qi, [S("div", $i, [t.taskId ? (i(), L("button", {
 				key: 0,
 				type: "button",
-				class: "jobs-tb-btn",
+				class: "ui-link",
 				"data-owned-task": "",
 				onClick: (e) => B(t.taskId, t.runId)
-			}, "查看执行", 8, Qi)) : (i(), L("span", $i, "尚未创建执行")), t.blockerTaskId ? (i(), L("button", {
+			}, "查看执行", 8, ea)) : (i(), L("span", ta, "尚未创建执行")), t.blockerTaskId ? (i(), L("button", {
 				key: 2,
 				type: "button",
-				class: "bulk-link",
+				class: "ui-link",
 				"data-blocker-task": "",
 				title: "查看占用任务（其他执行）",
 				onClick: (e) => B(t.blockerTaskId)
-			}, "查看占用", 8, ea)) : m("", !0)])])
-		], 8, Ii))), 128)), p.value.length ? m("", !0) : (i(), L("tr", ta, [S("td", na, [S("div", ra, b(e.loading ? "正在读取账号明细…" : "当前条件下没有目标。更改结果筛选不会改变本批固定名单。"), 1)])]))])])])], 8, Oi), d(P(he), {
+			}, "查看占用", 8, na)) : m("", !0)])])
+		], 8, Ri))), 128)), p.value.length ? m("", !0) : (i(), x(J, {
+			key: 0,
+			colspan: 7,
+			loading: e.loading,
+			"loading-title": "正在读取账号明细…",
+			title: "当前条件下没有目标",
+			text: "更改结果筛选不会改变本批固定名单。"
+		}, null, 8, ["loading"]))])])])], 8, ki), d(P(ge), {
 			open: k.value,
 			"onUpdate:open": n[4] ||= (e) => k.value = e
 		}, {
-			default: a(() => [d(P(Oe), null, {
-				default: a(() => [d(P(De), { class: "bulk-vue-overlay" }), d(P(we), {
+			default: a(() => [d(P(ke), null, {
+				default: a(() => [d(P(Oe), { class: "bulk-vue-overlay" }), d(P(Te), {
 					class: "bulk-vue-dialog",
 					onCloseAutoFocus: F
 				}, {
 					default: a(() => [
-						d(P(ke), null, {
+						d(P(Ae), null, {
 							default: a(() => [...n[12] ||= [R("账号执行详情", -1)]]),
 							_: 1
 						}),
-						d(P(Te), null, {
+						d(P(Ee), null, {
 							default: a(() => [R(b(j.value?.account) + " · 账号 #" + b(j.value?.accountId), 1)]),
 							_: 1
 						}),
-						j.value ? (i(), L("dl", ia, [
+						j.value ? (i(), L("dl", ra, [
 							n[15] ||= S("dt", null, "结果 / 阶段", -1),
 							S("dd", null, b(j.value.state) + " · " + b(j.value.stage || "—"), 1),
 							n[16] ||= S("dt", null, "结果摘要", -1),
@@ -3346,7 +3379,7 @@ var Rr = {
 							S("dd", null, b(j.value.taskId ? "任务 #" + j.value.taskId : "尚未创建执行") + b(j.value.runId ? " · 运行 #" + j.value.runId : ""), 1),
 							j.value.blockerTaskId ? (i(), L(_, { key: 1 }, [n[14] ||= S("dt", null, "占用任务（其他执行）", -1), S("dd", null, "#" + b(j.value.blockerTaskId), 1)], 64)) : m("", !0)
 						])) : m("", !0),
-						d(P(ge), {
+						d(P(_e), {
 							class: "jobs-tb-btn",
 							"data-close-detail": ""
 						}, {
@@ -3361,42 +3394,42 @@ var Rr = {
 			_: 1
 		}, 8, ["open"])], 64));
 	}
-}), oa = ["aria-busy"], sa = {
+}), aa = ["aria-busy"], oa = {
 	key: 0,
 	class: "bulk-error",
 	role: "alert"
-}, ca = {
+}, sa = {
 	key: 1,
 	class: "bulk-card bulk-overview"
-}, la = { class: "bulk-detail-toolbar" }, ua = { class: "bulk-detail-meta" }, da = { class: "bulk-settings bulk-detail-settings" }, fa = {
+}, ca = { class: "bulk-detail-toolbar" }, la = { class: "bulk-detail-meta" }, ua = { class: "bulk-settings bulk-detail-settings" }, da = {
 	key: 0,
 	class: "bulk-projection-note"
-}, pa = { class: "bulk-actions" }, ma = { class: "bulk-round-picker" }, ha = ["value"], ga = ["value"], _a = ["value"], va = ["disabled"], ya = ["disabled"], ba = { class: "bulk-control-strip" }, xa = { class: "bulk-control-copy" }, Sa = { class: "bulk-view-note" }, Ca = { key: 0 }, wa = { key: 1 }, Ta = { key: 2 }, Ea = { key: 3 }, Da = {
+}, fa = { class: "bulk-actions" }, pa = { class: "bulk-round-picker" }, ma = ["value"], ha = ["value"], ga = ["value"], _a = ["disabled"], va = ["disabled"], ya = { class: "bulk-control-strip" }, ba = { class: "bulk-control-copy" }, xa = { class: "bulk-view-note" }, Sa = { key: 0 }, Ca = { key: 1 }, wa = { key: 2 }, Ta = { key: 3 }, Ea = {
 	key: 0,
 	class: "bulk-view-note"
-}, Oa = {
+}, Da = {
 	class: "bulk-actions",
 	role: "group",
 	"aria-label": "运行控制"
-}, ka = [
+}, Oa = [
 	"data-bulk-action",
 	"disabled",
 	"onClick"
-], Aa = { class: "bulk-summary-grid" }, ja = { class: "bulk-summary-item" }, Ma = { class: "bulk-summary-item" }, Na = { class: "bulk-summary-item is-success" }, Pa = { class: "bulk-summary-item is-warning" }, Fa = ["aria-busy"], Ia = { class: "bulk-card bulk-results-card" }, La = { class: "bulk-results-heading" }, Ra = ["disabled"], za = { class: "bulk-retry-toolbar" }, Ba = ["value"], Va = ["disabled"], Ha = ["disabled"], Ua = {
+], ka = { class: "bulk-summary-grid" }, Aa = { class: "bulk-summary-item" }, ja = { class: "bulk-summary-item" }, Ma = { class: "bulk-summary-item is-success" }, Na = { class: "bulk-summary-item is-warning" }, Pa = ["aria-busy"], Fa = { class: "bulk-card bulk-results-card" }, Ia = { class: "bulk-results-heading" }, La = ["disabled"], Ra = { class: "bulk-retry-toolbar" }, za = ["value"], Ba = ["disabled"], Va = ["disabled"], Ha = {
 	key: 0,
 	class: "bulk-error",
 	role: "alert"
-}, Wa = {
+}, Ua = {
 	key: 1,
 	class: "bulk-notice",
 	role: "status"
-}, Ga = {
+}, Wa = {
 	class: "bulk-target-count-row",
 	"data-bulk-target-count-row": ""
-}, Ka = {
+}, Ga = {
 	class: "bulk-target-count",
 	role: "status"
-}, qa = { class: "bulk-vue-dialog-actions" }, Ja = /*#__PURE__*/ F(/* @__PURE__ */ n({
+}, Ka = { class: "bulk-vue-dialog-actions" }, qa = /*#__PURE__*/ F(/* @__PURE__ */ n({
 	__name: "BulkDetail",
 	props: {
 		navigation: {},
@@ -3407,7 +3440,7 @@ var Rr = {
 		}
 	},
 	setup(e, { expose: n }) {
-		let r = e, l = Lr(() => r.navigation, r.deps, r.visible ?? r.navigation.view === "detail"), { navigation: u, detail: f, targets: p, report: g, reportOpen: v, rounds: x, roundsCursor: C, selected: w, pendingRound: T, loading: E, targetsLoading: k, reportLoading: A, roundsLoading: j, writing: M, error: N, targetError: F, reportError: I, actionError: z, confirmation: B, counts: V, ended: H, paused: U, hasReport: W, hasPrevious: ee, nextCursor: G } = l, K = O(() => f.value?.name || f.value?.title || "批次详情"), q = y(null), J = y(null), Y = y("failed"), ne = O(() => [
+		let r = e, l = Rr(() => r.navigation, r.deps, r.visible ?? r.navigation.view === "detail"), { navigation: u, detail: f, targets: p, report: g, reportOpen: v, rounds: x, roundsCursor: C, selected: w, pendingRound: T, loading: E, targetsLoading: k, reportLoading: A, roundsLoading: j, writing: M, error: N, targetError: F, reportError: I, actionError: z, confirmation: B, counts: V, ended: H, paused: U, hasReport: W, hasPrevious: ee, nextCursor: G } = l, K = O(() => f.value?.name || f.value?.title || "批次详情"), q = y(null), J = y(null), Y = y("failed"), te = O(() => [
 			"success",
 			"partial_success",
 			"failed",
@@ -3432,8 +3465,8 @@ var Rr = {
 			"cancelled"
 		], se = O(() => u.value.result_state ? [{
 			key: "result_state",
-			label: `结果状态：${Or(u.value.result_state)}`,
-			title: `结果状态：${Or(u.value.result_state)}`,
+			label: `结果状态：${kr(u.value.result_state)}`,
+			title: `结果状态：${kr(u.value.result_state)}`,
 			removeLabel: "清除结果状态筛选"
 		}] : []), ce = [
 			["failed", "失败"],
@@ -3512,17 +3545,17 @@ var Rr = {
 			class: "bulk-detail-owner",
 			"aria-busy": P(E)
 		}, [
-			P(N) ? (i(), L("p", sa, [R(b(P(N)) + " ", 1), S("button", {
+			P(N) ? (i(), L("p", oa, [R(b(P(N)) + " ", 1), S("button", {
 				type: "button",
 				class: "bulk-link",
 				onClick: n[0] ||= (e) => P(l).refresh(!0)
 			}, "重试读取批次")])) : m("", !0),
-			P(f) ? (i(), L("section", ca, [
-				S("div", la, [S("div", ua, [
-					S("span", { class: D(["bulk-badge", P(Dr)(P(U) ? "paused" : P(Z)(P(f).control).state || P(f).control_state || P(f).state)]) }, b(P(Or)(P(U) ? "paused" : P(Z)(P(f).control).state || P(f).control_state || P(f).state)), 3),
-					S("span", null, b(P(mr)(P(kr)(P(f)))), 1),
+			P(f) ? (i(), L("section", sa, [
+				S("div", ca, [S("div", la, [
+					S("span", { class: D(["ui-badge bulk-badge", `ui-badge--${P(Or)(P(U) ? "paused" : P(Z)(P(f).control).state || P(f).control_state || P(f).state)}`]) }, b(P(kr)(P(U) ? "paused" : P(Z)(P(f).control).state || P(f).control_state || P(f).state)), 3),
+					S("span", null, b(P(mr)(P(Ar)(P(f)))), 1),
 					S("span", null, "创建于 " + b(e.deps.callbacks.formatDateTime(P(f).created_at)), 1),
-					S("details", da, [n[15] ||= S("summary", null, "范围与设置", -1), S("dl", null, [
+					S("details", ua, [n[15] ||= S("summary", null, "范围与设置", -1), S("dl", null, [
 						n[12] ||= S("dt", null, "名单生成", -1),
 						S("dd", null, b(e.deps.callbacks.formatDateTime(P(Z)(P(f).selection_summary).selection_at || P(f).selection_at)), 1),
 						n[13] ||= S("dt", null, "配置版本", -1),
@@ -3530,9 +3563,9 @@ var Rr = {
 						n[14] ||= S("dt", null, "结果更新", -1),
 						S("dd", null, b(e.deps.callbacks.formatDateTime(P(f).projected_at)), 1)
 					])]),
-					P(Z)(P(f).projection).state && P(Z)(P(f).projection).state !== "current" ? (i(), L("span", fa, "汇总同步中")) : m("", !0)
-				]), S("div", pa, [
-					S("label", ma, [n[17] ||= S("span", { class: "bulk-sr-only" }, "结果视图", -1), S("select", {
+					P(Z)(P(f).projection).state && P(Z)(P(f).projection).state !== "current" ? (i(), L("span", da, "汇总同步中")) : m("", !0)
+				]), S("div", fa, [
+					S("label", pa, [n[17] ||= S("span", { class: "bulk-sr-only" }, "结果视图", -1), S("select", {
 						value: P(u).round_id || "current",
 						"aria-label": "结果视图",
 						onChange: n[1] ||= (e) => P(l).setRound(e.target.value)
@@ -3541,19 +3574,19 @@ var Rr = {
 						(i(!0), L(_, null, c(P(x), (e) => (i(), L("option", {
 							key: String(e.id),
 							value: String(e.id)
-						}, b(Number(e.round_no) === 1 ? "首轮" : "重跑 " + (Number(e.round_no) - 1)) + " · " + b(P(Or)(e.state)) + " · " + b(e.target_count == null ? "准备中" : P($)(e.target_count) + " 个"), 9, ga))), 128)),
+						}, b(Number(e.round_no) === 1 ? "首轮" : "重跑 " + (Number(e.round_no) - 1)) + " · " + b(P(kr)(e.state)) + " · " + b(e.target_count == null ? "准备中" : P($)(e.target_count) + " 个"), 9, ha))), 128)),
 						P(u).round_id && !ie.value ? (i(), L("option", {
 							key: 0,
 							value: P(u).round_id
-						}, "所选轮次 #" + b(P(u).round_id), 9, _a)) : m("", !0)
-					], 40, ha)]),
+						}, "所选轮次 #" + b(P(u).round_id), 9, ga)) : m("", !0)
+					], 40, ma)]),
 					S("button", {
 						type: "button",
 						class: "jobs-tb-btn",
 						"data-bulk-action": "more-rounds",
 						disabled: !P(C) || P(j),
 						onClick: n[2] ||= (...e) => P(l).moreRounds && P(l).moreRounds(...e)
-					}, "更多轮次", 8, va),
+					}, "更多轮次", 8, _a),
 					P(W) ? (i(), L("button", {
 						key: 0,
 						type: "button",
@@ -3573,26 +3606,26 @@ var Rr = {
 						"data-bulk-action": "copy-query",
 						disabled: !ae.value,
 						onClick: n[4] ||= (e) => P(l).copyBatch(!1)
-					}, "复制条件新建", 8, ya)
+					}, "复制条件新建", 8, va)
 				])]),
-				S("div", ba, [S("div", xa, [S("p", Sa, [
-					S("strong", null, "已结束 " + b(P($)(ne.value)) + " / " + b(P($)(P(f).target_count)) + " 个", 1),
-					P(W) && P(v) && !P(H) && !P(U) ? (i(), L("span", Ca, b(P($)(re.value)) + " 个进行中", 1)) : m("", !0),
-					ie.value?.completion_reason === "cancelled_before_freeze" ? (i(), L("span", wa, "本轮在名单生成前取消，当前结果未改变。")) : P(u).round_id ? (i(), L("span", Ta, "仅展示该轮名单及执行结果。")) : (i(), L("span", Ea, "每个账号保留最近一轮结果"))
-				]), P(U) && !P(H) ? (i(), L("p", Da, "未开始的账号等待继续，已开始的账号继续收尾。")) : m("", !0)]), S("div", Oa, [(i(), L(_, null, c(le, ([e, t, n]) => S("button", {
+				S("div", ya, [S("div", ba, [S("p", xa, [
+					S("strong", null, "已结束 " + b(P($)(te.value)) + " / " + b(P($)(P(f).target_count)) + " 个", 1),
+					P(W) && P(v) && !P(H) && !P(U) ? (i(), L("span", Sa, b(P($)(re.value)) + " 个进行中", 1)) : m("", !0),
+					ie.value?.completion_reason === "cancelled_before_freeze" ? (i(), L("span", Ca, "本轮在名单生成前取消，当前结果未改变。")) : P(u).round_id ? (i(), L("span", wa, "仅展示该轮名单及执行结果。")) : (i(), L("span", Ta, "每个账号保留最近一轮结果"))
+				]), P(U) && !P(H) ? (i(), L("p", Ea, "未开始的账号等待继续，已开始的账号继续收尾。")) : m("", !0)]), S("div", Da, [(i(), L(_, null, c(le, ([e, t, n]) => S("button", {
 					key: e,
 					type: "button",
 					class: D(["jobs-tb-btn", { "jobs-tb-btn--danger": ["cancel", "stop"].includes(n) }]),
 					"data-bulk-action": n,
 					disabled: P(l).controlDisabled(e),
 					onClick: (t) => pe(e, t)
-				}, b(t), 11, ka)), 64))])]),
-				!P(W) || !P(v) ? (i(), L(_, { key: 0 }, [S("div", Aa, [
-					S("div", ja, [n[18] ||= S("span", null, "账号总数", -1), S("strong", null, b(P($)(P(f).target_count)), 1)]),
-					S("div", Ma, [n[19] ||= S("span", null, "进行中", -1), S("strong", null, b(re.value), 1)]),
-					S("div", Na, [n[20] ||= S("span", null, "成功", -1), S("strong", null, b(P(V).success || 0), 1)]),
-					S("div", Pa, [n[21] ||= S("span", null, "未成功", -1), S("strong", null, b(P(l).retryCount("unsuccessful")), 1)])
-				]), d(Vr, { metrics: P(f).business_summary || P(f).metrics }, null, 8, ["metrics"])], 64)) : m("", !0)
+				}, b(t), 11, Oa)), 64))])]),
+				!P(W) || !P(v) ? (i(), L(_, { key: 0 }, [S("div", ka, [
+					S("div", Aa, [n[18] ||= S("span", null, "账号总数", -1), S("strong", null, b(P($)(P(f).target_count)), 1)]),
+					S("div", ja, [n[19] ||= S("span", null, "进行中", -1), S("strong", null, b(re.value), 1)]),
+					S("div", Ma, [n[20] ||= S("span", null, "成功", -1), S("strong", null, b(P(V).success || 0), 1)]),
+					S("div", Na, [n[21] ||= S("span", null, "未成功", -1), S("strong", null, b(P(l).retryCount("unsuccessful")), 1)])
+				]), d(Hr, { metrics: P(f).business_summary || P(f).metrics }, null, 8, ["metrics"])], 64)) : m("", !0)
 			])) : m("", !0),
 			P(W) && P(v) ? (i(), L("section", {
 				key: 2,
@@ -3604,8 +3637,8 @@ var Rr = {
 				role: "region",
 				"aria-label": "批次报告",
 				"aria-busy": P(A)
-			}, [d(Di, {
-				"operation-key": P(kr)(P(f)),
+			}, [d(Oi, {
+				"operation-key": P(Ar)(P(f)),
 				report: P(g),
 				error: P(I) ? "读取报告失败：" + P(I) : "",
 				"format-date-time": e.deps.callbacks.formatDateTime,
@@ -3618,9 +3651,9 @@ var Rr = {
 				"format-date-time",
 				"on-retry",
 				"loading"
-			])], 8, Fa)) : m("", !0),
-			S("section", Ia, [
-				S("div", La, [S("h3", null, [
+			])], 8, Pa)) : m("", !0),
+			S("section", Fa, [
+				S("div", Ia, [S("h3", null, [
 					n[22] ||= R("账号明细 ", -1),
 					S("span", null, b(P(w).size ? "已选 " + P(w).size + " 个（可跨页）" : ""), 1),
 					S("button", {
@@ -3628,37 +3661,37 @@ var Rr = {
 						class: "bulk-link",
 						disabled: !P(w).size,
 						onClick: n[5] ||= (...e) => P(l).clearSelection && P(l).clearSelection(...e)
-					}, "清空选择", 8, Ra)
-				]), S("div", za, [
+					}, "清空选择", 8, La)
+				]), S("div", Ra, [
 					s(S("select", {
 						"onUpdate:modelValue": n[6] ||= (e) => Y.value = e,
 						"aria-label": "重跑范围"
 					}, [(i(), L(_, null, c(ce, ([e, t]) => S("option", {
 						key: e,
 						value: e
-					}, b(t), 9, Ba)), 64))], 512), [[h, Y.value]]),
+					}, b(t), 9, za)), 64))], 512), [[h, Y.value]]),
 					S("button", {
 						type: "button",
 						class: "jobs-tb-btn jobs-tb-btn--primary",
 						"data-bulk-action": "retry",
 						disabled: P(M) || !!P(B) || !P(l).retryCount(Y.value),
 						onClick: n[7] ||= (e) => fe(!1, e)
-					}, "重跑" + b(ce.find((e) => e[0] === Y.value)?.[1]) + " (" + b(P(l).retryCount(Y.value)) + ")", 9, Va),
+					}, "重跑" + b(ce.find((e) => e[0] === Y.value)?.[1]) + " (" + b(P(l).retryCount(Y.value)) + ")", 9, Ba),
 					S("button", {
 						type: "button",
 						class: "jobs-tb-btn",
 						"data-bulk-action": "retry-selected",
 						disabled: P(M) || !!P(B) || !P(w).size,
 						onClick: n[8] ||= (e) => fe(!0, e)
-					}, "重跑勾选" + b(P(w).size ? " (" + P(w).size + ")" : ""), 9, Ha)
+					}, "重跑勾选" + b(P(w).size ? " (" + P(w).size + ")" : ""), 9, Va)
 				])]),
-				P(z) ? (i(), L("p", Ua, b(P(z)), 1)) : m("", !0),
-				P(T) ? (i(), L("p", Wa, "重跑已受理，正在准备新轮次 #" + b(P(T)) + "。", 1)) : m("", !0),
-				S("div", Ga, [S("span", Ka, "共 " + b(P($)(P(f)?.target_count)) + " 个账号 · 当前页 " + b(P(p)?.items.length || 0) + " 个", 1), d(te, {
+				P(z) ? (i(), L("p", Ha, b(P(z)), 1)) : m("", !0),
+				P(T) ? (i(), L("p", Ua, "重跑已受理，正在准备新轮次 #" + b(P(T)) + "。", 1)) : m("", !0),
+				S("div", Wa, [S("span", Ga, "共 " + b(P($)(P(f)?.target_count)) + " 个账号 · 当前页 " + b(P(p)?.items.length || 0) + " 个", 1), d(ne, {
 					items: se.value,
 					onRemove: n[9] ||= (e) => P(l).setFilter("")
 				}, null, 8, ["items"])]),
-				d(aa, {
+				d(ia, {
 					ref_key: "targetTable",
 					ref: q,
 					scope: [
@@ -3695,7 +3728,7 @@ var Rr = {
 					"onSelectPage",
 					"onRetry"
 				]),
-				d(Ke, {
+				d(qe, {
 					"has-previous": P(ee),
 					"next-cursor": P(G),
 					"item-count": P(p)?.items.length || 0,
@@ -3716,28 +3749,28 @@ var Rr = {
 					"onFirst"
 				])
 			]),
-			d(P(Le), {
+			d(P(Re), {
 				open: !!P(B),
 				"onUpdate:open": n[11] ||= (e) => {
 					e || P(l).cancelConfirmation();
 				}
 			}, {
-				default: a(() => [d(P(Ie), null, {
-					default: a(() => [d(P(Fe), { class: "bulk-vue-overlay" }), d(P(Me), {
+				default: a(() => [d(P(Le), null, {
+					default: a(() => [d(P(Ie), { class: "bulk-vue-overlay" }), d(P(Ne), {
 						class: "bulk-vue-dialog",
 						onCloseAutoFocus: me
 					}, {
 						default: a(() => [
-							d(P(Re), null, {
+							d(P(ze), null, {
 								default: a(() => [R(b(P(B)?.title), 1)]),
 								_: 1
 							}),
-							d(P(Pe), null, {
+							d(P(Fe), null, {
 								default: a(() => [R(b(P(B)?.description), 1)]),
 								_: 1
 							}),
 							S("p", null, "范围：" + b(P(B)?.scopeLabel) + " · 预计账号：" + b(P(B)?.count) + " 个", 1),
-							S("div", qa, [d(P(Ne), {
+							S("div", Ka, [d(P(Pe), {
 								class: "jobs-tb-btn",
 								"data-confirm-cancel": "",
 								onClick: P(l).cancelConfirmation
@@ -3757,9 +3790,9 @@ var Rr = {
 				})]),
 				_: 1
 			}, 8, ["open"])
-		], 8, oa));
+		], 8, aa));
 	}
-}), [["__scopeId", "data-v-a13eaf43"]]), Ya = [
+}), [["__scopeId", "data-v-bf2c7fa6"]]), Ja = [
 	"batch_id",
 	"round_id",
 	"result_state",
@@ -3769,14 +3802,14 @@ var Rr = {
 	"state",
 	"created_from",
 	"created_to"
-], Xa = /* @__PURE__ */ new Set([
+], Ya = /* @__PURE__ */ new Set([
 	"attention_required",
 	"request_unknown",
 	"manual_reconcile",
 	"unknown",
 	"unconfirmed"
 ]);
-function Za(e = {}) {
+function Xa(e = {}) {
 	let t = [
 		"list",
 		"create",
@@ -3785,43 +3818,43 @@ function Za(e = {}) {
 		tab: "bulk",
 		view: t
 	};
-	for (let t of Ya) typeof e[t] == "string" && e[t] && (n[t] = e[t]);
+	for (let t of Ja) typeof e[t] == "string" && e[t] && (n[t] = e[t]);
 	if (t === "detail") {
 		if (!/^[1-9]\d*$/.test(n.batch_id || "")) return {
 			tab: "bulk",
 			view: "list"
 		};
-		(n.q || e.reason_code) && (delete n.q, delete n.cursor), n.result_state && Xa.has(n.result_state) && (n.result_state = "failed");
+		(n.q || e.reason_code) && (delete n.q, delete n.cursor), n.result_state && Ya.has(n.result_state) && (n.result_state = "failed");
 	}
 	return n;
 }
 // src/features/bulk/BulkPageShell.vue?vue&type=script&setup=true&lang.ts
-var Qa = ["data-bulk-view"], $a = { class: "bulk-page-heading" }, eo = { "data-bulk-title": "" }, to = {
+var Za = ["data-bulk-view"], Qa = { class: "bulk-page-heading" }, $a = { "data-bulk-title": "" }, eo = {
 	key: 0,
 	class: "bulk-heading-id"
-}, no = { class: "bulk-actions" }, ro = {
+}, to = { class: "bulk-actions" }, no = {
 	key: 0,
 	class: "bulk-error",
 	"data-bulk-error": "",
 	role: "alert"
-}, io = {
+}, ro = {
 	key: 1,
 	class: "bulk-notice",
 	"data-bulk-notice": "",
 	role: "status"
-}, ao = {
+}, io = {
 	key: 2,
 	class: "bulk-notice bulk-global-recovery",
 	"data-bulk-recovery": "",
 	role: "status"
-}, oo = ["disabled"], so = { "data-bulk-content": "" }, co = /*#__PURE__*/ F(/* @__PURE__ */ n({
+}, ao = ["disabled"], oo = { "data-bulk-content": "" }, so = /*#__PURE__*/ F(/* @__PURE__ */ n({
 	__name: "BulkPageShell",
 	props: {
 		deps: {},
 		initialNavigation: {}
 	},
 	setup(e, { expose: n }) {
-		let r = e, a = A(Za(r.initialNavigation)), c = y(!1), u = y(!1), f = y(""), p = y(""), h = y(!1), g = y(0), _ = A(null), v = y(null), x = y(null), C = y(null), T = !1, E = 0, D = 0, k = !1, j, M = null, P = "", F = !1, I = O(() => c.value && u.value), z = {
+		let r = e, a = A(Xa(r.initialNavigation)), c = y(!1), u = y(!1), f = y(""), p = y(""), h = y(!1), g = y(0), _ = A(null), v = y(null), x = y(null), C = y(null), T = !1, E = 0, D = 0, k = !1, j, M = null, P = "", F = !1, I = O(() => c.value && u.value), z = {
 			...r.deps.callbacks,
 			navigate: (e, t, n) => {
 				ae(e, t, n);
@@ -3910,7 +3943,7 @@ var Qa = ["data-bulk-view"], $a = { class: "bulk-page-heading" }, eo = { "data-b
 			return { ...a.value };
 		}
 		function ie(e) {
-			E++, a.value = Za(e), f.value = "", p.value = "", F = !1;
+			E++, a.value = Xa(e), f.value = "", p.value = "", F = !1;
 		}
 		async function ae(e, t = {}, n = !1) {
 			ie({
@@ -3920,7 +3953,7 @@ var Qa = ["data-bulk-view"], $a = { class: "bulk-page-heading" }, eo = { "data-b
 			}), F = n, c.value = !0, r.deps.onNavigation(re(), "push"), await J(!1);
 		}
 		async function oe(e) {
-			E++, a.value = Za({
+			E++, a.value = Xa({
 				...a.value,
 				...e
 			}), r.deps.onNavigation(re(), Object.keys(e).every((e) => e === "cursor") ? "replace" : "push"), await t(), q();
@@ -4013,7 +4046,7 @@ var Qa = ["data-bulk-view"], $a = { class: "bulk-page-heading" }, eo = { "data-b
 			"data-bulk-vue": "",
 			"data-bulk-view": a.value.view
 		}, [
-			S("header", $a, [S("h2", eo, [R(b(G.value) + " ", 1), a.value.view === "detail" ? (i(), L("span", to, "#" + b(a.value.batch_id), 1)) : m("", !0)]), S("div", no, [
+			S("header", Qa, [S("h2", $a, [R(b(G.value) + " ", 1), a.value.view === "detail" ? (i(), L("span", eo, "#" + b(a.value.batch_id), 1)) : m("", !0)]), S("div", to, [
 				a.value.view === "list" ? m("", !0) : (i(), L("button", {
 					key: 0,
 					type: "button",
@@ -4033,15 +4066,15 @@ var Qa = ["data-bulk-view"], $a = { class: "bulk-page-heading" }, eo = { "data-b
 					onClick: le
 				}, "新建批次")
 			])]),
-			f.value ? (i(), L("p", ro, b(f.value), 1)) : m("", !0),
-			p.value ? (i(), L("p", io, b(p.value), 1)) : m("", !0),
-			W.value.length && a.value.view !== "create" ? (i(), L("div", ao, [S("span", null, "有 " + b(W.value.length) + " 个请求未收到回执，草稿已保留。", 1), S("button", {
+			f.value ? (i(), L("p", no, b(f.value), 1)) : m("", !0),
+			p.value ? (i(), L("p", ro, b(p.value), 1)) : m("", !0),
+			W.value.length && a.value.view !== "create" ? (i(), L("div", io, [S("span", null, "有 " + b(W.value.length) + " 个请求未收到回执，草稿已保留。", 1), S("button", {
 				type: "button",
 				class: "jobs-tb-btn",
 				disabled: h.value,
 				onClick: de
-			}, b(h.value ? "正在找回…" : "找回原请求"), 9, oo)])) : m("", !0),
-			S("div", so, [
+			}, b(h.value ? "正在找回…" : "找回原请求"), 9, ao)])) : m("", !0),
+			S("div", oo, [
 				s(d(Rt, {
 					ref_key: "list",
 					ref: v,
@@ -4060,7 +4093,7 @@ var Qa = ["data-bulk-view"], $a = { class: "bulk-page-heading" }, eo = { "data-b
 					"seed",
 					"visible"
 				]), [[N, a.value.view === "create"]]),
-				s(d(Ja, {
+				s(d(qa, {
 					ref_key: "detail",
 					ref: C,
 					navigation: a.value,
@@ -4068,9 +4101,9 @@ var Qa = ["data-bulk-view"], $a = { class: "bulk-page-heading" }, eo = { "data-b
 					visible: I.value && a.value.view === "detail"
 				}, null, 8, ["navigation", "visible"]), [[N, a.value.view === "detail"]])
 			])
-		], 8, Qa));
+		], 8, Za));
 	}
-}), [["__scopeId", "data-v-6391ddef"]]), lo = "turb_bulk_intent:", uo = /* @__PURE__ */ new Set([
+}), [["__scopeId", "data-v-6391ddef"]]), co = "turb_bulk_intent:", lo = /* @__PURE__ */ new Set([
 	400,
 	403,
 	404,
@@ -4079,7 +4112,7 @@ var Qa = ["data-bulk-view"], $a = { class: "bulk-page-heading" }, eo = { "data-b
 	422,
 	429
 ]);
-function fo(e, t, n) {
+function uo(e, t, n) {
 	let r = /* @__PURE__ */ new Map();
 	function i(e, t) {
 		if (!t) return null;
@@ -4096,7 +4129,7 @@ function fo(e, t, n) {
 		};
 	}
 	async function a(a, o, s) {
-		let c = lo + a, l = JSON.stringify({
+		let c = co + a, l = JSON.stringify({
 			path: o,
 			body: s
 		}), u = r.get(c);
@@ -4124,7 +4157,7 @@ function fo(e, t, n) {
 			} catch {}
 			return e;
 		}, (e) => {
-			if (uo.has(Number(e?.status))) try {
+			if (lo.has(Number(e?.status))) try {
 				t.removeItem(c);
 			} catch {}
 			throw e;
@@ -4140,7 +4173,7 @@ function fo(e, t, n) {
 			let e = [];
 			for (let n = 0; n < t.length; n++) {
 				let r = t.key(n);
-				if (r?.startsWith(lo)) {
+				if (r?.startsWith(co)) {
 					let n = i(r, t.getItem(r));
 					n && e.push(n);
 				}
@@ -4153,10 +4186,10 @@ function fo(e, t, n) {
 	};
 }
 // src/features/bulk/mountBulkReport.ts
-function po(e, t) {
+function fo(e, t) {
 	e.replaceChildren();
 	function n(t) {
-		M(r(Di, { ...t }), e);
+		M(r(Oi, { ...t }), e);
 	}
 	return n(t), {
 		setView: n,
@@ -4166,14 +4199,14 @@ function po(e, t) {
 	};
 }
 // src/bulk.ts
-var mo = /* @__PURE__ */ new WeakMap();
-function ho(e, t) {
-	let n = mo.get(e);
+var po = /* @__PURE__ */ new WeakMap();
+function mo(e, t) {
+	let n = po.get(e);
 	if (n) return n;
-	let r = go(e, t);
-	return mo.set(e, r), r;
+	let r = ho(e, t);
+	return po.set(e, r), r;
 }
-function go(e, t) {
+function ho(e, t) {
 	let n = Bt(), r = {
 		get length() {
 			return window.sessionStorage.length;
@@ -4182,13 +4215,13 @@ function go(e, t) {
 		getItem: (e) => window.sessionStorage.getItem(e),
 		setItem: (e, t) => window.sessionStorage.setItem(e, t),
 		removeItem: (e) => window.sessionStorage.removeItem(e)
-	}, i = fo(n, r, () => globalThis.crypto?.randomUUID?.() || `bulk-${Date.now()}-${Math.random().toString(36).slice(2)}`), a = k(co, {
+	}, i = uo(n, r, () => globalThis.crypto?.randomUUID?.() || `bulk-${Date.now()}-${Math.random().toString(36).slice(2)}`), a = k(so, {
 		initialNavigation: t.navigation,
 		deps: {
 			api: n,
 			intents: i,
 			storage: r,
-			adapter: de(t.query),
+			adapter: fe(t.query),
 			callbacks: t.callbacks,
 			onNavigation: t.onNavigation,
 			isVisible: t.isVisible,
@@ -4199,11 +4232,11 @@ function go(e, t) {
 		request: n.request,
 		intent: i.submit,
 		destroy() {
-			a.unmount(), mo.delete(e);
+			a.unmount(), po.delete(e);
 		}
 	});
 }
-function _o(e, i) {
+function go(e, i) {
 	let a = A(i.view), o = A(), s = k(n({ setup: () => () => r(Rt, {
 		ref: o,
 		navigation: a.value,
@@ -4227,4 +4260,4 @@ function _o(e, i) {
 		}
 	};
 }
-export { ho as mountBulk, _o as mountBulkList, po as mountBulkReport };
+export { mo as mountBulk, go as mountBulkList, fo as mountBulkReport };

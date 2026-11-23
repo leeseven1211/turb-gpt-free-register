@@ -1,11 +1,11 @@
-import { A as e, C as t, F as n, G as r, H as i, K as a, L as o, Q as s, S as c, Z as l, _ as u, a as d, c as f, d as p, dt as m, et as h, ft as g, g as _, h as v, j as y, k as b, l as x, lt as S, m as C, n as w, nt as T, s as E, st as D, t as O, v as k, x as A, y as j } from "./_plugin-vue_export-helper-CBsH_ZoE.js";
-import { n as M, r as N, t as P } from "./ListFilterSummary-0POqp2Om.js";
-import { t as F } from "./ListPagination-DDdERjeb.js";
-import { t as I } from "./ListResult-ChGvCNvJ.js";
-import { n as L, t as R } from "./time-DOD6oyhP.js";
-import { t as z } from "./useColumnWidths-CUEzVga1.js";
-import { n as B, r as V } from "./client-B5R_MNgP.js";
-import { r as ee } from "./taskIds-BlchWwUp.js";
+import { A as e, C as t, F as n, G as r, H as i, K as a, L as o, Q as s, S as c, Z as l, _ as u, a as d, c as f, d as p, dt as m, et as h, ft as g, g as _, h as v, j as y, k as b, l as x, lt as S, m as C, n as w, nt as T, s as E, st as D, t as O, v as k, x as A, y as j } from "./_plugin-vue_export-helper-CbB61E6q.js";
+import { i as M, n as N, r as P, t as ee } from "./ListFilterSummary-DlR4RU2b.js";
+import { t as te } from "./ListPagination-Bj3Fp49w.js";
+import { t as F } from "./ListResult-TZ8UiZNn.js";
+import { n as I, t as L } from "./time-DOD6oyhP.js";
+import { n as R, t as ne } from "./ColumnResizer-DEY0rId6.js";
+import { n as z, r as B } from "./client-B5R_MNgP.js";
+import { r as V } from "./taskIds-BlchWwUp.js";
 // src/features/proxy/presentation.ts
 function H(e, t = "—") {
 	return e == null || e === "" ? t : typeof e == "string" || typeof e == "number" ? String(e) : t;
@@ -34,7 +34,7 @@ function K(e) {
 	for (; r >= 1024 && i < n.length - 1;) r /= 1024, i++;
 	return `${r >= 100 ? r.toFixed(0) : r >= 10 ? r.toFixed(1) : r.toFixed(2)} ${n[i]}`;
 }
-var q = {
+var re = {
 	pending: "待验证",
 	fetching: "提取中",
 	checking: "复检中",
@@ -58,10 +58,10 @@ var q = {
 	running: "运行中",
 	available: "可观测"
 };
-function J(e) {
+function q(e) {
 	let t = H(e, "");
 	return {
-		label: q[t] || "未知状态",
+		label: re[t] || "未知状态",
 		title: t || "未提供状态",
 		tone: ["failed", "quarantine"].includes(t) ? "danger" : [
 			"leased",
@@ -76,7 +76,7 @@ function J(e) {
 		].includes(t) ? "success" : "neutral"
 	};
 }
-var te = {
+var J = {
 	supply_unavailable: {
 		label: "补货暂不可用",
 		evidence: "补货暂不可用"
@@ -99,7 +99,7 @@ var te = {
 	}
 };
 function Y(e) {
-	let t = H(e, ""), n = te[t];
+	let t = H(e, ""), n = J[t];
 	return n ? {
 		...n,
 		evidence: `${n.evidence}（${t}）`
@@ -126,14 +126,14 @@ function Z(e, t = !1) {
 		...t ? [["注册 job", e.registration_job_id]] : []
 	].filter(([, e]) => e != null && e !== "").map(([e, t]) => `${e} #${H(t)}`).join(" · ") || "—";
 }
-function ne(e, t) {
+function ie(e, t) {
 	return {
 		text: X(e, t),
 		secondary: Z(e, e.operation_task_id == null || e.operation_task_id === ""),
 		title: [X(e, t), Z(e, !0)].join(" · ")
 	};
 }
-function re(e) {
+function ae(e) {
 	if (e.availability !== "available" || G(e.total_bytes) == null) return {
 		text: "未采集",
 		title: "未采集"
@@ -145,7 +145,7 @@ function re(e) {
 		title: t + (n ? "（部分字节未知）" : "")
 	};
 }
-function ie(e) {
+function oe(e) {
 	let t = U(e);
 	return [
 		"1xx",
@@ -159,18 +159,18 @@ function ie(e) {
 		return typeof n == "number" && Number.isSafeInteger(n) && n >= 0 ? [`${e}: ${n}`] : [];
 	}).join(" / ");
 }
-function ae(e, t, n) {
+function se(e, t, n) {
 	let r = [], i = (e, t) => {
 		t != null && t !== "" && r.push({
 			label: e,
 			value: H(t)
 		});
-	}, a = (e) => e ? L(e) : null;
+	}, a = (e) => e ? I(e) : null;
 	if (e === "history") return [
 		["租约 ID", t.lease_id],
 		["线路来源", t.provider],
 		["出口 IP", t.exit_ip],
-		["状态", q[H(t.state)] || t.state],
+		["状态", re[H(t.state)] || t.state],
 		["账号", t.account_id],
 		["用途", t.purpose],
 		["任务", t.operation_task_id],
@@ -185,7 +185,7 @@ function ae(e, t, n) {
 		["来源", t.source],
 		["字节口径", t.source === "protocol_http" ? "HTTP 传输正文；不含请求/响应头、TLS、隧道或代理商账单" : "浏览器可观测字节；不等同代理商账单"],
 		["总请求耗时", t.duration_ms == null ? null : `${H(t.duration_ms)} 毫秒`],
-		["状态族", ie(t.status_families)],
+		["状态族", oe(t.status_families)],
 		["重定向次数", t.redirect_count],
 		["解压后响应正文", t.decoded_response_bytes == null ? null : K(t.decoded_response_bytes)],
 		["字节未知请求数", t.byte_unknown_count],
@@ -226,32 +226,29 @@ function ae(e, t, n) {
 	return r;
 }
 // src/features/proxy/ProxyPool.vue?vue&type=script&setup=true&lang.ts
-var oe = {
+var ce = {
 	class: "pt-workspace",
 	"data-proxy-module-panel": "pool"
-}, se = {
+}, le = {
 	class: "pt-summary",
 	"aria-label": "代理池库存摘要"
-}, ce = { "data-proxy-summary": "poolCapacity" }, le = ["data-proxy-summary"], ue = {
-	class: "pt-panel",
+}, ue = { "data-proxy-summary": "poolCapacity" }, de = ["data-proxy-summary"], fe = {
+	class: "ui-list pt-panel",
 	"aria-label": "独立代理池库存"
-}, de = { class: "pt-pool-header" }, fe = {
+}, pe = { class: "ui-list-toolbar pt-pool-header" }, me = {
 	key: 0,
 	role: "status"
-}, pe = {
+}, he = {
 	key: 1,
 	role: "status"
-}, me = {
+}, ge = {
 	key: 0,
 	class: "pt-country-summary",
 	"aria-label": "分国家代理池统计"
-}, he = { class: "pt-country-cards" }, ge = { key: 1 }, _e = {
-	class: "pt-table pt-pool-table",
+}, _e = { class: "pt-country-cards" }, ve = { key: 1 }, ye = {
+	class: "ui-table pt-table pt-pool-table",
 	"data-proxy-table": "pool"
-}, ve = { key: 0 }, ye = { colspan: "7" }, be = {
-	class: "pt-empty",
-	role: "status"
-}, xe = /*#__PURE__*/ O(/* @__PURE__ */ t({
+}, be = /*#__PURE__*/ O(/* @__PURE__ */ t({
 	__name: "ProxyPool",
 	props: {
 		pool: {},
@@ -306,23 +303,23 @@ var oe = {
 			["rotation_wait", "等待轮换"],
 			["quarantine", "故障隔离"]
 		], E = (e) => G(e) ?? "—";
-		return (t, i) => (n(), k("div", oe, [v("div", se, [v("div", null, [i[2] ||= v("span", null, "代理池容量", -1), v("strong", ce, g(e.pool ? S.value : "—"), 1)]), (n(), k(p, null, o(w, ([t, n, r]) => v("div", { key: t }, [v("span", null, g(r), 1), v("strong", { "data-proxy-summary": t }, g(e.pool ? a.value[n] || 0 : "—"), 9, le)])), 64))]), v("section", ue, [
-			v("header", de, [i[3] ||= v("h3", null, "代理池库存", -1), e.pool ? (n(), k("span", fe, [
+		return (t, i) => (n(), k("div", ce, [v("div", le, [v("div", null, [i[2] ||= v("span", null, "代理池容量", -1), v("strong", ue, g(e.pool ? S.value : "—"), 1)]), (n(), k(p, null, o(w, ([t, n, r]) => v("div", { key: t }, [v("span", null, g(r), 1), v("strong", { "data-proxy-summary": t }, g(e.pool ? a.value[n] || 0 : "—"), 9, de)])), 64))]), v("section", fe, [
+			v("header", pe, [i[3] ||= v("h3", null, "代理池库存", -1), e.pool ? (n(), k("span", me, [
 				A("快照包含最近 " + g(l.value.length) + " 条库存 · 最小可用 " + g(e.pool.policy.min_ready || 0) + " · 本进程等待 " + g(e.pool.waiting_local || 0) + " / 维护线程 " + g(e.pool.workers_local || 0), 1),
 				s.value.length ? (n(), k(p, { key: 0 }, [A(" · 分国家 " + g(s.value.length) + " 组", 1)], 64)) : u("", !0),
 				e.pool.capacity_warning ? (n(), k(p, { key: 1 }, [A(" · " + g(e.pool.capacity_warning), 1)], 64)) : u("", !0)
-			])) : (n(), k("span", pe, g(e.loading ? "正在加载代理池库存" : "代理池快照暂不可用"), 1))]),
-			s.value.length ? (n(), k("div", me, [i[4] ||= v("strong", null, "分国家库存", -1), v("div", he, [(n(!0), k(p, null, o(s.value, (e, t) => (n(), k("div", {
+			])) : (n(), k("span", he, g(e.loading ? "正在加载代理池库存" : "代理池快照暂不可用"), 1))]),
+			s.value.length ? (n(), k("div", ge, [i[4] ||= v("strong", null, "分国家库存", -1), v("div", _e, [(n(!0), k(p, null, o(s.value, (e, t) => (n(), k("div", {
 				key: String(e.provider) + ":" + String(e.region) + ":" + t,
 				class: "pt-country-card"
 			}, [
-				c(M, {
+				c(P, {
 					text: D(H)(e.region || e.country, "未标注"),
 					secondary: D(H)(e.provider, "未标注")
 				}, null, 8, ["text", "secondary"]),
 				v("p", null, g(T.map(([t, n]) => `${n} ${E(D(U)(e.counts)[t])}`).join(" · ")), 1),
 				v("small", null, "等待 " + g(E(e.waiting_local)) + " · 目标 " + g(E(e.target_ready)), 1),
-				e.last_supply_error ? (n(), _(I, {
+				e.last_supply_error ? (n(), _(F, {
 					key: 0,
 					label: D(Y)(e.last_supply_error).label,
 					title: D(Y)(e.last_supply_error).evidence,
@@ -331,29 +328,15 @@ var oe = {
 					details: r(() => [A(g(D(Y)(e.last_supply_error).evidence), 1)]),
 					_: 2
 				}, 1032, ["label", "title"])) : u("", !0),
-				e.last_supply_error && Number(e.retry_after_seconds) ? (n(), k("small", ge, g(e.retry_after_seconds) + " 秒后补货", 1)) : u("", !0)
+				e.last_supply_error && Number(e.retry_after_seconds) ? (n(), k("small", ve, g(e.retry_after_seconds) + " 秒后补货", 1)) : u("", !0)
 			]))), 128))])])) : u("", !0),
-			e.pool ? (n(), _(F, {
-				key: 1,
-				page: d.value,
-				"onUpdate:page": i[0] ||= (e) => d.value = e,
-				size: f.value,
-				"onUpdate:size": i[1] ||= (e) => f.value = e,
-				total: l.value.length,
-				class: "pt-pool-pagination",
-				label: "代理池库存分页"
-			}, null, 8, [
-				"page",
-				"size",
-				"total"
-			])) : u("", !0),
 			v("div", {
 				ref_key: "tableScroll",
 				ref: m,
-				class: "pt-table-scroll",
+				class: "ui-table-scroll pt-table-scroll",
 				tabindex: "0",
 				"aria-label": "代理池库存，可横向滚动"
-			}, [v("table", _e, [v("thead", null, [v("tr", null, [(n(), k(p, null, o([
+			}, [v("table", ye, [v("thead", null, [v("tr", null, [(n(), k(p, null, o([
 				"资源",
 				"状态",
 				"来源 / 国家",
@@ -365,27 +348,27 @@ var oe = {
 				key: e,
 				scope: "col"
 			}, g(e), 1)), 64))])]), v("tbody", null, [(n(!0), k(p, null, o(x.value, (e, t) => (n(), k("tr", { key: String(e.resource_id || b.value + t) }, [
-				v("td", null, [c(M, { text: D(H)(e.resource_id) }, null, 8, ["text"])]),
-				v("td", null, [c(I, {
-					label: D(J)(e.state).label,
-					title: D(J)(e.state).title,
-					tone: D(J)(e.state).tone
+				v("td", null, [c(P, { text: D(H)(e.resource_id) }, null, 8, ["text"])]),
+				v("td", null, [c(F, {
+					label: D(q)(e.state).label,
+					title: D(q)(e.state).title,
+					tone: D(q)(e.state).tone
 				}, null, 8, [
 					"label",
 					"title",
 					"tone"
 				])]),
-				v("td", null, [c(M, {
+				v("td", null, [c(P, {
 					text: D(H)(e.provider),
 					secondary: D(H)(e.region)
 				}, null, 8, ["text", "secondary"])]),
-				v("td", null, [c(M, { text: D(H)(e.endpoint) }, null, 8, ["text"])]),
-				v("td", null, [c(M, { text: D(H)(e.exit_ip) }, null, 8, ["text"])]),
-				v("td", null, [c(M, {
-					text: `校验 ${D(L)(e.checked_at)}`,
-					secondary: `到期 ${D(L)(e.expires_at)}`
+				v("td", null, [c(P, { text: D(H)(e.endpoint) }, null, 8, ["text"])]),
+				v("td", null, [c(P, { text: D(H)(e.exit_ip) }, null, 8, ["text"])]),
+				v("td", null, [c(P, {
+					text: `校验 ${D(I)(e.checked_at)}`,
+					secondary: `到期 ${D(I)(e.expires_at)}`
 				}, null, 8, ["text", "secondary"])]),
-				v("td", null, [c(I, {
+				v("td", null, [c(F, {
 					label: D(Y)(e.last_error_code).label,
 					title: D(Y)(e.last_error_code).evidence,
 					tone: e.last_error_code ? "warning" : "neutral"
@@ -398,15 +381,40 @@ var oe = {
 					"title",
 					"tone"
 				])])
-			]))), 128)), l.value.length ? u("", !0) : (n(), k("tr", ve, [v("td", ye, [v("div", be, [v("strong", null, g(e.loading && !e.pool ? "正在加载代理池库存" : e.pool ? "暂无脱敏库存" : "暂时没有代理池快照"), 1), v("p", null, g(e.pool ? "等待后台补货或复检" : "代理池服务或旧版本接口暂未返回脱敏库存"), 1)])])]))])])], 512)
+			]))), 128)), l.value.length ? u("", !0) : (n(), _(N, {
+				key: 0,
+				colspan: 7,
+				loading: e.loading && !e.pool,
+				"loading-title": "正在加载代理池库存",
+				title: e.pool ? "暂无脱敏库存" : "暂时没有代理池快照",
+				text: e.pool ? "等待后台补货或复检" : "代理池服务或旧版本接口暂未返回脱敏库存"
+			}, null, 8, [
+				"loading",
+				"title",
+				"text"
+			]))])])], 512),
+			e.pool ? (n(), _(te, {
+				key: 1,
+				page: d.value,
+				"onUpdate:page": i[0] ||= (e) => d.value = e,
+				size: f.value,
+				"onUpdate:size": i[1] ||= (e) => f.value = e,
+				total: l.value.length,
+				class: "pt-pool-pagination",
+				label: "代理池库存分页"
+			}, null, 8, [
+				"page",
+				"size",
+				"total"
+			])) : u("", !0)
 		])]));
 	}
-}), [["__scopeId", "data-v-00a2dfc9"]]), Q = {
+}), [["__scopeId", "data-v-110a7eb5"]]), Q = {
 	search: "搜索",
 	state: "状态",
 	purpose: "用途",
 	window: "时间"
-}, Se = [
+}, xe = [
 	{
 		value: "all",
 		label: "全部时间"
@@ -423,32 +431,32 @@ var oe = {
 		value: "7d",
 		label: "最近 7 天"
 	}
-], Ce = [
+], Se = [
 	"pending",
 	"leased",
 	"shared_pending",
 	"shared_leased",
 	"pool_leased"
 ];
-function we(e, t, n, r) {
-	if (e === "window") return Se;
-	let i = e === "purpose" ? n?.purposes ?? [] : t === "traffic" ? ["available"] : (n?.lease_states ?? []).filter((e) => t === "current" ? Ce.includes(e) : !Ce.includes(e)), a = [...new Set(i.filter((e) => typeof e == "string" && e !== "all"))];
+function Ce(e, t, n, r) {
+	if (e === "window") return xe;
+	let i = e === "purpose" ? n?.purposes ?? [] : t === "traffic" ? ["available"] : (n?.lease_states ?? []).filter((e) => t === "current" ? Se.includes(e) : !Se.includes(e)), a = [...new Set(i.filter((e) => typeof e == "string" && e !== "all"))];
 	return r && r !== "all" && !a.includes(r) && a.push(r), [{
 		value: "all",
 		label: e === "state" ? "全部状态" : "全部用途"
 	}, ...a.map((t) => ({
 		value: t,
-		label: e === "state" ? J(t).label : t
+		label: e === "state" ? q(t).label : t
 	}))];
 }
-function Te(e, t) {
+function we(e, t) {
 	let n = [], r = (e, t, r) => n.push({
 		key: e,
 		label: `${t}：${r}`,
 		title: `${t}：${r}`,
 		removeLabel: `清除${t}筛选`
 	});
-	e.search && r("search", "搜索", e.search), e.window !== "all" && r("window", "时间", Se.find((t) => t.value === e.window)?.label || e.window), e.purpose !== "all" && r("purpose", "用途", e.purpose);
+	e.search && r("search", "搜索", e.search), e.window !== "all" && r("window", "时间", xe.find((t) => t.value === e.window)?.label || e.window), e.purpose !== "all" && r("purpose", "用途", e.purpose);
 	for (let e of [
 		"current",
 		"history",
@@ -457,21 +465,21 @@ function Te(e, t) {
 		current: "当前状态",
 		history: "历史状态",
 		traffic: "采集状态"
-	}[e], J(t[e]).label);
+	}[e], q(t[e]).label);
 	return n;
 }
 // src/features/proxy/ProxyFilters.vue?vue&type=script&setup=true&lang.ts
-var Ee = { class: "pt-filter-fields" }, De = {
+var Te = { class: "pt-filter-fields" }, Ee = {
 	key: 0,
 	class: "pt-filter-field"
-}, Oe = ["value"], ke = {
+}, De = ["value"], Oe = {
 	key: 1,
 	class: "pt-filter-field"
-}, Ae = ["value", "placeholder"], je = ["aria-label"], Me = [
+}, ke = ["value", "placeholder"], Ae = ["aria-label"], je = [
 	"data-proxy-filter-option",
 	"aria-pressed",
 	"onClick"
-], Ne = { class: "list-filter-actions" }, Pe = /* @__PURE__ */ t({
+], Me = { class: "list-filter-actions" }, Ne = /* @__PURE__ */ t({
 	__name: "ProxyFilters",
 	props: {
 		column: {},
@@ -493,7 +501,7 @@ var Ee = { class: "pt-filter-fields" }, De = {
 		function S(e) {
 			s("change", m.value, e), m.value !== "search" && s("update:open", !1);
 		}
-		return (t, i) => (n(), _(N, {
+		return (t, i) => (n(), _(M, {
 			label: e.column ? D(Q)[e.column] : "代理记录",
 			"trigger-label": e.triggerLabel || (e.column ? D(Q)[e.column] : "筛选"),
 			active: b.value,
@@ -501,15 +509,15 @@ var Ee = { class: "pt-filter-fields" }, De = {
 			open: e.open,
 			"onUpdate:open": i[5] ||= (e) => s("update:open", e)
 		}, {
-			default: r(() => [v("div", Ee, [
-				e.column ? u("", !0) : (n(), k("label", De, [i[6] ||= A("筛选列", -1), a(v("select", {
+			default: r(() => [v("div", Te, [
+				e.column ? u("", !0) : (n(), k("label", Ee, [i[6] ||= A("筛选列", -1), a(v("select", {
 					"onUpdate:modelValue": i[0] ||= (e) => c.value = e,
 					"aria-label": "选择代理记录筛选列"
 				}, [(n(!0), k(p, null, o(l.value, (e) => (n(), k("option", {
 					key: e,
 					value: e
-				}, g(D(Q)[e]), 9, Oe))), 128))], 512), [[d, c.value]])])),
-				m.value === "search" ? (n(), k("label", ke, [i[7] ||= A("搜索", -1), v("input", {
+				}, g(D(Q)[e]), 9, De))), 128))], 512), [[d, c.value]])])),
+				m.value === "search" ? (n(), k("label", Oe, [i[7] ||= A("搜索", -1), v("input", {
 					value: y.value,
 					type: "search",
 					placeholder: e.view === "traffic" ? "来源、方法或关联 ID" : "账号、任务、租约或 IP",
@@ -517,19 +525,19 @@ var Ee = { class: "pt-filter-fields" }, De = {
 					autocomplete: "off",
 					onInput: i[1] ||= (e) => S(e.target.value),
 					onKeydown: i[2] ||= f(x((e) => s("update:open", !1), ["prevent"]), ["enter"])
-				}, null, 40, Ae)])) : (n(), k("div", {
+				}, null, 40, ke)])) : (n(), k("div", {
 					key: 2,
 					class: "pt-filter-options",
 					role: "group",
 					"aria-label": D(Q)[m.value]
-				}, [(n(!0), k(p, null, o(D(we)(m.value, e.view, e.summary, y.value), (e) => (n(), k("button", {
+				}, [(n(!0), k(p, null, o(D(Ce)(m.value, e.view, e.summary, y.value), (e) => (n(), k("button", {
 					key: e.value,
 					type: "button",
 					"data-proxy-filter-option": e.value,
 					"aria-pressed": e.value === y.value,
 					onClick: (t) => S(e.value)
-				}, g(e.label), 9, Me))), 128))], 8, je)),
-				v("div", Ne, [v("button", {
+				}, g(e.label), 9, je))), 128))], 8, Ae)),
+				v("div", Me, [v("button", {
 					type: "button",
 					onClick: i[3] ||= (e) => S(m.value === "search" ? "" : "all")
 				}, " 清除此列"), v("button", {
@@ -547,11 +555,7 @@ var Ee = { class: "pt-filter-fields" }, De = {
 			"open"
 		]));
 	}
-}), Fe = ["aria-label", "aria-busy"], Ie = ["data-proxy-table"], Le = { class: "pt-sr-only" }, Re = { key: 1 }, ze = [
-	"aria-label",
-	"onPointerdown",
-	"onKeydown"
-], Be = ["onClick"], Ve = { key: 1 }, He = ["onClick"], Ue = { key: 1 }, We = { key: 0 }, Ge = { colspan: "8" }, Ke = ["role"], qe = /* @__PURE__ */ t({
+}), Pe = ["aria-label", "aria-busy"], Fe = ["data-proxy-table"], Ie = { class: "ui-sr-only" }, Le = { key: 1 }, Re = ["onClick"], ze = { key: 1 }, Be = ["onClick"], Ve = { key: 1 }, He = /* @__PURE__ */ t({
 	__name: "ProxyRecordsTable",
 	props: {
 		view: {},
@@ -604,21 +608,21 @@ var Ee = { class: "pt-filter-fields" }, De = {
 				188,
 				92
 			]
-		}, y = {
+		}, f = {
 			current: "proxyCurrent",
 			history: "proxyHistory",
 			traffic: "proxyTraffic"
-		}[s.view], S = z({
+		}[s.view], y = R({
 			defaults: d[s.view],
-			storageKey: "gpt_console_table_widths_" + y,
-			totalStorageKey: "gpt_console_table_total_" + y,
+			storageKey: "gpt_console_table_widths_" + f,
+			totalStorageKey: "gpt_console_table_total_" + f,
 			min: 28,
 			max: 2e3
-		}), w = h(), T = s.scrollRevision;
+		}), x = h(), S = s.scrollRevision;
 		i(() => [s.items, s.scrollRevision], async () => {
-			s.scrollRevision !== T && (T = s.scrollRevision, await e(), w.value && (w.value.scrollTop = 0));
+			s.scrollRevision !== S && (S = s.scrollRevision, await e(), x.value && (x.value.scrollTop = 0));
 		});
-		let E = C(() => s.view === "traffic" ? [
+		let w = C(() => s.view === "traffic" ? [
 			{
 				label: "来源",
 				filter: "search"
@@ -659,43 +663,43 @@ var Ee = { class: "pt-filter-fields" }, De = {
 				label: "时间",
 				filter: "window"
 			}]
-		]), O = C(() => ({
+		]), T = C(() => ({
 			current: "当前租约",
 			history: "线路历史",
 			traffic: "请求流量"
 		})[s.view]);
-		function A(e) {
-			let t = L(e.acquired_at), n = e[s.view === "history" ? "released_at" : "expires_at"];
+		function E(e) {
+			let t = I(e.acquired_at), n = e[s.view === "history" ? "released_at" : "expires_at"];
 			return {
 				text: t,
-				secondary: n ? `至 ${L(n)}` : "进行中",
-				title: `${t} · ${n ? L(n) : "进行中"}`
+				secondary: n ? `至 ${I(n)}` : "进行中",
+				title: `${t} · ${n ? I(n) : "进行中"}`
 			};
 		}
-		function j(e, t) {
+		function O(e, t) {
 			s.view !== "current" && l("detail", s.view, e, t.currentTarget);
 		}
-		return r({ resetColumns: S.resetColumns }), (e, r) => (n(), k("div", {
+		return r({ resetColumns: y.resetColumns }), (e, r) => (n(), k("div", {
 			ref_key: "scroll",
-			ref: w,
-			class: "pt-table-scroll",
+			ref: x,
+			class: "ui-table-scroll pt-table-scroll",
 			tabindex: "0",
-			"aria-label": `${O.value}列表，可横向滚动`,
+			"aria-label": `${T.value}列表，可横向滚动`,
 			"aria-busy": t.loading
 		}, [v("table", {
-			class: "pt-table pt-records-table",
+			class: "ui-table ui-table--sticky-end pt-table pt-records-table",
 			"data-proxy-table": t.view,
-			style: m({ "--pt-table-width": `${D(S).total.value}px` })
+			style: m({ "--ui-table-width": `${D(y).total.value}px` })
 		}, [
-			v("caption", Le, g(O.value), 1),
-			v("colgroup", null, [(n(!0), k(p, null, o(D(S).widths.value, (e, t) => (n(), k("col", {
+			v("caption", Ie, g(T.value), 1),
+			v("colgroup", null, [(n(!0), k(p, null, o(D(y).widths.value, (e, t) => (n(), k("col", {
 				key: t,
 				style: m({ width: `${e}px` })
 			}, null, 4))), 128))]),
-			v("thead", null, [v("tr", null, [(n(!0), k(p, null, o(E.value, (e, i) => (n(), k("th", {
+			v("thead", null, [v("tr", null, [(n(!0), k(p, null, o(w.value, (e, i) => (n(), k("th", {
 				key: e.label,
 				scope: "col"
-			}, [e.filter ? (n(), _(Pe, {
+			}, [e.filter ? (n(), _(Ne, {
 				key: 0,
 				column: e.filter,
 				"trigger-label": e.label,
@@ -715,28 +719,30 @@ var Ee = { class: "pt-filter-fields" }, De = {
 				"summary",
 				"open",
 				"onUpdate:open"
-			])) : (n(), k("span", Re, g(e.label), 1)), i < E.value.length - 1 ? (n(), k("button", {
+			])) : (n(), k("span", Le, g(e.label), 1)), i < w.value.length - 1 ? (n(), _(ne, {
 				key: 2,
-				type: "button",
-				class: "pt-column-resize",
-				"aria-label": `调整${e.label}列宽，方向键调整`,
-				onPointerdown: x((e) => D(S).resize(i, e), ["prevent"]),
-				onKeydown: [f(x((e) => D(S).resizeWithKeyboard(i, -10), ["prevent"]), ["left"]), f(x((e) => D(S).resizeWithKeyboard(i, 10), ["prevent"]), ["right"])]
-			}, null, 40, ze)) : u("", !0)]))), 128))])]),
+				label: e.label,
+				onStart: (e) => D(y).resize(i, e),
+				onNudge: (e) => D(y).resizeWithKeyboard(i, e)
+			}, null, 8, [
+				"label",
+				"onStart",
+				"onNudge"
+			])) : u("", !0)]))), 128))])]),
 			v("tbody", null, [(n(!0), k(p, null, o(t.items, (e, r) => (n(), k("tr", { key: `${t.view}:${e.id ?? r}` }, [t.view === "traffic" ? (n(), k(p, { key: 0 }, [
-				v("td", null, [c(M, { text: D(H)(e.source) }, null, 8, ["text"])]),
-				v("td", null, [c(M, { text: D(H)(e.method) }, null, 8, ["text"])]),
-				v("td", null, [c(I, {
-					label: D(re)(e).text === "未采集" ? "未采集" : "可观测",
+				v("td", null, [c(P, { text: D(H)(e.source) }, null, 8, ["text"])]),
+				v("td", null, [c(P, { text: D(H)(e.method) }, null, 8, ["text"])]),
+				v("td", null, [c(F, {
+					label: D(ae)(e).text === "未采集" ? "未采集" : "可观测",
 					title: D(H)(e.availability),
-					tone: D(re)(e).text === "未采集" ? "neutral" : "success"
+					tone: D(ae)(e).text === "未采集" ? "neutral" : "success"
 				}, null, 8, [
 					"label",
 					"title",
 					"tone"
 				])]),
-				v("td", null, [c(M, b({ ref_for: !0 }, D(re)(e)), null, 16)]),
-				v("td", null, [c(M, {
+				v("td", null, [c(P, b({ ref_for: !0 }, D(ae)(e)), null, 16)]),
+				v("td", null, [c(P, {
 					text: [
 						e.request_count,
 						e.failed_count,
@@ -745,58 +751,63 @@ var Ee = { class: "pt-filter-fields" }, De = {
 					].map((e) => D(G)(e) ?? "—").join(" / "),
 					title: "请求 / 失败 / 未完成 / 未知"
 				}, null, 8, ["text"])]),
-				v("td", null, [c(M, b({ ref_for: !0 }, D(ne)(e, t.facetLabel)), null, 16)]),
-				v("td", null, [c(M, b({ ref_for: !0 }, D(R)(e.started_at), { title: D(L)(e.started_at) }), null, 16, ["title"])]),
-				v("td", null, [e.id == null ? (n(), k("span", Ve, "—")) : (n(), k("button", {
+				v("td", null, [c(P, b({ ref_for: !0 }, D(ie)(e, t.facetLabel)), null, 16)]),
+				v("td", null, [c(P, b({ ref_for: !0 }, D(L)(e.started_at), { title: D(I)(e.started_at) }), null, 16, ["title"])]),
+				v("td", null, [e.id == null ? (n(), k("span", ze, "—")) : (n(), k("button", {
 					key: 0,
 					type: "button",
-					class: "pt-link",
+					class: "ui-link",
 					"data-proxy-detail": "traffic",
 					"aria-label": "查看请求流量详情",
-					onClick: (t) => j(e, t)
-				}, " 详情", 8, Be))])
+					onClick: (t) => O(e, t)
+				}, " 详情", 8, Re))])
 			], 64)) : (n(), k(p, { key: 1 }, [
-				v("td", null, [c(M, {
+				v("td", null, [c(P, {
 					text: D(H)(e.lease_id, "未提供租约 ID"),
 					secondary: D(H)(e.provider)
 				}, null, 8, ["text", "secondary"])]),
-				v("td", null, [c(M, { text: D(H)(e.exit_ip) }, null, 8, ["text"])]),
-				v("td", null, [c(I, {
-					label: D(J)(e.state).label,
-					title: D(J)(e.state).title,
-					tone: D(J)(e.state).tone
+				v("td", null, [c(P, { text: D(H)(e.exit_ip) }, null, 8, ["text"])]),
+				v("td", null, [c(F, {
+					label: D(q)(e.state).label,
+					title: D(q)(e.state).title,
+					tone: D(q)(e.state).tone
 				}, null, 8, [
 					"label",
 					"title",
 					"tone"
 				])]),
-				v("td", null, [c(M, { text: D(H)(e.account_id) }, null, 8, ["text"])]),
-				v("td", null, [c(M, { text: D(H)(e.purpose) }, null, 8, ["text"])]),
-				v("td", null, [c(M, { text: D(Z)(e, t.view === "history") }, null, 8, ["text"])]),
-				t.view === "current" ? (n(), k(p, { key: 0 }, [v("td", null, [c(M, { text: D(H)(e.route_attempt_no) }, null, 8, ["text"])]), v("td", null, [c(M, b({ ref_for: !0 }, A(e)), null, 16)])], 64)) : (n(), k(p, { key: 1 }, [v("td", null, [c(M, b({ ref_for: !0 }, A(e)), null, 16)]), v("td", null, [e.id == null ? (n(), k("span", Ue, "—")) : (n(), k("button", {
+				v("td", null, [c(P, { text: D(H)(e.account_id) }, null, 8, ["text"])]),
+				v("td", null, [c(P, { text: D(H)(e.purpose) }, null, 8, ["text"])]),
+				v("td", null, [c(P, { text: D(Z)(e, t.view === "history") }, null, 8, ["text"])]),
+				t.view === "current" ? (n(), k(p, { key: 0 }, [v("td", null, [c(P, { text: D(H)(e.route_attempt_no) }, null, 8, ["text"])]), v("td", null, [c(P, b({ ref_for: !0 }, E(e)), null, 16)])], 64)) : (n(), k(p, { key: 1 }, [v("td", null, [c(P, b({ ref_for: !0 }, E(e)), null, 16)]), v("td", null, [e.id == null ? (n(), k("span", Ve, "—")) : (n(), k("button", {
 					key: 0,
 					type: "button",
-					class: "pt-link",
+					class: "ui-link",
 					"data-proxy-detail": "history",
 					"aria-label": "查看线路历史详情",
-					onClick: (t) => j(e, t)
-				}, " 详情", 8, He))])], 64))
-			], 64))]))), 128)), t.items.length ? u("", !0) : (n(), k("tr", We, [v("td", Ge, [v("div", {
-				class: "pt-empty",
-				role: t.error ? "alert" : "status"
-			}, [
-				v("strong", null, g(t.loading ? `正在加载${O.value}` : t.error ? "代理与流量数据暂不可用" : `暂无${O.value}`), 1),
-				v("p", null, g(t.error || (t.loading ? "正在同步代理与流量 API" : "当前没有可显示的持久化记录。")), 1),
-				t.error ? (n(), k("button", {
-					key: 0,
-					type: "button",
-					class: "pt-button",
-					onClick: r[1] ||= (e) => l("retry")
-				}, "重新加载")) : u("", !0)
-			], 8, Ke)])]))])
-		], 12, Ie)], 8, Fe));
+					onClick: (t) => O(e, t)
+				}, " 详情", 8, Be))])], 64))
+			], 64))]))), 128)), t.items.length ? u("", !0) : (n(), _(N, {
+				key: 0,
+				colspan: 8,
+				loading: t.loading,
+				error: t.error,
+				"loading-title": `正在加载${T.value}`,
+				"loading-text": "正在同步代理与流量 API",
+				"error-title": "代理与流量数据暂不可用",
+				title: `暂无${T.value}`,
+				text: "当前没有可显示的持久化记录。",
+				"retry-label": "重新加载",
+				onRetry: r[1] ||= (e) => l("retry")
+			}, null, 8, [
+				"loading",
+				"error",
+				"loading-title",
+				"title"
+			]))])
+		], 12, Fe)], 8, Pe));
 	}
-}), Je = { class: "pt-detail-head" }, Ye = { id: "proxyTrafficDetailTitle" }, Xe = { class: "pt-detail-fields" }, Ze = /* @__PURE__ */ t({
+}), Ue = { class: "pt-detail-head" }, We = { id: "proxyTrafficDetailTitle" }, Ge = { class: "pt-detail-fields" }, Ke = /* @__PURE__ */ t({
 	__name: "ProxyDetail",
 	props: {
 		snapshot: {},
@@ -804,7 +815,7 @@ var Ee = { class: "pt-filter-fields" }, De = {
 	},
 	emits: ["close"],
 	setup(t, { emit: r }) {
-		let a = t, s = r, c = h(), l = h(), u = C(() => a.snapshot ? ae(a.snapshot.view, a.snapshot.row, a.facetLabel) : []), d = null, f = !1;
+		let a = t, s = r, c = h(), l = h(), u = C(() => a.snapshot ? se(a.snapshot.view, a.snapshot.row, a.facetLabel) : []), d = null, f = !1;
 		function m() {
 			d !== null && (document.body.style.overflow = d, d = null);
 		}
@@ -820,7 +831,7 @@ var Ee = { class: "pt-filter-fields" }, De = {
 			onCancel: r[1] ||= x((e) => s("close"), ["prevent"]),
 			onClick: r[2] ||= x((e) => s("close"), ["self"]),
 			onClose: r[3] ||= (e) => t.snapshot && s("close")
-		}, [v("div", Je, [v("h3", Ye, g(t.snapshot?.view === "history" ? "线路历史详情" : "请求流量详情"), 1), v("button", {
+		}, [v("div", Ue, [v("h3", We, g(t.snapshot?.view === "history" ? "线路历史详情" : "请求流量详情"), 1), v("button", {
 			ref_key: "closeButton",
 			ref: l,
 			type: "button",
@@ -828,14 +839,14 @@ var Ee = { class: "pt-filter-fields" }, De = {
 			"data-proxy-close-detail": "",
 			"aria-label": "关闭详情",
 			onClick: r[0] ||= (e) => s("close")
-		}, " 关闭 ", 512)]), v("dl", Xe, [(n(!0), k(p, null, o(u.value, (e, t) => (n(), k("div", { key: `${t}:${e.label}` }, [v("dt", null, g(e.label), 1), v("dd", null, g(e.value), 1)]))), 128))])], 544));
+		}, " 关闭 ", 512)]), v("dl", Ge, [(n(!0), k(p, null, o(u.value, (e, t) => (n(), k("div", { key: `${t}:${e.label}` }, [v("dt", null, g(e.label), 1), v("dd", null, g(e.value), 1)]))), 128))])], 544));
 	}
-}), Qe = {
+}), qe = {
 	current: "/api/proxy-traffic/current",
 	history: "/api/proxy-traffic/history",
 	traffic: "/api/proxy-traffic/traffic"
 };
-function $e(e, t) {
+function Je(e, t) {
 	let n = t;
 	if (!n || typeof n != "object" || n.ok !== !0) throw Error("代理列表接口响应无效");
 	if (n.view != null && n.view !== e) throw Error("代理列表接口视图不匹配");
@@ -852,7 +863,7 @@ function $e(e, t) {
 		aggregate: n.aggregate
 	};
 }
-function et() {
+function Ye() {
 	return {
 		async page(e, t, n) {
 			let r = new URLSearchParams({
@@ -863,23 +874,23 @@ function et() {
 				state: t.state,
 				search: t.search.trim()
 			});
-			return $e(e, await V(Qe[e] + "?" + r, { signal: n }, ee));
+			return Je(e, await B(qe[e] + "?" + r, { signal: n }, V));
 		},
 		async summary(e) {
-			let t = await V("/api/proxy-traffic/summary", { signal: e });
+			let t = await B("/api/proxy-traffic/summary", { signal: e });
 			if (t?.ok !== !0 || !Number.isFinite(Number(t.total_bytes)) || !Number.isFinite(Number(t.today_bytes))) throw Error("流量统计接口响应无效");
 			return t;
 		},
 		async pool(e) {
 			try {
-				let t = await V("/api/proxy-pool", { signal: e });
+				let t = await B("/api/proxy-pool", { signal: e });
 				return t?.ok === !0 && t.policy && t.counts && typeof t.counts == "object" ? {
 					...t,
 					items: Array.isArray(t.items) ? t.items : [],
 					country_pools: Array.isArray(t.country_pools) ? t.country_pools : []
 				} : null;
 			} catch (e) {
-				if (B(e)) throw e;
+				if (z(e)) throw e;
 				return null;
 			}
 		}
@@ -890,7 +901,7 @@ var $ = [
 	"current",
 	"history",
 	"traffic"
-], tt = () => ({
+], Xe = () => ({
 	page: 1,
 	size: 20,
 	total: 0,
@@ -898,15 +909,15 @@ var $ = [
 	items: [],
 	aggregate: void 0
 });
-function nt(t = {}) {
-	let n = t.api ?? et(), r = h(!1), i = h(t.view ?? "pool"), a = h("current"), o = s({
+function Ze(t = {}) {
+	let n = t.api ?? Ye(), r = h(!1), i = h(t.view ?? "pool"), a = h("current"), o = s({
 		window: "all",
 		purpose: "all",
 		search: ""
 	}), c = s({
-		current: tt(),
-		history: tt(),
-		traffic: tt()
+		current: Xe(),
+		history: Xe(),
+		traffic: Xe()
 	}), u = T(null), d = T(null), f = T(null), p = h(!1), m = h(""), g = h(null), _ = s({
 		current: 0,
 		history: 0,
@@ -917,7 +928,7 @@ function nt(t = {}) {
 	}
 	function N() {
 		clearTimeout(D), j() && (D = setTimeout(() => {
-			D = void 0, R();
+			D = void 0, I();
 		}, 3e4));
 	}
 	function P(t = null, n = 0) {
@@ -925,11 +936,11 @@ function nt(t = {}) {
 		let r = x;
 		if (!j()) return;
 		let i = () => {
-			E = void 0, r === x && j() && R(t);
+			E = void 0, r === x && j() && I(t);
 		};
 		n ? E = setTimeout(i, n) : e(i);
 	}
-	function F(e) {
+	function ee(e) {
 		let t = c[e];
 		return {
 			page: t.page,
@@ -940,7 +951,7 @@ function nt(t = {}) {
 			search: o.search
 		};
 	}
-	async function I(e, t, r) {
+	async function te(e, t, r) {
 		let i = await n.page(e, t, r), a = t.page;
 		if (r.aborted) throw new DOMException("Aborted", "AbortError");
 		return i.total === 0 ? {
@@ -954,7 +965,7 @@ function nt(t = {}) {
 			page: a
 		});
 	}
-	function L(e, t) {
+	function F(e, t) {
 		Object.assign(c[e], {
 			items: t.result.items,
 			total: t.result.total,
@@ -962,9 +973,9 @@ function nt(t = {}) {
 			aggregate: t.result.aggregate
 		});
 	}
-	async function R(e = null) {
+	async function I(e = null) {
 		if (!j()) return;
-		let r = !e || !u.value || k, i = r || d.value === null, a = r ? $ : $.filter((t) => t === e || A.has(t)), o = Object.fromEntries(a.map((e) => [e, F(e)])), s = JSON.stringify([r, o]);
+		let r = !e || !u.value || k, i = r || d.value === null, a = r ? $ : $.filter((t) => t === e || A.has(t)), o = Object.fromEntries(a.map((e) => [e, ee(e)])), s = JSON.stringify([r, o]);
 		if (O?.key === s) return O.promise;
 		M(), r && (k = !0);
 		let l = b, f = new AbortController();
@@ -972,22 +983,22 @@ function nt(t = {}) {
 		let h = (async () => {
 			try {
 				let e = i ? n.pool(f.signal).catch((e) => {
-					if (B(e)) throw e;
+					if (z(e)) throw e;
 					return null;
 				}) : null, [s, c, p] = await Promise.all([
 					Promise.all(a.map(async (e) => ({
 						name: e,
-						...await I(e, o[e], f.signal)
+						...await te(e, o[e], f.signal)
 					}))),
 					r ? n.summary(f.signal) : null,
 					e
 				]);
 				if (l !== b || !j()) return;
 				s.forEach((e) => {
-					L(e.name, e), A.delete(e.name) && _[e.name]++;
+					F(e.name, e), A.delete(e.name) && _[e.name]++;
 				}), r && (c && (u.value = c), k = !1), i && (d.value = p), m.value = "", t.onReady?.();
 			} catch (e) {
-				if (l !== b || !j() || B(e)) return;
+				if (l !== b || !j() || z(e)) return;
 				a.forEach((e) => {
 					c[e].items = [], c[e].total = 0;
 				}), r && (u.value = null, d.value = null), m.value = e instanceof Error ? e.message : String(e);
@@ -1000,20 +1011,20 @@ function nt(t = {}) {
 			promise: h
 		}, h;
 	}
-	function z(t = {}) {
+	function L(t = {}) {
 		let n = f.value?.opener;
 		f.value = null, t.restoreFocus !== !1 && n?.isConnected && e(() => n.focus({ preventScroll: !0 }));
 	}
+	function R(e) {
+		S || r.value === e || (r.value = e, e ? P() : (M(), g.value = null, L({ restoreFocus: !1 })));
+	}
+	function ne(e) {
+		!S && ["pool", "records"].includes(e) && i.value !== e && (i.value = e, g.value = null, L({ restoreFocus: !1 }));
+	}
+	function B(e) {
+		!S && $.includes(e) && a.value !== e && (a.value = e, g.value = null, L({ restoreFocus: !1 }));
+	}
 	function V(e) {
-		S || r.value === e || (r.value = e, e ? P() : (M(), g.value = null, z({ restoreFocus: !1 })));
-	}
-	function ee(e) {
-		!S && ["pool", "records"].includes(e) && i.value !== e && (i.value = e, g.value = null, z({ restoreFocus: !1 }));
-	}
-	function H(e) {
-		!S && $.includes(e) && a.value !== e && (a.value = e, g.value = null, z({ restoreFocus: !1 }));
-	}
-	function U(e) {
 		let t = Object.keys(e).filter((t) => e[t] !== void 0 && e[t] !== o[t]);
 		t.length && !S && (t.forEach((t) => {
 			o[t] = e[t];
@@ -1021,22 +1032,22 @@ function nt(t = {}) {
 			c[e].page = 1, A.add(e);
 		}), P(null, t.every((e) => e === "search") ? 260 : 0));
 	}
-	function W(e, t) {
+	function H(e, t) {
 		S || c[e].state === t || (c[e].state = t, c[e].page = 1, A.add(e), P(e));
 	}
-	function G(e, t) {
+	function U(e, t) {
 		if (S || !Number.isFinite(t)) return;
 		let n = c[e], r = Math.min(Math.max(1, Math.ceil(n.total / n.size)), Math.max(1, Math.floor(t)));
 		r !== n.page && (n.page = r, A.add(e), P(e));
 	}
-	function K(e, t) {
+	function W(e, t) {
 		!S && [
 			20,
 			50,
 			100
 		].includes(t) && c[e].size !== t && (c[e].size = t, c[e].page = 1, A.add(e), P(e));
 	}
-	function q() {
+	function G() {
 		Object.assign(o, {
 			window: "all",
 			purpose: "all",
@@ -1045,24 +1056,24 @@ function nt(t = {}) {
 			c[e].state = "all", c[e].page = 1, A.add(e);
 		}), P();
 	}
-	function J(e) {
-		e.startsWith("state:") ? W(e.slice(6), "all") : e === "search" ? U({ search: "" }) : (e === "window" || e === "purpose") && U({ [e]: "all" });
+	function K(e) {
+		e.startsWith("state:") ? H(e.slice(6), "all") : e === "search" ? V({ search: "" }) : (e === "window" || e === "purpose") && V({ [e]: "all" });
 	}
-	function te(e, t, n = null) {
+	function re(e, t, n = null) {
 		!S && j() && (f.value = {
 			view: e,
 			row: JSON.parse(JSON.stringify(t)),
 			opener: n
 		});
 	}
-	function Y() {
-		v.value = !document.hidden, document.hidden ? (M(), g.value = null, z({ restoreFocus: !1 })) : r.value && P();
+	function q() {
+		v.value = !document.hidden, document.hidden ? (M(), g.value = null, L({ restoreFocus: !1 })) : r.value && P();
 	}
-	document.addEventListener("visibilitychange", Y);
-	function X() {
-		S || (S = !0, M(), z({ restoreFocus: !1 }), document.removeEventListener("visibilitychange", Y));
+	document.addEventListener("visibilitychange", q);
+	function J() {
+		S || (S = !0, M(), L({ restoreFocus: !1 }), document.removeEventListener("visibilitychange", q));
 	}
-	return l(X), t.visible && V(!0), {
+	return l(J), t.visible && R(!0), {
 		visible: r,
 		active: y,
 		documentVisible: v,
@@ -1077,50 +1088,50 @@ function nt(t = {}) {
 		error: m,
 		openFilter: g,
 		scrollRevision: _,
-		load: R,
-		setVisible: V,
-		setView: ee,
-		setRecordView: H,
-		updateFilters: U,
-		setState: W,
-		setPage: G,
-		setSize: K,
-		resetFilters: q,
-		removeFilter: J,
-		openDetail: te,
-		closeDetail: z,
-		dispose: X
+		load: I,
+		setVisible: R,
+		setView: ne,
+		setRecordView: B,
+		updateFilters: V,
+		setState: H,
+		setPage: U,
+		setSize: W,
+		resetFilters: G,
+		removeFilter: K,
+		openDetail: re,
+		closeDetail: L,
+		dispose: J
 	};
 }
 // src/features/proxy/ProxyTrafficPage.vue?vue&type=script&setup=true&lang.ts
-var rt = {
+var Qe = {
 	class: "pt-root",
 	"data-proxy-vue": ""
-}, it = {
+}, $e = {
 	class: "pt-workspace",
 	"data-proxy-module-panel": "records"
-}, at = {
+}, et = {
 	class: "pt-summary",
 	"aria-label": "租约与流量摘要"
-}, ot = { "data-proxy-summary": "totalBytes" }, st = { "data-proxy-summary": "todayBytes" }, ct = { "data-proxy-summary": "todayRequestCount" }, lt = { "data-proxy-summary": "todayRouteCount" }, ut = { class: "pt-toolbar" }, dt = [
+}, tt = { "data-proxy-summary": "totalBytes" }, nt = { "data-proxy-summary": "todayBytes" }, rt = { "data-proxy-summary": "todayRequestCount" }, it = { "data-proxy-summary": "todayRouteCount" }, at = { class: "ui-list pt-records-sheet" }, ot = { class: "ui-list-toolbar pt-toolbar" }, st = [
 	"data-proxy-view",
 	"aria-selected",
 	"aria-controls",
 	"tabindex",
 	"onClick"
-], ft = { class: "pt-toolbar-main" }, pt = {
-	class: "pt-count",
+], ct = { class: "ui-list-toolbar__main pt-toolbar-main" }, lt = {
+	class: "ui-list-count pt-count",
 	role: "status"
-}, mt = { class: "pt-toolbar-actions" }, ht = { class: "pt-mobile-filter" }, gt = [
+}, ut = { class: "ui-list-toolbar__actions pt-toolbar-actions" }, dt = { class: "pt-mobile-filter" }, ft = [
 	"id",
 	"aria-label",
 	"aria-hidden",
 	"data-proxy-panel"
-], _t = /* @__PURE__ */ t({
+], pt = /* @__PURE__ */ t({
 	__name: "ProxyTrafficPage",
 	props: { deps: {} },
 	setup(e, { expose: t }) {
-		let r = e, i = nt(r.deps), { view: s, recordView: l, filters: d, pages: f, summary: m, pool: _, detail: y, loading: b, error: x, active: w, openFilter: T } = i, O = h({}), j = [
+		let r = e, i = Ze(r.deps), { view: s, recordView: l, filters: d, pages: f, summary: m, pool: _, detail: y, loading: b, error: x, active: w, openFilter: T } = i, O = h({}), j = [
 			"current",
 			"history",
 			"traffic"
@@ -1128,18 +1139,18 @@ var rt = {
 			current: "当前租约",
 			history: "线路历史",
 			traffic: "请求流量"
-		}, N = C(() => Te(d, {
+		}, N = C(() => we(d, {
 			current: f.current.state,
 			history: f.history.state,
 			traffic: f.traffic.state
-		})), I = C(() => f[l.value]);
-		function L(e, t, n) {
+		})), P = C(() => f[l.value]);
+		function F(e, t, n) {
 			t === "state" ? i.setState(e, n) : i.updateFilters({ [t]: n });
 		}
-		function R() {
+		function I() {
 			O.value[l.value]?.resetColumns(), r.deps.notify?.("已恢复默认列宽");
 		}
-		function z(e) {
+		function L(e) {
 			if (![
 				"ArrowLeft",
 				"ArrowRight",
@@ -1155,23 +1166,22 @@ var rt = {
 			setVisible: i.setVisible,
 			setView: i.setView,
 			closeDetail: i.closeDetail
-		}), (t, r) => (n(), k("div", rt, [
-			a(c(xe, {
+		}), (t, r) => (n(), k("div", Qe, [
+			a(c(be, {
 				pool: D(_),
 				loading: D(b)
 			}, null, 8, ["pool", "loading"]), [[E, D(s) === "pool"]]),
-			a(v("div", it, [
-				v("div", at, [
-					v("div", null, [r[6] ||= v("span", null, "累计可观测流量", -1), v("strong", ot, g(D(m) ? D(K)(D(m).total_bytes) : "—"), 1)]),
-					v("div", null, [r[7] ||= v("span", null, "今日可观测流量", -1), v("strong", st, g(D(m) ? D(K)(D(m).today_bytes) : "—"), 1)]),
-					v("div", null, [r[8] ||= v("span", null, "今日请求记录", -1), v("strong", ct, g(D(m) ? D(m).today_request_count ?? D(m).today_browser_count ?? "—" : "—"), 1)]),
-					v("div", null, [r[9] ||= v("span", null, "今日新建线路", -1), v("strong", lt, g(D(m)?.today_route_count ?? "—"), 1)])
-				]),
-				v("div", ut, [v("div", {
+			a(v("div", $e, [v("div", et, [
+				v("div", null, [r[6] ||= v("span", null, "累计可观测流量", -1), v("strong", tt, g(D(m) ? D(K)(D(m).total_bytes) : "—"), 1)]),
+				v("div", null, [r[7] ||= v("span", null, "今日可观测流量", -1), v("strong", nt, g(D(m) ? D(K)(D(m).today_bytes) : "—"), 1)]),
+				v("div", null, [r[8] ||= v("span", null, "今日请求记录", -1), v("strong", rt, g(D(m) ? D(m).today_request_count ?? D(m).today_browser_count ?? "—" : "—"), 1)]),
+				v("div", null, [r[9] ||= v("span", null, "今日新建线路", -1), v("strong", it, g(D(m)?.today_route_count ?? "—"), 1)])
+			]), v("div", at, [v("div", ot, [
+				v("div", {
 					class: "pt-view-tabs",
 					role: "tablist",
 					"aria-label": "代理与流量视图",
-					onKeydown: z
+					onKeydown: L
 				}, [(n(), k(p, null, o(j, (e) => v("button", {
 					key: e,
 					type: "button",
@@ -1182,14 +1192,19 @@ var rt = {
 					tabindex: D(l) === e ? 0 : -1,
 					class: S({ "is-active": D(l) === e }),
 					onClick: (t) => D(i).setRecordView(e)
-				}, [A(g(M[e]) + " ", 1), v("span", null, g(D(x) ? "—" : D(f)[e].total), 1)], 10, dt)), 64))], 32), v("div", ft, [v("span", pt, g(D(x) ? "数据暂不可用" : `${I.value.total.toLocaleString()} 条记录`), 1), v("div", mt, [
-					v("span", ht, [c(Pe, {
+				}, [A(g(M[e]) + " ", 1), v("span", null, g(D(x) ? "—" : D(f)[e].total), 1)], 10, st)), 64))], 32),
+				v("div", ct, [v("span", lt, g(D(x) ? "数据暂不可用" : `${P.value.total.toLocaleString()} 条记录`), 1), c(ee, {
+					items: N.value,
+					onRemove: D(i).removeFilter
+				}, null, 8, ["items", "onRemove"])]),
+				v("div", ut, [
+					v("span", dt, [c(Ne, {
 						view: D(l),
 						filters: D(d),
-						state: I.value.state,
+						state: P.value.state,
 						summary: D(m),
 						open: D(w) && D(T) === "all",
-						onChange: r[0] ||= (e, t) => L(D(l), e, t),
+						onChange: r[0] ||= (e, t) => F(D(l), e, t),
 						"onUpdate:open": r[1] ||= (e) => T.value = e ? "all" : null
 					}, null, 8, [
 						"view",
@@ -1201,86 +1216,81 @@ var rt = {
 					N.value.length ? (n(), k("button", {
 						key: 0,
 						type: "button",
-						class: "pt-link",
+						class: "ui-link",
 						onClick: r[2] ||= (...e) => D(i).resetFilters && D(i).resetFilters(...e)
 					}, "清筛")) : u("", !0),
 					v("button", {
 						type: "button",
-						class: "pt-link",
+						class: "ui-link",
 						"aria-label": "恢复当前列表列宽",
-						onClick: R
-					}, " 恢复列宽 ")
-				])])]),
-				c(P, {
-					items: N.value,
-					onRemove: D(i).removeFilter
-				}, null, 8, ["items", "onRemove"]),
-				(n(), k(p, null, o(j, (t) => a(v("section", {
-					id: `proxy-panel-${t}`,
-					key: t,
-					role: "tabpanel",
-					"aria-label": M[t],
-					"aria-hidden": D(l) !== t,
-					"data-proxy-panel": t,
-					class: "pt-panel"
-				}, [c(qe, {
-					ref_for: !0,
-					ref: (e) => {
-						e && (O.value[t] = e);
-					},
-					view: t,
-					items: D(f)[t].items,
-					filters: D(d),
-					state: D(f)[t].state,
-					summary: D(m),
-					loading: D(b),
-					error: D(x),
-					visible: D(w) && D(s) === "records" && D(l) === t,
-					"open-filter": D(T),
-					"scroll-revision": D(i).scrollRevision[t],
-					"facet-label": e.deps.facetLabel,
-					onFilter: (e, n) => L(t, e, n),
-					"onUpdate:openFilter": r[3] ||= (e) => T.value = e,
-					onDetail: D(i).openDetail,
-					onRetry: r[4] ||= (e) => D(i).load()
-				}, null, 8, [
-					"view",
-					"items",
-					"filters",
-					"state",
-					"summary",
-					"loading",
-					"error",
-					"visible",
-					"open-filter",
-					"scroll-revision",
-					"facet-label",
-					"onFilter",
-					"onDetail"
-				]), c(F, {
-					page: D(f)[t].page,
-					size: D(f)[t].size,
-					total: D(f)[t].total,
-					busy: D(b),
-					"page-sizes": [
-						20,
-						50,
-						100
-					],
-					label: `${M[t]}分页`,
-					"onUpdate:page": (e) => D(i).setPage(t, e),
-					"onUpdate:size": (e) => D(i).setSize(t, e)
-				}, null, 8, [
-					"page",
-					"size",
-					"total",
-					"busy",
-					"label",
-					"onUpdate:page",
-					"onUpdate:size"
-				])], 8, gt), [[E, D(l) === t]])), 64))
-			], 512), [[E, D(s) === "records"]]),
-			c(Ze, {
+						onClick: I
+					}, "恢复列宽")
+				])
+			]), (n(), k(p, null, o(j, (t) => a(v("section", {
+				id: `proxy-panel-${t}`,
+				key: t,
+				role: "tabpanel",
+				"aria-label": M[t],
+				"aria-hidden": D(l) !== t,
+				"data-proxy-panel": t,
+				class: "pt-panel"
+			}, [c(He, {
+				ref_for: !0,
+				ref: (e) => {
+					e && (O.value[t] = e);
+				},
+				view: t,
+				items: D(f)[t].items,
+				filters: D(d),
+				state: D(f)[t].state,
+				summary: D(m),
+				loading: D(b),
+				error: D(x),
+				visible: D(w) && D(s) === "records" && D(l) === t,
+				"open-filter": D(T),
+				"scroll-revision": D(i).scrollRevision[t],
+				"facet-label": e.deps.facetLabel,
+				onFilter: (e, n) => F(t, e, n),
+				"onUpdate:openFilter": r[3] ||= (e) => T.value = e,
+				onDetail: D(i).openDetail,
+				onRetry: r[4] ||= (e) => D(i).load()
+			}, null, 8, [
+				"view",
+				"items",
+				"filters",
+				"state",
+				"summary",
+				"loading",
+				"error",
+				"visible",
+				"open-filter",
+				"scroll-revision",
+				"facet-label",
+				"onFilter",
+				"onDetail"
+			]), c(te, {
+				page: D(f)[t].page,
+				size: D(f)[t].size,
+				total: D(f)[t].total,
+				busy: D(b),
+				"page-sizes": [
+					20,
+					50,
+					100
+				],
+				label: `${M[t]}分页`,
+				"onUpdate:page": (e) => D(i).setPage(t, e),
+				"onUpdate:size": (e) => D(i).setSize(t, e)
+			}, null, 8, [
+				"page",
+				"size",
+				"total",
+				"busy",
+				"label",
+				"onUpdate:page",
+				"onUpdate:size"
+			])], 8, ft), [[E, D(l) === t]])), 64))])], 512), [[E, D(s) === "records"]]),
+			c(Ke, {
 				snapshot: D(y),
 				"facet-label": e.deps.facetLabel,
 				onClose: r[5] ||= (e) => D(i).closeDetail()
@@ -1289,8 +1299,8 @@ var rt = {
 	}
 });
 // src/proxy.ts
-function vt(e, t = {}) {
-	let n = w(_t, { deps: t }), r = n.mount(e);
+function mt(e, t = {}) {
+	let n = w(pt, { deps: t }), r = n.mount(e);
 	return {
 		load: r.load,
 		setVisible: r.setVisible,
@@ -1299,4 +1309,4 @@ function vt(e, t = {}) {
 		destroy: () => n.unmount()
 	};
 }
-export { vt as mountProxyTraffic };
+export { mt as mountProxyTraffic };

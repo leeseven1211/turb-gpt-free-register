@@ -66,8 +66,8 @@ function clear() {
       </div>
     </div>
     <div class="tc-filter-footer">
-      <button type="button" class="tc-link" :disabled="!isFilterActive(column, modelValue)" @click="clear">清除此列</button>
-      <button type="submit" class="tc-button">完成</button>
+      <button type="button" class="ui-link" :disabled="!isFilterActive(column, modelValue)" @click="clear">清除此列</button>
+      <button type="submit" class="ui-button">完成</button>
     </div>
   </form>
 </template>
