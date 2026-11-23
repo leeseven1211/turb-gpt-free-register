@@ -1810,6 +1810,68 @@ def _execute_queued_job(job: dict) -> None:
     admission.run_job(job_id, execute)
 
 
+def close_jobs_for_completed_account_tasks(*, limit: int = 50) -> int:
+    """账号配置子任务已成功、但注册任务仍停在 partial/failed 时收口。
+
+    2FA/套餐重跑是入队式执行：入队时只能标记 partial，子任务完成没有回调
+    修改父任务，必须由定期对账把它收口，否则账号已完成、任务却一直不全。
+    """
+    from core.accounts.completion import completion_plan
+    from core.storage import postgres
+
+    if not postgres.enabled():
+        return 0
+    try:
+        with postgres.connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT DISTINCT j.id
+                FROM registration_jobs j
+                JOIN operation_tasks t
+                  ON t.source_system = 'registration_jobs'
+                 AND t.source_id = j.id::text
+                WHERE j.status IN ('partial_success', 'failed')
+                  AND t.status = 'success'
+                ORDER BY j.id
+                LIMIT %s
+                """,
+                (max(1, int(limit)),),
+            )
+            job_ids = [int(row[0]) for row in cur.fetchall()]
+    except Exception:
+        logger.exception("[Service] 读取账号配置对账候选失败")
+        return 0
+    closed = 0
+    for job_id in job_ids:
+        try:
+            job = db.get_job(job_id) or {}
+            account_id = job.get("account_id")
+            if not account_id:
+                continue
+            account = db.get_account(int(account_id))
+            if not account or not str(account.get("access_token") or "").strip():
+                continue
+            if completion_plan(account)["missing_steps"]:
+                continue
+            if db.transition_job_status(job_id, ("partial_success", "failed"), "success",
+                                       completed_at=_now_iso()):
+                db.update_job(job_id, error="")
+                _finish_registration_run(
+                    "success", result_summary={"job_id": job_id, "status": "success",
+                                               "manual_reconcile": "account_setup_completed"},
+                )
+                try:
+                    from core import operation_task_store
+
+                    operation_task_store.sync_registration_job(job_id)
+                except Exception:
+                    logger.exception("[Job %s] 同步账号配置收口投影失败", job_id)
+                closed += 1
+        except Exception:
+            logger.exception("[Job %s] 账号配置收口失败", job_id)
+    return closed
+
+
 def dispatch_pending_once() -> int:
     """先只读筛选剩余业务容量，再提交候选；原子认领仍在 worker 内完成。"""
     from core.registration.admission import dispatch_candidates, pending_jobs
@@ -1902,6 +1964,7 @@ def start_dispatcher(*, interval_seconds: float = 0.5) -> bool:
                         from core.storage import registration as registration_store
 
                         registration_store.close_jobs_for_interrupted_runs()
+                        close_jobs_for_completed_account_tasks()
                     except Exception:
                         logger.exception("[Service] 收口中断任务行失败")
                 _DISPATCH_WAKE.wait(_DISPATCH_INTERVAL)
@@ -3782,6 +3845,10 @@ def _build_retry_info(
     error = str(job.get("error_message") or job.get("error") or "")
     if "remail_order_request_unknown" in error or ("Remail" in error and "订单结果待核验" in error):
         info["retry_reason"] = "邮箱订单结果待核验，不能重复下单；需先恢复原订单邮箱"
+        return info
+    if "registration_identity_verification_required" in error:
+        info["display_status"] = "failed"
+        info["retry_reason"] = "OpenAI 要求继续身份验证，自动重试无法通过；需人工处理或标记邮箱不可用"
         return info
     remote_account_exists = account is None and any(
         marker in error for marker in ("invalid_auth_step", "落地判定为已有账号")

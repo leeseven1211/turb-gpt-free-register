@@ -43,6 +43,30 @@ def test_sentinel_rs_saved_password_is_resumable_through_the_protocol_kernel():
     assert "协议内核" in info["retry_reason"]
 
 
+def test_identity_verification_required_blocks_retry():
+    job = {
+        "id": 12, "status": "failed", "email": "idv@example.test",
+        "error_message": "request_unknown: registration_identity_verification_required: 资料已接受，OpenAI 仍要求身份验证",
+    }
+    info = service._build_retry_info(
+        job, account=None, successful_retry=None, attempt=None, root_job=job,
+    )
+    assert info["retryable"] is False
+    assert "身份验证" in info["retry_reason"]
+
+
+def test_protocol_failures_resume_with_their_own_kernel():
+    case = _pending_case("protocol_oss_2")
+    info = service._build_retry_info(
+        case["job"], account=case["account"], successful_retry=None,
+        attempt=case["attempt"], root_job=case["job"],
+    )
+    assert info["retryable"] is True
+    assert info["retry_action"] == "registration_resume"
+    assert info["retry_label"] == "继续邮箱验证"
+    assert "协议内核" not in info["retry_reason"]
+
+
 def test_resume_driver_detection_only_targets_the_rust_kernel():
     assert service._resume_driver_unsupported({"config_snapshot": {"registration_driver": "sentinel_rs"}})
     assert service._resume_driver_unsupported({"data": {"config_snapshot": {"registration_driver": "sentinel_rs"}}})
