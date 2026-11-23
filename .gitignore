@@ -78,5 +78,7 @@ core/用于注册的API邮箱.txt
 # Frontend dependencies (directory or local development symlink)
 /frontend/node_modules
 
-# Rust 内核：上游源码按许可另行获取，只保留本地构建产物
-/native/
+# Rust 内核：上游源码内置在 native/sentinel-rs（作者已授权），其余 native/ 内容不入库
+/native/*
+!/native/sentinel-rs/
+!/native/sentinel-rs/**
