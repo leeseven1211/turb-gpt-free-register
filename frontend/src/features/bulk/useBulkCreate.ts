@@ -89,7 +89,11 @@ export function useBulkCreate(deps:BulkCreateDependencies) {
   const configured=definition?.options??definition?.enum??definition?.values;
   const rows=facets.value[key]??(Array.isArray(configured)?configured:[]),found=new Map<string,FacetOption>();
   for(const entry of rows){const row=typeof entry==='object'&&entry?entry as FacetOption:{value:String(entry)};if(row.value)found.set(row.value,{...row,label:row.label||facetLabel(key==='token'?'account_token':key,row.value)});}
-  if(key==='promotion')for(const value of promotionOffers)if(!found.has(value))found.set(value,{value,label:facetLabel(key,value)});
+  if(key==='promotion'){
+    const options=promotionOffers.map(value=>({value,count:found.get(value)?.count??undefined,label:facetLabel(key,value)}));
+    for(const value of selectedValues(draft.value.query,key))if(!options.some(option=>option.value===value))options.push({value,count:0,label:facetLabel(key,value)});
+    return options;
+  }
   for(const value of selectedValues(draft.value.query,key))if(!found.has(value))found.set(value,{value,label:facetLabel(key==='token'?'account_token':key,value)});
   return[...found.values()];
  }
