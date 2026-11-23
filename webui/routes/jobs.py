@@ -117,6 +117,9 @@ def create_jobs_blueprint(context: WebUIContext):
     @bp.get("/api/jobs")
     @task_query()
     def api_jobs():
+        import time as _time
+
+        _list_started = _time.monotonic()
         view = str(request.args.get("view", default="") or "").strip().lower()
         if view not in {"", "batch", "table"}:
             return jsonify({"ok": False, "error": "view 仅支持 batch 或 table"}), 400
@@ -163,6 +166,10 @@ def create_jobs_blueprint(context: WebUIContext):
         )
         rows = result.get("items") or []
         progress_rows = result.pop("progress_rows", [])
+        if _list_started is not None:
+            _list_elapsed = _time.monotonic() - _list_started
+            if _list_elapsed >= 1.0:
+                logger.info("[jobs] view=%s rows=%s elapsed=%.2fs", view or "table", len(rows), _list_elapsed)
         if view != "table" and progress_detail:
             # 完整事件只服务当前卡片；历史尝试保留元数据，详情仍由原接口提供。
             snapshot_rows = _current_progress_jobs(progress_rows) if view == "batch" else [*rows, *progress_rows]
@@ -434,7 +441,16 @@ def create_jobs_blueprint(context: WebUIContext):
             retry_kwargs["debug_enabled"] = data["debug_enabled"]
         if proxy_country is not None:
             retry_kwargs["proxy_country"] = proxy_country
+        import time as _time
+
+        _started = _time.monotonic()
         result = svc.retry_job(job_id, workers=workers, **retry_kwargs)
+        _elapsed = _time.monotonic() - _started
+        if _elapsed >= 0.5:
+            logger.info(
+                "[retry] job=%s ok=%s elapsed=%.2fs",
+                job_id, bool(result.get("ok")), _elapsed,
+            )
         if not result.get("ok"):
             return jsonify(result), int(result.get("status") or 400)
         return jsonify(result)
