@@ -384,6 +384,12 @@ def run_protocol_oss_2_lifecycle(
             },
         )
         report_job_progress("token", "success", f"{_label}核心账号已写入 PostgreSQL")
+        kernel_totp_secret = str(flow_result.get("totp_secret") or "").strip()
+        if kernel_totp_secret and not existing_totp_secret:
+            # 内核在注册流程内完成 enroll+activate；落库后才能算账号完整。
+            from core.registration.checkpoints import save_protocol_totp_checkpoint
+
+            save_protocol_totp_checkpoint(email=email, secret=kernel_totp_secret, confirmed=True)
         local_result = _run_local_postprocessing(
             session=session,
             email=email,
