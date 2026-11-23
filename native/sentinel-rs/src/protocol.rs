@@ -124,6 +124,40 @@ pub fn landing(verdict: &str, host: &str) {
     emit("landing", json!({"verdict": verdict, "host": host}));
 }
 
+/// 协议模式下向 Python 请求验证码；Python 用自己的邮箱服务等待并回传。
+pub fn request_otp(email: &str, after_ts: u64) -> Result<String> {
+    if !enabled() {
+        bail!("协议模式未启用");
+    }
+    let challenge = uuid::Uuid::new_v4().to_string();
+    emit(
+        "otp_request",
+        json!({"challenge_id": challenge, "email": email, "after_ts": after_ts}),
+    );
+    loop {
+        let value = recv(Duration::from_secs(1200)).context("等待 otp_response")?;
+        if value.get("type").and_then(Value::as_str) != Some("otp_response") {
+            continue;
+        }
+        let data = value.get("data").cloned().unwrap_or_default();
+        if data.get("challenge_id").and_then(Value::as_str) != Some(challenge.as_str()) {
+            continue;
+        }
+        let status = data.get("status").and_then(Value::as_str).unwrap_or("malformed");
+        if status == "timeout" {
+            bail!("等待邮箱验证码超时（Python 侧）");
+        }
+        if status != "ok" {
+            bail!("取码失败（Python 侧）：{status}");
+        }
+        let code = data.get("code").and_then(Value::as_str).unwrap_or_default().to_string();
+        if code.len() != 6 || !code.chars().all(|ch| ch.is_ascii_digit()) {
+            bail!("取码结果不是 6 位数字");
+        }
+        return Ok(code);
+    }
+}
+
 /// 在发送 `user/register` 之前调用：Python 落库后回 ack，否则禁止继续。
 pub fn checkpoint_password(email: &str, password: &str) -> Result<()> {
     if !enabled() {

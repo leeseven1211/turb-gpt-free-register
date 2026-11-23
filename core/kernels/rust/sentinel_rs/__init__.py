@@ -205,7 +205,11 @@ def _run_sentinel_rs_flow(
 
         account = run_registration(
             request, on_progress=on_progress, check_cancel=check_cancel,
-            protocol_hooks={"persist_password": persist_password, "confirm_password": confirm_password}
+            protocol_hooks={
+                "persist_password": persist_password,
+                "confirm_password": confirm_password,
+                "email_source": source,
+            }
             if protocol_enabled() else None,
         )
     except BaseException as exc:

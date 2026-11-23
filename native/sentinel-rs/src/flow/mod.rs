@@ -891,15 +891,23 @@ async fn live_register(
     }
     info!("[6/10] OTP 已发送");
 
-    // 6) 取码（静态池 / API 同一条路径：GET {code_url} + HTML 卡片解析）
-    let code = email::poll_otp_url(
-        &email_http,
-        &mailbox.code_url,
-        cfg.otp_max_wait_secs,
-        cfg.otp_poll_interval_secs,
-    )
-    .await
-    .context("等待邮箱验证码失败")?;
+    // 6) 取码：协议模式交给 Python 的邮箱服务；否则沿用内核自带的 URL 轮询。
+    let issued_after = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|value| value.as_secs())
+        .unwrap_or(0);
+    let code = if crate::protocol::enabled() {
+        crate::protocol::request_otp(&identity.email, issued_after)?
+    } else {
+        email::poll_otp_url(
+            &email_http,
+            &mailbox.code_url,
+            cfg.otp_max_wait_secs,
+            cfg.otp_poll_interval_secs,
+        )
+        .await
+        .context("等待邮箱验证码失败")?
+    };
     info!("已取得邮箱验证码");
 
     // 8) 验证 OTP（该 flow 服务端要求 SO token）

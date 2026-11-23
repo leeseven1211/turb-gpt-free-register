@@ -273,6 +273,41 @@ def run_registration_protocol(
 
     incoming: "queue.Queue[dict]" = queue.Queue()
     raw_lines: list[str] = []
+    send_lock = threading.Lock()
+    otp_threads: list[threading.Thread] = []
+
+    def send_protocol(message: dict) -> None:
+        with send_lock:
+            _protocol_send(process.stdin, message)
+
+    def fetch_otp(challenge: str, address: str, after_ts: float) -> None:
+        """Python 侧用现有邮箱服务等待验证码，避免内核空转 300 秒。"""
+        status, code, note = "malformed", "", ""
+        logger.info("sentinel-rs 协议取码：email=%s after_ts=%s", address or request.email, after_ts)
+        try:
+            from core.email.provider import wait_for_otp
+
+            max_wait = hooks.get("otp_wait_seconds")
+            code = wait_for_otp(
+                address or request.email, after_ts=after_ts,
+                max_wait=int(max_wait) if max_wait else None,
+                email_source=hooks.get("email_source"),
+            )
+            status = "ok" if str(code or "").strip() else "malformed"
+            logger.info("sentinel-rs 协议取码完成：status=%s", status)
+            note = "" if status == "ok" else "邮箱服务返回空验证码"
+        except Exception as exc:  # noqa: BLE001 - 取码异常必须回给内核
+            text = str(exc)
+            status = "timeout" if ("超时" in text or "timeout" in text.lower() or "no_mail" in text) else "malformed"
+            note = text[:200]
+            logger.warning("sentinel-rs 协议取码失败：status=%s detail=%s", status, note)
+        try:
+            send_protocol({
+                "v": 1, "seq": 3, "type": "otp_response",
+                "data": {"challenge_id": challenge, "status": status, "code": code, "note": note},
+            })
+        except Exception:
+            logger.exception("sentinel-rs 协议取码回执写入失败")
 
     def reader() -> None:
         assert process.stdout is not None
@@ -326,7 +361,7 @@ def run_registration_protocol(
             kind = str(message.get("type") or "")
             data = message.get("data") if isinstance(message.get("data"), dict) else {}
             if kind == "ready":
-                _protocol_send(process.stdin, {
+                send_protocol({
                     "v": 1, "seq": 1, "type": "start",
                     "data": {"email": request.email, "proxy_requested": True},
                 })
@@ -341,6 +376,19 @@ def run_registration_protocol(
             elif kind == "landing":
                 landing_verdict = str(data.get("verdict") or "")
                 logger.info("sentinel-rs 授权落地判定：%s", landing_verdict or "unknown")
+            elif kind == "otp_request":
+                challenge = str(data.get("challenge_id") or "")
+                address = str(data.get("email") or "") or request.email
+                try:
+                    after_ts = float(data.get("after_ts") or 0)
+                except (TypeError, ValueError):
+                    after_ts = 0.0
+                thread = threading.Thread(
+                    target=fetch_otp, args=(challenge, address, after_ts),
+                    name="sentinel-rs-otp", daemon=True,
+                )
+                otp_threads.append(thread)
+                thread.start()
             elif kind == "checkpoint_prepare":
                 challenge = str(data.get("challenge_id") or "")
                 persisted = False
@@ -353,7 +401,7 @@ def run_registration_protocol(
                         attempt_id = (saved or {}).get("attempt_id")
                     except Exception:
                         logger.exception("sentinel-rs 密码落库失败")
-                _protocol_send(process.stdin, {
+                send_protocol({
                     "v": 1, "seq": 2, "type": "checkpoint_ack",
                     "data": {"challenge_id": challenge, "persisted": persisted, "attempt_id": attempt_id},
                 })
@@ -382,6 +430,8 @@ def run_registration_protocol(
                 except (ProcessLookupError, PermissionError):
                     pass
                 process.wait(timeout=5)
+        for thread in otp_threads:
+            thread.join(timeout=3)
         reader_thread.join(timeout=3)
         try:
             process.stdin.close()

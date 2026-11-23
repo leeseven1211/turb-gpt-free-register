@@ -47,6 +47,13 @@ if ack["data"]["persisted"] is not True:
     raise SystemExit(3)
 emit({"v": 1, "seq": 4, "type": "submission",
       "data": {"endpoint": "user/register", "http_status": 200, "receipt": "confirmed"}})
+emit({"v": 1, "seq": 5, "type": "otp_request",
+      "data": {"challenge_id": "o1", "email": email, "after_ts": 1700000000}})
+otp = recv()
+assert otp["type"] == "otp_response", otp
+assert otp["data"]["challenge_id"] == "o1", otp
+if otp["data"]["status"] != "ok" or otp["data"]["code"] != "123456":
+    raise SystemExit(5)
 
 con = sqlite3.connect(db)
 con.execute("CREATE TABLE IF NOT EXISTS accounts (id INTEGER PRIMARY KEY AUTOINCREMENT,"
@@ -78,6 +85,15 @@ def _request(tmp_path: Path) -> BridgeRequest:
 
 def test_protocol_bridge_acks_password_before_registration(tmp_path, monkeypatch):
     monkeypatch.setenv("SENTINEL_PROTOCOL", "1")
+    from core.email import provider as email_provider
+
+    otp_calls = []
+    monkeypatch.setattr(
+        email_provider, "wait_for_otp",
+        lambda address, after_ts, **kwargs: (
+            otp_calls.append((address, after_ts)) or "123456"
+        ),
+    )
     seen = []
     confirmed = []
     stages = []
@@ -89,8 +105,10 @@ def test_protocol_bridge_acks_password_before_registration(tmp_path, monkeypatch
                 seen.append((email, password)) or {"persisted": True, "attempt_id": 7}
             ),
             "confirm_password": lambda: confirmed.append(True),
+            "email_source": "generic_api",
         },
     )
+    assert otp_calls == [("fixture@example.test", 1700000000.0)]
     assert seen == [("fixture@example.test", "pw-from-kernel")]
     assert confirmed == [True]
     assert ("login_password", "failed") not in stages

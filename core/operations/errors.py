@@ -1962,6 +1962,7 @@ _SENTINEL_RS_OTP_MARKERS = (
     '"code": "no_code"',
     "暂未收到验证码",
     "还没有验证码",
+    "等待邮箱验证码超时",
 )
 
 
