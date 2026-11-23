@@ -476,6 +476,118 @@ if os.getenv("SETTLEMENT_DB_TESTS") == "1":
                 events = cur.fetchone()["count"]
             return run, permit, events
 
+        def _admit_account_task(self, task):
+            """用真实准入事务模拟已退出进程持有的账号许可。"""
+            run = task.get("run") or store.get_run(int(task["last_run_id"]))
+            owner = {**permits.current_owner(), "pid": 1073741823,
+                     "process_start": "dead-test-process"}
+            return permits.try_admit(
+                execution_key=f"operation_run:{run['id']}", task_type=task["task_type"],
+                execution_id=uuid.uuid4().hex, run_id=int(run["id"]), batch_key="",
+                owner=owner, metadata={},
+                policy=lambda _conn: ([{
+                    "kind": "account",
+                    "key": f"{run['account_id']}:{run['resource_family']}",
+                    "limit": 1,
+                }], 1, []),
+                claim=lambda conn, execution_id: store.claim_run(
+                    int(run["id"]), execution_id=execution_id,
+                    worker_pid=owner["pid"], conn=conn),
+            )
+
+        def test_deleted_stopped_task_releases_account_for_next_run_without_rewriting_result(self):
+            from core.storage import records
+
+            account_id = self.seed(records.ACCOUNTS, [{"email": "stopped-lock@example.test"}])[0]
+            old_task = store.create_runtime_task(
+                task_type="live_check", account_id=account_id,
+                email="stopped-lock@example.test", trigger="test")
+            ticket = self._admit_account_task(old_task)["settlement_ticket"]
+            store.terminate_run(ticket["run_id"], reason="测试管理终止后进程退出")
+            store.delete_tasks([old_task["id"]])
+            before = self._facts(ticket)[0]
+            waiting = store.create_runtime_task(
+                task_type="token_refresh", account_id=account_id,
+                email="stopped-lock@example.test", trigger="test")
+            self.assertEqual(["account_busy"], self._admit_account_task(waiting)["blocked_by"])
+
+            recovery.recover_participating_executions()
+            recovery.recover_participating_executions()
+
+            after, permit, interrupted_events = self._facts(ticket)
+            self.assertIsNotNone(permit["released_at"])
+            self.assertEqual(before, after, "回收许可不能改写已有终态和业务结果")
+            self.assertEqual(0, interrupted_events)
+            proof = settlements.read_disposition(ticket, domain=self.domain)
+            self.assertEqual("stopped", proof["result"]["status"])
+            self.assertFalse(proof["result"]["original_intent_committed"])
+            self.assertEqual([], self._admit_account_task(waiting)["blocked_by"])
+
+        def test_terminal_resources_keep_permit_until_exact_release_then_recover(self):
+            ticket = self._claim_dead(resource=True)
+            store.terminate_run(ticket["run_id"], reason="测试未释放资源的停止任务")
+            before = self._facts(ticket)[0]
+            recovery.recover_participating_executions()
+            proof = settlements.read_disposition(ticket, domain=self.domain)
+            self.assertIsNotNone(proof)
+            self.assertEqual("cleanup_pending", proof["result"]["resource_disposition"])
+            self.assertIsNone(self._facts(ticket)[1]["released_at"])
+            with postgres.connect(row_factory=dict_row) as conn, conn.cursor() as cur:
+                cur.execute(f"SELECT id FROM {common._table('operation_resources')} WHERE run_id=%s",
+                            (ticket["run_id"],))
+                resource_id = cur.fetchone()["id"]
+            store.release_resource(resource_id)
+
+            recovery.recover_participating_executions()
+
+            self.assertIsNotNone(self._facts(ticket)[1]["released_at"])
+            self.assertEqual(before, self._facts(ticket)[0])
+            self.assertEqual(proof, settlements.read_disposition(ticket, domain=self.domain))
+
+        def test_terminal_recovery_preserves_success_failure_and_remote_unknown_results(self):
+            for status in ("success", "failed", "attention_required"):
+                with self.subTest(status=status):
+                    ticket = self._claim_dead(remote=status == "attention_required")
+                    store.finish_run(
+                        ticket["run_id"], status=status, message="测试已落库终态",
+                        result_summary={"outcome": "request_unknown"} if status == "attention_required" else {})
+                    before = self._facts(ticket)[0]
+
+                    recovery.recover_participating_executions()
+
+                    after, permit, _ = self._facts(ticket)
+                    self.assertIsNotNone(permit["released_at"])
+                    self.assertEqual(before, after)
+                    self.assertEqual(status, settlements.read_disposition(
+                        ticket, domain=self.domain)["result"]["status"])
+
+        def test_terminal_without_authoritative_event_does_not_release(self):
+            ticket = self._claim_dead()
+            with postgres.connect() as conn, conn.cursor() as cur:
+                cur.execute(f"UPDATE {common._table('operation_runs')} SET status='stopped' WHERE id=%s",
+                            (ticket["run_id"],))
+
+            recovery.recover_participating_executions()
+
+            self.assertIsNone(self._facts(ticket)[1]["released_at"])
+            self.assertIsNone(settlements.read_disposition(ticket, domain=self.domain))
+
+        def test_terminal_with_live_owner_or_replaced_execution_keeps_permit(self):
+            for changed in ("live_owner", "execution"):
+                with self.subTest(changed=changed):
+                    ticket = self._claim_dead()
+                    store.terminate_run(ticket["run_id"], reason="测试执行身份保护")
+                    if changed == "execution":
+                        with postgres.connect() as conn, conn.cursor() as cur:
+                            cur.execute(f"UPDATE {common._table('operation_runs')} SET execution_id='successor' WHERE id=%s",
+                                        (ticket["run_id"],))
+                        recovery.recover_participating_executions()
+                    else:
+                        with patch.object(permits, "owner_liveness", return_value="alive"):
+                            recovery.recover_participating_executions()
+                    self.assertIsNone(self._facts(ticket)[1]["released_at"])
+                    self.assertIsNone(settlements.read_disposition(ticket, domain=self.domain))
+
         def test_dead_no_receipt_recovers_once_with_default_stale(self):
             ticket = self._claim_dead()
             recovery.recover_participating_executions()

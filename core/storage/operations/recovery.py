@@ -82,6 +82,33 @@ def _exact_receipt(cur, ticket):
     return cur.fetchone()
 
 
+def _recover_terminal_permit(cur, *, run, ticket, leases):
+    """原进程退出后补齐终态回收证明，保留既有业务结果和终止事件。"""
+    from core.storage.operations import settlements
+
+    cur.execute(f"""SELECT id,event_uuid FROM {_common._table('operation_events')}
+        WHERE run_id=%s AND task_id=%s AND event_type=%s AND event_uuid <> ''
+        ORDER BY id DESC LIMIT 1""",
+        (int(run["id"]), int(run["task_id"]), f"run.{run['status']}"))
+    event = cur.fetchone()
+    if not event:
+        return 0, False
+    resources = settlements._resource_snapshot(cur, int(run["id"]))
+    for lease in leases:
+        cur.execute(f"""DELETE FROM {_common._table('account_operation_leases')}
+            WHERE run_id=%s AND lease_token=%s AND expires_at <= now()""",
+            (int(run["id"]), str(lease["lease_token"])))
+    settlements.write_disposition(cur, ticket=ticket, result={
+        "status": str(run["status"]),
+        "event_uuid": str(event["event_uuid"]), "event_id": int(event["id"]),
+        "original_intent_committed": False, "recovery_reason": "worker_exit_confirmed",
+        "terminal_result_preserved": True,
+        "resource_disposition": _recovery_resource_disposition(resources),
+        "resources": resources,
+    })
+    return 1, True
+
+
 def _recover_participating_one(row, *, domain, stale_seconds):
     """One exact transaction; callers release only after this connection commits."""
     from core.storage.operations import permits, settlements
@@ -124,9 +151,11 @@ def _recover_participating_one(row, *, domain, stale_seconds):
             if (not task or not run or int(run["task_id"]) != int(ticket["task_id"])
                     or str(run.get("run_uuid")) != str(ticket["run_uuid"])
                     or str(run.get("execution_id") or "") != str(ticket["execution_id"])
-                    or str(run.get("status")) not in {"running", "cancelling", "settling"}
-                    or run.get("source_system") in {"registration_jobs", "account_action_tasks"}
-                    or not run.get("heartbeat_stale")):
+                    or run.get("source_system") in {"registration_jobs", "account_action_tasks"}):
+                return 0, False
+            terminal = str(run.get("status")) in _common._TERMINAL_STATUSES
+            if not terminal and (str(run.get("status")) not in {"running", "cancelling", "settling"}
+                                 or not run.get("heartbeat_stale")):
                 return 0, False
             cur.execute(f"""SELECT lease_token,expires_at > now() AS valid
                 FROM {_common._table('account_operation_leases')} WHERE run_id=%s FOR UPDATE""",
@@ -136,6 +165,8 @@ def _recover_participating_one(row, *, domain, stale_seconds):
                 return 0, False
             if _exact_receipt(cur, ticket) or settlements.read_disposition(ticket, domain=domain, conn=conn):
                 return 0, True
+            if terminal:
+                return _recover_terminal_permit(cur, run=run, ticket=ticket, leases=leases)
             result = _recovery_result(run)
             status, summary = result["status"], result["result_summary"]
             category, code, message = _common._error_fields(
