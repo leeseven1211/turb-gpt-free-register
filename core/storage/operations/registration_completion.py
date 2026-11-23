@@ -85,6 +85,38 @@ def enqueue(*, registration_run_id: int, account: dict, settings: dict, remainin
         return {**handoff, "accepted": True, "reused": bool(queued.get("reused"))}
 
 
+def reconcile_parent_registration_job(cur, job_id: int, *, account_id: int | None = None) -> bool:
+    """账号配置子任务成功的同一事务内，把父注册任务直接收口为成功。
+
+    不再依赖周期对账：子任务结算时父任务仍停在 partial/failed，且账号实际
+    已完整（AT、密码、2FA、套餐），就在这里同步改写，避免状态长期不一致。
+    """
+    from datetime import datetime, timezone
+
+    from core.accounts.completion import completion_plan
+
+    job = records.get_row(records.JOBS, int(job_id), conn=cur, for_update=True)
+    if not job:
+        return False
+    if str(job.get("status") or "") not in {"partial_success", "failed"}:
+        return False
+    resolved_account_id = int(account_id or job.get("account_id") or 0)
+    if resolved_account_id <= 0:
+        return False
+    account = records.get_row(records.ACCOUNTS, resolved_account_id, conn=cur)
+    if not account or not str(account.get("access_token") or "").strip():
+        return False
+    if completion_plan(account)["missing_steps"]:
+        return False
+    records.patch_row(
+        records.JOBS, int(job_id),
+        {"status": "success", "error_message": "",
+         "completed_at": datetime.now(timezone.utc).isoformat(timespec="seconds")},
+        conn=cur,
+    )
+    return True
+
+
 def reconcile(cur, parent_run_id: int, *, enqueue_projection: bool = True) -> dict | None:
     """只更新关联代次的投影，不改写原注册认证事实，也不覆盖新的续跑。"""
     from core.storage.operations import common, store

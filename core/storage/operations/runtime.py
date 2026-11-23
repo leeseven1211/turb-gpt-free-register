@@ -2947,6 +2947,14 @@ def finish_run(
             from core.storage.operations import registration_completion
 
             registration_completion.reconcile_for_child(cur, int(found["task_id"]))
+        if (str(result.get("status") or status_value) == "success"
+                and str(found.get("source_system") or "") == "registration_jobs"):
+            # 2FA/套餐补跑完成后，同一事务内直接回写父注册任务，不依赖周期对账。
+            from core.storage.operations import registration_completion
+
+            registration_completion.reconcile_parent_registration_job(
+                cur, int(found.get("source_id") or 0), account_id=found.get("account_id"),
+            )
     if _settlement_conn is not None:
         return result
     task_run_log.append(
