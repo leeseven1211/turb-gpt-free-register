@@ -10,8 +10,10 @@
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
+import queue
 import re
 import sqlite3
 import subprocess
@@ -222,13 +224,209 @@ def _read_account(db_path: Path, email: str) -> BridgeAccount | None:
     return matched[-1] if matched else None
 
 
+def protocol_enabled() -> bool:
+    """协议模式开关；未开启时完全走原有 CLI 路径。"""
+    return os.getenv("SENTINEL_PROTOCOL", "").strip() == "1"
+
+
+def _protocol_send(stream, message: dict) -> None:
+    stream.write(json.dumps(message, ensure_ascii=False, separators=(",", ":")) + "\n")
+    stream.flush()
+
+
+def run_registration_protocol(
+    request: BridgeRequest,
+    *,
+    on_progress: Callable[[str, str, str | None], None] | None = None,
+    check_cancel: Callable[[], None] | None = None,
+    hooks: dict | None = None,
+) -> BridgeAccount:
+    """协议模式：JSON Lines 双向通信，密码落库后才允许内核发 user/register。"""
+    hooks = hooks or {}
+    email_pool = _write_email_pool(request)
+    db_path = request.workdir / "accounts.db"
+    command = [
+        str(request.binary), "register", "--live", "--count", "1",
+        "--db", str(db_path), "--proxy", request.proxy,
+    ]
+    env = {
+        **os.environ,
+        "REG_MAIL_EMAIL_FILE": str(email_pool),
+        "REG_MAIL_ALLOW_INSECURE": "1",
+        "SENTINEL_DB_PATH": str(db_path),
+        "SENTINEL_LOG": request.log_level,
+        "SENTINEL_ENABLE_2FA": "0",
+        "SENTINEL_FP_GEO_PROBE": "1",
+        "SENTINEL_PROTOCOL": "1",
+        "OTP_MAX_WAIT": str(min(request.timeout_seconds, 300)),
+    }
+    logger.info("sentinel-rs 协议模式启动：binary=%s timeout=%ss", request.binary.name, request.timeout_seconds)
+    try:
+        process = subprocess.Popen(
+            command, cwd=str(request.workdir), env=env,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1, start_new_session=True,
+        )
+    except OSError as exc:
+        raise SentinelRsUnavailable(f"sentinel-rs 无法启动: {type(exc).__name__}") from exc
+    assert process.stdin is not None and process.stdout is not None
+
+    incoming: "queue.Queue[dict]" = queue.Queue()
+    raw_lines: list[str] = []
+
+    def reader() -> None:
+        assert process.stdout is not None
+        for raw in process.stdout:
+            line = raw.rstrip("\n")
+            raw_lines.append(line)
+            if len(raw_lines) > 400:
+                del raw_lines[:100]
+            text = line.strip()
+            if text.startswith("{"):
+                try:
+                    incoming.put(json.loads(text))
+                    continue
+                except ValueError:
+                    pass
+            # 非协议输出按 CLI 阶段日志处理，保持进度可见。
+            for marker_text, stage, detail in _STAGES:
+                if marker_text in line and on_progress is not None:
+                    try:
+                        on_progress(stage, "running", detail)
+                    except Exception:
+                        logger.exception("sentinel-rs 协议进度上报失败")
+                    break
+
+    reader_thread = threading.Thread(target=reader, name="sentinel-rs-protocol", daemon=True)
+    reader_thread.start()
+
+    deadline = time.monotonic() + request.timeout_seconds
+    started = False
+    landing_verdict = ""
+    cancelled = False
+    try:
+        while True:
+            if check_cancel is not None:
+                try:
+                    check_cancel()
+                except BaseException:
+                    cancelled = True
+                    raise
+            if time.monotonic() >= deadline:
+                logger.error("sentinel-rs 协议超时：diagnostics=%s", _tail_diagnostics(raw_lines))
+                raise SentinelRsFailed(
+                    "sentinel-rs 注册超时", exit_code=None, diagnostics=_tail_diagnostics(raw_lines),
+                )
+            try:
+                message = incoming.get(timeout=0.25)
+            except queue.Empty:
+                if process.poll() is not None:
+                    break
+                continue
+            kind = str(message.get("type") or "")
+            data = message.get("data") if isinstance(message.get("data"), dict) else {}
+            if kind == "ready":
+                _protocol_send(process.stdin, {
+                    "v": 1, "seq": 1, "type": "start",
+                    "data": {"email": request.email, "proxy_requested": True},
+                })
+                started = True
+            elif kind == "progress":
+                stage = str(data.get("stage") or "")
+                if stage and on_progress is not None:
+                    try:
+                        on_progress(stage, str(data.get("state") or "running"), data.get("detail"))
+                    except Exception:
+                        logger.exception("sentinel-rs 协议进度上报失败")
+            elif kind == "landing":
+                landing_verdict = str(data.get("verdict") or "")
+                logger.info("sentinel-rs 授权落地判定：%s", landing_verdict or "unknown")
+            elif kind == "checkpoint_prepare":
+                challenge = str(data.get("challenge_id") or "")
+                persisted = False
+                attempt_id = None
+                persist = hooks.get("persist_password")
+                if callable(persist):
+                    try:
+                        saved = persist(str(data.get("email") or ""), str(data.get("password") or ""))
+                        persisted = bool(saved and saved.get("persisted") is True)
+                        attempt_id = (saved or {}).get("attempt_id")
+                    except Exception:
+                        logger.exception("sentinel-rs 密码落库失败")
+                _protocol_send(process.stdin, {
+                    "v": 1, "seq": 2, "type": "checkpoint_ack",
+                    "data": {"challenge_id": challenge, "persisted": persisted, "attempt_id": attempt_id},
+                })
+            elif kind == "submission":
+                endpoint = str(data.get("endpoint") or "")
+                if endpoint == "user/register" and str(data.get("receipt") or "") == "confirmed":
+                    confirm = hooks.get("confirm_password")
+                    if callable(confirm):
+                        try:
+                            confirm()
+                        except Exception:
+                            logger.exception("sentinel-rs 密码确认升级失败")
+            else:
+                logger.debug("sentinel-rs 协议消息未处理：%s", kind)
+    finally:
+        if process.poll() is None:
+            try:
+                os.killpg(os.getpgid(process.pid), 15)
+            except (ProcessLookupError, PermissionError):
+                pass
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(os.getpgid(process.pid), 9)
+                except (ProcessLookupError, PermissionError):
+                    pass
+                process.wait(timeout=5)
+        reader_thread.join(timeout=3)
+        try:
+            process.stdin.close()
+        except Exception:
+            pass
+
+    exit_code = process.returncode
+    diagnostics = _tail_diagnostics(raw_lines)
+    if cancelled:
+        logger.warning("sentinel-rs 协议取消：exit=%s diagnostics=%s", exit_code, diagnostics)
+        raise SentinelRsFailed("sentinel-rs 注册已取消", exit_code=exit_code, diagnostics=diagnostics)
+    if exit_code != 0:
+        logger.error("sentinel-rs 协议失败：exit=%s diagnostics=%s", exit_code, diagnostics)
+        raise SentinelRsFailed(f"sentinel-rs 退出码 {exit_code}", exit_code=exit_code, diagnostics=diagnostics)
+    if not started:
+        raise SentinelRsResultInvalid("sentinel-rs 未完成协议握手")
+    account = _read_account(db_path, request.email)
+    logger.info(
+        "sentinel-rs 协议完成：exit=0 account=%s landing=%s",
+        account.email if account else "missing", landing_verdict or "unknown",
+    )
+    if account is None:
+        raise SentinelRsResultInvalid("sentinel-rs 未写回账号记录")
+    if account.email.strip().lower() != request.email.strip().lower():
+        raise SentinelRsResultInvalid("sentinel-rs 返回的邮箱与本次任务不一致")
+    if account.status != "registered":
+        raise SentinelRsResultInvalid(f"sentinel-rs 账号状态为 {account.status or '空'}")
+    if not account.access_token:
+        raise SentinelRsResultInvalid("sentinel-rs 账号缺少 Access Token")
+    return account
+
+
 def run_registration(
     request: BridgeRequest,
     *,
     on_progress: Callable[[str, str, str | None], None] | None = None,
     check_cancel: Callable[[], None] | None = None,
+    protocol_hooks: dict | None = None,
 ) -> BridgeAccount:
     """运行一次真实注册并返回已落库账号；任何成功判断都必须有 AT 和身份证据。"""
+    if protocol_enabled():
+        return run_registration_protocol(
+            request, on_progress=on_progress, check_cancel=check_cancel,
+            hooks=protocol_hooks or {},
+        )
     email_pool = _write_email_pool(request)
     db_path = request.workdir / "accounts.db"
     command = [
@@ -346,6 +544,7 @@ def run_registration(
 
 __all__ = [
     "BridgeAccount", "BridgeRequest", "SentinelRsFailed", "SentinelRsResultInvalid",
-    "SentinelRsUnavailable", "binary_status", "read_accounts", "resolve_binary", "run_registration",
+    "SentinelRsUnavailable", "binary_status", "protocol_enabled", "read_accounts",
+    "resolve_binary", "run_registration", "run_registration_protocol",
     "timeout_seconds", "log_level",
 ]

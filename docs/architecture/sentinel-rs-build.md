@@ -1,7 +1,8 @@
 # sentinel-rs 原生构建与验证
 
-`rust / sentinel_rs / registration` 使用独立原生进程。仓库不复制上游源码；
-构建前请自行确认 `wangshen233/sentinel-rs` 的许可与使用范围，再按下述步骤在本机获取源码。
+`rust / sentinel_rs / registration` 使用独立原生进程。源码已内置在
+`native/sentinel-rs/`（上游 `f222371c` + 本地协议补丁，作者已授权使用，见
+`native/sentinel-rs/FORK.md`）。构建直接用仓库内源码，不再单独 clone。
 
 ## 已验收基线
 
@@ -15,8 +16,7 @@
 ```bash
 sudo apt-get install -y cmake nasm clang libclang-dev pkg-config build-essential
 curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
-git clone https://github.com/wangshen233/sentinel-rs /home/ubuntu/src/sentinel-rs
-cd /home/ubuntu/src/sentinel-rs
+cd /srv/apps/turb-gpt-free-register/native/sentinel-rs
 cargo build --release --bin sentinel-rs
 sudo install -m 0755 target/release/sentinel-rs /usr/local/bin/sentinel-rs
 ```
@@ -27,7 +27,7 @@ macOS / Linux 不要复用 Windows 产物，必须按目标系统和 CPU 架构�
 ## 二进制查找顺序
 
 1. 运行配置 `SENTINEL_RS_BIN`（数据库运行配置，可在配置页修改）；
-2. `<repo>/native/sentinel-rs/target/release/sentinel-rs`（本地构建，`.gitignore` 已排除）；
+2. `<repo>/native/sentinel-rs/target/release/sentinel-rs`（本地构建，`.gitignore` 已排除构建产物）；
 3. `/srv/apps/sentinel-rs/target/release/sentinel-rs`；
 4. `/usr/local/bin/sentinel-rs`；
 5. `PATH` 中的 `sentinel-rs`。
