@@ -714,6 +714,7 @@ _DISPLAY_CODES = {
     "internal.request_prepare": "SYS-REQ-001",
     "sentinel_rs_binary_unavailable": "SYS-KERNEL-001",
     "sentinel_rs_remote_account_exists": "SYS-KERNEL-005",
+    "sentinel_rs_twofa_failed": "SYS-KERNEL-006",
     "sentinel_rs_result_invalid": "SYS-KERNEL-002",
     "sentinel_rs_otp_timeout": "SYS-KERNEL-003",
     "sentinel_rs_registration_failed": "SYS-KERNEL-004",
@@ -768,6 +769,7 @@ _DISPLAY_SUMMARIES = {
     "internal.request_prepare": "请求在本地准备阶段失败",
     "sentinel_rs_binary_unavailable": "Rust 内核不可用",
     "sentinel_rs_remote_account_exists": "远端已存在该邮箱账号",
+    "sentinel_rs_twofa_failed": "Rust 内核 2FA 设置失败",
     "sentinel_rs_result_invalid": "Rust 内核未返回可核验的账号结果",
     "sentinel_rs_otp_timeout": "Rust 内核等待邮箱验证码超时",
     "sentinel_rs_registration_failed": "Rust 内核注册进程失败",
@@ -1399,6 +1401,7 @@ _CAUSE_DETAILS: dict[str, tuple[str, str]] = {
     "local_config_schema_mismatch": ("SYS-CONFIG-SCHEMA", "配置 schema 不匹配，请重启后重跑"),
     "sentinel_rs_binary_unavailable": ("SYS-KERNEL-001", "Rust 内核不可用，请检查二进制与执行权限"),
     "sentinel_rs_remote_account_exists": ("SYS-KERNEL-005", "远端已存在该邮箱账号，不能重复注册"),
+    "sentinel_rs_twofa_failed": ("SYS-KERNEL-006", "Rust 内核 2FA 设置失败，账号已保留"),
     "sentinel_rs_result_invalid": ("SYS-KERNEL-002", "Rust 内核退出但未写回可核验的账号结果"),
     "sentinel_rs_otp_timeout": ("SYS-KERNEL-003", "Rust 内核在等待窗口内未收到邮箱验证码"),
     "sentinel_rs_registration_failed": ("SYS-KERNEL-004", "Rust 内核注册进程失败，详见内核诊断"),
@@ -1977,6 +1980,10 @@ def _sentinel_rs_error_cause(raw: str) -> dict[str, str] | None:
     if ("SentinelRsUnavailable" in text or "未找到 sentinel-rs 二进制" in text
             or "sentinel-rs 无法启动" in text):
         return _specific_error_cause({"cause_code": "sentinel_rs_binary_unavailable"})
+    if any(marker in text for marker in (
+            "mfa/enroll", "mfa/user/activate_enrollment", "2fa.enroll", "2fa.activate",
+            "2FA 失败", "2FA：enroll", "2FA：activate")):
+        return _specific_error_cause({"cause_code": "sentinel_rs_twofa_failed"})
     if "SentinelRsResultInvalid" in text:
         return _specific_error_cause({"cause_code": "sentinel_rs_result_invalid"})
     if ("user_already_exists" in text or "invalid_auth_step" in text

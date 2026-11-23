@@ -115,6 +115,9 @@ def _salvage_kernel_account(
         return
     setattr(exc, "password_salvaged", True)
     setattr(exc, "kernel_account_status", account.status)
+    if str(account.access_token or "").strip():
+        # 2FA 等后置步骤失败时，内核已写回 AT；这里带出去让生命周期保存账号。
+        setattr(exc, "kernel_account", account)
     logger.warning(
         "sentinel-rs 失败后已保存内核生成的密码：status=%s account_id=%s",
         account.status, account.account_id,

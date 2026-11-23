@@ -513,6 +513,34 @@ def run_protocol_oss_2_lifecycle(
         if kernel_summary and not error.startswith(kernel_summary):
             # 任务错误只保留前 500 字；把具体原因放最前面，避免被截断成“内核失败”。
             error = f"{kernel_summary}：{error}"
+        from core.accounts.password_evidence import registration_password_extra
+
+        salvaged_account = getattr(exc, "kernel_account", None)
+        if salvaged_account is not None and str(getattr(salvaged_account, "access_token", "") or "").strip():
+            # 内核在 2FA 之前已写回 AT：即使整单失败也要把账号保存下来。
+            try:
+                from core.kernels.rust.sentinel_rs import _session_info
+
+                session_info = _session_info(session, salvaged_account.access_token, email)
+                account_id = persist_registration_core(
+                    email=email,
+                    access_token=salvaged_account.access_token,
+                    chatgpt_session=session_info,
+                    email_source=selected_source,
+                    proxy_used=session.proxy or proxy,
+                    extra={
+                        "user": session_info.get("user"),
+                        "account": session_info.get("account"),
+                        "expires": session_info.get("expires"),
+                        "device_id": session.device_id,
+                        **registration_password_extra(salvaged_account.password or None, confirmed=True),
+                        "registration_checkpoint": "core_persisted",
+                        "registration_driver": _driver_name,
+                    },
+                )
+                error = f"{error}；账号已保存（AT 已写入），可单独补跑 2FA"
+            except Exception:
+                logger.exception("[Job] 保存内核已写回的账号失败")
         if getattr(exc, "password_salvaged", False) is True:
             # 内核已把密码落库却失败；保留提示，让操作人能拿这个密码继续。
             error = f"{error}；内核生成的密码已保存，可用支持续跑的内核继续"

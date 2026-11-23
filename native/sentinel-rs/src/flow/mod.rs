@@ -947,8 +947,32 @@ async fn live_register(
     //    （对齐 auth_flow.create_account() 之后的 9/10 步；尽力而为，失败不丢号）
     let handoff = complete_oauth(&http, &builder, &created.continue_url).await;
 
-    // 10) 可选 2FA：enroll → 用 TOTP 激活（现在有真 access_token 了）
+    // 10) 先落库 AT/会话：2FA 失败也不能丢掉已创建的账号
     let mut totp_secret = None;
+    let mut account = store::Account {
+        email: identity.email.clone(),
+        password: identity.password.clone(),
+        access_token: handoff.access_token.clone(),
+        totp_secret: String::new(),
+        cookies: merge_cookie_headers(&[
+            http.cookie_header_for(auth::AUTH_BASE),
+            http.cookie_header_for(auth::CHATGPT_BASE),
+        ]),
+        status: if handoff.access_token.is_empty() {
+            "registered_no_token".to_string()
+        } else {
+            "registered".to_string()
+        },
+        created_at: store::now_ts(),
+        updated_at: store::now_ts(),
+    };
+    {
+        let store_handle = store::Store::open(&cfg.db_path)?;
+        store_handle.init()?;
+        store_handle.save_account(&account)?;
+    }
+
+    // 11) 可选 2FA：enroll → 用 TOTP 激活（现在有真 access_token 了）
     if cfg.enable_2fa {
         if handoff.access_token.is_empty() {
             warn!("2FA：未拿到 access_token（oauth 交换失败），跳过 enroll/activate");
@@ -966,26 +990,14 @@ async fn live_register(
         }
     }
 
-    // 10) 落库（access_token / cookies 都来自上一步；账号在 user/register 时已写过
-    //     pending_otp，这里按 email upsert 更新成最终状态）
-    let account = store::Account {
-        email: identity.email.clone(),
-        password: identity.password.clone(),
-        access_token: handoff.access_token.clone(),
-        totp_secret: totp_secret.clone().unwrap_or_default(),
-        cookies: merge_cookie_headers(&[
-            http.cookie_header_for(auth::AUTH_BASE),
-            http.cookie_header_for(auth::CHATGPT_BASE),
-        ]),
-        status: if handoff.access_token.is_empty() {
-            "registered_no_token".to_string()
-        } else {
-            "registered".to_string()
-        },
-        created_at: store::now_ts(),
-        updated_at: store::now_ts(),
+    // 12) 2FA 成功后再更新 totp；失败时上一步落库的 AT 仍在
+    account.totp_secret = totp_secret.clone().unwrap_or_default();
+    account.updated_at = store::now_ts();
+    let account_id = {
+        let store_handle = store::Store::open(&cfg.db_path)?;
+        store_handle.init()?;
+        store_handle.save_account(&account)?
     };
-    let account_id = store.save_account(&account)?;
 
     Ok(RegistrationOutcome {
         dry_run: false,
