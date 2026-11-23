@@ -1283,6 +1283,47 @@ def recover_stale_runs(*, stale_seconds: int = 180) -> int:
     return len(items)
 
 
+def close_stuck_running_jobs(*, stale_seconds: int = 1200, limit: int = 50) -> int:
+    """收口长时间没有任何进展的 running 任务（HTTP 卡死等）。
+
+    阈值远高于正常等码窗口（300s），避免误杀；只是最后的安全网。
+    """
+    init()
+    from core.storage import db_legacy
+
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT j.id
+            FROM {_table('registration_jobs')} j
+            WHERE j.status = 'running'
+              AND COALESCE(
+                    (j.data->>'progress_updated_at')::timestamptz,
+                    (j.data->>'started_at')::timestamptz,
+                    (j.data->>'created_at')::timestamptz
+                  ) < now() - make_interval(secs => %s)
+            ORDER BY j.id
+            LIMIT %s
+            """,
+            (int(max(300, stale_seconds)), max(1, int(limit))),
+        )
+        rows = cur.fetchall()
+        try:
+            job_ids = [int(row[0]) for row in rows]
+        except (KeyError, TypeError):
+            job_ids = [int(row["id"]) for row in rows]
+    closed = 0
+    for job_id in job_ids:
+        if db_legacy.transition_job_status(
+            job_id, ("running",), "failed",
+            error="worker_stuck: 执行超过 20 分钟无进展，已终止",
+            completed_at=_now().isoformat(timespec="seconds"),
+        ):
+            db_legacy.update_job(job_id, error="worker_stuck: 执行超过 20 分钟无进展，已终止")
+            closed += 1
+    return closed
+
+
 def close_jobs_for_interrupted_runs(*, limit: int = 200) -> int:
     """把仍有 interrupted Run 但旧任务行仍 running 的记录收口为失败。
 

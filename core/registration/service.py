@@ -1970,6 +1970,7 @@ def start_dispatcher(*, interval_seconds: float = 0.5) -> bool:
                         from core.storage import registration as registration_store
 
                         registration_store.close_jobs_for_interrupted_runs()
+                        registration_store.close_stuck_running_jobs()
                         close_jobs_for_completed_account_tasks()
                     except Exception:
                         logger.exception("[Service] 收口中断任务行失败")
