@@ -448,6 +448,21 @@ def run_protocol_oss_2_lifecycle(
             "user_register_continue_url_missing",
         }:
             cause_code = password_entry_cause
+        if password_entry_cause.startswith("sentinel_rs_"):
+            # Rust 内核已给出固定形态；保留内核自身的分类，不退回通用
+            # registration_failed，否则失败诊断会丢成“原因未分类”。
+            kernel_diagnostics = str(getattr(exc, "diagnostics", "") or "")
+            cause_code = (
+                "sentinel_rs_otp_timeout"
+                if password_entry_cause == "sentinel_rs_registration_failed"
+                and ("no_code" in kernel_diagnostics or "暂未收到验证码" in kernel_diagnostics)
+                else password_entry_cause
+            )
+            if cause_code == "sentinel_rs_otp_timeout" and not registration_diagnostics:
+                registration_diagnostics = {
+                    "operation": "mailbox_wait", "failure_stage": "email_otp",
+                    "otp_received": False, "failure_kind": "no_mail",
+                }
         missing_module = str(getattr(exc, "name", "") or "")
         if isinstance(exc, ModuleNotFoundError) and len(missing_module) <= 160 and re.fullmatch(
             r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*",

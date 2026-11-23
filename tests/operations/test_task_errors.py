@@ -1867,6 +1867,47 @@ class RegistrationBrowserFailureCauseTests(unittest.TestCase):
         self.assertNotIn("unit@example.test", str(info))
         self.assertNotIn("unit-secret", str(info))
 
+    def test_sentinel_rs_kernel_failures_keep_their_own_cause(self):
+        otp_timeout = (
+            'registration_failed: 注册流程失败：SentinelRsFailed 内核诊断=N 片段：'
+            '{"code":"no_code","message":"暂未收到验证码","retryable":true,"success":false}）'
+            " | 第 98 次取码：还没有验证码"
+        )
+        cases = (
+            (otp_timeout, "sentinel_rs_otp_timeout", "SYS-KERNEL-003", "email_otp"),
+            ("registration_failed: 注册流程失败：SentinelRsResultInvalid",
+             "sentinel_rs_result_invalid", "SYS-KERNEL-002", "complete"),
+            ("注册流程失败：SentinelRsFailed 内核诊断=exit=1",
+             "sentinel_rs_registration_failed", "SYS-KERNEL-004", "complete"),
+            ("SentinelRsUnavailable: 未找到 sentinel-rs 二进制",
+             "sentinel_rs_binary_unavailable", "SYS-KERNEL-001", "complete"),
+        )
+        for message, code, display, stage in cases:
+            with self.subTest(code=code):
+                info = classify_task_error(
+                    message, stage="complete", task_type="registration", task_status="failed",
+                )
+                self.assertEqual(code, info["code"])
+                self.assertEqual(display, info["display_code"])
+                self.assertEqual(code, info["cause_code"])
+                self.assertEqual(stage, info["stage"])
+                self.assertEqual("internal", info["source"])
+                self.assertNotIn("diagnostics_missing", info["code"])
+
+    def test_sentinel_rs_result_invalid_keeps_the_saved_stage(self):
+        info = classify_task_error(
+            "registration_failed: 注册流程失败：SentinelRsResultInvalid",
+            stage="profile", task_type="registration", task_status="failed",
+        )
+        self.assertEqual("sentinel_rs_result_invalid", info["code"])
+        self.assertEqual("profile", info["stage"])
+
+    def test_sentinel_rs_otp_timeout_is_not_attributed_to_other_kernels(self):
+        info = classify_task_error(
+            '"code":"no_code" 第 98 次取码：还没有验证码', task_type="registration",
+        )
+        self.assertNotEqual("sentinel_rs_otp_timeout", (info or {}).get("code"))
+
 
 if __name__ == "__main__":
     unittest.main()
