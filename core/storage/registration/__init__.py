@@ -1254,6 +1254,35 @@ def recover_interrupted_runs(
     return recovered
 
 
+def recover_stale_runs(*, stale_seconds: int = 180) -> int:
+    """收口心跳超时的 running Run：进程被杀后不会自行写终态。"""
+    init()
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"""
+            UPDATE {_table('registration_runs')} rr
+            SET status='interrupted', completed_at=%s,
+                error_code='worker_interrupted',
+                error_message='执行进程中断，等待同一 Attempt 恢复'
+            WHERE rr.status='running'
+              AND COALESCE(rr.heartbeat_at, rr.started_at, rr.created_at) < now() - make_interval(secs => %s)
+            RETURNING rr.id, rr.attempt_id
+            """,
+            (_now(), int(max(30, stale_seconds))),
+        )
+        rows = cur.fetchall()
+        try:
+            items = [(int(row[0]), int(row[1])) for row in rows]
+        except (KeyError, TypeError, IndexError):
+            items = [(int(row["id"]), int(row["attempt_id"])) for row in rows]
+        for _run_id, attempt_id in items:
+            cur.execute(
+                f"UPDATE {_table('registration_attempts')} SET active_execution_id=NULL, updated_at=%s WHERE id=%s",
+                (_now(), attempt_id),
+            )
+    return len(items)
+
+
 def close_jobs_for_interrupted_runs(*, limit: int = 200) -> int:
     """把仍有 interrupted Run 但旧任务行仍 running 的记录收口为失败。
 
@@ -1276,13 +1305,17 @@ def close_jobs_for_interrupted_runs(*, limit: int = 200) -> int:
             """,
             (max(1, int(limit)),),
         )
-        job_ids = [int(row[0]) for row in cur.fetchall()]
+        rows = cur.fetchall()
+        try:
+            job_ids = [int(row[0]) for row in rows]
+        except (KeyError, TypeError):
+            job_ids = [int(row["job_id"]) for row in rows]
     closed = 0
     for job_id in job_ids:
         if db_legacy.transition_job_status(
             job_id, ("queued", "running"), "failed",
             error="worker_interrupted: 执行进程中断，未写入终态",
-            completed_at=_now(),
+            completed_at=_now().isoformat(timespec="seconds"),
         ):
             closed += 1
     return closed

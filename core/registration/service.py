@@ -1963,6 +1963,7 @@ def start_dispatcher(*, interval_seconds: float = 0.5) -> bool:
                     try:
                         from core.storage import registration as registration_store
 
+                        registration_store.recover_stale_runs()
                         registration_store.close_jobs_for_interrupted_runs()
                         close_jobs_for_completed_account_tasks()
                     except Exception:
