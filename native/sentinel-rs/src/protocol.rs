@@ -105,7 +105,9 @@ pub fn handshake(expected_email: &str) -> Result<()> {
         .and_then(|data| data.get("email"))
         .and_then(Value::as_str)
         .unwrap_or_default();
-    if !email.is_empty() && email.to_lowercase() != expected_email.to_lowercase() {
+    if !expected_email.is_empty() && !email.is_empty()
+        && email.to_lowercase() != expected_email.to_lowercase()
+    {
         bail!("start 邮箱与本地分配不一致");
     }
     Ok(())
