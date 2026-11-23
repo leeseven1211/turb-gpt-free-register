@@ -106,6 +106,9 @@ def _safe_protocol_registration_error(exc: BaseException, cause_code: str) -> st
             if 100 <= candidate <= 599:
                 status = candidate
     suffix = f" HTTP {status}" if status is not None else ""
+    kernel_detail = str(getattr(exc, "diagnostics", "") or "").strip()
+    if kernel_detail:
+        suffix += " 内核诊断=" + kernel_detail[-700:]
     if diagnostics:
         suffix += " 诊断=" + json.dumps(diagnostics, ensure_ascii=False, separators=(",", ":"))
     if diagnostics.get("operation") == "mailbox_wait":

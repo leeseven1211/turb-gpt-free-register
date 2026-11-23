@@ -322,7 +322,9 @@ def run_protocol_oss_2_lifecycle(
     core_persistence_started = False
     flow_result = None
     try:
-        report_job_progress("browser", "running", f"正在启动{_label}注册")
+        initial_stage = "authenticate" if _driver_name == "sentinel_rs" else "browser"
+        initial_detail = f"正在运行{_label}注册" if _driver_name == "sentinel_rs" else f"正在启动{_label}注册"
+        report_job_progress(initial_stage, "running", initial_detail)
         flow_result = _flow_runner(
             session,
             email=email,

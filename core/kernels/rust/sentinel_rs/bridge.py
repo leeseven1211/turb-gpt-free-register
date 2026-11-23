@@ -37,7 +37,7 @@ _SECRET_PATTERNS = (
 _EMAIL_PATTERN = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
 
 _STAGES = (
-    ("[1/10]", "browser", "Rust 内核预热会话"),
+    ("[1/10]", "authenticate", "Rust 内核预热会话"),
     ("[2/10]", "auth_redirect", "Rust 内核获取授权地址"),
     ("[3/10]", "auth_redirect", "Rust 内核建立认证会话"),
     ("[4/10]", "login_password", "Rust 内核创建密码"),
@@ -273,7 +273,9 @@ def run_registration(
                     cancelled = True
                     raise
             if time.monotonic() >= deadline:
-                raise SentinelRsFailed("sentinel-rs 注册超时", exit_code=None, diagnostics=_tail_diagnostics(lines))
+                diagnostics = _tail_diagnostics(lines)
+                logger.error("sentinel-rs 超时：diagnostics=%s", diagnostics)
+                raise SentinelRsFailed("sentinel-rs 注册超时", exit_code=None, diagnostics=diagnostics)
             time.sleep(0.2)
     finally:
         if process.poll() is None:
@@ -292,14 +294,17 @@ def run_registration(
         reader_thread.join(timeout=3)
 
     exit_code = process.returncode
+    diagnostics = _tail_diagnostics(lines)
     if cancelled:
-        raise SentinelRsFailed("sentinel-rs 注册已取消", exit_code=exit_code, diagnostics=_tail_diagnostics(lines))
+        logger.warning("sentinel-rs 已取消：exit=%s diagnostics=%s", exit_code, diagnostics)
+        raise SentinelRsFailed("sentinel-rs 注册已取消", exit_code=exit_code, diagnostics=diagnostics)
     if exit_code != 0:
+        logger.error("sentinel-rs 失败：exit=%s diagnostics=%s", exit_code, diagnostics)
         raise SentinelRsFailed(
-            f"sentinel-rs 退出码 {exit_code}", exit_code=exit_code, diagnostics=_tail_diagnostics(lines),
+            f"sentinel-rs 退出码 {exit_code}", exit_code=exit_code, diagnostics=diagnostics,
         )
-
     account = _read_account(db_path, request.email)
+    logger.info("sentinel-rs 完成：exit=0 account=%s", account.email if account else "missing")
     if account is None:
         raise SentinelRsResultInvalid("sentinel-rs 未写回账号记录")
     if account.email.strip().lower() != request.email.strip().lower():
