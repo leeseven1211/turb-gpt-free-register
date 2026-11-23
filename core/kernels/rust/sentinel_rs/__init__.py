@@ -92,8 +92,13 @@ def _run_sentinel_rs_flow(
     from core.kernels.rust.sentinel_rs.bridge import (
         BridgeRequest, log_level, resolve_binary, run_registration, timeout_seconds,
     )
-    from core.registration.service import report_job_progress
+    from core.registration.service import (
+        adopt_progress_thread_context,
+        report_job_progress,
+        snapshot_progress_thread_context,
+    )
 
+    progress_context = snapshot_progress_thread_context()
     if existing_password:
         raise RuntimeError("Rust 内核尚不支持原身份续跑，请使用原任务重跑入口或改用协议内核")
     if otp_code:
@@ -122,8 +127,11 @@ def _run_sentinel_rs_flow(
             workdir=workdir, timeout_seconds=timeout_seconds(), log_level=log_level(),
         )
 
-        def on_progress(stage: str, detail: str) -> None:
-            report_job_progress(stage, "running", detail)
+        def on_progress(stage: str, state: str, detail: str | None) -> None:
+            # sentinel-rs 的 stdout 由独立 reader 线程消费；进度上下文是线程本地的，
+            # 必须显式带过去，否则中间阶段不会写入任务时间线。
+            adopt_progress_thread_context(progress_context)
+            report_job_progress(stage, state, detail)
 
         def check_cancel() -> None:
             from core.registration.service import check_stop_requested

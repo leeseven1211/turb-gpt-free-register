@@ -323,6 +323,10 @@ def flow_for(task_type: Any, run: dict[str, Any] | None = None) -> list[dict[str
     data = data_value if isinstance(data_value, dict) else {}
     config_value = data.get("config_snapshot") or (run or {}).get("config_snapshot")
     config = config_value if isinstance(config_value, dict) else {}
+    registration_driver = str(config.get("registration_driver") or "").lower()
+    if task_key in {"registration", "registration_resume"} and registration_driver == "sentinel_rs":
+        # Rust 内核不启动浏览器；它的预热/认证阶段由 authenticate 承载。
+        flow = tuple(item for item in flow if item["id"] != "browser")
     password_driver = str(result_summary.get("password_driver") or config.get("password_driver") or "").lower()
     twofa_driver = str(result_summary.get("twofa_driver") or config.get("twofa_driver") or "").lower()
     if (

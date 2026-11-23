@@ -338,6 +338,7 @@ def run_protocol_oss_2_lifecycle(
         )
         access_token = str(flow_result["access_token"])
         session_info = dict(flow_result["session_info"])
+        report_job_progress("token", "running", f"{_label} 正在写入账号与登录态")
         registration_password = flow_result.get("registration_password")
         from core.accounts.password_evidence import registration_password_extra
 

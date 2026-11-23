@@ -879,6 +879,32 @@ def recover_registration_attempts(*, limit: int = 100) -> list[dict]:
     return decisions
 
 
+_PROGRESS_CONTEXT_ATTRS = (
+    "job_id", "attempt_id", "run_id", "operation_run_id", "execution_id",
+    "route_attempt_no", "progress_context", "step_instances",
+)
+
+
+def snapshot_progress_thread_context() -> dict:
+    """Capture the worker's progress context so a child reader thread can report."""
+    snapshot = {}
+    for key in _PROGRESS_CONTEXT_ATTRS:
+        value = getattr(_THREAD_CTX, key, None)
+        snapshot[key] = dict(value) if isinstance(value, dict) else value
+    return snapshot
+
+
+def adopt_progress_thread_context(snapshot: dict | None) -> None:
+    """Apply a captured worker context to the current (reader) thread."""
+    if not isinstance(snapshot, dict):
+        return
+    for key in _PROGRESS_CONTEXT_ATTRS:
+        if key not in snapshot:
+            continue
+        value = snapshot[key]
+        setattr(_THREAD_CTX, key, dict(value) if isinstance(value, dict) else value)
+
+
 def report_job_progress(stage: str, state: str = "running", detail: str | None = None) -> None:
     """注册驱动调用的轻量进度上报；CLI 场景没有 job_id 时自动忽略。"""
     job_id = getattr(_THREAD_CTX, "job_id", None)

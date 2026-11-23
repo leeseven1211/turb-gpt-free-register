@@ -207,7 +207,7 @@ def _read_account(db_path: Path, email: str) -> BridgeAccount | None:
 def run_registration(
     request: BridgeRequest,
     *,
-    on_progress: Callable[[str, str], None] | None = None,
+    on_progress: Callable[[str, str, str | None], None] | None = None,
     check_cancel: Callable[[], None] | None = None,
 ) -> BridgeAccount:
     """运行一次真实注册并返回已落库账号；任何成功判断都必须有 AT 和身份证据。"""
@@ -253,9 +253,14 @@ def run_registration(
             for marker, stage, detail in _STAGES:
                 if marker in line:
                     if stage != last_stage and on_progress is not None:
+                        if last_stage is not None:
+                            try:
+                                on_progress(last_stage, "success", None)
+                            except Exception:
+                                logger.exception("sentinel-rs 阶段完成上报失败")
                         last_stage = stage
                         try:
-                            on_progress(stage, detail)
+                            on_progress(stage, "running", detail)
                         except Exception:
                             logger.exception("sentinel-rs 进度上报失败")
                     break
@@ -303,6 +308,11 @@ def run_registration(
         raise SentinelRsFailed(
             f"sentinel-rs 退出码 {exit_code}", exit_code=exit_code, diagnostics=diagnostics,
         )
+    if last_stage is not None and on_progress is not None:
+        try:
+            on_progress(last_stage, "success", None)
+        except Exception:
+            logger.exception("sentinel-rs 收尾阶段上报失败")
     account = _read_account(db_path, request.email)
     logger.info("sentinel-rs 完成：exit=0 account=%s", account.email if account else "missing")
     if account is None:
