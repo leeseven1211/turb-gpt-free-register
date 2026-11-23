@@ -326,6 +326,27 @@ def run_registration_protocol(
             status = "timeout" if ("超时" in text or "timeout" in text.lower() or "no_mail" in text) else "malformed"
             note = text[:200]
             logger.warning("sentinel-rs 协议取码失败：status=%s detail=%s", status, note)
+            if status == "timeout":
+                # 宽限重取：真实案例里验证码常在超时后几秒到几分钟才到，再等一小段。
+                try:
+                    grace = int(hooks.get("otp_grace_seconds") or 90)
+                except (TypeError, ValueError):
+                    grace = 90
+                if grace > 0:
+                    logger.info("sentinel-rs 协议取码宽限重取：%ss", grace)
+                    try:
+                        from core.email.provider import wait_for_otp as wait_otp_again
+
+                        code = wait_otp_again(
+                            address or request.email, after_ts=after_ts, max_wait=grace,
+                            email_source=hooks.get("email_source"),
+                        )
+                        status = "ok" if str(code or "").strip() else "malformed"
+                        note = "" if status == "ok" else "宽限重取仍无验证码"
+                        logger.info("sentinel-rs 协议取码宽限结果：status=%s", status)
+                    except Exception as grace_exc:  # noqa: BLE001
+                        note = str(grace_exc)[:200]
+                        logger.warning("sentinel-rs 协议取码宽限仍失败：%s", note)
         try:
             send_protocol({
                 "v": 1, "seq": 3, "type": "otp_response",
