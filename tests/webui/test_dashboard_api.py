@@ -851,18 +851,26 @@ console.log('ok');
     def test_accounts_filter_by_matching_plan_and_discount(self):
         from core.storage.admin_repository import account_query_count, account_query_facets
 
-        def offer(plan, percentage, *, eligible=True):
-            return {"plan": plan, "discount_percentage": percentage, "eligible": eligible}
+        def offer(plan, percentage, *, eligible=True, months=None):
+            result = {"plan": plan, "discount_percentage": percentage, "eligible": eligible}
+            if months is not None:
+                result.update(duration_num_periods=months, duration_period="month")
+            return result
 
         self.seed(record_store.ACCOUNTS, [
             {"email": "go-half@example.test", "email_source": "outlook", "account_promotions": [offer("plus", 100), offer("go", 50), offer("go", 50)]},
             {"email": "plus-half@example.test", "email_source": "icloud_hide", "account_promotions": [offer("plus", 50), offer("go", 100)]},
             {"email": "go-other@example.test", "account_promotions": [offer("go", 25)]},
+            {"email": "plus-1m@example.test", "account_promotions": [offer("plus", 50, months=1)]},
+            {"email": "plus-2m@example.test", "account_promotions": [offer("plus", 50, months=2)]},
+            {"email": "plus-3m@example.test", "account_promotions": [offer("plus", 50, months=3)]},
+            {"email": "go-1m@example.test", "account_promotions": [offer("go", 50, months=1)]},
             {"email": "unknown@example.test", "account_promotions": [offer("go", None), offer("go", 50, eligible=False)]},
             {"email": "legacy@example.test", "plus_promo_kind": "discount", "plus_promo_discount_percentage": 50, "plus_discount_eligible": True},
         ])
         for value, expected in (
-            ("go_50", {"go-half"}), ("plus_50", {"plus-half", "legacy"}),
+            ("go_50", {"go-half", "go-1m"}), ("plus_50", {"plus-half", "legacy", "plus-1m", "plus-2m", "plus-3m"}),
+            ("plus_50_1m", {"plus-1m"}), ("plus_50_2m", {"plus-2m"}), ("plus_50_3m", {"plus-3m"}),
             ("go_other", {"go-other"}), ("go_100,plus_100", {"go-half", "plus-half"}),
         ):
             with self.subTest(value=value):

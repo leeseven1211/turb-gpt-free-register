@@ -234,17 +234,33 @@ def _promotion_offers_sql() -> str:
     """按同一条优惠明细的目标套餐及比例生成筛选值，兼容历史 Plus 投影。"""
     offers = "a.data->'account_promotions'"
     percentage = "offer->'discount_percentage'"
+    period = "lower(COALESCE(offer->>'duration_period', ''))"
+    periods = "COALESCE(offer->>'duration_num_periods', '')"
+    legacy_period = "lower(COALESCE(a.plus_promo_duration_period, ''))"
     return f"""CASE WHEN jsonb_typeof({offers}) = 'array' THEN ARRAY(
-        SELECT (offer->>'plan') || '_' || CASE {percentage}
-            WHEN '100'::jsonb THEN '100' WHEN '50'::jsonb THEN '50' ELSE 'other' END
-        FROM jsonb_array_elements({offers}) AS offer
+        SELECT code FROM jsonb_array_elements({offers}) AS offer
+        CROSS JOIN LATERAL (VALUES
+            ((offer->>'plan') || '_' || CASE {percentage}
+                WHEN '100'::jsonb THEN '100' WHEN '50'::jsonb THEN '50' ELSE 'other' END),
+            (CASE WHEN offer->>'plan' = 'plus' AND {percentage} = '50'::jsonb
+                   AND {period} IN ('month', 'months', '月')
+                   AND {periods} ~ '^[123]$'
+                  THEN 'plus_50_' || {periods} || 'm' END)
+        ) AS v(code)
         WHERE offer->>'plan' IN ('plus', 'go') AND offer->'eligible' = 'true'::jsonb
           AND jsonb_typeof({percentage}) = 'number'
           AND {percentage} > '0'::jsonb AND {percentage} <= '100'::jsonb
+          AND v.code IS NOT NULL
     ) WHEN {_ACCOUNT_PROMO_KIND} IN ('free_trial', 'discount', 'other_promo')
          AND a.plus_promo_discount_percentage > 0 AND a.plus_promo_discount_percentage <= 100
-    THEN ARRAY[CASE a.plus_promo_discount_percentage
-        WHEN 100 THEN 'plus_100' WHEN 50 THEN 'plus_50' ELSE 'plus_other' END]
+    THEN ARRAY_REMOVE(ARRAY[
+        CASE a.plus_promo_discount_percentage
+            WHEN 100 THEN 'plus_100' WHEN 50 THEN 'plus_50' ELSE 'plus_other' END,
+        CASE WHEN a.plus_promo_discount_percentage = 50
+               AND {legacy_period} IN ('month', 'months', '月')
+               AND a.plus_promo_duration_num_periods IN (1, 2, 3)
+              THEN 'plus_50_' || a.plus_promo_duration_num_periods::text || 'm' END
+    ], NULL)
     ELSE ARRAY[]::text[] END"""
 
 

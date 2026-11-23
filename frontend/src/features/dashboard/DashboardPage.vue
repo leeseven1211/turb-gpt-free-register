@@ -1,114 +1,470 @@
 <script setup lang="ts">
-import {nextTick,onBeforeUnmount,onMounted,ref,watch} from 'vue';
-import {CARD_DEFS,useDashboard} from './useDashboard';
-import {useNativeDialog} from '../../shared/useNativeDialog';
-import type {DashboardMountDependencies,DashboardRegion} from './contracts';
-const props=defineProps<{api:any;deps:DashboardMountDependencies}>();
-const owner=useDashboard(props.api,props.deps);
-const {cards,ids,prefs,customizerOpen,loading,error}=owner;
-const customizeButton=ref<HTMLButtonElement>(),customizer=ref<HTMLDialogElement>();
-useNativeDialog(customizer,()=>customizerOpen.value,()=>owner.visible.value);
-const cardLabel=(id:string)=>CARD_DEFS.find(card=>card.id===id)?.label||id;
-const dragged=ref<string|null>(null);
-function sourceValue(source:any,key:string){const value=source?.[key];return Number.isInteger(value)&&value>=0?String(value):source?.status==='error'?'读取失败':'未知';}
-function planLabel(plan:string){return ({free:'Free',free_trial_eligible:'Free · Plus 免费试用',free_half_price_eligible:'Free · Plus 半价',free_discount_eligible:'Free · Plus 其他折扣',free_promo_unknown:'Free · 优惠待复查',plus:'Plus',pro:'Pro',team:'Team',go:'Go',unknown:'未检测'} as Record<string,string>)[plan]||plan;}
-function statusLabel(status:string){return ({success:'成功',partial_success:'部分成功',failed:'失败'} as Record<string,string>)[status]||status;}
-const sourceList=(payload:any)=>payload?.sources||[];
-const leaseList=(payload:any)=>payload?.leases||[];
-const planList=(payload:any)=>payload?.plans||[];
-const rowList=(payload:any)=>payload?.rows||[];
-function closeCustomizer(){owner.closeCustomizer();}
-function backdrop(event:MouseEvent){const dialog=customizer.value;if(!dialog||event.target!==dialog)return;const box=dialog.getBoundingClientRect();if(event.clientX<box.left||event.clientX>box.right||event.clientY<box.top||event.clientY>box.bottom)closeCustomizer();}
-function closeOnEscape(event:KeyboardEvent){if(event.key!=='Escape')return;finishPointer();if(customizerOpen.value)closeCustomizer();}
-onMounted(()=>document.addEventListener('keydown',closeOnEscape));
-onBeforeUnmount(()=>document.removeEventListener('keydown',closeOnEscape));
-function action(action:any){if(!action)return;if(action[0]==='config')props.deps.onConfig?.('代理与网络');else props.deps.onNavigate?.(action[0]);}
-function regionOf(id:string):DashboardRegion{return owner.ids.value.metrics.includes(id)?'metrics':'panels';}
-function startDrag(id:string){dragged.value=id;}
-function drop(id:string){if(!dragged.value)return;owner.reorder(regionOf(id),dragged.value,id);dragged.value=null;}
-function keyMove(id:string,event:KeyboardEvent){if(!['ArrowLeft','ArrowUp','ArrowRight','ArrowDown'].includes(event.key))return;event.preventDefault();owner.move(regionOf(id),id,['ArrowLeft','ArrowUp'].includes(event.key)?'up':'down');const handle=event.currentTarget as HTMLElement;void nextTick(()=>handle.focus({preventScroll:true}));}
-let pointerCleanup:((cancelled?:boolean)=>void)|undefined;
-function finishPointer(cancelled=true){pointerCleanup?.(cancelled);}
-function startPointerDrag(id:string,event:PointerEvent){
- if(event.button!==0||pointerCleanup)return;
- const handle=event.currentTarget as HTMLElement,card=handle.closest<HTMLElement>('[data-dashboard-card]'),grid=card?.parentElement;if(!card||!grid)return;
- const region=regionOf(id),saved=[...owner.prefs.order[region]],startX=event.clientX,startY=event.clientY,rect=card.getBoundingClientRect();let ghost:HTMLElement|undefined,frame:number|undefined,lastX=startX,lastY=startY;
- handle.setPointerCapture?.(event.pointerId);
- const preview=()=>{const target=document.elementFromPoint?.(lastX,lastY)?.closest<HTMLElement>('[data-dashboard-card]');if(!target||target===card||target.parentElement!==grid)return;const box=target.getBoundingClientRect(),source=card.getBoundingClientRect();const columns=getComputedStyle(grid).gridTemplateColumns.trim().split(/\s+/).length;const vertical=columns===1||Math.abs(source.top-box.top)>8||target.dataset.overviewSize==='full';const after=vertical?lastY>=box.top+box.height/2:lastX>=box.left+box.width/2;const positions=new Map(Array.from(grid.children).map(node=>[node,node.getBoundingClientRect()]));owner.reorder(region,id,target.dataset.dashboardCard!,after);void nextTick(()=>{if(window.matchMedia?.('(prefers-reduced-motion: reduce)').matches)return;for(const [node,before] of positions){if(node===card)continue;const next=node.getBoundingClientRect(),dx=before.left-next.left,dy=before.top-next.top;if(dx||dy)(node as HTMLElement).animate?.([{transform:`translate(${dx}px,${dy}px)`},{transform:'translate(0,0)'}],{duration:180,easing:'cubic-bezier(.2,.75,.2,1)'});}});};
- const scroll=()=>{frame=undefined;if(!ghost)return;const margin=64,y=lastY,speed=y>=0&&y<margin?-Math.ceil((margin-y)/4):y<=window.innerHeight&&y>window.innerHeight-margin?Math.ceil((y-window.innerHeight+margin)/4):0;if(!speed)return;const before=document.scrollingElement?.scrollTop;window.scrollBy(0,speed);if(document.scrollingElement?.scrollTop===before)return;preview();frame=requestAnimationFrame(scroll);};
- const move=(e:PointerEvent)=>{if(e.pointerId!==event.pointerId)return;lastX=e.clientX;lastY=e.clientY;const dx=lastX-startX,dy=lastY-startY;if(!ghost&&Math.hypot(dx,dy)<5)return;if(!ghost){ghost=card.cloneNode(true) as HTMLElement;ghost.classList.add('overview-drag-ghost');ghost.setAttribute('aria-hidden','true');Object.assign(ghost.style,{left:`${rect.left}px`,top:`${rect.top}px`,width:`${rect.width}px`,height:`${rect.height}px`});document.body.append(ghost);card.classList.add('is-drag-placeholder');}ghost.style.transform=`translate3d(${dx}px,${dy}px,0)`;preview();if(!frame)frame=requestAnimationFrame(scroll);};
- const stop=(e:PointerEvent)=>{if(e.pointerId===event.pointerId)finishPointer(e.type==='pointercancel');};
- pointerCleanup=(cancelled=false)=>{pointerCleanup=undefined;window.removeEventListener('pointermove',move);window.removeEventListener('pointerup',stop);window.removeEventListener('pointercancel',stop);if(frame)cancelAnimationFrame(frame);if(handle.hasPointerCapture?.(event.pointerId))handle.releasePointerCapture(event.pointerId);ghost?.remove();card.classList.remove('is-drag-placeholder');if(cancelled)owner.mutate(p=>{p.order[region]=saved;});};
- window.addEventListener('pointermove',move);window.addEventListener('pointerup',stop);window.addEventListener('pointercancel',stop);event.preventDefault();
-}
-function startResize(id:string,event:PointerEvent){
- if(event.button!==0||pointerCleanup)return;
- const handle=event.currentTarget as HTMLElement,card=handle.closest<HTMLElement>('[data-dashboard-card]'),grid=card?.parentElement;if(!card||!grid)return;
- const style=getComputedStyle(grid),columns=Math.max(1,style.gridTemplateColumns.trim().split(/\s+/).length),gap=parseFloat(style.columnGap)||0,box=card.getBoundingClientRect(),gridBox=grid.getBoundingClientRect(),columnWidth=(gridBox.width-gap*(columns-1))/columns,region=regionOf(id),originalSize=owner.prefs.sizes[id]||'normal',originalHeight=card.style.minHeight;let size=originalSize,height=owner.prefs.heights[id],changed=false;
- handle.setPointerCapture?.(event.pointerId);card.classList.add('is-resizing');
- const move=(e:PointerEvent)=>{if(e.pointerId!==event.pointerId)return;const dx=e.clientX-event.clientX,dy=e.clientY-event.clientY;if(Math.abs(dx)>4&&columnWidth>0){const span=Math.max(1,Math.min(columns,Math.round((box.width+dx+gap)/(columnWidth+gap))));size=span<=1?'normal':span>=Math.min(columns,region==='metrics'?4:3)&&columns>=3?'full':'wide';card.dataset.overviewSize=size;changed=true;}if(Math.abs(dy)>4){height=Math.max(160,Math.min(800,Math.round(box.height+dy)));card.style.minHeight=`${height}px`;if(region==='panels')card.dataset.overviewDensity=height<220?'minimal':height<300?'compact':'normal';changed=true;}};
- const stop=(e:PointerEvent)=>{if(e.pointerId===event.pointerId)finishPointer(e.type==='pointercancel');};
- pointerCleanup=(cancelled=false)=>{pointerCleanup=undefined;window.removeEventListener('pointermove',move);window.removeEventListener('pointerup',stop);window.removeEventListener('pointercancel',stop);card.classList.remove('is-resizing');if(handle.hasPointerCapture?.(event.pointerId))handle.releasePointerCapture(event.pointerId);if(!cancelled&&changed)owner.mutate(p=>{p.sizes[id]=size;if(height!==undefined)p.heights[id]=height;});else{card.dataset.overviewSize=originalSize;card.style.minHeight=originalHeight;const previous=owner.prefs.heights[id];if(region==='panels')card.dataset.overviewDensity=!previous?'normal':previous<220?'minimal':previous<300?'compact':'normal';}};
- window.addEventListener('pointermove',move);window.addEventListener('pointerup',stop);window.addEventListener('pointercancel',stop);event.preventDefault();
-}
-watch(owner.visible,value=>{if(!value)finishPointer();});watch(owner.data,()=>finishPointer());onBeforeUnmount(()=>finishPointer());
+import {computed,onMounted,ref} from 'vue';
+import {proxyLabel,useDashboard} from './useDashboard';
+import type {DashboardDeps} from './contracts';
 
-defineExpose({load:owner.load,setVisible:owner.setVisible,openCustomizer:owner.openCustomizer,closeCustomizer:owner.closeCustomizer,resetLayout:owner.resetLayout});
+const props=defineProps<{api:any;deps:DashboardDeps}>();
+const owner=useDashboard(props.api,props.deps);
+const {data,extract,loading,error,updatedAt}=owner;
+const mounted=ref(false);
+onMounted(()=>{mounted.value=true;});
+
+const fmt=(value:any)=>new Intl.NumberFormat('zh-CN').format(Number(value||0));
+const num=(value:any)=>Number(value||0);
+const pct=(part:any,total:any)=>{const all=num(total);return all>0?Math.max(2,Math.min(100,Math.round(num(part)/all*100))):0;};
+const planLabel=(plan:string)=>({free:'Free',free_trial_eligible:'Free · 试用资格',free_half_price_eligible:'Free · 半价资格',free_discount_eligible:'Free · 折扣资格',free_promo_unknown:'Free · 优惠待查',plus:'Plus',pro:'Pro',team:'Team',go:'Go',unknown:'未检测'} as Record<string,string>)[plan]||plan;
+
+const accounts=computed<any>(()=>data.value?.accounts||{});
+const email=computed<any>(()=>data.value?.email?.supply||{});
+const emailSourcesAll=computed<any[]>(()=>Array.isArray(email.value?.sources)?email.value.sources:Array.isArray(data.value?.email?.sources)?data.value.email.sources:[]);
+const emailSources=computed<any[]>(()=>emailSourcesAll.value.filter((source:any)=>num(source.total)>0||num(source.available)>0));
+const emailIdle=computed(()=>Math.max(0,emailSourcesAll.value.length-emailSources.value.length));
+const emailAvailable=computed(()=>email.value?.status==='error'?'读取失败':num(email.value?.available));
+const emailNumber=computed(()=>email.value?.status==='error'?'—':fmt(emailAvailable.value));
+const emailTotal=computed(()=>num(email.value?.total));
+const emailUsed=computed(()=>num(email.value?.used));
+const emailBroken=computed(()=>num(email.value?.failed)+num(email.value?.disabled));
+const emailTone=computed(()=>{
+  if(email.value?.status==='error')return 'danger';
+  if(emailTotal.value>0&&num(email.value?.available)===0)return 'warn';
+  if(num(email.value?.available)>0)return 'ok';
+  return 'idle';
+});
+const emailChip=computed(()=>email.value?.status==='error'?'读取失败':emailTotal.value===0?'未配置':num(email.value?.available)===0?'库存耗尽':'库存正常');
+
+const codex=computed<any>(()=>data.value?.codex||{});
+const codexTone=computed(()=>num(codex.value.pending)>0?'warn':num(codex.value.total)>0?'ok':'idle');
+
+const plans=computed(()=>Object.entries(accounts.value?.plans||{}).map(([key,value])=>({key,label:planLabel(key),count:num(value)})).sort((a,b)=>b.count-a.count));
+const planMax=computed(()=>Math.max(1,...plans.value.map(plan=>plan.count)));
+const planTotal=computed(()=>plans.value.reduce((total,plan)=>total+plan.count,0));
+
+const jobs=computed<any>(()=>data.value?.jobs||{});
+const jobCounts=computed<any>(()=>({...jobs.value?.counts||{}}));
+const todayCounts=computed<any>(()=>({...jobs.value?.today_counts||{}}));
+const activeJobs=computed(()=>num(jobCounts.value.pending)+num(jobCounts.value.running)+num(jobCounts.value.stopping));
+const todayTotal=computed(()=>num(todayCounts.value.success)+num(todayCounts.value.partial_success)+num(todayCounts.value.failed));
+const cumulative=computed(()=>[
+  {key:'success',label:'成功',value:num(jobCounts.value.success),color:'#1f9d75'},
+  {key:'partial_success',label:'部分成功',value:num(jobCounts.value.partial_success),color:'#d99a2b'},
+  {key:'failed',label:'失败',value:num(jobCounts.value.failed),color:'#d9534f'},
+  {key:'cancelled',label:'停止/取消',value:num(jobCounts.value.stopped)+num(jobCounts.value.cancelled),color:'#98a2b3'},
+].filter(item=>item.value>0));
+const jobTone=computed(()=>activeJobs.value>0?'active':num(todayCounts.value.failed)>0?'warn':'idle');
+
+const proxy=computed<any>(()=>data.value?.proxy||{});
+const leases=computed<any[]>(()=>Array.isArray(proxy.value.leases)?proxy.value.leases.slice(0,3):[]);
+const proxyTone=computed(()=>num(proxy.value.active_leases)>0?'ok':'idle');
+
+const extractData=computed<any>(()=>extract.value||{});
+const extractTone=computed(()=>num(extractData.value.needs_review)>0?'warn':num(extractData.value.processing)>0?'active':'idle');
+const extractEmpty=computed(()=>num(extractData.value.all)===0&&num(extractData.value.today_extracted)===0&&num(extractData.value.processing)===0&&num(extractData.value.needs_review)===0&&num(extractData.value.awaiting_payment)===0);
+
+const pulse=computed(()=>[
+  {id:'email',label:'邮箱',value:emailNumber.value,hint:num(email.value?.available)===0?'库存耗尽':`邮箱总量 ${fmt(emailTotal.value)}`,tone:emailTone.value,tab:'outlook'},
+  {id:'accounts',label:'账号',value:fmt(accounts.value.active),hint:`归档 ${fmt(accounts.value.archived)}`,tone:'ok',tab:'accounts'},
+  {id:'codex',label:'Codex',value:fmt(codex.value.total),hint:`待导出 ${fmt(codex.value.pending)}`,tone:codexTone.value,tab:'codex'},
+  {id:'plans',label:'套餐',value:fmt(plans.value.length),hint:`${fmt(planTotal.value)} 个已归类`,tone:'ok',tab:'accounts'},
+  {id:'extract',label:'提炼',value:fmt(extractData.value.today_extracted),hint:num(extractData.value.needs_review)>0?`待核对 ${fmt(extractData.value.needs_review)}`:'今日已提炼',tone:extractTone.value,tab:'extract-workbench'},
+  {id:'proxy',label:'代理',value:fmt(proxy.value.active_leases),hint:proxyLabel(proxy.value.platform),tone:proxyTone.value,tab:'proxy-traffic'},
+  {id:'jobs',label:'任务',value:fmt(activeJobs.value),hint:`累计 ${fmt(jobs.value.total)}`,tone:jobTone.value,tab:'tasks'},
+]);
+
+const alerts=computed(()=>{
+  const list:Array<{tone:string;text:string;tab:string;label:string}>=[];
+  if(email.value?.status==='error')list.push({tone:'danger',text:'邮箱池统计读取失败，暂时无法判断可用库存。',tab:'outlook',label:'检查邮箱池'});
+  else if(emailTotal.value>0&&num(email.value?.available)===0)list.push({tone:'warning',text:`邮箱池已用完（已用 ${fmt(emailUsed.value)} / 邮箱总量 ${fmt(emailTotal.value)}），新的注册任务取不到邮箱。`,tab:'outlook',label:'添加邮箱库存'});
+  if(num(extractData.value.needs_review)>0)list.push({tone:'warning',text:`提炼工作台有 ${fmt(extractData.value.needs_review)} 个任务待核对。`,tab:'extract-workbench',label:'去核对'});
+  return list.slice(0,2);
+});
+
+const updatedLabel=computed(()=>{
+  if(!updatedAt.value)return loading.value?'正在读取…':'尚未读取';
+  return `数据更新 ${new Date(updatedAt.value).toLocaleTimeString('zh-CN',{hour12:false})}`;
+});
+const go=(tab:string)=>props.deps.onNavigate?.(tab);
+
+defineExpose({
+  load:owner.load,
+  setVisible:owner.setVisible,
+  // 旧版入口保留为空操作，避免已缓存的页面脚本调用时报错。
+  openCustomizer:()=>{},
+  closeCustomizer:()=>{},
+  resetLayout:()=>{},
+});
 </script>
+
 <template>
- <div class="dashboard-vue-root" data-dashboard-vue>
-  <section class="overview-hero" aria-label="平台状态总览">
-   <div><div class="data-panel-kicker">Operations overview</div><h2>整个平台，一屏看清</h2><p>拖动卡片标题旁的把手调整位置，拖动右下角调整大小；显示内容可按需设置。</p></div>
-   <div class="overview-hero-actions"><button ref="customizeButton" type="button" class="overview-customize-trigger" data-dashboard-open-customizer :aria-expanded="customizerOpen" @click="owner.openCustomizer">自定义总览</button><button type="button" class="overview-refresh" :disabled="loading" @click="owner.load">刷新数据</button></div>
-  </section>
-  <div v-if="error" class="list-result list-result--danger" role="alert"><strong>总览加载失败</strong><span>{{error}}</span><button type="button" @click="owner.load">重试</button></div>
-  <dialog ref="customizer" class="overview-customizer" role="dialog" aria-modal="true" aria-labelledby="dashboard-customizer-title" :aria-hidden="!customizerOpen" @cancel.prevent="closeCustomizer" @click="backdrop">
-   <div class="overview-customizer-head"><div><div class="data-panel-kicker">Customize overview</div><h3 id="dashboard-customizer-title">显示与排序</h3><p>拖动卡片排序，也可以用上移/下移调整。未启用或未配置的功能不会出现在这里。</p></div><button type="button" class="overview-customizer-close" data-dashboard-close-customizer @click="closeCustomizer">关闭</button></div>
-   <div class="overview-customizer-list">
-    <section v-for="region in ['metrics','panels'] as DashboardRegion[]" :key="region" class="overview-customizer-group">
-     <div class="overview-customizer-group-head"><strong>{{region==='metrics'?'指标卡片':'详细卡片'}}</strong><small>{{(ids[region]||[]).length}} 张可用卡片</small></div>
-     <div class="overview-customizer-items">
-      <div v-for="id in (prefs.order[region]||[])" :key="id" class="overview-customizer-item" draggable="true" :data-dashboard-custom-card="id" @dragstart="startDrag(id)" @dragover.prevent @drop="drop(id)">
-       <span class="overview-drag-handle" aria-hidden="true">拖动</span><label><input type="checkbox" :checked="!prefs.hidden.includes(id)" @change="owner.toggle(id,($event.target as HTMLInputElement).checked)"><span>{{cardLabel(id)}}</span></label>
-       <div class="overview-customizer-move" role="group" :aria-label="`调整 ${id} 顺序`"><button type="button" @click="owner.move(region,id,'up')">上移</button><button type="button" @click="owner.move(region,id,'down')">下移</button></div>
-      </div>
-     </div>
-    </section>
+ <div class="ov-page" :class="{'is-mounted':mounted}">
+  <div class="ov-section-head">
+   <div class="ov-section-title">
+    <h2>服务脉搏</h2>
+    <p>邮箱 · 账号 · Codex · 套餐 · 提炼 · 代理 · 任务</p>
    </div>
-   <div class="overview-customizer-foot"><button type="button" class="overview-reset-layout" data-dashboard-reset-layout @click="owner.resetLayout">恢复默认布局</button></div>
-  </dialog>
-  <div class="overview-metrics">
-   <template v-for="item in cards.filter(item=>item.card.region==='metrics')" :key="item.card.id">
-    <article class="overview-metric" :data-dashboard-card="item.card.id" :data-overview-card="item.card.id" :data-overview-size="item.size" :style="{'--metric-color':item.payload.color,minHeight:item.height?`${item.height}px`:undefined}" @dragstart.prevent @dragover.prevent @drop="drop(item.card.id)">
-     <div class="overview-metric-top"><span>{{item.card.label}}</span><div class="overview-card-tools"><i class="overview-metric-dot" aria-hidden="true"></i><span class="overview-card-drag" role="button" tabindex="0" :aria-label="`拖动${item.card.label}卡片排序，或使用方向键调整顺序`" @keydown="keyMove(item.card.id,$event)" @pointerdown="startPointerDrag(item.card.id,$event)"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="5" cy="3" r="1"/><circle cx="11" cy="3" r="1"/><circle cx="5" cy="8" r="1"/><circle cx="11" cy="8" r="1"/><circle cx="5" cy="13" r="1"/><circle cx="11" cy="13" r="1"/></svg></span></div></div>
-     <strong>{{item.payload.value}}</strong><small>{{item.payload.hint}}</small><button type="button" class="overview-resize-handle" data-overview-resize :aria-label="`拖动调整${item.card.label}卡片宽高；方向键可调整`" @pointerdown="startResize(item.card.id,$event)" @keydown.left.prevent="owner.resize(item.card.id,'width',-1)" @keydown.right.prevent="owner.resize(item.card.id,'width',1)" @keydown.up.prevent="owner.resize(item.card.id,'height',-40)" @keydown.down.prevent="owner.resize(item.card.id,'height',40)"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 14l8-8M10 14l4-4"/></svg></button>
+   <div class="ov-section-actions">
+    <span class="ov-updated"><i aria-hidden="true"></i>{{updatedLabel}}</span>
+    <button type="button" class="ov-refresh" :disabled="loading" @click="owner.load">
+     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 6.7"/><path d="M20 4v7h-7"/></svg>
+     {{loading?'刷新中':'刷新'}}
+    </button>
+   </div>
+  </div>
+
+  <div v-if="error" class="ov-error" role="alert">
+   <div><strong>总览加载失败</strong><span>{{error}}</span></div>
+   <button type="button" @click="owner.load">重试</button>
+  </div>
+
+  <section v-if="alerts.length" class="ov-alerts" aria-label="需要关注">
+   <article v-for="item in alerts" :key="item.text" class="ov-alert" :class="`is-${item.tone}`">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>
+    <p>{{item.text}}</p>
+    <button type="button" @click="go(item.tab)">{{item.label}}</button>
+   </article>
+  </section>
+
+  <section v-if="!data && loading" class="ov-skeleton" aria-label="正在读取总览">
+   <div class="ov-skeleton-pulse"></div>
+   <div class="ov-skeleton-grid"><i></i><i></i><i></i><i></i></div>
+  </section>
+
+  <template v-if="data">
+   <nav class="ov-pulse" aria-label="服务脉搏">
+    <button v-for="item in pulse" :key="item.id" type="button" class="ov-pulse-item" :class="[`is-${item.tone}`,{'is-zero':item.value==='0'}]" :title="`${item.label} · ${item.hint}`" @click="go(item.tab)">
+     <span class="ov-pulse-top"><i aria-hidden="true"></i>{{item.label}}</span>
+     <strong>{{item.value}}</strong>
+    </button>
+   </nav>
+
+   <div class="ov-grid">
+    <article class="ov-card ov-card--email" data-overview-card="email" style="--accent:#1f9d75;--accent-soft:#e7f6f0">
+     <header class="ov-card-head">
+      <div class="ov-card-title">
+       <span class="ov-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></svg></span>
+       <div><h3>邮箱池</h3><p>本地库存与来源</p></div>
+      </div>
+      <button type="button" class="ov-link" data-overview-action="email" @click="go('outlook')">管理<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg></button>
+     </header>
+     <div class="ov-figure">
+      <strong :class="{'is-danger':emailTone==='warn'}">{{emailNumber}}</strong><span>可用</span>
+      <em v-if="emailTone!=='ok'" class="ov-chip" :class="`is-${emailTone}`">{{emailChip}}</em>
+     </div>
+     <div class="ov-mini-grid ov-mini-grid--3">
+      <div><span>邮箱总量</span><strong>{{fmt(emailTotal)}}</strong></div>
+      <div><span>已使用</span><strong>{{fmt(emailUsed)}}</strong></div>
+      <div><span>停用 / 失败</span><strong>{{fmt(emailBroken)}}</strong></div>
+     </div>
+     <ul v-if="emailSources.length" class="ov-bars">
+      <li v-for="source in emailSources" :key="source.source">
+       <div class="ov-bar-label"><span>{{source.label}}</span><small>{{num(source.available)===0?'已用尽':`可用 ${fmt(source.available)}`}} / {{fmt(source.total)}}</small></div>
+       <div class="ov-bar" :class="{'is-spent':num(source.available)===0&&num(source.total)>0}"><i :style="{width:pct(source.available,source.total)+'%'}"></i></div>
+      </li>
+     </ul>
+     <p v-else class="ov-empty">还没有可统计的邮箱库存。</p>
+     <p v-if="emailIdle" class="ov-foot">另有 {{emailIdle}} 个来源未启用 · 仅统计本地库存</p>
+     <p v-else class="ov-foot">仅统计本地库存，用完后需手动导入</p>
     </article>
-   </template>
-  </div>
-  <div class="overview-grid">
-   <template v-for="item in cards.filter(item=>item.card.region==='panels')" :key="item.card.id">
-    <section class="overview-panel" :data-dashboard-card="item.card.id" :data-overview-card="item.card.id" :data-overview-size="item.size" :data-overview-density="item.density" :style="item.height?{minHeight:`${item.height}px`}:undefined" @dragstart.prevent @dragover.prevent @drop="drop(item.card.id)">
-     <div class="overview-panel-head"><div><span>{{item.card.label.split(' · ')[0]}}</span><h3>{{item.card.label.split(' · ').slice(1).join(' · ')}}</h3></div><div class="overview-card-tools"><button v-if="item.payload.action" type="button" @click="action(item.payload.action)">{{item.payload.action[1]}}</button><span class="overview-card-drag" role="button" tabindex="0" :aria-label="`拖动${item.card.label}卡片排序，或使用方向键调整顺序`" @keydown="keyMove(item.card.id,$event)" @pointerdown="startPointerDrag(item.card.id,$event)"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="5" cy="3" r="1"/><circle cx="11" cy="3" r="1"/><circle cx="5" cy="8" r="1"/><circle cx="11" cy="8" r="1"/><circle cx="5" cy="13" r="1"/><circle cx="11" cy="13" r="1"/></svg></span></div></div>
-     <div v-if="item.payload.kind==='email'" class="overview-source-grid"><article v-for="(source,index) in sourceList(item.payload)" :key="source.source" class="overview-source" :class="{'overview-density-secondary':Number(index)>=2,'overview-density-minimal-extra':Number(index)>=1}"><div class="overview-source-top"><span class="overview-source-name" :title="source.label">{{source.label}}</span><i class="overview-source-state is-on" aria-hidden="true"></i></div><strong>{{sourceValue(source,'available')}}</strong><small>本地总数 {{sourceValue(source,'total')}} · 已用 {{sourceValue(source,'used')}} · 失败 {{sourceValue(source,'failed')}}</small></article><div v-if="sourceList(item.payload).length>2" class="overview-more-summary overview-more-summary--compact overview-more-summary--paired">另有 {{sourceList(item.payload).length-2}} 个来源，进入详情查看</div><div v-if="sourceList(item.payload).length>1" class="overview-more-summary overview-more-summary--minimal">另有 {{sourceList(item.payload).length-1}} 个来源，进入详情查看</div></div>
-     <div v-else-if="item.payload.kind==='proxy'"><div class="overview-proxy-grid"><div class="overview-proxy-item"><span>系统代理平台</span><strong>{{item.payload.platform}}</strong></div><div class="overview-proxy-item"><span>活跃出口</span><strong>{{item.payload.active}} 个</strong></div></div><div class="overview-exit-list"><div v-for="(lease,index) in leaseList(item.payload)" :key="index" class="overview-exit-row" :class="{'overview-density-secondary':Number(index)>=1}"><i aria-hidden="true"></i><span>{{lease.endpoint||lease.exit_ip||'活跃出口'}}</span><small>{{lease.region||lease.provider||''}}</small></div><div v-if="!leaseList(item.payload).length" class="muted">当前没有活跃代理出口</div></div><div v-if="item.payload.more" class="overview-more-summary overview-more-summary--compact">{{item.payload.more}}</div></div>
-     <div v-else-if="item.payload.kind==='plans'" class="overview-plan-list"><div v-for="([plan,count],index) in planList(item.payload)" :key="plan" class="overview-plan-row" :class="{'overview-density-secondary':Number(index)>=3,'overview-density-minimal-extra':Number(index)>=2}"><span>{{planLabel(plan)}}</span><div class="overview-plan-bar"><i :style="{width:`${Math.max(4,Math.round(Number(count)/Math.max(1,...planList(item.payload).map((p:any)=>Number(p[1])))*100))}%`}"></i></div><strong>{{count}}</strong></div><div v-if="planList(item.payload).length>3" class="overview-more-summary overview-more-summary--compact overview-more-summary--paired">另有 {{planList(item.payload).length-3}} 种套餐，进入详情查看</div><div v-if="planList(item.payload).length>2" class="overview-more-summary overview-more-summary--minimal">另有 {{planList(item.payload).length-2}} 种套餐，进入详情查看</div></div>
-     <div v-else-if="item.payload.kind==='today'" class="overview-job-list"><div v-for="([status,label,count],index) in rowList(item.payload)" :key="status" class="overview-job-row" :class="{'overview-density-secondary':status==='partial_success'||(Number(index)>0&&!count)}"><span class="pill" :class="`status-${status}`">{{statusLabel(status)}}</span><div class="overview-job-main"><strong>{{count}} 个任务</strong><small>{{item.payload.today}} · {{label}}</small></div></div><div v-if="rowList(item.payload)[1]?.[2]" class="overview-more-summary overview-more-summary--compact">部分成功 {{rowList(item.payload)[1]?.[2]}}</div></div>
-     <div v-else-if="item.payload.kind==='queue' || item.payload.kind==='history' || item.payload.kind==='health' || item.payload.kind==='codex'" class="overview-status-grid"><div v-for="([label,count],index) in rowList(item.payload)" :key="label" class="overview-status-item" :class="{'overview-density-secondary':item.payload.kind==='health'?[1,3].includes(Number(index)):Number(index)>1}"><span>{{label}}</span><strong>{{count}}</strong></div><div v-if="item.payload.kind==='queue' && rowList(item.payload)[2]?.[1]" class="overview-more-summary overview-more-summary--compact">停止中 {{rowList(item.payload)[2]?.[1]}}</div><div v-if="item.payload.kind==='history' && (rowList(item.payload)[2]?.[1] || rowList(item.payload)[3]?.[1])" class="overview-more-summary overview-more-summary--compact">部分成功 {{rowList(item.payload)[2]?.[1]||0}} · 已停止或取消 {{rowList(item.payload)[3]?.[1]||0}}</div><div v-if="item.payload.kind==='health'" class="overview-more-summary overview-more-summary--compact">已用 {{rowList(item.payload)[1]?.[1]||0}} · 停用 {{rowList(item.payload)[3]?.[1]||0}}</div><div v-if="item.payload.kind==='codex'" class="overview-more-summary overview-more-summary--compact">账号 Codex 就绪 {{rowList(item.payload)[2]?.[1]||0}}</div></div>
-     <button type="button" class="overview-resize-handle" data-overview-resize :aria-label="`拖动调整${item.card.label}卡片宽高；方向键可调整`" @pointerdown="startResize(item.card.id,$event)" @keydown.left.prevent="owner.resize(item.card.id,'width',-1)" @keydown.right.prevent="owner.resize(item.card.id,'width',1)" @keydown.up.prevent="owner.resize(item.card.id,'height',-40)" @keydown.down.prevent="owner.resize(item.card.id,'height',40)"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 14l8-8M10 14l4-4"/></svg></button>
-    </section>
-   </template>
-  </div>
+
+    <article class="ov-card ov-card--accounts" data-overview-card="accounts" style="--accent:#5b5ce2;--accent-soft:#eeeefe">
+     <header class="ov-card-head">
+      <div class="ov-card-title">
+       <span class="ov-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.9"/></svg></span>
+       <div><h3>账号</h3><p>账号资产</p></div>
+      </div>
+      <button type="button" class="ov-link" data-overview-action="accounts" @click="go('accounts')">管理<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg></button>
+     </header>
+     <div class="ov-figure">
+      <strong>{{fmt(accounts.active)}}</strong><span>活跃账号</span>
+     </div>
+     <div class="ov-split" aria-hidden="true"><i class="is-active" :style="{width:pct(accounts.active,accounts.total)+'%'}"></i><i class="is-idle" :style="{width:pct(accounts.archived,accounts.total)+'%'}"></i></div>
+     <div class="ov-legend"><span><i style="background:#5b5ce2"></i>活跃 {{fmt(accounts.active)}}</span><span><i style="background:#d7dbe5"></i>归档 {{fmt(accounts.archived)}}</span></div>
+     <div class="ov-mini-grid ov-mini-grid--2">
+      <div><span>账号总数</span><strong>{{fmt(accounts.total)}}</strong></div>
+      <div><span>Codex 就绪</span><strong>{{fmt(accounts.codex_ready)}}</strong></div>
+     </div>
+     <div class="ov-meter"><span>Codex 就绪率</span><div class="ov-bar"><i :style="{width:pct(accounts.codex_ready,accounts.active)+'%'}"></i></div><strong>{{pct(accounts.codex_ready,accounts.active)}}%</strong></div>
+    </article>
+
+    <article class="ov-card ov-card--codex" data-overview-card="codex" style="--accent:#377dff;--accent-soft:#e9f1ff">
+     <header class="ov-card-head">
+      <div class="ov-card-title">
+       <span class="ov-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></span>
+       <div><h3>Codex</h3><p>授权凭证</p></div>
+      </div>
+      <button type="button" class="ov-link" data-overview-action="codex" @click="go('codex')">查看<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg></button>
+     </header>
+     <div class="ov-figure">
+      <strong>{{fmt(codex.total)}}</strong><span>已导出凭证</span>
+      <em v-if="codexTone==='warn'" class="ov-chip is-warn">待导出</em>
+     </div>
+     <div class="ov-bar-label"><span>导出进度</span><small>{{fmt(codex.exported)}} / {{fmt(codex.total)}}</small></div>
+     <div class="ov-bar ov-bar--thick"><i :style="{width:pct(codex.exported,codex.total)+'%'}"></i></div>
+     <div class="ov-mini-grid ov-mini-grid--3">
+      <div><span>已导出</span><strong>{{fmt(codex.exported)}}</strong></div>
+      <div><span>待导出</span><strong>{{fmt(codex.pending)}}</strong></div>
+      <div><span>账号就绪</span><strong>{{fmt(accounts.codex_ready)}}</strong></div>
+     </div>
+     <p class="ov-foot">账号 Codex 就绪 {{fmt(accounts.codex_ready)}} · 覆盖 {{pct(codex.total,accounts.active)}}% 活跃账号</p>
+    </article>
+
+    <article class="ov-card ov-card--extract" data-overview-card="extract" style="--accent:#d97706;--accent-soft:#fdf3e3">
+     <header class="ov-card-head">
+      <div class="ov-card-title">
+       <span class="ov-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9L12 3Z"/><path d="M19 15.5 20 18l2.5 1-2.5 1L19 22l-1-2-2.5-1 2.5-1 1-2.5Z"/></svg></span>
+       <div><h3>提炼</h3><p>提链工作台</p></div>
+      </div>
+      <button type="button" class="ov-link" data-overview-action="extract" @click="go('extract-workbench')">工作台<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg></button>
+     </header>
+     <div class="ov-figure">
+      <strong>{{fmt(extractData.today_extracted)}}</strong><span>今日已提炼</span>
+      <em class="ov-chip" :class="`is-${extractTone}`">{{extractTone==='idle'?'空闲':extractTone==='warn'?'待核对':'处理中'}}</em>
+     </div>
+     <div v-if="!extractEmpty" class="ov-mini-grid ov-mini-grid--4">
+      <div><span>Plus 已确认</span><strong>{{fmt(extractData.today_plus_confirmed)}}</strong></div>
+      <div><span>处理中</span><strong>{{fmt(extractData.processing)}}</strong></div>
+      <div><span>待支付</span><strong>{{fmt(extractData.awaiting_payment)}}</strong></div>
+      <div><span>待核对</span><strong class="is-warn">{{fmt(extractData.needs_review)}}</strong></div>
+     </div>
+     <p v-if="extractEmpty" class="ov-empty">今日还没有提炼任务，进入工作台即可发起。</p>
+     <p class="ov-foot">{{extractEmpty?'提链工作台空闲':`累计 ${fmt(extractData.all)} 个提炼任务`}}</p>
+    </article>
+
+    <article class="ov-card ov-card--plans" data-overview-card="plans" style="--accent:#8b5cf6;--accent-soft:#f3edff">
+     <header class="ov-card-head">
+      <div class="ov-card-title">
+       <span class="ov-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2 2 7l10 5 10-5-10-5Z"/><path d="m2 12 10 5 10-5"/><path d="m2 17 10 5 10-5"/></svg></span>
+       <div><h3>套餐</h3><p>账号套餐分布</p></div>
+      </div>
+      <button type="button" class="ov-link" data-overview-action="plans" @click="go('accounts')">账号<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg></button>
+     </header>
+     <template v-if="plans.length">
+      <div class="ov-figure ov-figure--small"><strong>{{fmt(plans.length)}}</strong><span>种套餐 · {{fmt(planTotal)}} 个账号</span></div>
+      <ul class="ov-bars">
+       <li v-for="plan in plans" :key="plan.key">
+        <div class="ov-bar-label"><span>{{plan.label}}</span><small>{{fmt(plan.count)}} · {{pct(plan.count,planTotal)}}%</small></div>
+        <div class="ov-bar"><i :style="{width:Math.max(4,Math.round(plan.count/planMax*100))+'%'}"></i></div>
+       </li>
+      </ul>
+     </template>
+     <p v-else class="ov-empty">还没有可用的套餐数据。</p>
+    </article>
+
+    <article class="ov-card ov-card--proxy" data-overview-card="proxy" style="--accent:#0e9aa7;--accent-soft:#e6f6f7">
+     <header class="ov-card-head">
+      <div class="ov-card-title">
+       <span class="ov-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c2.4 2.5 3.7 5.5 3.7 9s-1.3 6.5-3.7 9c-2.4-2.5-3.7-5.5-3.7-9S9.6 5.5 12 3Z"/></svg></span>
+       <div><h3>代理</h3><p>网络出口</p></div>
+      </div>
+      <button type="button" class="ov-link" data-overview-action="proxy" @click="go('proxy-traffic')">查看<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg></button>
+     </header>
+     <div class="ov-figure">
+      <strong>{{fmt(proxy.active_leases)}}</strong><span>活跃出口</span>
+      <em class="ov-chip">{{proxyLabel(proxy.platform)}}</em>
+     </div>
+     <ul v-if="leases.length" class="ov-lease-list">
+      <li v-for="(lease,index) in leases" :key="index"><i aria-hidden="true"></i><span>{{lease.endpoint||lease.exit_ip||'活跃出口'}}</span><small>{{lease.region||lease.provider||''}}</small></li>
+     </ul>
+     <p v-else class="ov-empty">当前没有活跃的代理租约，新任务会走 {{proxyLabel(proxy.platform)}}。</p>
+     <p v-if="leases.length" class="ov-foot">代理平台 {{proxyLabel(proxy.platform)}}</p>
+    </article>
+
+    <article class="ov-card ov-card--jobs" data-overview-card="jobs" style="--accent:#475569;--accent-soft:#eef1f5">
+     <header class="ov-card-head">
+      <div class="ov-card-title">
+       <span class="ov-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5h11"/><path d="M9 12h11"/><path d="M9 19h11"/><circle cx="4" cy="5" r="1"/><circle cx="4" cy="12" r="1"/><circle cx="4" cy="19" r="1"/></svg></span>
+       <div><h3>任务</h3><p>注册流水线与队列</p></div>
+      </div>
+      <button type="button" class="ov-link" data-overview-action="jobs" @click="go('tasks')">任务中心<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg></button>
+     </header>
+     <div class="ov-task-columns">
+      <section class="ov-task-block">
+       <h4>当前队列</h4>
+       <div class="ov-mini-grid ov-mini-grid--3">
+        <div><span>运行中</span><strong>{{fmt(jobCounts.running)}}</strong></div>
+        <div><span>待处理</span><strong>{{fmt(jobCounts.pending)}}</strong></div>
+        <div><span>停止中</span><strong>{{fmt(jobCounts.stopping)}}</strong></div>
+       </div>
+      </section>
+      <section class="ov-task-block">
+       <h4>今日结果 <small>{{jobs.today}}</small></h4>
+       <div class="ov-mini-grid ov-mini-grid--3">
+        <div><span>成功</span><strong class="is-ok">{{fmt(todayCounts.success)}}</strong></div>
+        <div><span>部分成功</span><strong class="is-warn">{{fmt(todayCounts.partial_success)}}</strong></div>
+        <div><span>失败</span><strong class="is-danger">{{fmt(todayCounts.failed)}}</strong></div>
+       </div>
+      </section>
+      <section class="ov-task-block ov-task-block--wide">
+       <h4>累计结果 <small>{{fmt(jobs.total)}} 个任务</small></h4>
+       <div v-if="cumulative.length" class="ov-stack" aria-hidden="true">
+        <i v-for="item in cumulative" :key="item.key" :style="{width:(item.value/Math.max(1,jobs.total)*100)+'%',background:item.color}"></i>
+       </div>
+       <div class="ov-stack-legend">
+        <span v-for="item in cumulative" :key="item.key"><i :style="{background:item.color}"></i>{{item.label}} {{fmt(item.value)}}</span>
+        <span v-if="!cumulative.length">暂无累计结果</span>
+       </div>
+      </section>
+     </div>
+    </article>
+   </div>
+  </template>
  </div>
 </template>
 
 <style scoped>
-.dashboard-vue-root{display:grid;grid-template-columns:minmax(0,1fr);gap:20px;min-width:0;max-width:100%}
-.list-result--danger{display:flex;align-items:center;flex-wrap:wrap;gap:8px 12px;padding:12px 16px;border:1px solid var(--ui-color-border);border-radius:8px;color:var(--ui-color-danger)}
-.list-result--danger span{flex:1;min-width:0;overflow-wrap:anywhere}
-.overview-customizer{margin:0 0 0 auto;border:0;border-left:1px solid var(--ui-color-border);max-width:100vw;max-height:100dvh;height:100dvh;box-sizing:border-box}.overview-customizer:not([open]){display:none}.overview-customizer[open]{display:flex}.overview-customizer::backdrop{background:rgb(16 20 39 / 42%);backdrop-filter:blur(2px)}.overview-customizer-list{min-height:0;overflow:auto}.overview-card-drag{touch-action:none}.overview-resize-handle{touch-action:none}
-@media(max-width:560px){.overview-customizer-item button{min-width:40px;min-height:40px}}
-</style>
+.ov-page{--ov-text:#172033;--ov-muted:#566175;--ov-line:#e6e9f0;--ov-soft:#f6f8fb;display:flex;flex-direction:column;gap:13px;min-width:0;font-family:var(--ui-font-sans,system-ui);color:var(--ov-text);opacity:0;transform:translateY(6px);transition:opacity .3s ease,transform .3s ease}
+.ov-page.is-mounted{opacity:1;transform:none}
+.ov-page *{box-sizing:border-box}
+.ov-section-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;flex:none}
+.ov-section-head{display:flex;align-items:flex-end;justify-content:space-between;gap:10px 16px;flex-wrap:wrap;padding:2px 2px 0}
+.ov-section-title{display:flex;align-items:baseline;gap:11px;flex-wrap:wrap;min-width:0}
+.ov-section-head h2{margin:0;font-size:18px;line-height:1.3;letter-spacing:-.015em;font-weight:700}
+.ov-section-head p{margin:0;color:#647086;font-size:12px;line-height:1.4}
+.ov-updated{display:inline-flex;align-items:center;gap:7px;color:#647086;font-size:12px;font-variant-numeric:tabular-nums}
+.ov-updated i{width:6px;height:6px;border-radius:50%;background:#1f9d75;box-shadow:0 0 0 4px rgba(31,157,117,.12)}
+.ov-refresh{display:inline-flex;align-items:center;gap:7px;min-height:36px;padding:0 14px;border:1px solid var(--ov-line);border-radius:9px;background:#fff;color:#3d4659;font:inherit;font-size:12.5px;font-weight:650;cursor:pointer;box-shadow:0 1px 1px rgba(16,24,40,.03)}
+.ov-refresh svg{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.ov-refresh:hover:not(:disabled){border-color:#c9cffa;color:#4f51be;background:#f7f7ff}
+.ov-refresh:disabled{opacity:.6;cursor:default}
+.ov-refresh:focus-visible,.ov-pulse-item:focus-visible,.ov-link:focus-visible,.ov-alert button:focus-visible,.ov-error button:focus-visible{outline:2px solid #5b5ce2;outline-offset:2px}
 
-<style>
-body.em-native-dialog-lock{position:fixed;left:0;right:0;width:100%;overflow:hidden}
+.ov-error{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:12px 16px;border:1px solid #f3cdd1;border-radius:12px;background:#fff7f8;color:#a5323c;font-size:12.5px}
+.ov-error div{display:flex;flex-direction:column;gap:2px;min-width:0}
+.ov-error span{color:#8b4a52}
+.ov-error button{min-height:32px;padding:0 12px;border:1px solid #eab6bc;border-radius:8px;background:#fff;color:#a5323c;font:inherit;font-size:12px;font-weight:650;cursor:pointer}
+
+.ov-alerts{display:grid;gap:10px}
+.ov-alert{display:flex;align-items:center;gap:11px;min-height:44px;padding:9px 12px;border:1px solid #efc07d;border-radius:11px;background:#fff8e9;color:#7a4a09;font-size:12.5px;line-height:1.5;box-shadow:inset 3px 0 #d9822b}
+.ov-alert.is-danger{border-color:#eeb1b8;background:#fff6f7;color:#9f2f39;box-shadow:inset 3px 0 #d94a55}
+.ov-alert svg{width:16px;height:16px;flex:none;fill:none;stroke:#c2710b;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.ov-alert p{flex:1;min-width:0;margin:0}
+.ov-alert button{flex:none;min-height:32px;padding:0 12px;border:1px solid #b45309;border-radius:7px;background:#b45309;color:#fff;font:inherit;font-size:12px;font-weight:700;cursor:pointer}
+.ov-alert button:hover{background:#96450a}
+.ov-alert.is-danger button{border-color:#b03a44;background:#b03a44}
+.ov-alert.is-danger button:hover{background:#97313a}
+.ov-alert.is-danger svg{stroke:#b03a44}
+
+.ov-skeleton{display:flex;flex-direction:column;gap:16px}
+.ov-skeleton-pulse,.ov-skeleton-grid i{display:block;border-radius:14px;background:linear-gradient(90deg,#f1f4f9 25%,#e8ecf3 37%,#f1f4f9 63%);background-size:400% 100%;animation:ov-shimmer 1.4s ease infinite}
+.ov-skeleton-pulse{height:78px}
+.ov-skeleton-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}
+.ov-skeleton-grid i{height:220px}
+
+.ov-pulse{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:0;border:1px solid var(--ov-line);border-radius:12px;background:#fff;box-shadow:0 1px 2px rgba(16,24,40,.04);overflow:hidden}
+.ov-pulse-item{display:flex;flex-direction:column;align-items:flex-start;gap:3px;min-width:0;padding:11px 14px;border:0;border-left:1px solid #eef1f6;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer;transition:background .16s ease}
+.ov-pulse-item:first-child{border-left:0}
+.ov-pulse-item:hover{background:#f8f9fc}
+.ov-pulse-top{display:flex;align-items:center;gap:7px;color:#566175;font-size:12px;font-weight:650}
+.ov-pulse-top i{width:6px;height:6px;border-radius:50%;background:#98a2b3;box-shadow:0 0 0 3px rgba(152,162,179,.12)}
+.ov-pulse-item.is-ok .ov-pulse-top i{background:#1f9d75;box-shadow:0 0 0 3px rgba(31,157,117,.12)}
+.ov-pulse-item.is-warn .ov-pulse-top i{background:#d9822b;box-shadow:0 0 0 3px rgba(217,130,43,.13)}
+.ov-pulse-item.is-danger .ov-pulse-top i{background:#d94a55;box-shadow:0 0 0 3px rgba(217,74,85,.13)}
+.ov-pulse-item.is-active .ov-pulse-top i{background:#5b5ce2;box-shadow:0 0 0 3px rgba(91,92,226,.13)}
+.ov-pulse-item strong{font-size:18px;line-height:1.15;letter-spacing:-.02em;font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap}
+.ov-pulse-item.is-zero strong{color:#a7aebc;font-weight:620}
+.ov-pulse-item.is-warn strong{color:#b46a12}
+.ov-pulse-item.is-danger strong{color:#c0392b}
+
+.ov-grid{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:16px;align-items:stretch}
+.ov-card{position:relative;display:flex;flex-direction:column;gap:13px;min-width:0;padding:17px 18px;border:1px solid var(--ov-line);border-radius:14px;background:#fff;box-shadow:0 1px 2px rgba(16,24,40,.04);overflow:hidden}
+.ov-card--email,.ov-card--accounts,.ov-card--codex,.ov-card--extract,.ov-card--plans,.ov-card--proxy{grid-column:span 4}
+.ov-card--jobs{grid-column:span 12}
+.ov-card-head{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:36px}
+.ov-card-title{display:flex;align-items:center;gap:11px;min-width:0}
+.ov-icon{display:grid;place-items:center;width:34px;height:34px;flex:none;border-radius:10px;background:var(--accent-soft);color:var(--accent)}
+.ov-icon svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+.ov-card-title h3{margin:0;font-size:15px;line-height:1.3;font-weight:700;letter-spacing:-.01em}
+.ov-card-title p{margin:2px 0 0;color:#647086;font-size:12px;line-height:1.4}
+.ov-link{display:inline-flex;align-items:center;gap:2px;flex:none;min-height:28px;padding:0 2px 0 8px;border:0;border-radius:7px;background:transparent;color:#8a93a6;font:inherit;font-size:11.5px;font-weight:650;cursor:pointer}
+.ov-link svg{width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.ov-link:hover{color:var(--accent);background:var(--accent-soft)}
+
+.ov-figure{display:flex;align-items:baseline;gap:7px;flex-wrap:wrap;min-width:0}
+.ov-figure strong{font-size:34px;line-height:1;letter-spacing:-.035em;font-weight:730;font-variant-numeric:tabular-nums}
+.ov-figure strong.is-danger{color:#c0392b}
+.ov-figure>span{color:#667085;font-size:12.5px;font-weight:600}
+.ov-figure--small strong{font-size:26px}
+.ov-chip{display:inline-flex;align-items:center;min-height:23px;padding:1px 9px;border-radius:999px;background:#f1f3f8;color:#6b7488;font-size:11px;font-style:normal;font-weight:700;white-space:nowrap}
+.ov-chip.is-ok{background:#e7f6f0;color:#17805f}
+.ov-chip.is-warn{background:#fdf1de;color:#a9660f}
+.ov-chip.is-danger{background:#fdeced;color:#b03a44}
+.ov-chip.is-active{background:#eef0ff;color:#4f51be}
+.ov-chip.is-idle{background:#f1f3f8;color:#6b7488}
+
+.ov-mini-grid{display:grid;gap:12px;border-radius:10px;background:var(--ov-soft);padding:12px 14px}
+.ov-mini-grid--2{grid-template-columns:repeat(2,minmax(0,1fr))}
+.ov-mini-grid--3{grid-template-columns:repeat(3,minmax(0,1fr))}
+.ov-mini-grid--4{grid-template-columns:repeat(4,minmax(0,1fr))}
+.ov-mini-grid>div{display:flex;flex-direction:column;gap:3px;min-width:0}
+.ov-mini-grid span{color:#647086;font-size:12px;line-height:1.35;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ov-mini-grid strong{font-size:15px;line-height:1.2;font-weight:700;font-variant-numeric:tabular-nums}
+.ov-mini-grid strong.is-ok{color:#17805f}
+.ov-mini-grid strong.is-warn{color:#b46a12}
+.ov-mini-grid strong.is-danger{color:#c0392b}
+
+.ov-bars{display:flex;flex-direction:column;gap:9px;margin:0;padding:0;list-style:none;min-width:0}
+.ov-bars li{display:flex;flex-direction:column;gap:5px;min-width:0}
+.ov-bar-label{display:flex;align-items:baseline;justify-content:space-between;gap:10px;min-width:0}
+.ov-bar-label span{min-width:0;color:#3d4659;font-size:12.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ov-bar-label small{flex:none;color:#647086;font-size:11px;font-variant-numeric:tabular-nums}
+.ov-bar{height:6px;border-radius:3px;background:#eef1f6;overflow:hidden}
+.ov-bar i{display:block;height:100%;border-radius:3px;background:var(--accent);transition:width .4s cubic-bezier(.2,.75,.2,1)}
+.ov-bar.is-spent i{width:100%!important;background:#dd9a3d;opacity:.8}
+.ov-bar--thick{height:8px;border-radius:4px}
+
+.ov-meter{display:flex;align-items:center;gap:9px;min-width:0;color:#7c86a2;font-size:11px}
+.ov-meter>span{flex:none}
+.ov-meter .ov-bar{flex:1;min-width:0}
+.ov-meter>strong{flex:none;color:#3d4659;font-size:11.5px;font-weight:700;font-variant-numeric:tabular-nums}
+.ov-split{display:flex;height:8px;border-radius:4px;background:#eef1f6;overflow:hidden}
+.ov-split i{display:block;height:100%}
+.ov-split .is-active{background:#5b5ce2}
+.ov-split .is-idle{background:#d7dbe5}
+.ov-legend{display:flex;gap:14px;flex-wrap:wrap;color:#647086;font-size:11px;margin-top:-6px}
+.ov-legend span{display:inline-flex;align-items:center;gap:5px}
+.ov-legend i{width:7px;height:7px;border-radius:2px}
+
+.ov-lease-list{display:flex;flex-direction:column;gap:7px;margin:0;padding:0;list-style:none}
+.ov-lease-list li{display:flex;align-items:center;gap:8px;min-height:26px;padding:5px 9px;border-radius:8px;background:var(--ov-soft);font-size:12px;color:#3d4659;min-width:0}
+.ov-lease-list li i{width:6px;height:6px;flex:none;border-radius:50%;background:#0e9aa7}
+.ov-lease-list li span{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums}
+.ov-lease-list li small{flex:none;color:#647086;font-size:11px}
+
+.ov-empty{margin:0;padding:12px 13px;border-radius:10px;background:var(--ov-soft);color:#647086;font-size:12px;line-height:1.5}
+.ov-foot{margin:auto 0 0;padding-top:2px;color:#6b778e;font-size:11.5px;line-height:1.5}
+.ov-task-columns{display:grid;grid-template-columns:minmax(0,.9fr) minmax(0,.9fr) minmax(0,1.4fr);gap:22px}
+.ov-task-block{display:flex;flex-direction:column;gap:10px;min-width:0}
+.ov-task-block+.ov-task-block{border-left:1px solid #eef1f6;padding-left:22px}
+.ov-task-block h4{margin:0;color:#566175;font-size:11.5px;font-weight:700;letter-spacing:.02em}
+.ov-task-block h4 small{margin-left:6px;color:#7c86a2;font-size:11px;font-weight:600}
+.ov-task-block .ov-mini-grid{background:transparent;padding:0}
+.ov-stack{display:flex;height:10px;border-radius:5px;background:#eef1f6;overflow:hidden}
+.ov-stack i{display:block;height:100%}
+.ov-stack i+i{box-shadow:inset 1px 0 rgba(255,255,255,.65)}
+.ov-stack-legend{display:flex;flex-wrap:wrap;gap:6px 16px;color:#566175;font-size:11.5px}
+.ov-stack-legend span{display:inline-flex;align-items:center;gap:6px;font-variant-numeric:tabular-nums}
+.ov-stack-legend i{width:7px;height:7px;border-radius:2px}
+
+@keyframes ov-shimmer{0%{background-position:100% 0}100%{background-position:0 0}}
+@media (prefers-reduced-motion:reduce){.ov-page{opacity:1;transform:none;transition:none}.ov-bar i{transition:none}.ov-skeleton-pulse,.ov-skeleton-grid i{animation:none}}
+@media (max-width:1180px){
+ .ov-pulse{display:flex;overflow-x:auto;scrollbar-width:none}
+ .ov-pulse::-webkit-scrollbar{display:none}
+ .ov-pulse-item{flex:1 0 146px}
+ .ov-card--email,.ov-card--accounts,.ov-card--codex,.ov-card--extract,.ov-card--plans,.ov-card--proxy{grid-column:span 6}
+ .ov-task-columns{grid-template-columns:repeat(2,minmax(0,1fr))}
+ .ov-task-block--wide{grid-column:1/-1;border-left:0!important;padding-left:0!important;border-top:1px solid #eef1f6;padding-top:14px}
+}
+@media (max-width:900px){
+ .ov-grid{grid-template-columns:repeat(6,minmax(0,1fr))}
+ .ov-card--jobs{grid-column:span 6}
+}
+@media (max-width:620px){
+ .ov-grid{grid-template-columns:minmax(0,1fr)}
+ .ov-card--email,.ov-card--accounts,.ov-card--codex,.ov-card--extract,.ov-card--plans,.ov-card--proxy,.ov-card--jobs{grid-column:1/-1}
+ .ov-card{padding:16px}
+ .ov-figure strong{font-size:30px}
+ .ov-task-columns{grid-template-columns:minmax(0,1fr)}
+ .ov-task-block+.ov-task-block{border-left:0;padding-left:0;border-top:1px solid #eef1f6;padding-top:14px}
+ .ov-mini-grid--4{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
 </style>

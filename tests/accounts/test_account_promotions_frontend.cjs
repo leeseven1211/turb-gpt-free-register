@@ -835,7 +835,7 @@ test('默认 2FA 窄列保留可完整点击的短验证码复制按钮', () => 
 test('用户调窄优惠列仍可通过提示查看完整国家与历史信息', async () => {
   const saved = [36, 72, 160, 80, 104, 84, 88, 72, 88, 88, 1, 72, 88, 72, 96, 108];
   const {columns, table, headers, wrapper, promotionIndex, storage, storageKey} = await createResizableAccountTable(saved, 1396);
-  await headers[promotionIndex].get('button.ac-column-resize').trigger('pointerdown', {button: 0, clientX: 100});
+  await headers[promotionIndex].get('button.ui-table__resize').trigger('pointerdown', {button: 0, clientX: 100});
   document.dispatchEvent(new MouseEvent('pointermove', {clientX: -1000}));
   await vue.nextTick();
   const tableWidth = Number.parseFloat(table.style.width);

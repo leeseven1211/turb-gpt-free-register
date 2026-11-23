@@ -40,7 +40,7 @@ const emit = defineEmits<{'update:open': [boolean]}>();
 .tc-column-filter-trigger.is-active svg {fill:var(--ui-color-brand-soft);stroke-width:2}
 .tc-column-filter-trigger:focus-visible {outline:2px solid var(--ui-color-brand);outline-offset:3px}
 /* Reka 的 Portal 根节点不透传 SFC scope 属性，使用组件专属全局类定位真实 DOM。 */
-:global(.list-filter-popover) {display:flex;flex-direction:column;box-sizing:border-box;z-index:1200;width:280px;max-width:calc(100vw - 20px);max-height:min(440px,var(--reka-popover-content-available-height, 85dvh));overflow:auto;overscroll-behavior:contain;padding:14px;border:1px solid var(--ui-color-border-strong);border-radius:10px;background:var(--ui-color-surface);color:var(--ui-color-text);box-shadow:0 8px 28px rgb(23 32 51 / 16%);font:13px/1.5 var(--ui-font-sans)}
+:global(.list-filter-popover) {display:flex;flex-direction:column;box-sizing:border-box;z-index:1200;width:280px;max-width:calc(100vw - 20px);max-height:min(520px,var(--reka-popover-content-available-height, 85dvh));overflow:auto;overscroll-behavior:contain;padding:14px;border:1px solid var(--ui-color-border-strong);border-radius:10px;background:var(--ui-color-surface);color:var(--ui-color-text);box-shadow:0 8px 28px rgb(23 32 51 / 16%);font:13px/1.5 var(--ui-font-sans)}
 :global(.list-filter-popover *) {box-sizing:border-box}
 :global(.list-filter-popover > :not(button)),:global(.list-filter-popover fieldset) {min-width:0}
 :global(.list-filter-popover :is(button,input,select)) {font:inherit}
@@ -52,13 +52,22 @@ const emit = defineEmits<{'update:open': [boolean]}>();
   flex:none;width:16px;height:16px;min-height:0;min-width:0;margin:0;padding:0;
   accent-color:var(--ui-color-brand);
 }
+:global(.list-filter-popover input[type=radio]) {
+  appearance:none;display:grid;place-items:center;width:15px;height:15px;
+  border:1.5px solid var(--ui-color-border-strong);border-radius:50%;
+  background:var(--ui-color-surface);cursor:pointer;
+}
+:global(.list-filter-popover input[type=radio]:checked) {
+  border-color:var(--ui-color-brand);background:var(--ui-color-brand);
+  box-shadow:inset 0 0 0 3px var(--ui-color-surface);
+}
 :global(.list-filter-popover :is(select,input:not([type=radio],[type=checkbox]))) {
   display:block;width:100%;min-width:0;min-height:36px;margin:0;padding:6px 9px;
   border:1px solid var(--ui-color-border-strong);border-radius:5px;
   background:var(--ui-color-surface);color:var(--ui-color-text);
 }
 :global(.list-filter-popover .list-filter-options) {
-  display:flex;flex-direction:column;gap:2px;min-width:0;max-height:270px;
+  display:flex;flex-direction:column;gap:2px;min-width:0;max-height:340px;
   overflow:auto;margin:0;padding:0;border:0;
 }
 :global(.list-filter-popover .list-filter-option) {

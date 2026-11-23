@@ -31,7 +31,7 @@ describe('批次创建 owner',()=>{
   expect(h.owner.filterOptions('promotion')).toEqual(expect.arrayContaining([
     expect.objectContaining({value:'half_price',count:3}),
     expect.objectContaining({value:'go_50'}),
-    expect.objectContaining({value:'plus_100'}),
+    expect.objectContaining({value:'plus_50_1m'}),
   ]));
  });
  it('固定名单保留大整数字符串及来源快照，按 ready revision 创建暂停批次',async()=>{

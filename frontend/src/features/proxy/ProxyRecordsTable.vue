@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue';
 import ListCell from '../../components/ListCell.vue';
+import ColumnResizer from '../../components/ColumnResizer.vue';
+import TableState from '../../components/TableState.vue';
 import ListResult from '../../components/ListResult.vue';
 import { useColumnWidths } from '../../shared/useColumnWidths';
 import { dateTimeLines, formatDateTime } from '../../shared/time';
@@ -101,17 +103,17 @@ defineExpose({ resetColumns: widths.resetColumns });
 <template>
   <div
     ref="scroll"
-    class="pt-table-scroll"
+    class="ui-table-scroll pt-table-scroll"
     tabindex="0"
     :aria-label="`${title}列表，可横向滚动`"
     :aria-busy="loading"
   >
     <table
-      class="pt-table pt-records-table"
+      class="ui-table ui-table--sticky-end pt-table pt-records-table"
       :data-proxy-table="view"
-      :style="{ '--pt-table-width': `${widths.total.value}px` }"
+      :style="{ '--ui-table-width': `${widths.total.value}px` }"
     >
-      <caption class="pt-sr-only">
+      <caption class="ui-sr-only">
         {{
           title
         }}
@@ -134,15 +136,7 @@ defineExpose({ resetColumns: widths.resetColumns });
               @change="(key, value) => emit('filter', key, value)"
               @update:open="emit('update:openFilter', $event ? `${view}:${header.filter}` : null)"
             /><span v-else>{{ header.label }}</span
-            ><button
-              v-if="index < headers.length - 1"
-              type="button"
-              class="pt-column-resize"
-              :aria-label="`调整${header.label}列宽，方向键调整`"
-              @pointerdown.prevent="widths.resize(index, $event)"
-              @keydown.left.prevent="widths.resizeWithKeyboard(index, -10)"
-              @keydown.right.prevent="widths.resizeWithKeyboard(index, 10)"
-            ></button>
+            ><ColumnResizer v-if="index < headers.length - 1" :label="header.label" @start="widths.resize(index, $event)" @nudge="widths.resizeWithKeyboard(index, $event)"/>
           </th>
         </tr>
       </thead>
@@ -177,7 +171,7 @@ defineExpose({ resetColumns: widths.resetColumns });
               <button
                 v-if="row.id != null"
                 type="button"
-                class="pt-link"
+                class="ui-link"
                 data-proxy-detail="traffic"
                 aria-label="查看请求流量详情"
                 @click="openDetail(row, $event)"
@@ -210,7 +204,7 @@ defineExpose({ resetColumns: widths.resetColumns });
                 <button
                   v-if="row.id != null"
                   type="button"
-                  class="pt-link"
+                  class="ui-link"
                   data-proxy-detail="history"
                   aria-label="查看线路历史详情"
                   @click="openDetail(row, $event)"
@@ -221,17 +215,7 @@ defineExpose({ resetColumns: widths.resetColumns });
             ></template
           >
         </tr>
-        <tr v-if="!items.length">
-          <td colspan="8">
-            <div class="pt-empty" :role="error ? 'alert' : 'status'">
-              <strong>{{
-                loading ? `正在加载${title}` : error ? '代理与流量数据暂不可用' : `暂无${title}`
-              }}</strong>
-              <p>{{ error || (loading ? '正在同步代理与流量 API' : '当前没有可显示的持久化记录。') }}</p>
-              <button v-if="error" type="button" class="pt-button" @click="emit('retry')">重新加载</button>
-            </div>
-          </td>
-        </tr>
+        <TableState v-if="!items.length" :colspan="8" :loading="loading" :error="error" :loading-title="`正在加载${title}`" loading-text="正在同步代理与流量 API" error-title="代理与流量数据暂不可用" :title="`暂无${title}`" text="当前没有可显示的持久化记录。" retry-label="重新加载" @retry="emit('retry')"/>
       </tbody>
     </table>
   </div>

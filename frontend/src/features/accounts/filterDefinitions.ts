@@ -37,11 +37,15 @@ export function columnActive(query:DeepReadonly<AccountQuerySpec>,column:Account
   if(column.kind==='text')return !!textValue(query,column.key as AccountFilterField);
   return selectedValues(query,column.key).length>0;
 }
-export const promotionOffers = ['plus_100','plus_50','plus_other','go_100','go_50','go_other'];
+export const promotionOffers = ['none','free_trial','half_price','go_50','plus_50','plus_50_1m','plus_50_2m','plus_50_3m'];
 
 export function facetOptions(query:DeepReadonly<AccountQuerySpec>,facets:DeepReadonly<AccountFacets>,column:AccountColumn,label:AccountFacetLabel) {
   const selected=selectedValues(query,column.key);
   const source=column.kind==='enum' ? facets[column.key as keyof AccountFacets]||[] : [];
+  if(column.key==='promotion'){
+    const counts=new Map(source.map(item=>[item.value,item.count]));
+    return promotionOffers.map(value=>({value,count:counts.get(value)??null,label:label('promotion',value)}));
+  }
   const values=source.filter(item=>item.value&&(item.count>0||selected.includes(item.value))).map(item=>({...item}));
   for(const value of selected)if(!values.some(item=>item.value===value))values.push({value,count:0});
   const order=column.order||[];
@@ -49,11 +53,7 @@ export function facetOptions(query:DeepReadonly<AccountQuerySpec>,facets:DeepRea
     const left=order.indexOf(a.value),right=order.indexOf(b.value);
     return (left<0?order.length:left)-(right<0?order.length:right);
   });
-  const options: {value:string;count:number|null;label:string}[] = values
-    .filter(item=>column.key!=='promotion'||!promotionOffers.includes(item.value))
-    .map(item=>({...item,label:label(column.group||column.key,item.value)}));
-  if(column.key==='promotion')for(const value of promotionOffers)options.push({value,count:null,label:label('promotion',value)});
-  return options;
+  return values.map(item=>({...item,label:label(column.group||column.key,item.value)}));
 }
 export function filterChips(query:DeepReadonly<AccountQuerySpec>,label:AccountFacetLabel) {
   return accountFilters.flatMap(column=>{

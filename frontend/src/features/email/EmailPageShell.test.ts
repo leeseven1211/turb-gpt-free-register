@@ -26,11 +26,15 @@ describe('complete email page owner',()=>{
   for(const name of ['复制当前页','导入邮箱','从 Butler 导入','恢复列宽','刷新'])expect(w.findAll('button').some(b=>b.text()===name)).toBe(true);
   expect(w.findAll('thead button').some(b=>b.attributes('aria-label')==='筛选状态')).toBe(true);
   await w.get('button[aria-label="筛选状态"]').trigger('click');await flushPromises();
-  const body=new DOMWrapper(document.body);await body.get('select[aria-label="状态"]').setValue('used');await flushPromises();
+  const body=new DOMWrapper(document.body);
+  expect(body.find('[data-filter-value="available"]').exists()).toBe(false);
+  await body.get('.list-filter-popover input[type=radio][value=used]').setValue(true);await flushPromises();
   expect(toolbar.get('.list-filter-summary').text()).toContain('状态：已用');
   expect(calls.filter(c=>c.path.startsWith('/api/outlook?')).at(-1)?.path).toContain('status=used');
   await inventory.get('input[aria-label="选择邮箱 resource@example.test"]').setValue(true);
   expect(toolbar.text()).toContain('已选 1 个邮箱');
+  expect(toolbar.text()).toContain('标记未使用');
+  expect(inventory.find('.ui-list-bulkbar').exists()).toBe(false);
   expect(toolbar.text()).not.toContain('45');
   expect(w.find('.list-pagination__jump').exists()).toBe(true);
   expect(inventory.get('.list-pagination__range').text()).toContain('共 45 条');
@@ -88,6 +92,16 @@ describe('complete email page owner',()=>{
   const {w}=await page('list',f=>{f.handlers.set('/api/email-derivation/summary',()=>({parents:[{source:'outlook',parent_id:9,child_count:0,remaining:100,enabled:true}]}));f.handlers.set('/api/email-derivation/allocations',()=>({items:[{id:1,source:'outlook',email:'readonly@example.test',state:'reserved',can_generate:true,can_disable:true,can_delete:true,capabilities:{writable:true}}],total:1}));});
   expect(w.find('button[aria-label="查看 resource@example.test 的历史子地址"]').exists()).toBe(false);
   w.vm.setView('derivations');await flushPromises();expect(w.get('section[aria-label="历史子邮箱"]').text()).toContain('只读');expect(w.get('section[aria-label="历史子邮箱"]').findAll('button').some(button=>['生成','停用','删除'].includes(button.text()))).toBe(false);
+ });
+ it('opens row actions in an anchored menu and colors status values',async()=>{
+  const {w}=await page();
+  expect(w.get('td .em-tone.is-active').text()).toContain('已用');
+  await w.get('button[aria-label^="更多邮箱操作"]').trigger('click');await flushPromises();
+  const body=new DOMWrapper(document.body);
+  const menu=body.get('.em-row-menu');
+  expect(menu.text()).toContain('恢复可用');expect(menu.text()).toContain('停用');expect(menu.text()).toContain('标失败');
+  await menu.findAll('button').find(button=>button.text()==='停用')!.trigger('click');await flushPromises();
+  expect(body.find('.em-row-menu').exists()).toBe(false);
  });
  it('changes page size atomically with one final page-one read',async()=>{
   const {w,calls}=await page();const section=w.get('section[aria-label="邮箱池"]');await section.findAll('button').find(button=>button.text()==='下一页')!.trigger('click');await flushPromises();calls.length=0;

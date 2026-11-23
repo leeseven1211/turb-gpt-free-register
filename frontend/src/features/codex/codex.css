@@ -1,58 +1,28 @@
 .cx-root {font:13px/1.5 var(--ui-font-sans);color:var(--ui-color-text);min-width:0}
 .cx-root *,.cx-row-menu *,.cx-filter-fields * {box-sizing:border-box}
 .cx-root button,.cx-row-menu button,.cx-filter-fields button {font:inherit;cursor:pointer}
-.cx-root :is(button,input,select):focus-visible,.cx-row-menu :is(button,input,summary):focus-visible,.cx-filter-fields :is(button,input,select):focus-visible,.cx-table-scroll:focus-visible {outline:2px solid var(--ui-color-brand);outline-offset:2px}
+.cx-root :is(button,input,select):focus-visible,.cx-row-menu :is(button,input,summary):focus-visible,.cx-filter-fields :is(button,input,select):focus-visible {outline:2px solid var(--ui-color-brand);outline-offset:2px}
 .cx-root button:disabled,.cx-row-menu button:disabled {opacity:.45;cursor:default}
-.cx-workspace {container:cx-workspace / inline-size;border:1px solid var(--ui-color-border);border-radius:var(--ui-radius-lg,10px);background:var(--ui-color-surface);overflow:hidden}
+.cx-workspace {container:cx-workspace / inline-size}
+.cx-selected {flex:none;color:var(--ui-color-brand);font-weight:650;white-space:nowrap}
 /* 保留旧 toolbar ID 供宿主定位，但不继承旧页的 nowrap/整行按钮布局。 */
-#codexToolbarV2.cx-toolbar {display:flex;align-items:center;gap:8px 16px;padding:10px 14px;min-width:0;flex-wrap:wrap;overflow:visible}
-.cx-toolbar-main {display:flex;align-items:center;gap:10px;min-width:0;flex:1 1 280px}
-.cx-count,.cx-selected {white-space:nowrap;flex:none;font-variant-numeric:tabular-nums}
-.cx-count {font-weight:600}.cx-selected {color:var(--ui-color-brand)}
-.cx-toolbar-utilities,.cx-bulk-actions,.cx-row-actions {display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.cx-toolbar-utilities {margin-left:auto;justify-content:flex-end}
 #codexToolbarV2.cx-toolbar #btnRefreshCodexV2 {width:auto;min-height:32px}
-.cx-bulk-actions {padding:0 14px 10px}
-.cx-button {display:inline-flex;align-items:center;justify-content:center;min-height:32px;padding:5px 10px;border:1px solid var(--ui-color-border-strong);border-radius:var(--ui-radius-sm,5px);background:var(--ui-color-surface);color:var(--ui-color-text);white-space:nowrap}
-.cx-button:hover:not(:disabled) {border-color:var(--ui-color-brand);background:var(--ui-color-brand-soft);color:var(--ui-color-brand)}
-.cx-link {border:0;background:transparent;color:var(--ui-color-brand);padding:4px 2px;min-height:28px;text-align:left;white-space:nowrap}
 .cx-danger {color:var(--ui-color-danger)}
-.cx-feedback {display:flex;align-items:center;gap:12px;padding:8px 14px;color:var(--ui-color-danger);border-top:1px solid var(--ui-color-border);overflow-wrap:anywhere}
-.cx-table-scroll {max-width:100%;overflow:auto;scrollbar-width:thin;border-block:1px solid var(--ui-color-border);overscroll-behavior-x:contain}
-.cx-table {table-layout:fixed;width:var(--cx-table-width);min-width:100%;border-collapse:collapse;font:inherit}
-.cx-table th {position:relative;padding:6px 10px;background:var(--ui-color-surface-subtle);border-bottom:1px solid var(--ui-color-border);text-align:left;color:var(--ui-color-text-secondary);font-weight:600;white-space:nowrap}
-.cx-table td {padding:10px;border-bottom:1px solid var(--ui-color-border);vertical-align:middle;overflow-wrap:anywhere}
-.cx-table tbody tr:last-child td {border-bottom:0}
-.cx-table tbody tr:hover {background:var(--ui-color-surface-subtle)}
-.cx-table .cx-row-selected {background:var(--ui-color-brand-soft)}
-.cx-table :is(th,td):first-child {text-align:center}
-.cx-table input[type=checkbox] {width:15px;height:15px;vertical-align:middle;accent-color:var(--ui-color-brand);margin:0;cursor:pointer}
-.cx-column-resize {position:absolute;right:-3px;top:0;bottom:0;width:8px;padding:0;border:0;background:transparent;cursor:col-resize!important;touch-action:none;z-index:1}
-.cx-column-resize::after {content:'';position:absolute;right:3px;top:25%;bottom:25%;width:1px;background:var(--ui-color-border-strong)}
-.cx-column-resize:hover::after,.cx-column-resize:focus-visible::after {width:2px;background:var(--ui-color-brand)}
-.cx-badge {display:inline;max-width:100%;font-weight:500;font-size:12px;line-height:18px}
-.cx-badge--success {color:var(--ui-color-success)}.cx-badge--danger {color:var(--ui-color-danger)}.cx-badge--warning {color:var(--ui-color-warning,var(--ui-color-text))}.cx-badge--neutral {color:var(--ui-color-text-secondary)}
-.cx-time {font-variant-numeric:tabular-nums}
-.cx-row-actions {flex-wrap:nowrap;justify-content:flex-start;gap:12px;min-height:32px}
+.cx-row-actions {flex-wrap:nowrap}
 .cx-mobile-summary {display:none}
-.cx-empty {display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:180px;padding:24px;text-align:center;color:var(--ui-color-text-secondary);gap:10px}
-.cx-empty p {margin:0;max-width:42em;overflow-wrap:anywhere}
-.cx-empty strong {color:var(--ui-color-text);font-weight:600}
-.cx-sr-only {position:absolute!important;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
 .cx-all-filters {display:none}
 /* Portal 浮层拥有独立样式，不能依赖 cx-root 祖先。 */
 .cx-filter-fields {display:flex;flex-direction:column;gap:12px}
 .cx-filter-field {display:flex;flex-direction:column;gap:6px;font-weight:500}
 .cx-filter-field input,.cx-filter-field select {width:100%;min-width:0;min-height:34px;padding:6px 8px;border:1px solid var(--ui-color-border-strong);border-radius:5px;background:var(--ui-color-surface);color:var(--ui-color-text);font:inherit}
-.cx-row-menu {z-index:1200;width:350px;max-width:calc(100vw - 20px);max-height:min(520px,var(--reka-popover-content-available-height));overflow:auto;padding:12px;border:1px solid var(--ui-color-border-strong);border-radius:8px;background:var(--ui-color-surface);color:var(--ui-color-text);box-shadow:0 8px 28px rgb(23 32 51 / 16%);font:13px/1.5 var(--ui-font-sans)}
-.cx-row-details {display:grid;grid-template-columns:82px minmax(0,1fr);gap:5px 10px;margin:0 0 12px;padding:0 0 12px;border-bottom:1px solid var(--ui-color-border)}
-.cx-row-details dt {color:var(--ui-color-text-secondary)}.cx-row-details dd {margin:0;overflow-wrap:anywhere;white-space:pre-wrap}
-.cx-menu-actions {display:grid;grid-template-columns:1fr 1fr;gap:4px}
-.cx-menu-actions button {padding:7px 8px;min-height:34px;text-align:left;border:0;border-radius:4px;background:transparent;color:inherit}
+.cx-row-menu {z-index:1200;box-sizing:border-box;min-width:176px;max-width:min(260px,calc(100vw - 16px));max-height:min(520px,var(--reka-popover-content-available-height));overflow:auto;padding:5px;border:1px solid var(--ui-color-border);border-radius:8px;background:var(--ui-color-surface);color:var(--ui-color-text);box-shadow:0 8px 28px rgb(23 32 51 / 16%);font:13px/1.5 var(--ui-font-sans)}
+.cx-menu-actions {display:grid;grid-template-columns:1fr;gap:1px}
+.cx-menu-actions button {padding:6px 9px;min-height:34px;text-align:left;border:0;border-radius:5px;background:transparent;color:inherit}
 .cx-menu-actions button:hover:not(:disabled) {background:var(--ui-color-brand-soft);color:var(--ui-color-brand)}
 .cx-menu-actions .cx-danger {color:var(--ui-color-danger)}
 @container cx-workspace (max-width:860px) {
   #codexToolbarV2.cx-toolbar {display:grid;grid-template-columns:minmax(0,1fr);padding:8px 10px;gap:6px 10px}
+  #codexToolbarV2 .cx-toolbar-utilities {width:100%;margin-left:0;justify-content:flex-end}
   .cx-toolbar-main {width:100%;gap:8px}
   .cx-toolbar-utilities {width:100%;min-width:0;margin-left:0;justify-content:flex-end;gap:8px}
   #codexToolbarV2.cx-toolbar #btnRefreshCodexV2 {min-height:36px}
@@ -61,19 +31,26 @@
   .cx-table {display:block;width:100%;min-width:0}
   .cx-table thead,.cx-table colgroup {display:none}
   .cx-table tbody {display:block}
-  .cx-table tbody tr {display:grid;grid-template-columns:28px minmax(0,1fr) auto;align-items:center;gap:8px;padding:10px;border-bottom:1px solid var(--ui-color-border)}
+  .cx-table tbody tr:not(.ui-table__state-row) {display:grid;grid-template-columns:28px minmax(0,1fr) auto;align-items:center;gap:8px;padding:10px;border-bottom:1px solid var(--ui-color-border)}
   .cx-table tbody tr:last-child {border-bottom:0}
-  .cx-table td {display:block;padding:0;border:0;min-width:0}
+  .cx-table td {display:block;height:auto;padding:0;border:0;min-width:0;background:transparent}
+  .cx-table :is(th,td):last-child {position:static;box-shadow:none}
   .cx-table .cx-extra,.cx-direct-download,.cx-identity .list-cell-secondary {display:none}
   .cx-identity .list-cell-primary {display:block;white-space:nowrap;text-overflow:ellipsis;overflow:hidden;max-height:18px}
   .cx-mobile-summary {display:block;max-width:100%;margin-top:4px;color:var(--ui-color-text-secondary);font-size:12px;line-height:18px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .cx-row-actions {gap:0}
-  .cx-table .cx-empty-row {display:block}
-  .cx-bulk-actions {padding:0 10px 10px}
-  .cx-button {min-height:36px}
+  .cx-table .ui-table__state-row {display:block}
 }
 @media(max-width:680px) {
   .cx-filter-field input,.cx-filter-field select {font-size:16px;min-height:40px}
   .cx-menu-actions button {min-height:40px}
-  .cx-row-menu {width:360px}
+  .cx-row-menu {width:min(240px,calc(100vw - 24px))}
+}
+
+/* 选中凭证的批量操作并入顶部工具栏，与邮箱池保持一致。 */
+.cx-toolbar-main {flex-wrap:wrap}
+.cx-bulk-actions {display:flex;align-items:center;flex-wrap:wrap;gap:6px;min-width:0;margin-left:2px;padding-left:10px;border-left:1px solid var(--ui-color-border)}
+.cx-bulk-actions .ui-button {min-height:28px;padding:3px 9px;font-size:12px}
+@media (max-width:860px) {
+  .cx-bulk-actions {flex-basis:100%;margin-left:0;padding-left:0;border-left:0}
 }

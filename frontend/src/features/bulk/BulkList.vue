@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue';
 import CursorPagination from '../../components/CursorPagination.vue';
 import FilterPopover from '../../components/FilterPopover.vue';
+import TableState from '../../components/TableState.vue';
 import ListFilterSummary from '../../components/ListFilterSummary.vue';
 import type { BulkListDependencies, BulkNavigation, BulkRecord } from './contracts';
 import { useBulkList, type BulkListFilter } from './useBulkList';
@@ -20,6 +21,7 @@ const operations: Record<string, string> = {
   codex_retry: '补 Codex',
   account_completion: '组合补全',
 };
+const stateTone = (state: string) => state === 'active' || state === 'settling' ? 'active' : ['paused', 'cancel_requested', 'stop_requested'].includes(state) ? 'warning' : 'neutral';
 const states: Record<string, string> = {
   active: '执行中',
   paused: '已暂停',
@@ -161,7 +163,7 @@ function setVisible(value: boolean) {
 defineExpose({ refresh, setVisible });
 </script>
 <template>
-  <section class="bl-root" aria-label="批次列表" :aria-busy="loading">
+  <section class="ui-list bl-root" aria-label="批次列表" :aria-busy="loading">
     <div v-if="kpis.length" class="bl-kpis">
       <div
         v-for="kpi in kpis"
@@ -175,16 +177,16 @@ defineExpose({ refresh, setVisible });
         >
       </div>
     </div>
-    <div v-if="chips.length" class="bl-toolbar">
-      <ListFilterSummary :items="chips" @remove="removeFilter" />
-      <button type="button" class="bl-link" @click="list.resetFilters">清除筛选</button>
-    </div>
-    <div v-if="error" class="bl-error" role="alert">
+      <div v-if="chips.length" class="ui-list-toolbar bl-toolbar">
+        <div class="ui-list-toolbar__main bl-toolbar-main"><ListFilterSummary :items="chips" @remove="removeFilter" /></div>
+        <div class="ui-list-toolbar__actions"><button type="button" class="ui-link" @click="list.resetFilters">清除筛选</button></div>
+      </div>
+    <div v-if="error" class="ui-list-feedback is-error bl-error" role="alert">
       <span>{{ error }}</span
-      ><button type="button" class="bl-link" :disabled="loading" @click="list.refresh()">重试</button
+      ><button type="button" class="ui-link" :disabled="loading" @click="list.refresh()">重试</button
       ><button
         v-if="stale && navigation.cursor"
-        class="bl-link"
+        class="ui-link"
         type="button"
         :disabled="loading"
         @click="list.first"
@@ -192,7 +194,7 @@ defineExpose({ refresh, setVisible });
         返回首页</button
       ><button
         v-if="stale && hasPrevious"
-        class="bl-link"
+        class="ui-link"
         type="button"
         :disabled="loading"
         @click="list.previous"
@@ -200,8 +202,8 @@ defineExpose({ refresh, setVisible });
         上一页
       </button>
     </div>
-    <div ref="tableHost" class="bl-table-wrap" tabindex="0" role="region" aria-label="批次列表内容">
-      <table class="bl-table">
+    <div ref="tableHost" class="ui-table-scroll bl-table-wrap" tabindex="0" role="region" aria-label="批次列表内容">
+      <table class="ui-table ui-table--sticky-end bl-table">
         <thead>
           <tr>
             <th class="bl-col-name">
@@ -235,7 +237,7 @@ defineExpose({ refresh, setVisible });
                 :open="openFilter === 'operation'"
                 @update:open="openFilter = $event ? 'operation' : null"
                 ><fieldset class="list-filter-options">
-                  <legend class="bl-sr-only">操作类型</legend>
+                  <legend class="ui-sr-only">操作类型</legend>
                   <label class="list-filter-option"
                     ><input
                       type="radio"
@@ -264,7 +266,7 @@ defineExpose({ refresh, setVisible });
                 :open="openFilter === 'state'"
                 @update:open="openFilter = $event ? 'state' : null"
                 ><fieldset class="list-filter-options">
-                  <legend class="bl-sr-only">运行状态</legend>
+                  <legend class="ui-sr-only">运行状态</legend>
                   <label class="list-filter-option"
                     ><input
                       type="radio"
@@ -309,7 +311,7 @@ defineExpose({ refresh, setVisible });
                 </div></FilterPopover
               >
             </th>
-            <th><span class="bl-sr-only">操作</span></th>
+            <th><span class="ui-sr-only">操作</span></th>
           </tr>
         </thead>
         <tbody>
@@ -317,7 +319,7 @@ defineExpose({ refresh, setVisible });
             <td class="bl-col-name">
               <button
                 type="button"
-                class="bl-name"
+                class="ui-link bl-name"
                 data-bulk-open
                 :disabled="stale"
                 :title="row.name"
@@ -328,7 +330,7 @@ defineExpose({ refresh, setVisible });
             </td>
             <td>{{ row.operation }}</td>
             <td>
-              <span class="bl-status" :class="`is-${row.state}`">{{ row.status }}</span>
+              <span class="ui-badge bl-status" :class="`ui-badge--${stateTone(row.state)}`">{{ row.status }}</span>
             </td>
             <td data-bulk-progress>
               <template v-if="row.total !== null && row.done !== null"
@@ -366,7 +368,7 @@ defineExpose({ refresh, setVisible });
             <td>
               <button
                 type="button"
-                class="bl-button"
+                class="ui-link"
                 data-bulk-report
                 :disabled="stale"
                 @click="report(row.id)"
@@ -375,32 +377,7 @@ defineExpose({ refresh, setVisible });
               </button>
             </td>
           </tr>
-          <tr v-if="!rows.length">
-            <td colspan="7">
-              <div class="bl-empty" role="status">
-                <strong>{{
-                  loading
-                    ? '正在加载批次…'
-                    : error
-                      ? '暂时无法读取批次'
-                      : chips.length
-                        ? '没有匹配的批次'
-                        : '还没有批次'
-                }}</strong
-                ><template v-if="!loading && !error"
-                  ><p>选择操作和账号范围，即可集中执行与追踪结果。</p>
-                  <button
-                    type="button"
-                    class="bl-button"
-                    data-bulk-create
-                    @click="deps.callbacks.navigate('create')"
-                  >
-                    新建批次
-                  </button></template
-                >
-              </div>
-            </td>
-          </tr>
+          <TableState v-if="!rows.length" :colspan="7" :loading="loading" :error="error ? ' ' : ''" loading-title="正在加载批次…" error-title="暂时无法读取批次" :title="chips.length ? '没有匹配的批次' : '还没有批次'" text="选择操作和账号范围，即可集中执行与追踪结果。"><button v-if="!loading && !error" type="button" class="ui-button ui-button--primary" data-bulk-create @click="deps.callbacks.navigate('create')">新建批次</button></TableState>
         </tbody>
       </table>
     </div>

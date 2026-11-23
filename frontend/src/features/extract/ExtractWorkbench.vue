@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import {computed,onMounted,onBeforeUnmount,ref,watch} from 'vue';import type {ExtractDeps,ExtractTask,ExtractLoadOptions,TaskId} from './contracts';import {createExtractWorkbench} from './useExtractWorkbench';import {createExtractBatch} from './useExtractBatch';import {createExtractArtifacts} from './useExtractArtifacts';import {useNativeDialog} from '../../shared/useNativeDialog';import {providerLabel,modeLabel,label,outcome,time,number,sourceSuffix,statusOptions,sourceLabel,modeLabels,promotionLabels,typeLabels,modes,linkTypes,candidateHint,active,safeReplay,paymentUrl,qrSources,paymentStatus,listOutcome,expiryText} from './presentation';import ListPagination from '../../components/ListPagination.vue';import ListCell from '../../components/ListCell.vue';import ListResult from '../../components/ListResult.vue';import ListFilterSummary from '../../components/ListFilterSummary.vue';import ExtractFilters from './ExtractFilters.vue';
+import {computed,onMounted,onBeforeUnmount,ref,watch} from 'vue';import type {ExtractDeps,ExtractTask,ExtractLoadOptions,TaskId} from './contracts';import {createExtractWorkbench} from './useExtractWorkbench';import {createExtractBatch} from './useExtractBatch';import {createExtractArtifacts} from './useExtractArtifacts';import {useNativeDialog} from '../../shared/useNativeDialog';import {providerLabel,modeLabel,label,outcome,time,number,sourceSuffix,statusOptions,sourceLabel,modeLabels,promotionLabels,typeLabels,modes,linkTypes,candidateHint,active,safeReplay,paymentUrl,qrSources,paymentStatus,listOutcome,expiryText} from './presentation';import ListPagination from '../../components/ListPagination.vue';import ListCell from '../../components/ListCell.vue';
+import TableState from '../../components/TableState.vue';import ListResult from '../../components/ListResult.vue';import ListFilterSummary from '../../components/ListFilterSummary.vue';import ExtractFilters from './ExtractFilters.vue';
 const props=defineProps<{deps?:ExtractDeps}>();const deps=props.deps||{};const work=createExtractWorkbench(deps);const batch=createExtractBatch(deps,()=>work.load({force:true}));const artifacts=createExtractArtifacts(deps,()=>work.load({force:true}));const visible=ref(deps.visible!==false);const showCreate=ref(false);const createDialog=ref<HTMLDialogElement>();const detailDialog=ref<HTMLDialogElement>();const paymentDialog=ref<HTMLDialogElement>();const query=work.state.query;const selected=computed(()=>work.state.selected as Set<string>);const pages=computed(()=>Math.max(1,Math.ceil(work.state.total/query.size)));const providers=computed(()=>work.state.config?.providers||batch.state.config?.providers||[]);const tableScroll=ref<HTMLElement>();let scrollGeneration=0;const selectedAll=computed(()=>work.state.items.length>0&&work.state.items.every((x:ExtractTask)=>selected.value.has(String(x.task_id))));
 useNativeDialog(createDialog,()=>showCreate.value,()=>visible.value);useNativeDialog(detailDialog,()=>Boolean(artifacts.state.drawer),()=>visible.value);useNativeDialog(paymentDialog,()=>Boolean(artifacts.state.payment.open),()=>visible.value);
 type FilterKey='query'|'provider'|'mode'|'status'|'batch';
@@ -40,7 +41,7 @@ function setVisible(v:boolean){visible.value=v;work.setVisible(v);if(!v){openFil
  <section class="extract-page" :aria-busy="work.state.loading">
   <header class="extract-toolbar">
    <div class="extract-title">
-    <h1>提链工作台</h1>
+    <h1 class="ui-sr-only">提链工作台</h1>
     <div v-if="work.state.summary" class="extract-metrics" aria-label="提链概况">
      <span>今日出链 <strong>{{number(work.state.summary.today_extracted)}}</strong></span>
      <span>待支付 <strong>{{number(work.state.summary.awaiting_payment)}}</strong></span>
@@ -48,39 +49,38 @@ function setVisible(v:boolean){visible.value=v;work.setVisible(v);if(!v){openFil
     </div>
    </div>
    <div class="extract-toolbar-actions">
-    <button type="button" class="extract-button" @click="refresh">刷新</button>
-    <button type="button" class="extract-button" @click="work.exportRows(true)">导出当前筛选</button>
-    <button type="button" class="extract-button primary" @click="openCreate">新建批次</button>
+    <button type="button" class="ui-button" @click="refresh">刷新</button>
+    <button type="button" class="ui-button" @click="work.exportRows(true)">导出当前筛选</button>
+    <button type="button" class="ui-button ui-button--primary" @click="openCreate">新建批次</button>
    </div>
   </header>
-  <div class="extract-list-panel">
-  <div class="extract-count-row" data-extract-count-row>
-   <div class="extract-count-main"><span class="extract-count">共 {{number(work.state.total)}} 条任务</span><ListFilterSummary :items="filterChips" @remove="changeFilter($event as FilterKey,'')"/></div>
-   <div class="extract-count-actions">
-    <button v-if="filterChips.length" type="button" class="extract-inline-button" @click="resetFilters">清除筛选</button>
+  <div class="ui-list extract-list-panel">
+  <div class="ui-list-toolbar extract-count-row" data-extract-count-row>
+   <div class="ui-list-toolbar__main extract-count-main"><span class="ui-list-count extract-count">共 {{number(work.state.total)}} 条任务</span><ListFilterSummary :items="filterChips" @remove="changeFilter($event as FilterKey,'')"/></div>
+   <div class="ui-list-toolbar__actions extract-count-actions">
+    <button v-if="filterChips.length" type="button" class="ui-link" @click="resetFilters">清除筛选</button>
     <ExtractFilters column="batch" :values="filterValues" :providers="filterProviders" :batches="work.state.batches" :batch-busy="work.state.batchLoading" :open="openFilter==='batch'" @update:open="openFilter=$event?'batch':null" @change="changeFilter">
      <p v-if="work.state.batchLoading" class="extract-batch-message" role="status">正在读取批次…</p>
      <div v-if="work.state.auxErrors.batches" class="extract-batch-message" role="alert">
-      批次读取失败 <button type="button" class="extract-inline-button" @click="changeBatchPage(work.state.batchPage)">重试</button>
+      批次读取失败 <button type="button" class="ui-link" @click="changeBatchPage(work.state.batchPage)">重试</button>
      </div>
      <ListPagination v-if="work.state.batchTotal>20" class="extract-batch-pager" label="提链批次分页" :page="work.state.batchPage" :size="20" :page-sizes="[20]" :total="work.state.batchTotal" :busy="work.state.batchLoading" @update:page="changeBatchPage"/>
     </ExtractFilters>
     <span class="extract-mobile-filter"><ExtractFilters omit-batch :values="filterValues" :providers="filterProviders" :batches="work.state.batches" :counts="work.state.counts" :open="openFilter==='all'" @update:open="openFilter=$event?'all':null" @change="changeFilter"/></span>
-    <button v-if="query.batch" type="button" class="extract-inline-button extract-cancel" :title="batchScope" :disabled="Boolean(work.state.cancellingBatch)" @click="work.cancelBatch()">取消当前批次</button>
+    <button v-if="query.batch" type="button" class="ui-link ui-link--danger extract-cancel" :title="batchScope" :disabled="Boolean(work.state.cancellingBatch)" @click="work.cancelBatch()">取消当前批次</button>
    </div>
   </div>
-  <p v-if="work.state.error" class="notice error" role="alert">{{work.state.error}} <button type="button" class="extract-inline-button" @click="refresh">重试</button></p>
-  <p v-if="artifacts.state.error" class="notice error" role="alert">{{artifacts.state.error}}</p>
-  <div v-if="selected.size" class="extract-bulk"><strong>已选 {{selected.size}} 项</strong><button type="button" class="extract-button" :disabled="work.state.bulkBusy" @click="work.bulkAction('sync_status')">同步原单</button><button type="button" class="extract-button" @click="work.bulkAction('links')">复制支付链接</button><button type="button" class="extract-button" @click="work.exportRows(false)">导出选中</button><button type="button" class="extract-inline-button" @click="work.bulkAction('clear')">清除选择</button></div>
-  <div ref="tableScroll" class="extract-table-wrap" role="region" aria-label="提链任务表格" tabindex="0"><table aria-label="提链任务"><thead><tr><th><input type="checkbox" aria-label="选择本页提链任务" :checked="selectedAll" @change="all(($event.target as HTMLInputElement).checked)"></th>
+  <p v-if="work.state.error" class="ui-list-feedback is-error" role="alert">{{work.state.error}} <button type="button" class="ui-link" @click="refresh">重试</button></p>
+  <p v-if="artifacts.state.error" class="ui-list-feedback is-error" role="alert">{{artifacts.state.error}}</p>
+  <div v-if="selected.size" class="ui-list-bulkbar extract-bulk"><strong class="ui-list-bulkbar__count">已选 {{selected.size}} 项</strong><button type="button" class="ui-button" :disabled="work.state.bulkBusy" @click="work.bulkAction('sync_status')">同步原单</button><button type="button" class="ui-button" @click="work.bulkAction('links')">复制支付链接</button><button type="button" class="ui-button" @click="work.exportRows(false)">导出选中</button><button type="button" class="ui-link" @click="work.bulkAction('clear')">清除选择</button></div>
+  <div ref="tableScroll" class="ui-table-scroll extract-table-wrap" role="region" aria-label="提链任务表格" tabindex="0"><table class="ui-table ui-table--sticky-end extract-table" aria-label="提链任务"><thead><tr><th class="ui-col-check"><input type="checkbox" aria-label="选择本页提链任务" :checked="selectedAll" @change="all(($event.target as HTMLInputElement).checked)"></th>
    <th v-for="key in (['query','provider','mode'] as FilterKey[])" :key="key"><ExtractFilters :column="key" :values="filterValues" :providers="filterProviders" :batches="work.state.batches" :counts="work.state.counts" :open="openFilter===key" @update:open="openFilter=$event?key:null" @change="changeFilter"/></th>
    <th>准备</th><th><ExtractFilters column="status" :values="filterValues" :providers="filterProviders" :batches="work.state.batches" :counts="work.state.counts" :open="openFilter==='status'" @update:open="openFilter=$event?'status':null" @change="changeFilter"/></th><th>支付</th><th>Plus</th><th>更新时间</th><th>操作</th></tr></thead>
-   <tbody><tr v-for="task in work.state.items" :key="String(task.task_id)" :class="{'is-selected':selected.has(String(task.task_id))}"><td><input type="checkbox" :aria-label="`选择提链任务 ${task.task_id}`" :checked="selected.has(String(task.task_id))" @change="toggle(String(task.task_id))"></td>
+   <tbody><tr v-for="task in work.state.items" :key="String(task.task_id)" :class="{'is-selected':selected.has(String(task.task_id))}"><td class="ui-col-check"><input type="checkbox" :aria-label="`选择提链任务 ${task.task_id}`" :checked="selected.has(String(task.task_id))" @change="toggle(String(task.task_id))"></td>
     <td><ListCell :text="task.email||'账号未记录'" :secondary="`#${task.task_id}`"/></td><td><ListCell :text="providerLabel(task.provider_id)" :secondary="task.link_type||undefined"/></td><td><ListCell :text="modeLabel(task.mode)" :secondary="sourceSuffix(task)||undefined"/></td><td><ListCell :text="label(task.preflight_status,'未开始')"/></td>
     <td><ListResult data-extract-result :label="resultSummary(task).label" :tone="resultSummary(task).tone" :title="outcome(task).detail"><template #details><p>{{outcome(task).label}}</p><p>{{outcome(task).detail}}</p><p v-if="task.message">{{task.message}}</p><p v-if="task.error">{{task.error}}</p><p v-if="task.progress?.label">{{task.progress.label}}</p></template></ListResult></td>
-    <td><ListCell :text="label(task.payment_phase||task.payment_status,'—')"/></td><td><ListCell :text="label(task.plus_state||task.plus_status,'未核验')"/></td><td><ListCell :text="time(task.updated_at||task.created_at)"/></td><td class="extract-row-actions"><button type="button" class="extract-inline-button" @click="artifacts.openDetail(task.task_id)">详情</button><button type="button" class="extract-button" :disabled="!(task.has_payment_entry||task.has_payment_link||task.has_qr)" @click="paymentEntry(task.task_id)">支付入口</button></td>
-   </tr></tbody></table>
-   <p v-if="!work.state.items.length" class="empty" role="status">{{work.state.loading?'正在读取任务…':work.state.error?'任务读取失败':filterChips.length?'没有符合筛选条件的任务':'暂无提链任务'}}</p>
+    <td><ListCell :text="label(task.payment_phase||task.payment_status,'—')"/></td><td><ListCell :text="label(task.plus_state||task.plus_status,'未核验')"/></td><td><ListCell :text="time(task.updated_at||task.created_at)"/></td><td><div class="ui-row-actions extract-row-actions"><button type="button" class="ui-link" @click="artifacts.openDetail(task.task_id)">详情</button><button type="button" class="ui-link" :disabled="!(task.has_payment_entry||task.has_payment_link||task.has_qr)" @click="paymentEntry(task.task_id)">支付入口</button></div></td>
+   </tr><TableState v-if="!work.state.items.length" :colspan="10" :loading="work.state.loading" :error="work.state.error?' ':''" loading-title="正在读取任务…" error-title="任务读取失败" :title="filterChips.length?'没有符合筛选条件的任务':'暂无提链任务'"/></tbody></table>
   </div>
   <ListPagination class="extract-task-pager" label="提链任务分页" :page="query.page" :size="query.size" :total="work.state.total" :busy="work.state.loading" @update:page="changePage" @update:size="changeSize"/>
   </div>
@@ -135,113 +135,42 @@ function setVisible(v:boolean){visible.value=v;work.setVisible(v);if(!v){openFil
 </template>
 <style scoped>
 @import '../../styles/task-center.css';
-/* Keep the toolbar and pager outside the only scrolling region. */
+/* 列表外观来自共享 list.css；这里只保留本页布局、概况数字与列宽。 */
 .extract-page {
   display:flex; flex-direction:column; gap:14px; height:100%; min-height:0;
   min-width:0; max-width:100%; color:var(--ui-color-text);
   font:13px/1.45 var(--ui-font-sans);
 }
-.extract-toolbar,.extract-title,.extract-toolbar-actions,.extract-metrics,
-.extract-count-row,.extract-count-main,.extract-count-actions,.extract-bulk {
-  display:flex; align-items:center; gap:8px; min-width:0;
+.extract-toolbar,.extract-title,.extract-toolbar-actions,.extract-metrics {
+  display:flex; align-items:center; flex-wrap:wrap; gap:8px; min-width:0;
 }
-.extract-toolbar,.extract-count-row { justify-content:space-between; }
-.extract-toolbar,.extract-title,.extract-toolbar-actions,.extract-metrics,
-.extract-count-actions,.extract-bulk { flex-wrap:wrap; }
+.extract-toolbar { justify-content:space-between; }
 .extract-title { gap:8px 18px; }
-.extract-title h1 { margin:0; font-size:22px; line-height:1.3; font-weight:700; }
-.extract-metrics {
-  color:var(--ui-color-text-secondary); font-size:12px; gap:4px 12px;
-  font-variant-numeric:tabular-nums;
-}
+.extract-metrics { color:var(--ui-color-text-secondary); font-size:12.5px; gap:4px 16px; font-variant-numeric:tabular-nums; }
 .extract-metrics span { white-space:nowrap; }
-.extract-metrics strong { margin-inline-start:3px; color:var(--ui-color-text); font-weight:650; }
+.extract-metrics strong { margin-inline-start:4px; color:var(--ui-color-text); font-size:15px; font-weight:700; font-stretch:110%; }
 .extract-metrics span:last-child strong { color:var(--ui-color-warning); }
-.extract-button,.extract-inline-button {
-  display:inline-flex; align-items:center; justify-content:center;
-  min-height:30px; border:1px solid transparent; border-radius:6px; padding:4px 9px;
-  color:var(--ui-color-text); background:transparent; white-space:nowrap; font:inherit; cursor:pointer;
-}
-.extract-button { border-color:var(--ui-color-border-strong); background:var(--ui-color-surface); }
-.extract-button.primary { border-color:var(--ui-color-brand); background:var(--ui-color-brand); color:var(--ui-color-on-brand,#fff); font-weight:650; }
-.extract-button:not(.primary):hover:not(:disabled),.extract-inline-button:hover:not(:disabled) {
-  color:var(--ui-color-brand); background:var(--ui-color-brand-soft); border-color:var(--ui-color-brand-soft);
-}
-.extract-button.primary:hover { filter:brightness(.94); }
-.extract-button:disabled,.extract-inline-button:disabled { opacity:.48; cursor:default; }
-.extract-inline-button { color:var(--ui-color-brand); }
-.extract-cancel { color:var(--ui-color-danger); }
-.extract-page :is(button,input,select):focus-visible,.extract-table-wrap:focus-visible {
-  outline:2px solid var(--ui-color-brand); outline-offset:2px;
-}
-.extract-list-panel {
-  display:flex; flex:1; flex-direction:column; min-width:0; min-height:0;
-  border:1px solid var(--ui-color-border); border-radius:12px;
-  background:var(--ui-color-surface); box-shadow:0 1px 2px rgb(16 24 40 / 5%); overflow:hidden;
-}
-.extract-count-row { flex:none; padding:6px 14px; }
-.extract-count-main { flex:1; }
-.extract-count { flex:none; font-weight:650; white-space:nowrap; font-variant-numeric:tabular-nums; }
+.extract-list-panel { flex:1; min-height:0; }
 .extract-count-main :deep(.list-filter-summary) { flex:1; }
-.extract-count-actions { justify-content:flex-end; }
-.extract-count-actions :deep(.tc-column-filter-trigger) {
-  padding-inline:9px; border:1px solid var(--ui-color-border); border-radius:6px;
-}
+.extract-count-actions :deep(.tc-column-filter-trigger) { padding-inline:9px; border:1px solid var(--ui-color-border); border-radius:6px; }
 .extract-count-actions :deep(.tc-column-filter-trigger[data-state=open]) { background:var(--ui-color-brand-soft); }
 .extract-mobile-filter { display:none; }
-.extract-bulk {
-  flex:none; padding:5px 14px; border-top:1px solid var(--ui-color-border);
-  background:var(--ui-color-brand-soft);
-}
-.extract-bulk strong { color:var(--ui-color-brand); }
-.extract-table-wrap {
-  flex:1; min-height:0; min-width:0; max-width:100%; overflow:auto;
-  overscroll-behavior-x:contain; scrollbar-width:thin; border-top:1px solid var(--ui-color-border);
-}
-.extract-table-wrap:focus-visible { outline-offset:-2px; }
-.extract-table-wrap table {
-  width:100%; min-width:1050px; table-layout:fixed; border-collapse:separate; border-spacing:0;
-}
-.extract-table-wrap :is(th,td) {
-  padding:5px 11px; border-bottom:1px solid var(--ui-color-border); text-align:left;
-  vertical-align:middle; white-space:normal; overflow-wrap:anywhere;
-}
-.extract-table-wrap th {
-  position:sticky; top:0; z-index:1; height:38px; padding-block:2px;
-  background:var(--ui-color-surface-subtle); color:var(--ui-color-text-secondary);
-  font-size:12px; font-weight:650;
-}
-.extract-table-wrap :is(th,td):first-child { width:38px; text-align:center; }
-.extract-table-wrap th:nth-child(3) { width:12%; }
-.extract-table-wrap th:nth-child(4) { width:11.5%; }
-.extract-table-wrap th:nth-child(5) { width:6.5%; }
-.extract-table-wrap th:nth-child(6) { width:10.5%; }
-.extract-table-wrap th:nth-child(7) { width:6.5%; }
-.extract-table-wrap th:nth-child(8) { width:8.5%; }
-.extract-table-wrap th:nth-child(9) { width:13.5%; }
-.extract-table-wrap th:last-child { width:12.5%; }
-.extract-table-wrap :is(th,td):last-child { text-align:right; }
-.extract-table-wrap :is(th,td):nth-child(9) { font-variant-numeric:tabular-nums; }
-.extract-table-wrap tbody tr:hover { background:var(--ui-color-surface-subtle); }
-.extract-table-wrap tbody tr.is-selected { background:var(--ui-color-brand-soft); }
-.extract-table-wrap input[type=checkbox] {
-  display:block; width:15px; height:15px; min-height:0; padding:0; margin:auto;
-  accent-color:var(--ui-color-brand); cursor:pointer;
-}
-.extract-table-wrap :deep(.list-cell-secondary) { margin-top:0; font-size:12px; }
-.extract-table-wrap td:nth-child(2) :deep(.list-cell-primary) { font-weight:600; }
-.extract-row-actions { white-space:nowrap !important; }
-.extract-row-actions button { min-height:28px; margin-inline-start:3px; padding-inline:6px; font-size:12px; }
-.extract-task-pager {
-  flex:none; border-top:1px solid var(--ui-color-border); padding-block:8px;
-  background:var(--ui-color-surface-subtle);
-}
+.extract-table { min-width:1050px; }
+.extract-table th:nth-child(3) { width:12%; }
+.extract-table th:nth-child(4) { width:11.5%; }
+.extract-table th:nth-child(5) { width:6.5%; }
+.extract-table th:nth-child(6) { width:10.5%; }
+.extract-table th:nth-child(7) { width:6.5%; }
+.extract-table th:nth-child(8) { width:8.5%; }
+.extract-table th:nth-child(9) { width:13.5%; }
+.extract-table th:last-child { width:12.5%; }
+.extract-table td:nth-child(2) :deep(.list-cell-primary) { font-weight:600; }
+.extract-row-actions { flex-wrap:nowrap; }
+.extract-task-pager { flex:none; border-top:1px solid var(--ui-color-border); }
 .extract-batch-pager { padding:8px 0 0; border-top:1px solid var(--ui-color-border); }
 .extract-batch-pager :deep(.list-pagination__size) { display:none; }
 .extract-batch-message,.extract-hint { margin:0; color:var(--ui-color-text-secondary); font-size:12px; }
-.notice { margin:0; padding:7px 14px; background:var(--ui-color-surface-subtle); }
-.error { color:var(--ui-color-danger); }
-.empty { padding:28px 14px; text-align:center; color:var(--ui-color-text-secondary); }
+.ui-list-feedback { margin-bottom:10px; }
 @media (max-width:860px), (max-height:560px) {
   .extract-page { height:auto; padding-bottom:12px; }
   .extract-table-wrap { flex:none; max-height:58dvh; min-height:min(205px,42dvh); }
@@ -249,17 +178,13 @@ function setVisible(v:boolean){visible.value=v;work.setVisible(v);if(!v){openFil
 @media (max-width:860px) {
   .extract-toolbar { align-items:flex-start; }
   .extract-title { flex-direction:column; align-items:flex-start; }
-  .extract-count-row { align-items:flex-start; flex-wrap:wrap; padding-inline:10px; }
-  .extract-count-main { flex-basis:100%; }
-  .extract-count-actions { margin-inline-start:auto; }
   .extract-mobile-filter { display:inline-flex; }
 }
 @media (pointer:coarse) {
-  .extract-button,.extract-inline-button,.extract-row-actions button { min-height:40px; }
-  .extract-count-actions :deep(.tc-column-filter-trigger) { min-height:40px; }
+  .extract-row-actions button,.extract-count-actions :deep(.tc-column-filter-trigger) { min-height:40px; }
 }
 .extract-dialog button { min-height:32px; padding:4px 10px; }
-.extract-dialog .primary { background:var(--ui-color-brand); color:var(--ui-color-on-brand,#fff); border:0; border-radius:5px; }
+.extract-dialog .primary { background:var(--ui-color-brand); color:var(--ui-color-on-brand,#fff); border:0; border-radius:var(--ui-radius-md); }
 .extract-dialog{box-sizing:border-box;width:min(760px,calc(100vw - 24px));max-width:calc(100vw - 24px);max-height:90dvh;overflow:auto;padding:20px;border:1px solid var(--ui-color-border);border-radius:10px;color:var(--ui-color-text);background:var(--ui-color-surface)}.extract-dialog[open]{display:flex;flex-direction:column;gap:12px}.extract-dialog::backdrop{background:#0006}.extract-dialog header,.extract-dialog footer,.extract-detail-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.extract-dialog header{justify-content:space-between}.extract-dialog h2,.extract-dialog h3,.extract-dialog p{margin:0}.extract-dialog pre{max-width:100%;white-space:pre-wrap;overflow-wrap:anywhere}.extract-form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.extract-form-grid label{display:flex;flex-direction:column;gap:5px;min-width:0;font-size:13px}.extract-form-grid input,.extract-form-grid select{width:100%;min-width:0;min-height:36px;padding:5px 8px}.extract-facts{display:flex;gap:10px 18px;flex-wrap:wrap}.extract-facts>div{min-width:120px;overflow-wrap:anywhere}.extract-facts dt{font-size:12px;color:var(--ui-color-text-secondary)}.extract-facts dd{margin:4px 0}.extract-timeline{padding-left:20px}.extract-timeline li{margin-bottom:12px;overflow-wrap:anywhere}
 @media(max-width:800px) {
   .extract-form-grid { grid-template-columns:minmax(0,1fr); }

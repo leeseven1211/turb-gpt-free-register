@@ -89,8 +89,6 @@
 .ac-table.accounts-table-v2 .account-promotion-country-row{height:22px;min-height:22px}
 .ac-table .acc-mobile-meta,.ac-table .acc-mobile-dot{display:none}
 .ac-row-selected td{background:var(--ui-color-brand-soft)}
-.ac-column-resize{position:absolute;right:-3px;top:0;bottom:0;width:7px;padding:0;border:0;background:transparent;cursor:col-resize;z-index:3;touch-action:none}
-.ac-column-resize:focus-visible{background:var(--ui-color-brand-soft)}
 .ac-filter-fields{display:grid;gap:10px;min-width:0;font-size:12px}
 .ac-filter-field{display:grid;gap:5px}
 .ac-filter-field input,.ac-filter-field select{min-height:32px;padding:5px 8px;border:1px solid var(--ui-color-border);border-radius:5px;background:var(--ui-color-surface);color:var(--ui-color-text);font:inherit}
@@ -99,8 +97,6 @@
 .ac-row-menu button{display:block;min-height:30px;text-align:left;padding:5px 8px;border:0;background:transparent;color:var(--ui-color-text);font:inherit;font-size:12px;cursor:pointer}
 .ac-row-menu button:disabled{opacity:.5;cursor:default}
 .ac-row-menu button.danger{color:var(--ui-color-danger)}
-.ac-empty{text-align:center!important;height:180px!important;white-space:normal!important}
-.ac-empty p{color:var(--ui-color-text-secondary);margin:8px 0}
 .ac-sr-only{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
 .ac-mobile-filters{display:none}
 @media(max-width:860px){

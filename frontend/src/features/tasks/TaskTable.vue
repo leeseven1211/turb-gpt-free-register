@@ -5,6 +5,8 @@ import {emptyFilters, type Facets, type OperationTask, type TaskAction, type Tas
 import TaskColumnFilter from './TaskColumnFilter.vue';
 import {filterColumns} from './filterDefinitions';
 import ListCell from '../../components/ListCell.vue';
+import ColumnResizer from '../../components/ColumnResizer.vue';
+import TableState from '../../components/TableState.vue';
 import TaskResultCell from './TaskResultCell.vue';
 import {canRetry, canStop, failureStageText, formatDateTime, formatDuration, isActive, label, record} from './presentation';
 import {taskListStatus} from './statusDisplay';
@@ -25,33 +27,33 @@ function batchRound(task: OperationTask) { return String(task.bulk_round_id || r
 defineExpose({resetColumns});
 </script>
 <template>
-  <div class="tc-table-scroll" tabindex="0" aria-label="任务列表，可横向滚动" :aria-busy="loading">
-    <table class="tc-table" :style="{'--tc-table-width': `${widths.reduce((sum, n) => sum + n, 0)}px`}">
-      <caption class="tc-sr-only">任务中心列表，选择任务可批量操作</caption>
+  <div class="ui-table-scroll tc-table-scroll" tabindex="0" aria-label="任务列表，可横向滚动" :aria-busy="loading">
+    <table class="ui-table ui-table--sticky-end ui-table--cards tc-table" :style="{'--ui-table-width': `${widths.reduce((sum, n) => sum + n, 0)}px`}">
+      <caption class="ui-sr-only">任务中心列表，选择任务可批量操作</caption>
       <colgroup><col v-for="(width, index) in widths" :key="index" :style="{width: `${width}px`}"></colgroup>
-      <thead><tr><th v-for="(name, index) in columns" :key="name" scope="col">
+      <thead><tr><th v-for="(name, index) in columns" :key="name" scope="col" :class="{'ui-col-check': index === 0}">
         <input v-if="index === 0" type="checkbox" aria-label="全选当前页任务" :checked="allChecked" :indeterminate="partial" :disabled="!items.length" @change="emit('selectPage', ($event.target as HTMLInputElement).checked)">
         <template v-else>
           <TaskColumnFilter v-if="filterColumns[index - 1]" :column="filterColumns[index - 1]!" :model-value="filters" :facets="facets" :open="openFilter === filterColumns[index - 1]!.key" @update:model-value="emit('update:filters', $event)" @update:open="emit('update:openFilter', $event ? filterColumns[index - 1]!.key : null)"/>
           <template v-else>{{ name }}</template>
-          <button v-if="index < columns.length - 1" type="button" class="tc-column-resize" :aria-label="`调整${name}列宽，方向键调整`" @pointerdown.prevent="resize(index, $event)" @keydown.left.prevent="resizeWithKeyboard(index, -10)" @keydown.right.prevent="resizeWithKeyboard(index, 10)"></button>
+          <ColumnResizer v-if="index < columns.length - 1" :label="name" @start="resize(index, $event)" @nudge="resizeWithKeyboard(index, $event)"/>
         </template>
       </th></tr></thead>
-      <tbody><tr v-for="{task, execution, target} in rows" :key="task.id" :class="{'tc-row-selected': selected.has(task.id)}">
-        <td data-label="选择"><input type="checkbox" :checked="selected.has(task.id)" :aria-label="`选择任务 #${task.id}`" @change="emit('select', task.id, ($event.target as HTMLInputElement).checked)"></td>
-        <td data-label="ID"><button type="button" class="tc-link tc-task-id" @click="emit('detail', task.id)">#{{ task.id }}</button></td>
+      <tbody><tr v-for="{task, execution, target} in rows" :key="task.id" :class="{'is-selected': selected.has(task.id)}">
+        <td data-label="选择" class="ui-col-check"><input type="checkbox" :checked="selected.has(task.id)" :aria-label="`选择任务 #${task.id}`" @change="emit('select', task.id, ($event.target as HTMLInputElement).checked)"></td>
+        <td data-label="ID"><button type="button" class="ui-link tc-task-id" @click="emit('detail', task.id)">#{{ task.id }}</button></td>
         <td data-label="类型"><ListCell :text="label('task_type', task.task_type)"/></td>
         <td data-label="目标"><ListCell :text="task.account_id ? `账号 #${task.account_id}` : task.attempt_id ? `注册尝试 #${task.attempt_id}` : '—'" :secondary="task.email_snapshot || task.email || '—'"><strong>{{ task.account_id ? `账号 #${task.account_id}` : task.attempt_id ? `注册尝试 #${task.attempt_id}` : '—' }}</strong></ListCell></td>
-        <td data-label="执行状态"><span class="tc-badge" :class="`tc-badge--${execution.tone}`" :title="execution.title">{{ execution.label }}</span><span v-if="execution.secondary" class="tc-subline tc-cell-line" :title="execution.secondary">{{ execution.secondary }}</span></td>
-        <td data-label="目标状态"><span v-if="target" class="tc-badge" :class="`tc-badge--${target.tone}`" :title="target.title">{{ target.label }}</span><span v-else class="tc-cell-line" aria-label="无额外目标状态">—</span></td>
-        <td data-label="批次 / 触发"><ListCell :text="task.batch_title || task.batch_uuid || (batchId(task) ? '查看批次' : '单任务')" :secondary="label('trigger', task.trigger)"><button v-if="batchId(task)" type="button" class="tc-link" @click="emit('batch', batchId(task), batchRound(task))">{{ task.batch_title || task.batch_uuid || '查看批次' }}</button><template v-else>{{ task.batch_title || task.batch_uuid || '单任务' }}</template></ListCell></td>
+        <td data-label="执行状态"><span class="ui-badge tc-badge" :class="`ui-badge--${execution.tone}`" :title="execution.title">{{ execution.label }}</span><span v-if="execution.secondary" class="tc-subline tc-cell-line" :title="execution.secondary">{{ execution.secondary }}</span></td>
+        <td data-label="目标状态"><span v-if="target" class="ui-badge tc-badge" :class="`ui-badge--${target.tone}`" :title="target.title">{{ target.label }}</span><span v-else class="tc-cell-line" aria-label="无额外目标状态">—</span></td>
+        <td data-label="批次 / 触发"><ListCell :text="task.batch_title || task.batch_uuid || (batchId(task) ? '查看批次' : '单任务')" :secondary="label('trigger', task.trigger)"><button v-if="batchId(task)" type="button" class="ui-link" @click="emit('batch', batchId(task), batchRound(task))">{{ task.batch_title || task.batch_uuid || '查看批次' }}</button><template v-else>{{ task.batch_title || task.batch_uuid || '单任务' }}</template></ListCell></td>
         <td data-label="运行次数"><ListCell :text="`${task.run_count || 0} 次`" :secondary="`最近 #${task.last_run_no || '—'}`"/></td>
         <td data-label="当前步骤"><ListCell :text="stepText(task)" :secondary="formatDuration(task.duration_ms)" :title="stepTitle(task)" :tone="failureStageText(task) ? 'danger' : 'neutral'"/></td>
-        <td data-label="创建 / 完成" class="tc-time"><ListCell :text="formatDateTime(task.created_at)" :secondary="formatDateTime(task.completed_at)"/></td>
+        <td data-label="创建 / 完成" class="ui-time"><ListCell :text="formatDateTime(task.created_at)" :secondary="formatDateTime(task.completed_at)"/></td>
         <td data-label="结果 / 错误"><TaskResultCell :task="task"/></td>
-        <td data-label="操作"><div class="tc-row-actions"><button type="button" class="tc-link" @click="emit('detail', task.id)">详情</button><button v-if="canRetry(task)" type="button" class="tc-link" :disabled="busy" @click="emit('action', task, 'retry')">重跑</button><button v-if="canStop(task)" type="button" class="tc-link tc-text-danger" :disabled="busy" @click="emit('action', task, 'terminate')">{{ task.status === 'queued' ? '取消' : '终止' }}</button><button v-if="!isActive(task)" type="button" class="tc-link tc-text-danger" :disabled="busy" @click="emit('action', task, 'delete')">删除</button></div></td>
+        <td data-label="操作"><div class="ui-row-actions tc-row-actions"><button type="button" class="ui-link" @click="emit('detail', task.id)">详情</button><button v-if="canRetry(task)" type="button" class="ui-link" :disabled="busy" @click="emit('action', task, 'retry')">重跑</button><button v-if="canStop(task)" type="button" class="ui-link ui-link--danger" :disabled="busy" @click="emit('action', task, 'terminate')">{{ task.status === 'queued' ? '取消' : '终止' }}</button><button v-if="!isActive(task)" type="button" class="ui-link ui-link--danger" :disabled="busy" @click="emit('action', task, 'delete')">删除</button></div></td>
       </tr>
-      <tr v-if="!items.length" class="tc-empty-row"><td :colspan="columns.length"><div class="tc-empty" :role="error ? 'alert' : 'status'"><span v-if="loading" class="tc-spinner" aria-hidden="true"></span><strong>{{ loading ? '正在加载任务记录' : error ? '任务列表加载失败' : '没有匹配的任务' }}</strong><p>{{ error || (loading ? '正在同步任务状态' : '可调整筛选条件，或清除全部筛选。') }}</p><button v-if="error" type="button" class="tc-button" @click="emit('retry')">重新加载</button></div></td></tr>
+      <TableState v-if="!items.length" :colspan="columns.length" :loading="loading" :error="error" loading-title="正在加载任务记录" loading-text="正在同步任务状态" error-title="任务列表加载失败" title="没有匹配的任务" text="可调整筛选条件，或清除全部筛选。" retry-label="重新加载" @retry="emit('retry')"/>
       </tbody>
     </table>
   </div>

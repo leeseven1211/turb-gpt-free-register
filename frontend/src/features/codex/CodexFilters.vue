@@ -6,6 +6,7 @@ import {clearFilter, codexColumns, facetLabel, filterChips, type CodexColumn} fr
 const props = defineProps<{modelValue: FilterValues; facets: CodexFacets; open: boolean; column?: CodexColumn}>();
 const emit = defineEmits<{'update:modelValue':[FilterValues];'update:open':[boolean]}>();
 const chosen = ref('q'), radioName = useId();
+function setChosen(value:string){chosen.value=value;}
 const current = computed(() => props.column || codexColumns.find(column => column.key === chosen.value) || codexColumns[0]!);
 const active = computed(() => props.column ? props.column.fields.some(field => !!props.modelValue[field]) : Object.values(props.modelValue).some(Boolean));
 const summary = computed(() => filterChips(props.modelValue, props.facets).find(chip => chip.key === current.value.key)?.label || '');
@@ -13,7 +14,7 @@ const options = computed(() => {
   const field = current.value.fields[0]!;
   const values = (props.facets[current.value.key] || []).filter(item => current.value.key !== 'status' || item.value !== 'archived');
   const selected = props.modelValue[field];
-  const result = values.map(item => ({...item, label: item.label || facetLabel(current.value.key, item.value)}));
+  const result = values.filter(item => Number(item.count) > 0 || item.value === selected).map(item => ({...item, label: item.label || facetLabel(current.value.key, item.value)}));
   if (selected && !result.some(item => item.value === selected)) result.unshift({value:selected,label:facetLabel(current.value.key,selected),count:0});
   return result;
 });
@@ -30,7 +31,7 @@ function finishPointerChoice(event: MouseEvent, field: keyof FilterValues, value
   <div :class="{'cx-all-filters': !column}">
     <FilterPopover :label="column?.label || '凭证'" :trigger-label="column ? undefined : '筛选'" :active="active" :summary="summary" :open="open" @update:open="emit('update:open',$event)">
       <div class="cx-filter-fields">
-        <label v-if="!column" class="cx-filter-field">筛选列<select v-model="chosen" aria-label="选择筛选列"><option v-for="entry in codexColumns" :key="entry.key" :value="entry.key">{{ entry.label }}</option></select></label>
+        <div v-if="!column" class="cx-filter-field">筛选列<div class="list-filter-options" role="radiogroup" aria-label="选择筛选列"><label v-for="entry in codexColumns" :key="entry.key" class="list-filter-option" :data-filter-value="entry.key"><input type="radio" :name="`${radioName}-column`" :value="entry.key" :checked="chosen===entry.key" @change="setChosen(entry.key)"><span>{{ entry.label }}</span></label></div></div>
         <fieldset v-if="current.kind === 'enum'" class="list-filter-options">
           <legend class="cx-sr-only">{{ current.label }}</legend>
           <label class="list-filter-option"><input type="radio" :name="radioName" value="" :checked="!modelValue[current.fields[0]!]" @change="change(current.fields[0]!,'')" @click="finishPointerChoice($event,current.fields[0]!,'')"><span>全部</span></label>

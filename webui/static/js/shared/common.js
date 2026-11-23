@@ -69,8 +69,9 @@ const LIST_FACET_LABELS = {
   totp: {enabled:'已启用', disabled:'未启用'},
   risk: {detected:'已收到', clear:'未发现', pending:'待处理'},
   promotion: {
-    plus_100:'Plus · 100% 优惠', plus_50:'Plus · 50% 优惠', plus_other:'Plus · 其他折扣',
-    go_100:'Go · 100% 优惠', go_50:'Go · 50% 优惠', go_other:'Go · 其他折扣',
+    plus_100:'Plus 免费试用', plus_50:'Plus 半价优惠', plus_other:'Plus 其他折扣',
+    go_100:'Go 免费试用', go_50:'Go 半价优惠', go_other:'Go 其他折扣',
+    plus_50_1m:'Plus 一个月半价', plus_50_2m:'Plus 二个月半价', plus_50_3m:'Plus 三个月半价',
     free_trial:'免费试用', half_price:'半价优惠', other_discount:'其他折扣', discount:'折扣优惠',
     other_promo:'其他优惠', none:'无优惠', unknown:'历史优惠待复查',
     pending:'待查询', failed:'查询失败', not_applicable:'不适用',
