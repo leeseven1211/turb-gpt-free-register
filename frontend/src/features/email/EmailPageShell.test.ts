@@ -93,15 +93,15 @@ describe('complete email page owner',()=>{
   expect(w.find('button[aria-label="查看 resource@example.test 的历史子地址"]').exists()).toBe(false);
   w.vm.setView('derivations');await flushPromises();expect(w.get('section[aria-label="历史子邮箱"]').text()).toContain('只读');expect(w.get('section[aria-label="历史子邮箱"]').findAll('button').some(button=>['生成','停用','删除'].includes(button.text()))).toBe(false);
  });
- it('opens row more actions in a modal and colors status values',async()=>{
+ it('opens row actions in an anchored menu and colors status values',async()=>{
   const {w}=await page();
   expect(w.get('td .em-tone.is-active').text()).toContain('已用');
-  await w.findAll('button').find(button=>button.text()==='更多')!.trigger('click');await flushPromises();
-  const dialog=w.get('dialog[data-email-more]');
-  expect((dialog.element as HTMLDialogElement).open).toBe(true);
-  expect(dialog.text()).toContain('恢复可用');expect(dialog.text()).toContain('停用');expect(dialog.text()).toContain('标失败');
-  await dialog.get('button[aria-label="关闭邮箱操作"]').trigger('click');await flushPromises();
-  expect((dialog.element as HTMLDialogElement).open).toBe(false);
+  await w.get('button[aria-label^="更多邮箱操作"]').trigger('click');await flushPromises();
+  const body=new DOMWrapper(document.body);
+  const menu=body.get('.em-row-menu');
+  expect(menu.text()).toContain('恢复可用');expect(menu.text()).toContain('停用');expect(menu.text()).toContain('标失败');
+  await menu.findAll('button').find(button=>button.text()==='停用')!.trigger('click');await flushPromises();
+  expect(body.find('.em-row-menu').exists()).toBe(false);
  });
  it('changes page size atomically with one final page-one read',async()=>{
   const {w,calls}=await page();const section=w.get('section[aria-label="邮箱池"]');await section.findAll('button').find(button=>button.text()==='下一页')!.trigger('click');await flushPromises();calls.length=0;

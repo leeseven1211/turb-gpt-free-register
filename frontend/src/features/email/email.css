@@ -96,10 +96,18 @@ body.em-native-dialog-lock {position:fixed;left:0;right:0;width:100%;overflow:hi
 .em-tone.is-danger {color:#b03a44}
 .em-tone.is-danger i {background:#d94a55}
 .em-tone.is-neutral {color:#6f7a90}
-.em-more-dialog {width:min(440px,calc(100vw - 32px))}
-.em-more-dialog .em-dialog-head>div {min-width:0}
-.em-more-dialog .em-dialog-head p {font-size:13px;color:var(--ui-color-text);overflow-wrap:anywhere}
-.em-more-dialog .em-dialog-head .em-button {min-height:30px;padding:4px 9px;border-color:transparent;background:transparent;color:var(--ui-color-text-secondary)}
-.em-more-dialog .em-dialog-head .em-button:hover {border-color:var(--ui-color-border);background:var(--ui-color-surface-subtle);color:var(--ui-color-text)}
-.em-more-actions {display:grid;gap:8px}
-.em-more-actions .em-button {justify-content:flex-start;min-height:40px;text-align:left}
+
+/* 行内“更多”使用锚定菜单，和账号/Codex 列表保持一致。 */
+.em-row-menu {
+  z-index:1200;box-sizing:border-box;min-width:148px;max-width:min(280px,calc(100vw - 16px));
+  max-height:var(--reka-popover-content-available-height,320px);overflow:auto;
+  padding:5px;border:1px solid var(--ui-color-border);border-radius:8px;
+  background:var(--ui-color-surface);box-shadow:0 8px 28px #00000024;
+}
+.em-row-menu button {
+  display:block;width:100%;min-height:34px;padding:6px 9px;border:0;border-radius:5px;
+  background:transparent;color:var(--ui-color-text);font:inherit;font-size:12.5px;text-align:left;cursor:pointer;
+}
+.em-row-menu button:hover:not(:disabled) {background:var(--ui-color-brand-soft);color:var(--ui-color-brand)}
+.em-row-menu button.is-danger {color:var(--ui-color-danger)}
+.em-row-menu button:disabled {opacity:.45;cursor:default}

@@ -1,6 +1,6 @@
-import { A as e, C as t, F as n, G as r, H as i, K as a, L as o, Q as s, S as c, V as l, Z as u, _ as d, a as f, c as p, d as m, dt as h, et as g, ft as _, g as v, h as y, j as b, k as x, l as S, lt as C, m as w, n as T, s as E, st as D, v as O, x as k } from "./_plugin-vue_export-helper-BSZsFlS8.js";
-import { a as A, c as j, i as M, n as N, o as P, r as F, s as I, t as L } from "./ListFilterSummary-Bo2VJ9RL.js";
-import { t as ee } from "./ListPagination-DURVj-Kj.js";
+import { A as e, C as t, F as n, G as r, H as i, K as a, L as o, Q as s, S as c, V as l, Z as u, _ as d, c as f, d as p, dt as m, et as h, ft as g, g as _, h as v, j as y, k as b, l as x, lt as S, m as C, n as w, s as T, st as E, v as D, x as O } from "./_plugin-vue_export-helper-BSZsFlS8.js";
+import { a as k, c as A, i as j, n as M, o as N, r as P, s as F, t as I } from "./ListFilterSummary-Bo2VJ9RL.js";
+import { t as L } from "./ListPagination-DURVj-Kj.js";
 import { n as R, t as z } from "./ColumnResizer-2h5GXxFn.js";
 import { t as B } from "./time-DOD6oyhP.js";
 import { n as V, r as H, t as U } from "./client-B5R_MNgP.js";
@@ -98,10 +98,19 @@ function J(e, t) {
 	return n;
 }
 // src/features/codex/CodexFilters.vue?vue&type=script&setup=true&lang.ts
-var Y = { class: "cx-filter-fields" }, te = {
+var Y = { class: "cx-filter-fields" }, X = {
 	key: 0,
 	class: "cx-filter-field"
-}, ne = ["value"], re = {
+}, ee = {
+	class: "list-filter-options",
+	role: "radiogroup",
+	"aria-label": "选择筛选列"
+}, te = ["data-filter-value"], ne = [
+	"name",
+	"value",
+	"checked",
+	"onChange"
+], re = {
 	key: 1,
 	class: "list-filter-options"
 }, ie = { class: "cx-sr-only" }, ae = { class: "list-filter-option" }, oe = ["name", "checked"], se = [
@@ -116,7 +125,7 @@ var Y = { class: "cx-filter-fields" }, te = {
 	"value",
 	"placeholder",
 	"onInput"
-], le = { class: "list-filter-actions" }, X = /* @__PURE__ */ t({
+], le = { class: "list-filter-actions" }, ue = /* @__PURE__ */ t({
 	__name: "CodexFilters",
 	props: {
 		modelValue: {},
@@ -126,89 +135,97 @@ var Y = { class: "cx-filter-fields" }, te = {
 	},
 	emits: ["update:modelValue", "update:open"],
 	setup(e, { emit: t }) {
-		let i = e, s = t, u = g("q"), h = l(), v = w(() => i.column || W.find((e) => e.key === u.value) || W[0]), b = w(() => i.column ? i.column.fields.some((e) => !!i.modelValue[e]) : Object.values(i.modelValue).some(Boolean)), x = w(() => q(i.modelValue, i.facets).find((e) => e.key === v.value.key)?.label || ""), T = w(() => {
-			let e = v.value.fields[0], t = (i.facets[v.value.key] || []).filter((e) => v.value.key !== "status" || e.value !== "archived"), n = i.modelValue[e], r = t.map((e) => ({
+		let i = e, a = t, s = h("q"), u = l();
+		function m(e) {
+			s.value = e;
+		}
+		let _ = C(() => i.column || W.find((e) => e.key === s.value) || W[0]), y = C(() => i.column ? i.column.fields.some((e) => !!i.modelValue[e]) : Object.values(i.modelValue).some(Boolean)), b = C(() => q(i.modelValue, i.facets).find((e) => e.key === _.value.key)?.label || ""), w = C(() => {
+			let e = _.value.fields[0], t = (i.facets[_.value.key] || []).filter((e) => _.value.key !== "status" || e.value !== "archived"), n = i.modelValue[e], r = t.filter((e) => Number(e.count) > 0 || e.value === n).map((e) => ({
 				...e,
-				label: e.label || K(v.value.key, e.value)
+				label: e.label || K(_.value.key, e.value)
 			}));
 			return n && !r.some((e) => e.value === n) && r.unshift({
 				value: n,
-				label: K(v.value.key, n),
+				label: K(_.value.key, n),
 				count: 0
 			}), r;
 		});
-		function E(e, t) {
-			s("update:modelValue", {
+		function T(e, t) {
+			a("update:modelValue", {
 				...i.modelValue,
 				[e]: t
 			});
 		}
-		function A() {
-			s("update:modelValue", J(i.modelValue, v.value.key)), s("update:open", !1);
+		function k() {
+			a("update:modelValue", J(i.modelValue, _.value.key)), a("update:open", !1);
 		}
-		function j(e, t, n) {
-			e.detail <= 0 || (E(t, n), s("update:open", !1));
+		function A(e, t, n) {
+			e.detail <= 0 || (T(t, n), a("update:open", !1));
 		}
-		return (t, i) => (n(), O("div", { class: C({ "cx-all-filters": !e.column }) }, [c(M, {
+		return (t, i) => (n(), D("div", { class: S({ "cx-all-filters": !e.column }) }, [c(j, {
 			label: e.column?.label || "凭证",
 			"trigger-label": e.column ? void 0 : "筛选",
-			active: b.value,
-			summary: x.value,
+			active: y.value,
+			summary: b.value,
 			open: e.open,
-			"onUpdate:open": i[5] ||= (e) => s("update:open", e)
+			"onUpdate:open": i[4] ||= (e) => a("update:open", e)
 		}, {
-			default: r(() => [y("div", Y, [
-				e.column ? d("", !0) : (n(), O("label", te, [i[6] ||= k("筛选列", -1), a(y("select", {
-					"onUpdate:modelValue": i[0] ||= (e) => u.value = e,
-					"aria-label": "选择筛选列"
-				}, [(n(!0), O(m, null, o(D(W), (e) => (n(), O("option", {
+			default: r(() => [v("div", Y, [
+				e.column ? d("", !0) : (n(), D("div", X, [i[5] ||= O("筛选列", -1), v("div", ee, [(n(!0), D(p, null, o(E(W), (e) => (n(), D("label", {
 					key: e.key,
-					value: e.key
-				}, _(e.label), 9, ne))), 128))], 512), [[f, u.value]])])),
-				v.value.kind === "enum" ? (n(), O("fieldset", re, [
-					y("legend", ie, _(v.value.label), 1),
-					y("label", ae, [y("input", {
+					class: "list-filter-option",
+					"data-filter-value": e.key
+				}, [v("input", {
+					type: "radio",
+					name: `${E(u)}-column`,
+					value: e.key,
+					checked: s.value === e.key,
+					onChange: (t) => m(e.key)
+				}, null, 40, ne), v("span", null, g(e.label), 1)], 8, te))), 128))])])),
+				_.value.kind === "enum" ? (n(), D("fieldset", re, [
+					v("legend", ie, g(_.value.label), 1),
+					v("label", ae, [v("input", {
 						type: "radio",
-						name: D(h),
+						name: E(u),
 						value: "",
-						checked: !e.modelValue[v.value.fields[0]],
-						onChange: i[1] ||= (e) => E(v.value.fields[0], ""),
-						onClick: i[2] ||= (e) => j(e, v.value.fields[0], "")
-					}, null, 40, oe), i[7] ||= y("span", null, "全部", -1)]),
-					(n(!0), O(m, null, o(T.value, (t) => (n(), O("label", {
+						checked: !e.modelValue[_.value.fields[0]],
+						onChange: i[0] ||= (e) => T(_.value.fields[0], ""),
+						onClick: i[1] ||= (e) => A(e, _.value.fields[0], "")
+					}, null, 40, oe), i[6] ||= v("span", null, "全部", -1)]),
+					(n(!0), D(p, null, o(w.value, (t) => (n(), D("label", {
 						class: "list-filter-option",
 						key: t.value
 					}, [
-						y("input", {
+						v("input", {
 							type: "radio",
-							name: D(h),
+							name: E(u),
 							value: t.value,
-							checked: e.modelValue[v.value.fields[0]] === t.value,
-							onChange: (e) => E(v.value.fields[0], t.value),
-							onClick: (e) => j(e, v.value.fields[0], t.value)
+							checked: e.modelValue[_.value.fields[0]] === t.value,
+							onChange: (e) => T(_.value.fields[0], t.value),
+							onClick: (e) => A(e, _.value.fields[0], t.value)
 						}, null, 40, se),
-						y("span", null, _(t.label), 1),
-						y("small", null, _(t.count), 1)
+						v("span", null, g(t.label), 1),
+						v("small", null, g(t.count), 1)
 					]))), 128))
-				])) : (n(!0), O(m, { key: 2 }, o(v.value.fields, (t, r) => (n(), O("label", {
+				])) : (n(!0), D(p, { key: 2 }, o(_.value.fields, (t, r) => (n(), D("label", {
 					key: t,
 					class: "cx-filter-field"
-				}, [k(_(v.value.kind === "date-range" ? r ? "截止日期" : "开始日期" : v.value.label) + " ", 1), y("input", {
-					type: v.value.kind === "text" ? "text" : "date",
-					"aria-label": v.value.kind === "date-range" ? r ? "截止日期" : "开始日期" : v.value.label,
+				}, [O(g(_.value.kind === "date-range" ? r ? "截止日期" : "开始日期" : _.value.label) + " ", 1), v("input", {
+					type: _.value.kind === "text" ? "text" : "date",
+					"aria-label": _.value.kind === "date-range" ? r ? "截止日期" : "开始日期" : _.value.label,
 					value: e.modelValue[t],
-					placeholder: v.value.placeholder,
+					placeholder: _.value.placeholder,
 					autocomplete: "off",
-					onInput: (e) => E(t, e.target.value),
-					onKeydown: i[3] ||= p(S((e) => s("update:open", !1), ["prevent"]), ["enter"])
+					onInput: (e) => T(t, e.target.value),
+					onKeydown: i[2] ||= f(x((e) => a("update:open", !1), ["prevent"]), ["enter"])
 				}, null, 40, ce)]))), 128)),
-				y("div", le, [y("button", {
+				v("div", le, [v("button", {
 					type: "button",
-					onClick: A
-				}, "清除此列"), y("button", {
+					onClick: k
+				}, "清除此列"), v("button", {
 					type: "button",
 					class: "list-filter-primary",
-					onClick: i[4] ||= (e) => s("update:open", !1)
+					onClick: i[3] ||= (e) => a("update:open", !1)
 				}, "完成")])
 			])]),
 			_: 1
@@ -222,32 +239,32 @@ var Y = { class: "cx-filter-fields" }, te = {
 	}
 });
 // src/features/codex/presentation.ts
-function ue(e) {
+function de(e) {
 	let t = Number(e.exported_count || 0), n = Number(e.sub2_uploaded_count || 0);
 	if (n > 0) {
 		let r = [`Sub2API 已上传 ${n} 次，最近 ${e.sub2_uploaded_at || "-"}`];
 		return t > 0 && r.push(`导出记录 ${t} 次，最近 ${e.exported_at || "-"}`), {
 			label: "已导出",
 			title: r.join("；"),
-			tone: "neutral"
+			tone: "success"
 		};
 	}
 	let r = e.exported === !0 || t > 0, i = e.sub2api_account_id != null && String(e.sub2api_account_id).trim() !== "";
 	return r && t <= 0 && i ? {
 		label: "已关联",
 		title: `Sub2API ID ${e.sub2api_account_id} 已有关联记录，本地下载 0 次`,
-		tone: "neutral"
+		tone: "success"
 	} : r ? {
 		label: "已导出",
 		title: `导出 ${t} 次，最近 ${e.exported_at || "-"}`,
-		tone: "neutral"
+		tone: "success"
 	} : {
 		label: "未导出",
 		title: "没有本地导出或 Sub2API 关联记录",
-		tone: "success"
+		tone: "neutral"
 	};
 }
-function de(e) {
+function fe(e) {
 	let t = String(e.oauth_status || "unknown"), n = Number(e.sub2api_http_status), r = e.oauth_seconds_left == null ? NaN : Number(e.oauth_seconds_left), i = Number.isFinite(r) ? `${r < 0 ? "已过期" : "剩余"} ${Math.floor(Math.abs(r) / 86400)}天${Math.floor(Math.abs(r) % 86400 / 3600)}小时` : "", a = [
 		n ? `Sub2API HTTP ${n}` : "",
 		e.oauth_expires_at ? `过期：${e.oauth_expires_at}` : "",
@@ -263,91 +280,95 @@ function de(e) {
 	});
 	return t === "deactivated" ? o("账号停用", "danger") : n === 401 ? o("401 失效", "danger") : e.oauth_reauth_required ? o("需重授权", "danger") : t === "valid" ? o("有效", "success") : t === "expiring" ? o("即将过期", "warning") : t === "expired" ? o(e.oauth_refreshable ? "已过期" : "已过期·需重授权", "danger") : t === "missing" ? o("缺少令牌", "danger") : o("未知", "neutral");
 }
+function pe(e) {
+	let t = String(e || "").toLowerCase();
+	return t === "plus" ? "active" : t === "pro" ? "warning" : t === "team" ? "success" : "neutral";
+}
 // src/features/codex/CodexTable.vue?vue&type=script&setup=true&lang.ts
-var fe = ["aria-busy"], pe = {
+var me = ["aria-busy"], he = {
 	scope: "col",
 	class: "ui-col-check"
-}, me = [
+}, ge = [
 	"checked",
 	"indeterminate",
 	"disabled"
-], he = {
+], _e = {
 	class: "ui-col-check cx-check",
 	"data-label": "选择"
-}, ge = [
+}, ve = [
 	"aria-label",
 	"checked",
 	"disabled",
 	"onChange"
-], _e = {
+], ye = {
 	class: "cx-identity",
 	"data-label": "邮箱 / 文件"
-}, ve = ["title"], ye = {
+}, be = ["title"], xe = {
 	class: "cx-extra",
 	"data-label": "Plan"
-}, be = {
-	class: "cx-extra",
-	"data-label": "凭证状态"
-}, xe = {
-	class: "cx-extra",
-	"data-label": "OAuth 状态"
 }, Se = {
 	class: "cx-extra",
-	"data-label": "Account ID"
+	"data-label": "凭证状态"
 }, Ce = {
 	class: "cx-extra",
-	"data-label": "Sub2API ID"
+	"data-label": "OAuth 状态"
 }, we = {
+	class: "cx-extra",
+	"data-label": "Account ID"
+}, Te = {
+	class: "cx-extra",
+	"data-label": "Sub2API ID"
+}, Ee = {
 	class: "cx-extra ui-time",
 	"data-label": "更新时间"
-}, Te = {
+}, De = {
 	class: "cx-extra ui-time",
 	"data-label": "过期时间"
-}, Ee = {
+}, Oe = {
 	class: "cx-actions",
 	"data-label": "操作"
-}, De = { class: "ui-row-actions cx-row-actions" }, Oe = [
+}, ke = { class: "ui-row-actions cx-row-actions" }, Ae = [
 	"data-codex-download",
 	"disabled",
 	"onClick"
-], ke = ["aria-label", "disabled"], Ae = { class: "cx-row-details" }, je = {
+], je = ["aria-label", "disabled"], Me = { class: "cx-row-details" }, Ne = {
 	class: "cx-menu-actions",
 	role: "group",
 	"aria-label": "凭证操作"
-}, Me = [
+}, Pe = [
 	"data-codex-download",
 	"disabled",
 	"onClick"
-], Ne = [
+], Fe = [
 	"data-codex-reauthorize",
 	"disabled",
 	"onClick"
-], Pe = [
+], Ie = [
 	"data-codex-download-cpa",
 	"disabled",
 	"onClick"
-], Fe = [
+], Le = [
 	"data-codex-refresh-token",
 	"disabled",
 	"onClick"
-], Ie = [
+], Re = [
 	"data-codex-upload-sub2",
 	"disabled",
 	"onClick"
-], Le = [
+], ze = [
 	"data-codex-reset",
 	"disabled",
 	"onClick"
-], Re = [
+], Be = [
 	"data-codex-archive",
 	"data-archived",
 	"disabled",
 	"onClick"
-], ze = [
+], Ve = [
 	"data-codex-delete",
 	"disabled",
 	"onClick"
-], Be = /* @__PURE__ */ t({
+], He = /* @__PURE__ */ t({
 	__name: "CodexTable",
 	props: {
 		items: {},
@@ -369,7 +390,7 @@ var fe = ["aria-busy"], pe = {
 		"update:openFilter"
 	],
 	setup(e, { expose: t, emit: a }) {
-		let s = e, l = a, { widths: u, total: f, resize: p, resizeWithKeyboard: b, resetColumns: S } = R({
+		let s = e, l = a, { widths: u, total: f, resize: y, resizeWithKeyboard: x, resetColumns: w } = R({
 			defaults: [
 				48,
 				228,
@@ -386,59 +407,59 @@ var fe = ["aria-busy"], pe = {
 			totalStorageKey: "gpt_console_table_total_codex",
 			min: 28,
 			max: 2e3
-		}), T = w(() => s.items.length > 0 && s.items.every((e) => s.selected.has(e.filename))), E = w(() => !T.value && s.items.some((e) => s.selected.has(e.filename))), M = w(() => {
+		}), T = C(() => s.items.length > 0 && s.items.every((e) => s.selected.has(e.filename))), j = C(() => !T.value && s.items.some((e) => s.selected.has(e.filename))), I = C(() => {
 			let e = /* @__PURE__ */ new Map();
 			return s.items.map((t) => {
 				let n = JSON.stringify([t.filename, t.sub2api_account_id ?? null]), r = e.get(n) ?? 0;
 				return e.set(n, r + 1), {
 					row: t,
 					key: JSON.stringify([n, r]),
-					credential: ue(t),
-					oauth: de(t)
+					credential: de(t),
+					oauth: fe(t)
 				};
 			});
-		}), L = g(null);
+		}), L = h(null);
 		i(() => s.visible, (e) => {
 			e || (L.value = null);
 		}), i(() => s.items, () => {
 			L.value = null;
 		});
-		function ee(e, t) {
+		function V(e, t) {
 			t ? L.value = e : L.value === e && (L.value = null);
 		}
-		function V(e, t) {
+		function H(e, t) {
 			s.busy || (L.value = null, l("action", e, t));
 		}
-		function H(e) {
+		function U(e) {
 			return e == null || e === "" ? "—" : String(e);
 		}
-		return t({ resetColumns: S }), (t, i) => (n(), O("div", {
+		return t({ resetColumns: w }), (t, i) => (n(), D("div", {
 			class: "ui-table-scroll cx-table-scroll",
 			tabindex: "0",
 			"aria-label": "Codex 凭证列表，可横向滚动",
 			"aria-busy": e.loading
-		}, [y("table", {
+		}, [v("table", {
 			class: "ui-table ui-table--sticky-end cx-table",
-			style: h({ "--ui-table-width": `${D(f)}px` })
+			style: m({ "--ui-table-width": `${E(f)}px` })
 		}, [
-			i[13] ||= y("caption", { class: "ui-sr-only" }, "Codex 凭证，支持跨页选择", -1),
-			y("colgroup", null, [(n(!0), O(m, null, o(D(u), (e, t) => (n(), O("col", {
+			i[13] ||= v("caption", { class: "ui-sr-only" }, "Codex 凭证，支持跨页选择", -1),
+			v("colgroup", null, [(n(!0), D(p, null, o(E(u), (e, t) => (n(), D("col", {
 				key: t,
-				style: h({ width: `${e}px` })
+				style: m({ width: `${e}px` })
 			}, null, 4))), 128))]),
-			y("thead", null, [y("tr", null, [
-				y("th", pe, [y("input", {
+			v("thead", null, [v("tr", null, [
+				v("th", he, [v("input", {
 					type: "checkbox",
 					"aria-label": "全选当前页 Codex 凭证",
 					checked: T.value,
-					indeterminate: E.value,
+					indeterminate: j.value,
 					disabled: !e.items.length || e.busy,
 					onChange: i[0] ||= (e) => l("selectPage", e.target.checked)
-				}, null, 40, me)]),
-				(n(!0), O(m, null, o(D(W), (t, r) => (n(), O("th", {
+				}, null, 40, ge)]),
+				(n(!0), D(p, null, o(E(W), (t, r) => (n(), D("th", {
 					key: t.key,
 					scope: "col"
-				}, [c(X, {
+				}, [c(ue, {
 					column: t,
 					"model-value": e.filters,
 					facets: e.facets,
@@ -453,27 +474,27 @@ var fe = ["aria-busy"], pe = {
 					"onUpdate:open"
 				]), c(z, {
 					label: t.label,
-					onStart: (e) => D(p)(r + 1, e),
-					onNudge: (e) => D(b)(r + 1, e)
+					onStart: (e) => E(y)(r + 1, e),
+					onNudge: (e) => E(x)(r + 1, e)
 				}, null, 8, [
 					"label",
 					"onStart",
 					"onNudge"
 				])]))), 128)),
-				i[3] ||= y("th", { scope: "col" }, "操作", -1)
+				i[3] ||= v("th", { scope: "col" }, "操作", -1)
 			])]),
-			y("tbody", null, [(n(!0), O(m, null, o(M.value, ({ row: t, key: a, credential: o, oauth: s }) => (n(), O("tr", {
+			v("tbody", null, [(n(!0), D(p, null, o(I.value, ({ row: t, key: a, credential: o, oauth: s }) => (n(), D("tr", {
 				key: a,
-				class: C({ "is-selected": e.selected.has(t.filename) })
+				class: S({ "is-selected": e.selected.has(t.filename) })
 			}, [
-				y("td", he, [y("input", {
+				v("td", _e, [v("input", {
 					type: "checkbox",
 					"aria-label": `选择凭证 ${t.filename}`,
 					checked: e.selected.has(t.filename),
 					disabled: e.busy,
 					onChange: (e) => l("select", t.filename, e.target.checked)
-				}, null, 40, ge)]),
-				y("td", _e, [c(F, {
+				}, null, 40, ve)]),
+				v("td", ye, [c(P, {
 					text: t.email || t.filename,
 					secondary: t.email ? t.filename : void 0,
 					title: `${t.email || ""} · 文件：${t.filename}${t.archived ? " · 已归档" : ""}`
@@ -481,68 +502,74 @@ var fe = ["aria-busy"], pe = {
 					"text",
 					"secondary",
 					"title"
-				]), y("div", {
+				]), v("div", {
 					class: "cx-mobile-summary",
 					title: [
-						H(t.plan),
+						U(t.plan),
 						o.title,
 						s.title
 					].join("；")
-				}, _([
-					H(t.plan),
+				}, g([
+					U(t.plan),
 					o.label,
 					s.label
-				].join(" · ")), 9, ve)]),
-				y("td", ye, [c(F, { text: H(t.plan) }, null, 8, ["text"])]),
-				y("td", be, [c(F, {
+				].join(" · ")), 9, be)]),
+				v("td", xe, [c(P, { text: U(t.plan) }, {
+					default: r(() => [t.plan ? (n(), D("span", {
+						key: 0,
+						class: S(["ui-badge cx-badge", `ui-badge--${E(pe)(t.plan)}`])
+					}, g(t.plan), 3)) : (n(), D(p, { key: 1 }, [O("—")], 64))]),
+					_: 2
+				}, 1032, ["text"])]),
+				v("td", Se, [c(P, {
 					text: o.label,
 					title: o.title,
 					tone: o.tone
 				}, {
-					default: r(() => [y("span", { class: C(["ui-badge cx-badge", `ui-badge--${o.tone}`]) }, _(o.label), 3)]),
+					default: r(() => [v("span", { class: S(["ui-badge cx-badge", `ui-badge--${o.tone}`]) }, g(o.label), 3)]),
 					_: 2
 				}, 1032, [
 					"text",
 					"title",
 					"tone"
 				])]),
-				y("td", xe, [c(F, {
+				v("td", Ce, [c(P, {
 					text: s.label,
 					title: s.title,
 					tone: s.tone
 				}, {
-					default: r(() => [y("span", { class: C(["ui-badge cx-badge", `ui-badge--${s.tone}`]) }, _(s.label), 3)]),
+					default: r(() => [v("span", { class: S(["ui-badge cx-badge", `ui-badge--${s.tone}`]) }, g(s.label), 3)]),
 					_: 2
 				}, 1032, [
 					"text",
 					"title",
 					"tone"
 				])]),
-				y("td", Se, [c(F, { text: H(t.account_id) }, null, 8, ["text"])]),
-				y("td", Ce, [c(F, { text: H(t.sub2api_account_id) }, null, 8, ["text"])]),
-				y("td", we, [c(F, x({ ref_for: !0 }, D(B)(t.mtime), { title: H(t.mtime) }), null, 16, ["title"])]),
-				y("td", Te, [c(F, x({ ref_for: !0 }, D(B)(t.expired), { title: H(t.expired) }), null, 16, ["title"])]),
-				y("td", Ee, [y("div", De, [y("button", {
+				v("td", we, [c(P, { text: U(t.account_id) }, null, 8, ["text"])]),
+				v("td", Te, [c(P, { text: U(t.sub2api_account_id) }, null, 8, ["text"])]),
+				v("td", Ee, [c(P, b({ ref_for: !0 }, E(B)(t.mtime), { title: U(t.mtime) }), null, 16, ["title"])]),
+				v("td", De, [c(P, b({ ref_for: !0 }, E(B)(t.expired), { title: U(t.expired) }), null, 16, ["title"])]),
+				v("td", Oe, [v("div", ke, [v("button", {
 					type: "button",
 					class: "ui-link cx-direct-download",
 					"data-codex-download": t.filename,
 					disabled: e.busy,
-					onClick: (e) => V("download", t)
-				}, "下载凭证", 8, Oe), c(D(j), {
+					onClick: (e) => H("download", t)
+				}, "下载凭证", 8, Ae), c(E(A), {
 					open: e.visible && L.value === a,
 					modal: !1,
-					"onUpdate:open": (e) => ee(a, e)
+					"onUpdate:open": (e) => V(a, e)
 				}, {
-					default: r(() => [c(D(A), { "as-child": "" }, {
-						default: r(() => [y("button", {
+					default: r(() => [c(E(k), { "as-child": "" }, {
+						default: r(() => [v("button", {
 							type: "button",
 							class: "ui-button",
 							"aria-label": `更多操作 ${t.filename}`,
 							disabled: e.busy
-						}, "更多", 8, ke)]),
+						}, "更多", 8, je)]),
 						_: 2
-					}, 1024), c(D(P), null, {
-						default: r(() => [c(D(I), {
+					}, 1024), c(E(N), null, {
+						default: r(() => [c(E(F), {
 							class: "cx-row-menu",
 							"aria-label": `${t.email || t.filename} 的凭证详情与操作`,
 							side: "bottom",
@@ -551,79 +578,79 @@ var fe = ["aria-busy"], pe = {
 							"collision-padding": 10,
 							"hide-when-detached": ""
 						}, {
-							default: r(() => [y("dl", Ae, [
-								i[5] ||= y("dt", null, "邮箱 / 文件", -1),
-								y("dd", null, [
-									k(_(t.email || "—"), 1),
-									i[4] ||= y("br", null, null, -1),
-									k(_(t.filename), 1)
+							default: r(() => [v("dl", Me, [
+								i[5] ||= v("dt", null, "邮箱 / 文件", -1),
+								v("dd", null, [
+									O(g(t.email || "—"), 1),
+									i[4] ||= v("br", null, null, -1),
+									O(g(t.filename), 1)
 								]),
-								i[6] ||= y("dt", null, "Plan", -1),
-								y("dd", null, _(H(t.plan)), 1),
-								i[7] ||= y("dt", null, "凭证状态", -1),
-								y("dd", null, _(o.title), 1),
-								i[8] ||= y("dt", null, "OAuth 状态", -1),
-								y("dd", null, _(s.label) + " · " + _(s.title), 1),
-								i[9] ||= y("dt", null, "Account ID", -1),
-								y("dd", null, _(H(t.account_id)), 1),
-								i[10] ||= y("dt", null, "Sub2API ID", -1),
-								y("dd", null, _(H(t.sub2api_account_id)), 1),
-								i[11] ||= y("dt", null, "更新时间", -1),
-								y("dd", null, _(H(t.mtime)), 1),
-								i[12] ||= y("dt", null, "过期时间", -1),
-								y("dd", null, _(H(t.expired)), 1)
-							]), y("div", je, [
-								y("button", {
+								i[6] ||= v("dt", null, "Plan", -1),
+								v("dd", null, g(U(t.plan)), 1),
+								i[7] ||= v("dt", null, "凭证状态", -1),
+								v("dd", null, g(o.title), 1),
+								i[8] ||= v("dt", null, "OAuth 状态", -1),
+								v("dd", null, g(s.label) + " · " + g(s.title), 1),
+								i[9] ||= v("dt", null, "Account ID", -1),
+								v("dd", null, g(U(t.account_id)), 1),
+								i[10] ||= v("dt", null, "Sub2API ID", -1),
+								v("dd", null, g(U(t.sub2api_account_id)), 1),
+								i[11] ||= v("dt", null, "更新时间", -1),
+								v("dd", null, g(U(t.mtime)), 1),
+								i[12] ||= v("dt", null, "过期时间", -1),
+								v("dd", null, g(U(t.expired)), 1)
+							]), v("div", Ne, [
+								v("button", {
 									type: "button",
 									"data-codex-download": t.filename,
 									disabled: e.busy,
-									onClick: (e) => V("download", t)
-								}, "下载凭证", 8, Me),
-								y("button", {
+									onClick: (e) => H("download", t)
+								}, "下载凭证", 8, Pe),
+								v("button", {
 									type: "button",
 									"data-codex-reauthorize": t.filename,
 									disabled: e.busy,
-									onClick: (e) => V("reauthorize", t)
-								}, "重跑授权", 8, Ne),
-								y("button", {
+									onClick: (e) => H("reauthorize", t)
+								}, "重跑授权", 8, Fe),
+								v("button", {
 									type: "button",
 									"data-codex-download-cpa": t.filename,
 									disabled: e.busy,
-									onClick: (e) => V("downloadCpa", t)
-								}, "从 CPA 下载", 8, Pe),
-								y("button", {
+									onClick: (e) => H("downloadCpa", t)
+								}, "从 CPA 下载", 8, Ie),
+								v("button", {
 									type: "button",
 									"data-codex-refresh-token": t.filename,
 									disabled: e.busy,
-									onClick: (e) => V("refreshToken", t)
-								}, "刷新 OAuth Token", 8, Fe),
-								y("button", {
+									onClick: (e) => H("refreshToken", t)
+								}, "刷新 OAuth Token", 8, Le),
+								v("button", {
 									type: "button",
 									"data-codex-upload-sub2": t.filename,
 									disabled: e.busy,
-									onClick: (e) => V("uploadSub2", t)
-								}, "上传 sub2api", 8, Ie),
-								Number(t.exported_count || 0) > 0 ? (n(), O("button", {
+									onClick: (e) => H("uploadSub2", t)
+								}, "上传 sub2api", 8, Re),
+								Number(t.exported_count || 0) > 0 ? (n(), D("button", {
 									key: 0,
 									type: "button",
 									"data-codex-reset": t.filename,
 									disabled: e.busy,
-									onClick: (e) => V("reset", t)
-								}, "重置标记", 8, Le)) : d("", !0),
-								y("button", {
+									onClick: (e) => H("reset", t)
+								}, "重置标记", 8, ze)) : d("", !0),
+								v("button", {
 									type: "button",
 									"data-codex-archive": t.filename,
 									"data-archived": t.archived ? "0" : "1",
 									disabled: e.busy,
-									onClick: (e) => V("archive", t)
-								}, _(t.archived ? "恢复" : "归档"), 9, Re),
-								y("button", {
+									onClick: (e) => H("archive", t)
+								}, g(t.archived ? "恢复" : "归档"), 9, Be),
+								v("button", {
 									type: "button",
 									class: "cx-danger",
 									"data-codex-delete": t.filename,
 									disabled: e.busy,
-									onClick: (e) => V("delete", t)
-								}, "删除凭证", 8, ze)
+									onClick: (e) => H("delete", t)
+								}, "删除凭证", 8, Ve)
 							])]),
 							_: 2
 						}, 1032, ["aria-label"])]),
@@ -631,7 +658,7 @@ var fe = ["aria-busy"], pe = {
 					}, 1024)]),
 					_: 2
 				}, 1032, ["open", "onUpdate:open"])])])
-			], 2))), 128)), e.items.length ? d("", !0) : (n(), v(N, {
+			], 2))), 128)), e.items.length ? d("", !0) : (n(), _(M, {
 				key: 0,
 				colspan: 10,
 				loading: e.loading,
@@ -644,11 +671,11 @@ var fe = ["aria-busy"], pe = {
 				"retry-label": "重新加载",
 				onRetry: i[2] ||= (e) => l("retry")
 			}, null, 8, ["loading", "error"]))])
-		], 4)], 8, fe));
+		], 4)], 8, me));
 	}
 });
 // src/api/codex.ts
-function Ve() {
+function Ue() {
 	return {
 		q: "",
 		plan: "",
@@ -671,21 +698,21 @@ function Z(e, t) {
 function Q(e) {
 	return e && typeof e == "object" && !Array.isArray(e) ? e : {};
 }
-function He(e, t) {
+function We(e, t) {
 	let n = /filename\*=UTF-8''([^;]+)/i.exec(e)?.[1], r = /filename=(?:"([^"]+)"|([^;]+))/i.exec(e), i = r?.[1] || r?.[2]?.trim() || t;
 	if (n) try {
 		i = decodeURIComponent(n.trim());
 	} catch {}
 	return i.replace(/[\\/\x00-\x1f\x7f]/g, "_") || t;
 }
-function Ue(e, t) {
+function Ge(e, t) {
 	let n = e.error, r = typeof n == "string" ? n : Q(n).message, i = Array.isArray(e.errors) ? e.errors.slice(0, 3).map((e) => {
 		let t = Q(e);
 		return typeof t.filename == "string" && typeof t.error == "string" ? `${t.filename}: ${t.error}` : "";
 	}).filter(Boolean) : [];
 	return new U((typeof r == "string" ? r : `下载失败（HTTP ${t}）`) + (i.length ? `；${i.join("；")}` : ""), t, typeof Q(n).code == "string" ? String(Q(n).code) : typeof e.error_code == "string" ? e.error_code : "");
 }
-async function We(e, t, n, r, i) {
+async function Ke(e, t, n, r, i) {
 	let a = await fetch(e, {
 		credentials: "same-origin",
 		...i ? {
@@ -706,7 +733,7 @@ async function We(e, t, n, r, i) {
 		} catch {
 			throw new U("下载返回无效 JSON。", a.status);
 		}
-		if (!a.ok || l.ok === !1 || l.error) throw Ue(l, a.status);
+		if (!a.ok || l.ok === !1 || l.error) throw Ge(l, a.status);
 	} else if (!a.ok) throw new U(`下载失败（HTTP ${a.status}）`, a.status);
 	if (!/attachment/i.test(s)) throw new U("服务返回了非下载附件，请刷新后重试。", a.status);
 	if (r === "zip" ? !o.includes("application/zip") : !o.includes("application/json")) throw new U("服务返回了非下载内容，请刷新后重试。", a.status);
@@ -717,7 +744,7 @@ async function We(e, t, n, r, i) {
 	}
 	return {
 		blob: c,
-		filename: He(s, t),
+		filename: We(s, t),
 		acknowledged: u,
 		failed: d
 	};
@@ -747,19 +774,19 @@ var $ = {
 	refreshToken: (e) => Z("refresh-token-bulk", { filenames: e }),
 	reauthorize: (e) => Z("retry-bulk", { filenames: e }),
 	uploadSub2: (e) => Z("upload-sub2-bulk", { filenames: e }),
-	download: (e, t = !1) => We(`/api/codex/${t ? "download-from-cpa" : "download"}/${encodeURIComponent(e)}`, t ? e.replace(/-cpa-callback\.json$/i, "-free.json") : e, [e], "single"),
-	downloadBulk: (e, t = !1) => We(`/api/codex/${t ? "download-bulk-from-cpa" : "download-bulk"}`, t ? "codex-cpa-bulk.zip" : "codex-bulk.json", e, t ? "zip" : "bulk", { filenames: e })
-}, Ge = /* @__PURE__ */ new Set([
+	download: (e, t = !1) => Ke(`/api/codex/${t ? "download-from-cpa" : "download"}/${encodeURIComponent(e)}`, t ? e.replace(/-cpa-callback\.json$/i, "-free.json") : e, [e], "single"),
+	downloadBulk: (e, t = !1) => Ke(`/api/codex/${t ? "download-bulk-from-cpa" : "download-bulk"}`, t ? "codex-cpa-bulk.zip" : "codex-bulk.json", e, t ? "zip" : "bulk", { filenames: e })
+}, qe = /* @__PURE__ */ new Set([
 	"download",
 	"downloadCpa",
 	"archive",
 	"delete",
 	"reset"
-]), Ke = /* @__PURE__ */ new Set([
+]), Je = /* @__PURE__ */ new Set([
 	"refreshToken",
 	"reauthorize",
 	"uploadSub2"
-]), qe = {
+]), Ye = {
 	download: "下载",
 	downloadCpa: "从 CPA 下载",
 	downloadBulk: "批量下载",
@@ -773,13 +800,13 @@ var $ = {
 	reauthorize: "重跑 Codex 授权",
 	uploadSub2: "上传 sub2api"
 };
-function Je(e) {
+function Xe(e) {
 	return e instanceof Error ? e.message : "请求失败，请稍后重试。";
 }
-function Ye(e = []) {
+function Ze(e = []) {
 	return e.filter((e) => e.accepted !== !1).map((e) => e.filename).filter((e) => typeof e == "string" && !!e);
 }
-function Xe(e) {
+function Qe(e) {
 	let t = URL.createObjectURL(e.blob), n = document.createElement("a");
 	n.href = t, n.download = e.filename;
 	let r = () => {
@@ -792,7 +819,7 @@ function Xe(e) {
 	}
 	setTimeout(r, 800);
 }
-function Ze(e, t, n, r, i) {
+function $e(e, t, n, r, i) {
 	let a = t.length;
 	switch (e) {
 		case "archiveBulk": return `${n ? "归档" : "恢复"}选中的 ${a} 个 Codex 授权凭证？`;
@@ -810,8 +837,8 @@ function Ze(e, t, n, r, i) {
 		default: return "";
 	}
 }
-function Qe(e) {
-	let t = g(!1), n = g(""), r = g(!1), { callbacks: i } = e;
+function et(e) {
+	let t = h(!1), n = h(""), r = h(!1), { callbacks: i } = e;
 	function a(t, n) {
 		let r = new Set(e.selected.value), i = new Set(n);
 		for (let e of t) i.has(e) && r.delete(e);
@@ -821,7 +848,7 @@ function Qe(e) {
 		try {
 			await e.refresh();
 		} catch (e) {
-			n.value = `操作已完成，但列表刷新失败：${Je(e)}`, i.notify(n.value);
+			n.value = `操作已完成，但列表刷新失败：${Xe(e)}`, i.notify(n.value);
 		}
 	}
 	async function s(s, c, l) {
@@ -831,9 +858,9 @@ function Qe(e) {
 		t.value = !0, n.value = "";
 		let d = !(l?.archived ?? e.archived.value);
 		try {
-			let t = Ge.has(s) ? 1 : Ke.has(s) ? 500 : 1e3;
+			let t = qe.has(s) ? 1 : Je.has(s) ? 500 : 1e3;
 			if (u.length > t) throw Error(`单次最多 ${t} 个凭证，请调整选择后重试。`);
-			let n = Ze(s, u, d, e, l);
+			let n = $e(s, u, d, e, l);
 			if (n && !await i.confirm(n)) return;
 			let c = u[0];
 			switch (s) {
@@ -842,7 +869,7 @@ function Qe(e) {
 				case "downloadBulk":
 				case "downloadBulkCpa": {
 					let e = s === "downloadBulk" || s === "downloadBulkCpa", t = s === "downloadCpa" || s === "downloadBulkCpa", n = e ? await $.downloadBulk(u, t) : await $.download(c, t);
-					Xe(n), e && a(n.acknowledged, u), i.notify(e ? t ? "已从 CPA 下载 ZIP，成功与失败详情见 manifest.json" : n.acknowledged.length ? `已打包下载 ${n.acknowledged.length} 个${n.failed ? `，${n.failed} 个失败` : ""}` : "成功 0 个，已下载错误清单" : t ? "已从 CPA 下载" : "已下载 JSON"), await o();
+					Qe(n), e && a(n.acknowledged, u), i.notify(e ? t ? "已从 CPA 下载 ZIP，成功与失败详情见 manifest.json" : n.acknowledged.length ? `已打包下载 ${n.acknowledged.length} 个${n.failed ? `，${n.failed} 个失败` : ""}` : "成功 0 个，已下载错误清单" : t ? "已从 CPA 下载" : "已下载 JSON"), await o();
 					break;
 				}
 				case "archive":
@@ -865,14 +892,14 @@ function Qe(e) {
 				case "refreshToken":
 				case "reauthorize": {
 					let e = s === "refreshToken" ? await $.refreshToken(u) : await $.reauthorize(u);
-					a(Ye(e.started), u);
+					a(Ze(e.started), u);
 					let t = e.skipped?.length || 0;
 					i.notify(t ? `已开始${s === "refreshToken" ? "刷新" : "重跑"} ${e.started_count || 0} 个，跳过 ${t} 个` : e.message || `已开始${s === "refreshToken" ? "刷新 OAuth Token" : "重跑 Codex 授权"}`), i.openTasks(s === "refreshToken" ? "codex_token_refresh" : "codex_retry");
 					break;
 				}
 				case "uploadSub2": {
 					let e = await $.uploadSub2(u), t = (e.failed_count || 0) + (e.skipped_count || 0);
-					if (a(Ye(e.accepted ? e.queued : e.uploaded), u), e.accepted) {
+					if (a(Ze(e.accepted ? e.queued : e.uploaded), u), e.accepted) {
 						let n = e.queued || [], a = n.some((e) => e.accepted && Number(e.task_id));
 						i.notify(`手动上传已入队 ${e.queued_count || 0} 个${t ? `，${t} 个未入队` : ""}${a ? "，可点击“查看上传进度”查看最终结果" : ""}`), i.track(n, "手动上传", { navigate: !1 }), r.value ||= a;
 					} else i.notify(t ? `已上传 ${e.uploaded_count || 0} 个，${t} 个未完成` : `已上传 ${e.uploaded_count || 0} 个到 sub2api`), await o();
@@ -880,7 +907,7 @@ function Qe(e) {
 				}
 			}
 		} catch (e) {
-			n.value = `${qe[s]}失败: ${Je(e)}`, i.notify(n.value);
+			n.value = `${Ye[s]}失败: ${Xe(e)}`, i.notify(n.value);
 		} finally {
 			t.value = !1;
 		}
@@ -894,8 +921,8 @@ function Qe(e) {
 	};
 }
 // src/features/codex/useCodexList.ts
-function $e() {
-	let t = s(Ve()), n = g([]), r = g({}), i = g(0), a = g(1), o = g(20), c = g(!1), l = g(/* @__PURE__ */ new Set()), d = g(!1), f = g(""), p = g(!1), m = w(() => Math.max(1, Math.ceil(i.value / o.value))), h = /* @__PURE__ */ new Set([
+function tt() {
+	let t = s(Ue()), n = h([]), r = h({}), i = h(0), a = h(1), o = h(20), c = h(!1), l = h(/* @__PURE__ */ new Set()), d = h(!1), f = h(""), p = h(!1), m = C(() => Math.max(1, Math.ceil(i.value / o.value))), g = /* @__PURE__ */ new Set([
 		"q",
 		"account_id",
 		"sub2api_id"
@@ -903,15 +930,15 @@ function $e() {
 	function S() {
 		++_, ++v, clearTimeout(x), x = void 0, b?.abort(), b = null, d.value = !1;
 	}
-	function C() {
+	function w() {
 		return !y && p.value && !document.hidden;
 	}
 	function T(t = 0) {
 		S();
 		let n = v;
-		if (!C()) return;
+		if (!w()) return;
 		let r = () => {
-			n === v && C() && D();
+			n === v && w() && D();
 		};
 		t ? x = setTimeout(r, t) : e(r);
 	}
@@ -931,7 +958,7 @@ function $e() {
 		return n;
 	}
 	async function D() {
-		if (S(), !C()) return;
+		if (S(), !w()) return;
 		let e = _, s = new AbortController();
 		b = s, d.value = !0;
 		try {
@@ -942,7 +969,7 @@ function $e() {
 					archived: c.value,
 					filters: { ...t }
 				}, d = await $.list(u, s.signal);
-				if (e !== _ || !C()) return;
+				if (e !== _ || !w()) return;
 				let p = Number(d.total);
 				if (i.value = Number.isFinite(p) ? Math.max(0, Math.floor(p)) : 0, a.value > m.value) {
 					if (a.value = m.value, !l) continue;
@@ -980,11 +1007,11 @@ function $e() {
 		if (!n.length) return;
 		for (let r of n) t[r] = e[r];
 		a.value = 1;
-		let r = n.every((e) => h.has(e));
+		let r = n.every((e) => g.has(e));
 		r || (l.value = /* @__PURE__ */ new Set()), T(r ? 250 : 0);
 	}
 	function N() {
-		y || (Object.assign(t, Ve()), l.value = /* @__PURE__ */ new Set(), a.value = 1, T());
+		y || (Object.assign(t, Ue()), l.value = /* @__PURE__ */ new Set(), a.value = 1, T());
 	}
 	function P(e, t) {
 		let n = new Set(l.value);
@@ -1025,23 +1052,23 @@ function $e() {
 	};
 }
 // src/features/codex/CodexCredentials.vue?vue&type=script&setup=true&lang.ts
-var et = {
+var nt = {
 	class: "cx-root",
 	"aria-label": "Codex 授权"
-}, tt = { class: "ui-list cx-workspace" }, nt = {
+}, rt = { class: "ui-list cx-workspace" }, it = {
 	id: "codexToolbarV2",
 	class: "ui-list-toolbar cx-toolbar"
-}, rt = { class: "ui-list-toolbar__main cx-toolbar-main" }, it = {
+}, at = { class: "ui-list-toolbar__main cx-toolbar-main" }, ot = {
 	class: "ui-list-count cx-count",
 	role: "status"
-}, at = { key: 0 }, ot = {
+}, st = { key: 0 }, ct = {
 	key: 0,
 	id: "codexSelectedHintV2",
 	class: "cx-selected",
 	role: "status"
-}, st = { class: "ui-list-toolbar__actions cx-toolbar-utilities" }, ct = ["disabled"], lt = {
-	key: 0,
-	class: "ui-list-bulkbar cx-bulk-actions",
+}, lt = {
+	key: 1,
+	class: "cx-bulk-actions",
 	role: "group",
 	"aria-label": "选中凭证批量操作"
 }, ut = [
@@ -1049,21 +1076,21 @@ var et = {
 	"title",
 	"disabled",
 	"onClick"
-], dt = {
-	key: 1,
+], dt = { class: "ui-list-toolbar__actions cx-toolbar-utilities" }, ft = ["disabled"], pt = {
+	key: 0,
 	class: "ui-list-feedback is-error cx-feedback",
 	role: "alert"
-}, ft = /* @__PURE__ */ t({
+}, mt = /* @__PURE__ */ t({
 	__name: "CodexCredentials",
 	props: { callbacks: {} },
 	setup(e, { expose: t }) {
-		let r = e, i = $e(), { items: s, facets: l, total: u, page: f, size: p, pages: h, archived: v, selected: x, loading: S, error: T, visible: A, filters: j } = i, M = Qe({
+		let r = e, i = tt(), { items: s, facets: l, total: u, page: f, size: m, pages: _, archived: b, selected: x, loading: w, error: k, visible: A, filters: j } = i, M = et({
 			selected: x,
 			items: s,
-			archived: v,
+			archived: b,
 			refresh: i.refresh,
 			callbacks: r.callbacks
-		}), { busy: N, error: P, uploadProgress: F } = M, I = g(), R = g(null), z = g(!document.hidden), B = w(() => q(j, l.value)), V = [
+		}), { busy: N, error: P, uploadProgress: F } = M, R = h(), z = h(null), B = h(!document.hidden), V = C(() => q(j, l.value)), H = [
 			{
 				kind: "refreshToken",
 				id: "btnCodexRefreshTokenBulkV2",
@@ -1108,111 +1135,111 @@ var et = {
 				danger: !0
 			}
 		];
-		function H(e) {
-			e || (R.value = null), i.setVisible(e);
-		}
 		function U(e) {
-			R.value = null, i.setArchived(e);
+			e || (z.value = null), i.setVisible(e);
 		}
-		async function W() {
+		function W(e) {
+			z.value = null, i.setArchived(e);
+		}
+		async function G() {
 			await i.refresh();
 		}
-		function G(e, t) {
+		function K(e, t) {
 			M.run(e, [t.filename], t);
 		}
-		function K(e) {
+		function Y(e) {
 			i.updateFilters(J(j, e));
 		}
-		let Y = () => {
-			z.value = !document.hidden, document.hidden && (R.value = null);
+		let X = () => {
+			B.value = !document.hidden, document.hidden && (z.value = null);
 		};
-		return document.addEventListener("visibilitychange", Y), b(() => document.removeEventListener("visibilitychange", Y)), t({
-			refresh: W,
-			setVisible: H,
-			setArchived: U
-		}), (e, t) => a((n(), O("section", et, [y("div", tt, [
-			y("div", nt, [y("div", rt, [
-				y("span", it, [k(_(D(u).toLocaleString()) + " 个凭证", 1), D(v) ? (n(), O("span", at, " · 已归档")) : d("", !0)]),
-				D(x).size ? (n(), O("span", ot, "已选 " + _(D(x).size) + " 项", 1)) : d("", !0),
-				c(L, {
-					items: B.value,
-					onRemove: K
+		return document.addEventListener("visibilitychange", X), y(() => document.removeEventListener("visibilitychange", X)), t({
+			refresh: G,
+			setVisible: U,
+			setArchived: W
+		}), (e, t) => a((n(), D("section", nt, [v("div", rt, [
+			v("div", it, [v("div", at, [
+				v("span", ot, [O(g(E(u).toLocaleString()) + " 个凭证", 1), E(b) ? (n(), D("span", st, " · 已归档")) : d("", !0)]),
+				E(x).size ? (n(), D("span", ct, "已选 " + g(E(x).size) + " 项", 1)) : d("", !0),
+				E(x).size ? (n(), D("div", lt, [(n(), D(p, null, o(H, (e) => v("button", {
+					id: e.id,
+					key: e.kind,
+					type: "button",
+					class: S(["ui-button", { "ui-button--danger": e.danger }]),
+					title: e.title,
+					disabled: E(N),
+					onClick: (t) => E(M).run(e.kind)
+				}, g(e.kind === "archiveBulk" && E(b) ? "恢复选中" : e.label), 11, ut)), 64))])) : d("", !0),
+				c(I, {
+					items: V.value,
+					onRemove: Y
 				}, null, 8, ["items"])
-			]), y("div", st, [
-				c(X, {
-					"model-value": D(j),
-					facets: D(l),
-					open: z.value && R.value === "all",
-					"onUpdate:modelValue": D(i).updateFilters,
-					"onUpdate:open": t[0] ||= (e) => R.value = e ? "all" : null
+			]), v("div", dt, [
+				c(ue, {
+					"model-value": E(j),
+					facets: E(l),
+					open: B.value && z.value === "all",
+					"onUpdate:modelValue": E(i).updateFilters,
+					"onUpdate:open": t[0] ||= (e) => z.value = e ? "all" : null
 				}, null, 8, [
 					"model-value",
 					"facets",
 					"open",
 					"onUpdate:modelValue"
 				]),
-				B.value.length ? (n(), O("button", {
+				V.value.length ? (n(), D("button", {
 					key: 0,
 					id: "btnResetCodexFiltersV2",
 					type: "button",
 					class: "ui-link",
-					onClick: t[1] ||= (...e) => D(i).resetFilters && D(i).resetFilters(...e)
+					onClick: t[1] ||= (...e) => E(i).resetFilters && E(i).resetFilters(...e)
 				}, "清除筛选")) : d("", !0),
-				D(F) ? (n(), O("button", {
+				E(F) ? (n(), D("button", {
 					key: 1,
 					id: "btnCodexUploadProgressV2",
 					type: "button",
 					class: "ui-button",
-					onClick: t[2] ||= (...e) => D(M).showProgress && D(M).showProgress(...e)
+					onClick: t[2] ||= (...e) => E(M).showProgress && E(M).showProgress(...e)
 				}, "查看上传进度")) : d("", !0),
-				y("button", {
+				v("button", {
 					id: "btnResetCodexColumnsV2",
 					type: "button",
 					class: "ui-link cx-reset-columns",
 					title: "恢复 Codex 列表默认列宽",
-					onClick: t[3] ||= (e) => I.value?.resetColumns()
+					onClick: t[3] ||= (e) => R.value?.resetColumns()
 				}, "恢复列宽"),
-				y("button", {
+				v("button", {
 					id: "btnRefreshCodexV2",
 					type: "button",
 					class: "ui-button",
-					disabled: D(S),
-					onClick: W
-				}, _(D(S) ? "刷新中…" : "刷新"), 9, ct)
+					disabled: E(w),
+					onClick: G
+				}, g(E(w) ? "刷新中…" : "刷新"), 9, ft)
 			])]),
-			D(x).size ? (n(), O("div", lt, [(n(), O(m, null, o(V, (e) => y("button", {
-				id: e.id,
-				key: e.kind,
-				type: "button",
-				class: C(["ui-button", { "ui-button--danger": e.danger }]),
-				title: e.title,
-				disabled: D(N),
-				onClick: (t) => D(M).run(e.kind)
-			}, _(e.kind === "archiveBulk" && D(v) ? "恢复选中" : e.label), 11, ut)), 64))])) : d("", !0),
-			D(P) || D(T) && D(s).length ? (n(), O("div", dt, [y("span", null, _(D(P) || D(T)), 1), D(T) ? (n(), O("button", {
+			E(P) || E(k) && E(s).length ? (n(), D("div", pt, [v("span", null, g(E(P) || E(k)), 1), E(k) ? (n(), D("button", {
 				key: 0,
 				type: "button",
 				class: "ui-link",
-				onClick: W
+				onClick: G
 			}, "重试")) : d("", !0)])) : d("", !0),
-			c(Be, {
+			c(He, {
 				ref_key: "table",
-				ref: I,
-				items: D(s),
-				selected: D(x),
-				filters: D(j),
-				facets: D(l),
-				loading: D(S),
-				error: D(T),
-				busy: D(N),
-				visible: D(A) && z.value,
-				"open-filter": R.value,
-				"onUpdate:openFilter": t[4] ||= (e) => R.value = e,
-				"onUpdate:filters": D(i).updateFilters,
-				onSelect: D(i).toggle,
-				onSelectPage: D(i).togglePage,
-				onAction: G,
-				onRetry: W
+				ref: R,
+				items: E(s),
+				selected: E(x),
+				filters: E(j),
+				facets: E(l),
+				loading: E(w),
+				error: E(k),
+				busy: E(N),
+				visible: E(A) && B.value,
+				"open-filter": z.value,
+				"onUpdate:openFilter": t[4] ||= (e) => z.value = e,
+				"onUpdate:filters": E(i).updateFilters,
+				onSelect: E(i).toggle,
+				onSelectPage: E(i).togglePage,
+				onAction: K,
+				onRetry: G
 			}, null, 8, [
 				"items",
 				"selected",
@@ -1227,12 +1254,12 @@ var et = {
 				"onSelect",
 				"onSelectPage"
 			]),
-			c(ee, {
-				page: D(f),
-				size: D(p),
-				pages: D(h),
-				total: D(u),
-				busy: D(S),
+			c(L, {
+				page: E(f),
+				size: E(m),
+				pages: E(_),
+				total: E(u),
+				busy: E(w),
 				"page-sizes": [
 					10,
 					20,
@@ -1241,8 +1268,8 @@ var et = {
 					100
 				],
 				label: "Codex 凭证分页",
-				"onUpdate:page": D(i).setPage,
-				"onUpdate:size": D(i).setSize
+				"onUpdate:page": E(i).setPage,
+				"onUpdate:size": E(i).setSize
 			}, null, 8, [
 				"page",
 				"size",
@@ -1252,11 +1279,11 @@ var et = {
 				"onUpdate:page",
 				"onUpdate:size"
 			])
-		])], 512)), [[E, D(A)]]);
+		])], 512)), [[T, E(A)]]);
 	}
 });
 // src/codex.ts
-function pt(e, t) {
-	return T(ft, { callbacks: t }).mount(e);
+function ht(e, t) {
+	return w(mt, { callbacks: t }).mount(e);
 }
-export { pt as mountCodexCredentials };
+export { ht as mountCodexCredentials };

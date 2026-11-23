@@ -18,8 +18,8 @@ describe('Codex列筛选',()=>{
     const model={...filters,q:'keep',date_from:'2026-11-01',date_to:'2026-11-14'};
     const wrapper=mount(CodexFilters,{attachTo:document.body,props:{modelValue:model,facets:{},open:true}});wrappers.push(wrapper);await flushPromises();
     const body=new DOMWrapper(document.body);
-    expect(body.find('select[aria-label="选择筛选列"]').exists()).toBe(true);
-    await body.get('select[aria-label="选择筛选列"]').setValue('date');
+    expect(body.find('[data-filter-value="date"]').exists()).toBe(true);
+    await body.get('[data-filter-value="date"] input').setValue(true);await flushPromises();
     expect(body.findAll<HTMLInputElement>('input[type="date"]').map(i=>i.element.value)).toEqual(['2026-11-01','2026-11-14']);
     await body.findAll('button').find(b=>b.text()==='清除此列')!.trigger('click');
     expect(wrapper.emitted('update:modelValue')?.at(-1)?.[0]).toEqual({...filters,q:'keep'});

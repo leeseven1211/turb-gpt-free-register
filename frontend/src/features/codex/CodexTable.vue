@@ -10,7 +10,7 @@ import {useColumnWidths} from '../../shared/useColumnWidths';
 import {dateTimeLines} from '../../shared/time';
 import CodexFilters from './CodexFilters.vue';
 import {codexColumns} from './filterDefinitions';
-import {credentialStatus, oauthStatus} from './presentation';
+import {credentialStatus, oauthStatus, planTone} from './presentation';
 const props = defineProps<{items: CodexRow[]; selected:Set<string>; filters:FilterValues; facets:CodexFacets; loading:boolean;error:string;busy:boolean;visible:boolean;openFilter:string|null}>();
 const emit = defineEmits<{select:[string,boolean];selectPage:[boolean];action:[CodexAction,CodexRow];retry:[];'update:filters':[FilterValues];'update:openFilter':[string|null]}>();
 const {widths,total,resize,resizeWithKeyboard,resetColumns} = useColumnWidths({defaults:[48,228,84,108,108,132,132,132,132,228],storageKey:'gpt_console_table_widths_codex',totalStorageKey:'gpt_console_table_total_codex',min:28,max:2000});
@@ -56,7 +56,7 @@ defineExpose({resetColumns});
         <tr v-for="{row,key,credential,oauth} in rows" :key="key" :class="{'is-selected':selected.has(row.filename)}">
           <td class="ui-col-check cx-check" data-label="选择"><input type="checkbox" :aria-label="`选择凭证 ${row.filename}`" :checked="selected.has(row.filename)" :disabled="busy" @change="emit('select',row.filename,($event.target as HTMLInputElement).checked)"></td>
           <td class="cx-identity" data-label="邮箱 / 文件"><ListCell :text="row.email || row.filename" :secondary="row.email ? row.filename : undefined" :title="`${row.email || ''} · 文件：${row.filename}${row.archived ? ' · 已归档' : ''}`"/><div class="cx-mobile-summary" :title="[display(row.plan),credential.title,oauth.title].join('；')">{{ [display(row.plan),credential.label,oauth.label].join(' · ') }}</div></td>
-          <td class="cx-extra" data-label="Plan"><ListCell :text="display(row.plan)"/></td>
+          <td class="cx-extra" data-label="Plan"><ListCell :text="display(row.plan)"><span v-if="row.plan" class="ui-badge cx-badge" :class="`ui-badge--${planTone(row.plan)}`">{{ row.plan }}</span><template v-else>—</template></ListCell></td>
           <td class="cx-extra" data-label="凭证状态"><ListCell :text="credential.label" :title="credential.title" :tone="credential.tone"><span class="ui-badge cx-badge" :class="`ui-badge--${credential.tone}`">{{ credential.label }}</span></ListCell></td>
           <td class="cx-extra" data-label="OAuth 状态"><ListCell :text="oauth.label" :title="oauth.title" :tone="oauth.tone"><span class="ui-badge cx-badge" :class="`ui-badge--${oauth.tone}`">{{ oauth.label }}</span></ListCell></td>
           <td class="cx-extra" data-label="Account ID"><ListCell :text="display(row.account_id)"/></td>

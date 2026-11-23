@@ -3,7 +3,7 @@ import type {CodexRow} from '../../api/codex';
 export interface CodexStatus {
   label: string;
   title: string;
-  tone: 'neutral' | 'success' | 'warning' | 'danger';
+  tone: 'neutral' | 'success' | 'warning' | 'danger' | 'active';
 }
 
 export function credentialStatus(row: CodexRow): CodexStatus {
@@ -12,16 +12,16 @@ export function credentialStatus(row: CodexRow): CodexStatus {
   if (uploadedCount > 0) {
     const details = [`Sub2API 已上传 ${uploadedCount} 次，最近 ${row.sub2_uploaded_at || '-'}`];
     if (count > 0) details.push(`导出记录 ${count} 次，最近 ${row.exported_at || '-'}`);
-    return {label: '已导出', title: details.join('；'), tone: 'neutral'};
+    return {label: '已导出', title: details.join('；'), tone: 'success'};
   }
   const exported = row.exported === true || count > 0;
   const linked = row.sub2api_account_id != null && String(row.sub2api_account_id).trim() !== '';
   if (exported && count <= 0 && linked) {
-    return {label: '已关联', title: `Sub2API ID ${row.sub2api_account_id} 已有关联记录，本地下载 0 次`, tone: 'neutral'};
+    return {label: '已关联', title: `Sub2API ID ${row.sub2api_account_id} 已有关联记录，本地下载 0 次`, tone: 'success'};
   }
   return exported
-    ? {label: '已导出', title: `导出 ${count} 次，最近 ${row.exported_at || '-'}`, tone: 'neutral'}
-    : {label: '未导出', title: '没有本地导出或 Sub2API 关联记录', tone: 'success'};
+    ? {label: '已导出', title: `导出 ${count} 次，最近 ${row.exported_at || '-'}`, tone: 'success'}
+    : {label: '未导出', title: '没有本地导出或 Sub2API 关联记录', tone: 'neutral'};
 }
 
 export function oauthStatus(row: CodexRow): CodexStatus {
@@ -49,4 +49,12 @@ export function oauthStatus(row: CodexRow): CodexStatus {
   if (status === 'expired') return result(row.oauth_refreshable ? '已过期' : '已过期·需重授权', 'danger');
   if (status === 'missing') return result('缺少令牌', 'danger');
   return result('未知', 'neutral');
+}
+
+export function planTone(plan: unknown): CodexStatus['tone'] {
+  const value = String(plan || '').toLowerCase();
+  if (value === 'plus') return 'active';
+  if (value === 'pro') return 'warning';
+  if (value === 'team') return 'success';
+  return 'neutral';
 }

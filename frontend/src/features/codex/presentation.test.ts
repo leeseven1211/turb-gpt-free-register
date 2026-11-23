@@ -13,19 +13,19 @@ describe('Codex 凭证事实展示', () => {
   ])('有确认上传回执时显示已导出，保留后续启用结果独立事实：%j', receipt => {
     const status = credentialStatus(row({exported: false, exported_count: 0, sub2_uploaded_count: 2,
       sub2_uploaded_at: '2026-11-13T14:40:00', ...receipt}));
-    expect(status).toEqual({label: '已导出', title: 'Sub2API 已上传 2 次，最近 2026-11-13T14:40:00', tone: 'neutral'});
+    expect(status).toEqual({label: '已导出', title: 'Sub2API 已上传 2 次，最近 2026-11-13T14:40:00', tone: 'success'});
     expect(status.title).not.toMatch(/已启用|导出 0 次|本地下载/);
   });
   it('上传回执与导出记录分别保留次数和时间', () => {
     const status = credentialStatus(row({exported_count: 1, exported_at: '2026-11-12T12:00:00',
       sub2_uploaded_count: 3, sub2_uploaded_at: '2026-11-13T14:40:00'}));
     expect(status).toEqual({label: '已导出',
-      title: 'Sub2API 已上传 3 次，最近 2026-11-13T14:40:00；导出记录 1 次，最近 2026-11-12T12:00:00', tone: 'neutral'});
+      title: 'Sub2API 已上传 3 次，最近 2026-11-13T14:40:00；导出记录 1 次，最近 2026-11-12T12:00:00', tone: 'success'});
   });
   it.each([
-    [{exported: true, exported_count: 0, sub2api_account_id: '9007199254740993'}, '已关联', 'neutral'],
-    [{exported_count: 3, sub2api_account_id: 42}, '已导出', 'neutral'],
-    [{exported: false, exported_count: 0}, '未导出', 'success'],
+    [{exported: true, exported_count: 0, sub2api_account_id: '9007199254740993'}, '已关联', 'success'],
+    [{exported_count: 3, sub2api_account_id: 42}, '已导出', 'success'],
+    [{exported: false, exported_count: 0}, '未导出', 'neutral'],
   ] as const)('导出与仅关联不同：%j', (input, label, tone) => {
     expect(credentialStatus(row(input))).toMatchObject({label, tone});
   });

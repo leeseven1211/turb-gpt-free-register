@@ -11,15 +11,15 @@ import EmailReceipt from './EmailReceipt.vue';
 import ColumnResizer from '../../components/ColumnResizer.vue';
 import TableState from '../../components/TableState.vue';
 import ListToolbar from '../../components/ListToolbar.vue';
-import {useNativeDialog} from './useNativeDialog';
+import {PopoverContent,PopoverPortal,PopoverRoot,PopoverTrigger} from 'reka-ui';
 import {credentials,keyOf,reasonSummary,sourceLabels,statusLabels,usageLabels} from './presentation';
 import type {useEmailInventory} from './useEmailInventory';
 import type {EmailRow} from './contracts';
 const props=defineProps<{owner:ReturnType<typeof useEmailInventory>;active:boolean;butlerLabel:string}>();
 const emit=defineEmits<{localImport:[];butlerImport:[];parent:[EmailRow]}>();
 const state=props.owner.state;
-const tableViewport=ref<HTMLElement>(),moreDialog=ref<HTMLDialogElement>(),moreRow=ref<EmailRow|null>(null);
-useNativeDialog(moreDialog,()=>!!moreRow.value,()=>props.active);
+const tableViewport=ref<HTMLElement>(),openAction=ref<string|null>(null);
+watch(()=>props.active,value=>{if(!value)openAction.value=null;});
 let resetScrollOnNextResult=false;
 watch([()=>state.page,()=>state.size,()=>Object.values(state.filters)],()=>{
   resetScrollOnNextResult=true;
@@ -42,9 +42,8 @@ function statusTone(value?:string):ValueTone{return ({available:'success',used:'
 function usageTone(value?:string):ValueTone{return ({available:'success',used_unbound:'active',bound:'active',pending_sync:'warning',replaced:'warning',failed:'danger'} as Record<string,ValueTone>)[value||'']||'neutral';}
 function credentialTone(row:EmailRow):ValueTone{const text=credentials(row).text;return text.includes('缺少')?'danger':text.includes('已配置')?'success':'neutral';}
 function sourceColor(source:string){return ({outlook:'#377dff',generic_api:'#7c5cf0',cloudflare_domain:'#e08a1e',icloud_hide:'#0e9aa7',email_butler:'#1f9d75'} as Record<string,string>)[source]||'#98a2b3';}
-function openMore(row:EmailRow){moreRow.value=row;}
-function closeMore(){moreRow.value=null;}
-function runMore(status:'available'|'disabled'|'failed'){const row=moreRow.value;if(!row)return;closeMore();props.owner.rowAction(row,status);}
+function actionsFor(row:EmailRow){return Object.entries(moreActions).filter(([status])=>status!==row.status);}
+function runMore(row:EmailRow,status:string){openAction.value=null;props.owner.rowAction(row,status);}
 function removeFilter(key:string){props.owner.updateFilters({[key]:key==='source'?'all':''});}
 function activity(row:EmailRow){return row.last_activity_at||row.used_at||row.updated_at||row.created_at;}
 function activityDetail(row:EmailRow){return`${row.used_at?'最近使用':row.last_activity_at?'最近更新':'导入时间'}：${formatDateTime(activity(row))}${row.synced_at?`\n同步：${formatDateTime(row.synced_at)}`:''}`;}
@@ -67,7 +66,7 @@ function activityDetail(row:EmailRow){return`${row.used_at?'最近使用':row.la
   <div v-if="state.error" class="ui-list-feedback is-error" role="alert">{{ state.error }} <button class="ui-link" @click="owner.refresh()">重试</button></div>
   <div v-if="state.summaryError" class="ui-list-feedback is-error" role="alert">{{ state.summaryError }} <button class="ui-link" @click="owner.refreshDerivationSummary()">重试</button></div>
   <EmailReceipt :receipt="state.receipt"/>
-  <div ref="tableViewport" class="ui-table-scroll em-table-wrap" role="region" tabindex="0" aria-label="邮箱列表，可滚动"><table class="ui-table ui-table--sticky-end em-table" :style="{'--ui-table-width':`${widths.total.value}px`}">
+  <div ref="tableViewport" class="ui-table-scroll em-table-wrap" role="region" tabindex="0" aria-label="邮箱列表，可滚动" @scroll="openAction=null"><table class="ui-table ui-table--sticky-end em-table" :style="{'--ui-table-width':`${widths.total.value}px`}">
    <colgroup><col v-for="(value,index) in widths.widths.value" :key="index" :style="{width:`${value}px`}"></colgroup>
    <thead><tr>
     <th class="ui-col-check"><input type="checkbox" aria-label="全选当前页邮箱资源" :checked="!!state.items.length&&checked===state.items.length" :indeterminate="checked>0&&checked<state.items.length" :disabled="!state.items.length" @change="owner.togglePage(($event.target as HTMLInputElement).checked)"><ColumnResizer label="选择" @start="widths.resize(0,$event)" @nudge="widths.resizeWithKeyboard(0,$event)"/></th>
@@ -85,13 +84,9 @@ function activityDetail(row:EmailRow){return`${row.used_at?'最近使用':row.la
     <td><ListResult :label="credentials(row).text" :title="credentials(row).detail" :tone="credentialTone(row)"><template #details>{{ credentials(row).detail }}</template></ListResult></td>
     <td><ListResult v-bind="{label:dateTimeLines(activity(row)).text,secondary:dateTimeLines(activity(row)).secondary}" :title="activityDetail(row)"><template #details>{{ activityDetail(row) }}</template></ListResult></td>
     <td><ListResult v-if="note(row)" data-email-note :label="reasonSummary(row)" :title="note(row)" :tone="row.service_sync_error?'danger':'neutral'"><template #details>{{ note(row) }}</template></ListResult><ListCell v-else text="—"/></td>
-    <td><div class="ui-row-actions em-row-actions"><button class="ui-link" :disabled="state.busy" @click="owner.copyRow(row)">复制素材</button><button class="ui-link ui-link--danger" :disabled="state.busy" @click="owner.rowAction(row,'delete')">删除</button><button v-if="!['replaced','pending_sync'].includes(row.status||'')" class="ui-link" :disabled="state.busy" @click="openMore(row)">更多</button></div></td>
+    <td><div class="ui-row-actions em-row-actions"><button class="ui-link" :disabled="state.busy" @click="owner.copyRow(row)">复制素材</button><button class="ui-link ui-link--danger" :disabled="state.busy" @click="owner.rowAction(row,'delete')">删除</button><PopoverRoot v-if="!['replaced','pending_sync'].includes(row.status||'')" :open="openAction===keyOf(row)" :modal="false" @update:open="openAction=$event?keyOf(row):null"><PopoverTrigger as-child><button type="button" class="ui-link" :disabled="state.busy" :aria-label="`更多邮箱操作 ${row.email}`">更多</button></PopoverTrigger><PopoverPortal><PopoverContent class="em-row-menu" :aria-label="`${row.email} 的更多操作`" side="bottom" align="end" :side-offset="6" :collision-padding="10" hide-when-detached @open-auto-focus.prevent><button v-for="([status,label]) in actionsFor(row)" :key="status" type="button" :class="{'is-danger':status==='failed'}" :disabled="state.busy" @click="runMore(row,status)">{{ label }}</button></PopoverContent></PopoverPortal></PopoverRoot></div></td>
    </tr><TableState v-if="!state.items.length" :colspan="9" :loading="state.loading" :error="state.error?' ':''" loading-title="正在加载邮箱资源…" error-title="邮箱资源加载失败" title="暂无邮箱资源" text="调整筛选条件或导入新的邮箱资源。"/></tbody>
   </table></div>
   <ListPagination compact :page="state.page" :size="state.size" :total="state.total" :busy="state.loading" :page-sizes="[10,20,30,50,100]" label="邮箱资源分页" @update:page="owner.setPage" @update:size="owner.setSize"/>
  </section>
-  <dialog ref="moreDialog" class="em-dialog em-more-dialog" data-email-more aria-labelledby="emailMoreTitle" @cancel.prevent="closeMore" @click="($event.target===moreDialog)&&closeMore()">
-   <div class="em-dialog-head"><div><h3 id="emailMoreTitle">邮箱操作</h3><p>{{ moreRow?.email }}</p></div><button class="em-button" aria-label="关闭邮箱操作" @click="closeMore">关闭</button></div>
-   <div class="em-dialog-body em-more-actions"><button v-for="(label,status) in moreActions" :key="status" class="em-button" :class="{'em-danger':status==='failed'}" :disabled="state.busy" @click="runMore(status)">{{ label }}</button></div>
-  </dialog>
 </template>
