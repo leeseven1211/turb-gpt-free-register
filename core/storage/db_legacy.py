@@ -1290,6 +1290,20 @@ def recover_interrupted_plan_checks(
     return len(recovered_rows)
 
 
+def mark_account_plan_check_skipped(acc_id: int) -> bool:
+    """注册驱动不提供套餐查询时，把套餐步骤明确记为 skipped。"""
+    row = record_store.get_row(record_store.ACCOUNTS, int(acc_id))
+    if row is None:
+        return False
+    record_store.patch_row(record_store.ACCOUNTS, int(acc_id), {
+        "plan_check_status": "skipped",
+        "plan_check_ok": None,
+        "plan_check_completed_at": _now(),
+        "plan_check_error": None,
+    })
+    return True
+
+
 def update_account_plan_check(acc_id: int | None = None, email: str | None = None, result: dict | None = None, *, conn=None) -> bool:
     """更新账号套餐、Go/Plus 优惠与额度查询结果。"""
     result = result or {}

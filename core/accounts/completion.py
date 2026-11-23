@@ -106,7 +106,7 @@ def completion_plan(account: Mapping | None, settings: Mapping | None = None) ->
     if enabled["password"] and not _password_present(account):
         # 显式补全重新核验本轮入口；历史无入口证据不能永久取消必需密码步骤。
         missing.append("password")
-    if enabled["plan_check"] and str(account.get("plan_check_status") or "").strip().lower() != "success":
+    if enabled["plan_check"] and str(account.get("plan_check_status") or "").strip().lower() not in {"success", "skipped"}:
         missing.append("plan_check")
     if enabled["twofa"] and not _twofa_present(account):
         missing.append("twofa")
