@@ -124,6 +124,11 @@ def _open_standard_password_login(driver, *, _deps: OpenStandardPasswordLoginDep
     urlparse = _deps.urlparse
     _find_any = _deps._find_any
     _safe_get = _deps._safe_get
+    def probe_error(message: str) -> RuntimeError:
+        error = RuntimeError(message)
+        error.code = "password_login_unavailable"
+        return error
+
     def trusted_password_page() -> bool:
         parsed = urlparse(str(getattr(driver, "current_url", "") or ""))
         return (
@@ -136,12 +141,19 @@ def _open_standard_password_login(driver, *, _deps: OpenStandardPasswordLoginDep
         timeout=10, attempts=1, accept_hosts=("auth.openai.com",),
     )
     if not trusted_password_page():
-        return False
+        parsed = urlparse(str(getattr(driver, "current_url", "") or ""))
+        if (
+            parsed.scheme == "https"
+            and parsed.netloc.lower() in {"auth.openai.com", "auth.openai.com:443"}
+            and parsed.path.rstrip("/") == "/email-verification"
+        ):
+            return False
+        raise probe_error("密码入口导航未确认")
     try:
         _find_any(driver, ["input[type='password']"], timeout=8)
     except RuntimeError as exc:
         if str(exc).startswith("找不到页面元素:"):
-            return False
+            raise probe_error("密码页未挂载密码框") from exc
         raise
     return trusted_password_page()
 
@@ -323,31 +335,38 @@ def _enter_existing_account_otp(driver, email: str, *, password: str='', totp_se
             if challenge_state == "advanced":
                 return "logged_in"
             if challenge_state == "email_otp":
-                if not email_invalid:
-                    return "otp"
                 # 公共状态机找不到页面提供的密码入口时会直接返回邮箱分支；
-                # 只有本轮产生密码提交回执，才把它描述为密码后的邮箱挑战。
-                if not password_submitted():
-                    try:
-                        opened_password = _open_standard_password_login(driver)
-                    except (OperationCancelled, AuthCancelledError, OperationLeaseLost):
-                        raise
-                    except Exception as exc:
-                        raise _EmailInvalidLoginError("password_login_unavailable", not_submitted=True) from exc
-                    if not opened_password:
-                        raise _EmailInvalidLoginError("password_login_unavailable", not_submitted=True)
-                    challenge_state = complete_openai_login_challenge(
-                        driver, email, password, totp_secret, timeout=45,
-                        page_classifier=_classify_at_login_page,
-                    )
-                    if challenge_state == "advanced":
-                        return "logged_in"
-                    if challenge_state == "email_otp":
-                        if not password_submitted():
-                            raise _EmailInvalidLoginError("password_login_unavailable", not_submitted=True)
+                # 本轮尚未提交密码时，正常和失效邮箱都沿当前会话只尝试一次标准密码入口。
+                if password_submitted():
+                    if email_invalid:
                         raise _EmailInvalidLoginError("email_verification_required")
-                else:
-                    raise _EmailInvalidLoginError("email_verification_required")
+                    return "otp"
+                try:
+                    opened_password = _open_standard_password_login(driver)
+                except (OperationCancelled, AuthCancelledError, OperationLeaseLost):
+                    raise
+                except Exception as exc:
+                    if email_invalid and getattr(exc, "code", "") == "password_login_unavailable":
+                        raise _EmailInvalidLoginError("password_login_unavailable", not_submitted=True) from exc
+                    raise
+                if not opened_password:
+                    if email_invalid:
+                        raise _EmailInvalidLoginError("password_login_unavailable", not_submitted=True)
+                    return "otp"
+                challenge_state = complete_openai_login_challenge(
+                    driver, email, password, totp_secret, timeout=45,
+                    page_classifier=_classify_at_login_page,
+                )
+                if challenge_state == "advanced":
+                    return "logged_in"
+                if challenge_state == "email_otp":
+                    if password_submitted():
+                        if email_invalid:
+                            raise _EmailInvalidLoginError("email_verification_required")
+                        return "otp"
+                    if email_invalid:
+                        raise _EmailInvalidLoginError("password_login_unavailable", not_submitted=True)
+                    return "otp"
             raise RuntimeError(f"已有账号登录挑战未完成：state={challenge_state}")
         return "otp"
     raise RuntimeError(f"浏览器登录未进入已有账号 OTP，最后状态={state}")
