@@ -6,17 +6,20 @@ import gzip
 import hashlib
 import json
 import logging
+import os
+import re
 import stat
 import tempfile
 import threading
 import time
 import uuid
 from collections.abc import Callable, Iterable, Mapping
+from contextlib import ExitStack
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from psycopg.errors import DeadlockDetected
+from psycopg.errors import DeadlockDetected, LockNotAvailable, QueryCanceled, SerializationFailure
 
 from core import operation_task_store
 from core.runtime import scheduler_state
@@ -28,15 +31,17 @@ from core.operations import run_log as task_run_log
 _ARCHIVE_ROOT = task_log_root() / "task-center-archives"
 _ARCHIVE_METADATA_KEYS = ("version", "created_at", "cutoff", "retention_days")
 _ARCHIVE_CHUNK_SIZE = 256 * 1024
+_ARCHIVE_NAME = re.compile(r"task-center-\d{8}T\d{6}Z-(?:[0-9a-f]{8}|[0-9a-f]{32})\.json\.gz")
 _DELETE_BATCH_SIZE = 500
 _MAX_BATCHES_PER_RUN = 20
-_DEADLOCK_RETRY_DELAYS = (0.05, 0.20)
+_RETRYABLE_ROLLBACKS = (DeadlockDetected, LockNotAvailable, SerializationFailure, QueryCanceled)
 SCHEDULER_TASK = "task_center_retention"
 _INTERVAL_SECONDS = 24 * 60 * 60
 _INITIAL_DELAY_SECONDS = 60
 logger = logging.getLogger('core.task_center_retention')
-_LOCK = threading.RLock()
 _SCHEDULER = PeriodicThread("task-center-retention")
+# A busy prefix can span more than one wake-up. Never reuse its cursor for another database.
+_scan = threading.local()
 
 
 def _archive_scrub(value: Any, depth: int = 0) -> Any:
@@ -67,15 +72,67 @@ def _archive_scrub(value: Any, depth: int = 0) -> Any:
     return task_run_log.redact_text(value, 100_000)
 
 
+def _sync_directory(path: Path) -> None:
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _prepare_archive_directory(root: Path) -> None:
+    if not root.is_dir():
+        _prepare_archive_directory(root.parent)
+        root.mkdir(exist_ok=True)
+        _sync_directory(root.parent)
+
+
+def _new_archive_path(root: Path) -> Path:
+    _prepare_archive_directory(root)
+    created = datetime.now(timezone.utc)
+    return root / f"task-center-{created.strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex}.json.gz"
+
+
+def _identity(info: os.stat_result) -> tuple[int, int, int]:
+    return info.st_dev, info.st_ino, info.st_ctime_ns
+
+
+def _unlink_if_unchanged(path: Path, expected: tuple[int, int, int]) -> bool:
+    try:
+        if _identity(path.lstat()) == expected:
+            path.unlink()
+            return True
+    except FileNotFoundError:
+        pass
+    except OSError:
+        logger.warning("[TaskCenterRetention] archive removal failed: %s", path, exc_info=True)
+    return False
+
+
+def _publish_archive(tmp: Path, path: Path, hold: Callable[[Path, int], None] | None = None) -> None:
+    import fcntl
+
+    with tmp.open("rb") as handle:
+        fd = handle.fileno()
+        fcntl.flock(fd, fcntl.LOCK_SH)
+        os.fsync(fd)
+        # Hard linking a file in the same directory publishes it without overwriting any archive.
+        os.link(tmp, path)
+        try:
+            tmp.unlink()
+            _sync_directory(path.parent)
+            if hold is not None:
+                hold(path, fd)
+        except BaseException:
+            _unlink_if_unchanged(path, _identity(os.fstat(fd)))
+            raise
+
+
 def archive_snapshot(snapshot: dict[str, Any], *, archive_root: Path | None = None) -> dict[str, Any]:
     """Write, reread, and verify one redacted gzip archive atomically."""
     root = Path(archive_root or _ARCHIVE_ROOT)
-    root.mkdir(parents=True, exist_ok=True)
+    final_path = _new_archive_path(root)
     safe_payload = _archive_scrub(snapshot)
-    created = datetime.now(timezone.utc)
-    final_path = root / (
-        f"task-center-{created.strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:8]}.json.gz"
-    )
     tmp_handle = tempfile.NamedTemporaryFile(
         prefix=".task-center-", suffix=".json.gz.tmp", dir=root, delete=False,
     )
@@ -89,10 +146,9 @@ def archive_snapshot(snapshot: dict[str, Any], *, archive_root: Path | None = No
         if verified != safe_payload:
             raise RuntimeError("任务中心清理归档回读校验不一致")
         raw = tmp_path.read_bytes()
-        tmp_path.replace(final_path)
-    except Exception:
+        _publish_archive(tmp_path, final_path)
+    finally:
         tmp_path.unlink(missing_ok=True)
-        raise
     counts = {
         str(key): len(value)
         for key, value in safe_payload.items()
@@ -124,6 +180,7 @@ def archive_snapshot_stream(
     *,
     archive_root: Path | None = None,
     check_cancel: Callable[[], None] | None = None,
+    _hold: Callable[[Path, int], None] | None = None,
 ) -> dict[str, Any]:
     """Write, reread, and verify the version-1 archive without collecting its rows."""
     def checkpoint() -> None:
@@ -140,11 +197,7 @@ def archive_snapshot_stream(
 
     checkpoint()
     root = Path(archive_root or _ARCHIVE_ROOT)
-    root.mkdir(parents=True, exist_ok=True)
-    created = datetime.now(timezone.utc)
-    final_path = root / (
-        f"task-center-{created.strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:8]}.json.gz"
-    )
+    final_path = _new_archive_path(root)
     encoder = json.JSONEncoder(ensure_ascii=False, separators=(",", ":"))
     counts: dict[str, int] = {}
     content_digest = hashlib.sha256()
@@ -203,36 +256,24 @@ def archive_snapshot_stream(
         with tmp_path.open("rb") as handle:
             size, sha256 = _read_archive_digest(handle, checkpoint)
         checkpoint()
-        tmp_path.replace(final_path)
+        _publish_archive(tmp_path, final_path, _hold)
     finally:
         tmp_path.unlink(missing_ok=True)
     return {"path": str(final_path), "size": size, "sha256": sha256, "counts": counts}
 
 
-def _archive_file_identity(path: Path) -> tuple[int, int, int] | None:
-    info = path.lstat()
-    if not stat.S_ISREG(info.st_mode):
-        return None
-    return info.st_dev, info.st_ino, info.st_ctime_ns
+def _cleanup_batch(days: int, check_cancel: Callable[[], None], after=None) -> dict[str, Any]:
+    check_cancel()
+    with ExitStack() as locks:
+        published = []
 
-
-def _cleanup_batch_with_retry(days: int, check_cancel: Callable[[], None],
-                              stop: threading.Event | None) -> dict[str, Any]:
-    for attempt in range(len(_DEADLOCK_RETRY_DELAYS) + 1):
-        check_cancel()
-        published: tuple[Path, tuple[int, int, int]] | None = None
+        def hold(path: Path, fd: int) -> None:
+            # Keep the publication's shared flock and inode alive until the store finishes committing.
+            locks.callback(os.close, os.dup(fd))
+            published.append((path, _identity(os.fstat(fd))))
 
         def archive_for_attempt(metadata, sections, *, check_cancel=None):
-            nonlocal published
-            result = archive_snapshot_stream(metadata, sections, check_cancel=check_cancel)
-            path = Path(result["path"])
-            try:
-                identity = _archive_file_identity(path)
-                if identity is not None:
-                    published = path, identity
-            except OSError:
-                logger.warning("Task center archive identity could not be read")
-            return result
+            return archive_snapshot_stream(metadata, sections, check_cancel=check_cancel, _hold=hold)
 
         try:
             result = operation_task_store.cleanup_terminal_history(
@@ -240,32 +281,21 @@ def _cleanup_batch_with_retry(days: int, check_cancel: Callable[[], None],
                 limit=_DELETE_BATCH_SIZE,
                 archive_stream=archive_for_attempt,
                 check_cancel=check_cancel,
+                after=after,
             )
-        except DeadlockDetected as error:
-            # The store's transaction has unwound with SQLSTATE 40P01.
-            # Only its own verified file is eligible for removal.
-            if published is not None:
-                path, identity = published
-                try:
-                    if _archive_file_identity(path) == identity:
-                        path.unlink(missing_ok=True)
-                except FileNotFoundError:
-                    pass
-                except OSError:
-                    logger.warning("Task center archive from a rolled back batch could not be removed")
+        except _RETRYABLE_ROLLBACKS as error:
+            # The final database transaction rolled back. Unknown commit outcomes keep their archives.
+            for path, identity in published:
+                _unlink_if_unchanged(path, identity)
             check_cancel()
-            if attempt == len(_DEADLOCK_RETRY_DELAYS):
-                raise scheduler_state.PeriodicCycleRetry() from error
-            delay = _DEADLOCK_RETRY_DELAYS[attempt]
-            if stop is None:
-                time.sleep(delay)
-            else:
-                stop.wait(delay)
-        else:
-            # Contention during a retry does not complete the rolled back batch.
-            if attempt and result.get("locked"):
-                raise scheduler_state.PeriodicCycleRetry()
-            return result
+            raise scheduler_state.PeriodicCycleRetry() from error
+        if result.get("retry") and not result.get("archive") and not any(
+            result.get(key) for key in ("deleted_tasks", "deleted_batches", "deleted_events")
+        ):
+            # Final validation declined the snapshot and committed no deletes.
+            for path, identity in published:
+                _unlink_if_unchanged(path, identity)
+        return result
 
 
 def cleanup_once(*, stop: threading.Event | None = None) -> dict[str, Any]:
@@ -274,7 +304,7 @@ def cleanup_once(*, stop: threading.Event | None = None) -> dict[str, Any]:
 
     days = int(getattr(operation_config, "TASK_CENTER_RETENTION_DAYS", 7) or 0)
     if days <= 0:
-        return {"enabled": False, "deleted_tasks": 0, "deleted_batches": 0, "batches": 0}
+        return {"enabled": False, "deleted_tasks": 0, "deleted_batches": 0, "deleted_events": 0, "batches": 0}
 
     def check_cancel() -> None:
         if stop is None:
@@ -284,31 +314,71 @@ def cleanup_once(*, stop: threading.Event | None = None) -> dict[str, Any]:
         if stop.is_set() or not execution_allowed():
             raise scheduler_state.PeriodicCycleCancelled()
 
+    started = time.monotonic()
     totals: dict[str, Any] = {
         "enabled": True,
         "retention_days": days,
         "deleted_tasks": 0,
         "deleted_batches": 0,
+        "deleted_events": 0,
         "removed_log_files": 0,
+        "raw_bytes": 0,
+        "busy_candidates": 0,
+        "invalidated_pieces": 0,
+        "inconsistent_candidates": 0,
         "batches": 0,
     }
+    pg = operation_task_store.postgres_store
+    domain = hash((pg.database_url(), pg.schema_name(), operation_task_store._schema_name(), days))
+    same_domain = getattr(_scan, "domain", None) == domain
+    after = _scan.after if same_domain else None
+    revisit = getattr(_scan, "revisit", False) if same_domain else False
+    deferred = False
     for _ in range(_MAX_BATCHES_PER_RUN):
-        result = _cleanup_batch_with_retry(days, check_cancel, stop)
+        result = _cleanup_batch(days, check_cancel, after)
         totals["batches"] += 1
         totals["deleted_tasks"] += int(result.get("deleted_tasks") or 0)
         totals["deleted_batches"] += int(result.get("deleted_batches") or 0)
+        totals["deleted_events"] += int(result.get("deleted_events") or 0)
+        totals["raw_bytes"] += int(result.get("raw_bytes") or 0)
+        totals["busy_candidates"] += int(result.get("busy_tasks") or 0)
+        totals["invalidated_pieces"] += int(bool(result.get("retry")))
+        totals["inconsistent_candidates"] += int(result.get("inconsistent_tasks") or 0)
         native_log_files = list(result.get("native_log_files") or [])
         if native_log_files:
             totals["removed_log_files"] += remove_native_task_logs(native_log_files)
         if result.get("archive"):
             totals["last_archive"] = result["archive"]
-        if not result.get("has_more"):
+        busy = bool(result.get("locked") or result.get("retry") or result.get("busy_tasks"))
+        if busy and "next_cursor" not in result:
+            # No page was read before its deadline. Retry at the same position.
+            deferred = True
             break
+        revisit |= busy or (after is not None and bool(result.get("deleted_tasks")))
+        if result.get("has_more") and not busy and not result.get("inconsistent_tasks"):
+            continue  # Drain the current page, including the remaining events of a large task.
+        after = result.get("next_cursor")
+        if after is None:
+            # Busy rows, or earlier parents freed by a later deletion, need another pass.
+            deferred, revisit = revisit, False
+            break
+    else:
+        deferred = True
+    _scan.domain, _scan.after, _scan.revisit = domain, after, revisit
     check_cancel()
     archive_days = int(
         getattr(operation_config, "TASK_CENTER_ARCHIVE_RETENTION_DAYS", 30) or 0
     )
     totals["removed_archives"] = remove_expired_archives(retention_days=archive_days)
+    totals["elapsed_ms"] = round((time.monotonic() - started) * 1000)
+    if deferred:
+        logger.info(
+            "[TaskCenterRetention] 本轮完成，等待续扫 tasks=%d events=%d batches=%d "
+            "raw_bytes=%d busy_candidates=%d invalidated_pieces=%d inconsistent_candidates=%d elapsed_ms=%d",
+            totals["deleted_tasks"], totals["deleted_events"], totals["deleted_batches"], totals["raw_bytes"],
+            totals["busy_candidates"], totals["invalidated_pieces"], totals["inconsistent_candidates"], totals["elapsed_ms"],
+        )
+        raise scheduler_state.PeriodicCycleRetry()
     return totals
 
 
@@ -316,6 +386,8 @@ def remove_expired_archives(
     *, retention_days: int, archive_root: Path | None = None,
 ) -> int:
     """Remove expired managed archives one file at a time."""
+    import fcntl
+
     days = int(retention_days or 0)
     if days <= 0:
         return 0
@@ -325,10 +397,22 @@ def remove_expired_archives(
     cutoff = time.time() - days * 86400
     removed = 0
     for path in root.glob("task-center-*.json.gz"):
+        if not _ARCHIVE_NAME.fullmatch(path.name):
+            continue
         try:
-            if path.is_file() and path.stat().st_mtime < cutoff:
-                path.unlink()
-                removed += 1
+            info = path.lstat()
+            if not stat.S_ISREG(info.st_mode) or info.st_mtime >= cutoff:
+                continue
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                locked = os.fstat(fd)
+                if _identity(locked) == _identity(info):
+                    removed += _unlink_if_unchanged(path, _identity(locked))
+            finally:
+                os.close(fd)
+        except (BlockingIOError, FileNotFoundError):
+            continue
         except OSError:
             logger.warning("[TaskCenterRetention] archive removal failed: %s", path, exc_info=True)
     return removed

@@ -44,7 +44,7 @@ _CODEX_EXPORT_STATE = _PROJECT_ROOT / "codex_导出状态.json"
 
 _LOCK = threading.RLock()
 _COMPAT_SCHEMA_LOCK_KEY = "turb-compat-schema-init"
-_COMPAT_SCHEMA_READY_KEYS = {"registration": "", "operation": ""}
+_COMPAT_SCHEMA_READY_KEYS = {"operation": ""}
 
 JOB_PROGRESS_STAGES = (
     ("network", "分配网络"),
@@ -370,7 +370,6 @@ def _ensure_registration_attempt_job(row: dict) -> None:
     """
     from core.storage import registration
 
-    _ensure_compat_schema("registration", registration.init)
     job_data = row.get("data") if isinstance(row.get("data"), dict) else {}
     attempt_data = job_data
     snapshot = job_data.get("config_snapshot")
@@ -3396,9 +3395,9 @@ def create_job(
     data: dict | None = None,
 ) -> dict:
     """创建一个首次执行的 pending 注册任务。"""
-    # 显式 init 是新 schema 首次调用的前置条件；不能把建表责任推迟到
-    # _locked_row_by_email/其它业务查询之后。
-    record_store.init()
+    from core.storage import registration
+
+    registration.init()
     row = _new_job_row(
         email_source=email_source,
         batch_id=batch_id,
@@ -3428,7 +3427,9 @@ def create_retry_job(
     data: dict | None = None,
 ) -> tuple[dict, bool]:
     """原子创建重试子任务；同一任务链已有活跃任务时直接复用。"""
-    record_store.init()
+    from core.storage import registration
+
+    registration.init()
     source_id = int(source_job_id)
     row: dict | None = None
     with record_store.transaction() as conn:
@@ -4276,7 +4277,9 @@ def get_successful_retries_for_jobs(jobs: list[dict]) -> dict[int, dict]:
     return out
 
 
-def get_accounts_for_jobs(jobs: list[dict]) -> dict[int, dict]:
+def get_accounts_for_jobs(
+    jobs: list[dict], *, attempts_by_root: Mapping[int, dict] | None = None,
+) -> dict[int, dict]:
     """先核验显式注册归属，再批量关联账号；查询次数不随任务数增长。"""
     rows = [row for row in (jobs or []) if row.get("id") is not None]
     if not rows:
@@ -4284,13 +4287,13 @@ def get_accounts_for_jobs(jobs: list[dict]) -> dict[int, dict]:
     from core.storage.registration.account_links import registration_account_link
 
     linked = [row for row in rows if row.get("attempt_id") is not None]
-    attempts = {}
     roots = {int(row["id"]): row for row in rows}
     if linked:
         from core.storage import registration
 
         root_ids = sorted({int(row.get("root_job_id") or row["id"]) for row in linked})
-        attempts = registration.get_attempts_for_root_jobs(root_ids)
+        if attempts_by_root is None:
+            attempts_by_root = registration.get_attempts_for_root_jobs(root_ids)
         missing_roots = [value for value in root_ids if value not in roots]
         if missing_roots:
             roots.update({int(row["id"]): row for row in record_store.list_rows(
@@ -4300,7 +4303,7 @@ def get_accounts_for_jobs(jobs: list[dict]) -> dict[int, dict]:
     for row in rows:
         if row.get("attempt_id") is not None:
             root_id = int(row.get("root_job_id") or row["id"])
-            identity = registration_account_link(row, roots.get(root_id), attempts.get(root_id))
+            identity = registration_account_link(row, roots.get(root_id), attempts_by_root.get(root_id))
             if identity is None or identity[1] is None:
                 continue
         else:

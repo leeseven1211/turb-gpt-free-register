@@ -5,11 +5,10 @@ from __future__ import annotations
 import threading
 import time
 from collections.abc import Mapping
-from contextlib import ExitStack
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any, Iterable
+from core.storage import postgres as postgres_store
 from core.storage.task_query_context import task_read_connection
-from core.storage import postgres as postgres_store, records as record_store
 from core.operations import run_log as task_run_log
 from core.bulk_operations import execution as bulk_execution
 from core.operations import account_receipts
@@ -17,6 +16,7 @@ from core.operations.progress import build_progress_snapshot
 from core.operations.presentation import public_result_status, public_result_status_sql
 from core.operations.stages import flow_for, stage_label
 from core.storage.operations import common as _common
+from core.storage.operations.history import cleanup_terminal_history
 from core.storage.operations import schema as _schema
 from core.storage.operations import recovery as _recovery
 from core.storage.operations import runtime as _runtime
@@ -34,17 +34,8 @@ _PROGRESS_SNAPSHOT_CACHE_MAX = 2048
 _PROGRESS_SNAPSHOT_CACHE_TTL = 300.0
 
 
-def _query_schema_initialized() -> bool:
-    from core.storage.operations import legacy_task_store
-
-    url = postgres_store.database_url()
-    return (_schema.schema_initialized()
-            and record_store._READY_KEY == f"{url}::{postgres_store.schema_name()}"
-            and legacy_task_store.schema_initialized())
-
-
 def _task_read_connection():
-    return task_read_connection(_common._connect, _schema.init_operation_schema, _query_schema_initialized)
+    return task_read_connection(_common._connect, _schema.init_operation_schema)
 
 
 def list_batches(*, limit: int = 50) -> list[dict]:
@@ -922,8 +913,7 @@ def get_registration_progress(job_ids: Iterable[int]) -> dict[int, dict]:
     ids = sorted({int(value) for value in job_ids if int(value) > 0})
     if not ids:
         return {}
-    _schema.init_operation_schema()
-    with _common._connect() as conn, conn.cursor() as cur:
+    with _task_read_connection() as conn, conn.cursor() as cur:
         cur.execute(
             f"SELECT rr.*, t.task_type, {_common._compatibility_run_projection_sql()} "
             f"FROM {_common._table('operation_runs')} rr JOIN {_common._table('operation_tasks')} t ON t.id=rr.task_id "
@@ -1056,8 +1046,7 @@ def read_task_run_log(
     cursor: int | None = None,
     limit: int = 500,
 ) -> dict:
-    _schema.init_operation_schema()
-    with _common._connect() as conn, conn.cursor() as cur:
+    with _task_read_connection() as conn, conn.cursor() as cur:
         cur.execute(
             f"SELECT r.log_file, r.status, r.result_summary, t.task_type FROM {_common._table('operation_runs')} r "
             f"JOIN {_common._table('operation_tasks')} t ON t.id=r.task_id WHERE r.id=%s AND r.task_id=%s",
@@ -1126,366 +1115,6 @@ def find_account_request_receipts(request_key: str) -> list[dict[str, str]]:
             (prefix, account_receipts.source_prefix_end(request_key), prefix + ":"),
         )
         return [{"task_id": str(row["task_id"]), "run_id": str(row["run_id"])} for row in cur.fetchall()]
-
-
-_RETENTION_FETCH_ROWS = 32
-
-
-def cleanup_terminal_history(
-    *,
-    retention_days: int,
-    limit: int = 500,
-    archive=None,
-    archive_stream=None,
-    check_cancel=None,
-) -> dict[str, Any]:
-    """Archive and delete one bounded batch of expired task-center history.
-
-    回调在锁定候选后、删除数据前的同一个事务内执行。流式回调必须完整消费
-    所有分段。回调或取消检查抛出的异常会回滚当前批次。
-    """
-    def checkpoint():
-        if check_cancel is not None:
-            check_cancel()
-
-    if check_cancel is not None and not callable(check_cancel):
-        raise ValueError("归档取消检查必须可调用")
-    checkpoint()
-    _schema.init_operation_schema()
-    days = int(retention_days or 0)
-    if days <= 0:
-        return {"deleted_tasks": 0, "deleted_batches": 0, "disabled": True}
-    if (archive is None) == (archive_stream is None) or not callable(
-        archive if archive_stream is None else archive_stream
-    ):
-        raise ValueError("任务中心清理必须提供一个归档回调")
-
-    row_limit = max(1, min(5000, int(limit or 500)))
-    cutoff = _common._now() - timedelta(days=days)
-    checkpoint()
-    with _common._connect() as conn, conn.cursor() as cur:
-        cur.execute(
-            "SELECT pg_try_advisory_xact_lock(hashtext(%s)) AS locked",
-            ("task_center_retention",),
-        )
-        if not bool(cur.fetchone()["locked"]):
-            return {"deleted_tasks": 0, "deleted_batches": 0, "locked": True}
-        # 与订单预约、关联写入共用锁，避免候选选出后出现新的原单引用。
-        checkpoint()
-        cur.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
-                    (f"{_common._schema_name()}:independent-payment:xxsyun",))
-        checkpoint()
-        cur.execute(
-            f"""
-            SELECT task.id, task.batch_id, task.source_system
-            FROM {_common._table('operation_tasks')} task
-            WHERE task.status IN ({_common._TERMINAL_STATUS_SQL})
-              AND NOT (task.data ? 'bulk_target_round_id')
-              AND task.completed_at IS NOT NULL
-              AND task.completed_at < %s
-              AND NOT EXISTS (
-                  SELECT 1 FROM {_common._table('extract_link_payment_orders')} payment
-                  WHERE payment.task_id=task.id
-                    AND (payment.payment_state IN ('pending','unknown')
-                      OR (payment.payment_state='succeeded'
-                        AND COALESCE(payment.summary->>'plus_verification_status', '')
-                            NOT IN ('confirmed','not_applicable')))
-              )
-              AND NOT EXISTS (
-                  SELECT 1 FROM {_common._table('extract_link_payment_orders')} original
-                  JOIN {_common._table('extract_link_payment_orders')} linked
-                    ON linked.summary->>'related_payment_order_id'=original.id::text
-                  WHERE original.task_id=task.id AND linked.task_id<>task.id
-              )
-              AND NOT EXISTS (
-                  SELECT 1 FROM {_common._table('operation_runs')} uncertain_run
-                  WHERE uncertain_run.task_id=task.id
-                    AND task.task_type IN ('token_refresh', 'live_check')
-                    AND uncertain_run.status='failed'
-                    AND uncertain_run.result_summary->>'cause_code' IN ('password_change_required', 'password_page_error')
-                    AND uncertain_run.result_summary->>'outcome'='request_unknown'
-              )
-              AND NOT EXISTS (
-                  SELECT 1 FROM {_common._table('operation_runs')} run
-                  WHERE run.task_id=task.id
-                    AND run.status IN ({_common._ACTIVE_RUN_STATUS_SQL})
-              )
-              AND NOT (
-                  task.source_system='registration_jobs'
-                  AND EXISTS (
-                      SELECT 1 FROM {_common._table('registration_jobs')} source_task
-                      WHERE source_task.id::text=task.source_id
-                        AND source_task.status IN ({_common._ACTIVE_RUN_STATUS_SQL})
-                  )
-              )
-              AND NOT (
-                  task.source_system='account_action_tasks'
-                  AND EXISTS (
-                      SELECT 1 FROM {_common._table('account_action_tasks')} source_task
-                      WHERE source_task.id::text=task.source_id
-                        AND source_task.status IN ({_common._ACTIVE_RUN_STATUS_SQL})
-                  )
-              )
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM {_common._table('account_operation_leases')} lease
-                  JOIN {_common._table('operation_runs')} run ON run.id=lease.run_id
-                  WHERE run.task_id=task.id AND lease.expires_at >= now()
-              )
-              AND NOT EXISTS (
-                  SELECT 1 FROM {_common._table('operation_tasks')} child
-                  WHERE child.id<>task.id
-                    AND (child.parent_task_id=task.id OR child.root_task_id=task.id)
-              )
-              AND NOT EXISTS (
-                  SELECT 1 FROM {_common._table('operation_task_dependencies')} dependency
-                  WHERE dependency.status<>'completed'
-                    AND (
-                      (
-                        dependency.parent_source_system=task.source_system
-                        AND dependency.parent_source_id IN (task.source_id, task.id::text)
-                      ) OR (
-                        dependency.child_source_system=task.source_system
-                        AND dependency.child_source_id IN (task.source_id, task.id::text)
-                      )
-                    )
-              )
-            ORDER BY task.completed_at, task.id
-            LIMIT %s
-            FOR UPDATE OF task
-            """,
-            (cutoff, row_limit),
-        )
-        task_candidates = cur.fetchall()
-        checkpoint()
-        cur.execute(
-            f"""
-            SELECT batch.id
-            FROM {_common._table('operation_batches')} batch
-            WHERE batch.status IN ({_common._TERMINAL_STATUS_SQL})
-              AND batch.source_system <> 'bulk_manager'
-              AND batch.completed_at IS NOT NULL
-              AND batch.completed_at < %s
-              AND NOT EXISTS (
-                  SELECT 1 FROM {_common._table('operation_tasks')} task
-                  WHERE task.batch_id=batch.id
-              )
-              AND NOT EXISTS (
-                  SELECT 1 FROM {_common._table('operation_runs')} run
-                  WHERE run.batch_id=batch.id
-                    AND run.status IN ({_common._ACTIVE_RUN_STATUS_SQL})
-              )
-              AND NOT EXISTS (
-                  SELECT 1 FROM {_common._table('operation_projection_queue')} queue
-                  WHERE queue.batch_id=batch.id
-                    AND queue.status IN ('queued', 'running')
-              )
-            ORDER BY batch.created_at, batch.id
-            LIMIT %s
-            FOR UPDATE OF batch
-            """,
-            (cutoff, row_limit),
-        )
-        empty_batch_ids = [int(row["id"]) for row in cur.fetchall()]
-        if not task_candidates and not empty_batch_ids:
-            return {
-                "deleted_tasks": 0,
-                "deleted_batches": 0,
-                "cutoff": cutoff.isoformat(),
-            }
-        task_ids = [int(row["id"]) for row in task_candidates]
-        task_batch_ids = sorted({int(row["batch_id"]) for row in task_candidates if row.get("batch_id")})
-        batch_ids = sorted(set(task_batch_ids) | set(empty_batch_ids))
-        native_task_ids = {
-            int(row["id"]) for row in task_candidates
-            if str(row.get("source_system") or "") == "native_operations"
-        }
-        run_scope = f"SELECT id FROM {_common._table('operation_runs')} WHERE task_id=ANY(%s)"
-        sections_sql = {
-            "tasks": (
-                f"SELECT * FROM {_common._table('operation_tasks')} WHERE id=ANY(%s) ORDER BY completed_at, id",
-                task_ids,
-            ),
-            "runs": (
-                f"SELECT * FROM {_common._table('operation_runs')} WHERE task_id=ANY(%s) ORDER BY id",
-                task_ids,
-            ),
-            "events": (
-                f"SELECT * FROM {_common._table('operation_events')} WHERE task_id=ANY(%s) ORDER BY id",
-                task_ids,
-            ),
-            "resources": (
-                f"SELECT * FROM {_common._table('operation_resources')} WHERE run_id IN ({run_scope}) ORDER BY id",
-                task_ids,
-            ),
-            "leases": (
-                f"SELECT * FROM {_common._table('account_operation_leases')} WHERE run_id IN ({run_scope}) ORDER BY run_id",
-                task_ids,
-            ),
-            "batch_items": (
-                f"SELECT * FROM {_common._table('operation_batch_items')} WHERE task_id=ANY(%s) ORDER BY id",
-                task_ids,
-            ),
-            "batches": (
-                f"SELECT * FROM {_common._table('operation_batches')} WHERE id=ANY(%s) ORDER BY id",
-                batch_ids,
-            ),
-            "projection_queue": (
-                f"SELECT * FROM {_common._table('operation_projection_queue')} WHERE batch_id=ANY(%s) ORDER BY id",
-                batch_ids,
-            ),
-            "dependencies": (
-                f"""
-                SELECT dependency.*
-                FROM {_common._table('operation_task_dependencies')} dependency
-                WHERE EXISTS (
-                    SELECT 1 FROM {_common._table('operation_tasks')} task
-                    WHERE task.id=ANY(%s)
-                      AND (
-                        (
-                          dependency.parent_source_system=task.source_system
-                          AND dependency.parent_source_id IN (task.source_id, task.id::text)
-                        ) OR (
-                          dependency.child_source_system=task.source_system
-                          AND dependency.child_source_id IN (task.source_id, task.id::text)
-                        )
-                      )
-                )
-                ORDER BY dependency.id
-                """,
-                task_ids,
-            ),
-            "extract_link_payment_orders": (
-                f"SELECT * FROM {_common._table('extract_link_payment_orders')} WHERE task_id=ANY(%s) ORDER BY id",
-                task_ids,
-            ),
-        }
-        metadata = {
-            "version": 1,
-            "created_at": _common._now().isoformat(),
-            "cutoff": cutoff.isoformat(),
-            "retention_days": days,
-        }
-        completed_dependency_ids: list[int] = []
-        native_log_files: set[str] = set()
-        finished_sections: set[str] = set()
-        locked_ids = {"tasks": task_ids, "batches": batch_ids}
-
-        def stream_section(name, sql, ids):
-            expected = locked_ids.get(name)
-            read_count = 0
-            if ids:
-                checkpoint()
-                with conn.cursor(name=f"task_history_{name}") as reader:
-                    reader.execute(sql, (ids,))
-                    while True:
-                        checkpoint()
-                        rows = reader.fetchmany(_RETENTION_FETCH_ROWS)
-                        if not rows:
-                            break
-                        for row in rows:
-                            checkpoint()
-                            if expected is not None and (
-                                read_count >= len(expected) or int(row["id"]) != expected[read_count]
-                            ):
-                                raise RuntimeError("归档记录与锁定候选不一致")
-                            read_count += 1
-                            if name == "dependencies" and row.get("status") == "completed":
-                                completed_dependency_ids.append(int(row["id"]))
-                            if name == "runs" and int(row["task_id"]) in native_task_ids:
-                                log_file = str(row.get("log_file") or "").strip()
-                                if log_file:
-                                    native_log_files.add(log_file)
-                            yield _common._row(row) or {}
-            if expected is not None and read_count != len(expected):
-                raise RuntimeError("归档记录与锁定候选不一致")
-            finished_sections.add(name)
-
-        with ExitStack() as readers:
-            sections = {}
-            for name, (query, ids) in sections_sql.items():
-                section = stream_section(name, query, ids)
-                readers.callback(section.close)
-                sections[name] = section
-            if archive_stream is not None:
-                archive_result = archive_stream(metadata, sections, check_cancel=check_cancel)
-                if finished_sections != sections_sql.keys():
-                    raise RuntimeError("归档分段未完整读取")
-            else:
-                snapshot = {**metadata, **{name: list(section) for name, section in sections.items()}}
-                archive_result = archive(snapshot)
-
-        checkpoint()
-        if completed_dependency_ids:
-            cur.execute(
-                f"DELETE FROM {_common._table('operation_task_dependencies')} WHERE id=ANY(%s)",
-                (completed_dependency_ids,),
-            )
-        deleted_tasks = 0
-        if task_ids:
-            checkpoint()
-            cur.execute(
-                f"DELETE FROM {_common._table('operation_tasks')} WHERE id=ANY(%s)",
-                (task_ids,),
-            )
-            deleted_tasks = int(cur.rowcount)
-        deleted_batches = 0
-        if empty_batch_ids:
-            checkpoint()
-            cur.execute(
-                f"""
-                DELETE FROM {_common._table('operation_batches')} batch
-                WHERE batch.id=ANY(%s)
-                  AND batch.status IN ({_common._TERMINAL_STATUS_SQL})
-                  AND batch.completed_at IS NOT NULL
-                  AND batch.completed_at < %s
-                  AND NOT EXISTS (
-                      SELECT 1 FROM {_common._table('operation_tasks')} task
-                      WHERE task.batch_id=batch.id
-                  )
-                  AND NOT EXISTS (
-                      SELECT 1 FROM {_common._table('operation_runs')} run
-                      WHERE run.batch_id=batch.id
-                        AND run.status IN ({_common._ACTIVE_RUN_STATUS_SQL})
-                  )
-                  AND NOT EXISTS (
-                      SELECT 1 FROM {_common._table('operation_projection_queue')} queue
-                      WHERE queue.batch_id=batch.id
-                        AND queue.status IN ('queued', 'running')
-                  )
-                """,
-                (empty_batch_ids, cutoff),
-            )
-            deleted_batches += int(cur.rowcount)
-        if task_batch_ids:
-            checkpoint()
-            cur.execute(
-                f"""
-                DELETE FROM {_common._table('operation_batches')} batch
-                WHERE batch.id=ANY(%s)
-                  AND batch.completed_at IS NOT NULL
-                  AND batch.completed_at < %s
-                  AND batch.status IN ({_common._TERMINAL_STATUS_SQL})
-                  AND NOT EXISTS (
-                      SELECT 1 FROM {_common._table('operation_tasks')} task
-                      WHERE task.batch_id=batch.id
-                  )
-                """,
-                (task_batch_ids, cutoff),
-            )
-            deleted_batches += int(cur.rowcount)
-        checkpoint()
-        return {
-            "deleted_tasks": deleted_tasks,
-            "deleted_batches": deleted_batches,
-            "cutoff": cutoff.isoformat(),
-            "archive": archive_result,
-            "native_log_files": sorted(native_log_files),
-            # Deleting a leaf can make its expired parent eligible.  Force one
-            # more bounded pass after any deletion; an empty pass terminates
-            # the daily drain without guessing from the current batch size.
-            "has_more": deleted_tasks > 0 or deleted_batches > 0,
-        }
 
 
 # 旧模块保留同签名委托；运行状态、线程和 SQL 实现只存在于职责模块中。

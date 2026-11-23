@@ -64,10 +64,6 @@ def _connect():
     return postgres_store.connect(row_factory=dict_row)
 
 
-def schema_initialized() -> bool:
-    return _READY_KEY == f"{postgres_store.database_url()}::{_SCHEMA}"
-
-
 def _sync_operation_task(task_id: int | None) -> None:
     """迁移期兼容桥：账号任务旧投影更新后刷新统一任务中心。"""
     if not task_id:
@@ -574,7 +570,7 @@ def list_tasks(*, page: int = 1, page_size: int = 50, task_type: str = "", statu
     clause = f" WHERE {' AND '.join(where)}" if where else ""
     tasks = _table("account_action_tasks")
     offset = (page - 1) * page_size
-    with task_read_connection(_connect, init, schema_initialized) as conn, conn.cursor() as cur:
+    with task_read_connection(_connect, init) as conn, conn.cursor() as cur:
         cur.execute(f"SELECT COUNT(*) AS n FROM {tasks}{clause}", params)
         total = int(cur.fetchone()["n"])
         cur.execute(
@@ -598,7 +594,7 @@ def list_tasks(*, page: int = 1, page_size: int = 50, task_type: str = "", statu
 def get_task(task_id: int) -> dict | None:
     tasks = _table("account_action_tasks")
     events = _table("account_action_events")
-    with task_read_connection(_connect, init, schema_initialized) as conn, conn.cursor() as cur:
+    with task_read_connection(_connect, init) as conn, conn.cursor() as cur:
         cur.execute(
             f"SELECT id, task_uuid, batch_id, task_type, account_id, email_snapshot, trigger, status, "
             "validation_method, network_route, proxy_mode, proxy_provider, proxy_region, proxy_used, "

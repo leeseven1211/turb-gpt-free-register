@@ -5,16 +5,21 @@ import importlib
 import io
 import json
 import os
+import stat
+import subprocess
+import sys
 import tempfile
 import threading
 import time
 import unittest
-from core.runtime.periodic import PeriodicThread
-from tests.runtime.test_periodic_lifecycle import FakeThread
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
-from psycopg.errors import DeadlockDetected, OperationalError
+from psycopg.errors import DeadlockDetected, LockNotAvailable, OperationalError, QueryCanceled, SerializationFailure
+
+from core.runtime.periodic import PeriodicThread
+from tests.runtime.test_periodic_lifecycle import FakeThread
 
 
 class TaskCenterRetentionStreamWriterTests(unittest.TestCase):
@@ -169,6 +174,42 @@ class TaskCenterRetentionStreamWriterTests(unittest.TestCase):
                 )
             self.assertEqual([], list(Path(td).iterdir()))
 
+    def test_disk_sync_failure_prevents_returning_an_archive_for_deletion(self):
+        for standalone in (False, True):
+            with self.subTest(standalone=standalone), tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                synced_file = False
+
+                def fail_directory_sync(fd):
+                    nonlocal synced_file
+                    if stat.S_ISREG(os.fstat(fd).st_mode):
+                        synced_file = True
+                    else:
+                        self.assertTrue(synced_file, "archive bytes must be synced before publication")
+                        raise OSError("directory sync failed")
+
+                with patch("os.fsync", side_effect=fail_directory_sync):
+                    with self.assertRaisesRegex(OSError, "directory sync failed"):
+                        if standalone:
+                            self.retention.archive_snapshot({**self.metadata, "tasks": []}, archive_root=root)
+                        else:
+                            self.retention.archive_snapshot_stream(self.metadata, {"tasks": []}, archive_root=root)
+                self.assertEqual([], list(root.iterdir()))
+
+    def test_filename_collision_preserves_the_first_archive(self):
+        with tempfile.TemporaryDirectory() as td, patch.object(
+            self.retention, "datetime", wraps=datetime,
+        ) as clock, patch.object(self.retention.uuid, "uuid4") as identifier:
+            clock.now.return_value = datetime(2026, 11, 23, tzinfo=timezone.utc)
+            identifier.return_value.hex = "a" * 32
+            root = Path(td)
+            first = self.retention.archive_snapshot_stream(self.metadata, {"tasks": [{"id": 1}]}, archive_root=root)
+            with self.assertRaises(FileExistsError):
+                self.retention.archive_snapshot_stream(self.metadata, {"tasks": [{"id": 2}]}, archive_root=root)
+            self.assertEqual([Path(first["path"])], list(root.iterdir()))
+            with gzip.open(first["path"], "rt", encoding="utf-8") as archive:
+                self.assertEqual([{"id": 1}], json.load(archive)["tasks"])
+
 
 class TaskCenterRetentionArchiveTests(unittest.TestCase):
     def test_archive_snapshot_is_gzipped_redacted_and_verified(self):
@@ -241,7 +282,7 @@ class TaskCenterRetentionArchiveTests(unittest.TestCase):
         self.assertEqual(7, cleanup.call_args_list[0].kwargs["retention_days"])
         self.assertTrue(callable(cleanup.call_args_list[0].kwargs["archive_stream"]))
 
-    def test_deadlock_retries_failed_batch_and_removes_only_its_orphan_archive(self):
+    def test_later_cycle_retries_failed_batch_and_keeps_the_earlier_commit(self):
         retention = importlib.import_module("core.operations.retention")
         metadata = {
             "version": 1, "created_at": "2026-11-19T00:00:00Z",
@@ -270,45 +311,53 @@ class TaskCenterRetentionArchiveTests(unittest.TestCase):
             ), patch.object(retention, "remove_expired_archives", return_value=0), patch.object(
                 retention.operation_task_store, "cleanup_terminal_history", side_effect=cleanup,
             ):
+                with self.assertRaises(retention.scheduler_state.PeriodicCycleRetry):
+                    retention.cleanup_once()
+                self.assertEqual(2, len(paths), "a failed export must wait until the next cycle")
                 result = retention.cleanup_once()
-            self.assertEqual(2, result["batches"])
-            self.assertEqual(2, result["deleted_tasks"])
+            self.assertEqual(1, result["batches"])
+            self.assertEqual(1, result["deleted_tasks"])
             self.assertEqual(str(paths[2]), result["last_archive"]["path"])
             self.assertEqual({existing, paths[0], paths[2]}, set(root.iterdir()))
 
-    def test_three_deadlocks_leave_cycle_due(self):
+    def test_postgres_rollbacks_leave_cycle_due_and_discard_only_the_failed_export(self):
         retention = importlib.import_module("core.operations.retention")
-        with patch("config.operations.TASK_CENTER_RETENTION_DAYS", 7), patch.object(
-            retention.operation_task_store, "cleanup_terminal_history",
-            side_effect=DeadlockDetected("synthetic deadlock"),
-        ) as cleanup, patch.object(retention, "remove_expired_archives") as remove:
+        metadata = {"version": 1, "created_at": "today", "cutoff": "last-week", "retention_days": 7}
+        for error in (DeadlockDetected, LockNotAvailable, SerializationFailure, QueryCanceled):
+            with self.subTest(sqlstate=error.sqlstate), tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                existing = root / "task-center-existing.json.gz"
+                existing.write_bytes(b"earlier commit")
+
+                def fail(**kwargs):
+                    kwargs["archive_stream"](metadata, {"tasks": [{"id": 1}]})
+                    raise error("synthetic rollback")
+
+                with patch.object(retention, "_ARCHIVE_ROOT", root), patch.object(
+                    retention.operation_task_store, "cleanup_terminal_history", side_effect=fail,
+                ) as cleanup:
+                    with self.assertRaises(retention.scheduler_state.PeriodicCycleRetry):
+                        retention.cleanup_once()
+                    self.assertEqual(1, cleanup.call_count)
+                self.assertEqual([existing], list(root.iterdir()))
+                self.assertEqual(b"earlier commit", existing.read_bytes())
+
+    def test_stale_uncommitted_snapshot_is_removed_before_next_cycle(self):
+        retention = importlib.import_module("core.operations.retention")
+        metadata = {"version": 1, "created_at": "today", "cutoff": "last-week", "retention_days": 7}
+
+        def stale(**kwargs):
+            receipt = kwargs["archive_stream"](metadata, {"tasks": [{"id": 1}]})
+            self.assertTrue(Path(receipt["path"]).is_file())
+            return {"retry": True, "busy_tasks": 1, "deleted_tasks": 0, "deleted_batches": 0}
+
+        with tempfile.TemporaryDirectory() as td, patch.object(retention, "_ARCHIVE_ROOT", Path(td)), patch.object(
+            retention.operation_task_store, "cleanup_terminal_history", side_effect=stale,
+        ) as cleanup:
             with self.assertRaises(retention.scheduler_state.PeriodicCycleRetry):
                 retention.cleanup_once()
-        self.assertEqual(3, cleanup.call_count)
-        remove.assert_not_called()
-
-    def test_deadlock_then_contended_lock_leaves_cycle_due(self):
-        retention = importlib.import_module("core.operations.retention")
-        locked_result = {"deleted_tasks": 0, "deleted_batches": 0, "locked": True}
-        with patch("config.operations.TASK_CENTER_RETENTION_DAYS", 7), patch.object(
-            retention.operation_task_store, "cleanup_terminal_history",
-            side_effect=[DeadlockDetected("synthetic deadlock"), locked_result],
-        ) as cleanup, patch.object(retention, "remove_expired_archives") as remove:
-            with self.assertRaises(retention.scheduler_state.PeriodicCycleRetry):
-                retention.cleanup_once()
-        self.assertEqual(2, cleanup.call_count)
-        remove.assert_not_called()
-
-    def test_initial_contended_lock_retains_no_op_behavior(self):
-        retention = importlib.import_module("core.operations.retention")
-        with patch("config.operations.TASK_CENTER_RETENTION_DAYS", 7), patch.object(
-            retention.operation_task_store, "cleanup_terminal_history",
-            return_value={"deleted_tasks": 0, "deleted_batches": 0, "locked": True},
-        ) as cleanup, patch.object(retention, "remove_expired_archives", return_value=0):
-            result = retention.cleanup_once()
-        cleanup.assert_called_once()
-        self.assertEqual(1, result["batches"])
-        self.assertEqual(0, result["deleted_tasks"])
+            self.assertEqual(1, cleanup.call_count)
+            self.assertEqual([], list(Path(td).iterdir()))
 
     def test_orphan_unlink_failure_does_not_prevent_retry(self):
         retention = importlib.import_module("core.operations.retention")
@@ -318,16 +367,12 @@ class TaskCenterRetentionArchiveTests(unittest.TestCase):
         }
         unlink = Path.unlink
         orphan = None
-        attempts = 0
 
         def cleanup(**kwargs):
-            nonlocal orphan, attempts
-            attempts += 1
+            nonlocal orphan
             result = kwargs["archive_stream"](metadata, {"tasks": iter([{"id": 1}])})
-            if attempts == 1:
-                orphan = Path(result["path"])
-                raise DeadlockDetected("synthetic deadlock")
-            return {"archive": result, "deleted_tasks": 1}
+            orphan = Path(result["path"])
+            raise DeadlockDetected("synthetic deadlock")
 
         def unlink_or_raise(path, *args, **kwargs):
             if path == orphan:
@@ -339,11 +384,11 @@ class TaskCenterRetentionArchiveTests(unittest.TestCase):
                 retention, "_ARCHIVE_ROOT", Path(td),
             ), patch.object(retention, "remove_expired_archives", return_value=0), patch.object(
                 retention.operation_task_store, "cleanup_terminal_history", side_effect=cleanup,
-            ), patch.object(Path, "unlink", unlink_or_raise), self.assertLogs(retention.logger, "WARNING"):
-                result = retention.cleanup_once()
-            self.assertEqual(2, attempts)
+            ) as store, patch.object(Path, "unlink", unlink_or_raise), self.assertLogs(retention.logger, "WARNING"):
+                with self.assertRaises(retention.scheduler_state.PeriodicCycleRetry):
+                    retention.cleanup_once()
+                store.assert_called_once()
             self.assertTrue(orphan.is_file())
-            self.assertEqual(1, result["deleted_tasks"])
 
     def test_deadlock_does_not_unlink_replaced_archive(self):
         retention = importlib.import_module("core.operations.retention")
@@ -353,15 +398,19 @@ class TaskCenterRetentionArchiveTests(unittest.TestCase):
         }
         path = None
 
-        def cleanup(**kwargs):
+        writer = retention.archive_snapshot_stream
+
+        def replace_after_publication(*args, **kwargs):
             nonlocal path
-            if path is not None:
-                return {"deleted_tasks": 1}
-            result = kwargs["archive_stream"](metadata, {"tasks": iter([{"id": 1}])})
+            result = writer(*args, **kwargs)
             path = Path(result["path"])
             replacement = path.with_suffix(".replacement")
             replacement.write_bytes(b"replacement")
             replacement.replace(path)
+            return result
+
+        def cleanup(**kwargs):
+            kwargs["archive_stream"](metadata, {"tasks": iter([{"id": 1}])})
             raise DeadlockDetected("synthetic deadlock")
 
         with tempfile.TemporaryDirectory() as td:
@@ -369,9 +418,9 @@ class TaskCenterRetentionArchiveTests(unittest.TestCase):
                 retention, "_ARCHIVE_ROOT", Path(td),
             ), patch.object(retention, "remove_expired_archives", return_value=0), patch.object(
                 retention.operation_task_store, "cleanup_terminal_history", side_effect=cleanup,
-            ):
-                result = retention.cleanup_once()
-            self.assertEqual(1, result["deleted_tasks"])
+            ), patch.object(retention, "archive_snapshot_stream", replace_after_publication):
+                with self.assertRaises(retention.scheduler_state.PeriodicCycleRetry):
+                    retention.cleanup_once()
             self.assertEqual(b"replacement", path.read_bytes())
 
     def test_failed_or_cancelled_transaction_retains_published_archive(self):
@@ -400,24 +449,122 @@ class TaskCenterRetentionArchiveTests(unittest.TestCase):
                     store.assert_called_once()
                 self.assertTrue(path.is_file())
 
-    def test_wait_between_deadlock_attempts_can_be_cancelled(self):
+    def test_periodic_contention_waits_before_retry_and_marks_only_the_completed_cycle(self):
         retention = importlib.import_module("core.operations.retention")
         stop = threading.Event()
+        events = []
+        results = iter([{"locked": True}, {"deleted_tasks": 0, "deleted_batches": 0}])
 
-        def cancel_during_wait(_timeout):
+        def store(**_kwargs):
+            events.append("store")
+            return next(results)
+
+        def mark(_task):
+            events.append("complete")
             stop.set()
-            return True
 
-        with patch("config.operations.TASK_CENTER_RETENTION_DAYS", 7), patch(
-            "core.runtime.periodic.execution_allowed", return_value=True,
-        ), patch.object(stop, "wait", side_effect=cancel_during_wait) as wait, patch.object(
+        def wait(seconds):
+            events.append(seconds)
+            self.assertLess(len(events), 10)
+            return False
+
+        with patch.object(stop, "wait", side_effect=wait), patch.object(
+            retention.scheduler_state, "seconds_until_due", return_value=0,
+        ), patch.object(retention.scheduler_state, "mark_ran", side_effect=mark), patch.object(
             retention.operation_task_store, "cleanup_terminal_history",
-            side_effect=DeadlockDetected("synthetic deadlock"),
-        ) as cleanup:
-            with self.assertRaises(retention.scheduler_state.PeriodicCycleCancelled):
-                retention.cleanup_once(stop=stop)
-            wait.assert_called_once()
-            cleanup.assert_called_once()
+            side_effect=store,
+        ), patch.object(retention, "remove_expired_archives", return_value=0):
+            retention.scheduler_state.run_periodic(
+                task=retention.SCHEDULER_TASK, label="test", work=lambda: retention.cleanup_once(stop=stop),
+                enabled=lambda: True, interval_seconds=lambda: 86400, initial_delay_seconds=0, stop=stop,
+            )
+        self.assertEqual([0, "store", 60, "store", "complete"], events)
+
+    def test_full_batch_budget_defers_remaining_work(self):
+        retention = importlib.import_module("core.operations.retention")
+        with patch.object(retention, "_MAX_BATCHES_PER_RUN", 2), patch.object(
+            retention.operation_task_store, "cleanup_terminal_history", return_value={"deleted_tasks": 1, "has_more": True},
+        ) as store, patch.object(retention, "remove_expired_archives", return_value=0):
+            with self.assertRaises(retention.scheduler_state.PeriodicCycleRetry):
+                retention.cleanup_once()
+            self.assertEqual(2, store.call_count)
+
+    def test_event_only_commits_are_kept_and_count_towards_draining_history(self):
+        retention = importlib.import_module("core.operations.retention")
+        metadata = {"version": 1, "created_at": "today", "cutoff": "last-week", "retention_days": 7}
+        phases = iter(("events", "task"))
+
+        def store(**kwargs):
+            if next(phases) == "events":
+                receipt = kwargs["archive_stream"](metadata, {"events": [{"id": 17}, {"id": 29}]})
+                return {"archive": receipt, "deleted_events": 2, "has_more": True}
+            receipt = kwargs["archive_stream"](metadata, {"tasks": [{"id": 1}]})
+            return {"archive": receipt, "deleted_tasks": 1, "has_more": False}
+
+        with tempfile.TemporaryDirectory() as td, patch.object(retention, "_ARCHIVE_ROOT", Path(td)), patch.object(
+            retention.operation_task_store, "cleanup_terminal_history", side_effect=store,
+        ):
+            result = retention.cleanup_once()
+            self.assertEqual(2, result["deleted_events"])
+            self.assertEqual(1, result["deleted_tasks"])
+            self.assertEqual(2, len(list(Path(td).glob("*.json.gz"))))
+
+    def test_gc_skips_archive_until_store_finalizes_and_releases_it(self):
+        retention = importlib.import_module("core.operations.retention")
+        metadata = {"version": 1, "created_at": "today", "cutoff": "last-week", "retention_days": 7}
+        future = time.time() + 40 * 86400
+        gc_in_another_process = """
+import sys
+from pathlib import Path
+from unittest.mock import patch
+from core.operations.retention import remove_expired_archives
+with patch("time.time", return_value=float(sys.argv[2])):
+    sys.exit(remove_expired_archives(retention_days=30, archive_root=Path(sys.argv[1])))
+"""
+
+        def commit(**kwargs):
+            receipt = kwargs["archive_stream"](metadata, {"tasks": [{"id": 1}]})
+            archive = Path(receipt["path"])
+            gc = subprocess.run(
+                [sys.executable, "-c", gc_in_another_process, str(archive.parent), str(future)],
+                cwd=Path(retention.__file__).resolve().parents[2], capture_output=True, text=True, timeout=10,
+            )
+            self.assertEqual(0, gc.returncode, gc.stderr)
+            self.assertTrue(archive.is_file())
+            return {"deleted_tasks": 1, "archive": receipt}
+
+        with tempfile.TemporaryDirectory() as td, patch.object(retention, "_ARCHIVE_ROOT", Path(td)), patch.object(
+            retention.operation_task_store, "cleanup_terminal_history", side_effect=commit,
+        ):
+            result = retention.cleanup_once()
+            self.assertTrue(Path(result["last_archive"]["path"]).is_file())
+            with patch.object(time, "time", return_value=future):
+                self.assertEqual(1, retention.remove_expired_archives(retention_days=30))
+
+    def test_committed_partial_batch_processes_native_logs_before_retrying_busy_tasks(self):
+        retention = importlib.import_module("core.operations.retention")
+        metadata = {"version": 1, "created_at": "today", "cutoff": "last-week", "retention_days": 7}
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            archive_root = root / "archives"
+            task_root = root / "tasks"
+            log = task_root / "task-1" / "runs" / "1" / "run.jsonl"
+            log.parent.mkdir(parents=True)
+            log.write_text("{}\n")
+
+            def partial_commit(**kwargs):
+                receipt = kwargs["archive_stream"](metadata, {"tasks": [{"id": 1}]})
+                return {"deleted_tasks": 1, "busy_tasks": 1, "archive": receipt, "native_log_files": [str(log)]}
+
+            with patch.object(retention, "_ARCHIVE_ROOT", archive_root), patch.object(
+                retention.task_run_log, "_LOG_ROOT", root,
+            ), patch.object(
+                retention.task_run_log, "_TASK_LOG_ROOT", task_root,
+            ), patch.object(retention.operation_task_store, "cleanup_terminal_history", side_effect=partial_commit):
+                with self.assertRaises(retention.scheduler_state.PeriodicCycleRetry):
+                    retention.cleanup_once()
+            self.assertFalse(log.exists())
+            self.assertEqual(1, len(list(archive_root.glob("*.json.gz"))))
 
     def test_scheduled_cycle_passes_cancellation_through_to_archive_transaction(self):
         retention = importlib.import_module("core.operations.retention")

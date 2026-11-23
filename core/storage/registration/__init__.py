@@ -59,6 +59,8 @@ ACTIVE_RUN_STATUSES = ("queued", "running")
 
 _READY_KEY = ""
 _LAST_LEGACY_CHECKPOINT_MIGRATED = 0
+_SCHEMA_VERSION = 1
+_SCHEMA_MIGRATIONS = "registration_schema_migrations"
 _SENSITIVE_PARTS = ("password", "otp", "secret", "authorization", "cookie", "token")
 
 
@@ -272,17 +274,29 @@ def _migrate_legacy_checkpoints(cur) -> int:
     return len(migrated)
 
 
-def init() -> None:
-    """Create/upgrade registration facts without touching or deleting legacy rows."""
-    global _READY_KEY, _LAST_LEGACY_CHECKPOINT_MIGRATED
-    if not postgres_store.enabled():
-        raise RuntimeError("注册事实存储需要配置可用的 DATABASE_URL")
-    record_store.init()
-    ready_key = f"{postgres_store.database_url()}::{postgres_store.schema_name()}"
-    if _READY_KEY == ready_key:
-        return
-    postgres_store.ensure_schema()
+def _table_exists(cur, name: str) -> bool:
+    cur.execute("SELECT to_regclass(%s) AS relation", (_table(name),))
+    return cur.fetchone()["relation"] is not None
+
+
+def _migration_completed(cur) -> bool:
+    if not _table_exists(cur, _SCHEMA_MIGRATIONS):
+        return False
+    cur.execute(f"SELECT 1 FROM {_table(_SCHEMA_MIGRATIONS)} WHERE version=%s", (_SCHEMA_VERSION,))
+    return cur.fetchone() is not None
+
+
+def _ensure_registration_schema() -> int:
     with _connect() as conn, conn.cursor() as cur:
+        cur.execute("SET LOCAL lock_timeout = '2s'")
+        if _migration_completed(cur):
+            return 0
+        record_store.lock_task_schema(conn, postgres_store.schema_name())
+        if _migration_completed(cur):
+            return 0
+        # registration_jobs belongs to the record store. On a fresh installation
+        # its DDL must share the same lock timeout and transaction as its foreign keys.
+        record_store.ensure_record_schema(conn)
         attempts = _table("registration_attempts")
         jobs = _table(record_store.JOBS.name)
         cur.execute(
@@ -433,7 +447,23 @@ def init() -> None:
             f'CREATE INDEX IF NOT EXISTS "registration_runs_attempt_idx" '
             f"ON {_table('registration_runs')} (attempt_id, run_no)"
         )
-        _LAST_LEGACY_CHECKPOINT_MIGRATED = _migrate_legacy_checkpoints(cur)
+        migrated = _migrate_legacy_checkpoints(cur)
+        versions = _table(_SCHEMA_MIGRATIONS)
+        cur.execute(f"CREATE TABLE IF NOT EXISTS {versions} (version INTEGER PRIMARY KEY)")
+        cur.execute(f"INSERT INTO {versions} (version) VALUES (%s)", (_SCHEMA_VERSION,))
+        return migrated
+
+
+def init() -> None:
+    """Install registration facts once per business schema, on startup or the first write."""
+    global _READY_KEY, _LAST_LEGACY_CHECKPOINT_MIGRATED
+    url = postgres_store.database_url()
+    if not url:
+        raise RuntimeError("注册事实存储需要配置可用的 DATABASE_URL")
+    ready_key = f"{url}::{postgres_store.schema_name()}"
+    if _READY_KEY == ready_key:
+        return
+    _LAST_LEGACY_CHECKPOINT_MIGRATED = _ensure_registration_schema()
     _READY_KEY = ready_key
 
 
@@ -2077,20 +2107,26 @@ def _legacy_run_status(value: Any) -> str:
 
 def backfill(*, apply: bool = True) -> dict[str, int | bool]:
     """Backfill one Attempt and one Run per historical registration job, idempotently."""
-    # A dry-run must remain read-only with respect to the new schema.  The legacy
-    # row tables already exist through record_store; only --apply installs facts.
-    migrated_checkpoints = 0
     if not apply:
-        record_store.init()
-    else:
-        init()
-        migrated_checkpoints = _LAST_LEGACY_CHECKPOINT_MIGRATED
+        with _connect() as conn, conn.cursor() as cur:
+            jobs = attempts = 0
+            if _table_exists(cur, "registration_jobs"):
+                table = _table("registration_jobs")
+                cur.execute(
+                    "SELECT 1 FROM pg_attribute WHERE attrelid=%s::regclass "
+                    "AND attname='root_job_id' AND NOT attisdropped", (table,),
+                )
+                root = "COALESCE(root_job_id, id)" if cur.fetchone() else "id"
+                cur.execute(f"SELECT count(*) AS jobs, count(DISTINCT {root}) AS attempts FROM {table}")
+                counts = cur.fetchone()
+                jobs, attempts = counts["jobs"], counts["attempts"]
+        return {"jobs": jobs, "attempts": attempts, "runs": jobs,
+                "legacy_checkpoint_migrated": 0, "applied": False}
+    init()
+    migrated_checkpoints = _LAST_LEGACY_CHECKPOINT_MIGRATED
     with _connect() as conn, conn.cursor() as cur:
         cur.execute(f"SELECT * FROM {_table('registration_jobs')} ORDER BY id")
         jobs = [_row(item) for item in cur.fetchall()]
-    if not apply:
-        roots = {int(item.get("root_job_id") or item.get("id")) for item in jobs}
-        return {"jobs": len(jobs), "attempts": len(roots), "runs": len(jobs), "legacy_checkpoint_migrated": 0, "applied": False}
     created_attempts = 0
     created_runs = 0
     for job in jobs:
@@ -2123,9 +2159,10 @@ def backfill(*, apply: bool = True) -> dict[str, int | bool]:
 
 
 def verify() -> dict[str, Any]:
-    """Check additive migration invariants; no writes beyond idempotent schema init."""
-    init()
+    """Read the installed migration version and verify its persisted facts."""
     with _connect() as conn, conn.cursor() as cur:
+        if not _migration_completed(cur):
+            return {"ok": False, "checks": {"schema_version_missing": 1}}
         queries = {
             "registration_jobs": f"SELECT COUNT(*) AS n FROM {_table('registration_jobs')}",
             "jobs_without_attempt": f"SELECT COUNT(*) AS n FROM {_table('registration_jobs')} WHERE attempt_id IS NULL",

@@ -21,6 +21,7 @@ from core.accounts.inspection import service as account_inspection_service
 from core.accounts import registration_retry as account_registration_retry
 from core import account_task_store
 from core.storage import admin_repository
+from core.storage.task_query_context import task_query
 from core.codex import operation_service as codex_operation_service, retry_service as codex_retry_service, token_refresh_service as codex_token_refresh_service
 from core import db
 from core.accounts.deactivation import mail_scan as deactivation_mail_service
@@ -200,6 +201,7 @@ def create_accounts_blueprint(context: WebUIContext):
         return _account_secret_value(acc, field)
 
     @bp.get("/api/accounts")
+    @task_query()
     def api_accounts():
         limit = request.args.get("limit", default=500, type=int)
         archived = str(request.args.get("archived", default="0") or "0").lower()

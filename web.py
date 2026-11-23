@@ -174,9 +174,11 @@ def main() -> None:
         install(bootstrap, logger=logger)
 
         if bootstrap.mode == "web":
-            # 独立 Web 先准备统一任务存储，再接收请求。
+            # 列表请求仅读取已部署的表，两类存储都在监听前准备好。
             from core.operation_task_store import init as init_operation_storage
+            from core.storage import registration
 
+            registration.init()
             init_operation_storage()
 
         app = create_app(auth_code=args.auth_code)

@@ -31,7 +31,8 @@ def main() -> int:
     args = parser.parse_args()
 
     ensure_loaded()
-    postgres_store.require_ready()
+    if not postgres_store.enabled():
+        parser.error("请配置 DATABASE_URL")
     if args.apply:
         result = {"mode": "apply", "backfill": registration.backfill(apply=True), "verification": registration.verify()}
     elif args.verify:

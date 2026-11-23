@@ -105,7 +105,8 @@ class WebEntrypointCleanupTests(unittest.TestCase):
             "core.operation_task_store": _module(
                 "core.operation_task_store", init=lambda: fail_at("operation-storage")),
             "core.storage": _module("core.storage",
-                postgres=SimpleNamespace(require_ready=lambda: fail_at("db"))),
+                postgres=SimpleNamespace(require_ready=lambda: fail_at("db")),
+                registration=SimpleNamespace(init=lambda: fail_at("registration-storage"))),
             "webui": _module("webui"),
             "webui.app": _module("webui.app", create_app=create_app),
             "webui.auth": _module("webui.auth", is_generated_code=lambda: fail_at("auth")),
@@ -132,11 +133,14 @@ class WebEntrypointCleanupTests(unittest.TestCase):
         self.assertFalse(state.installed)
 
     def test_web_storage_failure_releases_the_port_before_any_listener(self):
-        state, failure, error = self._run_web("operation-storage", mode="web")
-        self.assertIs(error, failure)
-        self.assertFalse(state.port_locked)
-        self.assertTrue(state.stop_attempted)
-        self.assertFalse(state.ran)
+        for stage in ("operation-storage", "registration-storage"):
+            with self.subTest(stage=stage):
+                state, failure, error = self._run_web(stage, mode="web")
+                self.assertIs(error, failure)
+                self.assertFalse(state.port_locked)
+                self.assertTrue(state.stop_attempted)
+                self.assertFalse(state.installed)
+                self.assertFalse(state.ran)
 
     def test_partial_install_and_startup_failures_stop_installed_resources(self):
         for stage in ("install", "app", "start", "auth", "signal"):

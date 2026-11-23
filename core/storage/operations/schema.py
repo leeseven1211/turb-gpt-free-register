@@ -21,10 +21,6 @@ def _ready_key() -> tuple[str, str, str]:
     return postgres_store.database_url(), _common._schema_name(), postgres_store.schema_name()
 
 
-def schema_initialized() -> bool:
-    return _READY_KEY == _ready_key()
-
-
 def reset_operation_ready() -> None:
     """强制下次初始化重新检查统一任务表。"""
     global _READY_KEY, _FORCE_SCHEMA_CHECK
@@ -506,7 +502,7 @@ def _ensure_operation_schema(domain_id: str) -> None:
     with _common._connect() as conn, conn.cursor() as cur:
         if not _FORCE_SCHEMA_CHECK and _migration_completed(cur, domain_id):
             return
-        record_store.advisory_xact_lock(conn, f"operation-schema:{_common._schema_name()}")
+        record_store.lock_task_schema(conn, _common._schema_name())
         if not _FORCE_SCHEMA_CHECK and _migration_completed(cur, domain_id):
             return
         _apply_operation_schema(cur)

@@ -57,7 +57,8 @@ class EntrypointTests(unittest.TestCase):
               'core.runtime.assembly':mod('core.runtime.assembly',install=lambda *a,**k:events.append('install')),
               'core.runtime.process':mod('core.runtime.process',start_runtime=lambda *_:events.append('runtime-start'),stop_runtime=lambda **_:events.append('runtime-stop') or True),
               'core.runtime.http_server':mod('core.runtime.http_server',HttpServer=Server),
-              'core.storage':mod('core.storage',postgres=SimpleNamespace(require_ready=lambda:events.append('db'))),
+              'core.storage':mod('core.storage',postgres=SimpleNamespace(require_ready=lambda:events.append('db')),
+                                 registration=SimpleNamespace(init=lambda:events.append('registration-storage'))),
               'core.operation_task_store':mod('core.operation_task_store',init=lambda:events.append('operation-storage')),
               'webui.app':mod('webui.app',create_app=lambda **_:object()),'webui.auth':mod('webui.auth',is_generated_code=lambda:False)}
             with patch.dict(sys.modules,modules),patch.object(sys,'argv',['web.py','--mode','web','--server','waitress']),patch.object(entry,'_acquire_single_instance',return_value=object()),patch.object(entry,'_release_single_instance',side_effect=lambda _:events.append('unlock')),patch.object(entry.signal,'signal'):
@@ -67,6 +68,8 @@ class EntrypointTests(unittest.TestCase):
                     self.assertEqual(caught.exception.code,3)
             self.assertIn(('http-stop',20.0),events)
             self.assertLess(events.index('db'),events.index('operation-storage'))
+            self.assertLess(events.index('db'),events.index('registration-storage'))
+            self.assertLess(events.index('registration-storage'),events.index('http-start'))
             self.assertLess(events.index('operation-storage'),events.index('http-start'))
             if clean:self.assertLess(events.index(('http-stop',20.0)),events.index('runtime-stop'))
             else:self.assertNotIn('runtime-stop',events);self.assertNotIn('unlock',events)
@@ -141,7 +144,8 @@ class ShutdownDeadlineTests(unittest.TestCase):
             'core.runtime.role_launcher': mod('core.runtime.role_launcher',
                 publish_managed_identity=lambda _: None,
                 write_exit_receipt=lambda **value: receipts.append(value)),
-            'core.storage': mod('core.storage', postgres=SimpleNamespace(require_ready=lambda: None)),
+            'core.storage': mod('core.storage', postgres=SimpleNamespace(require_ready=lambda: None),
+                                registration=SimpleNamespace(init=lambda: None)),
             'core.operation_task_store': mod('core.operation_task_store', init=lambda: None),
             'webui': mod('webui'), 'webui.app': mod('webui.app', create_app=lambda **_: object()),
             'webui.auth': mod('webui.auth', is_generated_code=lambda: False),

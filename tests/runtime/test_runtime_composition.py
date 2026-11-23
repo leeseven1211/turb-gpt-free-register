@@ -120,6 +120,7 @@ class RuntimeCompositionTests(unittest.TestCase):
         self.assertEqual(captures[0], captures[1])
         order = captures[0]
         self.assertEqual("owner:start", order[0])
+        self.assertLess(order.index("registration_storage"), order.index("recover_before_handlers"))
         self.assertLess(order.index("operation_storage"), order.index("recover_before_handlers"))
         self.assertLess(order.index("recover_before_handlers"), order.index("proxy_pool"))
         self.assertLess(order.index("maintenance_handlers"), order.index("recover_before_dispatchers"))

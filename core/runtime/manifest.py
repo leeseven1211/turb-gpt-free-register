@@ -18,6 +18,7 @@ class ComponentSpec:
 # T5 adds config observation explicitly; T3/T4/T6 wire this context's admission
 # gate into every claim/producer path before this plan is activated.
 COMPONENTS = (
+    ComponentSpec("registration_storage", "initializer", "core.storage.registration:init"),
     ComponentSpec("operation_storage", "initializer", "core.operation_task_store:init"),
     ComponentSpec("settlement", "service", "core.operations.settlement:start_runtime",
                   stop_target="core.operations.settlement:stop_runtime"),

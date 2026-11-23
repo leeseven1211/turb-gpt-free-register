@@ -6,12 +6,17 @@ from contextlib import nullcontext
 import json
 import logging
 import re
+import threading
+import time
 import uuid
 from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
 
-from core.storage import records as record_store
+from psycopg.errors import LockNotAvailable, QueryCanceled
+from psycopg_pool import PoolTimeout
+
+from core.storage import postgres, records as record_store
 from core.extract_link.contracts import safe_links, safe_payment_artifact
 from core.extract_link.payment_confirmation import payment_scan_completed
 from core.storage.operations import store as operation_store
@@ -19,6 +24,14 @@ from core.operations.presentation import public_result_status_sql
 
 
 logger = logging.getLogger('core.storage.extract_link_jobs')
+
+# The dispatcher runs this optional sweep before dispatching new work.
+_RECONCILE_PAGE_SIZE = 64
+_RECONCILE_SWEEP_SECONDS = 0.75
+_RECONCILE_ATTEMPT_SECONDS = 0.25
+_reconcile_sweep_lock = threading.Lock()
+# Database/schema identity, last examined provider Run, upper bound for this pass.
+_reconcile_position: tuple[int, int, int] | None = None
 
 
 _SUMMARY_FIELDS = frozenset({
@@ -605,10 +618,22 @@ def independent_plus_is_confirmed(account: dict | None, *, task_created_at: Any)
     return checked_at is not None and created_at is not None and checked_at > created_at
 
 
-def _reconcile_completed_payment(run_id: int, *, expected_job_id: str) -> bool:
+def _reconcile_connection(deadline: float | None):
+    if deadline is None:
+        return operation_store._connect()
+    from psycopg.rows import dict_row
+
+    return postgres.connect(row_factory=dict_row, deadline=deadline)
+
+
+def _reconcile_completed_payment(run_id: int, *, expected_job_id: str, deadline: float | None = None) -> bool:
     """在同一事务内核实最新终态与套餐事实，再补齐本地任务记录。"""
-    with operation_store._connect() as conn, conn.cursor() as cur:
-        cur.execute(f"SELECT * FROM {operation_store._table('operation_runs')} WHERE id=%s FOR UPDATE", (run_id,))
+    with _reconcile_connection(deadline) as conn, conn.cursor() as cur:
+        if deadline is None:
+            # Account-triggered checks have no sweep deadline. Bound all later locks
+            # too, including the account row and the batch projection advisory lock.
+            cur.execute("SET LOCAL lock_timeout='100ms'")
+        cur.execute(f"SELECT * FROM {operation_store._table('operation_runs')} WHERE id=%s FOR UPDATE NOWAIT", (run_id,))
         run = cur.fetchone()
         if not run or run["source_system"] != "native_operations" or run["status"] not in {"attention_required", "request_unknown", "partial_success", "success", "interrupted"}:
             return False
@@ -617,7 +642,7 @@ def _reconcile_completed_payment(run_id: int, *, expected_job_id: str) -> bool:
         intent = operation_store._remote_write_checkpoint(run.get("data"))
         if intent and str(intent.get("receipt_state") or intent.get("state") or "started") != "confirmed":
             return False
-        cur.execute(f"SELECT * FROM {operation_store._table('operation_tasks')} WHERE id=%s FOR UPDATE", (run["task_id"],))
+        cur.execute(f"SELECT * FROM {operation_store._table('operation_tasks')} WHERE id=%s FOR UPDATE NOWAIT", (run["task_id"],))
         task = cur.fetchone()
         if not task or task["last_run_id"] != run_id or task["source_system"] != "native_operations" or task["task_type"] != "extract_link":
             return False
@@ -628,7 +653,7 @@ def _reconcile_completed_payment(run_id: int, *, expected_job_id: str) -> bool:
             return False
         if data.get("mode") not in {"auto_payment", "manual_payment"}:
             return False
-        cur.execute(f"SELECT * FROM {operation_store._table('extract_link_provider_jobs')} WHERE run_id=%s FOR UPDATE", (run_id,))
+        cur.execute(f"SELECT * FROM {operation_store._table('extract_link_provider_jobs')} WHERE run_id=%s FOR UPDATE NOWAIT", (run_id,))
         job = cur.fetchone()
         if not job or job["provider_id"] != data.get("provider_id") or job["job_id"] != expected_job_id or not job["job_id"]:
             return False
@@ -678,7 +703,7 @@ def _reconcile_completed_payment(run_id: int, *, expected_job_id: str) -> bool:
             cur.execute(f"""SELECT source.*, original.completed_at AS original_completed_at
                 FROM {operation_store._table('extract_link_provider_jobs')} source
                 JOIN {operation_store._table('operation_runs')} original ON original.id=source.run_id
-                WHERE source.run_id=%s AND original.task_id=%s FOR UPDATE OF source, original""", (source_id, task["id"]))
+                WHERE source.run_id=%s AND original.task_id=%s FOR UPDATE OF source, original NOWAIT""", (source_id, task["id"]))
             original = cur.fetchone()
             if (original and original["job_id"] == job["job_id"] and original["provider_id"] == job["provider_id"]
                     and payment_scan_completed(_json_object(original["public_state"], field_name="原单公开状态"), provider_id=job["provider_id"])):
@@ -747,39 +772,98 @@ def _reconcile_completed_payment(run_id: int, *, expected_job_id: str) -> bool:
         return True
 
 
+def _payment_candidates_sql() -> str:
+    return f"""SELECT run.id, job.job_id FROM {operation_store._table('operation_tasks')} task
+            JOIN {operation_store._table('operation_runs')} run ON run.id=task.last_run_id AND run.task_id=task.id
+            JOIN {operation_store._table('extract_link_provider_jobs')} job ON job.run_id=run.id
+            WHERE task.source_system='native_operations' AND task.task_type='extract_link'
+              AND task.data->>'mode' IN ('auto_payment','manual_payment')
+              AND COALESCE(task.data->>'payment_source','native')<>'xxsyun'
+              AND run.source_system='native_operations' AND run.cancel_requested_at IS NULL
+              AND run.status IN ('attention_required','request_unknown','partial_success','success','interrupted')
+              AND task.status IN ('attention_required','request_unknown','partial_success','success','interrupted')
+              AND job.provider_id IN ('huanguang','legacy','lumen_flow','anguang')
+              AND job.payment_state IN ('unknown','succeeded') AND COALESCE(job.job_id,'')<>''
+              AND (run.status<>'success' OR job.public_state->>'plus_status' IS DISTINCT FROM 'confirmed')"""
+
+
+def _attempt_payment(candidate, *, deadline: float | None = None) -> str:
+    run_id = int(candidate["id"])
+    try:
+        confirmed = _reconcile_completed_payment(run_id, expected_job_id=str(candidate["job_id"]), deadline=deadline)
+    except LockNotAvailable:
+        return "skipped"
+    except (QueryCanceled, PoolTimeout, TimeoutError) as exc:
+        if deadline is not None:
+            return "skipped"
+        logger.warning("[提链] 本地支付状态补齐失败：run_id=%s error_type=%s", run_id, type(exc).__name__)
+    except Exception as exc:
+        logger.warning("[提链] 本地支付状态补齐失败：run_id=%s error_type=%s", run_id, type(exc).__name__)
+    else:
+        return "confirmed" if confirmed else "skipped"
+    return "failed"
+
+
+def _sweep_payment_page(result: dict[str, int]) -> None:
+    global _reconcile_position
+    # No credentials are retained in the per-process cursor. A restart starts a new pass.
+    domain = hash((postgres.database_url(), operation_store._schema_name()))
+    position = _reconcile_position
+    after, high = position[1:] if position and position[0] == domain else (0, 0)
+    deadline = time.monotonic() + _RECONCILE_SWEEP_SECONDS
+    jobs = operation_store._table("extract_link_provider_jobs")
+    try:
+        with _reconcile_connection(deadline) as conn, conn.cursor() as cur:
+            cur.execute(f"SELECT COALESCE(MAX(run_id),0) AS high FROM {jobs}")
+            current_high = int(cur.fetchone()["high"])
+            if not high or after >= current_high:
+                # Retention can remove the end of the pass between two calls.
+                after, high = 0, current_high
+            else:
+                high = min(high, current_high)
+            # Page the primary key before eligibility filters. Otherwise a sparse match
+            # can spend every sweep scanning the same long prefix before yielding an ID.
+            cur.execute(f"""SELECT run_id FROM {jobs} WHERE run_id>%s AND run_id<=%s
+                ORDER BY run_id LIMIT %s""", (after, high, _RECONCILE_PAGE_SIZE))
+            run_ids = [int(row["run_id"]) for row in cur.fetchall()]
+            if not run_ids:
+                _reconcile_position = None
+                return
+            cur.execute(_payment_candidates_sql() + " AND job.run_id=ANY(%s) ORDER BY run.id", (run_ids,))
+            candidates = cur.fetchall()
+    except (LockNotAvailable, QueryCanceled, PoolTimeout, TimeoutError) as exc:
+        logger.debug("[提链] 本轮本地支付扫描延后：error_type=%s", type(exc).__name__)
+        return
+    for candidate in candidates:
+        now = time.monotonic()
+        if now >= deadline:
+            return
+        attempt_deadline = min(deadline, now + _RECONCILE_ATTEMPT_SECONDS)
+        result[_attempt_payment(candidate, deadline=attempt_deadline)] += 1
+        _reconcile_position = (domain, int(candidate["id"]), high)
+    # All candidates in this page were attempted, including busy or ineligible ones.
+    # Returning to the head at the original upper bound revisits them under continuous arrivals.
+    _reconcile_position = (domain, run_ids[-1], high) if run_ids[-1] < high else None
+
+
 def reconcile_completed_payments(*, account_id: int | None = None) -> dict[str, int]:
     """用已保存的原单及后续 Plus 查询补齐支付状态，不发起网络请求或重跑。"""
     if account_id is not None and (isinstance(account_id, bool) or not isinstance(account_id, int) or account_id < 1):
         raise ValueError("account_id 参数无效")
     operation_store.init()
-    where = [
-        "task.source_system='native_operations'", "task.task_type='extract_link'",
-        "task.data->>'mode' IN ('auto_payment','manual_payment')",
-        "COALESCE(task.data->>'payment_source', 'native')<>'xxsyun'",
-        "run.source_system='native_operations'", "run.status IN ('attention_required','request_unknown','partial_success','success','interrupted')",
-        "task.status IN ('attention_required','request_unknown','partial_success','success','interrupted')", "run.cancel_requested_at IS NULL",
-        "job.provider_id IN ('huanguang','legacy','lumen_flow','anguang')", "job.payment_state IN ('unknown','succeeded')", "COALESCE(job.job_id,'')<>''",
-        "(run.status<>'success' OR job.public_state->>'plus_status' IS DISTINCT FROM 'confirmed')",
-    ]
-    params = []
-    if account_id is not None:
-        where.append("task.account_id=%s")
-        params.append(account_id)
-    with operation_store._connect() as conn, conn.cursor() as cur:
-        cur.execute(f"""SELECT run.id, job.job_id FROM {operation_store._table('operation_tasks')} task
-            JOIN {operation_store._table('operation_runs')} run ON run.id=task.last_run_id
-            JOIN {operation_store._table('extract_link_provider_jobs')} job ON job.run_id=run.id
-            WHERE {' AND '.join(where)} ORDER BY run.id""", tuple(params))
-        candidates = [dict(row) for row in cur.fetchall()]
     result = {"confirmed": 0, "skipped": 0, "failed": 0}
-    for candidate in candidates:
+    if account_id is not None:
+        with operation_store._connect() as conn, conn.cursor() as cur:
+            cur.execute("SET LOCAL lock_timeout='100ms'")
+            cur.execute(_payment_candidates_sql() + " AND task.account_id=%s ORDER BY run.id", (account_id,))
+            candidates = cur.fetchall()
+        for candidate in candidates:
+            result[_attempt_payment(candidate)] += 1
+    elif _reconcile_sweep_lock.acquire(blocking=False):
         try:
-            confirmed = _reconcile_completed_payment(int(candidate["id"]), expected_job_id=str(candidate["job_id"]))
-        except Exception as exc:
-            result["failed"] += 1
-            logger.warning("[提链] 本地支付状态补齐失败：run_id=%s error_type=%s", candidate["id"], type(exc).__name__)
-        else:
-            result["confirmed" if confirmed else "skipped"] += 1
+            _sweep_payment_page(result)
+        finally:
+            _reconcile_sweep_lock.release()
     return result
 
 

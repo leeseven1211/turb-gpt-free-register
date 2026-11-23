@@ -98,7 +98,8 @@ class UnconfirmedRegistrationRetryTests(unittest.TestCase):
              patch.object(svc.db, "get_account", return_value=account):
             self.assertEqual(svc._account_for_job(root), account)
 
-        def account_lookup(jobs):
+        def account_lookup(jobs, *, attempts_by_root):
+            self.assertEqual(attempts_by_root, {21: attempt})
             self.assertEqual(jobs[0]["email"], account["email"])
             self.assertEqual(jobs[0]["account_id"], account["id"])
             return {21: account}
@@ -294,7 +295,8 @@ class UnconfirmedRegistrationRetryTests(unittest.TestCase):
                 "source_id": "21:registration", "status": "request_unknown", "next_actions": [],
                 "runs": [{"source_system": "registration_jobs", "source_id": "21"}]}
         client = resume_tests.ResumeRetryChainTests._client()
-        with patch.object(operations.operation_task_store, "get_task", side_effect=lambda *a, **kw: copy.deepcopy(task)), \
+        with patch("core.bulk_operations.service.retry_managed_task", return_value=None), \
+             patch.object(operations.operation_task_store, "get_task", side_effect=lambda *a, **kw: copy.deepcopy(task)), \
              patch.object(svc.db, "get_job", return_value=job), \
              patch.object(svc.db, "get_successful_retry_for_job", return_value=None), \
              patch.object(svc, "_account_for_job", return_value=None), \

@@ -4,10 +4,12 @@ from __future__ import annotations
 import json
 import os
 import uuid
+from contextlib import contextmanager
+from threading import Event, Thread
 from unittest.mock import patch
 
 from core import account_task_store
-from core.storage import records as record_store
+from core.storage import postgres, records as record_store
 from core.storage.extract_link import batches as extract_link_batches, jobs as extract_link_jobs
 from core.storage.operations import store as operation
 from core.storage.operations import projection as operation_projection
@@ -355,3 +357,102 @@ class ExtractPaymentReconcileStorageTests(PostgresTestCase):
         self.assertEqual("attention_required", operation.get_run(first["run"]["id"])["status"])
         self.assertEqual("unknown", extract_link_jobs.get_provider_job_public(first["run"]["id"])["payment_state"])
         self.assertEqual("success", operation.get_run(second["run"]["id"])["status"])
+
+    @contextmanager
+    def bounded_wait(self):
+        # A regression must fail instead of waiting indefinitely for this test's holder.
+        connect = operation._common._connect
+
+        @contextmanager
+        def connection():
+            with connect() as conn:
+                conn.execute("SET LOCAL statement_timeout='900ms'")
+                yield conn
+
+        with patch.object(operation._common, "_connect", connection):
+            yield
+
+    def test_busy_run_and_task_do_not_block_other_payments(self):
+        first = self.task(self.account())
+        second = self.task(self.account())
+        for table, row_id in (("operation_runs", first["run"]["id"]), ("operation_tasks", first["id"])):
+            with self.subTest(table=table), postgres.connect() as holder:
+                holder.execute(f"SELECT id FROM {operation._table(table)} WHERE id=%s FOR UPDATE", (row_id,))
+                with self.bounded_wait():
+                    result = extract_link_jobs.reconcile_completed_payments()
+                self.assertEqual(1, result["skipped"])
+                self.assertEqual(0, result["failed"])
+                self.assertEqual("success", operation.get_run(second["run"]["id"])["status"])
+                self.assertEqual("attention_required", operation.get_run(first["run"]["id"])["status"])
+                if table == "operation_tasks":
+                    # The Run was acquired first and must already have been released.
+                    with postgres.connect() as observer:
+                        observer.execute(f"SELECT id FROM {operation._table('operation_runs')} WHERE id=%s FOR UPDATE NOWAIT",
+                                         (first["run"]["id"],))
+        self.assertEqual({"confirmed": 1, "skipped": 0, "failed": 0},
+                         extract_link_jobs.reconcile_completed_payments(account_id=first["account_id"]))
+
+    def test_busy_batch_rolls_back_payment_changes_and_retries_once(self):
+        task = self.task(self.account())
+        run_id = task["run"]["id"]
+        with postgres.connect() as holder, holder.cursor() as cur:
+            operation_projection._lock_projection_batch(cur, task["batch_id"])
+            with self.bounded_wait():
+                result = extract_link_jobs.reconcile_completed_payments(account_id=task["account_id"])
+            self.assertEqual({"confirmed": 0, "skipped": 1, "failed": 0}, result)
+            self.assertEqual("attention_required", operation.get_run(run_id)["status"])
+            self.assertEqual("unknown", extract_link_jobs.get_provider_job_public(run_id)["payment_state"])
+            events = operation.get_task(task["id"], include_events=True)["events"]
+            self.assertFalse(any(event["event_type"] == "payment.local_reconciled" for event in events))
+        self.assertEqual(1, extract_link_jobs.reconcile_completed_payments(account_id=task["account_id"])["confirmed"])
+        self.assertEqual(0, extract_link_jobs.reconcile_completed_payments(account_id=task["account_id"])["confirmed"])
+
+    def test_global_sweep_advances_past_persistently_unconfirmed_payments_and_wraps(self):
+        older = [self.task(self.account(current_plan_type="free")) for _ in range(2)]
+        newer = self.task(self.account())
+        with patch.object(extract_link_jobs, "_RECONCILE_PAGE_SIZE", 2, create=True):
+            self.assertEqual({"confirmed": 0, "skipped": 2, "failed": 0},
+                             extract_link_jobs.reconcile_completed_payments())
+            self.assertEqual("attention_required", operation.get_run(newer["run"]["id"])["status"])
+            self.assertEqual({"confirmed": 1, "skipped": 0, "failed": 0},
+                             extract_link_jobs.reconcile_completed_payments())
+            self.assertEqual("success", operation.get_run(newer["run"]["id"])["status"])
+            record_store.patch_row(record_store.ACCOUNTS, older[0]["account_id"], {"current_plan_type": "plus"})
+            self.assertEqual(1, extract_link_jobs.reconcile_completed_payments()["confirmed"])
+
+    def test_account_check_can_revisit_an_item_already_examined_in_global_pass(self):
+        first = self.task(self.account(current_plan_type="free"))
+        second = self.task(self.account())
+        with patch.object(extract_link_jobs, "_RECONCILE_PAGE_SIZE", 1):
+            self.assertEqual({"confirmed": 0, "skipped": 1, "failed": 0},
+                             extract_link_jobs.reconcile_completed_payments())
+            record_store.patch_row(record_store.ACCOUNTS, first["account_id"], {"current_plan_type": "pro"})
+            self.assertEqual({"confirmed": 1, "skipped": 0, "failed": 0},
+                             extract_link_jobs.reconcile_completed_payments(account_id=first["account_id"]))
+            self.assertEqual("attention_required", operation.get_run(second["run"]["id"])["status"])
+            self.assertEqual({"confirmed": 1, "skipped": 0, "failed": 0},
+                             extract_link_jobs.reconcile_completed_payments())
+
+    def test_global_candidate_discovery_returns_while_table_is_locked_then_retries(self):
+        task = self.task(self.account())
+        attempted = []
+        done = Event()
+
+        def sweep():
+            try:
+                attempted.append(extract_link_jobs.reconcile_completed_payments())
+            finally:
+                done.set()
+
+        worker = Thread(target=sweep)
+        with patch.object(extract_link_jobs, "_RECONCILE_SWEEP_SECONDS", 0.1):
+            try:
+                with postgres.connect() as holder:
+                    holder.execute(f"LOCK TABLE {operation._table('extract_link_provider_jobs')} IN ACCESS EXCLUSIVE MODE")
+                    worker.start()
+                    self.assertTrue(done.wait(2), "全局查询等待候选表锁，阻塞了调度线程")
+            finally:
+                worker.join(3)
+        self.assertEqual([{"confirmed": 0, "skipped": 0, "failed": 0}], attempted)
+        self.assertEqual("attention_required", operation.get_run(task["run"]["id"])["status"])
+        self.assertEqual(1, extract_link_jobs.reconcile_completed_payments()["confirmed"])

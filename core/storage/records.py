@@ -1003,14 +1003,16 @@ def _apply_record_schema(cur) -> None:
         _sync_identity_cursor(cur, spec)
 
 
-def _ensure_record_schema(conn) -> None:
+def ensure_record_schema(conn) -> None:
+    """Prepare record tables in the caller's transaction; its commit owns the version."""
+    postgres_store._guard_production_schema()
     if not _FORCE_SCHEMA_CHECK and _migration_completed(conn):
         return
     advisory_xact_lock(conn, f"record-store-schema:{postgres_store.schema_name()}")
     # 等锁期间可能已有其他进程完成迁移，取锁后再次读取已提交的版本。
     if not _FORCE_SCHEMA_CHECK and _migration_completed(conn):
         return
-    postgres_store.ensure_schema()
+    postgres_store.ensure_collection_schema(conn)
     with conn.cursor() as cur:
         _apply_record_schema(cur)
         table = postgres_store.qualified(_SCHEMA_MIGRATIONS)
@@ -1028,9 +1030,8 @@ def init() -> None:
     with _LOCK:
         if _READY_KEY == ready_key:
             return
-        postgres_store._guard_production_schema()
         with _connect() as conn:
-            _ensure_record_schema(conn)
+            ensure_record_schema(conn)
         _READY_KEY = ready_key
         _FORCE_SCHEMA_CHECK = False
 
@@ -1674,6 +1675,11 @@ def advisory_xact_lock(conn, key: str) -> None:
     """
     with conn.cursor() as cur:
         cur.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (str(key),))
+
+
+def lock_task_schema(conn, schema: str) -> None:
+    """注册事实和统一任务迁移都创建 registration_attempts，沿用已部署的锁名。"""
+    advisory_xact_lock(conn, f"operation-schema:{schema}")
 
 
 def try_advisory_xact_lock(conn, key: str) -> bool:

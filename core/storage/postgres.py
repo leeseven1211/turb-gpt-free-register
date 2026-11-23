@@ -353,6 +353,25 @@ def _connect():
     return connect()
 
 
+def ensure_collection_schema(conn) -> None:
+    """Create the namespace and shared collections in the caller's transaction."""
+    _guard_production_schema()
+    schema = schema_name()
+    table = qualified("app_collections")
+    with conn.cursor() as cur:
+        cur.execute("SELECT 1 WHERE to_regclass(%s) IS NOT NULL", (table,))
+        if cur.fetchone() is not None:
+            return
+        # Serialize competing first installs, including a standalone collections writer.
+        cur.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (f"collections-schema:{schema}",))
+        cur.execute(f"CREATE SCHEMA IF NOT EXISTS {quote_identifier(schema)}")
+        cur.execute(f"""CREATE TABLE IF NOT EXISTS {table} (
+            name text PRIMARY KEY,
+            payload jsonb NOT NULL,
+            updated_at timestamptz NOT NULL DEFAULT now()
+        )""")
+
+
 def ensure_schema() -> None:
     global _SCHEMA_READY_KEY
     url = database_url()
@@ -363,17 +382,8 @@ def ensure_schema() -> None:
     with _LOCK:
         if _SCHEMA_READY_KEY == ready_key:
             return
-        with _connect() as conn, conn.cursor() as cur:
-            cur.execute(f"CREATE SCHEMA IF NOT EXISTS {quote_identifier(schema_name())}")
-            cur.execute(
-                f"""
-                CREATE TABLE IF NOT EXISTS {qualified("app_collections")} (
-                    name text PRIMARY KEY,
-                    payload jsonb NOT NULL,
-                    updated_at timestamptz NOT NULL DEFAULT now()
-                )
-                """
-            )
+        with _connect() as conn:
+            ensure_collection_schema(conn)
         _SCHEMA_READY_KEY = ready_key
 
 

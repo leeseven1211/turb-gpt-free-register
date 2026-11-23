@@ -10,6 +10,7 @@ from psycopg.rows import dict_row
 from core import db
 from core.registration import service as registration_service
 from core.storage import postgres, records, registration
+from core.storage.task_query_context import readonly_task_query
 
 logger = logging.getLogger(__name__)
 _ACTIVE = ("pending", "queued", "running", "stopping", "cancelling", "settling", "waiting", "debug_paused")
@@ -54,7 +55,8 @@ def _sources(account_ids: list[int]) -> tuple[dict, dict, dict]:
     by_account = {int(row["id"]): row for row in accounts}
     if not by_account:
         return {}, {}, {}
-    registration.init()
+    if not readonly_task_query():
+        registration.init()
     with postgres.connect(row_factory=dict_row) as conn, conn.cursor() as cur:
         cur.execute(
             f"SELECT a.id, a.account_id, a.root_job_id, a.source_root_job_id, a.email_snapshot, a.email "

@@ -537,6 +537,7 @@ class RegistrationFactsTests(PostgresTestCase):
         attempt = registration.create_attempt("legacy-registered@example.test")
         attempt_id = int(attempt["id"])
         with postgres_store.connect() as conn, conn.cursor() as cur:
+            cur.execute(f"DELETE FROM {postgres_store.qualified('registration_schema_migrations')}")
             cur.execute(
                 f"""
                 UPDATE {postgres_store.qualified('registration_attempts')}
@@ -571,6 +572,7 @@ class RegistrationFactsTests(PostgresTestCase):
         advanced = registration.create_attempt("legacy-advanced@example.test")
         registration.advance_checkpoint(int(advanced["id"]), "account_confirmed")
         with postgres_store.connect() as conn, conn.cursor() as cur:
+            cur.execute(f"DELETE FROM {postgres_store.qualified('registration_schema_migrations')}")
             cur.execute(
                 f"""
                 UPDATE {postgres_store.qualified('registration_attempts')}

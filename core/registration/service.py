@@ -4041,7 +4041,7 @@ def get_retry_info_bulk(jobs: list[dict]) -> dict[int, dict]:
             if email:
                 lookup = dict(job, email=email, account_id=job.get("account_id") or attempt.get("account_id"))
         account_lookup_jobs.append(lookup)
-    accounts_by_job = db.get_accounts_for_jobs(account_lookup_jobs)
+    accounts_by_job = db.get_accounts_for_jobs(account_lookup_jobs, attempts_by_root=attempts_by_root)
     return {
         int(job.get("id") or 0): _build_retry_info(
             job,

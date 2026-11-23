@@ -15,6 +15,7 @@ from flask import Response, jsonify, make_response, redirect, render_template, r
 
 from core import account_task_store
 from core.storage import admin_repository
+from core.storage.task_query_context import task_query
 from core.codex import operation_service as codex_operation_service, retry_service as codex_retry_service, token_refresh_service as codex_token_refresh_service
 from core import db
 from core.accounts.deactivation import mail_scan as deactivation_mail_service
@@ -114,6 +115,7 @@ def create_jobs_blueprint(context: WebUIContext):
 
 
     @bp.get("/api/jobs")
+    @task_query()
     def api_jobs():
         view = str(request.args.get("view", default="") or "").strip().lower()
         if view not in {"", "batch", "table"}:
@@ -189,6 +191,7 @@ def create_jobs_blueprint(context: WebUIContext):
         return jsonify(result)
 
     @bp.get("/api/jobs/<int:job_id>/progress")
+    @task_query()
     def api_job_progress(job_id: int):
         """读取展开卡片对应的执行和阶段证据。"""
         job, attempts = admin_repository.registration_progress_history(job_id)

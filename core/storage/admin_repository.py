@@ -14,6 +14,7 @@ from typing import Any
 from psycopg.rows import dict_row
 
 from core.storage import postgres as postgres_store, records as record_store
+from core.storage.task_query_context import MISSING_SCHEMA_ERRORS, readonly_task_query
 from core.accounts.search import REGISTRATION_DRIVERS, parse_account_search
 from core.operations.presentation import public_result_status, public_result_status_sql
 
@@ -34,7 +35,8 @@ class PageRequest:
 
 
 def _connect():
-    record_store.init()
+    if not readonly_task_query():
+        record_store.init()
     return postgres_store.connect(row_factory=dict_row)
 
 
@@ -1173,22 +1175,22 @@ def registration_log_bindings(job_ids: list[int]) -> dict[int, dict]:
         return {}
     runs = operation_task_store._table("operation_runs")
     tasks = operation_task_store._table("operation_tasks")
-    with _connect() as conn, conn.cursor() as cur:
-        cur.execute("SELECT to_regclass(%s) AS relation", (runs,))
-        if not cur.fetchone()["relation"]:
-            return {}
-        cur.execute(
-            f"SELECT DISTINCT ON (r.source_id) r.source_id, r.task_id, r.id FROM {runs} r "
-            f"JOIN {tasks} t ON t.id = r.task_id "
-            "WHERE r.source_system = 'registration_jobs' AND r.source_id = ANY(%s) "
-            "AND COALESCE(t.data->>'deleted_by_user', 'false') <> 'true' "
-            "ORDER BY r.source_id, r.id DESC",
-            (ids,),
-        )
-        return {
-            int(row["source_id"]): {"operation_task_id": int(row["task_id"]), "operation_run_id": int(row["id"])}
-            for row in cur.fetchall()
-        }
+    try:
+        with _connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"SELECT DISTINCT ON (r.source_id) r.source_id, r.task_id, r.id FROM {runs} r "
+                f"JOIN {tasks} t ON t.id = r.task_id "
+                "WHERE r.source_system = 'registration_jobs' AND r.source_id = ANY(%s) "
+                "AND COALESCE(t.data->>'deleted_by_user', 'false') <> 'true' "
+                "ORDER BY r.source_id, r.id DESC",
+                (ids,),
+            )
+            return {
+                int(row["source_id"]): {"operation_task_id": int(row["task_id"]), "operation_run_id": int(row["id"])}
+                for row in cur.fetchall()
+            }
+    except MISSING_SCHEMA_ERRORS:
+        return {}
 
 
 _POOL_SPECS = {
