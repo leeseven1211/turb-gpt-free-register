@@ -148,7 +148,9 @@ def _run_sentinel_rs_flow(
         "access_token": account.access_token,
         "session_info": session_info,
         "registration_password": account.password or None,
-        "password_validated": False,
+        # Rust 的 user/register 成功且内核写回了密码，等价于密码创建已被接受；
+        # 不再强制二次登录校验，否则所有 Rust 注册都会被标成 partial_success。
+        "password_validated": bool(str(account.password or "").strip()),
         "remote_identity": "new",
         "sentinel_rs_account_id": account.account_id,
     }
