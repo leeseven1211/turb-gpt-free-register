@@ -42,6 +42,7 @@ export function useRegistration(deps:RegistrationDeps){
   let facetsSignature='',facetsAt=0,metaAt=0,metadataDirty=true;
   let createFlight:Promise<Record<string,any>>|undefined;
   const actionFlights=new Map<string,Promise<Record<string,any>>>();
+  let actionHold=0;
   const detailActive=()=>!disposed&&docVisible.value&&state.detail.id!==null;
   const detailValid=(version:number,id:RegistrationId)=>detailActive()&&version===detailVersion&&String(state.detail.id)===String(id);
 
@@ -55,6 +56,7 @@ export function useRegistration(deps:RegistrationDeps){
   function clearPageTimers(){window.clearInterval(jobsTimer);window.clearInterval(summaryTimer);jobsTimer=summaryTimer=undefined;}
   function shouldPollJobs(){
     if(!active.value)return false;
+    if(actionHold>0)return false;
     if(state.view==='tasks')return true;
     const batch=state.batch;
     if(!batch||String(batch.batch_id)!==state.batchId||batch.projection_delayed)return true;
@@ -204,6 +206,7 @@ export function useRegistration(deps:RegistrationDeps){
     const key=JSON.stringify([path,payload]);
     const current=actionFlights.get(key);if(current)return current;
     state.pendingActions[key]=true;
+    actionHold+=1;invalidatePageReads();
     const promise=(async()=>{
       try{
         const receipt=await api.action(path,payload);state.lastAction=receipt;selectAcceptedBatch(receipt);
