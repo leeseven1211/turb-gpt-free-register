@@ -777,7 +777,7 @@ function Ht(e) {
 						progress_batch_id: o.batchId,
 						refresh_generation: c
 					};
-					s === "launch" && (a.progress_detail = 0), s === "tasks" && e.automatic && E === n && Date.now() - D < 3e4 && (a.include_facets = 0);
+					(s === "launch" || e.automatic) && (a.progress_detail = 0), s === "tasks" && e.automatic && E === n && Date.now() - D < 3e4 && (a.include_facets = 0);
 					let u = await t.jobs(a, i.signal);
 					if (!l()) return;
 					if (Object.prototype.hasOwnProperty.call(u, "status_counts") && (o.statusCounts = u.status_counts || {}), s === "launch") {

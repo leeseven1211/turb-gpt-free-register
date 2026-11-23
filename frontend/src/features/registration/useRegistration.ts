@@ -93,7 +93,8 @@ export function useRegistration(deps:RegistrationDeps){
         for(let correction=0;correction<2;correction++){
           const params:Record<string,string|number>={paged:1,...state.query,view:requestView==='tasks'?'table':'batch',
             progress_batch_id:state.batchId,refresh_generation:generation};
-          if(requestView==='launch')params.progress_detail=0;
+          // 轮询只要轻量列表；进度明细按需从 /api/jobs/<id>/progress 读取。
+          if(requestView==='launch'||options.automatic)params.progress_detail=0;
           if(requestView==='tasks'&&options.automatic&&facetsSignature===signature&&Date.now()-facetsAt<30000)params.include_facets=0;
           const result=await api.jobs(params,controller.signal);
           if(!valid())return;

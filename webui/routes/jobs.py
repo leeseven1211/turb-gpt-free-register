@@ -173,6 +173,14 @@ def create_jobs_blueprint(context: WebUIContext):
         if view != "table" and progress_detail:
             # 完整事件只服务当前卡片；历史尝试保留元数据，详情仍由原接口提供。
             snapshot_rows = _current_progress_jobs(progress_rows) if view == "batch" else [*rows, *progress_rows]
+            # 只为当前页可见行和活跃行构建进度快照；历史行不再整批重算。
+            _focus_ids = {int(row["id"]) for row in rows if row.get("id")}
+            _active_states = {"pending", "running", "stopping", "cancelling", "settling", "waiting"}
+            snapshot_rows = [
+                row for row in snapshot_rows
+                if int(row.get("id") or 0) in _focus_ids
+                or str(row.get("status") or "").strip().lower() in _active_states
+            ]
             try:
                 snapshots = operation_task_store.get_registration_progress(
                     row["id"] for row in snapshot_rows if row.get("id")
