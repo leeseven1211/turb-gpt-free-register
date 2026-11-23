@@ -439,8 +439,12 @@ var X = { class: "registration-filter-fields" }, de = { key: 0 }, fe = ["value"]
 			return e.debug_state === "paused" ? "调试暂停" : i.statusLabel(e.display_status || x(e));
 		}
 		function V(e) {
-			let t = e.status_counts || {}, n = Number(t.running || 0) + Number(t.stopping || 0), r = Number(t.pending || 0);
-			return `${e.created_at ? F(e.created_at).replace(/:\d{2}$/, "") : String(e.batch_id)} · ${n || r ? `运行 ${n} / 等待 ${r}` : `成功 ${t.success || 0} / 失败 ${t.failed || 0}`}`;
+			let t = e.status_counts || {}, n = Number(t.running || 0) + Number(t.stopping || 0), r = Number(t.pending || 0), i = e.created_at ? F(e.created_at).replace(/:\d{2}$/, "") : String(e.batch_id), a = Number(t.partial_success || 0);
+			return `${i} · ${n || r ? `运行 ${n} / 等待 ${r}` : [
+				`成功 ${t.success || 0}`,
+				...a ? [`部分 ${a}`] : [],
+				`失败 ${t.failed || 0}`
+			].join(" / ")}`;
 		}
 		function H(e) {
 			u.value = e, d.value = null, g.value = !1, e === "failed" && D.value.length === 1 && (d.value = String(D.value[0].id), g.value = !0);
