@@ -493,7 +493,7 @@ def run_protocol_oss_2_lifecycle(
         from core.registration.errors import kernel_failure_summary
 
         kernel_summary = kernel_failure_summary(getattr(exc, "diagnostics", ""))
-        if kernel_summary and kernel_summary not in error:
+        if kernel_summary and not error.startswith(kernel_summary):
             # 任务错误只保留前 500 字；把具体原因放最前面，避免被截断成“内核失败”。
             error = f"{kernel_summary}：{error}"
         if getattr(exc, "password_salvaged", False) is True:
