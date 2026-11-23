@@ -127,7 +127,7 @@ def _run_sentinel_rs_flow(
 ):
     """把一次已分配邮箱/线路交给原生进程，并返回本地后处理需要的会话事实。"""
     from core.kernels.rust.sentinel_rs.bridge import (
-        BridgeRequest, log_level, resolve_binary, run_registration, timeout_seconds,
+        BridgeRequest, log_level, protocol_enabled, resolve_binary, run_registration, timeout_seconds,
     )
     from core.registration.service import (
         adopt_progress_thread_context,
@@ -175,7 +175,39 @@ def _run_sentinel_rs_flow(
 
             check_stop_requested()
 
-        account = run_registration(request, on_progress=on_progress, check_cancel=check_cancel)
+        saved_password: dict[str, str] = {}
+
+        def persist_password(address: str, password: str) -> dict:
+            from core.registration.checkpoints import save_protocol_password_checkpoint
+            from core.registration.service import registration_fact_context
+
+            save_protocol_password_checkpoint(
+                email=address or email, password=password, state="prepared",
+                proxy=proxy, email_source=source,
+            )
+            saved_password["value"] = password
+            try:
+                attempt_id = registration_fact_context().get("attempt_id")
+            except Exception:
+                attempt_id = None
+            return {"persisted": True, "attempt_id": attempt_id}
+
+        def confirm_password() -> None:
+            password = saved_password.get("value")
+            if not password:
+                return
+            from core.registration.checkpoints import save_protocol_password_checkpoint
+
+            save_protocol_password_checkpoint(
+                email=email, password=password, state="confirmed",
+                proxy=proxy, email_source=source,
+            )
+
+        account = run_registration(
+            request, on_progress=on_progress, check_cancel=check_cancel,
+            protocol_hooks={"persist_password": persist_password, "confirm_password": confirm_password}
+            if protocol_enabled() else None,
+        )
     except BaseException as exc:
         # 内核可能已经建号（pending_otp）；超时、取消或异常退出都要先保住密码。
         _salvage_kernel_account(
