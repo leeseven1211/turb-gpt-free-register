@@ -40,6 +40,16 @@ def _protocol_registration_cause_code(
     return "post_register_failure"
 
 
+def kernel_failure_summary(diagnostics: object) -> str:
+    """从内核诊断尾部提取一行“本次失败”，供任务面板直接展示。"""
+    text = str(diagnostics or "")
+    match = re.search(r"本次失败[:：]\s*([^|\n]+)", text)
+    if not match:
+        return ""
+    value = re.sub(r"\s+", " ", match.group(1)).strip()
+    return value[:150]
+
+
 def _safe_protocol_registration_error(exc: BaseException, cause_code: str) -> str:
     """仅保留固定阶段、异常类型和 HTTP 状态，不复制远端正文。"""
     from core.operations.errors import safe_registration_diagnostics

@@ -490,6 +490,12 @@ def run_protocol_oss_2_lifecycle(
             error = f"{_label} 缺少 Python 依赖：{missing_module}"
         else:
             error = _safe_protocol_registration_error(exc, cause_code)
+        from core.registration.errors import kernel_failure_summary
+
+        kernel_summary = kernel_failure_summary(getattr(exc, "diagnostics", ""))
+        if kernel_summary and kernel_summary not in error:
+            # 任务错误只保留前 500 字；把具体原因放最前面，避免被截断成“内核失败”。
+            error = f"{kernel_summary}：{error}"
         if getattr(exc, "password_salvaged", False) is True:
             # 内核已把密码落库却失败；保留提示，让操作人能拿这个密码继续。
             error = f"{error}；内核生成的密码已保存，可用支持续跑的内核继续"
