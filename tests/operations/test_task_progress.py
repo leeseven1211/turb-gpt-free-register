@@ -1768,3 +1768,14 @@ def test_explicit_remote_trigger_stage_can_associate_without_text_inference():
     snapshot = build_progress_snapshot(1, 2, 'token_refresh', _run('attention_required'), [remote, _event(2, 'email_otp', 'failed')])
     assert _step(snapshot, 'authenticate')['event_ids'] == ['1', '2']
     assert _step(snapshot, 'refresh_token')['display_status'] == 'not_executed'
+
+
+def test_sentinel_rs_registration_flow_does_not_show_browser_step():
+    from core.operations.stages import flow_for
+
+    run = {"data": {"config_snapshot": {"registration_driver": "sentinel_rs"}}}
+    steps = [step["id"] for step in flow_for("registration", run)]
+    assert "browser" not in steps
+    assert "authenticate" in steps
+    protocol_steps = [step["id"] for step in flow_for("registration", {"data": {"config_snapshot": {"registration_driver": "protocol_oss_2"}}})]
+    assert "browser" in protocol_steps

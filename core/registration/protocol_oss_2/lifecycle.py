@@ -322,7 +322,9 @@ def run_protocol_oss_2_lifecycle(
     core_persistence_started = False
     flow_result = None
     try:
-        report_job_progress("browser", "running", f"正在启动{_label}注册")
+        initial_stage = "authenticate" if _driver_name == "sentinel_rs" else "browser"
+        initial_detail = f"正在运行{_label}注册" if _driver_name == "sentinel_rs" else f"正在启动{_label}注册"
+        report_job_progress(initial_stage, "running", initial_detail)
         flow_result = _flow_runner(
             session,
             email=email,
@@ -336,6 +338,7 @@ def run_protocol_oss_2_lifecycle(
         )
         access_token = str(flow_result["access_token"])
         session_info = dict(flow_result["session_info"])
+        report_job_progress("token", "running", f"{_label} 正在写入账号与登录态")
         registration_password = flow_result.get("registration_password")
         from core.accounts.password_evidence import registration_password_extra
 
@@ -445,6 +448,21 @@ def run_protocol_oss_2_lifecycle(
             "user_register_continue_url_missing",
         }:
             cause_code = password_entry_cause
+        if password_entry_cause.startswith("sentinel_rs_"):
+            # Rust 内核已给出固定形态；保留内核自身的分类，不退回通用
+            # registration_failed，否则失败诊断会丢成“原因未分类”。
+            kernel_diagnostics = str(getattr(exc, "diagnostics", "") or "")
+            cause_code = (
+                "sentinel_rs_otp_timeout"
+                if password_entry_cause == "sentinel_rs_registration_failed"
+                and ("no_code" in kernel_diagnostics or "暂未收到验证码" in kernel_diagnostics)
+                else password_entry_cause
+            )
+            if cause_code == "sentinel_rs_otp_timeout" and not registration_diagnostics:
+                registration_diagnostics = {
+                    "operation": "mailbox_wait", "failure_stage": "email_otp",
+                    "otp_received": False, "failure_kind": "no_mail",
+                }
         missing_module = str(getattr(exc, "name", "") or "")
         if isinstance(exc, ModuleNotFoundError) and len(missing_module) <= 160 and re.fullmatch(
             r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*",
@@ -454,6 +472,9 @@ def run_protocol_oss_2_lifecycle(
             error = f"{_label} 缺少 Python 依赖：{missing_module}"
         else:
             error = _safe_protocol_registration_error(exc, cause_code)
+        if getattr(exc, "password_salvaged", False) is True:
+            # 内核已把密码落库却失败；保留提示，让操作人能拿这个密码继续。
+            error = f"{error}；内核生成的密码已保存，可用支持续跑的内核继续"
         try:
             if isinstance(exc, AccountUnusableError):
                 mark_email_permanently_unusable(

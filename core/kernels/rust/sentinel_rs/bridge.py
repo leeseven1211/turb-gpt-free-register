@@ -37,7 +37,7 @@ _SECRET_PATTERNS = (
 _EMAIL_PATTERN = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
 
 _STAGES = (
-    ("[1/10]", "browser", "Rust 内核预热会话"),
+    ("[1/10]", "authenticate", "Rust 内核预热会话"),
     ("[2/10]", "auth_redirect", "Rust 内核获取授权地址"),
     ("[3/10]", "auth_redirect", "Rust 内核建立认证会话"),
     ("[4/10]", "login_password", "Rust 内核创建密码"),
@@ -183,19 +183,7 @@ def _write_email_pool(request: BridgeRequest) -> Path:
     return path
 
 
-def _read_account(db_path: Path, email: str) -> BridgeAccount | None:
-    con = sqlite3.connect(str(db_path), timeout=10)
-    try:
-        con.row_factory = sqlite3.Row
-        row = con.execute(
-            "SELECT id, email, password, access_token, totp_secret, cookies, status "
-            "FROM accounts WHERE lower(email) = lower(?) ORDER BY id DESC LIMIT 1",
-            (email,),
-        ).fetchone()
-    finally:
-        con.close()
-    if row is None:
-        return None
+def _account_from_row(row: sqlite3.Row) -> BridgeAccount:
     return BridgeAccount(
         email=str(row["email"] or ""), password=str(row["password"] or ""),
         access_token=str(row["access_token"] or ""), totp_secret=str(row["totp_secret"] or ""),
@@ -204,10 +192,40 @@ def _read_account(db_path: Path, email: str) -> BridgeAccount | None:
     )
 
 
+def read_accounts(db_path: Path) -> list[BridgeAccount]:
+    """读取内核临时库里的全部账号行；失败路径也用它保住已生成的密码。"""
+    path = Path(db_path)
+    if not path.is_file():
+        return []
+    try:
+        con = sqlite3.connect(str(path), timeout=5)
+    except sqlite3.Error:
+        return []
+    try:
+        con.row_factory = sqlite3.Row
+        rows = con.execute(
+            "SELECT id, email, password, access_token, totp_secret, cookies, status "
+            "FROM accounts ORDER BY id",
+        ).fetchall()
+    except sqlite3.Error:
+        return []
+    finally:
+        con.close()
+    return [_account_from_row(row) for row in rows]
+
+
+def _read_account(db_path: Path, email: str) -> BridgeAccount | None:
+    matched = [
+        account for account in read_accounts(db_path)
+        if account.email.strip().lower() == str(email or "").strip().lower()
+    ]
+    return matched[-1] if matched else None
+
+
 def run_registration(
     request: BridgeRequest,
     *,
-    on_progress: Callable[[str, str], None] | None = None,
+    on_progress: Callable[[str, str, str | None], None] | None = None,
     check_cancel: Callable[[], None] | None = None,
 ) -> BridgeAccount:
     """运行一次真实注册并返回已落库账号；任何成功判断都必须有 AT 和身份证据。"""
@@ -253,9 +271,14 @@ def run_registration(
             for marker, stage, detail in _STAGES:
                 if marker in line:
                     if stage != last_stage and on_progress is not None:
+                        if last_stage is not None:
+                            try:
+                                on_progress(last_stage, "success", None)
+                            except Exception:
+                                logger.exception("sentinel-rs 阶段完成上报失败")
                         last_stage = stage
                         try:
-                            on_progress(stage, detail)
+                            on_progress(stage, "running", detail)
                         except Exception:
                             logger.exception("sentinel-rs 进度上报失败")
                     break
@@ -273,7 +296,9 @@ def run_registration(
                     cancelled = True
                     raise
             if time.monotonic() >= deadline:
-                raise SentinelRsFailed("sentinel-rs 注册超时", exit_code=None, diagnostics=_tail_diagnostics(lines))
+                diagnostics = _tail_diagnostics(lines)
+                logger.error("sentinel-rs 超时：diagnostics=%s", diagnostics)
+                raise SentinelRsFailed("sentinel-rs 注册超时", exit_code=None, diagnostics=diagnostics)
             time.sleep(0.2)
     finally:
         if process.poll() is None:
@@ -292,14 +317,22 @@ def run_registration(
         reader_thread.join(timeout=3)
 
     exit_code = process.returncode
+    diagnostics = _tail_diagnostics(lines)
     if cancelled:
-        raise SentinelRsFailed("sentinel-rs 注册已取消", exit_code=exit_code, diagnostics=_tail_diagnostics(lines))
+        logger.warning("sentinel-rs 已取消：exit=%s diagnostics=%s", exit_code, diagnostics)
+        raise SentinelRsFailed("sentinel-rs 注册已取消", exit_code=exit_code, diagnostics=diagnostics)
     if exit_code != 0:
+        logger.error("sentinel-rs 失败：exit=%s diagnostics=%s", exit_code, diagnostics)
         raise SentinelRsFailed(
-            f"sentinel-rs 退出码 {exit_code}", exit_code=exit_code, diagnostics=_tail_diagnostics(lines),
+            f"sentinel-rs 退出码 {exit_code}", exit_code=exit_code, diagnostics=diagnostics,
         )
-
+    if last_stage is not None and on_progress is not None:
+        try:
+            on_progress(last_stage, "success", None)
+        except Exception:
+            logger.exception("sentinel-rs 收尾阶段上报失败")
     account = _read_account(db_path, request.email)
+    logger.info("sentinel-rs 完成：exit=0 account=%s", account.email if account else "missing")
     if account is None:
         raise SentinelRsResultInvalid("sentinel-rs 未写回账号记录")
     if account.email.strip().lower() != request.email.strip().lower():
@@ -313,6 +346,6 @@ def run_registration(
 
 __all__ = [
     "BridgeAccount", "BridgeRequest", "SentinelRsFailed", "SentinelRsResultInvalid",
-    "SentinelRsUnavailable", "binary_status", "resolve_binary", "run_registration",
+    "SentinelRsUnavailable", "binary_status", "read_accounts", "resolve_binary", "run_registration",
     "timeout_seconds", "log_level",
 ]

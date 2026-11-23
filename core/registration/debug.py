@@ -115,6 +115,8 @@ _FAILURE_CATEGORY_LABELS = {
     "page_not_hydrated": "页面未完成渲染",
     "element_not_found": "页面元素缺失",
     "upstream_http_error": "上游 HTTP 错误",
+    "kernel_failure": "内核进程失败",
+    "otp_not_received": "验证码未到达",
     "unknown": "诊断证据不足",
 }
 
@@ -1031,6 +1033,13 @@ class RegistrationDebugSession:
             return "element_not_found"
         if any(int(item.get("status") or 0) >= 400 for item in meaningful_network):
             return "upstream_http_error"
+        if "sentinelrs" in text or "sentinel-rs" in text:
+            # 内核失败已经有自己的固定原因码；分类只标注证据来源。
+            info = state.get("error_info")
+            info = info if isinstance(info, dict) else {}
+            if info.get("cause_code") == "sentinel_rs_otp_timeout":
+                return "otp_not_received"
+            return "kernel_failure"
         return "unknown"
 
     @staticmethod

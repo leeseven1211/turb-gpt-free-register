@@ -712,6 +712,10 @@ _DISPLAY_CODES = {
     "internal.code": "SYS-CODE-001",
     "internal.browser": "SYS-BROWSER-001",
     "internal.request_prepare": "SYS-REQ-001",
+    "sentinel_rs_binary_unavailable": "SYS-KERNEL-001",
+    "sentinel_rs_result_invalid": "SYS-KERNEL-002",
+    "sentinel_rs_otp_timeout": "SYS-KERNEL-003",
+    "sentinel_rs_registration_failed": "SYS-KERNEL-004",
     "workflow.verification": "FLOW-VERIFY-001",
     "workflow.page_state": "FLOW-PAGE-001",
     "workflow.password_entry_not_hydrated": "FLOW-PWD-001",
@@ -761,6 +765,10 @@ _DISPLAY_SUMMARIES = {
     "internal.code": "本地代码错误",
     "internal.browser": "浏览器自动化异常",
     "internal.request_prepare": "请求在本地准备阶段失败",
+    "sentinel_rs_binary_unavailable": "Rust 内核不可用",
+    "sentinel_rs_result_invalid": "Rust 内核未返回可核验的账号结果",
+    "sentinel_rs_otp_timeout": "Rust 内核等待邮箱验证码超时",
+    "sentinel_rs_registration_failed": "Rust 内核注册进程失败",
     "workflow.verification": "验证流程失败",
     "workflow.page_state": "页面未进入下一步",
     "workflow.password_entry_not_hydrated": "密码入口页面未加载",
@@ -1387,6 +1395,10 @@ _CAUSE_DETAILS: dict[str, tuple[str, str]] = {
     "protocol_session_incomplete": ("FLOW-REG-SESSION", "注册资料已确认，后续登录态尚未取得"),
     "protocol_failure_evidence_missing": ("FLOW-REG-EVIDENCE", "协议失败未保留足够请求证据，无法确认具体原因"),
     "local_config_schema_mismatch": ("SYS-CONFIG-SCHEMA", "配置 schema 不匹配，请重启后重跑"),
+    "sentinel_rs_binary_unavailable": ("SYS-KERNEL-001", "Rust 内核不可用，请检查二进制与执行权限"),
+    "sentinel_rs_result_invalid": ("SYS-KERNEL-002", "Rust 内核退出但未写回可核验的账号结果"),
+    "sentinel_rs_otp_timeout": ("SYS-KERNEL-003", "Rust 内核在等待窗口内未收到邮箱验证码"),
+    "sentinel_rs_registration_failed": ("SYS-KERNEL-004", "Rust 内核注册进程失败，详见内核诊断"),
     "refresh_confirmation_missing": ("SYS-BULK-AT-RECEIPT", "AT 刷新成功记录缺少本轮认证或写回凭据"),
     "plan_result_confirmation_missing": ("SYS-BULK-PLAN-RESULT", "套餐查询成功记录缺少完整查询结果"),
     "setup_confirmation_missing": ("SYS-BULK-SETUP-RECEIPT", "配置任务成功记录缺少设置回执"),
@@ -1942,6 +1954,31 @@ def _registration_browser_error_cause(raw: str, *, task_type: str) -> dict[str, 
         return _specific_error_cause({"cause_code": "email_submit_unconfirmed"})
     if re.search(r"(?<![\w])StageTimeout(?=[:：\s]|$)", raw):
         return _specific_error_cause({"cause_code": "browser_stage_timeout"})
+    return None
+
+
+_SENTINEL_RS_OTP_MARKERS = (
+    '"code":"no_code"',
+    '"code": "no_code"',
+    "暂未收到验证码",
+    "还没有验证码",
+)
+
+
+def _sentinel_rs_error_cause(raw: str) -> dict[str, str] | None:
+    """识别 Rust 内核固定失败形态，不把内核诊断误归为“诊断缺失”。"""
+    text = str(raw or "")
+    if not text:
+        return None
+    if ("SentinelRsUnavailable" in text or "未找到 sentinel-rs 二进制" in text
+            or "sentinel-rs 无法启动" in text):
+        return _specific_error_cause({"cause_code": "sentinel_rs_binary_unavailable"})
+    if "SentinelRsResultInvalid" in text:
+        return _specific_error_cause({"cause_code": "sentinel_rs_result_invalid"})
+    if "SentinelRsFailed" in text or "sentinel-rs 注册超时" in text:
+        if any(marker in text for marker in _SENTINEL_RS_OTP_MARKERS):
+            return _specific_error_cause({"cause_code": "sentinel_rs_otp_timeout"})
+        return _specific_error_cause({"cause_code": "sentinel_rs_registration_failed"})
     return None
 
 
@@ -2799,7 +2836,7 @@ def classify_task_error(
         }
         if stage in {"", "event", "unknown", "complete", "result", "network", "network_route"}:
             stage = "login"
-    if cause is None and (str(error_code).startswith(("roxy_", "email_derivation_", "email_resource_", "password_setup_"))
+    if cause is None and (str(error_code).startswith(("roxy_", "email_derivation_", "email_resource_", "password_setup_", "sentinel_rs_"))
                           or str(error_code) in _BUTLER_RECIPIENT_CAUSES
                           or str(error_code) in _AT_CALLBACK_CAUSE_CODES):
         cause = _specific_error_cause({"cause_code": error_code})
@@ -2835,6 +2872,11 @@ def classify_task_error(
                     cause = _specific_error_cause({"cause_code": login_cause})
     if cause is None:
         cause = _registration_browser_error_cause(raw, task_type=task_type)
+    if cause is None:
+        cause = _sentinel_rs_error_cause(raw)
+        if cause is not None and cause["cause_code"] == "sentinel_rs_otp_timeout":
+            # 内核诊断已证明失败发生在取码等待；进度阶段可能仍停在认证阶段。
+            stage = "email_otp"
     raw_projection = None
     if cause is not None and cause["cause_code"] in {
         "refresh_driver_exception", "protocol_v2_unknown_error", "protocol_v3_unknown_error", "post_register_failure",

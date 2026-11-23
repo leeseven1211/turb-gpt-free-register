@@ -3,9 +3,9 @@ import { i as A, n as j, r as M, t as te } from "./ListFilterSummary-BMevcZKj.js
 import { n as ne, t as re } from "./ColumnResizer-CkmQ7nlB.js";
 import { t as ie } from "./ListResult-hdVKwFWL.js";
 import { n as N, r as P } from "./client-B5R_MNgP.js";
-import { t as ae } from "./errorLabels-BWpfwuWJ.js";
+import { t as ae } from "./errorLabels-Byl2EONI.js";
 import { n as F, t as I } from "./time-DOD6oyhP.js";
-import { O as oe, _ as se, a as L, b as R, g as z, h as B, i as V, n as H, p as U, r as W, t as G, v as K, x as q, y as J } from "./StepEvidence-D0UuIVGi.js";
+import { O as oe, _ as se, a as L, b as R, g as z, h as B, i as V, n as H, p as U, r as W, t as G, v as K, x as q, y as J } from "./StepEvidence-DPP2GQj1.js";
 import { t as ce } from "./useNativeDialog-CpAHpAsH.js";
 import { t as le } from "./ListPagination-BTUO61r-.js";
 import { a as ue, r as Y } from "./taskIds-BlchWwUp.js";
@@ -439,8 +439,12 @@ var X = { class: "registration-filter-fields" }, de = { key: 0 }, fe = ["value"]
 			return e.debug_state === "paused" ? "调试暂停" : i.statusLabel(e.display_status || x(e));
 		}
 		function V(e) {
-			let t = e.status_counts || {}, n = Number(t.running || 0) + Number(t.stopping || 0), r = Number(t.pending || 0);
-			return `${e.created_at ? F(e.created_at).replace(/:\d{2}$/, "") : String(e.batch_id)} · ${n || r ? `运行 ${n} / 等待 ${r}` : `成功 ${t.success || 0} / 失败 ${t.failed || 0}`}`;
+			let t = e.status_counts || {}, n = Number(t.running || 0) + Number(t.stopping || 0), r = Number(t.pending || 0), i = e.created_at ? F(e.created_at).replace(/:\d{2}$/, "") : String(e.batch_id), a = Number(t.partial_success || 0);
+			return `${i} · ${n || r ? `运行 ${n} / 等待 ${r}` : [
+				`成功 ${t.success || 0}`,
+				...a ? [`部分 ${a}`] : [],
+				`失败 ${t.failed || 0}`
+			].join(" / ")}`;
 		}
 		function H(e) {
 			u.value = e, d.value = null, g.value = !1, e === "failed" && D.value.length === 1 && (d.value = String(D.value[0].id), g.value = !0);
@@ -553,7 +557,7 @@ var X = { class: "registration-filter-fields" }, de = { key: 0 }, fe = ["value"]
 					class: "registration-batch-card",
 					"data-tone": i
 				}, [_("div", ot, [
-					_("div", st, [_("strong", null, h(n.email || "准备邮箱中…"), 1), _("small", null, h(u), 1)]),
+					_("div", st, [_("strong", null, h(n.email || (n.status === "pending" ? "等待执行…" : "准备邮箱中…")), 1), _("small", null, h(u), 1)]),
 					_("div", ct, [_("span", {
 						class: "registration-state",
 						"data-tone": i

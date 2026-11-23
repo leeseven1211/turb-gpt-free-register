@@ -84,6 +84,43 @@ def _session_info(session, access_token: str, email: str) -> dict:
     }
 
 
+def _salvage_kernel_account(
+    exc: BaseException, *, workdir: Path, email: str, proxy: str, email_source: str,
+) -> None:
+    """内核失败时也把已生成的密码存成候选凭据，避免远端账号无凭据。"""
+    from core.kernels.rust.sentinel_rs.bridge import read_accounts
+
+    try:
+        accounts = [
+            item for item in read_accounts(workdir / "accounts.db")
+            if str(item.email or "").strip().lower() == str(email or "").strip().lower()
+            and str(item.password or "").strip()
+        ]
+    except Exception:
+        logger.exception("sentinel-rs 失败后读取内核账号行失败")
+        return
+    if not accounts:
+        return
+    account = accounts[-1]
+    try:
+        from core.registration.checkpoints import save_protocol_password_checkpoint
+
+        save_protocol_password_checkpoint(
+            email=email, password=account.password, state="confirmed",
+            proxy=proxy, email_source=email_source,
+        )
+    except Exception:
+        # 保存失败不能改变任务原本的失败原因，只记录日志。
+        logger.exception("sentinel-rs 失败后保存内核密码失败")
+        return
+    setattr(exc, "password_salvaged", True)
+    setattr(exc, "kernel_account_status", account.status)
+    logger.warning(
+        "sentinel-rs 失败后已保存内核生成的密码：status=%s account_id=%s",
+        account.status, account.account_id,
+    )
+
+
 def _run_sentinel_rs_flow(
     session, *, email, name, birthday, otp_code, email_source,
     existing_password, existing_totp_secret, options,
@@ -92,8 +129,13 @@ def _run_sentinel_rs_flow(
     from core.kernels.rust.sentinel_rs.bridge import (
         BridgeRequest, log_level, resolve_binary, run_registration, timeout_seconds,
     )
-    from core.registration.service import report_job_progress
+    from core.registration.service import (
+        adopt_progress_thread_context,
+        report_job_progress,
+        snapshot_progress_thread_context,
+    )
 
+    progress_context = snapshot_progress_thread_context()
     if existing_password:
         raise RuntimeError("Rust 内核尚不支持原身份续跑，请使用原任务重跑入口或改用协议内核")
     if otp_code:
@@ -122,8 +164,11 @@ def _run_sentinel_rs_flow(
             workdir=workdir, timeout_seconds=timeout_seconds(), log_level=log_level(),
         )
 
-        def on_progress(stage: str, detail: str) -> None:
-            report_job_progress(stage, "running", detail)
+        def on_progress(stage: str, state: str, detail: str | None) -> None:
+            # sentinel-rs 的 stdout 由独立 reader 线程消费；进度上下文是线程本地的，
+            # 必须显式带过去，否则中间阶段不会写入任务时间线。
+            adopt_progress_thread_context(progress_context)
+            report_job_progress(stage, state, detail)
 
         def check_cancel() -> None:
             from core.registration.service import check_stop_requested
@@ -131,6 +176,12 @@ def _run_sentinel_rs_flow(
             check_stop_requested()
 
         account = run_registration(request, on_progress=on_progress, check_cancel=check_cancel)
+    except BaseException as exc:
+        # 内核可能已经建号（pending_otp）；超时、取消或异常退出都要先保住密码。
+        _salvage_kernel_account(
+            exc, workdir=workdir, email=email, proxy=proxy, email_source=source,
+        )
+        raise
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
 
@@ -140,7 +191,9 @@ def _run_sentinel_rs_flow(
         "access_token": account.access_token,
         "session_info": session_info,
         "registration_password": account.password or None,
-        "password_validated": False,
+        # Rust 的 user/register 成功且内核写回了密码，等价于密码创建已被接受；
+        # 不再强制二次登录校验，否则所有 Rust 注册都会被标成 partial_success。
+        "password_validated": bool(str(account.password or "").strip()),
         "remote_identity": "new",
         "sentinel_rs_account_id": account.account_id,
     }

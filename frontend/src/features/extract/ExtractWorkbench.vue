@@ -27,6 +27,11 @@ const qrImages=computed(()=>qrSources(artifacts.state.payment.entry||{}));
 function qrError(){if(qrIndex.value+1<qrImages.value.length)qrIndex.value++;else qrFailed.value=true;}
 async function paymentEntry(id:any){qrIndex.value=0;qrFailed.value=false;await artifacts.showPaymentEntry(id);}
 const resultSummary=listOutcome;
+type Tone='neutral'|'success'|'warning'|'danger'|'active';
+function providerColor(id?:string){return ({legacy:'#64748b',huanguang:'#7c5cf0',anguang:'#0e9aa7',lumen:'#377dff',lumen_flow:'#377dff'} as Record<string,string>)[id||'']||'#98a2b3';}
+function preflightTone(status?:string):Tone{return ({passed:'success',success:'success',failed:'danger',running:'active',queued:'active',waiting:'active'} as Record<string,Tone>)[status||'']||'neutral';}
+function paymentTone(status?:string):Tone{return ({paid:'success',succeeded:'success',success:'success',awaiting_payment:'warning',pending:'warning',unpaid:'warning',pending_payment:'warning',processing:'active',running:'active',failed:'danger',expired:'danger',cancelled:'danger',canceled:'danger'} as Record<string,Tone>)[status||'']||'neutral';}
+function plusTone(status?:string):Tone{return ({confirmed:'success',plus:'success',not_confirmed:'danger',checking:'active',unavailable:'warning'} as Record<string,Tone>)[status||'']||'neutral';}
 function historyOutcome(run:any){const status=label(run.status||run.task_status,'状态未记录'),evidence=run.error_info?.summary||run.error_message||run.error||run.message||'';return evidence?`${status} · ${evidence}`:status;}
 function providerChanged(){batch.setProvider(batch.state.provider);}
 function resetScroll(){if(tableScroll.value){tableScroll.value.scrollTop=0;tableScroll.value.scrollLeft=0;}}
@@ -55,7 +60,7 @@ function setVisible(v:boolean){visible.value=v;work.setVisible(v);if(!v){openFil
   </header>
   <div class="ui-list extract-list-panel">
   <div class="ui-list-toolbar extract-count-row" data-extract-count-row>
-   <div class="ui-list-toolbar__main extract-count-main"><span class="ui-list-count extract-count">共 {{number(work.state.total)}} 条任务</span><ListFilterSummary :items="filterChips" @remove="changeFilter($event as FilterKey,'')"/></div>
+   <div class="ui-list-toolbar__main extract-count-main"><span class="ui-list-count extract-count">共 {{number(work.state.total)}} 条任务</span><div v-if="selected.size" class="extract-bulk-actions" role="group" aria-label="选中提链任务批量操作"><strong class="ui-list-bulkbar__count">已选 {{selected.size}} 项</strong><button type="button" class="ui-button" :disabled="work.state.bulkBusy" @click="work.bulkAction('sync_status')">同步原单</button><button type="button" class="ui-button" @click="work.bulkAction('links')">复制支付链接</button><button type="button" class="ui-button" @click="work.exportRows(false)">导出选中</button><button type="button" class="ui-link" @click="work.bulkAction('clear')">清除选择</button></div><ListFilterSummary :items="filterChips" @remove="changeFilter($event as FilterKey,'')"/></div>
    <div class="ui-list-toolbar__actions extract-count-actions">
     <button v-if="filterChips.length" type="button" class="ui-link" @click="resetFilters">清除筛选</button>
     <ExtractFilters column="batch" :values="filterValues" :providers="filterProviders" :batches="work.state.batches" :batch-busy="work.state.batchLoading" :open="openFilter==='batch'" @update:open="openFilter=$event?'batch':null" @change="changeFilter">
@@ -71,14 +76,13 @@ function setVisible(v:boolean){visible.value=v;work.setVisible(v);if(!v){openFil
   </div>
   <p v-if="work.state.error" class="ui-list-feedback is-error" role="alert">{{work.state.error}} <button type="button" class="ui-link" @click="refresh">重试</button></p>
   <p v-if="artifacts.state.error" class="ui-list-feedback is-error" role="alert">{{artifacts.state.error}}</p>
-  <div v-if="selected.size" class="ui-list-bulkbar extract-bulk"><strong class="ui-list-bulkbar__count">已选 {{selected.size}} 项</strong><button type="button" class="ui-button" :disabled="work.state.bulkBusy" @click="work.bulkAction('sync_status')">同步原单</button><button type="button" class="ui-button" @click="work.bulkAction('links')">复制支付链接</button><button type="button" class="ui-button" @click="work.exportRows(false)">导出选中</button><button type="button" class="ui-link" @click="work.bulkAction('clear')">清除选择</button></div>
   <div ref="tableScroll" class="ui-table-scroll extract-table-wrap" role="region" aria-label="提链任务表格" tabindex="0"><table class="ui-table ui-table--sticky-end extract-table" aria-label="提链任务"><thead><tr><th class="ui-col-check"><input type="checkbox" aria-label="选择本页提链任务" :checked="selectedAll" @change="all(($event.target as HTMLInputElement).checked)"></th>
    <th v-for="key in (['query','provider','mode'] as FilterKey[])" :key="key"><ExtractFilters :column="key" :values="filterValues" :providers="filterProviders" :batches="work.state.batches" :counts="work.state.counts" :open="openFilter===key" @update:open="openFilter=$event?key:null" @change="changeFilter"/></th>
    <th>准备</th><th><ExtractFilters column="status" :values="filterValues" :providers="filterProviders" :batches="work.state.batches" :counts="work.state.counts" :open="openFilter==='status'" @update:open="openFilter=$event?'status':null" @change="changeFilter"/></th><th>支付</th><th>Plus</th><th>更新时间</th><th>操作</th></tr></thead>
    <tbody><tr v-for="task in work.state.items" :key="String(task.task_id)" :class="{'is-selected':selected.has(String(task.task_id))}"><td class="ui-col-check"><input type="checkbox" :aria-label="`选择提链任务 ${task.task_id}`" :checked="selected.has(String(task.task_id))" @change="toggle(String(task.task_id))"></td>
-    <td><ListCell :text="task.email||'账号未记录'" :secondary="`#${task.task_id}`"/></td><td><ListCell :text="providerLabel(task.provider_id)" :secondary="task.link_type||undefined"/></td><td><ListCell :text="modeLabel(task.mode)" :secondary="sourceSuffix(task)||undefined"/></td><td><ListCell :text="label(task.preflight_status,'未开始')"/></td>
+    <td><ListCell :text="task.email||'账号未记录'" :secondary="`#${task.task_id}`"/></td><td><ListCell :text="providerLabel(task.provider_id)" :secondary="task.link_type||undefined"><span class="extract-tone"><i :style="{background:providerColor(task.provider_id)}" aria-hidden="true"></i>{{ providerLabel(task.provider_id) }}</span></ListCell></td><td><ListCell :text="modeLabel(task.mode)" :secondary="sourceSuffix(task)||undefined"/></td><td><ListCell :text="label(task.preflight_status,'未开始')" :tone="preflightTone(task.preflight_status)"/></td>
     <td><ListResult data-extract-result :label="resultSummary(task).label" :tone="resultSummary(task).tone" :title="outcome(task).detail"><template #details><p>{{outcome(task).label}}</p><p>{{outcome(task).detail}}</p><p v-if="task.message">{{task.message}}</p><p v-if="task.error">{{task.error}}</p><p v-if="task.progress?.label">{{task.progress.label}}</p></template></ListResult></td>
-    <td><ListCell :text="label(task.payment_phase||task.payment_status,'—')"/></td><td><ListCell :text="label(task.plus_state||task.plus_status,'未核验')"/></td><td><ListCell :text="time(task.updated_at||task.created_at)"/></td><td><div class="ui-row-actions extract-row-actions"><button type="button" class="ui-link" @click="artifacts.openDetail(task.task_id)">详情</button><button type="button" class="ui-link" :disabled="!(task.has_payment_entry||task.has_payment_link||task.has_qr)" @click="paymentEntry(task.task_id)">支付入口</button></div></td>
+    <td><ListCell :text="label(task.payment_phase||task.payment_status,'—')" :tone="paymentTone(task.payment_phase||task.payment_status)"/></td><td><ListCell :text="label(task.plus_state||task.plus_status,'未核验')" :tone="plusTone(task.plus_state||task.plus_status)"/></td><td><ListCell :text="time(task.updated_at||task.created_at)"/></td><td><div class="ui-row-actions extract-row-actions"><button type="button" class="ui-link" @click="artifacts.openDetail(task.task_id)">详情</button><button type="button" class="ui-link" :disabled="!(task.has_payment_entry||task.has_payment_link||task.has_qr)" @click="paymentEntry(task.task_id)">支付入口</button></div></td>
    </tr><TableState v-if="!work.state.items.length" :colspan="10" :loading="work.state.loading" :error="work.state.error?' ':''" loading-title="正在读取任务…" error-title="任务读取失败" :title="filterChips.length?'没有符合筛选条件的任务':'暂无提链任务'"/></tbody></table>
   </div>
   <ListPagination class="extract-task-pager" label="提链任务分页" :page="query.page" :size="query.size" :total="work.state.total" :busy="work.state.loading" @update:page="changePage" @update:size="changeSize"/>
@@ -165,6 +169,10 @@ function setVisible(v:boolean){visible.value=v;work.setVisible(v);if(!v){openFil
 .extract-table th:last-child { width:12.5%; }
 .extract-table td:nth-child(2) :deep(.list-cell-primary) { font-weight:600; }
 .extract-row-actions { flex-wrap:nowrap; }
+.extract-bulk-actions { display:flex; align-items:center; flex-wrap:wrap; gap:6px; min-width:0; margin-left:2px; padding-left:10px; border-left:1px solid var(--ui-color-border); }
+.extract-bulk-actions .ui-button { min-height:28px; padding:3px 9px; font-size:12px; }
+.extract-tone { display:inline-flex; align-items:center; gap:6px; min-width:0; }
+.extract-tone i { width:6px; height:6px; border-radius:2px; flex:none; }
 .extract-task-pager { flex:none; border-top:1px solid var(--ui-color-border); }
 .extract-batch-pager { padding:8px 0 0; border-top:1px solid var(--ui-color-border); }
 .extract-batch-pager :deep(.list-pagination__size) { display:none; }
@@ -178,6 +186,7 @@ function setVisible(v:boolean){visible.value=v;work.setVisible(v);if(!v){openFil
   .extract-toolbar { align-items:flex-start; }
   .extract-title { flex-direction:column; align-items:flex-start; }
   .extract-mobile-filter { display:inline-flex; }
+  .extract-bulk-actions { flex-basis:100%; margin-left:0; padding-left:0; border-left:0; }
 }
 @media (pointer:coarse) {
   .extract-row-actions button,.extract-count-actions :deep(.tc-column-filter-trigger) { min-height:40px; }

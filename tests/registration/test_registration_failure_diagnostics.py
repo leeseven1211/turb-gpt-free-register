@@ -5,6 +5,7 @@ from unittest.mock import Mock, patch
 import pytest
 
 from core.registration.errors import _safe_protocol_registration_error
+from core.kernels.rust.sentinel_rs.bridge import SentinelRsFailed
 from core.registration.protocol_oss_2.lifecycle import ProtocolOssRequestUnknown, run_protocol_oss_2_lifecycle
 from core.operations.errors import classify_task_error
 
@@ -176,3 +177,15 @@ def test_specific_existing_cause_is_not_replaced_by_incomplete_diagnostic_facts(
         "registration_diagnostics": {"failure_stage": "profile", "profile_confirmed": False},
     })
     assert info["code"] == cause_code
+
+
+def test_sentinel_rs_native_diagnostics_reach_the_safe_error_message():
+    exc = SentinelRsFailed(
+        "sentinel-rs 退出码 1",
+        exit_code=1,
+        diagnostics="user/register 失败: HTTP 400 invalid_auth_step | 汇总: 0/1",
+    )
+    message = _safe_protocol_registration_error(exc, "registration_failed")
+    assert "注册流程失败" in message
+    assert "内核诊断=" in message
+    assert "invalid_auth_step" in message

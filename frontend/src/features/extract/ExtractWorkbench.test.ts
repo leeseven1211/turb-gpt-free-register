@@ -20,10 +20,17 @@ describe('extract list standards',()=>{
  it('moves filters into headings and count-row chips while retaining server filter values',async()=>{
   const {wrapper,api}=setup();await flushPromises();
   await wrapper.get('thead button[aria-label="筛选平台"]').trigger('click');await flushPromises();
-  const provider=document.querySelector<HTMLSelectElement>('[aria-label="筛选平台值"]')!;expect(provider).not.toBeNull();provider.value='legacy';provider.dispatchEvent(new Event('change',{bubbles:true}));await flushPromises();
+  const provider=document.querySelector<HTMLInputElement>('[data-extract-option="legacy"] input')!;expect(provider).not.toBeNull();provider.checked=true;provider.dispatchEvent(new Event('change',{bubbles:true}));await flushPromises();
   const count=wrapper.get('[data-extract-count-row]');expect(count.text()).toContain('125');expect(count.get('.list-filter-summary').text()).toContain('传统平台');
   expect(vi.mocked(api.tasks).mock.calls.at(-1)?.[0]).toMatchObject({provider:'legacy',page:1});
   await count.get('[aria-label="清除平台筛选"]').trigger('click');await flushPromises();expect(vi.mocked(api.tasks).mock.calls.at(-1)?.[0]).toMatchObject({provider:'',page:1});
+ });
+ it('keeps selected bulk actions inside the count row',async()=>{
+  const {wrapper}=setup();await flushPromises();
+  await wrapper.get('input[aria-label="选择提链任务 9007199254740993"]').setValue(true);
+  const row=wrapper.get('[data-extract-count-row]');
+  expect(row.text()).toContain('已选 1 项');expect(row.text()).toContain('同步原单');
+  expect(wrapper.find('.ui-list-bulkbar').exists()).toBe(false);
  });
  it('limits default result text, preserves full detail, and gives both pagers jump controls',async()=>{
   const {wrapper,api}=setup();await flushPromises();
@@ -51,9 +58,9 @@ describe('extract list standards',()=>{
   expect(tasks).toHaveBeenCalledTimes(calls);
   expect(scroll.scrollTop).toBe(80);
   expect(wrapper.get('nav[aria-label="提链任务分页"] [aria-current="page"]').text()).toBe('2');
-  const selection=document.querySelector<HTMLSelectElement>('[aria-label="筛选批次值"]')!;
-  expect([...selection.options].map(option=>option.text)).toContain('第二页批次');
-  selection.value='9';selection.dispatchEvent(new Event('change',{bubbles:true}));await flushPromises();
+  const option=document.querySelector<HTMLElement>('[data-extract-option="9"]')!;
+  expect(option.textContent).toContain('第二页批次');
+  const selection=option.querySelector<HTMLInputElement>('input')!;selection.checked=true;selection.dispatchEvent(new Event('change',{bubbles:true}));await flushPromises();
   expect(tasks).toHaveBeenLastCalledWith(expect.objectContaining({batch:'9',page:1}),expect.any(AbortSignal));
   expect(scroll.scrollTop).toBe(0);
  });

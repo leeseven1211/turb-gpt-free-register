@@ -51,6 +51,10 @@ def _safe_protocol_registration_error(exc: BaseException, cause_code: str) -> st
         "user_register_result_unknown": "账号创建请求结果待确认，未保留失败细项",
         "registration_checkpoint_failed": "注册执行检查点读取或保存失败",
         "registration_route_close_failed": "旧连接关闭失败，未交还当前线路",
+        "sentinel_rs_binary_unavailable": "Rust 内核二进制不可用",
+        "sentinel_rs_result_invalid": "Rust 内核未写回可核验的账号结果",
+        "sentinel_rs_otp_timeout": "Rust 内核在等待窗口内未收到邮箱验证码",
+        "sentinel_rs_registration_failed": "Rust 内核注册进程失败",
         "user_register_continue_url_missing": "账号创建响应缺少后续验证地址",
         "email_otp_send_rejected": "验证码发送请求被拒绝",
         "email_otp_send_failed": "验证码发送请求失败",
@@ -106,6 +110,9 @@ def _safe_protocol_registration_error(exc: BaseException, cause_code: str) -> st
             if 100 <= candidate <= 599:
                 status = candidate
     suffix = f" HTTP {status}" if status is not None else ""
+    kernel_detail = str(getattr(exc, "diagnostics", "") or "").strip()
+    if kernel_detail:
+        suffix += " 内核诊断=" + kernel_detail[-700:]
     if diagnostics:
         suffix += " 诊断=" + json.dumps(diagnostics, ensure_ascii=False, separators=(",", ":"))
     if diagnostics.get("operation") == "mailbox_wait":

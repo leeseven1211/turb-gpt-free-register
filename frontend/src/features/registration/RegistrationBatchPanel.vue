@@ -131,7 +131,10 @@ function optionLabel(batch: RegistrationBatch) {
   const running = Number(counts.running || 0) + Number(counts.stopping || 0);
   const pending = Number(counts.pending || 0);
   const date = batch.created_at ? formatDateTime(batch.created_at).replace(/:\d{2}$/, '') : String(batch.batch_id);
-  const state = running || pending ? `运行 ${running} / 等待 ${pending}` : `成功 ${counts.success || 0} / 失败 ${counts.failed || 0}`;
+  const partial = Number(counts.partial_success || 0);
+  const state = running || pending
+    ? `运行 ${running} / 等待 ${pending}`
+    : [`成功 ${counts.success || 0}`, ...(partial ? [`部分 ${partial}`] : []), `失败 ${counts.failed || 0}`].join(' / ');
   return `${date} · ${state}`;
 }
 function setFilter(value: Filter) {
@@ -244,7 +247,7 @@ onBeforeUnmount(resetProgress);
       <article v-for="{job, tone, result, identity, elapsed, started, completed} in rowSummaries" :key="String(job.id)" class="registration-batch-card" :data-tone="tone">
         <div class="registration-batch-row">
           <div class="registration-batch-identity">
-            <strong>{{ job.email || '准备邮箱中…' }}</strong>
+            <strong>{{ job.email || (job.status === 'pending' ? '等待执行…' : '准备邮箱中…') }}</strong>
             <small>{{ identity }}</small>
           </div>
           <div class="registration-batch-result">

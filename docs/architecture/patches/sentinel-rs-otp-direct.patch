@@ -1,0 +1,27 @@
+diff --git a/src/flow/mod.rs b/src/flow/mod.rs
+index 3f62ecc..407c753 100644
+--- a/src/flow/mod.rs
++++ b/src/flow/mod.rs
+@@ -734,6 +734,13 @@ async fn live_register(
+         http::RetryPolicy::default(),
+         cfg.emulation_profile(),
+     )?;
++    // 取码地址常在内网/专属邮箱服务上，必须直连；注册代理只用于 OpenAI。
++    let email_http = http::Client::build_with_emulation(
++        &cfg.user_agent,
++        None,
++        http::RetryPolicy::default(),
++        cfg.emulation_profile(),
++    )?;
+     // 现领邮箱 API 客户端（静态池模式下不构造：那种模式没有 API 基地址）。
+     let mail = cfg
+         .email_api
+@@ -875,7 +882,7 @@ async fn live_register(
+
+     // 6) 取码（静态池 / API 同一条路径：GET {code_url} + HTML 卡片解析）
+     let code = email::poll_otp_url(
+-        &http,
++        &email_http,
+         &mailbox.code_url,
+         cfg.otp_max_wait_secs,
+         cfg.otp_poll_interval_secs,
