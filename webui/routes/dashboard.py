@@ -31,7 +31,7 @@ from webui import config_editor
 from webui.assets import page_asset_version
 from webui.blueprint import LegacyEndpointBlueprint
 from webui.runtime import WebUIContext
-from webui.display_statistics import DisplayStatisticsCache
+from webui.display_statistics import display_statistics_cache
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +39,7 @@ def create_dashboard_blueprint(context: WebUIContext):
     bp = LegacyEndpointBlueprint("dashboard", __name__)
     logger = context.logger
     _prepared_downloads = context.prepared_downloads
-    statistics = DisplayStatisticsCache(ttl=15)
+    statistics = display_statistics_cache(context.app, ttl=15)
 
     def display_supply():
         from core.email.supply import email_supply_summary
@@ -149,7 +149,18 @@ def create_dashboard_blueprint(context: WebUIContext):
     @bp.get("/api/capabilities")
     def api_capabilities():
         """返回不含密钥的功能可用性及缺失配置原因。"""
-        from core.runtime.capabilities import feature_availability
-        return jsonify(feature_availability())
+        from core.runtime.capabilities import email_source_readiness, feature_availability
+        try:
+            return jsonify(feature_availability(
+                email_supply=display_supply(),
+                email_sources=email_source_readiness(),
+            ))
+        except Exception:
+            logger.exception("读取功能实时资格失败")
+            return jsonify({
+                "ok": False,
+                "error_code": "capabilities_query_failed",
+                "error": "读取功能资格失败，注册资格未确认，请稍后重试",
+            }), 503
 
     return bp

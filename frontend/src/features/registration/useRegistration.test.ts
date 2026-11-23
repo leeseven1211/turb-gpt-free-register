@@ -6,7 +6,7 @@ const makeOwner=(deps:Parameters<typeof useRegistration>[0])=>{const owner=useRe
 afterEach(()=>{owners.splice(0).forEach(owner=>owner.dispose());});
 function apiFixture():RegistrationApi{
   return {
-    metadata:vi.fn(async()=>({sources:[],registration_drivers:[]})),
+    metadata:vi.fn(async()=>({sources:[],registration_drivers:[],capabilities:{features:{register:{enabled:true}}}})),
     summary:vi.fn(async()=>({accounts:4,email_supply:{total:2,available:1,used:1,failed:0}})),
     jobs:vi.fn(async()=>({items:[{id:'9007199254740993'}],total:1})),
     progress:vi.fn(async(id)=>({ok:true,job:{id}})),
@@ -38,9 +38,66 @@ describe('registration owner lifecycle',()=>{
   });
   it('keeps create acceptance receipt separate from the follow-up read',async()=>{
     const api=apiFixture(),notify=vi.fn(),owner=makeOwner({api,visible:true,notify});
+    await owner.ensureMeta();
     await owner.create({count:1,workers:3,email_source:'outlook',debug_enabled:false});
     expect(owner.state.receipt).toEqual({tone:'success',message:'已提交 1 个任务'});
     expect(notify).toHaveBeenCalledWith('已提交 1 个任务');
+    owner.setVisible(false);
+  });
+  it('does not submit before registration eligibility is confirmed',async()=>{
+    const api=apiFixture(),owner=makeOwner({api,visible:true});
+    await expect(owner.create({count:1,workers:3,email_source:'outlook',debug_enabled:false})).rejects.toThrow('注册资格未确认');
+    expect(api.create).not.toHaveBeenCalled();
+    owner.setVisible(false);
+  });
+  it('refreshes on visible re-entry and updates an empty inventory after the ten-second poll',async()=>{
+    vi.useFakeTimers();
+    try{
+      const api=apiFixture(),owner=makeOwner({api,visible:false});
+      vi.mocked(api.metadata)
+        .mockResolvedValueOnce({sources:[],registration_drivers:[],capabilities:{features:{register:{enabled:true}}}})
+        .mockResolvedValue({sources:[{value:'outlook',label:'Outlook',enabled:true}],registration_drivers:[],capabilities:{features:{register:{enabled:true}}}});
+      owner.setVisible(true);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(api.metadata).toHaveBeenCalledTimes(1);
+      expect(owner.state.meta?.sources).toEqual([]);
+      owner.setVisible(false);
+      owner.setVisible(true);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(api.metadata).toHaveBeenCalledTimes(2);
+      expect(owner.state.meta?.sources[0]?.value).toBe('outlook');
+      await vi.advanceTimersByTimeAsync(10000);
+      expect(api.metadata).toHaveBeenCalledTimes(3);
+      owner.setVisible(false);
+    }finally{vi.useRealTimers();}
+  });
+  it('starts the ten-second metadata refresh from the poll deadline when the first response took 100ms',async()=>{
+    vi.useFakeTimers();
+    try{
+      const api=apiFixture(),owner=makeOwner({api,visible:false});
+      vi.mocked(api.metadata)
+        .mockImplementationOnce(()=>new Promise(resolve=>{
+          window.setTimeout(()=>resolve({sources:[],registration_drivers:[],capabilities:{features:{register:{enabled:true}}}}),100);
+        }))
+        .mockResolvedValue({sources:[{value:'outlook',label:'Outlook',enabled:true}],registration_drivers:[],capabilities:{features:{register:{enabled:true}}}});
+      owner.setVisible(true);
+      await vi.advanceTimersByTimeAsync(100);
+      expect(api.metadata).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(9900);
+      expect(api.metadata).toHaveBeenCalledTimes(2);
+      expect(owner.state.meta?.sources[0]?.value).toBe('outlook');
+      owner.setVisible(false);
+    }finally{vi.useRealTimers();}
+  });
+  it('keeps the registration gate closed when a later metadata refresh fails',async()=>{
+    const api=apiFixture(),owner=makeOwner({api,visible:false});
+    owner.setVisible(true);
+    await owner.ensureMeta();
+    vi.mocked(api.metadata).mockRejectedValueOnce(new Error('库存暂时不可用'));
+    await owner.ensureMeta(true);
+    expect(owner.registrationUnavailable.value).toContain('库存暂时不可用');
+    await expect(owner.create({count:1,workers:3,email_source:'outlook',debug_enabled:false})).rejects.toThrow('库存暂时不可用');
+    expect(api.create).not.toHaveBeenCalled();
     owner.setVisible(false);
   });
   it('advances only the latest summary response',async()=>{

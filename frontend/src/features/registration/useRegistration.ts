@@ -7,6 +7,7 @@ import type {RegistrationAction,RegistrationDeps,RegistrationLoadOptions,Registr
 const activeStatuses=['pending','running','stopping'];
 const terminalStatuses=['success','partial_success','failed','stopped','cancelled','interrupted','request_unknown','manual_reconcile','attention_required','password_confirmation_pending','unsupported','deactivated'];
 const retryStatuses=['failed','partial_success','stopped','cancelled','interrupted','request_unknown','manual_reconcile','attention_required'];
+const metadataCacheMs=10000;
 type BatchAction = 'stopBatch' | 'cancelBatch' | 'retryBatch';
 const emptyQuery=():RegistrationQuery=>({page:1,page_size:20,status:'',id:'',email:'',email_source:'',proxy:'',error:'',date_from:'',date_to:''});
 const message=(error:unknown)=>error instanceof Error?error.message:'请求失败';
@@ -21,13 +22,15 @@ export function useRegistration(deps:RegistrationDeps){
   const state=reactive<RegistrationState&{
     query:RegistrationQuery;batchId:string;batchRefreshGeneration:number;statusCounts:Record<string,number>;facets:Record<string,any>;
     creating:boolean;pendingActions:Record<string,boolean>;lastCreate:any;lastAction:any;
-    detail:ReturnType<typeof emptyDetail>;
+    detail:ReturnType<typeof emptyDetail>;metaError:string;
   }>({jobs:[],total:0,batch:null,batches:[],meta:null,summary:null,view:deps.view||'launch',loading:false,error:'',receipt:null,
-    query:emptyQuery(),batchId:'',batchRefreshGeneration:0,statusCounts:{},facets:{},creating:false,pendingActions:{},lastCreate:null,lastAction:null,detail:emptyDetail()});
+    query:emptyQuery(),batchId:'',batchRefreshGeneration:0,statusCounts:{},facets:{},creating:false,pendingActions:{},lastCreate:null,lastAction:null,detail:emptyDetail(),metaError:''});
   const creating=computed(()=>state.creating);
   const registrationUnavailable=computed(()=>{
     const feature=state.meta?.capabilities?.features?.register;
-    return feature?.enabled===false?String(feature.reason||'功能缺少必要配置'):'';
+    if(state.metaError)return state.metaError;
+    if(!state.meta)return state.metaError||'注册资格未确认，请刷新后重试';
+    return feature?.enabled===true?'':String(feature?.reason||'注册资格未确认，请刷新后重试');
   });
   const notify=(text:string)=>deps.notify?.(text);
   let readVersion=0,refreshGeneration=0,summaryVersion=0,metaVersion=0,detailVersion=0;
@@ -147,35 +150,38 @@ export function useRegistration(deps:RegistrationDeps){
     summaryRead={version,promise,controller};return promise;
   }
   function ensureMeta(force=false):Promise<void>{
+    if(metaRead)return metaRead.promise;
     if(force)metadataDirty=true;
     if(!active.value)return Promise.resolve();
-    if(!metadataDirty&&state.meta&&Date.now()-metaAt<30000)return Promise.resolve();
-    if(metaRead&&!force)return metaRead.promise;
-    metaRead?.controller.abort();
+    if(!metadataDirty&&state.meta&&Date.now()-metaAt<metadataCacheMs)return Promise.resolve();
     const version=++metaVersion,controller=new AbortController();
     const promise=(async()=>{
       try{
         const value:any=await api.metadata(controller.signal);
         if(version!==metaVersion||!active.value)return;
-        const caps=value.capabilities?.email_sources||{};
-        state.meta={...value,sources:(value.sources||[]).map((item:any)=>({...item,...(caps[item.value]||{})}))};metaAt=Date.now();metadataDirty=false;
-      }catch(error){if(version===metaVersion&&active.value&&!isAbort(error))state.error=message(error);}
+        state.meta={...value,sources:Array.isArray(value.sources)?value.sources:[]};state.metaError='';metaAt=Date.now();metadataDirty=false;
+      }catch(error){
+        if(version===metaVersion&&active.value&&!isAbort(error)){
+          const detail=message(error);
+          state.metaError=/[\u3400-\u9fff]/.test(detail)?detail:`邮箱来源读取失败，请稍后重试${detail?`（${detail}）`:''}`;
+        }
+      }
       finally{if(version===metaVersion)metaRead=undefined;}
     })();
     metaRead={version,promise,controller};return promise;
   }
-  function startPageReads(){
+  function startPageReads(refreshMeta=false){
     clearPageTimers();
     if(!active.value)return;
-    void ensureMeta();void load({coalesce:true});void loadSummary();
+    void ensureMeta(refreshMeta);void load({coalesce:true});void loadSummary();
     jobsTimer=window.setInterval(()=>{void load({automatic:true});},5000);
-    summaryTimer=window.setInterval(()=>{if(!summaryRead)void loadSummary();},10000);
+    summaryTimer=window.setInterval(()=>{if(!summaryRead)void loadSummary();void ensureMeta(true);},10000);
   }
   function setVisible(value:boolean){
     if(visible.value===value)return;
     visible.value=value;
     if(!value){clearPageTimers();invalidatePageReads();}
-    else startPageReads();
+    else startPageReads(true);
   }
   function setView(value:'launch'|'tasks'){
     if(!['launch','tasks'].includes(value)||state.view===value)return;
@@ -328,7 +334,7 @@ export function useRegistration(deps:RegistrationDeps){
   function visibilityChanged(){
     docVisible.value=!document.hidden;
     if(!docVisible.value){clearPageTimers();invalidatePageReads();invalidateDetail();}
-    else{startPageReads();if(state.detail.id!==null)void refreshDetail();}
+    else{startPageReads(true);if(state.detail.id!==null)void refreshDetail();}
   }
   function dispose(){
     disposed=true;clearPageTimers();invalidatePageReads();invalidateDetail();

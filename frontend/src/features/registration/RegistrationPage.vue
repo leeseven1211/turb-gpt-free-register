@@ -39,15 +39,15 @@ const manualMode=computed(()=>Boolean(state.meta?.manual_mode));
 const confirmingStart = ref(false);
 const filterSourceOptions=computed(()=>{const values=new Map((state.meta?.sources||[]).map(item=>[String(item.value),{value:String(item.value),label:item.label||String(item.value)}]));const facets=state.facets.email_source;for(const item of Array.isArray(facets)?facets:[]){const value=String(typeof item==='object'?item.value:item);if(!values.has(value))values.set(value,{value,label:typeof item==='object'?item.label||value:value});}if(sourceFilter.value&&!values.has(sourceFilter.value))values.set(sourceFilter.value,{value:sourceFilter.value,label:sourceFilter.value});return [...values.values()];});
 const sourceOptions=computed(()=>manualMode.value?[{value:'manual',label:'手动配置邮箱'}]:(state.meta?.sources?.filter(item=>item.enabled===true)||[]));
-const launchBlock=computed(()=>owner.registrationUnavailable.value || (
-  state.meta && !sourceOptions.value.length
+const launchBlock=computed(()=>state.metaError || (state.meta && (
+  owner.registrationUnavailable.value || (!sourceOptions.value.length
     ? '没有可用的邮箱来源。请先导入本地邮箱，再重新选择。'
-    : ''
-));
+    : '')
+)) || '');
 const launchHint=computed(()=>launchBlock.value || (
-  !state.meta ? '正在读取邮箱来源…' :
+  state.metaError || (!state.meta ? '正在读取邮箱来源…' :
   manualMode.value ? '使用手动配置的邮箱来源。' :
-  !source.value ? '请选择本批使用的邮箱来源。' : ''
+  !source.value ? '请选择本批使用的邮箱来源。' : '')
 ));
 const supply=computed(()=>state.summary?.email_supply||{}), supplyValue=(key:string)=>{const value=supply.value[key];return Number.isInteger(value)&&Number(value)>=0?value:(supply.value.status==='error'?'读取失败':'未知');}, supplyHint=computed(()=>`仅统计本地库存；用完后请手动导入；邮箱由 Email Butler 等邮箱服务准备${supply.value.reason?`；${supply.value.reason}`:''}`);
 const inventoryMetrics=computed(()=>[
@@ -128,6 +128,7 @@ onMounted(()=>{void owner.ensureMeta();});
           </div>
           <p class="registration-hint">
             <span v-if="launchHint" id="registration-launch-hint" :class="{'registration-warning':launchBlock}" role="status">{{ launchHint }} </span>
+            <button v-if="state.metaError" type="button" class="ui-link" data-registration-source-retry @click="owner.ensureMeta(true)">重试</button>
             <span id="registrationEmailSupplyHint">{{ supplyHint }}</span>
           </p>
         </form>
