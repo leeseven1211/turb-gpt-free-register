@@ -8,23 +8,33 @@ const props=defineProps<{column?:ExtractFilterKey;values:Record<ExtractFilterKey
 const emit=defineEmits<{'update:open':[boolean];change:[ExtractFilterKey,string]}>();
 const selected=ref<ExtractFilterKey>('query'),current=computed(()=>props.column||selected.value),value=computed(()=>props.values[current.value]);
 function change(value:string){emit('change',current.value,value);}
+function setSelected(value:ExtractFilterKey){selected.value=value;}
+const options=computed<{value:string;label:string;count?:number}[]>(()=>{
+ if(current.value==='provider')return[{value:'',label:'全部平台'},...props.providers.map(provider=>({value:provider.id,label:provider.label||provider.id}))];
+ if(current.value==='mode')return[{value:'',label:'全部模式'},...['extract_only','manual_payment','auto_payment'].map(mode=>({value:mode,label:modeLabel(mode)}))];
+ if(current.value==='status')return statusOptions.filter(([key])=>{const count=props.counts?.[key||'all'];return count===undefined||count>0||key===value.value;}).map(([key,text])=>({value:key,label:text,count:props.counts?.[key||'all']}));
+ if(current.value==='batch')return[{value:'',label:'全部任务'},...(value.value&&!props.batches.some(item=>String(item.batch_id)===value.value)?[{value:value.value,label:`批次 #${value.value}`}]:[]),...props.batches.map(batch=>({value:String(batch.batch_id),label:batch.title||`批次 #${batch.batch_id}`}))];
+ return[];
+});
 </script>
 <template>
  <FilterPopover :label="column?labels[column]:'提链任务'" :trigger-label="column?labels[column]:'筛选'" :active="column?Boolean(values[column]):Object.values(values).some(Boolean)" :summary="value" :open="open" @update:open="emit('update:open',$event)">
   <div class="extract-filter-fields">
-   <label v-if="!column">筛选列<select v-model="selected" aria-label="选择提链任务筛选列"><template v-for="(label,key) in labels" :key="key"><option v-if="key!=='batch'||!omitBatch" :value="key">{{label}}</option></template></select></label>
-   <label>{{labels[current]}}
+   <div v-if="!column" class="extract-filter-field">筛选列<div class="list-filter-options" role="radiogroup" aria-label="选择提链任务筛选列"><label v-for="(label,key) in labels" v-show="key!=='batch'||!omitBatch" :key="key" class="list-filter-option"><input type="radio" :name="`extract-column-${label}`" :value="key" :checked="selected===key" @change="setSelected(key)"><span>{{ label }}</span></label></div></div>
+   <div class="extract-filter-field">{{ labels[current] }}
     <input v-if="current==='query'" type="search" :value="value" aria-label="筛选账号值" placeholder="邮箱或任务号" @change="change(($event.target as HTMLInputElement).value)" @keydown.enter="emit('update:open',false)">
-    <select v-else-if="current==='provider'" :value="value" aria-label="筛选平台值" @change="change(($event.target as HTMLSelectElement).value)"><option value="">全部平台</option><option v-for="provider in providers" :key="provider.id" :value="provider.id">{{provider.label||provider.id}}</option></select>
-    <select v-else-if="current==='mode'" :value="value" aria-label="筛选模式值" @change="change(($event.target as HTMLSelectElement).value)"><option value="">全部模式</option><option v-for="mode in ['extract_only','manual_payment','auto_payment']" :key="mode" :value="mode">{{modeLabel(mode)}}</option></select>
-    <select v-else-if="current==='status'" :value="value" aria-label="筛选提链状态值" @change="change(($event.target as HTMLSelectElement).value)"><option v-for="option in statusOptions" :key="option[0]" :value="option[0]">{{option[1]}}{{counts&&counts[option[0]||'all']!==undefined?` (${counts[option[0]||'all']})`:''}}</option></select>
-    <select v-else :value="value" :disabled="batchBusy" aria-label="筛选批次值" @change="change(($event.target as HTMLSelectElement).value)"><option value="">全部任务</option><option v-if="value&&!batches.some(item=>String(item.batch_id)===value)" :value="value">批次 #{{value}}</option><option v-for="batch in batches" :key="String(batch.batch_id)" :value="String(batch.batch_id)">{{batch.title||`批次 #${batch.batch_id}`}}</option></select>
-   </label>
+    <div v-else class="list-filter-options" role="radiogroup" :aria-label="`筛选${labels[current]}值`">
+     <label v-for="option in options" :key="option.value" class="list-filter-option" :data-extract-option="option.value" :class="{'is-disabled':batchBusy&&current==='batch'}">
+      <input type="radio" :name="`extract-${current}`" :value="option.value" :checked="value===option.value" :disabled="batchBusy&&current==='batch'" @change="change(option.value)">
+      <span>{{ option.label }}</span><small v-if="option.count!==undefined">{{ option.count }}</small>
+     </label>
+    </div>
+   </div>
    <slot v-if="current==='batch'"/>
    <div class="list-filter-actions"><button type="button" @click="change('')">清除此列</button><button type="button" class="list-filter-primary" @click="emit('update:open',false)">完成</button></div>
   </div>
  </FilterPopover>
 </template>
 <style scoped>
-.extract-filter-fields,.extract-filter-fields label{display:flex;flex-direction:column;gap:8px}.extract-filter-fields{gap:12px}
+.extract-filter-fields,.extract-filter-field{display:flex;flex-direction:column;gap:8px}.extract-filter-fields{gap:12px}.extract-filter-field{font-weight:500}.list-filter-option.is-disabled{opacity:.55}
 </style>
