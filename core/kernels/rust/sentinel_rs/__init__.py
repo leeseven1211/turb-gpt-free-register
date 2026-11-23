@@ -203,14 +203,22 @@ def _run_sentinel_rs_flow(
                 proxy=proxy, email_source=source,
             )
 
+        # 内核原窗口是 300s；配置更宽时跟随配置，至少不回退到这个下限。
+        try:
+            from config import email as _email_cfg
+
+            otp_wait = max(int(getattr(_email_cfg, "OTP_MAX_WAIT", 300) or 300), 300)
+        except Exception:
+            otp_wait = 300
+        protocol_hooks = {
+            "persist_password": persist_password,
+            "confirm_password": confirm_password,
+            "email_source": source,
+            "otp_wait_seconds": otp_wait,
+        } if protocol_enabled() else None
         account = run_registration(
             request, on_progress=on_progress, check_cancel=check_cancel,
-            protocol_hooks={
-                "persist_password": persist_password,
-                "confirm_password": confirm_password,
-                "email_source": source,
-            }
-            if protocol_enabled() else None,
+            protocol_hooks=protocol_hooks,
         )
     except BaseException as exc:
         # 内核可能已经建号（pending_otp）；超时、取消或异常退出都要先保住密码。

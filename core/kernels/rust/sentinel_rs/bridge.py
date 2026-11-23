@@ -229,6 +229,31 @@ def protocol_enabled() -> bool:
     return os.getenv("SENTINEL_PROTOCOL", "").strip() == "1"
 
 
+_SENSITIVE_PROTOCOL_FIELDS = ("password", "code", "access_token", "cookies", "totp_secret")
+
+
+def _protocol_line_for_diagnostics(line: str) -> str:
+    """协议消息只保留类型；密码/验证码/凭据绝不能进入诊断或任务错误。"""
+    text = str(line or "").strip()
+    if not text.startswith("{"):
+        return line
+    try:
+        message = json.loads(text)
+    except ValueError:
+        return "<protocol-line>"
+    if not isinstance(message, dict):
+        return "<protocol-line>"
+    kind = str(message.get("type") or "unknown")
+    data = message.get("data")
+    fields = []
+    if isinstance(data, dict):
+        fields = [key for key in data if key in _SENSITIVE_PROTOCOL_FIELDS]
+    label = f"<protocol:{kind}>"
+    if fields:
+        label = f"<protocol:{kind}:{','.join(fields)}-redacted>"
+    return label
+
+
 def _protocol_send(stream, message: dict) -> None:
     stream.write(json.dumps(message, ensure_ascii=False, separators=(",", ":")) + "\n")
     stream.flush()
@@ -313,7 +338,7 @@ def run_registration_protocol(
         assert process.stdout is not None
         for raw in process.stdout:
             line = raw.rstrip("\n")
-            raw_lines.append(line)
+            raw_lines.append(_protocol_line_for_diagnostics(line))
             if len(raw_lines) > 400:
                 del raw_lines[:100]
             text = line.strip()

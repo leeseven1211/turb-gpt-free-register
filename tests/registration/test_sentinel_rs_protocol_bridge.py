@@ -118,8 +118,11 @@ def test_protocol_bridge_acks_password_before_registration(tmp_path, monkeypatch
 
 def test_protocol_bridge_stops_when_password_is_not_persisted(tmp_path, monkeypatch):
     monkeypatch.setenv("SENTINEL_PROTOCOL", "1")
-    with pytest.raises(SentinelRsFailed):
+    with pytest.raises(SentinelRsFailed) as caught:
         run_registration_protocol(
             _request(tmp_path),
             hooks={"persist_password": lambda email, password: {"persisted": False}},
         )
+    # 协议消息里的密码不能被写进诊断尾部。
+    assert "pw-from-kernel" not in str(caught.value)
+    assert "pw-from-kernel" not in str(caught.value.diagnostics)
