@@ -51,6 +51,7 @@ describe('dashboard Vue owner',()=>{
   const meter=wrapper.get('[data-overview-card="accounts"] .ov-meter');
   expect(meter.get('strong').text()).toBe(`${ready}%`);
   expect(meter.get('.ov-bar > i').attributes('style')).toContain(`width: ${ready}%`);
+  expect(wrapper.get('[data-overview-card="codex"] .ov-foot').text()).toBe(`账号 Codex 就绪 ${ready} · 覆盖 ${ready}% 活跃账号`);
   const plus=wrapper.get('[data-overview-card="plans"]').findAll('.ov-bars li').find(row=>row.text().includes('Plus'))!;
   expect(plus.text()).toContain('1 · 1%');
  });

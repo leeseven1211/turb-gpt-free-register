@@ -368,7 +368,7 @@ var te = { class: "ov-section-head" }, ne = { class: "ov-section-actions" }, re 
 				onClick: (t) => $(e.tab)
 			}, [d("span", de, [n[15] ||= d("i", { "aria-hidden": "true" }, null, -1), y(u(e.label), 1)]), d("strong", null, u(e.value), 1)], 10, ue))), 128))]), d("div", fe, [
 				d("article", pe, [
-					d("header", me, [n[17] ||= o("<div class=\"ov-card-title\" data-v-2c95205f><span class=\"ov-icon\" data-v-2c95205f><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\" data-v-2c95205f><rect x=\"3\" y=\"5\" width=\"18\" height=\"14\" rx=\"2\" data-v-2c95205f></rect><path d=\"m3 7 9 6 9-6\" data-v-2c95205f></path></svg></span><div data-v-2c95205f><h3 data-v-2c95205f>邮箱池</h3><p data-v-2c95205f>本地库存与来源</p></div></div>", 1), d("button", {
+					d("header", me, [n[17] ||= o("<div class=\"ov-card-title\" data-v-481e7e08><span class=\"ov-icon\" data-v-481e7e08><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\" data-v-481e7e08><rect x=\"3\" y=\"5\" width=\"18\" height=\"14\" rx=\"2\" data-v-481e7e08></rect><path d=\"m3 7 9 6 9-6\" data-v-481e7e08></path></svg></span><div data-v-481e7e08><h3 data-v-481e7e08>邮箱池</h3><p data-v-481e7e08>本地库存与来源</p></div></div>", 1), d("button", {
 						type: "button",
 						class: "ov-link",
 						"data-overview-action": "email",
@@ -394,7 +394,7 @@ var te = { class: "ov-section-head" }, ne = { class: "ov-section-actions" }, re 
 					P.value ? (t(), v("p", be, "另有 " + u(P.value) + " 个来源暂无库存 · 仅统计本地库存", 1)) : (t(), v("p", xe, "仅统计本地库存，用完后需手动导入"))
 				]),
 				d("article", Se, [
-					d("header", Ce, [n[23] ||= o("<div class=\"ov-card-title\" data-v-2c95205f><span class=\"ov-icon\" data-v-2c95205f><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\" data-v-2c95205f><path d=\"M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2\" data-v-2c95205f></path><circle cx=\"9\" cy=\"7\" r=\"4\" data-v-2c95205f></circle><path d=\"M22 21v-2a4 4 0 0 0-3-3.9\" data-v-2c95205f></path></svg></span><div data-v-2c95205f><h3 data-v-2c95205f>账号</h3><p data-v-2c95205f>账号资产</p></div></div>", 1), d("button", {
+					d("header", Ce, [n[23] ||= o("<div class=\"ov-card-title\" data-v-481e7e08><span class=\"ov-icon\" data-v-481e7e08><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\" data-v-481e7e08><path d=\"M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2\" data-v-481e7e08></path><circle cx=\"9\" cy=\"7\" r=\"4\" data-v-481e7e08></circle><path d=\"M22 21v-2a4 4 0 0 0-3-3.9\" data-v-481e7e08></path></svg></span><div data-v-481e7e08><h3 data-v-481e7e08>账号</h3><p data-v-481e7e08>账号资产</p></div></div>", 1), d("button", {
 						type: "button",
 						class: "ov-link",
 						"data-overview-action": "accounts",
@@ -420,7 +420,7 @@ var te = { class: "ov-section-head" }, ne = { class: "ov-section-actions" }, re 
 					])
 				]),
 				d("article", Ae, [
-					d("header", je, [n[31] ||= o("<div class=\"ov-card-title\" data-v-2c95205f><span class=\"ov-icon\" data-v-2c95205f><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\" data-v-2c95205f><rect x=\"3\" y=\"11\" width=\"18\" height=\"10\" rx=\"2\" data-v-2c95205f></rect><path d=\"M7 11V7a5 5 0 0 1 10 0v4\" data-v-2c95205f></path></svg></span><div data-v-2c95205f><h3 data-v-2c95205f>Codex</h3><p data-v-2c95205f>授权凭证</p></div></div>", 1), d("button", {
+					d("header", je, [n[31] ||= o("<div class=\"ov-card-title\" data-v-481e7e08><span class=\"ov-icon\" data-v-481e7e08><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\" data-v-481e7e08><rect x=\"3\" y=\"11\" width=\"18\" height=\"10\" rx=\"2\" data-v-481e7e08></rect><path d=\"M7 11V7a5 5 0 0 1 10 0v4\" data-v-481e7e08></path></svg></span><div data-v-481e7e08><h3 data-v-481e7e08>Codex</h3><p data-v-481e7e08>授权凭证</p></div></div>", 1), d("button", {
 						type: "button",
 						class: "ov-link",
 						"data-overview-action": "codex",
@@ -441,10 +441,10 @@ var te = { class: "ov-section-head" }, ne = { class: "ov-section-actions" }, re 
 						d("div", null, [n[35] ||= d("span", null, "待导出", -1), d("strong", null, u(D(z.value.pending)), 1)]),
 						d("div", null, [n[36] ||= d("span", null, "账号就绪", -1), d("strong", null, u(D(A.value.codex_ready)), 1)])
 					]),
-					d("p", Le, "账号 Codex 就绪 " + u(D(A.value.codex_ready)) + " · 覆盖 " + u(k(z.value.total, A.value.active)) + "% 活跃账号", 1)
+					d("p", Le, "账号 Codex 就绪 " + u(D(A.value.codex_ready)) + " · 覆盖 " + u(k(A.value.codex_ready, A.value.active)) + "% 活跃账号", 1)
 				]),
 				d("article", Re, [
-					d("header", ze, [n[38] ||= o("<div class=\"ov-card-title\" data-v-2c95205f><span class=\"ov-icon\" data-v-2c95205f><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\" data-v-2c95205f><path d=\"m12 3 1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9L12 3Z\" data-v-2c95205f></path><path d=\"M19 15.5 20 18l2.5 1-2.5 1L19 22l-1-2-2.5-1 2.5-1 1-2.5Z\" data-v-2c95205f></path></svg></span><div data-v-2c95205f><h3 data-v-2c95205f>提炼</h3><p data-v-2c95205f>提链工作台</p></div></div>", 1), d("button", {
+					d("header", ze, [n[38] ||= o("<div class=\"ov-card-title\" data-v-481e7e08><span class=\"ov-icon\" data-v-481e7e08><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\" data-v-481e7e08><path d=\"m12 3 1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9L12 3Z\" data-v-481e7e08></path><path d=\"M19 15.5 20 18l2.5 1-2.5 1L19 22l-1-2-2.5-1 2.5-1 1-2.5Z\" data-v-481e7e08></path></svg></span><div data-v-481e7e08><h3 data-v-481e7e08>提炼</h3><p data-v-481e7e08>提链工作台</p></div></div>", 1), d("button", {
 						type: "button",
 						class: "ov-link",
 						"data-overview-action": "extract",
@@ -467,7 +467,7 @@ var te = { class: "ov-section-head" }, ne = { class: "ov-section-actions" }, re 
 					Z.value ? (t(), v("p", Ue, "今日还没有提炼任务，进入工作台即可发起。")) : a("", !0),
 					d("p", We, u(Z.value ? "提链工作台空闲" : `累计 ${D(Y.value.all)} 个提炼任务`), 1)
 				]),
-				d("article", Ge, [d("header", Ke, [n[45] ||= o("<div class=\"ov-card-title\" data-v-2c95205f><span class=\"ov-icon\" data-v-2c95205f><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\" data-v-2c95205f><path d=\"M12 2 2 7l10 5 10-5-10-5Z\" data-v-2c95205f></path><path d=\"m2 12 10 5 10-5\" data-v-2c95205f></path><path d=\"m2 17 10 5 10-5\" data-v-2c95205f></path></svg></span><div data-v-2c95205f><h3 data-v-2c95205f>套餐</h3><p data-v-2c95205f>账号套餐分布</p></div></div>", 1), d("button", {
+				d("article", Ge, [d("header", Ke, [n[45] ||= o("<div class=\"ov-card-title\" data-v-481e7e08><span class=\"ov-icon\" data-v-481e7e08><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\" data-v-481e7e08><path d=\"M12 2 2 7l10 5 10-5-10-5Z\" data-v-481e7e08></path><path d=\"m2 12 10 5 10-5\" data-v-481e7e08></path><path d=\"m2 17 10 5 10-5\" data-v-481e7e08></path></svg></span><div data-v-481e7e08><h3 data-v-481e7e08>套餐</h3><p data-v-481e7e08>账号套餐分布</p></div></div>", 1), d("button", {
 					type: "button",
 					class: "ov-link",
 					"data-overview-action": "plans",
@@ -477,7 +477,7 @@ var te = { class: "ov-section-head" }, ne = { class: "ov-section-actions" }, re 
 					"aria-hidden": "true"
 				}, [d("path", { d: "m9 6 6 6-6 6" })], -1)]])]), V.value.length ? (t(), v(s, { key: 0 }, [d("div", qe, [d("strong", null, u(D(V.value.length)), 1), d("span", null, "种套餐 · " + u(D(H.value)) + " 个账号", 1)]), d("ul", Je, [(t(!0), v(s, null, r(V.value, (e) => (t(), v("li", { key: e.key }, [d("div", Ye, [d("span", null, u(e.label), 1), d("small", null, u(D(e.count)) + " · " + u(k(e.count, H.value)) + "%", 1)]), d("div", Xe, [d("i", { style: c({ width: Math.max(4, Math.round(e.count / wt.value * 100)) + "%" }) }, null, 4)])]))), 128))])], 64)) : (t(), v("p", Ze, "还没有可用的套餐数据。"))]),
 				d("article", Qe, [
-					d("header", $e, [n[47] ||= o("<div class=\"ov-card-title\" data-v-2c95205f><span class=\"ov-icon\" data-v-2c95205f><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\" data-v-2c95205f><circle cx=\"12\" cy=\"12\" r=\"9\" data-v-2c95205f></circle><path d=\"M3 12h18\" data-v-2c95205f></path><path d=\"M12 3c2.4 2.5 3.7 5.5 3.7 9s-1.3 6.5-3.7 9c-2.4-2.5-3.7-5.5-3.7-9S9.6 5.5 12 3Z\" data-v-2c95205f></path></svg></span><div data-v-2c95205f><h3 data-v-2c95205f>代理</h3><p data-v-2c95205f>网络出口</p></div></div>", 1), d("button", {
+					d("header", $e, [n[47] ||= o("<div class=\"ov-card-title\" data-v-481e7e08><span class=\"ov-icon\" data-v-481e7e08><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\" data-v-481e7e08><circle cx=\"12\" cy=\"12\" r=\"9\" data-v-481e7e08></circle><path d=\"M3 12h18\" data-v-481e7e08></path><path d=\"M12 3c2.4 2.5 3.7 5.5 3.7 9s-1.3 6.5-3.7 9c-2.4-2.5-3.7-5.5-3.7-9S9.6 5.5 12 3Z\" data-v-481e7e08></path></svg></span><div data-v-481e7e08><h3 data-v-481e7e08>代理</h3><p data-v-481e7e08>网络出口</p></div></div>", 1), d("button", {
 						type: "button",
 						class: "ov-link",
 						"data-overview-action": "proxy",
@@ -499,7 +499,7 @@ var te = { class: "ov-section-head" }, ne = { class: "ov-section-actions" }, re 
 					J.value.length ? (t(), v("p", it, [y(u(kt.value ? "注册代理未启用，已有租约仍保留" : `代理平台 ${g(T)(q.value.platform)}`), 1), Ot.value ? (t(), v(s, { key: 0 }, [y(" · 另有 " + u(Ot.value) + " 个活跃出口", 1)], 64)) : a("", !0)])) : a("", !0)
 				]),
 				d("article", at, [
-					d("header", ot, [n[51] ||= o("<div class=\"ov-card-title\" data-v-2c95205f><span class=\"ov-icon\" data-v-2c95205f><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\" data-v-2c95205f><path d=\"M9 5h11\" data-v-2c95205f></path><path d=\"M9 12h11\" data-v-2c95205f></path><path d=\"M9 19h11\" data-v-2c95205f></path><circle cx=\"4\" cy=\"5\" r=\"1\" data-v-2c95205f></circle><circle cx=\"4\" cy=\"12\" r=\"1\" data-v-2c95205f></circle><circle cx=\"4\" cy=\"19\" r=\"1\" data-v-2c95205f></circle></svg></span><div data-v-2c95205f><h3 data-v-2c95205f>任务</h3><p data-v-2c95205f>注册流水线与队列</p></div></div>", 1), d("button", {
+					d("header", ot, [n[51] ||= o("<div class=\"ov-card-title\" data-v-481e7e08><span class=\"ov-icon\" data-v-481e7e08><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\" data-v-481e7e08><path d=\"M9 5h11\" data-v-481e7e08></path><path d=\"M9 12h11\" data-v-481e7e08></path><path d=\"M9 19h11\" data-v-481e7e08></path><circle cx=\"4\" cy=\"5\" r=\"1\" data-v-481e7e08></circle><circle cx=\"4\" cy=\"12\" r=\"1\" data-v-481e7e08></circle><circle cx=\"4\" cy=\"19\" r=\"1\" data-v-481e7e08></circle></svg></span><div data-v-481e7e08><h3 data-v-481e7e08>任务</h3><p data-v-481e7e08>注册流水线与队列</p></div></div>", 1), d("button", {
 						type: "button",
 						class: "ov-link",
 						"data-overview-action": "jobs",
@@ -536,7 +536,7 @@ var te = { class: "ov-section-head" }, ne = { class: "ov-section-actions" }, re 
 			])], 64)) : a("", !0)
 		], 2));
 	}
-}), [["__scopeId", "data-v-2c95205f"]]);
+}), [["__scopeId", "data-v-481e7e08"]]);
 // src/api/dashboard.ts
 async function D(e, t) {
 	if (!t) return e;

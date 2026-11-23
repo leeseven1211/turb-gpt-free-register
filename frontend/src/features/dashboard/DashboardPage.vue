@@ -210,7 +210,7 @@ defineExpose({
       <div><span>待导出</span><strong>{{fmt(codex.pending)}}</strong></div>
       <div><span>账号就绪</span><strong>{{fmt(accounts.codex_ready)}}</strong></div>
      </div>
-     <p class="ov-foot">账号 Codex 就绪 {{fmt(accounts.codex_ready)}} · 覆盖 {{pct(codex.total,accounts.active)}}% 活跃账号</p>
+     <p class="ov-foot">账号 Codex 就绪 {{fmt(accounts.codex_ready)}} · 覆盖 {{pct(accounts.codex_ready,accounts.active)}}% 活跃账号</p>
     </article>
 
     <article class="ov-card ov-card--extract" data-overview-card="extract" style="--accent:#d97706;--accent-soft:#fdf3e3">
