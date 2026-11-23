@@ -415,8 +415,8 @@ def create_jobs_blueprint(context: WebUIContext):
         if not isinstance(data, dict):
             return jsonify({"ok": False, "error": "请求体必须是对象"}), 400
         registration_driver = data.get("registration_driver") if "registration_driver" in data else None
-        if "registration_driver" in data and registration_driver != "roxy":
-            return jsonify({"ok": False, "error": "registration_driver 仅支持 roxy"}), 400
+        if "registration_driver" in data and registration_driver not in {"roxy", "protocol_oss_2"}:
+            return jsonify({"ok": False, "error": "registration_driver 仅支持 roxy 或 protocol_oss_2"}), 400
         if "debug_enabled" in data and type(data["debug_enabled"]) is not bool:
             return jsonify({"ok": False, "error": "debug_enabled 必须是布尔值"}), 400
         proxy_country = None

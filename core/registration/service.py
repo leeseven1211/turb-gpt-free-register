@@ -3802,12 +3802,6 @@ def _build_retry_info(
         return info
 
     if private_resume:
-        if _resume_driver_unsupported(job):
-            info.update({
-                "display_status": "failed",
-                "retry_reason": "已保存原密码，但 Rust 内核不支持原身份续跑；需用该密码人工完成邮箱验证",
-            })
-            return info
         info.update({
             "display_status": "failed",
             "retryable": True,
@@ -3844,12 +3838,6 @@ def _build_retry_info(
         info["retry_reason"] = "待验证账号缺少已保存密码，不能续跑"
         return info
     if account and pending_password:
-        if _resume_driver_unsupported(job):
-            info.update({
-                "display_status": "failed",
-                "retry_reason": "已保存原密码，但 Rust 内核不支持原身份续跑；需用该密码人工完成邮箱验证",
-            })
-            return info
         if not resume_root or not _roxy_resume_facts_match(
             job, resume_root, account, attempt, root_id=root_id,
         ):
@@ -3859,8 +3847,12 @@ def _build_retry_info(
             "display_status": "failed",
             "retryable": True,
             "retry_action": "registration_resume",
-            "retry_label": "继续邮箱验证",
-            "retry_reason": "注册尚未完成；复用原邮箱和已保存密码继续同一账号验证",
+            "retry_label": "继续注册（协议内核）" if _resume_driver_unsupported(job) else "继续邮箱验证",
+            "retry_reason": (
+                "复用已保存密码，由协议内核继续邮箱验证（Rust 内核无续跑入口）"
+                if _resume_driver_unsupported(job)
+                else "注册尚未完成；复用原邮箱和已保存密码继续同一账号验证"
+            ),
             "next_actions": [{
                 "action": "registration_resume",
                 "reason": "同一 Attempt 继续完成邮箱验证",
@@ -4174,8 +4166,8 @@ def retry_job(
             workers = validate_registration_workers(workers)
         except ValueError as exc:
             return {"ok": False, "error": str(exc), "status": 400}
-    if registration_driver is not None and registration_driver != "roxy":
-        return {"ok": False, "error": "单任务驱动覆盖仅支持 roxy", "status": 400}
+    if registration_driver is not None and registration_driver not in {"roxy", "protocol_oss_2"}:
+        return {"ok": False, "error": "单任务驱动覆盖仅支持 roxy 或 protocol_oss_2", "status": 400}
     if debug_enabled is not None and type(debug_enabled) is not bool:
         return {"ok": False, "error": "debug_enabled 必须是布尔值", "status": 400}
     retry_country = None
@@ -4336,6 +4328,14 @@ def retry_job(
         retry_snapshot["registration_driver"] = "roxy"
         if action == "twofa":
             retry_snapshot["twofa_driver"] = "browser"
+    elif registration_driver == "protocol_oss_2":
+        if action != "registration_resume":
+            return {"ok": False, "error": "protocol_oss_2 覆盖仅支持继续注册", "status": 409}
+        retry_snapshot["registration_driver"] = "protocol_oss_2"
+    elif action == "registration_resume" and retry_snapshot.get("registration_driver") == "sentinel_rs":
+        # Rust 内核没有续跑入口：复用已保存密码，交给支持原身份续跑的协议内核。
+        retry_snapshot["registration_driver"] = "protocol_oss_2"
+        logger.info("[Job %s] 续跑驱动自动切换：sentinel_rs -> protocol_oss_2", job_id)
     if retry_country is not None:
         retry_snapshot["proxy_country"] = retry_country
         retry_snapshot["retry_proxy_country_override"] = retry_country

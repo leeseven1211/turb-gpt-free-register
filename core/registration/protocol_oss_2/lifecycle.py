@@ -336,6 +336,24 @@ def run_protocol_oss_2_lifecycle(
             existing_totp_secret=existing_totp_secret,
             options=options,
         )
+        if existing_password and flow_result.get("password_validated") is not True:
+            # 续跑场景：密码在本轮之前已被 user/register 接受并持久化为 confirmed，
+            # 本轮 OTP 通过后不应再把同一密码降级成“未确认”。
+            try:
+                from core.registration.service import registration_fact_context
+                from core.storage import registration as registration_store
+
+                attempt_id = registration_fact_context().get("attempt_id")
+                if attempt_id:
+                    private = registration_store.get_private_resume_context(
+                        int(attempt_id), email=email,
+                    )
+                    if (str(private.get("password") or "") == str(existing_password)
+                            and str(private.get("password_state") or "") == "confirmed"):
+                        flow_result["password_validated"] = True
+            except Exception:
+                logger.exception("[Job] 续跑密码确认状态读取失败")
+
         access_token = str(flow_result["access_token"])
         session_info = dict(flow_result["session_info"])
         report_job_progress("token", "running", f"{_label} 正在写入账号与登录态")
