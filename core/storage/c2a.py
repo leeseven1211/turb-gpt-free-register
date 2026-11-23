@@ -15,6 +15,7 @@ _FIELDS = (
     "stage", "email", "source_generation", "refresh_key", "refresh_workers",
     "selection_id", "batch_id", "round_id", "refresh_task_id", "refresh_run_id",
     "next_attempt_at", "last_code", "attempt_count", "targets",
+    "refresh_failure_count", "refresh_observed_run_id",
 )
 _TARGET_FIELDS = ("state", "key", "task_id", "run_id", "observed_run_id", "next_attempt_at", "last_code", "token_generation")
 

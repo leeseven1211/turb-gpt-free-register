@@ -37,11 +37,15 @@ it('opens C2A monitor settings from service integrations and submits a check wit
  expect(wrapper.get('[data-key="C2A_MONITOR_ENABLED"]').element).toHaveProperty('checked',false);
  expect(wrapper.get('[data-key="C2A_MONITOR_MAX_PER_CYCLE"]').element).toHaveProperty('value','500');
  await wrapper.get('[data-key="C2A_API_BASE"]').setValue('draft-base');
- request.mockResolvedValueOnce({ok:true,monitor:{enabled:false,interval_seconds:300,max_per_cycle:500,state_available:true,repair_stages:{}}} as never);
+ request.mockResolvedValueOnce({ok:true,monitor:{
+  enabled:false,interval_seconds:300,max_per_cycle:500,state_available:true,
+  repair_stages:{refresh_retry:1,refresh_exhausted:2},
+ }} as never);
  await tool.findAll('button').find(button=>button.text()==='查看状态')!.trigger('click');
  await flushPromises();
  expect(request).toHaveBeenLastCalledWith('/api/c2a/automation',expect.objectContaining({method:'GET'}));
  expect(tool.get('[role="status"]').text()).toContain('已关闭');
+ expect(tool.get('[role="status"]').text()).toContain('刷新冷却 1，刷新失败已跳过 2');
  request.mockResolvedValueOnce({ok:true,accepted:true,task_id:'101',run_id:'202'} as never);
  await tool.get('[data-config-action="check-c2a"]').trigger('click');
  await flushPromises();
