@@ -3710,6 +3710,16 @@ def _pre_account_submission_retry_reason(attempt: dict | None) -> str:
     return "缺少可核验的原邮箱或注册 Attempt，无法重跑原任务"
 
 
+def _resume_driver_unsupported(job: dict) -> bool:
+    """Rust 内核不接受已保存密码续跑；不能把入口指向必然失败的动作。"""
+    snapshot = job.get("config_snapshot")
+    if not isinstance(snapshot, dict):
+        data = job.get("data")
+        snapshot = data.get("config_snapshot") if isinstance(data, dict) else {}
+    driver = str((snapshot or {}).get("registration_driver") or "").strip().lower()
+    return driver == "sentinel_rs"
+
+
 def _build_retry_info(
     job: dict,
     *,
@@ -3792,6 +3802,12 @@ def _build_retry_info(
         return info
 
     if private_resume:
+        if _resume_driver_unsupported(job):
+            info.update({
+                "display_status": "failed",
+                "retry_reason": "已保存原密码，但 Rust 内核不支持原身份续跑；需用该密码人工完成邮箱验证",
+            })
+            return info
         info.update({
             "display_status": "failed",
             "retryable": True,
@@ -3828,6 +3844,12 @@ def _build_retry_info(
         info["retry_reason"] = "待验证账号缺少已保存密码，不能续跑"
         return info
     if account and pending_password:
+        if _resume_driver_unsupported(job):
+            info.update({
+                "display_status": "failed",
+                "retry_reason": "已保存原密码，但 Rust 内核不支持原身份续跑；需用该密码人工完成邮箱验证",
+            })
+            return info
         if not resume_root or not _roxy_resume_facts_match(
             job, resume_root, account, attempt, root_id=root_id,
         ):

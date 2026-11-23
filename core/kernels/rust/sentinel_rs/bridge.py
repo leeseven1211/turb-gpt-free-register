@@ -183,25 +183,43 @@ def _write_email_pool(request: BridgeRequest) -> Path:
     return path
 
 
-def _read_account(db_path: Path, email: str) -> BridgeAccount | None:
-    con = sqlite3.connect(str(db_path), timeout=10)
-    try:
-        con.row_factory = sqlite3.Row
-        row = con.execute(
-            "SELECT id, email, password, access_token, totp_secret, cookies, status "
-            "FROM accounts WHERE lower(email) = lower(?) ORDER BY id DESC LIMIT 1",
-            (email,),
-        ).fetchone()
-    finally:
-        con.close()
-    if row is None:
-        return None
+def _account_from_row(row: sqlite3.Row) -> BridgeAccount:
     return BridgeAccount(
         email=str(row["email"] or ""), password=str(row["password"] or ""),
         access_token=str(row["access_token"] or ""), totp_secret=str(row["totp_secret"] or ""),
         cookies=str(row["cookies"] or ""), status=str(row["status"] or ""),
         account_id=int(row["id"]) if row["id"] is not None else None,
     )
+
+
+def read_accounts(db_path: Path) -> list[BridgeAccount]:
+    """读取内核临时库里的全部账号行；失败路径也用它保住已生成的密码。"""
+    path = Path(db_path)
+    if not path.is_file():
+        return []
+    try:
+        con = sqlite3.connect(str(path), timeout=5)
+    except sqlite3.Error:
+        return []
+    try:
+        con.row_factory = sqlite3.Row
+        rows = con.execute(
+            "SELECT id, email, password, access_token, totp_secret, cookies, status "
+            "FROM accounts ORDER BY id",
+        ).fetchall()
+    except sqlite3.Error:
+        return []
+    finally:
+        con.close()
+    return [_account_from_row(row) for row in rows]
+
+
+def _read_account(db_path: Path, email: str) -> BridgeAccount | None:
+    matched = [
+        account for account in read_accounts(db_path)
+        if account.email.strip().lower() == str(email or "").strip().lower()
+    ]
+    return matched[-1] if matched else None
 
 
 def run_registration(
@@ -328,6 +346,6 @@ def run_registration(
 
 __all__ = [
     "BridgeAccount", "BridgeRequest", "SentinelRsFailed", "SentinelRsResultInvalid",
-    "SentinelRsUnavailable", "binary_status", "resolve_binary", "run_registration",
+    "SentinelRsUnavailable", "binary_status", "read_accounts", "resolve_binary", "run_registration",
     "timeout_seconds", "log_level",
 ]
