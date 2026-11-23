@@ -2528,6 +2528,7 @@ _C2A_ERROR_DETAILS = {
     "c2a_remote_access_token_missing": ("credential", "C2A-CRED-007", "原 C2A 账号仍存在，但其 AT 读取结果缺失"),
     "c2a_scan_in_progress": ("local_policy", "C2A-POLICY-006", "同一目标已有 C2A 巡检进行中，本轮尚未执行"),
     "c2a_remote_verification_pending": ("local_policy", "C2A-POLICY-007", "C2A 正在核验原账号，本轮等待远端核验结束"),
+    "c2a_refresh_attempts_exhausted": ("local_policy", "C2A-POLICY-008", "同一账号 AT 刷新已连续失败两次，后续巡检跳过自动刷新；可人工重试账号"),
 }
 
 

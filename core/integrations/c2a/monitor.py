@@ -27,6 +27,7 @@ TASK_TYPE = "c2a_scan"
 _TASK = "c2a_monitor"
 _SCHEDULER = PeriodicThread("c2a-monitor")
 _REFRESH = {"key": "token_refresh", "version": 1}
+_REFRESH_FAILURE_LIMIT = 2
 _ACTIVE = {"pending_submit", "waiting_account", "queued", "running", "waiting", "cancelling", "settling", "stopping"}
 _CANCELLED = {"cancelled", "canceled", "stopped", "terminated"}
 _TERMINAL_TARGET_CODES = {
@@ -179,6 +180,13 @@ def _cool(row: dict, reason: str, now: float, *, stage="refresh_retry") -> None:
     row.update(stage=stage, last_code=reason, next_attempt_at=now + _cooldown())
 
 
+def _refresh_failed(row: dict, reason: str, now: float, *, count_failure: bool) -> None:
+    if count_failure:
+        row["refresh_failure_count"] = int(row.get("refresh_failure_count") or 0) + 1
+    exhausted = int(row.get("refresh_failure_count") or 0) >= _REFRESH_FAILURE_LIMIT
+    _cool(row, reason, now, stage="refresh_exhausted" if exhausted else "refresh_retry")
+
+
 def _refresh_workers() -> int:
     limits = policy_values()
     return min(128, limits["GLOBAL_TASK_WORKERS"], limits["ACCOUNT_TOKEN_REFRESH_WORKERS"])
@@ -282,20 +290,25 @@ def _after_refresh(
     state = target["outcome"]
     run_id = target.get("run_id")
     round_id = target.get("round_id") or row["round_id"]
-    if (row["stage"] == "refresh_retry" and state not in _ACTIVE
-            and row["round_id"] == round_id and row.get("refresh_run_id") == run_id):
-        return
+    if state not in _ACTIVE:
+        if run_id and row.get("refresh_observed_run_id") == run_id:
+            return
+        if (not run_id and row["stage"] == "refresh_retry"
+                and row["round_id"] == round_id and not row.get("refresh_run_id")):
+            return
     row.update(round_id=round_id, refresh_task_id=target.get("task_id"), refresh_run_id=run_id)
     if state in _ACTIVE:
         row["stage"] = "refresh_wait"
         return
+    if run_id:
+        row["refresh_observed_run_id"] = run_id
     if state in _CANCELLED or run_id in cancelled:
         row.update(stage="cancelled", last_code="c2a_repair_cancelled")
         _note(summary, "c2a_repair_cancelled")
         return
     if state != "success" or not target.get("run_id"):
         reason = _code(target.get("reason_code"), "c2a_refresh_result_missing")
-        _cool(row, reason, now)
+        _refresh_failed(row, reason, now, count_failure=bool(run_id) and state != "not_executed")
         _note(summary, reason)
         return
     reason = _local_skip(account, row["email"])
@@ -306,10 +319,11 @@ def _after_refresh(
     generation, _, expiry = _at(account)
     if generation == row["source_generation"] or expiry is None or expiry <= now:
         reason = "c2a_refresh_token_unchanged" if generation == row["source_generation"] else "c2a_local_at_unverified"
-        _cool(row, reason, now)
+        _refresh_failed(row, reason, now, count_failure=True)
         _note(summary, reason)
         return
-    row.update(stage="sync_wait", source_generation=generation, next_attempt_at=0, last_code=None)
+    row.update(stage="sync_wait", source_generation=generation, next_attempt_at=0, last_code=None,
+               refresh_failure_count=0)
 
 
 def _advance_refresh(
@@ -320,7 +334,7 @@ def _advance_refresh(
     for row in repairs:
         if row["stage"] == "refresh_pending":
             selections[row["refresh_key"]].append(row)
-        elif row["stage"] in {"refresh_wait", "refresh_retry"} and row.get("batch_id"):
+        elif row["stage"] in {"refresh_wait", "refresh_retry", "refresh_exhausted"} and row.get("batch_id"):
             batches[row["batch_id"]].append(row)
     scheduled = set()
     for rows in selections.values():
@@ -511,7 +525,7 @@ def _discover(by_email: dict, matched: dict, repairs: dict, summary: dict, now: 
         account_id = account["id"]
         row = repairs.get(account_id, {})
         stage = row.get("stage")
-        if stage in store.ACTIVE_STAGES:
+        if stage in (*store.ACTIVE_STAGES, "refresh_exhausted"):
             continue
         if stage == "cancelled" and not force:
             _note(summary, "c2a_repair_cancelled")
@@ -523,6 +537,12 @@ def _discover(by_email: dict, matched: dict, repairs: dict, summary: dict, now: 
             _note(summary, "c2a_scan_cycle_limit")
             break
         generation, issued, expiry = _at(account)
+        failure_count = int(row.get("refresh_failure_count") or 0)
+        if generation != row.get("source_generation") and expiry is not None and expiry > now:
+            failure_count = 0
+        if failure_count >= _REFRESH_FAILURE_LIMIT:
+            _note(summary, "c2a_refresh_attempts_exhausted")
+            continue
         blocked = {} if force else {
             remote_id: target for remote_id, target in (row.get("targets") or {}).items()
             if target.get("last_code") == "c2a_remote_token_conflict" and target.get("token_generation") == generation
@@ -537,6 +557,8 @@ def _discover(by_email: dict, matched: dict, repairs: dict, summary: dict, now: 
             "stage": "sync_wait" if can_sync else "refresh_retry", "next_attempt_at": 0,
             "targets": {**blocked, **{item["id"]: {"state": "pending"} for item in pending}},
             "attempt_count": 0,
+            "refresh_failure_count": failure_count,
+            "refresh_observed_run_id": row.get("refresh_observed_run_id"),
         })
     return discovered
 
@@ -545,7 +567,7 @@ def _refresh_due(backend: str, repairs: list[dict], accounts: dict, summary: dic
     due = []
     changed = []
     for row in repairs:
-        if row["stage"] != "refresh_retry":
+        if row["stage"] not in {"refresh_retry", "refresh_exhausted"}:
             continue
         account = accounts.get(row["account_id"])
         reason = _local_skip(account, row["email"])
@@ -556,8 +578,14 @@ def _refresh_due(backend: str, repairs: list[dict], accounts: dict, summary: dic
             continue
         generation, _, expiry = _at(account)
         if generation != row["source_generation"] and expiry is not None and expiry > now:
-            row.update(stage="sync_wait", source_generation=generation, next_attempt_at=0, last_code=None)
+            row.update(stage="sync_wait", source_generation=generation, next_attempt_at=0, last_code=None,
+                       refresh_failure_count=0)
             changed.append(row)
+        elif int(row.get("refresh_failure_count") or 0) >= _REFRESH_FAILURE_LIMIT:
+            if row["stage"] != "refresh_exhausted":
+                row["stage"] = "refresh_exhausted"
+                changed.append(row)
+            _note(summary, "c2a_refresh_attempts_exhausted")
         elif float(row.get("next_attempt_at") or 0) <= now:
             row["source_generation"] = generation
             due.append(row)
@@ -576,7 +604,8 @@ def _scan(backend: str, *, force: bool = False, continuation_only: bool = False,
             _note(summary, "c2a_scan_in_progress")
             return dict(summary, ok=False, error_code="c2a_scan_in_progress", stage="c2a_scan", batch_refs=[])
         repairs = {row["account_id"]: row for row in store.list_repairs(backend)}
-        active = [row for row in repairs.values() if row["stage"] in store.ACTIVE_STAGES]
+        # 耗尽行只观察人工重跑或本地新 AT，不作为待办持续唤醒已关闭的巡检。
+        active = [row for row in repairs.values() if row["stage"] in (*store.ACTIVE_STAGES, "refresh_exhausted")]
         by_email = {}
         if not continuation_only:
             try:

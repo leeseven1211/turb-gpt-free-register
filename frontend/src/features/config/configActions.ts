@@ -332,7 +332,7 @@ export function createConfigActions(owner: ConfigDraftOwner, dependencies: Confi
       }
       const stages = record(monitor.repair_stages);
       const stageCount = (key: string) => count(stages[key]) ? stages[key] : 0;
-      states.c2a.text = `${enabled}。待提交刷新 ${stageCount('refresh_pending')}，等待刷新 ${stageCount('refresh_wait')}，刷新冷却 ${stageCount('refresh_retry')}，同步待完成 ${stageCount('sync_wait')}，已结束 ${stageCount('done')}，已取消 ${stageCount('cancelled')}。`;
+      states.c2a.text = `${enabled}。待提交刷新 ${stageCount('refresh_pending')}，等待刷新 ${stageCount('refresh_wait')}，刷新冷却 ${stageCount('refresh_retry')}，刷新失败已跳过 ${stageCount('refresh_exhausted')}，同步待完成 ${stageCount('sync_wait')}，已结束 ${stageCount('done')}，已取消 ${stageCount('cancelled')}。`;
     }, error: () => '暂时无法读取 C2A 巡检状态，请稍后重试。'});
   }
   function checkC2a() {

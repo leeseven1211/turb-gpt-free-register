@@ -2388,7 +2388,7 @@ function qn(e, t = {}) {
 					return;
 				}
 				let i = J(t.repair_stages), a = (e) => Z(i[e]) ? i[e] : 0;
-				r.c2a.text = `${n}。待提交刷新 ${a("refresh_pending")}，等待刷新 ${a("refresh_wait")}，刷新冷却 ${a("refresh_retry")}，同步待完成 ${a("sync_wait")}，已结束 ${a("done")}，已取消 ${a("cancelled")}。`;
+				r.c2a.text = `${n}。待提交刷新 ${a("refresh_pending")}，等待刷新 ${a("refresh_wait")}，刷新冷却 ${a("refresh_retry")}，刷新失败已跳过 ${a("refresh_exhausted")}，同步待完成 ${a("sync_wait")}，已结束 ${a("done")}，已取消 ${a("cancelled")}。`;
 			},
 			error: () => "暂时无法读取 C2A 巡检状态，请稍后重试。"
 		});
