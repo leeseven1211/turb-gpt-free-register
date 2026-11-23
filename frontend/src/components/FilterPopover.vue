@@ -52,6 +52,15 @@ const emit = defineEmits<{'update:open': [boolean]}>();
   flex:none;width:16px;height:16px;min-height:0;min-width:0;margin:0;padding:0;
   accent-color:var(--ui-color-brand);
 }
+:global(.list-filter-popover input[type=radio]) {
+  appearance:none;display:grid;place-items:center;width:15px;height:15px;
+  border:1.5px solid var(--ui-color-border-strong);border-radius:50%;
+  background:var(--ui-color-surface);cursor:pointer;
+}
+:global(.list-filter-popover input[type=radio]:checked) {
+  border-color:var(--ui-color-brand);background:var(--ui-color-brand);
+  box-shadow:inset 0 0 0 3px var(--ui-color-surface);
+}
 :global(.list-filter-popover :is(select,input:not([type=radio],[type=checkbox]))) {
   display:block;width:100%;min-width:0;min-height:36px;margin:0;padding:6px 9px;
   border:1px solid var(--ui-color-border-strong);border-radius:5px;

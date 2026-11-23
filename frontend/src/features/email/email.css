@@ -36,10 +36,6 @@
 .em-cell-button {display:block;width:100%;min-width:0;border:0;padding:0;background:transparent;text-align:left;cursor:pointer;color:inherit;font:inherit}
 .em-cell-button:hover .list-cell-secondary {color:var(--ui-color-brand)}
 .em-row-actions {flex-wrap:nowrap}
-.em-more {position:relative;flex:none}
-.em-more>summary {padding:4px 0;color:var(--ui-color-brand);font-size:12.5px;font-weight:600;cursor:pointer;white-space:nowrap}
-.em-more>div {display:flex;flex-wrap:wrap;gap:2px 10px}
-.em-more[open] {min-width:50px}
 .em-error {padding:12px 16px;color:var(--ui-color-danger);background:var(--ui-color-danger-soft,var(--ui-color-surface-subtle));overflow-wrap:anywhere}
 .em-receipt {padding:10px 16px;border-bottom:1px solid var(--ui-color-border)}
 .em-dialog {box-sizing:border-box;width:660px;max-width:calc(100vw - 32px);max-height:calc(100dvh - 48px);padding:0;border:1px solid var(--ui-color-border-strong);border-radius:10px;background:var(--ui-color-surface);color:var(--ui-color-text);font:13px/1.6 var(--ui-font-sans);box-shadow:0 16px 60px #0003}
@@ -86,3 +82,24 @@ body.em-native-dialog-lock {position:fixed;left:0;right:0;width:100%;overflow:hi
 @media (max-width: 680px) {
   .em-bulk-actions { flex-basis: 100%; margin-left: 0; padding-left: 0; border-left: 0; }
 }
+
+/* 表格值语义色：状态、使用情况、来源类型与凭证配置。 */
+.em-source, .em-tone {display:inline-flex;align-items:center;gap:6px;min-width:0}
+.em-source i {width:6px;height:6px;border-radius:2px;flex:none}
+.em-tone i {width:6px;height:6px;border-radius:50%;flex:none;background:#98a2b3}
+.em-tone.is-success {color:#17805f}
+.em-tone.is-success i {background:#1f9d75}
+.em-tone.is-active {color:#4f51be}
+.em-tone.is-active i {background:#5b5ce2}
+.em-tone.is-warning {color:#a9660f}
+.em-tone.is-warning i {background:#d9822b}
+.em-tone.is-danger {color:#b03a44}
+.em-tone.is-danger i {background:#d94a55}
+.em-tone.is-neutral {color:#6f7a90}
+.em-more-dialog {width:min(440px,calc(100vw - 32px))}
+.em-more-dialog .em-dialog-head>div {min-width:0}
+.em-more-dialog .em-dialog-head p {font-size:13px;color:var(--ui-color-text);overflow-wrap:anywhere}
+.em-more-dialog .em-dialog-head .em-button {min-height:30px;padding:4px 9px;border-color:transparent;background:transparent;color:var(--ui-color-text-secondary)}
+.em-more-dialog .em-dialog-head .em-button:hover {border-color:var(--ui-color-border);background:var(--ui-color-surface-subtle);color:var(--ui-color-text)}
+.em-more-actions {display:grid;gap:8px}
+.em-more-actions .em-button {justify-content:flex-start;min-height:40px;text-align:left}
