@@ -1979,7 +1979,8 @@ def _sentinel_rs_error_cause(raw: str) -> dict[str, str] | None:
         return _specific_error_cause({"cause_code": "sentinel_rs_binary_unavailable"})
     if "SentinelRsResultInvalid" in text:
         return _specific_error_cause({"cause_code": "sentinel_rs_result_invalid"})
-    if ("invalid_auth_step" in text or "落地判定为已有账号" in text
+    if ("user_already_exists" in text or "invalid_auth_step" in text
+            or "落地判定为已有账号" in text
             or "已有账号" in text and "SentinelRs" in text):
         # 邮箱已在远端建过号：重跑注册只会再次被拒。
         return _specific_error_cause({"cause_code": "sentinel_rs_remote_account_exists"})
