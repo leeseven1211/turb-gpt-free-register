@@ -422,6 +422,7 @@ def _authenticate(session, initial_url, *, email, target, password, secret, prog
     url = _follow(session, initial_url)
     payload = {"continue_url": url}
     methods, seen = progress["methods"], set()
+    password_probe_attempted = False
     for _ in range(8):
         context = _client_auth_context(session, payload)
         if context:
@@ -444,18 +445,36 @@ def _authenticate(session, initial_url, *, email, target, password, secret, prog
             stage = "callback"
         else:
             raise _error("auth_page_unknown", category="response")
+        if stage == "email_otp" and password and "password" not in seen and not password_probe_attempted:
+            password_probe_attempted = True
+            # 只探测一次密码入口；服务端确实返回密码页后才提交保存密码。
+            try:
+                offered = _follow(session, _AUTH + "/log-in/password", referer=url)
+            except (OperationCancelled, OperationLeaseLost):
+                raise
+            except ProtocolV2AuthError as exc:
+                _reraise_control(exc)
+                diagnostics = getattr(exc, "diagnostics", {}) or {}
+                status = diagnostics.get("http_status")
+                if exc.code != "auth_navigation_failed" or int(status or 0) != 404:
+                    raise
+                if account_email_is_invalid(email):
+                    raise _error("password_login_unavailable", category="auth") from exc
+                offered = ""
+            except Exception as exc:
+                _reraise_control(exc)
+                raise
+            if urlparse(offered).path.rstrip("/") == "/log-in/password":
+                payload = {"continue_url": offered}
+                continue
+            if account_email_is_invalid(email):
+                raise _error("password_login_unavailable", category="auth")
         if stage == "email_otp" and account_email_is_invalid(email):
             if "password" in seen:
                 raise _error("email_verification_required", category="email")
             if not password:
                 raise _error("password_missing", category="configuration")
-            # Navigation only: the server must actually offer the password page
-            # before a saved password is submitted. Never bypass an email challenge.
-            offered = _follow(session, _AUTH + "/log-in/password", referer=url)
-            if urlparse(offered).path.rstrip("/") != "/log-in/password":
-                raise _error("password_login_unavailable", category="auth")
-            payload = {"continue_url": offered}
-            continue
+            raise _error("password_login_unavailable", category="auth")
         if stage in seen:
             raise _error("auth_challenge_loop", category="response")
         seen.add(stage)

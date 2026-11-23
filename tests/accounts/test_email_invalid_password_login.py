@@ -191,7 +191,9 @@ class InvalidEmailProtocolLoginTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual("password_mfa_totp", result["auth_method"])
         self.assertEqual("verified", result["password_auth_status"])
-        opened.assert_called_once_with(session, OTP_URL, allow_standard_route=True)
+        opened.assert_called_once_with(
+            session, OTP_URL, allow_standard_route=True, require_standard_route=True,
+        )
         verify.assert_called_once_with(session, "fixture-password")
         mfa.assert_called_once_with(session, {"continue_url": MFA_URL}, MFA_URL, "fixture-secret")
         boundary.assert_called_once()
@@ -289,12 +291,59 @@ class InvalidEmailProtocolLoginTests(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual("email_otp", result["auth_method"])
-        opened.assert_called_once_with(session, OTP_URL, allow_standard_route=False)
+        opened.assert_called_once_with(
+            session, OTP_URL, allow_standard_route=True, require_standard_route=False,
+        )
         verify.assert_not_called()
         mfa.assert_not_called()
         send.assert_called_once()
         email.assert_called_once()
         legacy.assert_not_called()
+
+    def test_unmarked_email_keeps_email_challenge_when_standard_password_route_is_unavailable(self):
+        from core.accounts.liveness.protocol import v2 as v2_module
+
+        open_offered = v2_module._open_offered_password_login
+        v2, session, _, opened, verify, mfa, send, email, legacy = self._context(invalid=False)
+        opened.side_effect = open_offered
+        session.get.side_effect = [
+            _Response(OTP_URL, "<p>请输入验证码</p>"),
+            _Response(OTP_URL, "<p>请输入验证码</p>"),
+        ]
+
+        result = v2.refresh_access_token(EMAIL, proxy="")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("email_otp", result["auth_method"])
+        self.assertEqual(
+            [OTP_URL, PASSWORD_URL],
+            [call.args[0] for call in session.get.call_args_list],
+        )
+        verify.assert_not_called()
+        mfa.assert_not_called()
+        send.assert_called_once()
+        email.assert_called_once()
+        legacy.assert_not_called()
+
+    def test_unmarked_email_treats_missing_standard_password_route_as_email_challenge(self):
+        from core.accounts.liveness.protocol import v2 as v2_module
+
+        open_offered = v2_module._open_offered_password_login
+        session = _Session()
+        session.get.side_effect = [
+            _Response(OTP_URL, "<p>请输入验证码</p>"),
+            _Response(PASSWORD_URL, status_code=404),
+        ]
+
+        result = open_offered(
+            session,
+            OTP_URL,
+            allow_standard_route=True,
+            require_standard_route=False,
+        )
+
+        self.assertEqual(OTP_URL, result)
+        self.assertEqual([OTP_URL, PASSWORD_URL], [call.args[0] for call in session.get.call_args_list])
 
     def test_unmarked_email_follows_real_password_offer_and_authenticates_without_otp(self):
         from core.accounts.liveness.protocol import v2 as v2_module
@@ -314,6 +363,29 @@ class InvalidEmailProtocolLoginTests(unittest.TestCase):
         self.assertEqual("verified", result["password_auth_status"])
         self.assertEqual("password_mfa_totp", result["auth_method"])
         self.assertEqual([OTP_URL, target], [call.args[0] for call in session.get.call_args_list])
+        verify.assert_called_once_with(session, "fixture-password")
+        mfa.assert_called_once()
+        send.assert_not_called()
+        email.assert_not_called()
+        legacy.assert_not_called()
+
+    def test_unmarked_email_uses_standard_password_page_when_server_offers_it(self):
+        from core.accounts.liveness.protocol import v2 as v2_module
+
+        open_offered = v2_module._open_offered_password_login
+        v2, session, _, opened, verify, mfa, send, email, legacy = self._context(invalid=False)
+        opened.side_effect = open_offered
+        session.get.side_effect = [
+            _Response(OTP_URL, "<p>请输入验证码</p>"),
+            _Response(PASSWORD_URL, "<input type=\"password\">"),
+        ]
+
+        result = v2.refresh_access_token(EMAIL, proxy="")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("verified", result["password_auth_status"])
+        self.assertEqual("password_mfa_totp", result["auth_method"])
+        self.assertEqual([OTP_URL, PASSWORD_URL], [call.args[0] for call in session.get.call_args_list])
         verify.assert_called_once_with(session, "fixture-password")
         mfa.assert_called_once()
         send.assert_not_called()
@@ -407,14 +479,43 @@ class InvalidEmailLegacyAndBrowserTests(unittest.TestCase):
 
     def test_browser_unmarked_email_returns_to_mail_if_shared_challenge_still_requires_it(self):
         driver, roxy_liveness, challenge = self._browser_otp_entry(invalid=False, challenge_state="email_otp")
+        driver._browser_submission_receipt = SimpleNamespace(endpoint_kind="email_submit")
+        challenge.side_effect = ["email_otp", "email_otp"]
+        roxy_liveness._open_standard_password_login.return_value = True
 
         result = roxy_liveness._enter_existing_account_otp(
             driver, EMAIL, password="fixture-password", totp_secret="fixture-secret",
         )
 
         self.assertEqual("otp", result)
+        self.assertEqual(2, challenge.call_count)
+        roxy_liveness._open_standard_password_login.assert_called_once_with(driver)
+
+    def test_browser_unmarked_email_with_saved_password_tries_standard_route_after_email_challenge(self):
+        """普通邮箱已有密码时，邮箱挑战后尝试标准密码入口并完成登录。"""
+        driver, roxy_liveness, challenge = self._browser_otp_entry(invalid=False, challenge_state="email_otp")
+        driver._browser_submission_receipt = SimpleNamespace(endpoint_kind="email_submit")
+        challenge.side_effect = ["email_otp", "advanced"]
+        roxy_liveness._open_standard_password_login.return_value = True
+
+        result = roxy_liveness._enter_existing_account_otp(
+            driver, EMAIL, password="fixture-password", totp_secret="fixture-secret",
+        )
+
+        self.assertEqual("logged_in", result)
+        roxy_liveness._open_standard_password_login.assert_called_once_with(driver)
+        self.assertEqual(2, challenge.call_count)
+
+    def test_browser_unmarked_email_propagates_password_probe_navigation_failure(self):
+        driver, roxy_liveness, challenge = self._browser_otp_entry(invalid=False, challenge_state="email_otp")
+        driver._browser_submission_receipt = SimpleNamespace(endpoint_kind="email_submit")
+        roxy_liveness._open_standard_password_login.side_effect = RuntimeError("密码入口导航失败")
+
+        with self.assertRaisesRegex(RuntimeError, "密码入口导航失败"):
+            roxy_liveness._enter_existing_account_otp(
+                driver, EMAIL, password="fixture-password", totp_secret="fixture-secret",
+            )
         challenge.assert_called_once()
-        roxy_liveness._open_standard_password_login.assert_not_called()
 
     def test_browser_unmarked_email_without_password_keeps_mail_flow(self):
         driver, roxy_liveness, challenge = self._browser_otp_entry(invalid=False)
@@ -480,14 +581,11 @@ class InvalidEmailLegacyAndBrowserTests(unittest.TestCase):
         driver._browser_submission_receipt = SimpleNamespace(endpoint_kind="email_submit")
         roxy_liveness._open_standard_password_login.side_effect = open_standard
         with patch.object(roxy_liveness, "_safe_get", side_effect=TimeoutError("fixture-private-navigation")) as navigate:
-            with self.assertRaises(RuntimeError) as caught:
+            with self.assertRaisesRegex(TimeoutError, "fixture-private-navigation"):
                 roxy_liveness._enter_existing_account_otp(
                     driver, EMAIL, password="fixture-password", totp_secret="fixture-secret",
                 )
 
-        self.assertEqual("password_login_unavailable", caught.exception.code)
-        self.assertIs(caught.exception.not_submitted, True)
-        self.assertNotIn("fixture-private-navigation", str(caught.exception))
         navigate.assert_called_once()
         roxy_liveness._open_standard_password_login.assert_called_once_with(driver)
         challenge.assert_called_once()

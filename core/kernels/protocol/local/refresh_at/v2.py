@@ -381,8 +381,15 @@ class OpenOfferedPasswordLoginDependencies:
     logger: Any
 
 
-def _open_offered_password_login(session, final_url: str, *, allow_standard_route: bool=True, _deps: OpenOfferedPasswordLoginDependencies) -> str:
-    """沿用当前会话检查页面密码入口；失效邮箱可继续探测既有标准路由。"""
+def _open_offered_password_login(
+    session,
+    final_url: str,
+    *,
+    allow_standard_route: bool = True,
+    require_standard_route: bool = True,
+    _deps: OpenOfferedPasswordLoginDependencies,
+) -> str:
+    """检查密码入口；可按账号状态决定标准路由未提供时是否继续邮箱验证。"""
     HTMLParser = _deps.HTMLParser
     urljoin = _deps.urljoin
     urlparse = _deps.urlparse
@@ -413,7 +420,12 @@ def _open_offered_password_login(session, final_url: str, *, allow_standard_rout
                 url, headers=session.get_auth_navigate_headers(referer=referer),
                 allow_redirects=True,
             )
-            response.raise_for_status()
+            try:
+                response.raise_for_status()
+            except Exception as exc:
+                if getattr(exc, "response", None) is None:
+                    exc.response = response
+                raise
             return response
         except Exception as exc:
             error = unavailable()
@@ -453,9 +465,19 @@ def _open_offered_password_login(session, final_url: str, *, allow_standard_rout
     if parser.target:
         logger.info("[查活][Protocol v2] 发现密码登录入口，优先验证保存的密码")
     # 标准密码页是既有登录路由；只做导航，并以服务端真实落点决定能否提交密码。
-    response = navigate(parser.target or _PASSWORD_PATH, current_url)
+    try:
+        response = navigate(parser.target or _PASSWORD_PATH, current_url)
+    except ProtocolV2AuthError as exc:
+        status = (getattr(exc, "diagnostics", {}) or {}).get("http_status")
+        if not require_standard_route and int(status or 0) == 404:
+            logger.info("[查活][Protocol v2] 标准密码路由返回 404，继续邮箱验证码")
+            return current_url
+        raise
     password_url = str(getattr(response, "url", "") or "")
     if not trusted_path(password_url, "/log-in/password"):
+        if not require_standard_route and trusted_path(password_url, "/email-verification"):
+            logger.info("[查活][Protocol v2] 服务端未提供密码登录页，继续邮箱验证码")
+            return password_url
         raise unavailable()
     logger.info("[查活][Protocol v2] 服务端已允许进入密码登录页")
     return password_url
@@ -589,8 +611,13 @@ def _refresh_with_password(email: str, proxy: str | None, *, proxy_supplier: Cal
             and parsed_final_url.path.rstrip("/") == "/email-verification"
         ):
             auth_method = "password"
+            callback_recovery = _AT_CALLBACK_CONTEXT.get() is not None
             final_url = _open_offered_password_login(
-                session, str(final_url), allow_standard_route=email_invalid,
+                session,
+                str(final_url),
+                # 回调恢复沿用原会话事实，不重新探测密码入口，避免在未知回执后重复派发认证。
+                allow_standard_route=not callback_recovery or email_invalid,
+                require_standard_route=email_invalid,
             )
             parsed_final_url = urlparse(final_url)
         final_host = (parsed_final_url.hostname or "").lower()

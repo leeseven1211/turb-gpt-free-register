@@ -144,6 +144,7 @@ class ProtocolV3RefreshTests(unittest.TestCase):
 
     def test_mismatched_returned_identity_is_not_saved(self):
         session = Session(landing="/email-verification", routes={
+            ("GET", AUTH + "/log-in/password"): Response(status=302, location=AUTH + "/email-verification"),
             ("POST", AUTH + "/api/accounts/email-otp/validate"): Response({"continue_url": CHAT + "/api/auth/callback/openai"}),
             ("GET", CHAT + "/api/auth/session"): Response({**SESSION, "user": {"email": "other@example.test", "id": "other"}}),
         })
@@ -301,6 +302,54 @@ class ProtocolV3RefreshTests(unittest.TestCase):
         })
         self.assertTrue(self.run_flow(session)["ok"])
 
+    def test_normal_email_with_saved_password_probes_password_before_otp(self):
+        session = Session(landing="/email-verification", routes={
+            ("GET", AUTH + "/email-verification"): Response({}),
+            ("GET", AUTH + "/log-in/password"): Response({}),
+            ("POST", AUTH + "/api/accounts/password/verify"): Response({"continue_url": CHAT + "/api/auth/callback/openai"}),
+        })
+        result = self.run_flow(session)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual("password", result["auth_method"])
+        self.assertEqual(["/api/accounts/password/verify"],
+                         [url.removeprefix(AUTH) for method, url, _ in session.calls if method == "POST"])
+
+    def test_normal_email_password_probe_returning_email_otp_continues_with_otp(self):
+        session = Session(landing="/email-verification", routes={
+            ("GET", AUTH + "/email-verification"): Response({}),
+            ("GET", AUTH + "/log-in/password"): Response(status=302, location=AUTH + "/email-verification"),
+            ("POST", AUTH + "/api/accounts/email-otp/validate"): Response({"continue_url": CHAT + "/api/auth/callback/openai"}),
+        })
+        result = self.run_flow(session)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual("email_otp", result["auth_method"])
+        self.assertEqual(["/api/accounts/email-otp/validate"],
+                         [url.removeprefix(AUTH) for method, url, _ in session.calls if method == "POST"])
+
+    def test_normal_email_password_probe_network_failure_does_not_start_otp(self):
+        session = Session(landing="/email-verification", routes={
+            ("GET", AUTH + "/email-verification"): Response({}),
+            ("GET", AUTH + "/log-in/password"): Response(status=503),
+            ("POST", AUTH + "/api/accounts/email-otp/validate"): Response({"continue_url": CHAT + "/api/auth/callback/openai"}),
+        })
+
+        result = self.run_flow(session)
+
+        self.assertEqual("auth_navigation_failed", result["error"])
+        self.assertFalse(any(url.endswith("/api/accounts/email-otp/validate")
+                             for method, url, _ in session.calls if method == "POST"))
+
+    def test_email_otp_without_saved_password_does_not_probe_or_submit_password(self):
+        self.stack.enter_context(patch.object(self.v3, "get_account_login_credentials", return_value=("", "JBSWY3DPEHPK3PXP")))
+        session = Session(landing="/email-verification", routes={
+            ("GET", AUTH + "/email-verification"): Response({}),
+            ("POST", AUTH + "/api/accounts/email-otp/validate"): Response({"continue_url": CHAT + "/api/auth/callback/openai"}),
+        })
+        result = self.run_flow(session)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual("email_otp", result["auth_method"])
+        self.assertFalse(any(url.endswith("/api/accounts/password/verify") for method, url, _ in session.calls if method == "POST"))
+
     def test_real_curl_cookie_container_can_restore_expiring_cache(self):
         from curl_cffi.requests import Cookies
         self.load.return_value = self.cache()
@@ -401,7 +450,10 @@ class ProtocolV3RefreshTests(unittest.TestCase):
                 with self.subTest(exception=exception.__name__, boundary=boundary), ExitStack() as stack:
                     control = exception("control-signal")
                     if boundary == "email_post":
-                        session = Session(landing="/email-verification", routes={("POST", AUTH + "/api/accounts/email-otp/validate"): control})
+                        session = Session(landing="/email-verification", routes={
+                            ("GET", AUTH + "/log-in/password"): Response(status=302, location=AUTH + "/email-verification"),
+                            ("POST", AUTH + "/api/accounts/email-otp/validate"): control,
+                        })
                     elif boundary == "mfa_post":
                         session = Session(landing="/mfa-challenge/factor", routes={("POST", AUTH + "/api/accounts/mfa/issue_challenge"): control})
                     elif boundary == "workspace_post":
