@@ -82,3 +82,6 @@ core/用于注册的API邮箱.txt
 /native/*
 !/native/sentinel-rs/
 !/native/sentinel-rs/**
+
+# 内核构建产物不入库
+native/sentinel-rs/target/
