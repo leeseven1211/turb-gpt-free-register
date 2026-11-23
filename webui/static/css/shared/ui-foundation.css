@@ -2112,9 +2112,9 @@ body {
 
 .topbar-title {
   font-size: 21px;
-  font-weight: 760;
-  font-stretch: 114%;
-  letter-spacing: -.012em;
+  font-weight: 700;
+  font-stretch: 100%;
+  letter-spacing: -.02em;
   line-height: 1.2;
 }
 

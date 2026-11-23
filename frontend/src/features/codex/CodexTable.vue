@@ -66,9 +66,8 @@ defineExpose({resetColumns});
           <td class="cx-actions" data-label="操作"><div class="ui-row-actions cx-row-actions">
             <button type="button" class="ui-link cx-direct-download" :data-codex-download="row.filename" :disabled="busy" @click="action('download',row)">下载凭证</button>
             <PopoverRoot :open="visible && openAction === key" :modal="false" @update:open="setActionOpen(key,$event)">
-              <PopoverTrigger as-child><button type="button" class="ui-button" :aria-label="`更多操作 ${row.filename}`" :disabled="busy">更多</button></PopoverTrigger>
+              <PopoverTrigger as-child><button type="button" class="ui-link" :aria-label="`更多操作 ${row.filename}`" :disabled="busy">更多</button></PopoverTrigger>
               <PopoverPortal><PopoverContent class="cx-row-menu" :aria-label="`${row.email || row.filename} 的凭证详情与操作`" side="bottom" align="end" :side-offset="6" :collision-padding="10" hide-when-detached>
-                <dl class="cx-row-details"><dt>邮箱 / 文件</dt><dd>{{ row.email || '—' }}<br>{{ row.filename }}</dd><dt>Plan</dt><dd>{{ display(row.plan) }}</dd><dt>凭证状态</dt><dd>{{ credential.title }}</dd><dt>OAuth 状态</dt><dd>{{ oauth.label }} · {{ oauth.title }}</dd><dt>Account ID</dt><dd>{{ display(row.account_id) }}</dd><dt>Sub2API ID</dt><dd>{{ display(row.sub2api_account_id) }}</dd><dt>更新时间</dt><dd>{{ display(row.mtime) }}</dd><dt>过期时间</dt><dd>{{ display(row.expired) }}</dd></dl>
                 <div class="cx-menu-actions" role="group" aria-label="凭证操作">
                   <button type="button" :data-codex-download="row.filename" :disabled="busy" @click="action('download',row)">下载凭证</button>
                   <button type="button" :data-codex-reauthorize="row.filename" :disabled="busy" @click="action('reauthorize',row)">重跑授权</button>

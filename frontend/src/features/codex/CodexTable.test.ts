@@ -103,7 +103,7 @@ describe('Codex凭证表格',()=>{
     const body=new DOMWrapper(document.body);
     expect(body.findAll('.cx-row-menu')).toHaveLength(1);
     const menu=body.get('.cx-row-menu');
-    expect(menu.findAll('dt').find(label=>label.text()==='Sub2API ID')!.element.nextElementSibling?.textContent).toBe('202');
+    expect(menu.find('[data-codex-upload-sub2]').exists()).toBe(true);
     expect(menu.get('[data-codex-upload-sub2]').attributes('data-codex-upload-sub2')).toBe(row.filename);
     await menu.get('[data-codex-upload-sub2]').trigger('click');
     expect(w.emitted('action')?.at(-1)).toEqual(['uploadSub2',second]);
@@ -133,7 +133,7 @@ describe('Codex凭证表格',()=>{
     expect(body.findAll('.cx-row-menu')).toHaveLength(0);
     await w.findAll('tbody tr')[0]!.get('button[aria-label^="更多操作"]').trigger('click');await flushPromises();
     expect(body.findAll('.cx-row-menu')).toHaveLength(1);
-    expect(body.get('.cx-row-menu').findAll('dt').find(label=>label.text()==='Plan')!.element.nextElementSibling?.textContent).toBe('team');
+    expect(body.get('.cx-row-menu').find('[data-codex-archive]').exists()).toBe(true);
     await w.setProps({items:[{...second,plan:'plus'},first]});await flushPromises();
     expect(body.findAll('.cx-row-menu')).toHaveLength(0);
   });
