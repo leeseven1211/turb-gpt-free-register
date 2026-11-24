@@ -105,14 +105,24 @@ def _handle(context):
 
 
 def cancel_inspection(inspection_id):
+    from core.storage.operations import cancellation, common
+
     children=store.active_child_runs(int(inspection_id))
     reason="用户停止本次账号巡检"
-    queued={run_id:reason for run_id,status in children if status == "queued"}
-    cancelled=bulk_facts.request_cancel_runs_many(queued)
-    for run_id,status in children:
-        # 排队 Run 可能在集合取消前已被领取，仍交由原控制路径处理。
-        if status in store.ACTIVE and (status != "queued" or cancelled.get(run_id) is not None):
-            task_gateway._operation().request_run_cancel(run_id,reason=reason)
+    pending={run_id:status for run_id,status in children}
+    while pending:
+        with common._connect() as conn:
+            cancelled=cancellation.cancel_runs_many(conn,[
+                {"id":run_id,"expected_status":status,"reason":reason}
+                for run_id,status in pending.items()
+            ])
+        changed={run_id for run_id,result in cancelled.items()
+                 if result and result.get("cancel_skipped") and result["status"] in store.ACTIVE}
+        if not changed:
+            break
+        # 排队到运行等竞争整批重读；只补原范围中的 CAS 漏项，不扩张后续 Run。
+        pending={run_id:status for run_id,status in store.active_child_runs(int(inspection_id))
+                 if run_id in changed}
     task_gateway._operation().reconcile_parent_task(int(inspection_id))
     task_gateway.notify_dispatch()
     return {"ok":True,"task_id":int(inspection_id)}
