@@ -3,6 +3,14 @@ import {BulkMutationPendingError,parseBulkMutationJson,projectBulkMutation,submi
 
 afterEach(()=>vi.useRealTimers());
 describe('durable bulk mutation receipts',()=>{
+ it.each(['stopped','deactivated','unsupported','attention_required'])('recognizes durable %s as terminal without polling forever',async status=>{
+  vi.useFakeTimers();
+  const send=vi.fn().mockResolvedValueOnce({accepted:true,command_id:'103'}).mockResolvedValueOnce({status,items:[],next_offset:null});
+  const action=submitBulkMutation(send,'/api/accounts/archive-bulk',{}, {timeoutMs:10}).catch(error=>error);
+  await vi.advanceTimersByTimeAsync(10);
+  expect(await action).toMatchObject({status,accepted:false,items:[]});
+  expect(send).toHaveBeenCalledTimes(2);
+ });
  it('collects all final receipt pages before acknowledging selected items',async()=>{
   const send=vi.fn().mockResolvedValueOnce({accepted:true,command_id:'100'})
    .mockResolvedValueOnce({status:'success',items:[{key:'7',status:'updated'}],next_offset:1})

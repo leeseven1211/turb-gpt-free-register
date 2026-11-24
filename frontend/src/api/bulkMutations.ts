@@ -43,7 +43,7 @@ export function parseBulkMutationJson(source:string):unknown {
  return parseTaskJson(result+source.slice(start));
 }
 export const bulkMutationRequest:BulkMutationRequest=(path,options)=>request(path,options,parseBulkMutationJson);
-const terminal=new Set(['success','partial_success','failed','cancelled','interrupted','terminated']);
+const terminal=new Set(['success','partial_success','failed','stopped','cancelled','interrupted','deactivated','unsupported','attention_required','terminated']);
 
 /** Submit exactly once. After acceptance only GETs are allowed; timeout/abort retains the command reference. */
 export async function submitBulkMutation(send:BulkMutationRequest,path:string,body:unknown,options:BulkMutationOptions={}):Promise<BulkMutationReceipt> {
