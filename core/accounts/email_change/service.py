@@ -1653,8 +1653,8 @@ def submit_email_change_bulk(
             records.advisory_xact_lock(conn, "email-change-bulk:" + identity)
             cur.execute(
                 f"SELECT data FROM {common._table('operation_batches')} "
-                "WHERE batch_type=%s AND data->>'email_change_request'=%s ORDER BY id LIMIT 1",
-                (EMAIL_CHANGE_TASK_TYPE, identity),
+                "WHERE source_system='native_operations' AND source_id=%s",
+                ("email-change-bulk:" + identity,),
             )
             previous = cur.fetchone()
             if previous:
@@ -1744,8 +1744,9 @@ def submit_email_change_bulk(
         }
         cur.execute(
             f"UPDATE {common._table('operation_batches')} SET skipped_count=%s,"
-            "status=%s,data=data || %s::jsonb WHERE id=%s",
-            (len(skipped), "queued" if started else "failed", json.dumps({
+            "status=%s,source_id=COALESCE(%s,source_id),data=data || %s::jsonb WHERE id=%s",
+            (len(skipped), "queued" if started else "failed",
+            "email-change-bulk:" + identity if identity else None, json.dumps({
                 "skipped": skipped,
                 "email_change_request": identity,
                 "request_fingerprint": fingerprint,
