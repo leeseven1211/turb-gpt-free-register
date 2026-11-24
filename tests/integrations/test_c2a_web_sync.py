@@ -25,66 +25,42 @@ class C2AWebSyncTests(unittest.TestCase):
         self.assertIn("C2A_API_KEY", response.json["error"])
         queue.assert_not_called()
 
-    def test_bulk_deduplicates_and_returns_only_queue_receipts(self):
-        account = {"id": 23, "email": "fixture@example.test"}
-        queued = {"accepted": True, "task_id": 17, "run_id": 29, "status": "queued"}
-        with patch("core.runtime.capabilities.require_feature", return_value=(True, "")), patch(
-            "webui.app.db.get_account", return_value=account
-        ), patch("core.integrations.c2a.manual_sync.queue_account", return_value=queued) as queue, patch(
-            "core.integrations.c2a.client.find_unique_account"
-        ) as find_remote, patch("core.integrations.c2a.client.update_account_access_token") as update_remote:
+    def test_bulk_submits_one_collection_and_returns_queue_receipts(self):
+        result = {"accepted": True, "status": "queued", "queued_count": 1,
+                  "queued": [{"task_id": 17, "run_id": 29}], "updated_count": 0,
+                  "failed_count": 0, "skipped_count": 0}
+        with patch("core.runtime.capabilities.require_feature", return_value=(True, "")), \
+                patch("webui.routes.accounts.account_bulk_submission.submit_accounts", return_value=result) as submit, \
+                patch("core.integrations.c2a.client.find_unique_account") as remote, \
+                patch("webui.routes.accounts.db.get_account", side_effect=AssertionError("single read")):
             response = self.client.post("/api/accounts/c2a/sync-bulk", json={"account_ids": [23, 23]})
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(response.json["queued_count"], 1)
+        self.assertEqual(response.json["updated_count"], 0)
+        self.assertEqual(response.json["queued"][0]["task_id"], "17")
+        submit.assert_called_once_with([23, 23], operation="c2a", trigger="c2a_manual_reimport")
+        remote.assert_not_called()
 
-        self.assertEqual(202, response.status_code)
-        self.assertTrue(response.json["accepted"])
-        self.assertEqual("queued", response.json["status"])
-        self.assertEqual(1, response.json["queued_count"])
-        self.assertEqual(0, response.json["updated_count"])
-        self.assertEqual(17, response.json["queued"][0]["task_id"])
-        queue.assert_called_once_with(account)
-        find_remote.assert_not_called()
-        update_remote.assert_not_called()
-
-    def test_bulk_preserves_classified_enqueue_failure_without_remote_write(self):
-        account = {"id": 23, "email": "fixture@example.test"}
-        failure = manual_sync.C2AReimportError(
-            "c2a_account_deactivated", "关联账号已确认停用，未向 C2A 更新 AT"
-        )
-        with patch("core.runtime.capabilities.require_feature", return_value=(True, "")), patch(
-            "webui.app.db.get_account", return_value=account
-        ), patch("core.integrations.c2a.manual_sync.queue_account", side_effect=failure) as queue, patch(
-            "core.integrations.c2a.client.update_account_access_token"
-        ) as update_remote:
+    def test_bulk_preserves_classified_collection_results_without_remote_write(self):
+        result = {"accepted": False, "status": "queued", "queued_count": 0, "queued": [],
+                  "updated_count": 0, "failed_count": 1, "skipped_count": 0,
+                  "failed": [{"id": 23, "error_code": "c2a_account_deactivated", "error": "关联账号已确认停用"}]}
+        with patch("core.runtime.capabilities.require_feature", return_value=(True, "")), \
+                patch("webui.routes.accounts.account_bulk_submission.submit_accounts", return_value=result), \
+                patch("core.integrations.c2a.client.update_account_access_token") as remote:
             response = self.client.post("/api/accounts/c2a/sync-bulk", json={"account_ids": [23]})
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(response.json["failed"][0]["error_code"], "c2a_account_deactivated")
+        remote.assert_not_called()
 
-        self.assertEqual(202, response.status_code)
-        self.assertTrue(response.json["accepted"])
-        self.assertEqual(0, response.json["queued_count"])
-        self.assertEqual(1, response.json["failed_count"])
-        self.assertEqual("c2a_account_deactivated", response.json["failed"][0]["error_code"])
-        queue.assert_called_once_with(account)
-        update_remote.assert_not_called()
-
-    def test_bulk_rejects_bool_float_and_noncanonical_ids_before_account_lookup(self):
-        account = {"id": 23, "email": "fixture@example.test"}
-        queued = {"accepted": True, "task_id": 17, "run_id": 29, "status": "queued"}
+    def test_bulk_keeps_all_inputs_for_collection_validation(self):
         values = [True, 1.9, 0, -1, "1.0", "01", {}, "23"]
-        with patch("core.runtime.capabilities.require_feature", return_value=(True, "")), patch(
-            "webui.app.db.get_account", return_value=account
-        ) as get_account, patch(
-            "core.integrations.c2a.manual_sync.queue_account", return_value=queued
-        ) as queue:
+        with patch("core.runtime.capabilities.require_feature", return_value=(True, "")), \
+                patch("webui.routes.accounts.account_bulk_submission.submit_accounts", return_value={"accepted": True}) as submit, \
+                patch("webui.routes.accounts.db.get_account", side_effect=AssertionError("single read")):
             response = self.client.post("/api/accounts/c2a/sync-bulk", json={"account_ids": values})
-
-        self.assertEqual(202, response.status_code)
-        self.assertEqual(1, response.json["queued_count"])
-        self.assertEqual(7, response.json["skipped_count"])
-        self.assertEqual(
-            {"c2a_local_account_id_invalid"},
-            {item["error_code"] for item in response.json["skipped"]},
-        )
-        get_account.assert_called_once_with(23)
-        queue.assert_called_once_with(account)
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(submit.call_args.args, (values,))
 
     def test_bulk_requires_a_json_object(self):
         with patch("core.runtime.capabilities.require_feature", return_value=(True, "")):

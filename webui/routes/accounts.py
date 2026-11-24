@@ -23,6 +23,7 @@ from core import account_task_store
 from core.storage import admin_repository
 from core.storage.accounts import bulk_mutations as account_bulk_mutations
 from core.storage.accounts import bulk_reads as account_bulk_reads
+from core.accounts import bulk_submission as account_bulk_submission
 from core.storage.task_query_context import task_query
 from core.codex import operation_service as codex_operation_service, retry_service as codex_retry_service, token_refresh_service as codex_token_refresh_service
 from core import db
@@ -40,6 +41,7 @@ from core.accounts.plans.promotion import is_free_trial_record
 from core.operations import query_service as operation_query_service
 from core.operations import task_gateway
 from core.operations.account_receipts import normalize_request_key
+from core.operations.bulk_mutation_service import public_submission
 from core.operations.errors import classify_task_error
 from webui import config_editor
 from webui.blueprint import LegacyEndpointBlueprint
@@ -414,35 +416,11 @@ def create_accounts_blueprint(context: WebUIContext):
             return jsonify({"ok": False, "error": "account_ids 必须是非空数组"}), 400
         if len(raw_ids) > 500:
             return jsonify({"ok": False, "error": "单次最多补齐 500 个账号"}), 400
-        started, reused, skipped = [], [], []
-        seen = set()
-        for raw_id in raw_ids:
-            try:
-                acc_id = int(raw_id)
-            except (TypeError, ValueError):
-                skipped.append({"id": raw_id, "reason": "ID 非法"})
-                continue
-            if acc_id in seen:
-                continue
-            seen.add(acc_id)
-            result = _enqueue_account_setup(acc_id, trigger="manual_account_setup_bulk")
-            if result.get("busy"):
-                skipped.append({"id": acc_id, "reason": result.get("error") or "账号正在执行其它操作"})
-            elif not result.get("accepted"):
-                skipped.append({"id": acc_id, "reason": result.get("error") or "不能补齐账号配置"})
-            else:
-                started.append(result)
-        if not started and not skipped:
-            return jsonify({"ok": False, "error": "没有可补齐的账号"}), 409
-        return jsonify({
-            "ok": True,
-            "started": started,
-            "started_count": len(started),
-            "reused": reused,
-            "reused_count": len(reused),
-            "skipped": skipped,
-            "skipped_count": len(skipped),
-        }), 202
+        result = account_bulk_submission.submit_accounts(
+            raw_ids, operation="setup", trigger="manual_account_setup_bulk",
+        )
+        return jsonify(public_submission({"ok": bool(result.get("accepted") or result.get("skipped")), **result,
+                        "reused": [], "reused_count": 0})), 202
 
     @bp.post("/api/accounts/<int:acc_id>/email-change")
     def api_account_email_change(acc_id: int):
@@ -541,39 +519,11 @@ def create_accounts_blueprint(context: WebUIContext):
             return jsonify({"ok": False, "error": "account_ids 必须是非空数组"}), 400
         if len(raw_ids) > 500:
             return jsonify({"ok": False, "error": "单次最多补全 500 个账号"}), 400
-        started, ready, skipped = [], [], []
-        seen = set()
-        for raw_id in raw_ids:
-            try:
-                acc_id = int(raw_id)
-            except (TypeError, ValueError):
-                skipped.append({"id": raw_id, "reason": "ID 非法"})
-                continue
-            if acc_id in seen:
-                continue
-            seen.add(acc_id)
-            payload, status = _account_action_result(
-                acc_id,
-                "complete",
-                trigger="manual_account_completion_bulk",
-            )
-            if status == 202 and payload.get("accepted"):
-                started.append(payload)
-            elif payload.get("ready"):
-                ready.append(payload)
-            else:
-                skipped.append({"id": acc_id, "reason": payload.get("error") or "不能补全账号"})
-        if not started and not ready and not skipped:
-            return jsonify({"ok": False, "error": "没有可补全的账号"}), 409
-        return jsonify({
-            "ok": True,
-            "started": started,
-            "started_count": len(started),
-            "ready": ready,
-            "ready_count": len(ready),
-            "skipped": skipped,
-            "skipped_count": len(skipped),
-        }), 202
+        result = account_bulk_submission.submit_accounts(
+            raw_ids, operation="complete", trigger="manual_account_completion_bulk",
+        )
+        return jsonify(public_submission({"ok": bool(result.get("accepted") or result.get("skipped") or result.get("ready")),
+                        **result})), 202
 
     @bp.post("/api/accounts/action-bulk")
     def api_accounts_action_bulk():
@@ -588,34 +538,11 @@ def create_accounts_blueprint(context: WebUIContext):
             return jsonify({"ok": False, "error": "修改密码或修改 2FA 单次最多操作 20 个账号"}), 400
         if len(raw_ids) > 500:
             return jsonify({"ok": False, "error": "单次最多操作 500 个账号"}), 400
-        started, ready, skipped = [], [], []
-        seen = set()
-        for raw_id in raw_ids:
-            try:
-                acc_id = int(raw_id)
-            except (TypeError, ValueError):
-                skipped.append({"id": raw_id, "reason": "ID 非法"})
-                continue
-            if acc_id in seen:
-                continue
-            seen.add(acc_id)
-            payload, status = _account_action_result(acc_id, action, trigger=f"manual_account_{action}_bulk")
-            if status == 202 and payload.get("accepted"):
-                started.append(payload)
-            elif payload.get("ready"):
-                ready.append(payload)
-            else:
-                skipped.append({"id": acc_id, "reason": payload.get("error") or "操作未入队"})
-        return jsonify({
-            "ok": True,
-            "action": action,
-            "started": started,
-            "started_count": len(started),
-            "ready": ready,
-            "ready_count": len(ready),
-            "skipped": skipped,
-            "skipped_count": len(skipped),
-        }), 202
+        result = account_bulk_submission.submit_accounts(
+            raw_ids, operation=action, trigger=f"manual_account_{action}_bulk",
+        )
+        return jsonify(public_submission({"ok": bool(result.get("accepted") or result.get("skipped") or result.get("ready")),
+                        "action": action, **result})), 202
 
     @bp.post("/api/accounts/<int:acc_id>/check-deactivation-mail")
     @_with_account_request_key
@@ -1045,84 +972,13 @@ def create_accounts_blueprint(context: WebUIContext):
             return jsonify({"ok": False, "error": "account_ids 必须是非空数组"}), 400
         if len(ids) > 500:
             return jsonify({"ok": False, "error": "单次最多查活 500 个账号"}), 400
-
-        account_ids: list[int] = []
-        skipped: list[dict] = []
-        seen = set()
-        for raw in ids:
-            try:
-                acc_id = int(raw)
-            except (TypeError, ValueError):
-                skipped.append({"id": raw, "reason": "ID 非法"})
-                continue
-            if acc_id in seen:
-                continue
-            seen.add(acc_id)
-            account_ids.append(acc_id)
-
-        accounts_by_id = _load_bulk_operation_accounts(account_ids)
-        accounts = []
-        for acc_id in account_ids:
-            acc = accounts_by_id.get(acc_id)
-            if not acc:
-                skipped.append({"id": acc_id, "reason": "账号不存在"})
-                continue
-            email = str(acc.get("email") or "").strip()
-            if not email:
-                skipped.append({"id": acc_id, "reason": "邮箱为空"})
-                continue
-            if db.account_is_deactivated(acc):
-                skipped.append({"id": acc_id, "email": email, "reason": "账号已标记为封号"})
-                continue
-            accounts.append(acc)
-
-        batch_id = account_task_store.create_batch(
-            action_type="live_check",
-            trigger="manual_bulk",
-            total_count=len(accounts),
-        ) if accounts else None
-        started = []
-        busy_count = 0
-        failed = []
-        for acc in accounts:
-            acc_id = int(acc.get("id") or 0)
-            email = str(acc.get("email") or "")
-            queued = live_check_service.enqueue_account_live_check(
-                account_id=acc_id,
-                email=email,
-                trigger="manual_bulk",
-                # 未显式传入时，由账号代理服务按注册国家申请新的平台租约，
-                # 或按 ACCOUNT_ACTION_PROXY_MODE 使用静态代理池/直连。
-                proxy=None,
-                batch_id=batch_id,
-                force_refresh=False,
-                driver=effective_driver,
-                **({"account_request_key": account_request_key} if account_request_key else {}),
-            )
-            if queued.get("accepted"):
-                started.append({
-                    "id": acc_id, "email": email, "status": "queued",
-                    "task_id": queued.get("task_id"), "run_id": queued.get("run_id"),
-                })
-            elif queued.get("busy"):
-                busy_count += 1
-                skipped.append({"id": acc_id, "email": email, "reason": queued.get("error") or "正在查活"})
-            else:
-                failed.append({"id": acc_id, "email": email, "error": queued.get("error") or "入队失败"})
-
-        return jsonify({
-            "ok": True,
-            "message": f"已入队 {len(started)} 个查活任务",
-            "started": started,
-            "started_count": len(started),
-            "busy_count": busy_count,
-            "failed": failed,
-            "failed_count": len(failed),
-            "skipped": skipped,
-            "queue": live_check_service.queue_settings(),
-            "batch_id": batch_id,
-            "live_check_driver": effective_driver,
-        }), 202
+        result = account_bulk_submission.submit_accounts(
+            ids, operation="live", trigger="manual_bulk", parameters={"driver": effective_driver},
+            request_key=account_request_key,
+        )
+        return jsonify(public_submission({"ok": True, "message": f"已入队 {result.get('started_count', 0)} 个查活任务",
+                        **result, "queue": live_check_service.queue_settings(),
+                        "live_check_driver": effective_driver})), 202
 
     @bp.post("/api/accounts/refresh-token-bulk")
     @_with_account_request_key
@@ -1135,81 +991,11 @@ def create_accounts_blueprint(context: WebUIContext):
         ids = data.get("account_ids") or data.get("ids") or []
         if not isinstance(ids, list) or not ids:
             return jsonify({"ok": False, "error": "account_ids 必须是非空数组"}), 400
-
-        account_ids: list[int] = []
-        skipped: list[dict] = []
-        seen = set()
-        for raw in ids:
-            try:
-                acc_id = int(raw)
-            except (TypeError, ValueError):
-                skipped.append({"id": raw, "reason": "ID 非法"})
-                continue
-            if acc_id in seen:
-                continue
-            seen.add(acc_id)
-            account_ids.append(acc_id)
-
-        accounts_by_id = _load_bulk_operation_accounts(account_ids)
-        accounts = []
-        for acc_id in account_ids:
-            acc = accounts_by_id.get(acc_id)
-            if not acc:
-                skipped.append({"id": acc_id, "reason": "账号不存在"})
-                continue
-            email = str(acc.get("email") or "").strip()
-            if not email:
-                skipped.append({"id": acc_id, "reason": "邮箱为空"})
-                continue
-            if db.account_is_deactivated(acc):
-                skipped.append({"id": acc_id, "email": email, "reason": "账号已标记为封号"})
-                continue
-            accounts.append(acc)
-
-        batch_id = account_task_store.create_batch(
-            action_type="token_refresh",
-            trigger="manual_bulk",
-            total_count=len(accounts),
-        ) if accounts else None
-        started = []
-        busy_count = 0
-        failed = []
-        for acc in accounts:
-            acc_id = int(acc.get("id") or 0)
-            email = str(acc.get("email") or "")
-            queued = live_check_service.enqueue_account_live_check(
-                account_id=acc_id,
-                email=email,
-                trigger="token_refresh_manual",
-                proxy=None,
-                batch_id=batch_id,
-                force_refresh=True,
-                **({"account_request_key": account_request_key} if account_request_key else {}),
-            )
-            if queued.get("accepted"):
-                started.append({
-                    "id": acc_id, "email": email, "status": "queued",
-                    "task_id": queued.get("task_id"), "run_id": queued.get("run_id"),
-                    "refresh_driver": queued.get("token_refresh_driver"),
-                })
-            elif queued.get("busy"):
-                busy_count += 1
-                skipped.append({"id": acc_id, "email": email, "reason": queued.get("error") or "账号操作进行中"})
-            else:
-                failed.append({"id": acc_id, "email": email, "error": queued.get("error") or "入队失败"})
-
-        return jsonify({
-            "ok": True,
-            "message": f"已入队 {len(started)} 个刷新AT任务",
-            "started": started,
-            "started_count": len(started),
-            "busy_count": busy_count,
-            "failed": failed,
-            "failed_count": len(failed),
-            "skipped": skipped,
-            "queue": live_check_service.queue_settings(),
-            "batch_id": batch_id,
-        }), 202
+        result = account_bulk_submission.submit_accounts(
+            ids, operation="token", trigger="token_refresh_manual", request_key=account_request_key,
+        )
+        return jsonify(public_submission({"ok": True, "message": f"已入队 {result.get('started_count', 0)} 个刷新AT任务",
+                        **result, "queue": live_check_service.queue_settings()})), 202
 
     @bp.post("/api/accounts/check-plan")
     @_with_account_request_key
@@ -1266,81 +1052,11 @@ def create_accounts_blueprint(context: WebUIContext):
         if len(ids) > 500:
             return jsonify({"ok": False, "error": "单次最多查询 500 个账号"}), 400
         timezone_offset_min = str(data.get("timezone_offset_min") or "-")
-
-        seen = set()
-        ordered_inputs = []
-        for raw in ids:
-            try:
-                acc_id = int(raw)
-            except Exception:
-                ordered_inputs.append((None, raw))
-                continue
-            if acc_id in seen:
-                continue
-            seen.add(acc_id)
-            ordered_inputs.append((acc_id, raw))
-
-        accounts_by_id = _load_bulk_operation_accounts(list(seen))
-        items = []
-        skipped = []
-        auto_refresh_at = None
-        for acc_id, raw in ordered_inputs:
-            if acc_id is None:
-                skipped.append({"id": raw, "reason": "ID 非法"})
-                continue
-            acc = accounts_by_id.get(acc_id)
-            if not acc:
-                skipped.append({"id": acc_id, "reason": "账号不存在"})
-                continue
-            if db.account_is_deactivated(acc):
-                skipped.append({"id": acc_id, "email": acc.get("email"), "reason": "账号已废号"})
-                continue
-            if not (acc.get("access_token") or "").strip():
-                if auto_refresh_at is None:
-                    auto_refresh_at = bool(plan_check_service.get_config_snapshot().get("PLAN_CHECK_AUTO_REFRESH_AT_ENABLED", True))
-                if not auto_refresh_at:
-                    skipped.append({"id": acc_id, "email": acc.get("email"), "reason": "缺少 access_token"})
-                    continue
-            items.append(acc)
-
-        started = []
-        busy = []
-        failed = []
-        batch_id = account_task_store.create_batch(
-            action_type="plan_check",
-            trigger="manual_bulk",
-            total_count=len(items),
-        ) if items else None
-        for acc in items:
-            queued = plan_check_service.enqueue_account_plan_check(
-                account_id=int(acc.get("id")),
-                email=acc.get("email") or "",
-                access_token=acc.get("access_token") or "",
-                trigger="manual_bulk",
-                proxy=None,
-                timezone_offset_min=timezone_offset_min,
-                batch_id=batch_id,
-                **({"account_request_key": account_request_key} if account_request_key else {}),
-            )
-            item = {"id": acc.get("id"), "email": acc.get("email"), **queued}
-            if queued.get("accepted"):
-                started.append(item)
-            elif queued.get("busy"):
-                busy.append(item)
-            else:
-                failed.append(item)
-        return jsonify({
-            "ok": True,
-            "started": started,
-            "started_count": len(started),
-            "busy": busy,
-            "busy_count": len(busy),
-            "failed": failed,
-            "failed_count": len(failed),
-            "skipped": skipped,
-            "skipped_count": len(skipped),
-            "batch_id": batch_id,
-        }), 202
+        result = account_bulk_submission.submit_accounts(
+            ids, operation="plan", trigger="manual_bulk",
+            parameters={"timezone_offset_min": timezone_offset_min}, request_key=account_request_key,
+        )
+        return jsonify(public_submission({"ok": True, **result})), 202
 
     @bp.get("/api/extract-link/cdk")
     def api_extract_link_cdk():
@@ -1525,49 +1241,11 @@ def create_accounts_blueprint(context: WebUIContext):
             return jsonify({"ok": False, "error": "单次最多提交 500 个账号"}), 400
 
         from core.integrations.sub2api import manual_upload
-
-        queued, failed, skipped = [], [], []
-        seen = set()
-        for raw in ids:
-            try:
-                acc_id = int(raw)
-            except Exception:
-                skipped.append({"id": raw, "reason": "ID 非法"})
-                continue
-            if acc_id in seen:
-                continue
-            seen.add(acc_id)
-            acc = db.get_account(acc_id)
-            if not acc:
-                skipped.append({"id": acc_id, "reason": "账号不存在"})
-                continue
-            email = acc.get("email")
-            if (acc.get("codex_status") or "") != "success":
-                skipped.append({"id": acc_id, "email": email, "reason": "尚未完成 Codex OAuth"})
-                continue
-            try:
-                result = manual_upload.queue_account(acc)
-                if not result.get("accepted"):
-                    skipped.append({"id": acc_id, "email": email, "reason": result.get("error") or "账号任务暂不可入队",
-                                    "task_id": result.get("task_id"), "run_id": result.get("run_id")})
-                    continue
-                queued.append({
-                    "id": acc_id,
-                    "email": email,
-                    **result,
-                })
-            except Exception as exc:
-                failed.append({"id": acc_id, "email": email, "error_code": getattr(exc, "code", "sub2api_manual_queue_failed"),
-                               "error": str(exc) if isinstance(exc, (manual_upload.ManualUploadError, ValueError)) else "手动上传入队失败，请查看服务日志"})
-        return jsonify({
-            "ok": True,
-            "accepted": True, "status": "queued", "queued": queued, "queued_count": len(queued),
-            "uploaded": [], "uploaded_count": 0,
-            "failed": failed,
-            "failed_count": len(failed),
-            "skipped": skipped,
-            "skipped_count": len(skipped),
-        }), 202
+        try:
+            result = manual_upload.queue_accounts(ids)
+        except ValueError as exc:
+            return jsonify({"ok": False, "error_code": getattr(exc, "code", "sub2api_manual_queue_failed"), "error": str(exc)}), 400
+        return jsonify(public_submission({"ok": True, **result})), 202
 
     @bp.post("/api/accounts/<int:acc_id>/c2a/sync")
     def api_account_c2a_sync(acc_id: int):
@@ -1621,78 +1299,11 @@ def create_accounts_blueprint(context: WebUIContext):
         if len(ids) > 500:
             return jsonify({"ok": False, "error": "单次最多提交 500 个账号"}), 400
 
-        from core.integrations.c2a import client as c2a_client
-        from core.integrations.c2a import manual_sync
-
-        queued, failed, skipped = [], [], []
-        seen = set()
-        for index, raw in enumerate(ids, start=1):
-            try:
-                acc_id = _strict_positive_account_id(raw)
-            except ValueError:
-                skipped.append({
-                    "input_index": index,
-                    "error_code": "c2a_local_account_id_invalid",
-                    "reason": "账号 ID 必须是正整数",
-                })
-                continue
-            if acc_id in seen:
-                continue
-            seen.add(acc_id)
-            account = db.get_account(acc_id)
-            if not account:
-                skipped.append({
-                    "id": acc_id,
-                    "error_code": "c2a_local_account_missing",
-                    "reason": "账号不存在",
-                })
-                continue
-            try:
-                result = manual_sync.queue_account(account)
-                if not result.get("accepted"):
-                    busy = bool(result.get("busy"))
-                    skipped.append({
-                        "id": acc_id,
-                        "email": account.get("email"),
-                        "error_code": result.get("error_code") or (
-                            "c2a_manual_queue_busy" if busy else "c2a_manual_queue_deferred"
-                        ),
-                        "reason": result.get("error") or (
-                            "该账号已有 C2A 重新导入任务" if busy else "账号任务暂不可入队"
-                        ),
-                        "task_id": result.get("task_id"),
-                        "run_id": result.get("run_id"),
-                    })
-                    continue
-                queued.append({"id": acc_id, "email": account.get("email"), **result})
-            except (manual_sync.C2AReimportError, c2a_client.C2AError, ValueError) as exc:
-                failed.append({
-                    "id": acc_id,
-                    "email": account.get("email"),
-                    "error_code": getattr(exc, "code", "c2a_manual_queue_failed"),
-                    "error": str(exc),
-                })
-            except Exception:
-                logger.exception("C2A 批量重新导入入队失败：account_id=%s", acc_id)
-                failed.append({
-                    "id": acc_id,
-                    "email": account.get("email"),
-                    "error_code": "c2a_manual_queue_failed",
-                    "error": "C2A 重新导入入队失败，请查看服务日志",
-                })
-        return jsonify({
-            "ok": True,
-            "accepted": True,
-            "status": "queued",
-            "queued": queued,
-            "queued_count": len(queued),
-            "updated": [],
-            "updated_count": 0,
-            "failed": failed,
-            "failed_count": len(failed),
-            "skipped": skipped,
-            "skipped_count": len(skipped),
-        }), 202
+        try:
+            result = account_bulk_submission.submit_accounts(ids, operation="c2a", trigger="c2a_manual_reimport")
+        except ValueError as exc:
+            return jsonify({"ok": False, "error_code": getattr(exc, "code", "c2a_manual_queue_failed"), "error": str(exc)}), 400
+        return jsonify(public_submission({"ok": True, **result})), 202
 
     @bp.post("/api/codex/upload-sub2-bulk")
     def api_codex_upload_sub2_bulk():
@@ -1708,36 +1319,11 @@ def create_accounts_blueprint(context: WebUIContext):
             return jsonify({"ok": False, "error": "单次最多提交 500 个凭证"}), 400
 
         from core.integrations.sub2api import manual_upload
-
-        queued, failed, skipped = [], [], []
-        seen = set()
-        for raw in filenames:
-            filename = str(raw or "").strip() if isinstance(raw, str) else ""
-            if not filename:
-                skipped.append({"filename": str(raw), "reason": "文件名非法"})
-                continue
-            if filename in seen:
-                continue
-            seen.add(filename)
-            try:
-                result = manual_upload.queue_filename(filename)
-                if not result.get("accepted"):
-                    skipped.append({"filename": filename, "reason": result.get("error") or "凭证任务暂不可入队",
-                                    "task_id": result.get("task_id"), "run_id": result.get("run_id")})
-                    continue
-                queued.append({"filename": result.get("filename") or filename, **result})
-            except Exception as exc:
-                failed.append({"filename": filename, "error_code": getattr(exc, "code", "sub2api_manual_queue_failed"),
-                               "error": str(exc) if isinstance(exc, (manual_upload.ManualUploadError, ValueError)) else "手动上传入队失败，请查看服务日志"})
-        return jsonify({
-            "ok": True,
-            "accepted": True, "status": "queued", "queued": queued, "queued_count": len(queued),
-            "uploaded": [], "uploaded_count": 0,
-            "failed": failed,
-            "failed_count": len(failed),
-            "skipped": skipped,
-            "skipped_count": len(skipped),
-        }), 202
+        try:
+            result = manual_upload.queue_filenames(filenames)
+        except ValueError as exc:
+            return jsonify({"ok": False, "error_code": getattr(exc, "code", "sub2api_manual_queue_failed"), "error": str(exc)}), 400
+        return jsonify(public_submission({"ok": True, **result})), 202
 
     @bp.post("/api/accounts/download-cpa-bulk")
     def api_accounts_download_cpa_bulk():

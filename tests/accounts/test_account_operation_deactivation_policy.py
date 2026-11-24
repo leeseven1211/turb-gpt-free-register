@@ -98,6 +98,9 @@ class AccountOperationDeactivationPolicyTests(unittest.TestCase):
             patch("webui.routes.accounts.db.get_account", return_value=_DEACTIVATED_ACCOUNT),
             patch("webui.routes.accounts.record_store.list_rows", return_value=[_DEACTIVATED_ACCOUNT]),
             patch("webui.routes.accounts.account_task_store.create_batch") as create_batch,
+            patch("webui.routes.accounts.account_bulk_submission.submit_accounts",
+                  return_value={"accepted": False, "skipped": [{"id": 7, "reason": "账号已废号"}],
+                                "skipped_count": 1}),
             patch("webui.routes.accounts.plan_check_service.enqueue_account_plan_check") as enqueue_plan,
             patch("webui.routes.accounts.extract_link_service.enqueue_account_extract") as enqueue_extract,
         ):

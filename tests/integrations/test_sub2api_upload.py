@@ -300,27 +300,27 @@ class Sub2ApiWebUploadTests(unittest.TestCase):
         mark.assert_not_called()
 
     def test_account_bulk_deduplicates_and_returns_only_queue_receipts(self):
-        account = {"id": 23, "email": "fixture@example.test", "codex_status": "success"}
-        with patch("webui.app.db.get_account", return_value=account), patch(
-            "core.integrations.sub2api.manual_upload.queue_account", return_value={"accepted": True, "task_id": 17, "run_id": 29}
+        result = {"accepted": True, "queued": [{"id": 23, "task_id": 17, "run_id": 29}],
+                  "queued_count": 1, "uploaded": [], "uploaded_count": 0}
+        with patch("webui.app.db.get_account", side_effect=AssertionError("single read")), patch(
+            "core.integrations.sub2api.manual_upload.queue_accounts", return_value=result
         ) as queue, patch("core.integrations.sub2api.client.upload_codex_oauth_credential") as upload:
             response = self.client.post("/api/accounts/codex/upload-sub2-bulk", json={"account_ids": [23,23]})
         self.assertEqual(202, response.status_code)
         self.assertEqual(1, response.json["queued_count"])
         self.assertEqual(0, response.json["uploaded_count"])
-        queue.assert_called_once()
+        queue.assert_called_once_with([23, 23])
         upload.assert_not_called()
 
     def test_filename_bulk_deduplicates_and_keeps_classified_enqueue_failures(self):
-        from core.integrations.sub2api.manual_upload import ManualUploadError
-        def queue(name):
-            if name == "stopped.json":
-                raise ManualUploadError("sub2api_account_deactivated", "关联账号已停用，禁止上传 OAuth 凭证")
-            return {"accepted": True, "task_id": 17, "run_id": 29, "filename": name}
-        with patch("core.integrations.sub2api.manual_upload.queue_filename", side_effect=queue) as queued:
+        result = {"accepted": True, "queued": [{"filename": "fixture.json", "task_id": 17, "run_id": 29}],
+                  "queued_count": 1, "uploaded": [], "uploaded_count": 0,
+                  "failed": [{"filename": "stopped.json", "error_code": "sub2api_account_deactivated"}],
+                  "failed_count": 1, "skipped": [{"filename": "", "reason": "文件名非法"}], "skipped_count": 1}
+        with patch("core.integrations.sub2api.manual_upload.queue_filenames", return_value=result) as queued:
             response = self.client.post("/api/codex/upload-sub2-bulk", json={"filenames": ["fixture.json", "fixture.json", "stopped.json", ""]})
         self.assertEqual(202, response.status_code)
-        self.assertEqual(2, queued.call_count)
+        queued.assert_called_once_with(["fixture.json", "fixture.json", "stopped.json", ""])
         self.assertEqual(1, response.json["queued_count"])
         self.assertEqual(0, response.json["uploaded_count"])
         self.assertEqual(1, response.json["failed_count"])
