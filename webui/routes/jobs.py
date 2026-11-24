@@ -502,12 +502,9 @@ def create_jobs_blueprint(context: WebUIContext):
                 continue
             seen.add(one_id)
             normalized_ids.append(one_id)
+        results = svc.retry_jobs(normalized_ids, workers=workers, **retry_kwargs)
         for one_id in normalized_ids:
-            result = svc.retry_job(
-                one_id,
-                workers=workers,
-                **retry_kwargs,
-            )
+            result = results[one_id]
             result_job = result.get("job") or {}
             if result_job.get("batch_id"):
                 affected_batch_ids.add(str(result_job.get("batch_id")))

@@ -70,6 +70,8 @@ class ResumeRetryChainTests(unittest.TestCase):
         root, child, account, attempt = facts()
         executor = Mock()
         with patch.object(operations.operation_task_store, 'get_task', side_effect=lambda *a, **kw: self._task()), \
+             patch.object(operations.operation_task_store, 'get_action_tasks_many', return_value={9: self._task()}), \
+             patch('core.bulk_operations.service.retry_managed_task', return_value=None), \
              patch.object(svc.db, 'get_job', side_effect=lambda ident: {21: root, 22: child}.get(ident)), \
              patch.object(svc.db, 'get_successful_retry_for_job', return_value=None), \
              patch.object(svc, '_account_for_job', return_value=account), \

@@ -18,7 +18,7 @@ import uuid
 from contextlib import ExitStack
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from config.operation_drivers import (
     operation_driver_aliases,
@@ -36,6 +36,9 @@ from core.registration.driver_selection import REGISTRATION_DRIVERS, normalize_r
 from core.registration.admission import mark_execution_state
 from core.email.remail.client import RemailOrderUncertain
 from core.operations.errors import REGISTRATION_REQUEST_UNKNOWN_CAUSE_CODES
+
+if TYPE_CHECKING:
+    from core.storage.registration.bulk_retry import RetryAdmission
 
 logger = logging.getLogger('core.registration_service')
 
@@ -4244,7 +4247,8 @@ def retry_job(
     registration_driver: str | None = None,
     debug_enabled: bool | None = None,
     proxy_country: str | None = None,
-) -> dict:
+    _admissions: list["RetryAdmission"] | None = None,
+) -> dict | None:
     """按原身份重跑终态任务，显式驱动或国家覆盖只冻结到新子任务。"""
     if workers is not None:
         try:
@@ -4434,6 +4438,19 @@ def retry_job(
     if unavailable:
         return {"ok": False, "status": 503, **unavailable}
 
+    if _admissions is not None and action in {"registration", "registration_resume"}:
+        from core.storage.registration.bulk_retry import RetryAdmission
+
+        _admissions.append(RetryAdmission(
+            source=source, root=root_job, attempt=attempt, action=action,
+            email=email or None, email_source=retry_email_source,
+            account=account if action == "registration_resume" else None,
+            batch_id=batch_id, batch_index=batch_index, batch_size=batch_size,
+            workers=workers, config_snapshot=retry_snapshot,
+            debug_enabled=retry_debug_enabled,
+        ))
+        return None
+
     reserved_account_action = False
     if action == "twofa":
         if not email or account_id is None:
@@ -4472,46 +4489,10 @@ def retry_job(
     if not created:
         if reserved_account_action:
             codex_retry_service.release(email)
-        if debug_enabled is not None and bool(job.get("debug_enabled", False)) != debug_enabled:
-            return {"ok": False, "error": "同一 Attempt 已有不同调试设置的运行，不能中途切换抓包", "status": 409}
-        if retry_country is not None:
-            active_snapshot = job.get("config_snapshot")
-            if not isinstance(active_snapshot, dict):
-                active_data = job.get("data")
-                active_snapshot = active_data.get("config_snapshot") if isinstance(active_data, dict) else None
-            observed_country = _normalize_registration_country(job.get("proxy_region"))
-            if (not isinstance(active_snapshot, dict)
-                    or active_snapshot.get("registration_driver") != "roxy"
-                    or _snapshot_registration_country(active_snapshot) != retry_country
-                    or active_snapshot.get("retry_proxy_country_override") != retry_country
-                    or (observed_country and observed_country != retry_country)):
-                return {"ok": False, "error": "同一 Attempt 已有其他国家配置的任务，不能中途切换线路", "status": 409}
-        if registration_driver == "roxy":
-            active_snapshot = job.get("config_snapshot")
-            if not isinstance(active_snapshot, dict):
-                active_data = job.get("data")
-                active_snapshot = active_data.get("config_snapshot") if isinstance(active_data, dict) else None
-            if not isinstance(active_snapshot, dict) or active_snapshot.get("registration_driver") != "roxy":
-                return {
-                    "ok": False,
-                    "error": "同一 Attempt 已有其他驱动的任务在排队或运行",
-                    "status": 409,
-                }
-            if action == "twofa" and active_snapshot.get("twofa_driver") != "browser":
-                return {
-                    "ok": False,
-                    "error": "同一 Attempt 已有其他 2FA 驱动的任务在排队或运行",
-                    "status": 409,
-                }
-        return {
-            "ok": True,
-            "created": False,
-            "reused": True,
-            "message": f"已有重试任务 #{job['id']} 在排队或运行中",
-            "source_job_id": int(job_id),
-            "retry_action": action,
-            "job": job,
-        }
+        return _reused_retry_result(
+            job_id, action, job, debug_enabled=debug_enabled,
+            retry_country=retry_country, registration_driver=registration_driver,
+        )
 
     account_task_id = None
     try:
@@ -4565,6 +4546,10 @@ def retry_job(
         logger.exception("[Service] 重试任务 #%s 提交线程池失败", job["id"])
         return {"ok": False, "error": "重试任务创建成功，但提交执行失败", "status": 500, "job": db.get_job(int(job["id"]))}
 
+    return _created_retry_result(job_id, action, job)
+
+
+def _created_retry_result(job_id: int, action: str, job: dict) -> dict:
     return {
         "ok": True,
         "created": True,
@@ -4574,6 +4559,100 @@ def retry_job(
         "retry_action": action,
         "job": job,
     }
+
+
+def _reused_retry_result(
+    job_id: int, action: str, job: dict, *, debug_enabled: bool | None,
+    retry_country: str | None = None, registration_driver: str | None = None,
+) -> dict:
+    if debug_enabled is not None and bool(job.get("debug_enabled", False)) != debug_enabled:
+        return {"ok": False, "error": "同一 Attempt 已有不同调试设置的运行，不能中途切换抓包", "status": 409}
+    if retry_country is not None:
+        active_snapshot = job.get("config_snapshot")
+        if not isinstance(active_snapshot, dict):
+            active_data = job.get("data")
+            active_snapshot = active_data.get("config_snapshot") if isinstance(active_data, dict) else None
+        observed_country = _normalize_registration_country(job.get("proxy_region"))
+        if (not isinstance(active_snapshot, dict)
+                or active_snapshot.get("registration_driver") != "roxy"
+                or _snapshot_registration_country(active_snapshot) != retry_country
+                or active_snapshot.get("retry_proxy_country_override") != retry_country
+                or (observed_country and observed_country != retry_country)):
+            return {"ok": False, "error": "同一 Attempt 已有其他国家配置的任务，不能中途切换线路", "status": 409}
+    if registration_driver == "roxy":
+        active_snapshot = job.get("config_snapshot")
+        if not isinstance(active_snapshot, dict):
+            active_data = job.get("data")
+            active_snapshot = active_data.get("config_snapshot") if isinstance(active_data, dict) else None
+        if not isinstance(active_snapshot, dict) or active_snapshot.get("registration_driver") != "roxy":
+            return {
+                "ok": False,
+                "error": "同一 Attempt 已有其他驱动的任务在排队或运行",
+                "status": 409,
+            }
+        if action == "twofa" and active_snapshot.get("twofa_driver") != "browser":
+            return {
+                "ok": False,
+                "error": "同一 Attempt 已有其他 2FA 驱动的任务在排队或运行",
+                "status": 409,
+            }
+    return {
+        "ok": True,
+        "created": False,
+        "reused": True,
+        "message": f"已有重试任务 #{job['id']} 在排队或运行中",
+        "source_job_id": int(job_id),
+        "retry_action": action,
+        "job": job,
+    }
+
+
+def retry_jobs(job_ids: list[int], *, workers: int, debug_enabled: bool | None = None) -> dict[int, dict]:
+    """Validate each source through the regular retry policy, then admit registration runs together."""
+    from core.storage.registration.bulk_retry import RetryAdmission, admit
+
+    plans: list[RetryAdmission] = []
+    results = {}
+    options = {} if debug_enabled is None else {"debug_enabled": debug_enabled}
+    for job_id in job_ids:
+        result = retry_job(job_id, workers=workers, _admissions=plans, **options)
+        if result is not None:
+            results[job_id] = result
+    pending = []
+    for plan in plans:
+        if is_job_worker_active(plan.source_id):
+            results[plan.source_id] = {"ok": False, "error": "原任务仍在收口，暂不能重跑", "status": 409}
+        else:
+            pending.append(plan)
+    admissions = admit(pending)
+    started = []
+    for plan in reversed(pending):
+        outcome = admissions[plan.source_id]
+        if outcome is None:
+            continue
+        if isinstance(outcome, dict):
+            results[plan.source_id] = outcome
+        else:
+            job, created = outcome
+            if created:
+                started.append(plan)
+                results[plan.source_id] = _created_retry_result(plan.source_id, plan.action, job)
+            else:
+                results[plan.source_id] = _reused_retry_result(
+                    plan.source_id, plan.action, job, debug_enabled=debug_enabled,
+                )
+    if started:
+        # 与逐条入口一样，默认并发沿用最后一个创建成功的原批次设置。
+        configure_submission_workers(started[0].workers)
+    for plan in pending:
+        if admissions[plan.source_id] is None:
+            # 部署前的历史记录可能尚未建立完整 Attempt/任务投影，沿用兼容回填入口。
+            logger.info("[Service] 注册重试沿用历史兼容入口：job_id=%s", plan.source_id)
+            results[plan.source_id] = retry_job(plan.source_id, workers=workers, **options)
+    if started:
+        start_dispatcher()
+        notify_dispatch()
+    return results
 
 
 def cancel_pending_jobs(*, batch_id: str | None = None) -> int:

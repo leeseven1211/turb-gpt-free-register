@@ -447,15 +447,14 @@ class RegistrationRetryDriverTests(unittest.TestCase):
     def test_bulk_retry_preserves_explicit_debug_setting_for_each_job(self):
         client = create_app(auth_code="test-auth").test_client()
         for enabled in (True, False):
-            with self.subTest(enabled=enabled), patch("webui.app.svc.retry_job", return_value={"ok": True}) as retry:
+            with self.subTest(enabled=enabled), patch("webui.app.svc.retry_jobs", return_value={
+                21: {"ok": True}, 23: {"ok": True},
+            }) as retry:
                 response = client.post("/api/jobs/retry-bulk", json={
                     "job_ids": [21, 23], "workers": 1, "debug_enabled": enabled,
                 }, headers={"X-Auth-Code": "test-auth"})
                 self.assertEqual(response.status_code, 200)
-                self.assertEqual([call.kwargs for call in retry.call_args_list], [
-                    {"workers": 1, "debug_enabled": enabled},
-                    {"workers": 1, "debug_enabled": enabled},
-                ])
+                retry.assert_called_once_with([21, 23], workers=1, debug_enabled=enabled)
 
     def test_bulk_retry_rejects_invalid_debug_flag_before_submitting_any_job(self):
         client = create_app(auth_code="test-auth").test_client()
