@@ -182,7 +182,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 批量执行现有任务操作 */
+        /**
+         * 批量执行现有任务操作
+         * @description 按任务 ID 返回受理和跳过结果。批量托管任务重跑按原批次创建一个目标集合轮次。
+         */
         post: operations["bulkOperations"];
         delete?: never;
         options?: never;
@@ -580,6 +583,17 @@ export interface components {
             };
         } & {
             [key: string]: unknown;
+        };
+        BulkActionResponse: {
+            ok: boolean;
+            /** @enum {string} */
+            action: "retry" | "cancel" | "terminate" | "delete";
+            accepted: components["schemas"]["ActionResult"][];
+            accepted_count: number;
+            skipped: components["schemas"]["ActionResult"][];
+            skipped_count: number;
+            deleted?: number[];
+            deleted_count?: number;
         };
         ActionResponse: {
             ok?: boolean;
@@ -1191,7 +1205,10 @@ export interface operations {
     bulkOperations: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description 托管任务重跑的可选幂等键，在原批次内绑定本次目标集合。 */
+                "Idempotency-Key"?: string;
+            };
             path?: never;
             cookie?: never;
         };
@@ -1213,7 +1230,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ActionResponse"];
+                    "application/json": components["schemas"]["BulkActionResponse"];
                 };
             };
             /** @description 参数无效 */
