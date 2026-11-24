@@ -2335,7 +2335,8 @@ function wn(e = (e, t) => O(e, t, ie)) {
 				source: i.source,
 				q: i.q,
 				status: i.status,
-				used_date: i.used_date
+				used_date: i.used_date,
+				usage: String(i.usage || "")
 			})}`, n);
 		},
 		derivationSummary: (e) => t("/api/email-derivation/summary?source=all", e),
