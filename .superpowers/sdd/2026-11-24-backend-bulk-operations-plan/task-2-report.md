@@ -2,7 +2,7 @@
 
 状态：已完成。
 
-Commit：`252487da`（`feat: 增加批量命令 Worker 执行入口`）。
+Commit：`b842436d`（`feat: 增加批量命令 Worker 执行入口`）。
 
 实现内容：
 
