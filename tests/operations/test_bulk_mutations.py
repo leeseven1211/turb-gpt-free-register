@@ -99,3 +99,11 @@ def test_unhashable_invalid_targets_are_classified_without_type_error():
 
     assert [item.reason_code for item in result.items[:2]] == ["invalid_target", "invalid_target"]
     assert result.items[2].status == "updated"
+
+
+def test_float_target_cannot_collapse_into_integer_target():
+    result = execute_chunked_bulk("archive", [1, 1.0], lambda chunk: None)
+    assert result.unique_count == 1
+    assert result.duplicate_count == 0
+    assert [item.status for item in result.items] == ["updated", "skipped"]
+    assert result.items[1].reason_code == "invalid_target"

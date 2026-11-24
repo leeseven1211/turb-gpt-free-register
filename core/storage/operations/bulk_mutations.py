@@ -52,9 +52,11 @@ def init() -> None:
                 run_id BIGINT,
                 execution_id TEXT NOT NULL,
                 items JSONB NOT NULL,
+                outcome TEXT NOT NULL DEFAULT 'updated',
                 committed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                 PRIMARY KEY (command_id, chunk_index)
             )''')
+            cur.execute(f"ALTER TABLE {common._table(_RECEIPTS)} ADD COLUMN IF NOT EXISTS outcome TEXT NOT NULL DEFAULT 'updated'")
         _READY.add(key)
 
 
@@ -113,37 +115,47 @@ def _execution_fence(cur, command: Mapping[str, Any], run_id: int, execution_id:
         raise PermissionError('bulk_execution_fenced')
 
 
+def _chunk_command(cur, command_id: int, chunk_index: int) -> dict:
+    """只返回所需块与小元数据，避免逐块反序列化全部输入集合。"""
+    cur.execute(f'''SELECT id,task_id,chunk_size,
+        jsonb_path_query_array(targets,
+            format('$[%%s to %%s]',%s * chunk_size,(%s + 1) * chunk_size - 1)::jsonpath) AS chunk
+        FROM {common._table(_COMMANDS)} WHERE id=%s FOR UPDATE''',
+        (int(chunk_index),int(chunk_index),int(command_id)))
+    row = cur.fetchone()
+    if row is None:
+        raise LookupError('bulk_command_not_found')
+    return dict(row)
+
+
 def execute_chunk(command_id: int, chunk_index: int, *, run_id: int, execution_id: str,
-                  apply_chunk: Callable[..., list[dict]]) -> tuple[list[dict], bool]:
+                  apply_chunk: Callable[..., list[dict]], parameters: Mapping[str, Any],
+                  outcome: str | None = None) -> tuple[list[dict], bool, str]:
     """重入只读已提交回执；新增业务变更和完整回执在同一事务内提交。"""
     with common._connect() as conn, conn.cursor() as cur:
-        cur.execute(f'SELECT * FROM {common._table(_COMMANDS)} WHERE id=%s FOR UPDATE', (int(command_id),))
-        row = cur.fetchone()
-        if row is None:
-            raise LookupError('bulk_command_not_found')
-        command = dict(row)
+        command = _chunk_command(cur, command_id, chunk_index)
         _execution_fence(cur, command, run_id, execution_id)
-        cur.execute(f'SELECT items FROM {common._table(_RECEIPTS)} WHERE command_id=%s AND chunk_index=%s',
+        cur.execute(f'SELECT items,outcome FROM {common._table(_RECEIPTS)} WHERE command_id=%s AND chunk_index=%s',
             (int(command_id), int(chunk_index)))
         receipt = cur.fetchone()
         if receipt is not None:
-            return receipt['items'], True
-        start = int(chunk_index) * command['chunk_size']
-        chunk = tuple(command['targets'][start:start + command['chunk_size']])
+            return receipt['items'], True, receipt['outcome']
+        chunk = tuple(command['chunk'])
         if not chunk:
             raise ValueError('bulk_chunk_out_of_range')
-        items = apply_chunk(chunk, command['parameters'], conn=conn)
+        items = apply_chunk(chunk, parameters, conn=conn)
+        chunk_outcome = outcome or ('failed' if any(item['status']=='failed' for item in items) else 'updated')
         _execution_fence(cur, command, run_id, execution_id)
         cur.execute(f'''INSERT INTO {common._table(_RECEIPTS)}
-            (command_id,chunk_index,run_id,execution_id,items) VALUES (%s,%s,%s,%s,%s::jsonb)''',
-            (int(command_id),int(chunk_index),int(run_id),str(execution_id),_json(items)))
-        return items, False
+            (command_id,chunk_index,run_id,execution_id,items,outcome) VALUES (%s,%s,%s,%s,%s::jsonb,%s)''',
+            (int(command_id),int(chunk_index),int(run_id),str(execution_id),_json(items),chunk_outcome))
+        return items, False, chunk_outcome
 
 
 def save_result(command_id: int, result: Mapping[str, Any], *, run_id: int, execution_id: str) -> None:
     """保存完整最终结果；通用 Run 只保存计数和命令引用。"""
     with common._connect() as conn, conn.cursor() as cur:
-        cur.execute(f'SELECT * FROM {common._table(_COMMANDS)} WHERE id=%s FOR UPDATE', (int(command_id),))
+        cur.execute(f'SELECT id,task_id FROM {common._table(_COMMANDS)} WHERE id=%s FOR UPDATE', (int(command_id),))
         command = cur.fetchone()
         if command is None:
             raise LookupError('bulk_command_not_found')

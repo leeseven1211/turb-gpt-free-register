@@ -61,3 +61,17 @@ GREEN 验证（安全测试库：独立 turb_test、隔离 test_ schema；通过
 - 额外运行 `tests/runtime/test_web_action_catalog.py` 暴露 assembly 中上一版无条件 Worker 注册；runtime integration 实现者已独占接手该修正，Worker 注册/提交入口本身已移除自动 execution 注册。
 
 当前边界：本 Worker 只执行本地数据库 handler；领域 handler 必须使用传入 conn，不能自行提交外部副作用。自动将 interrupted Run 接续到新 Run、查询分页和 runtime readiness 由后续 integration 任务接入；专用命令 receipt 已支持跨 Run 恢复。
+
+## 二轮审查修复
+
+- 普通 handler/连接/锁/提交异常不再写入永久 `bulk_chunk_failed` 回执；已回滚块按 `bulk_storage_retry` 延期同一 Run，若延期自身失败则由既有 settlement/recovery 处理。只有明确的 `BulkChunkFailed` 领域拒绝或 handler 显式返回 failed 项形成业务失败事实。
+- Worker 每次执行只读取一次完整命令快照；逐块事务仅选择 `id/task_id/chunk_size` 和 PostgreSQL JSONPath 目标切片，块事务不再将完整 input_targets/targets 解码到 Python。每块仍重新持锁校验当前 Run execution/cancellation fence；最终保存也只读取 fence 元数据。
+- 分块 receipt 新增 `outcome`，恢复时保留真实失败状态；最终 `chunks.status` 由持久化块 outcome 填充。
+- 幂等键按 operation 作用域哈希；payload 指纹按去重、顺序无关的目标集合与参数计算，不含注册 chunk_size。等价重放返回首个命令及首个请求统计；异参数/异目标仍 `idempotency_key_conflict`，既有 route 的 409 映射保留。
+- 用户明确提交的 allowlisted `note` 作为业务内容完整保留，未静默修改；该字段不复制到通用 Run/event。目标拒绝 JWT/代理凭据模式；逐项诊断 reason/data 按通用仓储已有 JWT/代理凭据规则脱敏、去掉敏感字段，数组不截断。
+- 通用 normalizer 将 float 归为 invalid_target，避免 `1.0 == 1` 的 Python 哈希比较吞掉非法账号目标；原始输入与计数仍完整保留。
+- `after_commit` 本轮只用于 compat export 的幂等调度，失败保留 warning；它不承担必须完成的业务义务。
+
+RED：新增审查回归测试首次运行 `4 failed, 12 passed`，分别命中技术异常被持久化为失败、无 SQL 块切片接口、失败块状态误报 updated、等价幂等请求冲突。
+
+GREEN：安全测试库运行 `tools/test_isolated.py --profile all -- tests/operations/test_bulk_mutation_worker.py tests/operations/test_bulk_mutations.py -q`：**25 passed**。新增覆盖模拟 PostgreSQL 连接故障和提交边界故障均无业务/receipt 残留、可重试；真实块 outcome、规范幂等、仅块切片读取、note 原样与回执脱敏、float 分类。compileall、git diff --check 通过。

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from unittest.mock import patch
 
 import pytest
@@ -206,7 +206,7 @@ class BulkMutationWorkerTests(PostgresTestCase):
         increment = self._register()
         def fail(chunk, parameters, *, conn):
             increment(chunk, parameters, conn=conn)
-            raise RuntimeError("synthetic")
+            raise worker.BulkChunkFailed()
         self._register(handler=fail)
         submitted = self._submit([1])
         result = worker._handle_claimed_bulk_mutation(self._claim(submitted))
@@ -214,6 +214,97 @@ class BulkMutationWorkerTests(PostgresTestCase):
         self.assertEqual({}, self._counters())
         self.assertEqual("bulk_chunk_failed",
             commands.get_command_result(submitted["command_id"])["items"][0]["reason_code"])
+        self.assertEqual("failed", commands.get_command_result(submitted["command_id"])["chunks"][0]["status"])
+
+    def test_database_failure_does_not_become_a_permanent_failed_receipt(self):
+        from psycopg import OperationalError
+        increment = self._register()
+        def fail(chunk, parameters, *, conn):
+            increment(chunk, parameters, conn=conn)
+            raise OperationalError("synthetic connection failure")
+        self._register(handler=fail)
+        submitted = self._submit([1])
+        context = self._claim(submitted)
+        result = worker._handle_claimed_bulk_mutation(context)
+        self.assertEqual('deferred', result['status'])
+        self.assertEqual({}, self._counters())
+        self.assertEqual([], commands.get_command_result(submitted["command_id"])["items"])
+        self._register()
+        with operation._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"UPDATE {operation._table('operation_runs')} SET next_attempt_at=NULL WHERE id=%s", (context.run_id,))
+        recovered = worker._handle_claimed_bulk_mutation(self._claim(submitted, execution='replacement'))
+        self.assertEqual(1, recovered.summary['updated_count'])
+        self.assertEqual({1:1}, self._counters())
+
+    def test_idempotency_is_operation_scoped_and_ignores_order_duplicates_and_chunk_size(self):
+        increment = self._register(parameter_allowlist=('note',))
+        first = self._submit([2,1,1], parameters={'note':'a'})
+        worker.register_bulk_mutation_handler('test_increment', increment,
+            parameter_allowlist=('note',), chunk_size=1)
+        same = self._submit([1,2], parameters={'note':'a'})
+        self.assertEqual(first['command_id'], same['command_id'])
+        self._register('different_operation')
+        other = self._submit([1,2], operation_name='different_operation')
+        self.assertNotEqual(first['command_id'], other['command_id'])
+
+    def test_chunk_transaction_reads_only_sql_target_slice(self):
+        self._register()
+        submitted = self._submit(list(range(1001)))
+        context = self._claim(submitted)
+        seen = []
+        actual = commands._chunk_command
+        def capture(cur, command_id, index):
+            row = actual(cur, command_id, index)
+            seen.append(row)
+            return row
+        with patch.object(commands, '_chunk_command', capture):
+            worker._handle_claimed_bulk_mutation(context)
+        self.assertEqual([500,500,1], [len(row['chunk']) for row in seen])
+        self.assertTrue(all('input_targets' not in row and 'targets' not in row for row in seen))
+
+    def test_commit_failure_leaves_no_receipt_and_can_retry(self):
+        from psycopg import OperationalError
+        increment = self._register()
+        armed = False
+        def increment_before_commit(chunk, parameters, *, conn):
+            nonlocal armed
+            values = increment(chunk, parameters, conn=conn)
+            armed = True
+            return values
+        self._register(handler=increment_before_commit)
+        submitted = self._submit([1])
+        context = self._claim(submitted)
+        original = commands.common._connect
+        @contextmanager
+        def fail_commit_once():
+            nonlocal armed
+            with original() as conn:
+                yield conn
+                if armed:
+                    armed = False
+                    raise OperationalError('synthetic commit failure')
+        with patch.object(commands.common, '_connect', fail_commit_once):
+            result = worker._handle_claimed_bulk_mutation(context)
+        self.assertEqual('deferred', result['status'])
+        self.assertEqual({}, self._counters())
+        self.assertEqual([], commands.get_command_result(submitted['command_id'])['items'])
+
+    def test_note_business_text_is_preserved_and_receipt_diagnostics_are_redacted(self):
+        note = '用户记录 https://user:password@example.test 和 eyJabcdefghijklm.abcdefghijklmn.abcdefghijklmn'
+        observed = []
+        def handler(chunk, parameters, *, conn):
+            observed.append(parameters['note'])
+            return [BulkItemResult(1,'failed','explicit_failure',reason=note,
+                data={'note':note,'access_token':'should-not-persist'})]
+        self._register(handler=handler,parameter_allowlist=('note',))
+        submitted = self._submit([1], parameters={'note':note})
+        worker._handle_claimed_bulk_mutation(self._claim(submitted))
+        self.assertEqual([note], observed)
+        self.assertEqual(note,commands.get_command(submitted['command_id'])['parameters']['note'])
+        receipt = commands.get_command_result(submitted['command_id'])['items'][0]
+        self.assertNotIn('user:password',receipt['reason'])
+        self.assertNotIn('eyJabcdefghijklm',receipt['reason'])
+        self.assertNotIn('access_token',receipt['data'])
 
     def test_stale_execution_fence_cannot_mutate_or_store_receipt(self):
         self._register()

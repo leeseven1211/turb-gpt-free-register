@@ -28,6 +28,10 @@ _RUNTIME_REGISTERED = False
 logger = logging.getLogger(__name__)
 
 
+class BulkChunkFailed(RuntimeError):
+    """领域明确拒绝整块；技术故障不得使用该业务失败标记。"""
+
+
 @dataclass(frozen=True)
 class _Handler:
     callback: Callable[..., Any]
@@ -50,7 +54,7 @@ def _sensitive_name(key: str) -> bool:
     return text == 'key' or text.endswith('_key') or any(part in text for part in _SECRET_PARTS)
 
 
-def _json_value(value: Any, *, depth: int = 0) -> Any:
+def _json_value(value: Any, *, depth: int = 0, business_text: bool = False) -> Any:
     """只接受完整的非敏感 JSON 值；不把对象转字符串，也不截断集合。"""
     if depth > 12:
         raise ValueError('bulk_payload_too_deep')
@@ -61,7 +65,7 @@ def _json_value(value: Any, *, depth: int = 0) -> Any:
             raise ValueError('bulk_payload_not_finite')
         return value
     if isinstance(value, str):
-        if _SECRET_VALUE.search(value):
+        if not business_text and (_SECRET_VALUE.search(value) or re.search(r'https?://[^/@\s]+:[^/@\s]+@',value,re.I)):
             raise ValueError('bulk_sensitive_value')
         return value
     if isinstance(value, Mapping):
@@ -71,10 +75,10 @@ def _json_value(value: Any, *, depth: int = 0) -> Any:
                 raise TypeError('bulk_payload_key_must_be_string')
             if _sensitive_name(key):
                 raise ValueError('bulk_sensitive_field')
-            result[key] = _json_value(item, depth=depth + 1)
+            result[key] = _json_value(item, depth=depth + 1, business_text=business_text)
         return result
     if isinstance(value, (list, tuple)):
-        return [_json_value(item, depth=depth + 1) for item in value]
+        return [_json_value(item, depth=depth + 1, business_text=business_text) for item in value]
     raise TypeError('bulk_payload_must_be_json')
 
 
@@ -134,7 +138,10 @@ def submit_bulk_mutation(operation: str, targets: Iterable[object], parameters: 
     supplied = parameters or {}
     if set(supplied) - handler.parameter_allowlist:
         raise ValueError('bulk_parameter_not_allowed')
-    safe_parameters = _json_value(supplied)
+    if any(not isinstance(key,str) or _sensitive_name(key) for key in supplied):
+        raise ValueError('bulk_sensitive_field')
+    # note 属于用户明确提交的业务内容；完整保存，不复制到日志或回执。
+    safe_parameters = {key:_json_value(value,business_text=key=='note') for key,value in supplied.items()}
     if isinstance(targets, (str, bytes, Mapping)) or not isinstance(targets, Iterable):
         raise TypeError('bulk_targets_must_be_iterable')
     raw = []
@@ -143,9 +150,10 @@ def submit_bulk_mutation(operation: str, targets: Iterable[object], parameters: 
         if len(raw) > _MAX_TARGETS:
             raise ValueError('bulk_target_limit_exceeded')
     normalized = normalize_bulk_targets(raw, max_targets=_MAX_TARGETS)
-    request_hash = _digest(idempotency_key.strip())
-    payload_hash = _digest({'operation':name,'input_targets':raw,
-        'parameters':safe_parameters,'chunk_size':handler.chunk_size})
+    request_hash = _digest([name,idempotency_key.strip()])
+    canonical_targets = sorted({_digest(value):value for value in raw}.values(),
+        key=lambda value:json.dumps(value,sort_keys=True,ensure_ascii=False))
+    payload_hash = _digest({'operation':name,'targets':canonical_targets,'parameters':safe_parameters})
     commands.init()
     with task_gateway._operation()._connect() as conn:
         command, reused = commands.create_command(operation=name, request_key_hash=request_hash,
@@ -216,11 +224,25 @@ def _chunk_items(chunk: tuple, raw: Any) -> list[dict]:
         result.append({
             'key': _json_value(item.key),
             'status': item.status,
-            'reason_code': _json_value(item.reason_code),
-            'reason': _json_value(item.reason),
-            'data': _json_value(item.data),
+            'reason_code': _receipt_value(item.reason_code),
+            'reason': _receipt_value(item.reason),
+            'data': _receipt_value(item.data),
         })
     return result
+
+
+def _receipt_value(value: Any) -> Any:
+    """脱敏诊断文本及任意回执字段，但完整保留合法集合。"""
+    from core.storage.operations import common
+    if isinstance(value, str):
+        return common._PROXY_RE.sub(r'\g<scheme>***@',
+            common._JWT_RE.sub('[REDACTED_TOKEN]',value))
+    if isinstance(value, Mapping):
+        return {key:_receipt_value(item) for key,item in value.items()
+            if isinstance(key,str) and not _sensitive_name(key)}
+    if isinstance(value,(list,tuple)):
+        return [_receipt_value(item) for item in value]
+    return _json_value(value)
 
 
 def _checkpoint(context) -> None:
@@ -249,22 +271,26 @@ def _handle_claimed_bulk_mutation(context) -> OperationResult:
     control_errors = (OperationCancelled, OperationAccountDeactivated, task_gateway.OperationLeaseLost,
         PermissionError, *task_gateway.SETTLEMENT_CONTROL_ERRORS)
     receipts = {}
+    outcomes = []
     total_chunks = (len(command['targets']) + command['chunk_size'] - 1) // command['chunk_size']
     for index in range(total_chunks):
         _checkpoint(context)
         def apply(chunk, parameters, *, conn):
             return _chunk_items(chunk, spec.callback(chunk, parameters, conn=conn))
         try:
-            items, reused = commands.execute_chunk(command_id,index,run_id=context.run_id,
-                execution_id=context.execution_id,apply_chunk=apply)
+            items, reused, outcome = commands.execute_chunk(command_id,index,run_id=context.run_id,
+                execution_id=context.execution_id,apply_chunk=apply,parameters=command['parameters'])
         except control_errors:
             raise
-        except Exception:
-            # 业务异常先回滚整块，再持久化该块失败事实；取消和归属错误始终上抛。
+        except BulkChunkFailed:
+            # 仅领域明确拒绝才形成永久失败回执，技术异常保持未提交以便恢复。
             def failure(chunk, parameters, *, conn):
                 return [asdict(BulkItemResult(key,'failed','bulk_chunk_failed','当前分块执行失败')) for key in chunk]
-            items, reused = commands.execute_chunk(command_id,index,run_id=context.run_id,
-                execution_id=context.execution_id,apply_chunk=failure)
+            items, reused, outcome = commands.execute_chunk(command_id,index,run_id=context.run_id,
+                execution_id=context.execution_id,apply_chunk=failure,parameters=command['parameters'],outcome='failed')
+        except Exception:
+            return context.defer(delay_seconds=1,reason='bulk_storage_retry',stage='bulk_mutation')
+        outcomes.append(outcome)
         if spec.after_commit is not None:
             start = index * command['chunk_size']
             chunk = tuple(command['targets'][start:start + command['chunk_size']])
@@ -291,6 +317,9 @@ def _handle_claimed_bulk_mutation(context) -> OperationResult:
         lambda chunk:[receipts[key] for key in chunk],max_targets=_MAX_TARGETS,
         chunk_size=command['chunk_size'],idempotency_key=command['request_key_hash'])
     complete = {**asdict(result),'command_id':command_id}
+    complete['chunks'] = [{**chunk,'status':outcomes[index],
+        **({'reason_code':'bulk_chunk_failed'} if outcomes[index]=='failed' else {})}
+        for index,chunk in enumerate(complete['chunks'])]
     commands.save_result(command_id,complete,run_id=context.run_id,execution_id=context.execution_id)
     summary = {key:value for key,value in complete.items() if key not in {'items','chunks'}}
     summary['chunk_count'] = total_chunks
@@ -299,4 +328,4 @@ def _handle_claimed_bulk_mutation(context) -> OperationResult:
 
 
 __all__ = ['TASK_TYPE','register_runtime_handler','register_bulk_mutation_handler',
-    'registered_bulk_mutation_operations','submit_bulk_mutation','run_bulk_mutation']
+    'registered_bulk_mutation_operations','submit_bulk_mutation','run_bulk_mutation','BulkChunkFailed']

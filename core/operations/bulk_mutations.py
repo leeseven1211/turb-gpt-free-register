@@ -26,7 +26,7 @@ class NormalizedBulkTargets:
 
 
 def _is_valid_target(target: object) -> bool:
-    if target is None or isinstance(target, bool):
+    if target is None or isinstance(target, (bool, float)):
         return False
     if isinstance(target, str):
         return bool(target.strip())
