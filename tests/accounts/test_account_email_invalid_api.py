@@ -26,10 +26,6 @@ class AccountEmailInvalidApiTests(TestCase):
             [], {}, {"account_ids": [7]},
             *({"account_ids": [7], "invalid": value} for value in (1, 0, "false", None)),
             {"account_ids": [], "invalid": True},
-            {"account_ids": [True], "invalid": True},
-            {"account_ids": [0], "invalid": True},
-            {"account_ids": [7.5], "invalid": True},
-            {"account_ids": [2**63], "invalid": True},
             {"account_ids": list(range(1, 502)), "invalid": True},
             {"account_ids": [7], "icloud_account_id": "4", "invalid": True},
             {"ids": [7], "icloud_account_id": "4", "invalid": True},
@@ -65,7 +61,7 @@ class AccountEmailInvalidApiTests(TestCase):
         }) as command, patch("webui.routes.accounts.db.set_accounts_email_invalid") as old_command:
             response = self.client.post(self.url, json=payload, headers=self.headers)
         self.assertEqual(202, response.status_code)
-        self.assertEqual(command.call_args.args, ("account_email_invalid", [7], {
+        self.assertEqual(command.call_args.args, ("account_email_invalid", [7, 7], {
             "invalid": True, "reason": "邮箱已失效", "expected_emails": {"7": "old@example.test"},
             "icloud_account_id": None, "source": "manual",
         }))
@@ -73,7 +69,7 @@ class AccountEmailInvalidApiTests(TestCase):
         result = response.get_json()
         self.assertTrue(result["ok"])
         self.assertEqual(0, result["updated_count"])
-        self.assertEqual(30, result["command_id"])
+        self.assertEqual("30", result["command_id"])
         self.assertNotIn("email", result)
         self.assertNotIn("access_token", result)
 
@@ -98,3 +94,13 @@ class AccountEmailInvalidApiTests(TestCase):
             response = self.client.post(self.url, json={"account_ids": [7], "invalid": True}, headers=self.headers)
         self.assertEqual(400, response.status_code)
         self.assertFalse(response.get_json()["ok"])
+
+    def test_invalid_targets_are_accepted_for_durable_per_item_receipts(self):
+        targets = [True, 0, 7.5, 2**63, "bad", None, {}, []]
+        with patch("webui.routes.accounts.task_gateway.submit_bulk_mutation", return_value={
+            "accepted": True, "command_id": 30, "task_id": 10, "run_id": 20,
+        }) as command:
+            response = self.client.post(self.url, json={"account_ids": targets, "invalid": True}, headers=self.headers)
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(command.call_args.args[1], targets)
+        self.assertEqual(response.get_json()["requested_count"], 8)

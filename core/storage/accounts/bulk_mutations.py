@@ -20,7 +20,8 @@ def _targets(account_ids):
     for raw in account_ids or ():
         if type(raw) is int and 0 < raw < 2**63:
             value = raw
-        elif isinstance(raw, str) and raw.isascii() and raw.isdecimal() and 0 < int(raw) < 2**63:
+        elif (isinstance(raw, str) and 1 <= len(raw) <= 19 and raw[0] != "0"
+              and raw.isascii() and raw.isdecimal() and 0 < int(raw) < 2**63):
             value = int(raw)
         else:
             invalid.append(BulkItemResult(raw, "skipped", "invalid_target", "ID 非法"))

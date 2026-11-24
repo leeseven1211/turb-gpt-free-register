@@ -62,6 +62,12 @@ class AccountBulkMutationTests(PostgresTestCase):
         self.assertIsNone(rs.get_row(rs.ACCOUNTS, 2))
         self.assertIsNotNone(rs.get_row(rs.ACCOUNTS, 3))
 
+    def test_malformed_numeric_targets_skip_without_failing_valid_members(self):
+        items = mutations.archive_many([1, "01", "1.0", "9" * 5000], True)
+        self.assertEqual([item.status for item in items], ["updated", "skipped", "skipped", "skipped"])
+        self.assertEqual([item.reason_code for item in items[1:]], ["invalid_target"] * 3)
+        self.assertEqual(self.statement_count("UPDATE"), 1)
+
     def test_caller_transaction_rolls_back_the_whole_chunk(self):
         with self.assertRaisesRegex(RuntimeError, "rollback"):
             with rs.transaction() as conn:
@@ -139,9 +145,10 @@ class AccountBulkMutationTests(PostgresTestCase):
                 patch.object(account_task_store, "_READY_KEY", ""), \
                 patch.object(task_gateway, "notify_dispatch"):
             operation.reset_ready()
+            mutations.register_handlers()
             client = create_app(auth_code="synthetic-auth").test_client()
             response = client.post("/api/accounts/email-invalid-bulk", json={
-                "account_ids": [1, 2], "invalid": True, "reason": "manual evidence",
+                "account_ids": [1, "1", 2, "bad", None, {}], "invalid": True, "reason": "manual evidence",
                 "expected_emails": {"1": "first@example.test", "2": "stale@example.test"},
             }, headers={"X-Auth-Code": "synthetic-auth", "X-Account-Request-Key": "abcdef1234567890abcdef1234567890"})
             self.assertEqual(response.status_code, 202)
@@ -155,11 +162,56 @@ class AccountBulkMutationTests(PostgresTestCase):
                 task_gateway.OperationHandlerContext(run, execution_id="synthetic-worker"),
             )
             self.assertEqual(result.summary["updated_count"], 1)
-            self.assertEqual(result.summary["skipped_count"], 1)
+            self.assertEqual(result.summary["skipped_count"], 4)
             persisted = commands.get_command_result(submitted["command_id"])
+            self.assertEqual(persisted["requested_count"], 6)
+            self.assertEqual(persisted["duplicate_count"], 1)
+            self.assertEqual(persisted["skipped_count"], 4)
             self.assertEqual(persisted["items"][1]["reason_code"], "account_email_changed")
         self.assertTrue(rs.get_row(rs.ACCOUNTS, 1)["email_invalid"])
         self.assertFalse(rs.get_row(rs.ACCOUNTS, 2)["email_invalid"])
+
+    def test_archive_command_keeps_duplicate_invalid_and_missing_receipts_and_conflicts(self):
+        from core import account_task_store
+        from core.operations import bulk_mutation_worker, task_gateway
+        from core.storage.operations import bulk_mutations as commands, store as operation
+
+        with patch.object(account_task_store, "_SCHEMA", self.schema), \
+                patch.object(account_task_store, "_READY_KEY", ""), patch.object(task_gateway, "notify_dispatch"):
+            operation.reset_ready()
+            mutations.register_handlers()
+            client = create_app(auth_code="synthetic-auth").test_client()
+            headers = {"X-Auth-Code": "synthetic-auth", "X-Account-Request-Key": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
+            targets = [1, "1", "bad", True, None, {}, [], 99]
+            response = client.post("/api/accounts/archive-bulk", json={"account_ids": targets}, headers=headers)
+            self.assertEqual(response.status_code, 202)
+            submitted = response.get_json()
+            self.assertIsInstance(submitted["command_id"], str)
+            self.assertIsInstance(submitted["task_id"], str)
+            self.assertIsInstance(submitted["run_id"], str)
+            command = commands.get_command(submitted["command_id"])
+            self.assertEqual(command["input_targets"], [1, 1, "bad", True, None, {}, [], 99])
+            with rs.transaction() as conn, conn.cursor() as cur:
+                cur.execute(f"TRUNCATE {postgres.qualified('mutation_statements')}")
+            run = operation.claim_run(int(submitted["run_id"]), execution_id="synthetic-worker", worker_pid=123)
+            bulk_mutation_worker._handle_claimed_bulk_mutation(
+                task_gateway.OperationHandlerContext(run, execution_id="synthetic-worker"),
+            )
+            result = commands.get_command_result(submitted["command_id"])
+            self.assertEqual(result["requested_count"], 8)
+            self.assertEqual(result["duplicate_count"], 1)
+            self.assertEqual(result["updated_count"], 1)
+            self.assertEqual(result["skipped_count"], 6)
+            self.assertEqual(result["failed_count"], 0)
+            self.assertEqual([item["reason_code"] for item in result["items"]], [
+                None, "invalid_target", "invalid_target", "invalid_target", "invalid_target", "invalid_target", "account_not_found",
+            ])
+            self.assertEqual(self.statement_count("UPDATE"), 1)
+            same = client.post("/api/accounts/archive-bulk", json={"account_ids": targets}, headers=headers)
+            self.assertEqual(same.status_code, 202)
+            self.assertEqual(same.get_json()["command_id"], submitted["command_id"])
+            conflict = client.post("/api/accounts/archive-bulk", json={"account_ids": [2]}, headers=headers)
+            self.assertEqual(conflict.status_code, 409)
 
 
 class AccountBulkRoutesTests(TestCase):
@@ -194,17 +246,19 @@ class AccountBulkRoutesTests(TestCase):
                 self.assertEqual(bulk.status_code, 202)
                 self.assertEqual(len(calls), 2)
                 self.assertEqual(calls[0][0], calls[1][0])
-                self.assertEqual(bulk.get_json()["task_id"], 10)
-                self.assertEqual(submit.call_args.args[0:2], (f"account_{action}", [1]))
+                self.assertEqual(bulk.get_json()["task_id"], "10")
+                self.assertEqual(submit.call_args.args[0:2], (f"account_{action}", [1, 1]))
 
-    def test_invalid_ids_do_not_submit_a_command(self):
-        with patch("core.operations.task_gateway.submit_bulk_mutation") as submit:
+    def test_invalid_ids_are_preserved_in_the_submitted_command(self):
+        with patch("core.operations.task_gateway.submit_bulk_mutation", return_value={
+            "accepted": True, "command_id": 30, "task_id": 10, "run_id": 20,
+        }) as submit:
             response = self.client.post("/api/accounts/archive-bulk",
                                         json={"account_ids": [True, 0, 1.5, "bad"]}, headers=self.headers)
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 202)
         self.assertEqual(response.get_json()["updated_count"], 0)
-        self.assertEqual(len(response.get_json()["skipped"]), 4)
-        submit.assert_not_called()
+        self.assertEqual(submit.call_args.args[1], [True, 0, 1.5, "bad"])
+        self.assertEqual(response.get_json()["requested_count"], 4)
 
     def test_email_invalid_submits_one_command_without_reading_accounts(self):
         with patch("core.operations.task_gateway.submit_bulk_mutation", return_value={
@@ -215,7 +269,7 @@ class AccountBulkRoutesTests(TestCase):
                 "expected_emails": {"1": "first@example.test", "2": "second@example.test"},
             }, headers=self.headers)
         self.assertEqual(response.status_code, 202)
-        self.assertEqual(submit.call_args.args[:2], ("account_email_invalid", [1, 2]))
+        self.assertEqual(submit.call_args.args[:2], ("account_email_invalid", [1, 1, 2]))
         self.assertEqual(submit.call_args.kwargs["idempotency_key"], "1234567890abcdef1234567890abcdef")
         self.assertEqual(response.get_json()["updated_count"], 0)
 

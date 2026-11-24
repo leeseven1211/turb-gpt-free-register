@@ -110,12 +110,13 @@ def create_accounts_blueprint(context: WebUIContext):
                 key = data.get("idempotency_key") or uuid.uuid4().hex
                 if not isinstance(key, str) or not 1 <= len(key.strip()) <= 200:
                     raise ValueError("idempotency_key 必须为 1–200 个字符")
-            account_bulk_mutations.register_handlers()
             queued = task_gateway.submit_bulk_mutation(
                 operation, targets, parameters, idempotency_key=key, trigger=f"manual_{operation}_bulk",
             )
         except (ValueError, TypeError) as exc:
-            return jsonify({"ok": False, "error": str(exc)}), 400
+            return jsonify({"ok": False, "error": str(exc)}), 409 if str(exc) == "idempotency_key_conflict" else 400
+        queued = {name: str(value) if name in {"command_id", "task_id", "run_id"} and value is not None else value
+                  for name, value in queued.items()}
         return jsonify({
             **compatibility, **queued, "ok": bool(queued.get("accepted") or queued.get("reused")),
             "queued": True, "requested_count": len(targets), "operation": operation,
@@ -127,19 +128,16 @@ def create_accounts_blueprint(context: WebUIContext):
             raise ValueError("account_ids 必须是非空数组")
         if len(raw) > limit:
             raise ValueError(f"单次最多{label} {limit} 个账号")
-        ids, skipped, seen = [], [], set()
+        ids = []
         for value in raw:
             try:
                 account_id = _strict_positive_account_id(value)
                 if account_id >= 2**63:
                     raise ValueError()
             except ValueError:
-                skipped.append({"id": value, "reason": "ID 非法"})
-                continue
-            if account_id not in seen:
-                ids.append(account_id)
-                seen.add(account_id)
-        return ids, skipped
+                account_id = value
+            ids.append(account_id)
+        return ids, []
 
     @bp.get("/api/accounts/operation-receipt")
     @_with_account_request_key
@@ -877,9 +875,7 @@ def create_accounts_blueprint(context: WebUIContext):
             raw_ids = data.get("account_ids", data.get("ids"))
             if not isinstance(raw_ids, list) or not 1 <= len(raw_ids) <= 500:
                 return jsonify({"ok": False, "error": "账号 ID 必须为非空数组，单次最多 500 个"}), 400
-            if any(type(value) is not int or not 1 <= value <= 9223372036854775807 for value in raw_ids):
-                return jsonify({"ok": False, "error": "账号 ID 必须为正整数"}), 400
-            account_ids = list(dict.fromkeys(raw_ids))
+            account_ids, _ = _local_bulk_ids(data, limit=500, label="标记")
         expected_emails = None
         if "expected_emails" in data:
             raw_expected = data["expected_emails"]
@@ -898,7 +894,8 @@ def create_accounts_blueprint(context: WebUIContext):
                 if not local or not domain:
                     return jsonify({"ok": False, "error": "expected_emails 必须包含完整邮箱"}), 400
                 expected_emails[int(key)] = email
-            if set(expected_emails) != set(account_ids):
+            valid_ids = {value for value in account_ids if type(value) is int and 0 < value < 2**63}
+            if set(expected_emails) != valid_ids:
                 return jsonify({"ok": False, "error": "expected_emails 必须完整对应本次账号 ID"}), 400
         response = _submit_local_account_bulk(
             "account_email_invalid", [group] if has_group else account_ids,

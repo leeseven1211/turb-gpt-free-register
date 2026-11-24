@@ -29,3 +29,12 @@ TDD：
 - 副号组是一个命令目标，组回执的数据包含真实账号 IDs/updated_count 和关联资源 counts；没有账号但存在邮箱池资源时仍会更新并报告资源数量。
 - 原同步 bulk HTTP 调用方需要消费 202 并查询命令回执；UI 和 Worker assembly 安装由后续集成任务统一处理。
 - 复用现有邮箱 validity 私有纯函数和行查询辅助，以保持现有 scopes 和关联语义一致；后续若该模块内部接口变更需同步维护。
+
+## 审查修复
+
+- 本地账号 bulk 路由保留原始输入中的重复项及非法目标，仅将规范数字字符串 canonical 为整数；命令持久化完整 `input_targets`，统一回执恢复 requested/duplicate/skipped 统计。
+- 邮箱失效入口同样保留原始目标；`expected_emails` 的完整对应约束只针对合法账号 ID，非法目标由逐项回执说明，不丢失请求。
+- storage 数字字符串限制为规范 1–19 位正整数，超长数字、前导零和非整数文本返回 `invalid_target`，不会让合法成员所在块失败。
+- 同幂等键异内容冲突返回 409；202 的 command/task/run ID 输出十进制字符串。route 不再逐请求注册，registry 由 Web/Worker 组装显式安装。
+- 新增真实 POST→command→claim→Worker→持久结果测试，验证 `[1,"1","bad",true,null,{},[],99]` 的 requested=8、duplicate=1、updated=1、skipped=6、failed=0，及同键复用/冲突；邮箱快照链路也覆盖重复与非法目标。
+- 使用相同隔离 `turb_test` 路线运行四个相关测试文件：42 passed、33 subtests passed，无跳过；`compileall` 和 Task 3 文件 `git diff --check` 通过。
