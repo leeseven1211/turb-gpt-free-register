@@ -226,7 +226,19 @@ def cancel_reauthorization(*, account_ids=(), emails=()):
                                 "reason": result.get("message") or "任务状态已变化",
                                 "reason_code": "run_state_changed"})
                 continue
+            cancelled = result.get("status") == "cancelled"
+            records.patch_row(
+                records.ACCOUNTS,
+                int(account["id"]),
+                {
+                    "codex_execution_status": "empty" if cancelled else "cancelling",
+                    "codex_active_run_id": 0 if cancelled else int(result["id"]),
+                    "codex_last_run_status": "cancelled" if cancelled else None,
+                    "codex_error": "用户手动停止 Codex 补跑",
+                },
+                conn=conn,
+            )
             stopped.append({"id": int(account["id"]), "email": shown_email,
-                            "run_id": int(result["id"]), "running": result.get("status") != "cancelled"})
+                            "run_id": int(result["id"]), "running": not cancelled})
     return {"ok": True, "stopped": stopped, "stopped_count": len(stopped),
             "skipped": skipped, "skipped_count": len(skipped)}

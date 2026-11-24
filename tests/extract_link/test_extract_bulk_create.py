@@ -68,15 +68,18 @@ class ExtractBulkCreateTests(PostgresTestCase):
 
     def test_preserves_config_allowlist_ordinal_and_never_persists_unrelated_secret(self):
         ids = self.accounts(2)
+        batch = operation.create_runtime_batch(batch_type="extract_link", title="bulk create", requested_count=2, data={})
         result = bulk_create.create_tasks(ids, data={"provider_id": "lumen_flow", "mode": "extract_only",
             "options": {"link_type": "upi"}}, config_snapshot={"revision": 9, "values": {
                 "EXTRACT_LINK_API_BASE": "https://example.test", "UNRELATED_SECRET": "do-not-save",
-            }}, first_ordinal=41)
+            }}, batch_id=batch["id"], first_ordinal=41)
         self.assertEqual(2, result["started"])
         with operation._connect() as conn, conn.cursor() as cur:
             cur.execute(f"SELECT task.data, run.data FROM {operation._table('operation_tasks')} task JOIN {operation._table('operation_runs')} run ON run.task_id=task.id ORDER BY task.id")
             rows = cur.fetchall()
         self.assertTrue(all("UNRELATED_SECRET" not in str(row) for row in rows))
+        cur.execute(f"SELECT ordinal FROM {operation._table('operation_batch_items')} WHERE batch_id=%s ORDER BY ordinal", (batch["id"],))
+        self.assertEqual([41, 42], [row["ordinal"] for row in cur.fetchall()])
 
     def test_501_targets_are_chunked_and_ordinal_continues(self):
         ids = self.accounts(501)

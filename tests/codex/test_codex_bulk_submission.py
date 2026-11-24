@@ -133,3 +133,5 @@ class CodexBulkSubmissionTests(PostgresTestCase):
         self.assertEqual(result["skipped"][0]["reason_code"], "account_missing")
         self.assertEqual(operations.get_run(first["run"]["id"])["status"], "cancelled")
         self.assertEqual(operations.get_run(second["run"]["id"])["status"], "cancelled")
+        self.assertEqual(records.get_row(records.ACCOUNTS, self.ids[0])["codex_execution_status"], "empty")
+        self.assertEqual(records.get_row(records.ACCOUNTS, self.ids[0])["codex_active_run_id"], 0)
