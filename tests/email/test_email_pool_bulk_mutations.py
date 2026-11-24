@@ -100,6 +100,7 @@ class EmailPoolBulkMutationTests(PostgresTestCase):
         replay = mutations().delete_many(targets[:2])
         self.assertTrue(all(item.status == 'updated' for item in replay))
         self.assertEqual(len(store.list_rows(store.EMAIL_SERVICE_SYNC)), 2)
+        self.assertEqual(replay[1].data['sync'], result[1].data['sync'])
 
     def test_delete_shared_transaction_failure_preserves_only_previously_committed_chunk(self):
         rows = [self.row('outlook', f'chunk{number}@example.test') for number in range(4)]
@@ -188,7 +189,7 @@ class TestEmailPoolBulkRoutes:
                     {'source': 'generic_api', 'email': 'one@example.test'}], 'status': 'disabled', 'note': '停用'})
         assert response.status_code == 202
         assert response.json['accepted'] is True
-        assert response.json['task_id'] == 12
+        assert response.json['task_id'] == '12'
         assert submit.call_args.args == ('email_pool_status', ['generic_api:one@example.test', 'generic_api:one@example.test'],
             {'status': 'disabled', 'note': '停用'})
         assert submit.call_args.kwargs['idempotency_key'] == 'email-status-1'

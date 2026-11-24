@@ -139,6 +139,9 @@ def delete_many(items, *, conn=None):
     with _connection(conn) as current:
         rows = _load_targets(current, targets)
         changes, results = defaultdict(dict), []
+        return_keys = [f"return:{key.split(':', 1)[0]}:{row['id']}" for key, parents in rows.items() for row in parents]
+        return_events = {row['event_key']: row for row in store.list_rows(store.EMAIL_SERVICE_SYNC,
+            where='event_key=ANY(%s)', params=(return_keys,), conn=current)} if return_keys else {}
         # 已存在子地址的母资源保留历史恢复资料，并停止新增分配。
         parent_ids = defaultdict(set)
         with current.cursor() as cur:
@@ -160,6 +163,8 @@ def delete_many(items, *, conn=None):
             sync = None
             for row in parents:
                 if row.get('status') == 'tombstone' or row.get('pool_deleted_at'):
+                    event = return_events.get(f"return:{source}:{row['id']}")
+                    sync = service_facts._public(event) if event else sync
                     continue
                 if row['id'] in parent_ids[source]:
                     changes[source][row['id']] = {'archived': True, 'status': 'disabled',
