@@ -255,6 +255,20 @@ class TaskCenterRetryStorageTests(PostgresTestCase):
         self.assertNotEqual(after["last_run_id"], parent["run"]["id"])
         self.assertEqual(store.get_run(after["last_run_id"])["status"], "waiting")
 
+    def test_public_parent_prelock_returns_precise_parent_generation(self):
+        parent = store.create_runtime_task(task_type="account_completion", account_id=None,
+            email="parent@example.test", resource_family="completion_coordinator")
+        child = store.create_runtime_task(task_type="twofa_setup", account_id=1,
+            email="center-retry-1@example.test", source_system="webui_runtime",
+            parent_task_id=parent["id"])
+        unrelated = store.create_runtime_task(task_type="fixture_native", account_id=2,
+            email="center-retry-2@example.test")
+        leaf = import_module("core.storage.operations.bulk_retry_tasks")
+        with store._connect() as conn:
+            self.assertEqual(leaf.lock_retry_parents_many(conn, [child["id"], child["id"]]),
+                             {parent["id"]: parent["run"]["id"]})
+            self.assertEqual(leaf.lock_retry_parents_many(conn, [unrelated["id"]]), {})
+
     def test_registration_password_handoff_reconciles_current_parent_only(self):
         child = self.tasks(task_type="password_setup", source_system="webui_runtime")[0]
         job_id = records.insert_row(records.JOBS, {"email": "center-retry-1@example.test",

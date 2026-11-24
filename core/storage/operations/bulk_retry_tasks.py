@@ -27,6 +27,21 @@ def _rejected(task_id: int, message: str, **extra) -> dict:
     return {"accepted": False, "busy": False, "task_id": task_id, "error": message, **extra}
 
 
+def lock_retry_parents_many(conn, task_ids) -> dict[int, int]:
+    """在账号和子 Task 锁之前锁定精确父上下文，返回父 Task 的 Run 代次。
+
+    调用者拥有完整受理保存点并负责竞争重试；返回后须在后续 Task 锁内核对代次。
+    锁冲突或代次变化抛 PostgreSQL 序列化异常，不能忽略该异常继续写入事实。
+    """
+    specs = [{"task_id": int(value)} for value in dict.fromkeys(task_ids)]
+    if not specs:
+        return {}
+    try:
+        return _prelock_selected_parents(conn, specs)
+    except _ParentChanged:
+        raise SerializationFailure("父任务状态已变化，请刷新后重试") from None
+
+
 def retry_tasks_many(conn, specifications: list[dict]) -> dict[int, dict]:
     """集合追加各原生逻辑任务的新 Run，不提交事务或发送调度通知。
 
