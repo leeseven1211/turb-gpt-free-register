@@ -113,6 +113,22 @@ def create_tasks(conn, specs, batch_id):
     return create_specs(enriched, conn=conn)
 
 
+def existing_refresh_tasks(conn, source_ids):
+    if not source_ids:
+        return {}
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""SELECT t.source_id,t.id AS task_id,t.account_id,t.email_snapshot AS email,
+                t.batch_id,t.data,r.id AS run_id,r.status,b.batch_uuid
+            FROM {common._table('operation_tasks')} t
+            JOIN {common._table('operation_runs')} r ON r.id=t.last_run_id
+            LEFT JOIN {common._table('operation_batches')} b ON b.id=t.batch_id
+            WHERE t.source_system='native_operations' AND t.task_type='codex_token_refresh'
+              AND t.source_id=ANY(%s)""", (list(source_ids),),
+        )
+        return {row["source_id"]: dict(row) for row in cur.fetchall()}
+
+
 def project_queued(conn, rows):
     values = [{"account_id": row["account_id"], "run_id": row["run_id"]} for row in rows if not row["reused"]]
     if not values:

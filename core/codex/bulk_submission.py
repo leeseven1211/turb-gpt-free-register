@@ -22,9 +22,13 @@ def _ids(values):
     output, invalid = [], []
     for value in values:
         try:
-            if isinstance(value, bool) or int(value) <= 0:
+            if type(value) is not int and not (
+                isinstance(value, str) and value.strip().isascii() and value.strip().isdigit()
+            ):
                 raise ValueError()
             number = int(value)
+            if not 0 < number <= 2**63 - 1:
+                raise ValueError()
         except (ValueError, TypeError):
             invalid.append({"id": value, "reason": "ID 非法", "reason_code": "invalid_id"})
             continue
@@ -63,15 +67,12 @@ def _submit(kind, *, account_ids=(), filenames=(), trigger="manual_bulk", title=
         enabled, reason = oauth._feature_ready(snapshot)
         if not enabled:
             return {"accepted": False, "feature": "codex_retry", "error": reason, "unavailable": True}
-        oauth.register_handler()
     elif kind == "codex_token_refresh":
         snapshot = task_gateway.normalize_config_snapshot(refresh._snapshot_for_submission(),
                                                           allowlist=refresh._CONFIG_ALLOWLIST)
-        refresh._register_worker()
     else:
         snapshot = None
         backend = client.configured_backend_identity()
-        manual_upload.register_handler()
     records.init()
     schema.init_operation_schema()
     with records.transaction() as conn:
@@ -121,7 +122,6 @@ def _submit(kind, *, account_ids=(), filenames=(), trigger="manual_bulk", title=
                 credential, content_first=kind == "sub2api_manual_upload",
             ).casefold())
             targets.append(({"filename": name}, account, credential))
-        batch = storage.create_batch(conn, kind, len(targets) + len(skipped), trigger, title)
         specs, seen_accounts, selected = [], set(), []
         for identity, account, credential in targets:
             email = str((account or {}).get("email") or _credential_email(
@@ -192,15 +192,33 @@ def _submit(kind, *, account_ids=(), filenames=(), trigger="manual_bulk", title=
                     "config_allowlist": _REFRESH_CONFIG_FIELDS if kind == "codex_token_refresh" else _REAUTH_CONFIG_FIELDS}
                    if snapshot is not None else {}),
             })
-        created = storage.create_tasks(conn, specs, batch["id"])
+        previous = storage.existing_refresh_tasks(
+            conn, [spec["source_id"] for spec in specs],
+        ) if kind == "codex_token_refresh" else {}
+        for spec in specs:
+            prior = previous.get(spec.get("source_id"))
+            if prior:
+                # 同一凭证代际的刷新重发沿用原任务快照；配置变化不会创建第二次 grant。
+                spec["config_snapshot"] = (prior.get("data") or {}).get("config_snapshot") or {}
+        prior_batches = {row["batch_id"] for row in previous.values() if row.get("batch_id")}
+        reused_only = bool(specs) and len(previous) == len(specs) and len(prior_batches) == 1
+        if reused_only:
+            first = next(iter(previous.values()))
+            batch = {"id": first["batch_id"], "batch_uuid": first.get("batch_uuid")}
+            created = [{**previous[spec["source_id"]], "accepted": True, "reused": True}
+                       for spec in specs]
+        else:
+            batch = storage.create_batch(conn, kind, len(targets) + len(skipped), trigger, title)
+            created = storage.create_tasks(conn, specs, batch["id"])
         if kind != "sub2api_manual_upload":
             storage.project_queued(conn, created)
-        storage.finish_batch(conn, batch["id"], skipped, bool(created))
+        if not reused_only:
+            storage.finish_batch(conn, batch["id"], skipped, bool(created))
         accepted = [{**identity, "accepted": True, "busy": False, "task_id": row["task_id"],
                      "run_id": row["run_id"], "account_id": row["account_id"], "email": row["email"],
                      "status": row["status"], "reused": row["reused"], "trigger": trigger}
                     for identity, row in zip(selected, created, strict=True)]
-    if created:
+    if any(not item["reused"] for item in created):
         task_gateway.notify_dispatch()
     if kind == "sub2api_manual_upload":
         return {"ok": True, "accepted": True, "status": "queued", "queued": accepted,
@@ -241,6 +259,10 @@ def cancel_reauthorization(*, account_ids=(), emails=()):
         active = storage.reauthorization_runs(conn, by_id)
         targets = [(("id", number), by_id.get(number)) for number in ids]
         targets.extend((("email", email), by_email.get(email.casefold())) for email in normalized_emails)
+        targets.sort(key=lambda entry: (
+            (active.get(int(entry[1]["id"])) or {}).get("id", 2**63) if entry[1] else 2**63,
+            int(entry[1]["id"]) if entry[1] else 2**63,
+        ))
         stopped = []
         seen = set()
         for (kind, value), account in targets:

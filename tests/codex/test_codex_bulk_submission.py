@@ -201,3 +201,37 @@ class CodexBulkSubmissionTests(PostgresTestCase):
         result = self.service.submit_reauthorization(filenames=self.names[1:2])
         self.assertEqual(result["started_count"], 1)
         self.assertEqual(result["started"][0]["account_id"], self.ids[1])
+
+    def test_non_integral_and_out_of_postgres_range_ids_are_skipped(self):
+        result = self.service.submit_reauthorization(account_ids=[1.9, True, "1.5", 2**63, self.ids[0]])
+        self.assertEqual(result["started_count"], 1)
+        self.assertEqual(len(result["skipped"]), 4)
+        self.assertEqual({item["reason_code"] for item in result["skipped"]}, {"invalid_id"})
+
+    def test_reused_refresh_keeps_original_batch_and_frozen_snapshot(self):
+        first = self.service.submit_refresh(self.names[:1])
+        queued = first["started"][0]
+        with operations._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"UPDATE {operations._table('operation_runs')} SET status='cancelled' WHERE id=%s", (queued["run_id"],))
+            cur.execute(f"UPDATE {operations._table('operation_tasks')} SET status='cancelled' WHERE id=%s", (queued["task_id"],))
+        with patch.object(token_refresh_service, "_snapshot_for_submission",
+                          return_value={"revision": 2, "CODEX_REQUEST_TIMEOUT": 45}):
+            second = self.service.submit_refresh(self.names[:1])
+        self.assertEqual(second["batch_id"], first["batch_id"])
+        self.assertEqual(second["started"][0]["run_id"], queued["run_id"])
+        self.assertTrue(second["started"][0]["reused"])
+        self.assertEqual(operations.get_run(queued["run_id"])["data"]["config_snapshot"]["request_timeout"], 30)
+        with operations._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"SELECT COUNT(*) AS n FROM {operations._table('operation_batches')}")
+            self.assertEqual(cur.fetchone()["n"], 1)
+
+    def test_bulk_submission_never_registers_executable_handlers_in_web_process(self):
+        with (
+            patch.object(operation_service, "register_handler", side_effect=AssertionError("web OAuth handler")),
+            patch.object(token_refresh_service, "_register_worker", side_effect=AssertionError("web refresh handler")),
+            patch.object(manual_upload, "register_handler", side_effect=AssertionError("web upload handler")),
+            patch.object(task_gateway, "register_operation_handler", side_effect=AssertionError("web executable handler")),
+        ):
+            self.assertEqual(self.service.submit_refresh(self.names[:1])["started_count"], 1)
+            self.assertEqual(self.service.submit_reauthorization(account_ids=self.ids[1:2])["started_count"], 1)
+            self.assertEqual(manual_upload.queue_filenames(self.names[2:3])["queued_count"], 1)
