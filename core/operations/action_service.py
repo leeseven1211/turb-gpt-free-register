@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import logging
+import uuid
+from collections import defaultdict
 from collections.abc import Mapping
 from typing import Any
 
@@ -43,12 +45,30 @@ def perform_operation_action(
     request_key: str | None = None,
     operation_logger: logging.Logger | None = None,
 ):
-    """执行统一任务中心的单条动作，供单条和批量入口共用。"""
-    logger = operation_logger or action_logger
+    """读取单个任务并分发动作。"""
     task = _get_operation_action_task(task_id, action)
     if not task:
         return {"ok": False, "error": "任务不存在"}, 404
+    return _dispatch_operation_action(
+        task_id, task, action, expected_status=expected_status, driver_override=driver_override,
+        diagnostic_after_mfa=diagnostic_after_mfa, request_key=request_key,
+        operation_logger=operation_logger,
+    )
 
+
+def _dispatch_operation_action(
+    task_id: int,
+    task: dict,
+    action: str,
+    *,
+    expected_status: str | None = None,
+    driver_override: str | None = None,
+    diagnostic_after_mfa: bool = False,
+    request_key: str | None = None,
+    operation_logger: logging.Logger | None = None,
+    managed_retry_checked: bool = False,
+):
+    logger = operation_logger or action_logger
     task_type = str(task.get("task_type") or "").strip()
     source_system = str(task.get("source_system") or "").strip()
     current_status = str(task.get("status") or "").strip().lower()
@@ -58,7 +78,7 @@ def perform_operation_action(
         if diagnostic_after_mfa:
             if not codex_operation_service.session_diagnostic_target_supported(task, driver_override):
                 return {"ok": False, "error": "MFA 诊断仅支持单条非批量原生 Codex protocol 补跑任务"}, 400
-        else:
+        elif not managed_retry_checked:
             from core.bulk_operations.service import retry_managed_task
             try:
                 retry_key = request_key
@@ -182,16 +202,16 @@ def delete_operation(task_id: int):
     return payload, status
 
 
-def perform_bulk_action(
-    task_ids: list[int],
+def accept_bulk_operation_action(
     action: str,
+    task_ids: list[int],
     *,
     request_key: str | None = None,
     operation_logger: logging.Logger | None = None,
 ) -> dict:
-    """执行已由入口校验的任务选择；保留逐项状态复查与结果聚合。"""
+    """按集合读取和归组，精确受理选中的任务。"""
     if action == "delete":
-        result = operation_task_store.delete_tasks(task_ids)
+        result = operation_task_store.delete_tasks_many(task_ids)
         accepted = [
             {"task_id": task_id, "state": "deleted", "message": "任务已从任务中心隐藏"}
             for task_id in result.get("deleted", [])
@@ -204,10 +224,12 @@ def perform_bulk_action(
             **result,
         }
 
-    accepted = []
-    skipped = []
+    tasks = operation_task_store.get_action_tasks_many(task_ids)
+    managed_retries = _accept_managed_retries(tasks, request_key=request_key) if action == "retry" else {}
+    accepted: list[dict] = []
+    skipped: list[dict] = []
     for task_id in task_ids:
-        task = _get_operation_action_task(task_id, action)
+        task = tasks.get(task_id)
         if not task:
             skipped.append({"task_id": task_id, "error": "任务不存在"})
             continue
@@ -222,13 +244,15 @@ def perform_bulk_action(
         ):
             skipped.append({"task_id": task_id, "error": "只有原生执行中的任务可以终止"})
             continue
-        payload, status = perform_operation_action(
-            task_id,
-            action,
-            expected_status=task_status,
-            request_key=request_key,
-            operation_logger=operation_logger,
-        )
+        if task_id in managed_retries:
+            payload, status = managed_retries[task_id]
+        elif action == "retry" and request_key and len(request_key) > 128:
+            payload, status = {"ok": False, "error": "Idempotency-Key 不能超过 128 字符"}, 422
+        else:
+            payload, status = _dispatch_operation_action(
+                task_id, task, action, expected_status=task_status,
+                operation_logger=operation_logger, managed_retry_checked=True,
+            )
         if 200 <= status < 300 and payload.get("ok", payload.get("accepted", False)) and payload.get("state") != "empty":
             accepted.append({
                 "task_id": task_id,
@@ -248,6 +272,50 @@ def perform_bulk_action(
         "skipped": skipped,
         "skipped_count": len(skipped),
     }
+
+
+def _accept_managed_retries(
+    tasks: dict[int, dict], *, request_key: str | None,
+) -> dict[int, tuple[dict, int]]:
+    from core.bulk_operations import service
+
+    identities = {task_id: task.get("_managed_target_round_id") for task_id, task in tasks.items()}
+    managed = {task_id: identity for task_id, identity in identities.items() if identity}
+    if not managed or (request_key and len(request_key) > 128):
+        return {}
+    targets = operation_task_store.get_managed_retry_targets(sorted({int(value) for value in managed.values()}))
+    replies = {}
+    groups: dict[int, dict[int, int]] = defaultdict(dict)
+    for task_id, target_round_id in managed.items():
+        target = targets.get(int(target_round_id))
+        if not target:
+            replies[task_id] = ({"ok": False, "error": "批量任务归属缺失，已保留原任务，请检查数据。"}, 409)
+            continue
+        groups[int(target["batch_id"])][task_id] = int(target["canonical_target_id"])
+
+    for batch_id, members in groups.items():
+        scope = {"kind": "targets", "target_ids": [str(value) for value in sorted(set(members.values()))]}
+        try:
+            result = service.create_round(
+                batch_id, {"source": {"view": "current"}, "selection": scope},
+                f"operations-bulk-retry:{request_key}" if request_key else f"manual-task-retry:{uuid.uuid4().hex}",
+            )
+            reply = {"ok": True, "accepted": True, "state": result["state"]}, 202
+        except ValueError as exc:
+            reply = {"ok": False, "error": str(exc)}, getattr(exc, "status", 409)
+        replies.update(dict.fromkeys(members, reply))
+    return replies
+
+
+def perform_bulk_action(
+    task_ids: list[int],
+    action: str,
+    *,
+    request_key: str | None = None,
+    operation_logger: logging.Logger | None = None,
+) -> dict:
+    """保留原应用层调用签名。"""
+    return accept_bulk_operation_action(action, task_ids, request_key=request_key, operation_logger=operation_logger)
 
 
 def retry_legacy_account_task(task_id: int, *, operation_logger: logging.Logger | None = None) -> tuple[dict, int]:
@@ -449,11 +517,14 @@ def cancel_runtime_task(task: Mapping[str, Any]) -> dict[str, Any]:
     if not active:
         return {"ok": True, "running": False, "state": "empty", "message": "任务没有活跃 attempt"}
     try:
-        run = operation_task_store.request_run_cancel(
-            int(active["id"]), reason="用户手动停止 WebUI durable operation",
-        )
+        cancel_options = {"reason": "用户手动停止 WebUI durable operation"}
+        if task.get("_expected_run_status"):
+            cancel_options["expected_status"] = task["_expected_run_status"]
+        run = operation_task_store.request_run_cancel(int(active["id"]), **cancel_options)
     except LookupError as exc:
         return {"ok": False, "error": str(exc)}
+    if run.get("cancel_skipped"):
+        return {"ok": False, **run}
     task_gateway.notify_dispatch()
     return {
         "ok": True,

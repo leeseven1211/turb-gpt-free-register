@@ -394,13 +394,13 @@ def create_jobs_blueprint(context: WebUIContext):
     @bp.post("/api/jobs/cancel-pending")
     def api_jobs_cancel_pending():
         """取消所有还在排队（status=pending）的任务。已在 running 的不动。"""
-        cancelled = svc.cancel_pending_jobs()
+        cancelled = operation_task_store.cancel_pending_jobs_many()
         return jsonify({"ok": True, "cancelled": cancelled})
 
     @bp.post("/api/jobs/batches/<batch_id>/cancel")
     def api_batch_jobs_cancel(batch_id: str):
         """只取消指定批次中尚未启动的任务。"""
-        cancelled = svc.cancel_pending_jobs(batch_id=batch_id)
+        cancelled = operation_task_store.cancel_pending_jobs_many(batch_id=batch_id)
         return jsonify({"ok": True, "batch_id": batch_id, "cancelled": cancelled})
 
     @bp.post("/api/jobs/batches/<batch_id>/stop")
@@ -534,18 +534,16 @@ def create_jobs_blueprint(context: WebUIContext):
     @bp.post("/api/jobs/<int:job_id>/delete")
     def api_job_delete(job_id: int):
         """删除一个任务记录。运行中的任务不允许删除；排队任务删除后执行前会自动跳过。"""
-        debug_job = db.get_job(job_id)
-        deleted, skipped = db.delete_jobs([job_id], delete_log=True, allow_running=False)
+        deleted, skipped = operation_task_store.delete_registration_jobs_many([job_id])
         if not deleted:
             reason = skipped[0]["reason"] if skipped else "任务不存在"
             status_code = 409 if "运行中" in reason else 404
             return jsonify({"ok": False, "error": reason}), status_code
-        if debug_job:
-            try:
-                from core.registration.debug import delete_job_artifacts
-                delete_job_artifacts(debug_job)
-            except Exception:
-                logger.exception("删除任务 #%s 的调试产物失败", job_id)
+        try:
+            from core.registration.debug import delete_job_artifacts
+            delete_job_artifacts(deleted[0])
+        except Exception:
+            logger.exception("删除任务 #%s 的调试产物失败", job_id)
         return jsonify({"ok": True, "deleted": True})
 
     @bp.post("/api/jobs/delete-bulk")
@@ -572,18 +570,15 @@ def create_jobs_blueprint(context: WebUIContext):
             seen.add(job_id)
             valid_ids.append(job_id)
 
-        debug_jobs = {job_id: db.get_job(job_id) for job_id in valid_ids}
-        deleted_rows, skipped = db.delete_jobs(valid_ids, delete_log=True, allow_running=False)
+        deleted_rows, skipped = operation_task_store.delete_registration_jobs_many(valid_ids)
         skipped = invalid + skipped
         deleted = [int(row["id"]) for row in deleted_rows]
-        try:
-            from core.registration.debug import delete_job_artifacts
-            for deleted_id in deleted:
-                debug_job = debug_jobs.get(deleted_id)
-                if debug_job:
-                    delete_job_artifacts(debug_job)
-        except Exception:
-            logger.exception("批量删除注册任务调试产物失败")
+        from core.registration.debug import delete_job_artifacts
+        for deleted_job in deleted_rows:
+            try:
+                delete_job_artifacts(deleted_job)
+            except Exception:
+                logger.exception("删除任务 #%s 的调试产物失败", deleted_job["id"])
         return jsonify({"ok": True, "deleted": deleted, "deleted_count": len(deleted), "skipped": skipped})
 
     @bp.get("/api/jobs/<int:job_id>/debug")

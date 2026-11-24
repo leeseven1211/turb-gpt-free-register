@@ -773,70 +773,41 @@ def get_task(task_id: int, *, include_events: bool = True) -> dict | None:
     return result
 
 
-def delete_tasks(task_ids: Iterable[int]) -> dict[str, Any]:
-    """隐藏非执行中的任务，保留任务、运行和事件供审计查询。"""
-    normalized: list[int] = []
-    for raw_id in task_ids:
-        try:
-            task_id = int(raw_id)
-        except (TypeError, ValueError):
-            continue
-        if task_id > 0 and task_id not in normalized:
-            normalized.append(task_id)
-    normalized = normalized[:100]
-    if not normalized:
-        return {"deleted": [], "deleted_count": 0, "skipped": [], "skipped_count": 0}
+def get_action_tasks_many(task_ids: list[int]) -> dict[int, dict]:
+    from core.storage.operations import bulk_facts
 
-    _schema.init_operation_schema()
-    deleted: list[int] = []
-    skipped: list[dict[str, Any]] = []
-    with _common._connect() as conn, conn.cursor() as cur:
-        cur.execute(
-            f"""
-            SELECT t.id, t.status, t.data,
-                   EXISTS (
-                     SELECT 1 FROM {_common._table('operation_runs')} active_run
-                     WHERE active_run.task_id=t.id
-                       AND active_run.status IN ({_common._ACTIVE_RUN_STATUS_SQL})
-                   ) AS has_active_run
-            FROM {_common._table('operation_tasks')} t
-            WHERE t.id = ANY(%s)
-            FOR UPDATE OF t
-            """,
-            (normalized,),
-        )
-        rows = {int(row["id"]): dict(row) for row in cur.fetchall()}
-        for task_id in normalized:
-            row = rows.get(task_id)
-            if not row:
-                skipped.append({"task_id": task_id, "error": "任务不存在"})
-                continue
-            if _common._task_is_user_deleted(row):
-                skipped.append({"task_id": task_id, "error": "任务已删除"})
-                continue
-            status = str(row.get("status") or "").strip().lower()
-            if status in _common._ACTIVE_RUN_STATUSES or bool(row.get("has_active_run")):
-                skipped.append({"task_id": task_id, "error": "任务仍在执行，不能删除"})
-                continue
-            cur.execute(
-                f"""
-                UPDATE {_common._table('operation_tasks')}
-                SET data=COALESCE(data, '{{}}'::jsonb)
-                          || jsonb_build_object('deleted_by_user', true, 'deleted_at', now()),
-                    updated_at=now()
-                WHERE id=%s
-                RETURNING id
-                """,
-                (task_id,),
-            )
-            if cur.fetchone():
-                deleted.append(task_id)
-    return {
-        "deleted": deleted,
-        "deleted_count": len(deleted),
-        "skipped": skipped,
-        "skipped_count": len(skipped),
-    }
+    with _task_read_connection() as conn:
+        return bulk_facts.get_action_tasks_many(task_ids, conn=conn)
+
+
+def get_managed_retry_targets(target_round_ids: list[int]) -> dict[int, dict]:
+    from core.storage.operations import bulk_facts
+
+    with _task_read_connection() as conn:
+        return bulk_facts.get_managed_retry_targets(target_round_ids, conn=conn)
+
+
+def delete_tasks_many(task_ids: Iterable[int]) -> dict[str, Any]:
+    from core.storage.operations import bulk_facts
+
+    return bulk_facts.delete_tasks_many(task_ids)
+
+
+def delete_tasks(task_ids: Iterable[int]) -> dict[str, Any]:
+    """兼容单条和历史调用方。"""
+    return delete_tasks_many(task_ids)
+
+
+def cancel_pending_jobs_many(job_ids: Iterable[int] | None = None, *, batch_id: str | None = None) -> int:
+    from core.storage.operations import bulk_facts
+
+    return bulk_facts.cancel_pending_jobs_many(job_ids, batch_id=batch_id)
+
+
+def delete_registration_jobs_many(job_ids: list[int]) -> tuple[list[dict], list[dict]]:
+    from core.storage.operations import bulk_facts
+
+    return bulk_facts.delete_registration_jobs_many(job_ids)
 
 
 def get_run_progress(task_id: int, run_id: int, *, public_status: bool = False) -> dict:

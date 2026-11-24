@@ -14,6 +14,7 @@ class TaskCenterActionTests(unittest.TestCase):
         self.stack = ExitStack()
         self.addCleanup(self.stack.close)
         self.read = self.stack.enter_context(patch.object(action_service.operation_task_store, "get_task"))
+        self.read_many = self.stack.enter_context(patch.object(action_service.operation_task_store, "get_action_tasks_many"))
         self.managed = self.stack.enter_context(patch("core.bulk_operations.service.retry_managed_task", return_value=None))
         self.registered = self.stack.enter_context(patch.object(action_service.task_gateway, "operation_action", return_value=None))
         self.task = {
@@ -21,6 +22,7 @@ class TaskCenterActionTests(unittest.TestCase):
             "status": "failed", "account_id": 7, "runs": [], "next_actions": [],
         }
         self.read.return_value = self.task
+        self.read_many.return_value = {41: self.task}
 
     def test_managed_retry_precedes_driver_ownership_and_terminal_checks(self):
         self.task.update(task_type="plan_check", status="running", target_status="account_deactivated")
@@ -86,26 +88,24 @@ class TaskCenterActionTests(unittest.TestCase):
         self.assertEqual((1, 0), (payload["accepted_count"], payload["skipped_count"]))
         self.assertEqual("queued", cancel.call_args.args[0]["_expected_run_status"])
         self.assertNotIn("_expected_run_status", self.task)
-        self.assertEqual(2, self.read.call_count)
-        self.assertTrue(all(call.kwargs == {"include_events": False} for call in self.read.call_args_list))
+        self.read_many.assert_called_once_with([41])
+        self.read.assert_not_called()
 
     def test_bulk_cancel_skips_task_that_starts_between_selection_and_action(self):
-        self.read.side_effect = [{**self.task, "status": "queued"}, {**self.task, "status": "running"}]
+        self.task["status"] = "queued"
+        self.registered.return_value = Mock(return_value={
+            "ok": False, "state": "running", "message": "任务状态已变化，请刷新后重试",
+        })
         payload = action_service.perform_bulk_action([41], "cancel")
         self.assertEqual((0, 1), (payload["accepted_count"], payload["skipped_count"]))
         self.assertIn("状态已变化", payload["skipped"][0]["error"])
-        self.registered.assert_not_called()
+        self.assertEqual("queued", self.registered.return_value.call_args.args[0]["_expected_run_status"])
 
-    def test_bulk_empty_stop_is_skipped_and_retry_key_is_scoped_per_task(self):
+    def test_bulk_stop_without_an_active_run_is_skipped(self):
         self.task.update(status="queued")
         self.registered.return_value = Mock(return_value={"ok": True, "state": "empty", "message": "没有活跃 attempt"})
         payload = action_service.perform_bulk_action([41], "cancel")
         self.assertEqual((0, 1), (payload["accepted_count"], payload["skipped_count"]))
-        self.task.update(status="failed")
-        self.managed.return_value = {"ok": True, "accepted": True, "state": "queued"}
-        payload = action_service.perform_bulk_action([41, 42], "retry", request_key="shared")
-        self.assertEqual(2, payload["accepted_count"])
-        self.assertEqual(["operations-retry:shared:41", "operations-retry:shared:42"], [call.kwargs["request_key"] for call in self.managed.call_args_list])
 
 
 class LegacyAccountActionTests(unittest.TestCase):

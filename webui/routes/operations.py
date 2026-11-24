@@ -212,8 +212,10 @@ def create_operations_blueprint(context: WebUIContext):
 
     @bp.post("/api/operations/bulk")
     def api_operations_bulk():
-        """批量执行任务中心动作；逐条校验并返回跳过原因。"""
-        data = request.get_json(silent=True) or {}
+        """受理选中的任务动作并返回逐项结果。"""
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return jsonify({"ok": False, "error": "请求体必须是对象"}), 400
         action = str(data.get("action") or "").strip().lower()
         raw_ids = data.get("task_ids") or data.get("ids") or []
         if action not in {"retry", "cancel", "terminate", "delete"}:
@@ -225,15 +227,15 @@ def create_operations_blueprint(context: WebUIContext):
             if isinstance(raw_id, bool) or not isinstance(raw_id, int):
                 return jsonify({"ok": False, "error": "task_ids 必须都是整数"}), 400
             task_id = raw_id
-            if task_id <= 0:
-                return jsonify({"ok": False, "error": "task_ids 必须是正整数"}), 400
+            if not 0 < task_id <= 2**63 - 1:
+                return jsonify({"ok": False, "error": "task_ids 必须是 64 位正整数"}), 400
             if task_id not in task_ids:
                 task_ids.append(task_id)
         if len(task_ids) > 100:
             return jsonify({"ok": False, "error": "单次最多处理 100 个任务"}), 400
 
-        result = action_service.perform_bulk_action(
-            task_ids, action, request_key=request.headers.get("Idempotency-Key"), operation_logger=logger,
+        result = action_service.accept_bulk_operation_action(
+            action, task_ids, request_key=request.headers.get("Idempotency-Key"), operation_logger=logger,
         )
         return jsonify(result)
 

@@ -4,14 +4,143 @@ from __future__ import annotations
 
 import logging
 import unittest
+import uuid
 from unittest.mock import Mock, patch
 
 from flask import Flask
 
+from core.bulk_operations import catalog
 from core.operations import action_service, concurrency, query_service, task_gateway
 from core.storage.operations import store as operation
+from core.storage import records
+from core.storage.operations import bulk, legacy_task_store
+from tests.support_pg import PostgresTestCase
 from webui import runtime
 from webui.routes import operations
+
+
+class BulkOperationFactTests(PostgresTestCase):
+    def setUp(self):
+        self.enterContext(patch.object(legacy_task_store, "_SCHEMA", self.schema))
+        self.enterContext(patch.object(legacy_task_store, "_READY_KEY", ""))
+        legacy_task_store.init()
+        app = Flask("operation-bulk-facts")
+        app.register_blueprint(operations.create_operations_blueprint(
+            runtime.WebUIContext(app, logging.getLogger(__name__)),
+        ))
+        self.client = app.test_client()
+        operation.init()
+
+    def _task(self, *, status="failed", data=None):
+        token = uuid.uuid4().hex
+        with operation._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""INSERT INTO {operation._table('operation_tasks')}
+                    (task_uuid,source_system,source_id,task_type,target_type,requested_action,status,data)
+                    VALUES (%s,'native_operations',%s,'plan_check','account','plan_check',%s,%s::jsonb)
+                    RETURNING id""",
+                (token, token, status, operation._json(data or {})),
+            )
+            task_id = cur.fetchone()["id"]
+            cur.execute(
+                f"""INSERT INTO {operation._table('operation_runs')}
+                    (run_uuid,task_id,run_no,source_system,source_id,status,data)
+                    VALUES (%s,%s,1,'native_operations',%s,%s,%s::jsonb) RETURNING id""",
+                (token, task_id, token, status, operation._json(data or {})),
+            )
+            cur.execute(
+                f"UPDATE {operation._table('operation_tasks')} SET last_run_id=%s WHERE id=%s",
+                (cur.fetchone()["id"], task_id),
+            )
+        return task_id
+
+    def test_delete_hides_terminal_selection_in_one_update_and_preserves_runs(self):
+        terminal_a, terminal_b = self._task(), self._task()
+        active = self._task(status="queued")
+        counts = operation._table("delete_statement_count")
+        count_write = operation._table("count_delete_write")
+        with operation._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"CREATE TABLE {counts} (updated boolean)")
+            cur.execute(
+                f"CREATE FUNCTION {count_write}() RETURNS trigger LANGUAGE plpgsql AS "
+                f"$$ BEGIN INSERT INTO {counts} VALUES (true); RETURN NULL; END $$"
+            )
+            cur.execute(
+                f"CREATE TRIGGER count_delete_write AFTER UPDATE ON {operation._table('operation_tasks')} "
+                f"FOR EACH STATEMENT EXECUTE FUNCTION {count_write}()"
+            )
+
+        response = self.client.post("/api/operations/bulk", json={
+            "action": "delete", "task_ids": [terminal_b, active, terminal_a, 99999, terminal_b],
+        })
+        self.assertEqual(200, response.status_code)
+        payload = response.get_json()
+        self.assertEqual([terminal_b, terminal_a], payload["deleted"])
+        self.assertEqual([active, 99999], [row["task_id"] for row in payload["skipped"]])
+        with operation._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"SELECT count(*) AS total FROM {counts}")
+            self.assertEqual(1, cur.fetchone()["total"])
+            cur.execute(f"SELECT count(*) AS total FROM {operation._table('operation_runs')}")
+            self.assertEqual(3, cur.fetchone()["total"])
+
+    def test_managed_retry_creates_one_round_per_original_batch(self):
+        bulk.init()
+        accounts = self.seed(records.ACCOUNTS, [
+            {"email": f"managed-retry-{i}@example.test", "created_at": "2026-11-24T12:00:00",
+             "updated_at": "2026-11-24T12:00:00"}
+            for i in range(3)
+        ])
+
+        def make_batch(ids):
+            with patch.object(catalog, "capture_settings", return_value={
+                "config_revision": "test", "effective_settings": {},
+            }):
+                selection = bulk.create_selection(
+                    request_key=uuid.uuid4().hex, source={"kind": "ids", "ids": ids},
+                    operation_key="plan_check", parameters={}, config_revision="test",
+                )
+                selection = bulk.freeze_selection(selection["id"])
+                batch = bulk.create_batch(
+                    request_key=uuid.uuid4().hex, selection_id=selection["id"], selection_revision=1,
+                    operation_key="plan_check", parameters={}, config_revision="test", max_concurrency=3,
+                )
+            bulk.materialize_targets(batch["id"])
+            with operation._connect() as conn, conn.cursor() as cur:
+                cur.execute(
+                    f"SELECT id,canonical_target_id FROM {operation._table('operation_batch_target_rounds')} "
+                    "WHERE batch_id=%s ORDER BY ordinal",
+                    (batch["id"],),
+                )
+                targets = cur.fetchall()
+            return batch, targets
+
+        first, first_targets = make_batch(accounts[:2])
+        second, second_targets = make_batch(accounts[2:])
+        tasks = [
+            self._task(data={"bulk_target_round_id": target["id"]})
+            for target in first_targets + second_targets
+        ]
+        body = {"action": "retry", "task_ids": tasks}
+        headers = {"Idempotency-Key": "managed-selection-retry"}
+        response = self.client.post("/api/operations/bulk", json=body, headers=headers)
+        replay = self.client.post("/api/operations/bulk", json={
+            "action": "retry", "task_ids": list(reversed(tasks)),
+        }, headers=headers)
+        self.assertEqual(200, response.status_code)
+        self.assertEqual(3, response.get_json()["accepted_count"])
+        self.assertEqual(3, replay.get_json()["accepted_count"])
+        with operation._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"SELECT r.batch_id,s.query_spec FROM {operation._table('operation_batch_rounds')} r "
+                f"JOIN {operation._table('operation_selections')} s ON s.id=r.member_selection_id "
+                "WHERE r.request_kind='manual_retry' ORDER BY r.batch_id",
+            )
+            self.assertEqual([
+                {"batch_id": batch["id"], "query_spec": {"source": {"view": "current"}, "selection": {
+                    "kind": "targets", "target_ids": [str(target["canonical_target_id"]) for target in targets],
+                }}}
+                for batch, targets in ((first, first_targets), (second, second_targets))
+            ], cur.fetchall())
 
 
 class OperationRouteMigrationPhase2Tests(unittest.TestCase):
@@ -543,10 +672,9 @@ class OperationRouteMigrationPhase2Tests(unittest.TestCase):
         }
         try:
             client = self._client()
-            with patch.object(
-                operations.operation_task_store,
-                "get_task",
-                side_effect=lambda task_id: tasks.get(int(task_id)),
+            with (
+                patch.object(operation, "get_action_tasks_many", create=True, return_value=tasks),
+                patch.object(operation, "get_task", side_effect=AssertionError("unexpected per-task read")),
             ):
                 response = client.post(
                     "/api/operations/bulk",
@@ -569,7 +697,7 @@ class OperationRouteMigrationPhase2Tests(unittest.TestCase):
 
         with patch.object(
             operations.operation_task_store,
-            "delete_tasks",
+            "delete_tasks_many",
             create=True,
             return_value={
                 "deleted": [41],
@@ -646,14 +774,12 @@ class OperationRouteMigrationPhase2Tests(unittest.TestCase):
     def test_bulk_cancel_rechecks_queued_state_before_dispatch(self):
         client = self._client()
         queued = self._task(status="queued", runs=[{"id": 55, "status": "queued"}])
-        running = self._task(status="running", runs=[{"id": 55, "status": "running"}])
         with (
-            patch.object(
-                operations.operation_task_store,
-                "get_task",
-                side_effect=[queued, running],
-            ),
-            patch.object(action_service.codex_operation_service, "request_cancel") as request_cancel,
+            patch.object(operation, "get_action_tasks_many", create=True, return_value={41: queued}),
+            patch.object(task_gateway, "operation_action", return_value=None),
+            patch.object(action_service.codex_operation_service, "request_cancel", return_value={
+                "ok": False, "state": "running", "message": "任务状态已变化，请刷新后重试",
+            }) as request_cancel,
         ):
             response = client.post(
                 "/api/operations/bulk",
@@ -665,7 +791,7 @@ class OperationRouteMigrationPhase2Tests(unittest.TestCase):
         self.assertEqual(0, payload["accepted_count"])
         self.assertEqual(1, payload["skipped_count"])
         self.assertIn("状态", payload["skipped"][0]["error"])
-        request_cancel.assert_not_called()
+        request_cancel.assert_called_once_with(run_id=55, expected_status="queued")
 
     def test_bulk_cancel_does_not_load_selected_tasks_event_history(self):
         client = self._client()
@@ -676,17 +802,10 @@ class OperationRouteMigrationPhase2Tests(unittest.TestCase):
             )
             for task_id in (41, 42)
         }
-        reads = []
-
-        def read_without_events(task_id, *, include_events=True):
-            reads.append(task_id)
-            if include_events:
-                raise AssertionError("取消任务不应加载历史事件")
-            return tasks[task_id]
-
         cancel = Mock(side_effect=lambda task: {"ok": True, "state": "cancelled"})
         with (
-            patch.object(operations.operation_task_store, "get_task", side_effect=read_without_events),
+            patch.object(operation, "get_action_tasks_many", create=True, return_value=tasks) as read,
+            patch.object(operation, "get_task", side_effect=AssertionError("unexpected per-task read")),
             patch.object(task_gateway, "operation_action", return_value=cancel),
         ):
             response = client.post(
@@ -696,7 +815,7 @@ class OperationRouteMigrationPhase2Tests(unittest.TestCase):
         self.assertEqual(200, response.status_code)
         self.assertEqual(2, response.get_json()["accepted_count"])
         self.assertEqual(0, response.get_json()["skipped_count"])
-        self.assertEqual({41, 42}, set(reads))
+        read.assert_called_once_with([41, 42])
         self.assertEqual([41, 42], [call.args[0]["id"] for call in cancel.call_args_list])
 
     def test_single_cancel_and_terminate_do_not_load_event_history(self):
@@ -723,21 +842,27 @@ class OperationRouteMigrationPhase2Tests(unittest.TestCase):
     def test_bulk_terminate_skips_queued_task(self):
         client = self._client()
         queued = self._task(status="queued", runs=[{"id": 56, "status": "queued"}])
+        running = self._task(id=42, status="running", runs=[{"id": 57, "status": "running"}])
         with (
-            patch.object(operations.operation_task_store, "get_task", return_value=queued),
-            patch.object(action_service.codex_operation_service, "terminate") as terminate,
+            patch.object(operation, "get_action_tasks_many", create=True, return_value={41: queued, 42: running}),
+            patch.object(task_gateway, "operation_action", return_value=None),
+            patch.object(action_service.codex_operation_service, "terminate", return_value={
+                "ok": True, "state": "attention_required",
+            }) as terminate,
         ):
             response = client.post(
                 "/api/operations/bulk",
-                json={"action": "terminate", "task_ids": [41]},
+                json={"action": "terminate", "task_ids": [41, 42]},
             )
 
         self.assertEqual(200, response.status_code)
         payload = response.get_json()
-        self.assertEqual(0, payload["accepted_count"])
+        self.assertEqual(1, payload["accepted_count"])
+        self.assertEqual(42, payload["accepted"][0]["task_id"])
+        self.assertEqual("attention_required", payload["accepted"][0]["state"])
         self.assertEqual(1, payload["skipped_count"])
         self.assertIn("执行中", payload["skipped"][0]["error"])
-        terminate.assert_not_called()
+        terminate.assert_called_once_with(run_id=57)
 
     def test_operation_list_exposes_short_error_code_and_summary(self):
         client = self._client()

@@ -10,7 +10,83 @@ from unittest.mock import Mock, patch
 from core import db
 from core.operations import task_gateway
 from core.registration import service as registration_service
+from core.storage import registration
+from core.storage import postgres
+from core.storage.operations import store as operation
+from tests.support_pg import PostgresTestCase
 from webui.app import create_app
+
+
+class RegistrationLocalBulkControlTests(PostgresTestCase):
+    def setUp(self):
+        self.client = create_app(auth_code="test-auth").test_client()
+        self.headers = {"X-Auth-Code": "test-auth"}
+
+    def test_cancel_batch_settles_only_waiting_jobs_without_resubmitting(self):
+        pending = db.create_job("icloud_hide", batch_id="selected")
+        running = db.create_job("icloud_hide", batch_id="selected")
+        elsewhere = db.create_job("icloud_hide", batch_id="other")
+        self.assertTrue(db.claim_job_for_execution(int(running["id"])))
+        attempt = registration.get_attempt_by_job(pending["id"])
+        queued_run = registration.start_run(attempt["id"], job_id=pending["id"], historical=True, initial_status="queued")
+        running_before = db.get_job(running["id"])
+        elsewhere_before = db.get_job(elsewhere["id"])
+
+        with (
+            patch.object(db, "_sync_operation_job", side_effect=AssertionError("unexpected one-job projection")),
+            patch.object(registration_service, "_enqueue_job", side_effect=AssertionError("unexpected registration submission")),
+        ):
+            response = self.client.post("/api/jobs/batches/selected/cancel", headers=self.headers)
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual({"ok": True, "batch_id": "selected", "cancelled": 1}, response.get_json())
+        self.assertEqual("cancelled", db.get_job(pending["id"])["status"])
+        self.assertEqual("cancelled", registration.get_run(queued_run["id"])["status"])
+        self.assertEqual(attempt, registration.get_attempt_by_job(pending["id"]))
+        self.assertEqual(running_before, db.get_job(running["id"]))
+        self.assertEqual(elsewhere_before, db.get_job(elsewhere["id"]))
+        task = operation.find_task_by_source("registration_jobs", str(pending["id"]), include_runs=True)
+        self.assertEqual("cancelled", task["status"])
+
+    def test_bulk_delete_uses_deleted_rows_for_artifacts_and_keeps_running_job(self):
+        pending = db.create_job("icloud_hide", batch_id="delete")
+        running = db.create_job("icloud_hide", batch_id="delete")
+        unselected = db.create_job("icloud_hide", batch_id="delete")
+        self.assertTrue(db.claim_job_for_execution(int(running["id"])))
+        persisted = db.get_job(pending["id"])
+        attempt = registration.get_attempt_by_job(pending["id"])
+        original_run = registration.list_runs(attempt["id"])[0]
+        with postgres.connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"""INSERT INTO {postgres.qualified('registration_runs')}
+                    (run_uuid, attempt_id, run_no, status, result_summary)
+                    VALUES ('historical-sibling', %s, 2, 'failed', '{{"outcome":"request_unknown"}}')""",
+                (attempt["id"],),
+            )
+        with (
+            patch.object(db, "get_job", side_effect=AssertionError("unexpected per-job read")),
+            patch("core.registration.debug.delete_job_artifacts") as delete_artifacts,
+            patch.object(registration_service, "_enqueue_job", side_effect=AssertionError("unexpected registration submission")),
+        ):
+            response = self.client.post("/api/jobs/delete-bulk", json={
+                "job_ids": [pending["id"], running["id"]],
+            }, headers=self.headers)
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual([pending["id"]], response.get_json()["deleted"])
+        self.assertEqual([{"id": running["id"], "reason": "运行中，不能删除"}], response.get_json()["skipped"])
+        delete_artifacts.assert_called_once_with(persisted)
+        self.assertIsNone(db.get_job(pending["id"]))
+        self.assertEqual("running", db.get_job(running["id"])["status"])
+        self.assertEqual("pending", db.get_job(unselected["id"])["status"])
+        run = registration.get_run(original_run["id"])
+        self.assertEqual("cancelled", run["status"])
+        self.assertIsNone(run["job_id"])
+        self.assertEqual(pending["id"], run["data"]["deleted_job_id"])
+        self.assertEqual(original_run["attempt_id"], run["attempt_id"])
+        sibling = next(row for row in registration.list_runs(attempt["id"]) if row["run_no"] == 2)
+        self.assertEqual("failed", sibling["status"])
+        self.assertEqual({"outcome": "request_unknown"}, sibling["result_summary"])
 
 
 class RegistrationRetryDriverTests(unittest.TestCase):
