@@ -185,6 +185,78 @@ def enqueue_return(source, row, *, conn):
     return store.get_row(_TABLE, event_id, conn=conn)
 
 
+def enqueue_return_many(items, *, conn, snapshot=None, existing=None):
+    """固定一组删除前的原归属，以集合 SQL 保存退租意图；不调用远端服务。"""
+    from core.email.email_butler.client import original_handoff_acquisition
+    from core.storage.email.collections import insert_many
+    from core.storage.email.deletion_snapshot import load_snapshot
+
+    items = list(items)
+    if not items:
+        return {}
+    event_keys = [f"return:{source}:{row['id']}" for source, row in items]
+    if existing is None:
+        existing = {row['event_key']: row for row in store.list_rows(_TABLE,
+            where='event_key=ANY(%s)', params=(event_keys,), conn=conn)}
+    else:
+        existing = dict(existing)
+    fresh_items = [(source, row) for source, row in items
+                   if f"return:{source}:{row['id']}" not in existing]
+    profile_ids = {
+        row.get('local_inbox_profile_id') or row.get('inbox_profile_id')
+        or (row.get('derivation_policy') or {}).get('inbox_profile_id')
+        for _, row in fresh_items
+    } - {None, ''}
+    profiles = {row['id']: row for row in store.list_rows(store.EMAIL_INBOX_PROFILES,
+        where='id=ANY(%s)', params=([int(value) for value in profile_ids],), conn=conn)} if profile_ids else {}
+    if snapshot is None:
+        snapshot = load_snapshot([row for _, row in fresh_items], conn=conn)
+    payloads = []
+    for source, row in fresh_items:
+        address = _address(row['email'])
+        profile_id = (row.get('local_inbox_profile_id') or row.get('inbox_profile_id')
+                      or (row.get('derivation_policy') or {}).get('inbox_profile_id'))
+        profile = profiles.get(int(profile_id)) if profile_id else None
+        acquisition = original_handoff_acquisition(address, row=row, profile=profile)
+        handoff = row.get('butler_handoff') or {}
+        lease_id = str(handoff.get('lease_id') or '')
+        if source != 'email_butler' and not acquisition and not lease_id:
+            continue
+        error = None
+        if not profile or profile.get('connector') != 'forward_butler' or profile.get('state') != 'active':
+            error = 'fixed_route_unavailable'
+        elif not acquisition and not lease_id:
+            error = 'acquisition_required'
+        payload = {'email': address, 'service': 'openai', 'acquisition_id': acquisition}
+        if lease_id:
+            payload['lease_id'] = lease_id
+        if handoff.get('client_id'):
+            payload['client_id'] = str(handoff['client_id'])
+        evidence = {'version': 1, 'pool_status': row.get('status'), 'used_at': row.get('used_at')}
+        safety_reason = snapshot.return_block_reason(row,
+            unused_inventory=evidence['pool_status'] == 'available' and not evidence['used_at'])
+        if safety_reason in {'registration_confirmed', 'registration_result_unverified'}:
+            state = 'local_only'
+        elif safety_reason == 'registration_active':
+            state = 'pending'
+        else:
+            state = 'blocked' if error else 'pending'
+        payloads.append({'event_key': f"return:{source}:{row['id']}", 'kind': 'return',
+            'address_norm': address, 'source': source, 'pool_id': row['id'], 'state': state,
+            'attempts': 0, 'profile_id': profile_id,
+            'api_base': ((profile or {}).get('inbox_locator') or {}).get('api_base', ''),
+            'credential_ref': (profile or {}).get('credential_ref') or '',
+            'error_code': safety_reason or error, 'payload': payload, 'return_evidence': evidence})
+    created = insert_many(conn, _TABLE, payloads, conflict_key='event_key')
+    existing.update({row['event_key']: row for row in created})
+    # 调用方持有邮箱锁；仍处理其他兼容入口抢先发布同一唯一意图的情况。
+    missing = [body['event_key'] for body in payloads if body['event_key'] not in existing]
+    if missing:
+        existing.update({row['event_key']: row for row in store.list_rows(_TABLE,
+            where='event_key=ANY(%s)', params=(missing,), conn=conn)})
+    return {(source, row['id']): existing.get(key) for (source, row), key in zip(items, event_keys)}
+
+
 def _public(row):
     error = row.get('error_code')
     retained = row['kind'] == 'return' and error in {

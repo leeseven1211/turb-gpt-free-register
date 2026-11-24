@@ -7,7 +7,6 @@ import json
 
 from core.operations.contracts import BulkItemResult
 from core.storage import postgres as pg, records as store
-from core.storage.email import local_imports
 
 _TABLES = {'outlook': store.OUTLOOK_POOL, 'generic_api': store.GENERIC_API_POOL,
     'cloudflare_domain': store.DOMAIN_POOL, 'icloud_hide': store.ICLOUD_HIDE_POOL,
@@ -63,8 +62,8 @@ def _load_targets(conn, targets):
             for raw in cur.fetchall():
                 row = store.merge_row(spec, raw)
                 result[f"{source}:{str(row['email']).lower()}"].append(row)
-    for email in sorted({key.split(':', 1)[1] for key in targets}):
-        store.advisory_xact_lock(conn, 'registered-account:' + email)
+    from core.storage.email.collections import lock_keys
+    lock_keys(conn, ['registered-account:' + key.split(':', 1)[1] for key in targets])
     return result
 
 
@@ -133,6 +132,7 @@ def update_status_many(items, status, note=None, *, conn=None):
 
 def delete_many(items, *, conn=None):
     from core.email.email_butler import service_facts
+    from core.storage.email.deletion_snapshot import load_snapshot
     targets = normalize_items(items)
     if not targets:
         return ()
@@ -150,14 +150,23 @@ def delete_many(items, *, conn=None):
                 (list(_TABLES), [row['id'] for parents in rows.values() for row in parents]))
             for row in cur.fetchall():
                 parent_ids[row['source']].add(row['parent_id'])
+        snapshot = load_snapshot([row for parents in rows.values() for row in parents
+                                  if row.get('status') != 'tombstone'], conn=current)
+        protected = {key for key, parents in rows.items()
+                     if any(snapshot.confirmed(row) for row in parents if row.get('status') != 'tombstone')}
+        returning = [(key.split(':', 1)[0], row) for key, parents in rows.items()
+                     if key not in protected for row in parents
+                     if row.get('status') != 'tombstone' and not row.get('pool_deleted_at')
+                     and row['id'] not in parent_ids[key.split(':', 1)[0]]]
+        return_by_pool = service_facts.enqueue_return_many(returning, conn=current,
+            snapshot=snapshot, existing=return_events)
         for key in targets:
             source, email = key.split(':', 1)
             parents = rows[key]
             if not parents:
                 results.append(_result(key, 'email_not_found', '邮箱不存在', source=source, email=email))
                 continue
-            if any(local_imports.pool_mutation_protected(row, conn=current)
-                   for row in parents if row.get('status') != 'tombstone'):
+            if key in protected:
                 results.append(_result(key, 'registration_confirmed', '邮箱已确认注册成功，不能删除', source=source, email=email))
                 continue
             sync = None
@@ -171,7 +180,7 @@ def delete_many(items, *, conn=None):
                         'derivation_policy': {**(row.get('derivation_policy') or {}), 'enabled': False},
                         'pool_deleted_at': store._now(), 'note': '母资源关联已有子地址，已停止新分配并保留历史恢复资料'}
                 else:
-                    event = service_facts.enqueue_return(source, row, conn=current)
+                    event = return_by_pool.get((source, row['id']))
                     sync = service_facts._public(event) if event else None
                     patch = {'status': 'tombstone', 'deleted_at': store._now(), 'pool_deleted_at': store._now()}
                     if source == 'email_butler':
