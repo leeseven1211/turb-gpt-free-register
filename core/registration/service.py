@@ -4841,10 +4841,9 @@ def request_stop_batch(batch_id: str, *, cancel_pending: bool = False) -> dict:
     if not batch_key:
         return {"ok": False, "error": "批次 ID 为空", "status": 400}
 
-    jobs = [
-        row for row in db.list_jobs(limit=1000)
-        if str(row.get("batch_id") or "").strip() == batch_key
-    ]
+    from core.storage import records
+
+    jobs = records.list_rows(records.JOBS, where="batch_id = %s", params=(batch_key,))
     if not jobs:
         return {"ok": False, "error": "批次不存在", "status": 404}
 
