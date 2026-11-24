@@ -90,56 +90,95 @@ def _v2_handoff_payload(email, handoff):
 
 
 
+def _import_snapshot(conn, source, addresses, *, registered=False, exclude_item_ids=()):
+    """一次集合读取跨来源历史；注册兼容路径还锁原池行。"""
+    from core.email.inventory import TABLES
+    from core.storage import postgres as pg
+    if registered:
+        with conn.cursor() as cur:
+            cur.execute(f'SELECT * FROM {pg.qualified(TABLES[source].name)} '
+                'WHERE lower(email)=ANY(%s) ORDER BY id FOR UPDATE', (addresses,))
+            existing = {row['email'].lower(): record_store.merge_row(TABLES[source], row) for row in cur.fetchall()}
+    else:
+        existing = {}
+    from core.storage.email.collections import lock_keys
+    lock_keys(conn, ['registered-account:' + email for email in addresses])
+    branches = []
+    tables = [(spec, 'email', 'pool') for spec in TABLES.values()] + [
+        (record_store.ACCOUNTS, 'email', 'account'),
+        (record_store.EMAIL_ADDRESS_ALLOCATIONS, 'address_norm', 'allocation'),
+        (record_store.LOCAL_EMAIL_CLAIMS, 'address_norm', 'claim'),
+        (record_store.EMAIL_SERVICE_SYNC, 'address_norm', 'sync')]
+    for spec, field, kind in tables:
+        branches.append(f"SELECT lower({field}) AS address,'{kind}' AS kind FROM {pg.qualified(spec.name)}")
+    branches.append(f"SELECT lower(COALESCE(address_norm,data->'mailbox'->>'email','')) AS address,'remote' AS kind "
+        f"FROM {pg.qualified(record_store.EMAIL_BUTLER_CLAIM_INTENTS.name)} WHERE status NOT IN ('prepared','rejected')")
+    occupied = {}
+    with conn.cursor() as cur:
+        cur.execute('SELECT DISTINCT address,kind FROM (' + ' UNION ALL '.join(branches) + ') all_history WHERE address=ANY(%s)', (addresses,))
+        for row in cur.fetchall():
+            occupied.setdefault(row['address'], set()).add(row['kind'])
+        cur.execute(f'SELECT address_norm,id FROM {pg.qualified(record_store.EMAIL_BUTLER_IMPORT_ITEMS.name)} '
+            "WHERE address_norm=ANY(%s) AND status <> 'skipped' AND NOT (id=ANY(%s))",
+            (addresses, list(exclude_item_ids)))
+        for row in cur.fetchall():
+            occupied.setdefault(row['address_norm'], set()).add('manual')
+    return existing, occupied
+
+
 def import_resources(records: list[dict], *, source: str, _fixed_profile=None,
-                     _handoffs=None, _manual_item_id=None, _conn=None, _as_registered=False) -> tuple[int, int]:
-    """Insert only never-seen full addresses, with one cross-source lock per address."""
-    from core.email.inventory import TABLES, import_conflict
+                     _handoffs=None, _manual_item_id=None, _manual_item_ids=(), _conn=None, _as_registered=False) -> tuple[int, int]:
+    """集合预检、集合插入与本地服务事实同事务；远端原租约核验保持逐地址。"""
+    from core.email.inventory import TABLES
     from core.email.resource_lifetime import normalize_expiry
     from core.email.email_butler import service_facts
-
+    from core.storage.email.collections import insert_many, patch_many
     if source not in {'outlook', 'generic_api', 'email_butler'}:
         raise ValueError('不支持的手动邮箱导入来源')
-    inserted = skipped = 0
+    candidates, skipped = {}, 0
+    for raw in sorted(records, key=lambda item: str(item.get('email') or '').strip().lower()):
+        email = str(raw.get('email') or '').strip().lower()
+        if not _ADDRESS.fullmatch(email):
+            skipped += 1
+            continue
+        if source == 'email_butler':
+            email = butler_forward_address(email)
+        if source == 'generic_api' and not str(raw.get('code_url') or raw.get('url') or '').strip():
+            skipped += 1
+            continue
+        if _as_registered and source == 'outlook' and not all(str(raw.get(key) or raw.get(alias) or '').strip()
+                for key, alias in (('password','password'),('client_id','clientId'),('refresh_token','refreshToken'))):
+            skipped += 1
+            continue
+        lifetime = {} if _as_registered else normalize_expiry(raw.get('expires_at'), reject_expired=True)
+        if email in candidates:
+            skipped += 1
+        else:
+            candidates[email] = (raw, lifetime)
+    if not candidates:
+        return 0, skipped
     profile = _fixed_profile
     with (nullcontext(_conn) if _conn is not None else record_store.transaction()) as conn:
         if _as_registered:
             from core.storage.email.validity import lock_email_validity
             lock_email_validity(conn, shared=True)
-        # 同一批事务会持有所有地址锁；各来源使用相同顺序，避免相反输入批次互等。
-        for raw in sorted(records, key=lambda item: str(item.get('email') or '').strip().lower()):
-            email = str(raw.get('email') or '').strip().lower()
-            if not _ADDRESS.fullmatch(email):
+        excluded = tuple(_manual_item_ids) + ((_manual_item_id,) if _manual_item_id else ())
+        existing, occupied = _import_snapshot(conn, source, list(candidates), registered=_as_registered,
+            exclude_item_ids=excluded)
+        payloads, staged, staged_rows = [], {}, []
+        for email, (raw, lifetime) in candidates.items():
+            previous = existing.get(email)
+            if _as_registered and previous and previous.get('status') not in {
+                    'pending_sync','replaced','tombstone','request_unknown','reserved','running'} and not (
+                    occupied.get(email, set()) & {'account','allocation','claim'}):
+                changes = _registered_material(raw, source)
+                staged[previous['id']] = changes
+                staged_rows.append({**previous, **changes})
+                continue
+            if occupied.get(email):
                 skipped += 1
                 continue
-            if source == 'email_butler':
-                email = butler_forward_address(email)
             code_url = str(raw.get('code_url') or raw.get('url') or '').strip()
-            if source == 'generic_api' and not code_url:
-                skipped += 1
-                continue
-            if _as_registered and source == 'outlook' and not all(str(raw.get(key) or raw.get(alias) or '').strip()
-                    for key, alias in (('password', 'password'), ('client_id', 'clientId'), ('refresh_token', 'refreshToken'))):
-                skipped += 1
-                continue
-            lifetime = {} if _as_registered else normalize_expiry(raw.get('expires_at'), reject_expired=True)
-            existing = (record_store.get_row_by(TABLES[source], 'email', email, lower=True, conn=conn, for_update=True)
-                        if _as_registered else None)
-            record_store.advisory_xact_lock(conn, 'registered-account:' + email)
-            if _as_registered:
-                if existing and _stage_existing_registered(conn, source, existing, raw):
-                    inserted += 1
-                    continue
-            if import_conflict(email, conn=conn):
-                skipped += 1
-                continue
-            # A pending manual batch owns its fixed candidate even before the
-            # remote result is known. Paste imports cannot race that intent.
-            reserved = record_store.list_rows(record_store.EMAIL_BUTLER_IMPORT_ITEMS,
-                where="address_norm = %s AND status <> 'skipped'" + (" AND id <> %s" if _manual_item_id else ''),
-                params=(email, _manual_item_id) if _manual_item_id else (email,), limit=1, conn=conn)
-            if reserved:
-                skipped += 1
-                continue
             # 永久标签与成功次数独立，退号不会清除导入事实。
             service_tags = raw.get('service_tags')
             service_tags = service_facts.permanent_tags(service_tags if isinstance(service_tags, list) else [])
@@ -181,15 +220,78 @@ def import_resources(records: list[dict], *, source: str, _fixed_profile=None,
                 payload['registered_expires_at'] = raw.get('expires_at')
                 payload.update({key: raw[key] for key in ('user_id', 'user_name', 'plan_type', 'device_id',
                     'proxy_used', 'codex_status', 'codex_error') if key in raw})
-            pool_id = record_store.insert_row_if_absent(TABLES[source], 'email', payload, conn=conn)
-            if pool_id is None:
-                skipped += 1
-            else:
-                if source != 'email_butler':
-                    service_facts.enqueue_import(source, {**payload, 'id': pool_id}, conn=conn,
-                                                 as_registered=_as_registered)
-                inserted += 1
-    return inserted, skipped
+            payloads.append(payload)
+        patch_many(conn, TABLES[source], staged)
+        fresh = insert_many(conn, TABLES[source], payloads, conflict_key='email')
+        skipped += len(payloads) - len(fresh)
+        accepted = [*staged_rows, *fresh]
+        if source != 'email_butler':
+            service_facts.enqueue_import_many(source, accepted, conn=conn, as_registered=_as_registered)
+        return len(accepted), skipped
+
+
+def _registered_material(raw, source):
+    changes = {'access_token': str(raw.get('access_token') or raw.get('token') or '').strip(),
+        'totp_secret': str(raw.get('totp_secret') or raw.get('totp') or '').strip(),
+        'registered_expires_at': raw.get('expires_at')}
+    changes.update({key: raw[key] for key in ('user_id','user_name','plan_type','device_id',
+        'proxy_used','codex_status','codex_error') if key in raw})
+    if source == 'generic_api':
+        changes['code_url'] = str(raw.get('code_url') or raw.get('url') or '').strip()
+    else:
+        changes.update(password=str(raw.get('password') or '').strip(),
+            client_id=str(raw.get('client_id') or raw.get('clientId') or '').strip(),
+            refresh_token=str(raw.get('refresh_token') or raw.get('refreshToken') or '').strip())
+    return changes
+
+
+def publish_registered_many(source, rows, *, conn):
+    """已确认本地永久事实后集合创建兼容账号；保留原池失效证据。"""
+    import json
+    from core.storage.db_legacy import _outlook_line, _generic_api_email_line
+    from core.storage.email.collections import insert_many, patch_many
+    from core.storage.email.validity import lock_email_validity
+    from core.email.inventory import TABLES
+    lock_email_validity(conn, shared=True)
+    addresses = [row['email'].lower() for row in rows]
+    existing = record_store.list_rows(record_store.ACCOUNTS, where='lower(email)=ANY(%s)', params=(addresses,), conn=conn)
+    allocated = record_store.list_rows(record_store.EMAIL_ADDRESS_ALLOCATIONS, where='address_norm=ANY(%s)', params=(addresses,), conn=conn)
+    blocked = {row['email'].lower() for row in existing} | {row['address_norm'] for row in allocated}
+    if blocked:
+        raise ValueError('registered_import_conflict: 原已注册账号导入无法完成')
+    payloads, pool_by_email, changes = [], {}, {}
+    for row in rows:
+        email, now = row['email'], record_store._now()
+        pool_by_email[email.lower()] = row
+        patch = {'status': 'used', 'used_at': row.get('used_at') or now,
+            'completed_at': row.get('completed_at') or now,
+            'note': row.get('note') or '导入为已注册账号，用于 Codex 授权'}
+        material = {**row, **patch}
+        account = {'email': email, 'created_at': now, 'updated_at': now,
+            'access_token': str(row.get('access_token') or '').strip(),
+            'totp_secret': str(row.get('totp_secret') or '').strip() or None,
+            'user_id': row.get('user_id'), 'user_name': row.get('user_name') or 'Imported Account',
+            'plan_type': row.get('plan_type'), 'expires_at': row.get('registered_expires_at'),
+            'device_id': row.get('device_id'), 'proxy_used': row.get('proxy_used'), 'email_source': source,
+            'extra_json': json.dumps({'imported_registered': True}, ensure_ascii=False),
+            'codex_status': row.get('codex_status') or '', 'codex_error': row.get('codex_error'),
+            'original_email_line': _outlook_line(material) if source == 'outlook' else _generic_api_email_line(material)}
+        if source == 'outlook':
+            account.update({key: row.get(key) for key in ('password','client_id','refresh_token')})
+        if row.get('email_invalid') is True:
+            account.update({key: row.get(key) for key in ('email_invalid','email_invalid_reason',
+                'email_invalid_source','email_invalid_at')})
+            account['email_invalid_email'] = email
+        payloads.append(account)
+        changes[row['id']] = patch
+    accounts = insert_many(conn, record_store.ACCOUNTS, payloads)
+    for account in accounts:
+        row = pool_by_email[account['email'].lower()]
+        changes[row['id']].update(registered_account_id=account['id'], access_token=account.get('access_token') or '')
+        if account.get('totp_secret'):
+            changes[row['id']]['totp_secret'] = account['totp_secret']
+    patch_many(conn, TABLES[source], changes)
+    return accounts
 
 
 def _stage_existing_registered(conn, source, row, raw):

@@ -61,25 +61,56 @@ def _new_route():
 
 
 def enqueue_import(source, row, *, conn, final_status='available', as_registered=False):
-    """v2 不接收业务事实：原子保存本地证据并完成本地导入。"""
+    return enqueue_import_many(source, [row], conn=conn, final_status=final_status,
+        as_registered=as_registered)[0]
+
+
+def enqueue_import_many(source, rows, *, conn, final_status='available', as_registered=False):
+    """集合保存本地永久事实；只发布本次真正新增的事实，不重放旧意图。"""
     from core.email.email_butler.inventory_handoff import _consumer_instance
-    address = _address(row['email'])
-    event_key = f"{'registered-import' if as_registered else 'import'}:{source}:{row['id']}"
-    existing = store.get_row_by(_TABLE, 'event_key', event_key, conn=conn)
-    if existing:
-        return existing
-    instance = _consumer_instance()
-    evidence = 'turb-import:' + hashlib.sha256(f"{instance}:{event_key}:{address}".encode()).hexdigest()
-    payload = {'address': address, 'service': 'openai', 'fact_type': 'imported', 'evidence_id': evidence,
-               'source_instance': instance, 'source_record': f"{source}:{row['id']}",
-               'observed_at': datetime.now(timezone.utc).isoformat()}
-    event_id = store.insert_row(_TABLE, {'event_key': event_key, 'kind': 'import', 'address_norm': address,
-        'source': source, 'pool_id': row['id'], 'state': 'local_only', 'attempts': 0,
-        'api_base': '', 'credential_ref': '', 'error_code': 'service_facts_unsupported',
-        'payload': payload, 'final_status': final_status, 'as_registered': as_registered}, conn=conn)
-    event = store.get_row(_TABLE, event_id, conn=conn)
-    _publish_import_local(event, row, conn=conn)
-    return event
+    from core.storage.email.collections import insert_many, patch_many
+    rows = list(rows)
+    if not rows:
+        return []
+    keys = [f"{'registered-import' if as_registered else 'import'}:{source}:{row['id']}" for row in rows]
+    existing = {row['event_key']: row for row in store.list_rows(_TABLE,
+        where='event_key=ANY(%s)', params=(keys,), conn=conn)}
+    instance = _consumer_instance() if len(existing) < len(keys) else ''
+    fresh = []
+    for key, row in zip(keys, rows):
+        if key in existing:
+            continue
+        address = _address(row['email'])
+        evidence = 'turb-import:' + hashlib.sha256(f"{instance}:{key}:{address}".encode()).hexdigest()
+        fresh.append({'event_key': key, 'kind': 'import', 'address_norm': address,
+            'source': source, 'pool_id': row['id'], 'state': 'local_only', 'attempts': 0,
+            'api_base': '', 'credential_ref': '', 'error_code': 'service_facts_unsupported',
+            'payload': {'address': address, 'service': 'openai', 'fact_type': 'imported',
+                'evidence_id': evidence, 'source_instance': instance, 'source_record': f"{source}:{row['id']}",
+                'observed_at': datetime.now(timezone.utc).isoformat()},
+            'final_status': final_status, 'as_registered': as_registered})
+    events = insert_many(conn, _TABLE, fresh, conflict_key='event_key')
+    by_id = {row['id']: row for row in rows}
+    patches, registered = {}, []
+    for event in events:
+        row = by_id[event['pool_id']]
+        if row.get('status') in {'tombstone','replaced','request_unknown','reserved','running'}:
+            continue
+        final = 'disabled' if source == 'icloud_hide' and row.get('remote_active') is False else final_status
+        changes = {'service_sync_state': 'local_only', 'service_sync_error': None,
+            'service_fact_scope': 'local', 'service_fact_permanent': True,
+            'service_tags': permanent_tags(row.get('service_tags'))}
+        if row.get('status') in {'pending_sync','available'}:
+            changes['status'] = final
+        patches[row['id']] = changes
+        if as_registered:
+            registered.append({**row, **changes})
+    patch_many(conn, _tables()[source], patches)
+    if registered:
+        from core.storage.email.local_imports import publish_registered_many
+        publish_registered_many(source, registered, conn=conn)
+    existing.update({row['event_key']: row for row in events})
+    return [existing[key] for key in keys]
 
 
 def _publish_import_local(event, row, *, conn):
