@@ -11,6 +11,7 @@ from webui.routes import email_pool
 
 
 class EmailPoolDeleteRoutesTests(unittest.TestCase):
+    BULK_SOURCES = {'outlook', 'generic_api', 'icloud_hide', 'cloudflare_domain'}
     SOURCES = {
         'outlook': 'db.delete_outlook',
         'generic_api': 'db.delete_generic_api_email',
@@ -34,6 +35,22 @@ class EmailPoolDeleteRoutesTests(unittest.TestCase):
             return_value={'state': 'not_required'}))
         self.deleters = {source: stack.enter_context(patch('webui.routes.email_pool.' + target,
             return_value=True)) for source, target in self.SOURCES.items()}
+        self.bulk_delete = stack.enter_context(patch.object(email_pool.db, 'delete_pool_emails',
+            side_effect=self._bulk_delete))
+
+    def _bulk_delete(self, source, emails):
+        deleted = []
+        skipped = []
+        for email in emails:
+            row = self.lookup(email, source)
+            if self.protected(row):
+                skipped.append({'email': email, 'reason': '邮箱已确认注册成功，不能删除',
+                                'reason_code': 'registration_confirmed'})
+            elif source == 'generic_api' and email == 'missing@example.test':
+                skipped.append({'email': email, 'reason': '邮箱不存在', 'reason_code': 'email_not_found'})
+            else:
+                deleted.append(email)
+        return {'deleted': deleted, 'skipped': skipped}
 
     def test_confirmed_success_has_same_single_and_bulk_reason_for_every_source(self):
         self.protected.return_value = True
@@ -66,8 +83,12 @@ class EmailPoolDeleteRoutesTests(unittest.TestCase):
                 self.assertEqual(bulk.status_code, 200)
                 self.assertEqual(bulk.json['deleted_count'], 1)
                 self.assertEqual(bulk.json['skipped'], [])
-                self.assertEqual(delete.call_count, 2)
-                delete.assert_called_with(item['email'])
+                if source in self.BULK_SOURCES:
+                    self.assertEqual(delete.call_count, 1)
+                    self.bulk_delete.assert_called_with(source, [item['email']])
+                else:
+                    self.assertEqual(delete.call_count, 2)
+                    delete.assert_called_with(item['email'])
 
     def test_bulk_keeps_success_and_other_skip_reasons(self):
         self.protected.side_effect = lambda row: row['email'].startswith('success')

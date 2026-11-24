@@ -643,6 +643,31 @@ class AdminRepositoryTests(PostgresTestCase):
         self.assertNotIn("refresh_token", item)
         self.assertNotIn("account_copy_line", item)
 
+    def test_email_pool_bound_filter_requires_used_status(self):
+        rs.insert_row(rs.OUTLOOK_POOL, {
+            "email": "history-available@example.test",
+            "status": "available",
+        })
+        rs.insert_row(rs.ACCOUNTS, {"email": "history-available@example.test"})
+        rs.insert_row(rs.OUTLOOK_POOL, {
+            "email": "bound-filter@example.test",
+            "status": "used",
+        })
+        rs.insert_row(rs.ACCOUNTS, {"email": "bound-filter@example.test"})
+
+        result = repo.list_email_pool(
+            repo.PageRequest(
+                page=1,
+                page_size=20,
+                filters={"source": "outlook", "usage": "bound"},
+            )
+        )
+
+        self.assertEqual(
+            {"bound-filter@example.test"},
+            {row["email"] for row in result["items"]},
+        )
+
     def test_email_pool_can_filter_replaced_mailboxes(self):
         rs.insert_row(rs.OUTLOOK_POOL, {
             "email": "changed@example.test",

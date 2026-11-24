@@ -7,7 +7,7 @@ export function createEmailApi(send:EmailRequest=(path,options)=>request(path,op
  const post=<T>(path:string,body:unknown,signal?:AbortSignal)=>send(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),...(signal?{signal}:{})}) as Promise<T>;
  return {
   overview:(signal?:AbortSignal)=>get<{email?:{supply?:{sources?:SourceCard[]};sources?:SourceCard[]}}>('/api/dashboard',signal),
-  inventory:(query:InventoryQuery,signal?:AbortSignal)=>{const {size,...values}=query;return get<InventoryResponse>(`/api/outlook?${new URLSearchParams({paged:'1',page:String(values.page),page_size:String(size),source:values.source,q:values.q,status:values.status,used_date:values.used_date})}`,signal);},
+  inventory:(query:InventoryQuery,signal?:AbortSignal)=>{const {size,...values}=query;return get<InventoryResponse>(`/api/outlook?${new URLSearchParams({paged:'1',page:String(values.page),page_size:String(size),source:values.source,q:values.q,status:values.status,used_date:values.used_date,usage:String(values.usage||'')})}`,signal);},
   derivationSummary:(signal?:AbortSignal)=>get<{parents?:ParentHistory[]}>('/api/email-derivation/summary?source=all',signal),
   history:(query:HistoryQuery,signal?:AbortSignal)=>{const {size,page,...filters}=query;const params=new URLSearchParams({page:String(page),page_size:String(size)});for(const [key,value]of Object.entries(filters))if(value)params.set(key,value);return get<{items:HistoryRow[];total:number}>(`/api/email-derivation/allocations?${params}`,signal);},
   secret:(item:EmailIdentity,signal?:AbortSignal)=>get<{value?:string}>(`/api/outlook/secret?${new URLSearchParams({...item,field:'copy_line'})}`,signal),
