@@ -307,10 +307,14 @@ def _upsert_registration_job(cur, job: dict, accounts_by_id: dict[int, dict], ac
     }
     if isinstance(job.get("config_snapshot"), dict):
         projection_data["config_snapshot"] = dict(job["config_snapshot"])
-    cur.execute(
-        f"UPDATE {postgres_store.qualified('registration_jobs')} SET attempt_id=%s WHERE id=%s",
-        (attempt_id, job_id),
-    )
+    # A separate projection schema owns a different Attempt sequence. The
+    # registration Job must retain the link written by the registration store.
+    if _common._schema_name() == postgres_store.schema_name():
+        cur.execute(
+            f"UPDATE {postgres_store.qualified('registration_jobs')} SET attempt_id=%s "
+            "WHERE id=%s AND attempt_id IS NULL",
+            (attempt_id, job_id),
+        )
     batch_id = None
     legacy_batch_id = str(job.get("batch_id") or "").strip()
     if legacy_batch_id:

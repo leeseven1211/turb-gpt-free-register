@@ -170,7 +170,8 @@ class RegistrationWorkerStorageTests(PostgresTestCase):
             self.assertEqual((attempt["id"], "queued"), (task["attempt_id"], task["status"]))
 
     def test_batch_submission_preserves_business_attempt_with_separate_projection_schema(self):
-        from core.storage import registration
+        from core.storage import postgres, registration
+        from core.storage.operations import schema
         from core.storage.operations import store as operation
         from tests.support_pg import drop_schema, temporary_schema_name
 
@@ -181,6 +182,11 @@ class RegistrationWorkerStorageTests(PostgresTestCase):
                 patch.object(service, "notify_dispatch"), \
                 patch.object(service, "require_registration_deployment"), \
                 patch.object(service, "registration_config_snapshot", return_value={"registration_driver": "protocol_oss_2"}):
+            schema.init_operation_schema()
+            projected_attempts = f'{postgres.quote_identifier(operation_schema)}."registration_attempts"'
+            with postgres.connect() as conn, conn.cursor() as cur:
+                cur.execute(f"""INSERT INTO {projected_attempts} (attempt_uuid,source_root_job_id)
+                               SELECT 'unrelated-' || n, 10000 + n FROM generate_series(1,5) n""")
             jobs = service.submit_registration(count=2, email_source="outlook", workers=2)
             for job in jobs:
                 attempt = registration.get_attempt_by_job(job["id"])
@@ -189,3 +195,47 @@ class RegistrationWorkerStorageTests(PostgresTestCase):
                 self.assertEqual(job["id"], registration.list_runs(attempt["id"])[0]["job_id"])
                 task = operation.find_task_by_source("registration_jobs", str(job["id"]), include_runs=True)
                 self.assertEqual("not_created", task["target_status"])
+                self.assertNotEqual(attempt["id"], task["attempt_id"])
+                db.update_job(job["id"], status="running")
+                # Force the synchronous projector to surface an FK error rather than logging it.
+                operation.sync_registration_job(job["id"])
+                self.assertEqual(attempt["id"], db.get_job(job["id"])["attempt_id"])
+                projected = operation.find_task_by_source("registration_jobs", str(job["id"]), include_runs=True)
+                self.assertEqual((task["attempt_id"], "running"), (projected["attempt_id"], projected["status"]))
+
+    def test_large_registration_batch_writes_bounded_statements_in_original_order(self):
+        from core.storage import postgres, registration
+        from core.storage.operations import schema
+
+        registration.init()
+        schema.init_operation_schema()
+        jobs = postgres.qualified("registration_jobs")
+        captured = postgres.qualified("registration_statement_sizes")
+        fn = postgres.qualified("capture_registration_statement")
+        with postgres.connect() as conn, conn.cursor() as cur:
+            cur.execute(f"CREATE TABLE {captured} (id bigserial,n int)")
+            cur.execute(f"""CREATE FUNCTION {fn}() RETURNS trigger LANGUAGE plpgsql AS $$
+                             BEGIN INSERT INTO {captured}(n) SELECT count(*) FROM inserted;
+                             RETURN NULL; END $$""")
+            cur.execute(f"""CREATE TRIGGER capture_registration_statement AFTER INSERT ON {jobs}
+                            REFERENCING NEW TABLE AS inserted FOR EACH STATEMENT EXECUTE FUNCTION {fn}()""")
+        try:
+            with (patch.object(service, "start_dispatcher") as start,
+                  patch.object(service, "notify_dispatch") as wake,
+                  patch.object(service, "require_registration_deployment"),
+                  patch.object(service, "registration_config_snapshot", return_value={"registration_driver": "protocol_oss_2"})):
+                rows = service.submit_registration(count=501, email_source="outlook", workers=3)
+            with postgres.connect() as conn, conn.cursor() as cur:
+                cur.execute(f"SELECT n FROM {captured} ORDER BY id")
+                self.assertEqual([500, 1], [row[0] for row in cur.fetchall()])
+            self.assertEqual(list(range(1, 502)), [row["batch_index"] for row in rows])
+            self.assertEqual({501}, {row["batch_size"] for row in rows})
+            self.assertEqual(1, len({row["batch_id"] for row in rows}))
+            self.assertTrue(all(row["registration_dispatch_ready"] for row in rows))
+            start.assert_called_once()
+            wake.assert_called_once()
+        finally:
+            with postgres.connect() as conn, conn.cursor() as cur:
+                cur.execute(f"DROP TRIGGER capture_registration_statement ON {jobs}")
+                cur.execute(f"DROP FUNCTION {fn}()")
+                cur.execute(f"DROP TABLE {captured}")
