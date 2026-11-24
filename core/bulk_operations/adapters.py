@@ -334,9 +334,9 @@ def _submit_fresh(conn, items: Sequence[Mapping], context: Mapping) -> dict[int,
               SET codex_execution_status='queued',codex_active_run_id=s.run_id,
                   codex_status=CASE WHEN a.codex_status='success' OR a.codex_credential_state IN ('valid','pending_confirmation')
                     THEN a.codex_status ELSE 'retrying' END,
-                  data=a.data || %s::jsonb
+                  updated_at=%s,data=a.data || %s::jsonb
               FROM jsonb_to_recordset(%s::jsonb) s(account_id BIGINT,run_id BIGINT) WHERE a.id=s.account_id""",
-              (json.dumps({"updated_at": now}), json.dumps(changes)))
+              (now, json.dumps({"updated_at": now}), json.dumps(changes)))
     return output
 
 

@@ -415,3 +415,29 @@ class NativeRetryCollectionTests(PostgresTestCase):
             self.assertEqual(dict(cur.fetchone()), {"status": "queued", "queued_count": 1, "failed_count": 0})
             cur.execute(f"SELECT batch_id FROM {store._table('operation_runs')} WHERE id=%s", (receipt["run_id"],))
             self.assertEqual(cur.fetchone()["batch_id"], batch["id"])
+
+    def test_codex_submission_and_retry_refresh_promoted_updated_at(self):
+        old_timestamp = "2000-01-01T00:00:00+00:00"
+        with store._connect() as conn:
+            records.patch_row(records.ACCOUNTS, 1, {"updated_at": old_timestamp}, conn=conn)
+            first = adapters.submit_chunk(conn, [{"target_round_id": 1001, "account_id": 1}],
+                                          self.context("codex_retry"))[0]
+            first_account = records.get_row(records.ACCOUNTS, 1, conn=conn)
+            self.assertEqual(first["disposition"], "created")
+            self.assertGreater(first_account["updated_at"], old_timestamp)
+            self.assertEqual(first_account["codex_active_run_id"], first["run_id"])
+            with conn.cursor() as cur:
+                cur.execute(f"UPDATE {store._table('operation_runs')} SET status='failed' WHERE id=%s",
+                            (first["run_id"],))
+                cur.execute(f"UPDATE {store._table('operation_tasks')} SET status='failed' WHERE id=%s",
+                            (first["task_id"],))
+            records.patch_row(records.ACCOUNTS, 1, {"updated_at": old_timestamp,
+                "codex_status": "success", "codex_credential_state": "valid"}, conn=conn)
+            retry = adapters.submit_chunk(conn, [{"target_round_id": 11001, "account_id": 1,
+                "source_task_id": first["task_id"]}], self.context("codex_retry"))[0]
+            retry_account = records.get_row(records.ACCOUNTS, 1, conn=conn)
+            self.assertEqual(retry["disposition"], "created")
+            self.assertGreater(retry_account["updated_at"], old_timestamp)
+            self.assertEqual(retry_account["codex_active_run_id"], retry["run_id"])
+            self.assertEqual(retry_account["codex_status"], "success")
+            self.assertEqual(retry_account["codex_credential_state"], "valid")

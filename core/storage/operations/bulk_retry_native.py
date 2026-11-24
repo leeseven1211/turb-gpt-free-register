@@ -185,9 +185,9 @@ def _retry_chunk(conn, specs: list[dict], *, operation_key: str, task_counts: Co
                 SET codex_execution_status='queued',codex_active_run_id=s.run_id,
                     codex_status=CASE WHEN a.codex_status='success'
                         OR a.codex_credential_state IN ('valid','pending_confirmation')
-                        THEN a.codex_status ELSE 'retrying' END,data=a.data || %s::jsonb
+                        THEN a.codex_status ELSE 'retrying' END,updated_at=%s,data=a.data || %s::jsonb
                 FROM jsonb_to_recordset(%s::jsonb) s(account_id BIGINT,run_id BIGINT)
-                WHERE a.id=s.account_id""", (json.dumps({"updated_at": queued_at}), payload))
+                WHERE a.id=s.account_id""", (queued_at, json.dumps({"updated_at": queued_at}), payload))
         _refresh_previous_batches(cur, batch_ids)
         for row in rows:
             output[row["target_round_id"]] = {"target_round_id": row["target_round_id"],
