@@ -64,6 +64,23 @@ class LocalEmailImportsTests(PostgresTestCase):
     def post(self, endpoint, body):
         return self.client.post(endpoint, json=body, headers=self.headers)
 
+    def post_bulk(self, endpoint, body):
+        """验收请求受理和真实块写入；通用 Worker 的持久回执由专属测试覆盖。"""
+        from core.storage.email import bulk_mutations
+        commands = []
+        def accept(operation, targets, parameters, **kwargs):
+            commands.append((operation, targets, parameters))
+            return {'accepted': True, 'task_id': 1, 'run_id': 1}
+        with patch('core.operations.bulk_mutation_worker.submit_bulk_mutation', side_effect=accept):
+            response = self.post(endpoint, body)
+        results = ()
+        for operation, targets, parameters in commands:
+            handler = (bulk_mutations._handle_status_chunk if operation == 'email_pool_status'
+                else bulk_mutations._handle_delete_chunk)
+            with record_store.transaction() as conn:
+                results = handler(targets, parameters, conn=conn)
+        return response, results
+
     def test_unconfirmed_butler_handoff_cannot_become_available_local_stock(self):
         with patch('core.email.email_butler.inventory_handoff.handoff_for_import',
                    side_effect=ValueError('handoff_unconfirmed: 请重试同一地址')):
@@ -146,8 +163,10 @@ class LocalEmailImportsTests(PostgresTestCase):
 
     def test_legacy_used_resource_without_success_can_be_bulk_deleted(self):
         record_store.insert_row(record_store.GENERIC_API_POOL, {'email': 'legacy@example.test', 'status': 'used'})
-        deleted = self.post('/api/outlook/delete-bulk', {'items': [{'source': 'generic_api', 'email': 'legacy@example.test'}]}).get_json()
-        self.assertEqual(deleted['deleted_count'], 1)
+        response, results = self.post_bulk('/api/outlook/delete-bulk',
+            {'items': [{'source': 'generic_api', 'email': 'legacy@example.test'}]})
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual([item.status for item in results], ['updated'])
         self.assertEqual(record_store.get_row_by(record_store.GENERIC_API_POOL, 'email', 'legacy@example.test')['status'], 'tombstone')
 
     def test_manual_status_routes_reset_historical_states_for_every_source(self):
@@ -165,10 +184,10 @@ class LocalEmailImportsTests(PostgresTestCase):
                     row_id = record_store.insert_row(table, {'email': address, 'status': status, 'used_at': used_at})
                     item = {'source': source, 'email': address}
                     if bulk:
-                        response = self.post('/api/outlook/status-bulk', {'items': [item], 'status': 'available'})
-                        self.assertEqual(response.status_code, 200)
-                        self.assertEqual(response.get_json()['updated_count'], 1)
-                        self.assertEqual(response.get_json()['skipped'], [])
+                        response, results = self.post_bulk('/api/outlook/status-bulk', {'items': [item], 'status': 'available'})
+                        self.assertEqual(response.status_code, 202)
+                        self.assertEqual([(result.status, result.reason_code) for result in results],
+                            [('updated', None)])
                     else:
                         response = self.post('/api/outlook/status', {**item, 'status': 'available'})
                         self.assertEqual(response.status_code, 200)
@@ -201,10 +220,13 @@ class LocalEmailImportsTests(PostgresTestCase):
                 item = {'source': 'icloud_hide', 'email': 'parent@icloud.test'}
                 endpoint = '/api/outlook/status-bulk' if bulk else '/api/outlook/status'
                 body = {'items': [item], 'status': 'available'} if bulk else {**item, 'status': 'available'}
-                response = self.post(endpoint, body)
-                self.assertEqual(response.status_code, 200)
                 if bulk:
-                    self.assertEqual(response.get_json()['updated_count'], 1)
+                    response, results = self.post_bulk(endpoint, body)
+                    self.assertEqual(response.status_code, 202)
+                    self.assertEqual(results[0].status, 'updated')
+                else:
+                    response = self.post(endpoint, body)
+                    self.assertEqual(response.status_code, 200)
                 parent = record_store.get_row(record_store.ICLOUD_HIDE_POOL, parent_id)
                 self.assertEqual(parent['status'], 'available')
                 self.assertIsNone(parent['used_at'])
@@ -225,10 +247,10 @@ class LocalEmailImportsTests(PostgresTestCase):
                 item = {'source': source, 'email': address}
                 response = self.post('/api/outlook/status', {**item, 'status': 'available'})
                 self.assertEqual(response.status_code, 409)
-                response = self.post('/api/outlook/status-bulk', {'items': [item], 'status': 'available'})
-                self.assertEqual(response.status_code, 200)
-                self.assertEqual(response.get_json()['updated_count'], 0)
-                self.assertEqual(len(response.get_json()['skipped']), 1)
+                response, results = self.post_bulk('/api/outlook/status-bulk', {'items': [item], 'status': 'available'})
+                self.assertEqual(response.status_code, 202)
+                self.assertEqual([(result.status, result.reason_code) for result in results],
+                    [('skipped', 'email_replaced')])
                 self.assertEqual(record_store.get_row(table, row_id)['status'], 'replaced')
 
     def test_parallel_imports_cannot_create_two_local_resources_for_one_address(self):
