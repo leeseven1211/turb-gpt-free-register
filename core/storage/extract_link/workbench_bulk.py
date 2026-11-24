@@ -10,6 +10,32 @@ from core.storage import records, postgres
 from core.storage.operations import common, projection, store as operation
 
 
+def _lock_sync_sources(cur, conn, ids):
+    """受管目标先锁，随后统一按账号、Task 顺序锁；等待后还要核验来源 Run。"""
+    cur.execute(f"""SELECT task.id,task.account_id,latest.id AS source_run_id,
+        latest.data->>'bulk_target_round_id' AS target_id
+        FROM {operation._table('operation_tasks')} task
+        LEFT JOIN LATERAL (SELECT id,data FROM {operation._table('operation_runs')}
+            WHERE task_id=task.id ORDER BY run_no DESC,id DESC LIMIT 1) latest ON TRUE
+        WHERE task.id=ANY(%s) ORDER BY task.id""",(ids,))
+    identities = [dict(row) for row in cur.fetchall()]
+    managed = sorted((row for row in identities if str(row.get('target_id') or '').isdigit()),
+        key=lambda row:(int(row['target_id']),row['source_run_id']))
+    if managed:
+        from core.storage.operations import bulk
+        for row in managed:
+            bulk.lock_managed_target(conn,row['source_run_id'])
+    account_ids = sorted({row['account_id'] for row in identities if row.get('account_id')})
+    if account_ids:
+        cur.execute(f"SELECT id FROM {postgres.qualified(records.ACCOUNTS.name)} "
+            "WHERE id=ANY(%s) ORDER BY id FOR UPDATE",(account_ids,))
+        cur.fetchall()
+    cur.execute(f"SELECT id FROM {operation._table('operation_tasks')} "
+        "WHERE id=ANY(%s) ORDER BY id FOR UPDATE",(ids,))
+    cur.fetchall()
+    return {row['id']:(row['source_run_id'],row['account_id']) for row in identities}
+
+
 def read_snapshots(task_ids, *, conn=None, lock=False, use_latest=True):
     """一次读取最新 Run、公开原单和付款意图；私有凭据只在 SQL 内复制。"""
     ids = list(dict.fromkeys(int(value) for value in task_ids))
@@ -17,10 +43,7 @@ def read_snapshots(task_ids, *, conn=None, lock=False, use_latest=True):
         return {}
     operation.init()
     with (operation._connect() if conn is None else nullcontext(conn)) as connection, connection.cursor() as cur:
-        if lock:
-            cur.execute(f"SELECT id FROM {operation._table('operation_tasks')} "
-                        "WHERE id=ANY(%s) ORDER BY id FOR UPDATE", (ids,))
-            cur.fetchall()
+        expected_sources = _lock_sync_sources(cur,connection,ids) if lock else {}
         selected_run = "run.task_id=task.id" if use_latest else "run.id=task.last_run_id AND run.task_id=task.id"
         cur.execute(f"""
             SELECT task.*, to_jsonb(latest) AS latest_run,
@@ -53,10 +76,15 @@ def read_snapshots(task_ids, *, conn=None, lock=False, use_latest=True):
             """, (sorted(common._ACTIVE_RUN_STATUSES), ids))
         rows = {int(row["id"]): dict(row) for row in cur.fetchall()}
         if lock:
+            for row in rows.values():
+                identity = ((row.get('latest_run') or {}).get('id'),row.get('account_id'))
+                if identity != expected_sources.get(row['id']):
+                    # 等待锁时另一入口已经创建下一 Run，旧身份不能继续集合重试。
+                    row['has_active_run'] = True
             account_ids = sorted({int(row["account_id"]) for row in rows.values() if row["account_id"]})
             if account_ids:
                 cur.execute(f"SELECT id,deactivated FROM {postgres.qualified(records.ACCOUNTS.name)} "
-                            "WHERE id=ANY(%s) ORDER BY id FOR UPDATE", (account_ids,))
+                            "WHERE id=ANY(%s) ORDER BY id", (account_ids,))
                 locked_accounts = {int(row["id"]): row for row in cur.fetchall()}
                 cur.execute(f"SELECT account_id FROM {operation._table('operation_runs')} "
                             "WHERE account_id=ANY(%s) AND resource_family='openai_interactive' "
@@ -74,6 +102,7 @@ def retry_sync_many(prepared, *, conn):
     if not prepared:
         return {}
     rows = []
+    managed_sources = {}
     for item in prepared:
         row = dict(item)
         row.update(run_uuid=uuid.uuid4().hex, cancellation_token=uuid.uuid4().hex,
@@ -81,6 +110,14 @@ def retry_sync_many(prepared, *, conn):
         row["log_file"] = run_log.build_path(task_uuid=row["task_uuid"], run_no=row["run_no"],
                                              run_uuid=row["run_uuid"])
         row["data"] = common._scrub(row["data"])
+        if row['data'].get('bulk_target_round_id'):
+            from core.bulk_operations import execution as bulk_execution
+            managed = bulk_execution.lock_run(conn,int(row['source_run_id']))
+            if managed:
+                managed_sources[row['task_id']] = managed
+                row['data']['bulk_target_round_id'] = int(managed['id'])
+            else:
+                row['data'].pop('bulk_target_round_id',None)
         rows.append(row)
     payload = json.dumps(rows, ensure_ascii=False)
     with conn.cursor() as cur:
@@ -98,6 +135,11 @@ def retry_sync_many(prepared, *, conn):
         runs = {int(row["task_id"]): int(row["id"]) for row in cur.fetchall()}
         for row in rows:
             row["run_id"] = runs[row["task_id"]]
+            if row['task_id'] in managed_sources:
+                from core.bulk_operations import execution as bulk_execution
+                bulk_execution.inherit(conn,row['run_id'],source_run_id=int(row['source_run_id']),
+                    step_key='extract_link')
+                bulk_execution.changed(conn,managed_sources[row['task_id']])
         payload = json.dumps(rows, ensure_ascii=False)
         cur.execute(f"""
             INSERT INTO {operation._table('extract_link_provider_jobs')}

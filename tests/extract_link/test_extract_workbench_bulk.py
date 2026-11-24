@@ -101,6 +101,84 @@ class ExtractWorkbenchBulkTests(PostgresTestCase):
             self.assertEqual(f"synthetic-private-{task['id']}", saved["private_data"]["job_secret"])
             self.assertEqual(task["run"]["id"], operation.get_run(new_run)["data"]["provider_job_run_id"])
 
+    def test_managed_sync_retains_target_ownership_and_projection_change(self):
+        from core.extract_link import workbench_bulk
+        from core.storage.operations import bulk
+        import uuid
+
+        bulk.reset_ready()
+        bulk.init()
+        account_id = self.accounts([{}])[0]
+        task = self.finished_task(account_id)
+        jobs.save_provider_job(task['run']['id'],'legacy','managed-saved',{}, {'job_secret':'private-managed'})
+        with patch('core.bulk_operations.catalog.capture_settings',return_value={
+                'config_revision':'test-v1','effective_settings':{}}):
+            selection = bulk.create_selection(request_key=uuid.uuid4().hex,source={'kind':'ids','ids':[account_id]},
+                operation_key='plan_check',parameters={},config_revision='test-v1')
+            selection = bulk.freeze_selection(selection['id'])
+            batch = bulk.create_batch(request_key=uuid.uuid4().hex,selection_id=selection['id'],
+                selection_revision=1,operation_key='plan_check',parameters={},config_revision='test-v1',max_concurrency=1)
+        bulk.materialize_targets(batch['id'])
+        with operation._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"SELECT id FROM {operation._table('operation_batch_target_rounds')} WHERE batch_id=%s",(batch['id'],))
+            target_id = cur.fetchone()['id']
+            cur.execute(f"UPDATE {operation._table('operation_batch_target_rounds')} SET admission_state='submitted',"
+                "chain_state='started',chain_started_at=now(),next_execution_generation=2 WHERE id=%s",(target_id,))
+            cur.execute(f"UPDATE {operation._table('operation_runs')} SET batch_id=%s,"
+                "data=data||jsonb_build_object('bulk_target_round_id',%s::bigint) WHERE id=%s",
+                (batch['id'],target_id,task['run']['id']))
+            cur.execute(f"INSERT INTO {operation._table('operation_batch_run_links')}"
+                "(target_round_id,task_id,run_id,task_id_snapshot,run_id_snapshot,step_key,execution_generation,relation)"
+                " VALUES (%s,%s,%s,%s,%s,'extract_link',1,'owned_root')",
+                (target_id,task['id'],task['run']['id'],task['id'],task['run']['id']))
+        locks = []
+        original = Cursor.execute
+        def execute(cur,query,*args,**kwargs):
+            text = str(query)
+            if 'FOR UPDATE' in text:
+                locks.append(text)
+            return original(cur,query,*args,**kwargs)
+        with self.provider_patches(), patch.object(Cursor,'execute',execute), operation._connect() as conn:
+            result = workbench_bulk.sync_status_many([str(task['id'])],{},conn=conn)
+        self.assertEqual('updated',result[0].status)
+        run = operation.get_run(result[0].data['run_id'])
+        self.assertEqual(target_id,run['data']['bulk_target_round_id'])
+        self.assertEqual(batch['id'],run['batch_id'])
+        with operation._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"SELECT target_round_id,relation,step_key FROM {operation._table('operation_batch_run_links')} "
+                "WHERE run_id=%s",(run['id'],))
+            link = cur.fetchone()
+            self.assertIsNotNone(link)
+            self.assertEqual((target_id,'owned_continuation','extract_link'),
+                (link['target_round_id'],link['relation'],link['step_key']))
+            cur.execute(f"SELECT source_revision,chain_state FROM {operation._table('operation_batch_target_rounds')} WHERE id=%s",(target_id,))
+            target = cur.fetchone()
+            self.assertGreater(target['source_revision'],0)
+            self.assertEqual('started',target['chain_state'])
+        target_lock = next(index for index,sql in enumerate(locks) if 'operation_batch_target_rounds' in sql)
+        account_lock = next(index for index,sql in enumerate(locks) if '"registered_accounts"' in sql)
+        task_lock = next(index for index,sql in enumerate(locks) if '"operation_tasks"' in sql)
+        self.assertLess(target_lock,account_lock)
+        self.assertLess(account_lock,task_lock)
+
+    def test_sync_skips_source_changed_while_waiting_for_locks(self):
+        from core.extract_link import workbench_bulk
+        from core.storage.extract_link import workbench_bulk as storage
+        task = self.finished_task()
+        jobs.save_provider_job(task['run']['id'],'legacy','saved',{}, {})
+        original = storage._lock_sync_sources
+        def advance(cur,conn,ids):
+            sources = original(cur,conn,ids)
+            operation.retry_runtime_task(task['id'],conn=conn)
+            return sources
+        with self.provider_patches(),patch.object(storage,'_lock_sync_sources',advance),operation._connect() as conn:
+            result = workbench_bulk.sync_status_many([str(task['id'])],{},conn=conn)
+        self.assertEqual('skipped',result[0].status)
+        self.assertEqual('task_active',result[0].reason_code)
+        with operation._connect() as conn,conn.cursor() as cur:
+            cur.execute(f"SELECT count(*) AS n FROM {operation._table('operation_runs')} WHERE task_id=%s",(task['id'],))
+            self.assertEqual(2,cur.fetchone()['n'])
+
     def test_sync_skips_active_and_wrong_kind_without_changing_runs(self):
         from core.extract_link import workbench_bulk
 
