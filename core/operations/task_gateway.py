@@ -2325,6 +2325,27 @@ def dispatcher_status() -> dict[str, object]:
         }
 
 
+def register_bulk_mutation_handler(operation: str, handler: Callable[..., Any]) -> None:
+    """Lazy forwarder for the durable bulk mutation worker boundary."""
+    from core.operations.bulk_mutation_worker import register_bulk_mutation_handler as register
+
+    return register(operation, handler)
+
+
+def submit_bulk_mutation(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    """Lazy forwarder for submitting one idempotent bulk mutation command."""
+    from core.operations.bulk_mutation_worker import submit_bulk_mutation as submit
+
+    return submit(*args, **kwargs)
+
+
+def run_bulk_mutation(run_id: int) -> dict[str, Any]:
+    """Lazy forwarder for executing one claimed bulk mutation Run."""
+    from core.operations.bulk_mutation_worker import run_bulk_mutation as run
+
+    return run(run_id)
+
+
 # Short aliases make the contract convenient for maintenance service agents
 # while keeping the descriptive names above as the canonical documentation.
 submit_operation = submit_durable_operation
@@ -2349,5 +2370,6 @@ __all__ = [
     "default_operation_retry", "default_operation_cancel", "default_operation_terminate",
     "list_reconciliation_accounts",
     "submit_durable_operation", "submit_operation", "register_durable_handler",
+    "register_bulk_mutation_handler", "submit_bulk_mutation", "run_bulk_mutation",
     "start_dispatcher", "stop_dispatcher", "dispatcher_status",
 ]

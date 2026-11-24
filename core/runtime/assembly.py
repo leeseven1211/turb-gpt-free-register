@@ -282,6 +282,7 @@ def install(bootstrap: RuntimeBootstrap, *, logger=None):
     from core.storage import postgres
     from core.sms import provider
     from core.maintenance import sentinel
+    from core.operations import bulk_mutation_worker
     context = RuntimeContext(bootstrap.mode, logger or logging.getLogger('core.runtime'))
     provider.configure_cancel_queue_path(bootstrap.runtime_dir / 'sms_cancel_queue.json')
     sentinel.configure_cache_directory(
@@ -308,6 +309,9 @@ def install(bootstrap: RuntimeBootstrap, *, logger=None):
         connect_dedicated=postgres.connect_dedicated,
         on_lost=lambda: context.admission.block('owner_lost'), **pause_hooks) if context.executes else None
     components = build_components()
+    # 批量命令共用 task_gateway 的 durable claim、lease 和恢复边界；先注册
+    # 通用 handler，确保 operation_dispatcher 启动后即可接收已提交命令。
+    bulk_mutation_worker.register_runtime_handler()
     for name, target in _STOPS.items():
         original = components[name]
         components[name] = replace(original, stop=lambda _ctx, budget, t=target: _lookup(t)(timeout=budget))
