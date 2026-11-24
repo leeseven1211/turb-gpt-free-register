@@ -1618,6 +1618,15 @@ def submit_email_change_bulk(
     trigger: str = "manual_bulk",
     idempotency_key: str | None = None,
 ) -> dict[str, Any]:
+    """集合预检并原子创建批次；远端换绑仍由原 handler 逐账号执行。"""
+    import hashlib
+
+    from psycopg.rows import dict_row
+    from config import account as account_config
+    from core.runtime.capabilities import require_email_source
+    from core.storage import records
+    from core.storage.operations import bulk_submission, common
+
     ids: list[int] = []
     for raw in account_ids or []:
         try:
@@ -1627,49 +1636,125 @@ def submit_email_change_bulk(
         if value not in ids:
             ids.append(value)
     if not ids:
-        return {"accepted": False, "error": "没有可换绑的账号"}
+        return {"accepted": False, "error": "account_ids 必须是非空数组"}
     try:
         selected_source = email_provider.validate_email_source(source)
     except ValueError as exc:
         return {"accepted": False, "error": str(exc)}
-    batch = operation_store.create_runtime_batch(
-        batch_type=EMAIL_CHANGE_TASK_TYPE,
-        title="批量协议邮箱换绑",
-        requested_count=len(ids),
-        trigger=trigger,
-    )
-    started: list[dict[str, Any]] = []
-    skipped: list[dict[str, Any]] = []
     request_key = str(idempotency_key or "").strip() or None
-    for ordinal, account_id in enumerate(ids, 1):
-        key = f"{request_key}:{account_id}" if request_key else None
-        item = submit_email_change(
-            account_id,
-            source=selected_source,
-            trigger=trigger,
-            batch_id=int(batch["id"]),
-            batch_ordinal=ordinal,
-            idempotency_key=key,
-            dispatch=False,
+    fingerprint = hashlib.sha256(
+        json.dumps([ids, selected_source, trigger], separators=(",", ":")).encode(),
+    ).hexdigest()
+    records.init()
+    operation_store.init()
+    with common._connect() as conn, conn.cursor(row_factory=dict_row) as cur:
+        identity = hashlib.sha256(request_key.encode()).hexdigest() if request_key else None
+        if identity:
+            records.advisory_xact_lock(conn, "email-change-bulk:" + identity)
+            cur.execute(
+                f"SELECT data FROM {common._table('operation_batches')} "
+                "WHERE batch_type=%s AND data->>'email_change_request'=%s ORDER BY id LIMIT 1",
+                (EMAIL_CHANGE_TASK_TYPE, identity),
+            )
+            previous = cur.fetchone()
+            if previous:
+                if previous["data"].get("request_fingerprint") != fingerprint:
+                    raise ValueError("idempotency_key_conflict")
+                return previous["data"]["submission_result"]
+        cur.execute(
+            f"SELECT * FROM {records._qualified(records.ACCOUNTS)} "
+            "WHERE id=ANY(%s) ORDER BY id FOR UPDATE",
+            (ids,),
         )
-        if item.get("accepted"):
-            started.append(item)
-        else:
-            skipped.append({"id": account_id, "error": item.get("error") or "邮箱换绑未入队", "busy": bool(item.get("busy"))})
-    operation_store.set_runtime_batch_skipped(int(batch["id"]), skipped)
-    if not started:
-        operation_store.mark_runtime_batch_empty(int(batch["id"]), status="failed")
-    if started:
+        accounts = {
+            int(row["id"]): records.merge_row(records.ACCOUNTS, row)
+            for row in cur.fetchall()
+        }
+        cur.execute(
+            f"SELECT account_id,task_id,id AS run_id FROM {common._table('operation_runs')} "
+            "WHERE account_id=ANY(%s) AND resource_family=%s AND status=ANY(%s)",
+            (ids, EMAIL_CHANGE_RESOURCE_FAMILY, list(common._ACTIVE_RUN_STATUSES)),
+        )
+        active = {int(row["account_id"]): dict(row) for row in cur.fetchall()}
+        ready, source_reason = require_email_source(selected_source)
+        enabled = bool(getattr(account_config, "ACCOUNT_EMAIL_CHANGE_ENABLED", True))
+        snapshot = _config_snapshot()
+        proxy_source = _captured_proxy_source(None)
+        batch = bulk_submission.create_batch(
+            conn=conn, task_type=EMAIL_CHANGE_TASK_TYPE, requested_count=len(ids),
+            trigger=trigger, title="批量协议邮箱换绑",
+        )
+        specs, skipped = [], []
+        for ordinal, account_id in enumerate(ids, 1):
+            account = accounts.get(account_id)
+            error, busy = "", False
+            age_error = _account_age_gate_error(account) if account else ""
+            if account is None:
+                error = "账号不存在"
+            elif age_error:
+                error = age_error
+            elif not ready:
+                error = f"邮箱来源 {selected_source} 当前不可用：{source_reason}"
+            elif not str(account.get("access_token") or "").strip():
+                error = "账号缺少 access_token，请先查活刷新 AT"
+            elif str(account.get("email_change_status") or "").strip().lower() in {
+                "request_unknown", "attention_required",
+            }:
+                error = "上一次邮箱换绑结果待人工核验，禁止盲目重试"
+            elif not enabled:
+                error = "协议邮箱换绑已被配置关闭"
+            elif common._account_is_deactivated(account):
+                error = "账号已废号，禁止创建任务"
+            elif account_id in active:
+                error, busy = "该账号已有排队或运行中的账号操作", True
+            if error:
+                skipped.append({"id": account_id, "error": error, "busy": busy})
+                continue
+            key = f"{request_key}:{account_id}" if request_key else None
+            specs.append({
+                "task_type": EMAIL_CHANGE_TASK_TYPE,
+                "account_id": account_id,
+                "email": str(account.get("email") or "").strip(),
+                "trigger": trigger,
+                "source_system": EMAIL_CHANGE_SOURCE_SYSTEM,
+                "source_id": f"email-change:{account_id}:{key or uuid.uuid4().hex}",
+                "batch_id": int(batch["id"]),
+                "batch_ordinal": ordinal,
+                "resource_family": EMAIL_CHANGE_RESOURCE_FAMILY,
+                "data": {
+                    "email_source": selected_source,
+                    "proxy_source": proxy_source,
+                    "remail_acquisition_id": f"email-change:{account_id}:{key or uuid.uuid4().hex}",
+                },
+                "config_snapshot": snapshot,
+                "config_allowlist": EMAIL_CHANGE_CONFIG_ALLOWLIST,
+            })
+        started = [
+            {**item, "task_type": EMAIL_CHANGE_TASK_TYPE}
+            for item in bulk_submission.create_specs(specs, conn=conn)
+        ]
+        result = {
+            "accepted": bool(started),
+            "batch_id": int(batch["id"]),
+            "batch_uuid": batch["batch_uuid"],
+            "started": started,
+            "started_count": len(started),
+            "skipped": skipped,
+            "skipped_count": len(skipped),
+        }
+        cur.execute(
+            f"UPDATE {common._table('operation_batches')} SET skipped_count=%s,"
+            "status=%s,data=data || %s::jsonb WHERE id=%s",
+            (len(skipped), "queued" if started else "failed", json.dumps({
+                "skipped": skipped,
+                "email_change_request": identity,
+                "request_fingerprint": fingerprint,
+                "submission_result": result,
+            }, ensure_ascii=False), int(batch["id"])),
+        )
+    if any(not item.get("reused") for item in started):
         task_gateway.notify_dispatch()
-    return {
-        "accepted": bool(started),
-        "batch_id": int(batch["id"]),
-        "batch_uuid": batch.get("batch_uuid"),
-        "started": started,
-        "started_count": len(started),
-        "skipped": skipped,
-        "skipped_count": len(skipped),
-    }
+    return result
 
 
 register_actions()
