@@ -20,6 +20,10 @@ from core.operations.runtime import OperationCancelled
 from core.operations import task_gateway as account_task_store
 from core.storage import accounts as db
 from core.storage.operations import runtime as operation_runtime_store
+from core.storage.accounts import deactivation_mail as mail_store
+from core.storage import records as record_store
+from core.storage.operations import bulk_submission, common, schema
+from core.operations.account_receipts import source_prefix
 from core.email.cloudflare.client import CFTempMailError
 from core.email.cloudflare.client import scan_openai_deactivation as scan_cloudflare_deactivation
 from core.email.email_butler.client import EmailButlerClientError, scan_openai_deactivation
@@ -57,6 +61,7 @@ _HME_VALIDATION_METHOD = "mailbox_recipient_search"
 # 调度器单轮最多读取 5000 个账号，因此 100 x 50 的两层结构足够覆盖当前上限。
 _HME_PAYLOAD_CHUNK_SIZE = 100
 _HME_PAYLOAD_MAX_ACCOUNTS = 5000
+_ACCEPTANCE_CHUNK_SIZE = 500
 _INTERRUPTED_SCAN_ERROR = "WebUI 重启导致封号邮件扫描中断，请重新扫描"
 _PERMANENT_EMAIL_BUTLER_SCAN_ERRORS = (
     ("http 404", "email account not found"),
@@ -417,23 +422,21 @@ def reconcile_interrupted_scans(*, limit: int = 500) -> int:
             entries = [{"account_id": int(run["account_id"])}]
         else:
             entries = []
-        for entry in entries:
-            account_id = int(entry["account_id"])
-            account = db.get_account(account_id)
-            if not account:
-                continue
-            if str(account.get("deactivation_mail_scan_status") or "") not in {"queued", "running"}:
-                continue
-            if _projection_was_requeued_after_recovery(account, run):
-                continue
-            if db.update_account_deactivation_mail(account_id, {
-                "status": "failed",
-                "trigger": str(run.get("trigger") or "scheduled"),
-                "error": _INTERRUPTED_SCAN_ERROR,
-                "preserve_checked_at": True,
-            }):
-                repaired += 1
-                run_repaired += 1
+        for offset in range(0, len(entries), _HME_PAYLOAD_CHUNK_SIZE):
+            block = entries[offset:offset + _HME_PAYLOAD_CHUNK_SIZE]
+            with record_store.transaction() as conn:
+                accounts = mail_store.load_many([int(entry["account_id"]) for entry in block], conn=conn)
+                changes = {}
+                for account_id, account in accounts.items():
+                    if str(account.get("deactivation_mail_scan_status") or "") not in {"queued", "running"}:
+                        continue
+                    if _projection_was_requeued_after_recovery(account, run):
+                        continue
+                    changes[account_id] = {"status": "failed", "trigger": str(run.get("trigger") or "scheduled"),
+                        "error": _INTERRUPTED_SCAN_ERROR, "preserve_checked_at": True}
+                count = len(mail_store.update_many(changes, conn=conn, accounts=accounts))
+            repaired += count
+            run_repaired += count
         operation_runtime_store.mark_runtime_run_projection_reconciled(
             int(run["id"]), repaired_count=run_repaired,
         )
@@ -481,7 +484,7 @@ def _scan_hme_group(
         }
         try:
             context.report(**event)
-        except (account_task_store.OperationSettlementPending, account_task_store.OperationSettlementConflict, account_task_store.OperationSettlementFenced):
+        except (account_task_store.OperationLeaseLost, account_task_store.OperationSettlementPending, account_task_store.OperationSettlementConflict, account_task_store.OperationSettlementFenced):
             raise
         except Exception:
             # A reporting failure must not prevent the remaining aliases from
@@ -489,34 +492,26 @@ def _scan_hme_group(
             logger.exception("[DeactivationMail] HME 账号事件写入失败: account_id=%s", account_id)
 
     def mark_remaining(status: str, error: str) -> int:
+        remaining = [entry for entry in entries if int(entry["account_id"]) not in processed]
         count = 0
-        for entry in entries:
-            account_id = int(entry["account_id"])
-            if account_id in processed:
-                continue
+        for offset in range(0, len(remaining), _HME_PAYLOAD_CHUNK_SIZE):
+            block = remaining[offset:offset + _HME_PAYLOAD_CHUNK_SIZE]
             safe_error = str(error or "封号邮件扫描未完成")[:500]
             try:
-                db.update_account_deactivation_mail(account_id, {
-                    "status": status,
-                    "trigger": trigger,
-                    "error": safe_error,
-                })
-            except (account_task_store.OperationSettlementPending, account_task_store.OperationSettlementConflict, account_task_store.OperationSettlementFenced):
+                committed = mail_store.update_many({int(entry["account_id"]): {
+                    "status": status, "trigger": trigger, "error": safe_error,
+                } for entry in block})
+            except (account_task_store.OperationLeaseLost, account_task_store.OperationSettlementPending,
+                    account_task_store.OperationSettlementConflict, account_task_store.OperationSettlementFenced):
                 raise
             except Exception:
-                logger.exception(
-                    "[DeactivationMail] HME 未完成账号状态写入失败: account_id=%s status=%s",
-                    account_id,
-                    status,
-                )
-            processed[account_id] = status
-            report_account(
-                account_id,
-                status,
-                "封号邮件扫描已取消" if status == "cancelled" else "封号邮件扫描失败",
-                error=safe_error,
-            )
-            count += 1
+                logger.exception("[DeactivationMail] HME 未完成账号集合状态写入失败")
+                continue
+            for account_id in committed:
+                processed[account_id] = status
+                report_account(account_id, status,
+                    "封号邮件扫描已取消" if status == "cancelled" else "封号邮件扫描失败", error=safe_error)
+                count += 1
         return count
 
     try:
@@ -532,11 +527,10 @@ def _scan_hme_group(
                 result_summary={"account_count": 0, "scan_mode": _HME_SCAN_MODE},
             )
             return
-        for entry in entries:
-            db.update_account_deactivation_mail(int(entry["account_id"]), {
-                "status": "running",
-                "trigger": trigger,
-            })
+        for offset in range(0, len(entries), _HME_PAYLOAD_CHUNK_SIZE):
+            _checkpoint(context, "写入 HME 批量运行状态前检查取消状态")
+            mail_store.update_many({int(entry["account_id"]): {"status": "running", "trigger": trigger}
+                for entry in entries[offset:offset + _HME_PAYLOAD_CHUNK_SIZE]})
         _checkpoint(context, "HME 批量扫描预检完成前检查取消状态")
         context.report(
             stage="preflight", state="success", message="HME 批量扫描预检通过",
@@ -563,57 +557,42 @@ def _scan_hme_group(
             raise ForwardIMAPError("批量封号邮件扫描未返回结果映射")
         _checkpoint(context, "批量 HME 检索完成后确认取消状态")
 
-        for entry in entries:
-            account_id = int(entry["account_id"])
-            email = entry["email"]
+        for offset in range(0, len(entries), _HME_PAYLOAD_CHUNK_SIZE):
             _checkpoint(context, "写回 HME 账号结果前检查取消状态")
-            result = results.get(email)
-            if not isinstance(result, dict):
-                status = "failed"
-                error = f"批量封号邮件扫描未返回账号结果: {account_id}"
-                payload = {"ok": False, "status": status, "error": error}
-            elif result.get("ok", True) is False:
-                status = "unsupported" if result.get('error_code') == 'signal_scan_unsupported' else "failed"
-                error = str(result.get("error") or "该别名扫描失败")[:500]
-                payload = dict(result)
-                payload.update({"ok": False, "status": status, "error": error})
-                if status == 'unsupported':
-                    payload['preserve_checked_at'] = True
-            else:
-                status = "success"
-                error = ""
-                payload = dict(result)
-                payload.update({"ok": True, "status": status})
-            payload["trigger"] = trigger
+            payloads = {}
+            for entry in entries[offset:offset + _HME_PAYLOAD_CHUNK_SIZE]:
+                account_id = int(entry["account_id"])
+                result = results.get(entry["email"])
+                if not isinstance(result, dict):
+                    payload = {"status": "failed", "error": f"批量封号邮件扫描未返回账号结果: {account_id}"}
+                elif result.get("ok", True) is False:
+                    status = "unsupported" if result.get("error_code") == "signal_scan_unsupported" else "failed"
+                    payload = {**result, "status": status, "error": str(result.get("error") or "该别名扫描失败")[:500]}
+                    if status == "unsupported":
+                        payload["preserve_checked_at"] = True
+                else:
+                    payload = {**result, "status": "success", "ok": True}
+                payloads[account_id] = {**payload, "trigger": trigger}
             try:
-                db.update_account_deactivation_mail(account_id, payload)
-            except (account_task_store.OperationSettlementPending, account_task_store.OperationSettlementConflict, account_task_store.OperationSettlementFenced):
+                committed = mail_store.update_many(payloads)
+            except (account_task_store.OperationLeaseLost, account_task_store.OperationSettlementPending,
+                    account_task_store.OperationSettlementConflict, account_task_store.OperationSettlementFenced):
                 raise
             except Exception as exc:
-                status = "failed"
                 error = f"账号结果写回失败: {type(exc).__name__}: {str(exc)[:300]}"
-                try:
-                    db.update_account_deactivation_mail(account_id, {
-                        "status": status,
-                        "trigger": trigger,
-                        "error": error,
-                    })
-                except (account_task_store.OperationSettlementPending, account_task_store.OperationSettlementConflict, account_task_store.OperationSettlementFenced):
-                    raise
-                except Exception:
-                    logger.exception(
-                        "[DeactivationMail] HME 账号失败状态也无法写回: account_id=%s",
-                        account_id,
-                    )
-            processed[account_id] = status
-            report_account(
-                account_id,
-                status,
-                "发现高置信度封号邮件" if payload.get("detected") else
-                "未发现封号邮件" if status == "success" else
-                "当前邮箱服务不支持封号邮件扫描" if status == "unsupported" else "封号邮件扫描失败",
-                error=error or None,
-            )
+                payloads = {account_id: {"status": "failed", "trigger": trigger, "error": error} for account_id in payloads}
+                committed = mail_store.update_many(payloads)
+            for account_id in committed:
+                payload = payloads[account_id]
+                status = payload["status"]
+                processed[account_id] = status
+                report_account(account_id, status,
+                    "发现高置信度封号邮件" if payload.get("detected") else
+                    "未发现封号邮件" if status == "success" else
+                    "当前邮箱服务不支持封号邮件扫描" if status == "unsupported" else "封号邮件扫描失败",
+                    error=payload.get("error") or None)
+            if len(committed) != len(payloads):
+                raise RuntimeError("部分 HME 账号不存在，未写入扫描结果")
 
         failed_count = sum(status == "failed" for status in processed.values())
         unsupported_count = sum(status == "unsupported" for status in processed.values())
@@ -914,150 +893,132 @@ def _enqueue_native_bulk(
     idempotency_key: str | None = None,
     account_request_key: str | None = None,
 ) -> dict:
-    started: list[dict] = []
-    busy: list[dict] = []
-    skipped: list[dict] = []
-    hme_entries: list[dict] = []
-    seen: set[int] = set()
+    from core.accounts.bulk_submission import _ids
+    ids, invalid = _ids(account_ids)
+    skipped = [{"id": item.get("id"), "error": "ID 非法"} for item in invalid]
+    started, busy = [], []
     trigger = str(trigger or "manual_bulk")
     request_key = str(idempotency_key or "").strip() or None
-    for raw_id in account_ids or []:
-        try:
-            account_id = int(raw_id)
-        except (TypeError, ValueError):
-            skipped.append({"id": raw_id, "error": "ID 非法"})
-            continue
-        if account_id in seen:
-            continue
-        seen.add(account_id)
-        account = db.get_account(account_id)
-        if not account:
-            skipped.append({"id": account_id, "error": "账号不存在"})
-            continue
-        source = str(account.get("email_source") or "").strip().lower()
-        if source not in _SUPPORTED_SOURCES or source == 'email_butler':
-            error = _BUTLER_SCAN_ERROR if source == 'email_butler' else "该账号邮箱来源暂不支持封号邮件扫描"
-            db.update_account_deactivation_mail(account_id, {
-                "status": "unsupported", "trigger": trigger,
-                "error": error, "preserve_checked_at": True,
-            })
-            skipped.append({
-                "id": account_id, "unsupported": True,
-                "error": error, "error_code": "signal_scan_unsupported" if source == 'email_butler' else "email_scan_connector_unsupported",
-            })
-            continue
-        if source == "icloud_hide":
-            email = str(account.get("email") or "").strip().lower()
-            if "@" not in email:
-                skipped.append({
-                    "id": account_id,
-                    "error": "待扫描隐藏邮箱地址无效",
-                })
+    snapshot = _config_snapshot_provider()
+    record_store.init()
+    schema.init_operation_schema()
+    batch_value = _numeric_batch_id(batch_id)
+    fresh_count = 0
+    with common._connect() as conn, conn.cursor() as cur:
+        # HME uses one stable global anchor even for disjoint selected aliases.
+        # Find it first to keep every account lock in ID order.
+        anchor = mail_store.hme_anchor(conn=conn)
+        lock_ids = sorted(set(ids) | ({int(anchor["id"])} if anchor else set()))
+        accounts = mail_store.load_many(lock_ids, conn=conn)
+        hme, ordinary, projections = [], [], {}
+        for account_id in ids:
+            account = accounts.get(account_id)
+            if not account:
+                skipped.append({"id": account_id, "error": "账号不存在"})
                 continue
-            hme_entries.append({"account_id": account_id, "email": email})
-            continue
-        key = None
-        if request_key:
-            key = f"{request_key}:{account_id}"
-        try:
-            submitted = _submit_native_scan(
-                account_id=account_id,
-                email=str(account.get("email") or ""),
-                trigger=trigger,
-                batch_id=batch_id,
-                idempotency_key=key,
-                **({"account_request_key": account_request_key} if account_request_key else {}),
-            )
-        except Exception as exc:
-            skipped.append({
-                "id": account_id,
-                "error": f"封号邮件扫描持久化失败: {type(exc).__name__}: {str(exc)[:240]}",
-            })
-            continue
-        item = _native_response(
-            submitted,
-            account_id=account_id,
-            email=str(account.get("email") or ""),
-            trigger=trigger,
-        )
-        if item["accepted"]:
-            if not submitted.get("reused"):
-                db.update_account_deactivation_mail(account_id, {"status": "queued", "trigger": trigger})
-            started.append({
-                "id": account_id,
-                "accepted": True,
-                "account_id": account_id,
-                "task_id": item.get("task_id"),
-                "run_id": item.get("run_id"),
-                "reused": item.get("reused", False),
-            })
-        elif item.get("busy"):
-            busy.append({
-                "id": account_id,
-                "task_id": item.get("task_id"),
-                "run_id": item.get("run_id"),
-                "busy": True,
-                "error": item.get("error") or "封号邮件扫描正在进行",
-            })
-        else:
-            skipped.append({"id": account_id, "error": item.get("error") or "封号邮件扫描未接受"})
-
-    if hme_entries:
-        account_ids_key = ",".join(str(entry["account_id"]) for entry in sorted(hme_entries, key=lambda item: item["account_id"]))
-        group_key = f"{request_key}:accounts:{account_ids_key}" if request_key else None
-        anchor_account_id, anchor_email = _hme_anchor(hme_entries)
-        try:
-            submitted = _submit_native_hme_group(
-                anchor_account_id=anchor_account_id,
-                anchor_email=anchor_email,
-                entries=hme_entries,
-                trigger=trigger,
-                batch_id=batch_id,
-                idempotency_key=group_key,
-                **({"account_request_key": account_request_key} if account_request_key else {}),
-            )
-        except Exception as exc:
-            error = f"封号邮件批量扫描持久化失败: {type(exc).__name__}: {str(exc)[:240]}"
-            skipped.extend({"id": entry["account_id"], "error": error} for entry in hme_entries)
-        else:
-            for entry in hme_entries:
-                account_id = int(entry["account_id"])
-                item = _native_response(
-                    submitted,
-                    account_id=account_id,
-                    email=entry["email"],
-                    trigger=trigger,
-                )
-                if item["accepted"]:
-                    if not submitted.get("reused"):
-                        db.update_account_deactivation_mail(
-                            account_id,
-                            {"status": "queued", "trigger": trigger},
-                        )
-                    started.append({
-                        "id": account_id,
-                        "accepted": True,
-                        "account_id": account_id,
-                        "task_id": item.get("task_id"),
-                        "run_id": item.get("run_id"),
-                        "reused": item.get("reused", False),
-                        "shared_scan": True,
-                    })
-                elif item.get("busy"):
-                    busy.append({
-                        "id": account_id,
-                        "task_id": item.get("task_id"),
-                        "run_id": item.get("run_id"),
-                        "busy": True,
-                        "error": item.get("error") or "封号邮件扫描正在进行",
-                        "shared_scan": True,
-                    })
+            source = str(account.get("email_source") or "").strip().lower()
+            if source not in _SUPPORTED_SOURCES or source == "email_butler":
+                error = _BUTLER_SCAN_ERROR if source == "email_butler" else "该账号邮箱来源暂不支持封号邮件扫描"
+                projections[account_id] = {"status": "unsupported", "trigger": trigger, "error": error, "preserve_checked_at": True}
+                skipped.append({"id": account_id, "unsupported": True, "error": error,
+                    "error_code": "signal_scan_unsupported" if source == "email_butler" else "email_scan_connector_unsupported"})
+                continue
+            email = str(account.get("email") or "").strip()
+            if source == "icloud_hide":
+                if "@" not in email:
+                    skipped.append({"id": account_id, "error": "待扫描隐藏邮箱地址无效"})
                 else:
-                    skipped.append({
-                        "id": account_id,
-                        "error": item.get("error") or "封号邮件扫描未接受",
-                    })
-    return {"started": started, "busy": busy, "skipped": skipped}
+                    hme.append({"account_id": account_id, "email": email.lower()})
+            else:
+                ordinary.append({"account_id": account_id, "email": email})
+        if len(hme) > _HME_PAYLOAD_MAX_ACCOUNTS:
+            raise ValueError(f"iCloud HME 单次批量扫描最多 {_HME_PAYLOAD_MAX_ACCOUNTS} 个账号")
+        groups = []
+        for entry in ordinary:
+            account_id = entry["account_id"]
+            source = (f"{source_prefix(account_request_key)}:deactivation_mail:{trigger}:{account_id}" if account_request_key else
+                f"maintenance:deactivation_mail:{account_id}:{request_key + ':' + str(account_id) if request_key else uuid.uuid4().hex}")
+            groups.append(({"task_type": "deactivation_mail", "account_id": account_id, "email": entry["email"],
+                "source_system": "native_operations", "source_id": source, "trigger": trigger,
+                "resource_family": "mailbox_scan", "data": {"email_source": "mailbox_cache", "lookback_days": _LOOKBACK_DAYS},
+                "config_snapshot": snapshot, "config_allowlist": DEACTIVATION_CONFIG_ALLOWLIST}, [entry]))
+        if hme:
+            target_ids = ",".join(str(item["account_id"]) for item in sorted(hme, key=lambda item: item["account_id"]))
+            source = (f"{source_prefix(account_request_key)}:deactivation_mail:{trigger}:hme:" + hashlib.sha256(target_ids.encode("ascii")).hexdigest()
+                if account_request_key else f"maintenance:deactivation_mail:bulk:{request_key + ':accounts:' + target_ids if request_key else uuid.uuid4().hex}")
+            chosen = anchor or min(hme, key=lambda item: item["account_id"])
+            groups.append(({"task_type": "deactivation_mail", "account_id": int(chosen.get("id") or chosen["account_id"]),
+                "email": chosen["email"], "source_system": "native_operations", "source_id": source,
+                "trigger": trigger, "resource_family": "mailbox_scan", "data": {"bulk": True,
+                    "scan_mode": _HME_SCAN_MODE, "lookback_days": _LOOKBACK_DAYS, "account_count": len(hme),
+                    "account_batches": _pack_hme_entries(hme)}, "config_snapshot": snapshot,
+                "config_allowlist": DEACTIVATION_CONFIG_ALLOWLIST}, hme))
+        prior = {}
+        if groups:
+            cur.execute(f"""SELECT t.source_id,t.data,t.batch_id,t.id AS task_id,r.id AS run_id,r.status
+                FROM {common._table('operation_tasks')} t LEFT JOIN LATERAL (SELECT id,status
+                    FROM {common._table('operation_runs')} WHERE task_id=t.id
+                    ORDER BY run_no {'ASC' if account_request_key else 'DESC'},id {'ASC' if account_request_key else 'DESC'} LIMIT 1) r ON TRUE
+                WHERE t.source_system='native_operations' AND t.source_id=ANY(%s)""", ([spec["source_id"] for spec, _ in groups],))
+            prior = {row["source_id"]: dict(row) for row in cur.fetchall()}
+        cur.execute(f"""SELECT account_id,task_id,id AS run_id,status FROM {common._table('operation_runs')}
+            WHERE account_id=ANY(%s) AND resource_family='mailbox_scan' AND status=ANY(%s) ORDER BY id""",
+            (lock_ids, list(common._ACTIVE_RUN_STATUSES)))
+        active = {int(row["account_id"]): dict(row) for row in cur.fetchall()}
+        fresh = []
+        def append_receipts(submitted, entries, *, shared=False):
+            for entry in entries:
+                started.append({"id": entry["account_id"], "account_id": entry["account_id"], "accepted": True,
+                    "task_id": submitted["task_id"], "run_id": submitted["run_id"], "reused": bool(submitted.get("reused")),
+                    **({"shared_scan": True} if shared else {})})
+        for spec, entries in groups:
+            shared = bool(spec["data"].get("bulk"))
+            owned = prior.get(spec["source_id"])
+            if not account_request_key and common._account_is_deactivated(accounts.get(spec["account_id"])):
+                skipped.extend({"id": item["account_id"], "error": "账号已废号，禁止创建任务", "error_code": "account_deactivated"}
+                    for item in entries)
+            elif owned:
+                if account_request_key and common._task_is_user_deleted({"data": owned.get("data") or {}}):
+                    skipped.extend({"id": item["account_id"], "error": "原任务已从任务中心删除，请重新发起操作"} for item in entries)
+                else:
+                    append_receipts({**owned, "reused": True}, entries, shared=shared)
+                    batch_value = batch_value or owned.get("batch_id")
+            elif common._account_is_deactivated(accounts.get(spec["account_id"])):
+                skipped.extend({"id": item["account_id"], "error": "账号已废号，禁止创建任务", "error_code": "account_deactivated"}
+                    for item in entries)
+            elif spec["account_id"] in active:
+                existing = active[spec["account_id"]]
+                busy.extend({"id": item["account_id"], "task_id": existing["task_id"], "run_id": existing["run_id"],
+                    "busy": True, "error": "封号邮件扫描正在进行", **({"shared_scan": True} if shared else {})} for item in entries)
+            else:
+                fresh.append((spec, entries))
+        if fresh:
+            if batch_value is None:
+                batch_value = int(bulk_submission.create_batch(conn=conn, task_type="deactivation_mail",
+                    requested_count=len(ids), trigger=trigger, title="批量封号邮件扫描")["id"])
+            for ordinal, (spec, _) in enumerate(fresh, 1):
+                spec.update(batch_id=batch_value, batch_ordinal=ordinal)
+            receipts = []
+            for offset in range(0, len(fresh), _ACCEPTANCE_CHUNK_SIZE):
+                receipts.extend(bulk_submission.create_specs(
+                    [spec for spec, _ in fresh[offset:offset + _ACCEPTANCE_CHUNK_SIZE]], conn=conn,
+                ))
+            for receipt, (spec, entries) in zip(receipts, fresh):
+                append_receipts(receipt, entries, shared=bool(spec["data"].get("bulk")))
+                if not receipt.get("reused"):
+                    fresh_count += 1
+                    projections.update({item["account_id"]: {"status": "queued", "trigger": trigger} for item in entries})
+        projection_ids = list(projections)
+        for offset in range(0, len(projection_ids), _ACCEPTANCE_CHUNK_SIZE):
+            mail_store.update_many(
+                {value: projections[value] for value in projection_ids[offset:offset + _ACCEPTANCE_CHUNK_SIZE]},
+                conn=conn, accounts=accounts,
+            )
+    if fresh_count:
+        account_task_store.notify_dispatch()
+    order = {account_id: index for index, account_id in enumerate(ids)}
+    started.sort(key=lambda item: order[item["account_id"]])
+    return {"started": started, "busy": busy, "skipped": skipped, "batch_id": batch_value}
 
 
 def enqueue_bulk(
@@ -1103,6 +1064,7 @@ def enqueue_due_accounts() -> dict:
     now = datetime.now(timezone.utc)
     interval_seconds = scheduler_interval_seconds()
     due_ids: list[int] = []
+    unsupported_projections = {}
     skipped = 0
     accounts = db.list_accounts(limit=5000, archived=False)
     unsupported = _butler_scan_account_ids(accounts)
@@ -1113,15 +1075,21 @@ def enqueue_due_accounts() -> dict:
             skipped += 1
             if (account.get('deactivation_mail_scan_status') != 'unsupported'
                     or account.get('deactivation_mail_error') != _BUTLER_SCAN_ERROR):
-                db.update_account_deactivation_mail(int(account['id']), {
+                unsupported_projections[int(account['id'])] = {
                     'status': 'unsupported', 'trigger': 'scheduled', 'error': _BUTLER_SCAN_ERROR,
-                    'preserve_checked_at': True})
+                    'preserve_checked_at': True}
             continue
         checked = _parse_time(account.get("deactivation_mail_checked_at"))
         if checked and (now - checked).total_seconds() < interval_seconds:
             skipped += 1
             continue
         due_ids.append(int(account.get("id") or 0))
+    projection_ids = list(unsupported_projections)
+    for offset in range(0, len(projection_ids), _ACCEPTANCE_CHUNK_SIZE):
+        mail_store.update_many({
+            value: unsupported_projections[value]
+            for value in projection_ids[offset:offset + _ACCEPTANCE_CHUNK_SIZE]
+        })
     result = enqueue_bulk(due_ids, trigger="scheduled") if due_ids else {"started": [], "busy": [], "skipped": []}
     skipped += len(result.get("busy") or []) + len(result.get("skipped") or [])
     return {"started": len(result.get("started") or []), "skipped": skipped}

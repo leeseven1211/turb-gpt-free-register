@@ -6,34 +6,35 @@ from config import email as email_config
 from core.accounts.deactivation import mail_scan
 from core.email.email_butler.client import EmailButlerClientError
 from core.runtime import capabilities
+from core.storage import records as store
+from tests.support_pg import PostgresTestCase
 
 
-class V2SignalContractTests(TestCase):
+class V2SignalContractTests(PostgresTestCase):
     def test_unsupported_code_is_permanent_and_does_not_claim_missing_email(self):
         error = EmailButlerClientError('v2 不提供邮件信号', error_code='signal_scan_unsupported')
         self.assertTrue(mail_scan._is_permanent_email_butler_scan_error(error))
 
     def test_manual_butler_scan_returns_unsupported_without_queuing(self):
-        account = {'id': 1, 'email': 'fixture@example.test', 'email_source': 'email_butler'}
-        with patch.object(mail_scan.db, 'get_account', return_value=account), patch.object(
-                mail_scan.db, 'update_account_deactivation_mail') as update, patch.object(
-                mail_scan, '_submit_native_scan') as submit:
+        self.seed(store.ACCOUNTS, [{'id': 1, 'email': 'fixture@example.test', 'email_source': 'email_butler'}])
+        with patch.object(mail_scan, '_submit_native_scan') as submit:
             result = mail_scan.enqueue(1)
         self.assertFalse(result['accepted'])
         self.assertTrue(result['unsupported'])
         self.assertEqual(result['error_code'], 'signal_scan_unsupported')
-        self.assertEqual(update.call_args.args[1]['status'], 'unsupported')
+        self.assertEqual(store.get_row(store.ACCOUNTS, 1)['deactivation_mail_scan_status'], 'unsupported')
         submit.assert_not_called()
 
     def test_hme_unsupported_result_stays_unsupported_without_false_clear_result(self):
         context = Mock()
         context.is_cancel_requested.return_value = False
         result = {'ok': False, 'error_code': 'signal_scan_unsupported', 'error': 'v2 暂不提供封号邮件扫描'}
-        with patch.object(mail_scan.db, 'update_account_deactivation_mail') as update, patch.object(
-                mail_scan, 'scan_hme_deactivation_bulk', return_value={'fixture@icloud.com': result}):
+        self.seed(store.ACCOUNTS, [{'id': 1, 'email': 'fixture@icloud.com'}])
+        with patch.object(mail_scan, 'scan_hme_deactivation_bulk', return_value={'fixture@icloud.com': result}):
             mail_scan._scan_hme_group(context, [{'account_id': 1, 'email': 'fixture@icloud.com'}], 'manual')
-        self.assertEqual(update.call_args.args[1]['status'], 'unsupported')
-        self.assertNotIn('detected', update.call_args.args[1])
+        row = store.get_row(store.ACCOUNTS, 1)
+        self.assertEqual(row['deactivation_mail_scan_status'], 'unsupported')
+        self.assertFalse(row.get('deactivation_mail_detected'))
         self.assertEqual(context.finish.call_args.kwargs['status'], 'unsupported')
         self.assertEqual(context.finish.call_args.kwargs['result_summary']['success_count'], 0)
 

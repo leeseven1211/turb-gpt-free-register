@@ -45,8 +45,15 @@ class DeactivationMailReportingTests(unittest.TestCase):
             execution.append(("mailbox_call", None))
             return {email: dict(result) for email in emails}
 
+        def write_collection(results, **_kwargs):
+            # 领域阶段测试替换集合仓储边界，不连接数据库；真实集合语义另由 PG 测试验证。
+            for account_id, payload in results.items():
+                database.update_account_deactivation_mail(account_id, payload)
+            return list(results)
+
         with ExitStack() as stack:
             stack.enter_context(patch.object(service, "db", database))
+            stack.enter_context(patch.object(service.mail_store, "update_many", side_effect=write_collection))
             stack.enter_context(patch.object(service, "logger"))
             stack.enter_context(patch.object(service.account_task_store, "start_task"))
             stack.enter_context(patch.object(service.account_task_store, "append_event", side_effect=report))
@@ -239,7 +246,10 @@ class DeactivationMailReportingTests(unittest.TestCase):
 
     def test_hme_cancellation_after_provider_preserves_uncancelled_preflight(self):
         with self._scenario(source="icloud_hide") as scenario:
-            scenario.context.checkpoint.side_effect = [None, None, None, OperationCancelled("模拟批量扫描取消")]
+            def cancel_after_provider(message):
+                if message == "批量 HME 检索完成后确认取消状态":
+                    raise OperationCancelled("模拟批量扫描取消")
+            scenario.context.checkpoint.side_effect = cancel_after_provider
             self._group(scenario)
             self.assertEqual([
                 ("preflight", "running"), ("preflight", "success"), ("mailbox_scan", "running"),
@@ -247,8 +257,15 @@ class DeactivationMailReportingTests(unittest.TestCase):
             self.assertEqual("cancelled", scenario.finish.call_args.kwargs["status"])
 
     def test_hme_cancellation_after_first_alias_keeps_main_scan_unfinished(self):
-        with self._scenario(source="icloud_hide") as scenario:
-            scenario.context.checkpoint.side_effect = [None] * 5 + [OperationCancelled("模拟第二个别名写回前取消")]
+        with self._scenario(source="icloud_hide") as scenario, patch.object(service, "_HME_PAYLOAD_CHUNK_SIZE", 1):
+            result_blocks = 0
+            def cancel_before_second_block(message):
+                nonlocal result_blocks
+                if message == "写回 HME 账号结果前检查取消状态":
+                    result_blocks += 1
+                    if result_blocks == 2:
+                        raise OperationCancelled("模拟第二个分块写回前取消")
+            scenario.context.checkpoint.side_effect = cancel_before_second_block
             self._group(scenario)
             self.assertEqual([
                 ("preflight", "running"), ("preflight", "success"), ("mailbox_scan", "running"),
@@ -272,7 +289,10 @@ class DeactivationMailReportingTests(unittest.TestCase):
 
     def test_hme_lost_lease_does_not_finish_or_fabricate_account_failure(self):
         with self._scenario(source="icloud_hide") as scenario:
-            scenario.context.checkpoint.side_effect = [None, None, None, service.account_task_store.OperationLeaseLost("模拟租约丢失")]
+            def lose_after_provider(message):
+                if message == "批量 HME 检索完成后确认取消状态":
+                    raise service.account_task_store.OperationLeaseLost("模拟租约丢失")
+            scenario.context.checkpoint.side_effect = lose_after_provider
             with self.assertRaises(service.account_task_store.OperationLeaseLost):
                 self._group(scenario)
             self.assertEqual([

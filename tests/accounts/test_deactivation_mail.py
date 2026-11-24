@@ -93,12 +93,13 @@ class DeactivationMailTests(PostgresTestCase):
                 legacy_account_task_store,
                 "create_batch",
                 return_value="batch-1",
-            ),
+            ) as create_batch,
             patch.object(
                 deactivation_mail_service,
                 "enqueue_bulk",
                 return_value={
                     "started": [{"id": 1, "task_id": 11}],
+                    "batch_id": 44,
                     "busy": [],
                     "skipped": [],
                 },
@@ -119,8 +120,8 @@ class DeactivationMailTests(PostgresTestCase):
         enqueue_bulk.assert_called_once_with(
             [1, 2],
             trigger="manual_bulk",
-            batch_id="batch-1",
         )
+        create_batch.assert_not_called()
 
     def test_account_management_ui_has_mail_scan_controls(self):
         app = create_app(auth_code="test-auth")
@@ -248,45 +249,16 @@ const table = h.mount(Table, {props: {
         self.assertEqual("failed", finish.call_args.kwargs["status"])
 
     def test_bulk_enqueue_uses_dedicated_icloud_coordinator(self):
-        accounts = {
-            1: {"id": 1, "email": "first@icloud.com", "email_source": "icloud_hide"},
-            2: {"id": 2, "email": "second@icloud.com", "email_source": "icloud_hide"},
-        }
-        with (
-            patch.object(deactivation_mail_service.db, "get_account", side_effect=accounts.get),
-            patch.object(deactivation_mail_service.db, "update_account_deactivation_mail"),
-            patch.object(
-                deactivation_mail_service.db,
-                "list_accounts",
-                return_value=[],
-            ),
-            patch.object(
-                deactivation_mail_service,
-                "_submit_native_hme_group",
-                return_value={
-                    "accepted": True,
-                    "busy": False,
-                    "reused": False,
-                    "task_id": 101,
-                    "run_id": 201,
-                    "status": "queued",
-                },
-            ) as submit_group,
-        ):
+        self.seed(ACCOUNTS, [
+            {"id": 1, "email": "first@icloud.com", "email_source": "icloud_hide"},
+            {"id": 2, "email": "second@icloud.com", "email_source": "icloud_hide"},
+        ])
+        with patch.object(deactivation_mail_service.account_task_store, "notify_dispatch"):
             result = deactivation_mail_service.enqueue_bulk([1, 2], trigger="manual_bulk")
-
         self.assertEqual(len(result["started"]), 2)
-        self.assertEqual({item["task_id"] for item in result["started"]}, {101})
-        self.assertEqual({item["run_id"] for item in result["started"]}, {201})
+        self.assertEqual(len({item["task_id"] for item in result["started"]}), 1)
+        self.assertEqual(len({item["run_id"] for item in result["started"]}), 1)
         self.assertTrue(all(item["shared_scan"] for item in result["started"]))
-        submit_group.assert_called_once()
-        self.assertEqual(
-            submit_group.call_args.kwargs["entries"],
-            [
-                {"account_id": 1, "email": "first@icloud.com"},
-                {"account_id": 2, "email": "second@icloud.com"},
-            ],
-        )
 
     def test_grouped_scan_fans_out_terminal_results_to_each_account(self):
         entries = [
@@ -299,8 +271,8 @@ const table = h.mount(Table, {props: {
             "checked_at": "2026-08-10T00:00:00Z",
             "confidence": "none",
         }
+        self.seed(ACCOUNTS, [{"id": entry["account_id"], "email": entry["email"]} for entry in entries])
         with (
-            patch.object(deactivation_mail_service.db, "update_account_deactivation_mail") as update,
             patch.object(
                 deactivation_mail_service,
                 "scan_hme_deactivation_bulk",
@@ -315,10 +287,7 @@ const table = h.mount(Table, {props: {
             ["first@icloud.com", "second@icloud.com"],
             lookback_days=deactivation_mail_service._LOOKBACK_DAYS,
         )
-        success_updates = [
-            call for call in update.call_args_list if call.args[1].get("status") == "success"
-        ]
-        self.assertEqual({call.args[0] for call in success_updates}, {1, 2})
+        self.assertEqual([db.get_account(i)["deactivation_mail_scan_status"] for i in (1, 2)], ["success", "success"])
         context.finish.assert_called_once()
         self.assertEqual("success", context.finish.call_args.kwargs["status"])
 
