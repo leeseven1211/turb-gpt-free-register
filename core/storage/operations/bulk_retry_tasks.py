@@ -62,10 +62,11 @@ def retry_tasks_many(conn, specifications: list[dict]) -> dict[int, dict]:
     for attempt in range(3):
         try:
             with conn.transaction():
+                group_results = {}
                 selected_parents = _prelock_selected_parents(conn, specs)
                 for offset in range(0, len(specs), _CHUNK_SIZE):
                     output.update(_retry_chunk(conn, specs[offset:offset + _CHUNK_SIZE],
-                                               selected_parents=selected_parents))
+                                               selected_parents=selected_parents, group_results=group_results))
             return output
         except _ParentChanged:
             output.clear()
@@ -140,7 +141,7 @@ def _prelock_selected_parents(conn, specs: list[dict]) -> dict[int, int]:
         return expected
 
 
-def _retry_chunk(conn, specs: list[dict], *, selected_parents: dict[int, int]) -> dict[int, dict]:
+def _retry_chunk(conn, specs: list[dict], *, selected_parents: dict[int, int], group_results: dict) -> dict[int, dict]:
     ids = sorted(int(spec["task_id"]) for spec in specs)
     output = {}
     with conn.cursor() as cur:
@@ -174,8 +175,16 @@ def _retry_chunk(conn, specs: list[dict], *, selected_parents: dict[int, int]) -
         previous = {int(row["task_id"]): dict(row) for row in cur.fetchall()}
         queued_at = common._now().isoformat(timespec="seconds")
         rows, batches, parents, passwords, copies = [], set(), set(), set(), []
+        planned_groups, reuse = {}, {}
         for spec in specs:
             task_id = int(spec["task_id"])
+            group_key = spec.get("group_key")
+            if group_key is not None and group_key in group_results:
+                output[task_id] = {**group_results[group_key], "reused": True}
+                continue
+            if group_key is not None and group_key in planned_groups:
+                reuse[task_id] = planned_groups[group_key]
+                continue
             task = tasks.get(task_id)
             if not task:
                 output[task_id] = (_rejected(task_id, "任务正在变更，请稍后重试", busy=True)
@@ -230,6 +239,8 @@ def _retry_chunk(conn, specs: list[dict], *, selected_parents: dict[int, int]) -
                 "previous_batch_id": prior.get("batch_id"), "task_batch_id": task.get("batch_id"),
                 "parent_task_id": task.get("parent_task_id")}
             rows.append(row)
+            if group_key is not None:
+                planned_groups[group_key] = task_id
             batches.update(int(value) for value in (task.get("batch_id"), prior.get("batch_id")) if value)
             if task.get("parent_task_id"):
                 parents.add(int(task["parent_task_id"]))
@@ -262,6 +273,7 @@ def _retry_chunk(conn, specs: list[dict], *, selected_parents: dict[int, int]) -
                 output[row["task_id"]] = _rejected(row["task_id"], "账号操作仍在执行，请稍后重试", busy=True)
         rows = [row for row in rows if row["task_id"] in inserted]
         if not rows:
+            output.update({task_id: dict(output[winner]) for task_id, winner in reuse.items()})
             return output
         changed_ids = {row["task_id"] for row in rows}
         copies = [row for row in copies if row["task_id"] in changed_ids]
@@ -317,6 +329,11 @@ def _retry_chunk(conn, specs: list[dict], *, selected_parents: dict[int, int]) -
                 "task_id": row["task_id"], "run_id": row["run_id"], "account_id": row["account_id"],
                 "email": row["email"], "source_system": row["source_system"], "status": "queued",
                 "event_id": event["id"], "event_uuid": event["event_uuid"], "event_created_at": event["created_at"]}
+        for key, winner in planned_groups.items():
+            if output[winner].get("accepted"):
+                group_results[key] = output[winner]
+        for task_id, winner in reuse.items():
+            output[task_id] = {**output[winner], **({"reused": True} if output[winner].get("accepted") else {})}
         return output
 
 
