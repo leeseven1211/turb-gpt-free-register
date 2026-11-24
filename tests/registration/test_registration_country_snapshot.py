@@ -8,28 +8,24 @@ from unittest.mock import Mock, patch
 import pytest
 
 from core.registration import service as service
+from core.storage.registration import bulk_submission
 
 
 def test_submit_registration_freezes_one_country_for_the_whole_queued_batch():
-    executor = Mock()
-    created = []
-
-    def create_job(**kwargs):
-        row = {"id": len(created) + 1, "log_file": f"/tmp/job-{len(created) + 1}.log"}
-        created.append((row, kwargs))
-        return row
-
-    with patch.object(service, "_enqueue_job", new=executor), \
+    with patch.object(service, "start_dispatcher") as start, \
+            patch.object(service, "notify_dispatch") as notify, \
             patch.object(service, "get_executor_workers", return_value=2), \
-            patch.object(service.db, "create_job", side_effect=create_job), \
-            patch.object(service.db, "get_job", return_value=None), \
+            patch.object(bulk_submission, "create_jobs", return_value=[{"id": 1}, {"id": 2}]) as create, \
             patch.object(service, "registration_config_snapshot", return_value={"proxy_country": "JP"}) as snapshot:
         queued = service.submit_registration(count=2, email_source="outlook", workers=2)
 
     assert snapshot.call_count == 1
-    assert [item[1]["data"]["config_snapshot"]["proxy_country"] for item in created] == ["JP", "JP"]
+    create.assert_called_once()
+    assert create.call_args.kwargs["config_snapshot"]["proxy_country"] == "JP"
+    assert create.call_args.kwargs["count"] == 2
     assert [item["id"] for item in queued] == [1, 2]
-    assert executor.call_count == 2
+    start.assert_called_once()
+    notify.assert_called_once()
 
 
 @pytest.mark.parametrize("driver,password_enabled,password_mode", [
@@ -37,18 +33,10 @@ def test_submit_registration_freezes_one_country_for_the_whole_queued_batch():
     ("roxy", True, "password"),
 ])
 def test_submit_registration_freezes_the_selected_driver_for_the_whole_batch(driver, password_enabled, password_mode):
-    executor = Mock()
-    created = []
-
-    def create_job(**kwargs):
-        row = {"id": len(created) + 1, "log_file": f"/tmp/job-{len(created) + 1}.log"}
-        created.append((row, kwargs))
-        return row
-
-    with patch.object(service, "_enqueue_job", new=executor), \
+    with patch.object(service, "start_dispatcher"), \
+            patch.object(service, "notify_dispatch"), \
             patch.object(service, "get_executor_workers", return_value=2), \
-            patch.object(service.db, "create_job", side_effect=create_job), \
-            patch.object(service.db, "get_job", return_value=None), \
+            patch.object(bulk_submission, "create_jobs", return_value=[{"id": 1}, {"id": 2}]) as create, \
             patch.object(service, "registration_config_snapshot", return_value={
                 "registration_driver": "roxy",
                 "password_enabled": False,
@@ -62,19 +50,16 @@ def test_submit_registration_freezes_the_selected_driver_for_the_whole_batch(dri
             registration_driver=driver,
         )
 
-    snapshots = [item[1]["data"]["config_snapshot"] for item in created]
-    assert [snapshot["registration_driver"] for snapshot in snapshots] == [
-        driver,
-        driver,
-    ]
-    assert [snapshot["password_enabled"] for snapshot in snapshots] == [password_enabled, password_enabled]
-    assert [snapshot["password_mode"] for snapshot in snapshots] == [password_mode, password_mode]
-    assert [snapshot["proxy_country"] for snapshot in snapshots] == ["JP", "JP"]
+    snapshot = create.call_args.kwargs["config_snapshot"]
+    assert snapshot["registration_driver"] == driver
+    assert snapshot["password_enabled"] == password_enabled
+    assert snapshot["password_mode"] == password_mode
+    assert snapshot["proxy_country"] == "JP"
     assert [item["id"] for item in queued] == [1, 2]
 
 
 def test_submit_registration_rejects_unknown_driver_before_creating_jobs():
-    with patch.object(service.db, "create_job") as create_job:
+    with patch.object(bulk_submission, "create_jobs") as create_jobs:
         with pytest.raises(ValueError, match="registration_driver"):
             service.submit_registration(
                 count=1,
@@ -82,7 +67,7 @@ def test_submit_registration_rejects_unknown_driver_before_creating_jobs():
                 registration_driver="unknown",
             )
 
-    create_job.assert_not_called()
+    create_jobs.assert_not_called()
 
 
 def test_registration_codex_driver_follows_the_selected_driver_snapshot():

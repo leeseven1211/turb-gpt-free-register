@@ -3303,31 +3303,15 @@ def submit_registration(
         require_registration_deployment(registration_snapshot)
         effective_workers = configure_submission_workers(workers)
         batch_id = f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
-        jobs = []
-        for index in range(count):
-            job = db.create_job(
-                email_source=email_source,
-                batch_id=batch_id,
-                batch_index=index + 1,
-                batch_size=count,
-                batch_workers=effective_workers,
-                data={"config_snapshot": dict(registration_snapshot), "registration_dispatch_ready": False},
-            )
-            if debug_enabled:
-                from core.registration.debug import patch_job
-                patch_job(
-                    int(job["id"]),
-                    debug_enabled=True,
-                    debug_state="pending",
-                    debug_policy={
-                        "capture_network": True,
-                        "hold_on_failure": True,
-                        "preserve_success_browser": False,
-                    },
-                )
-                job = db.get_job(int(job["id"])) or job
-            _enqueue_job(int(job["id"]))
-            jobs.append(db.get_job(int(job["id"])) or job)
+        from core.storage.registration import bulk_submission
+
+        jobs = bulk_submission.create_jobs(
+            count=count, email_source=email_source, batch_id=batch_id, workers=effective_workers,
+            config_snapshot=registration_snapshot, debug_enabled=debug_enabled,
+        )
+        if jobs:
+            start_dispatcher()
+            notify_dispatch()
     logger.info(
         "[Service] 已提交 %s 个注册任务，源=%s，driver=%s，workers=%s，debug=%s",
         count,

@@ -175,7 +175,7 @@ class DeploymentAdmissionTests(PostgresTestCase):
     def test_registration_creation_checks_effective_driver_before_creating_jobs(self):
         from core.storage import postgres
 
-        with patch.object(registration, "_enqueue_job"), patch.object(
+        with patch.object(registration, "start_dispatcher"), patch.object(
             registration, "get_executor_workers", return_value=1,
         ), patch("config.roxybrowser.REGISTRATION_DRIVER", "roxy"), patch("config.codex.ENABLE_CODEX_AUTO", False):
             for driver in ("roxy",):

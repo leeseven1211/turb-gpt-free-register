@@ -139,14 +139,53 @@ class RegistrationWorkerStorageTests(PostgresTestCase):
 
     def test_new_registration_batch_persists_thirty_workers_without_starting_real_jobs(self):
         snapshot = {"registration_driver": "protocol_oss_2", "proxy_country": "JP"}
-        with patch.object(service, "_enqueue_job") as enqueue, \
+        with patch.object(service, "start_dispatcher") as start, \
+                patch.object(service, "notify_dispatch") as notify, \
+                patch.object(db, "create_job", side_effect=AssertionError("unexpected per-job creation")), \
                 patch.object(service, "require_registration_deployment"), \
                 patch.object(service, "registration_config_snapshot", return_value=snapshot):
-            jobs = service.submit_registration(count=2, email_source="outlook", workers="30")
+            jobs = service.submit_registration(count=2, email_source="outlook", workers="30", debug_enabled=True)
         self.assertEqual(2, len(jobs))
-        self.assertEqual(2, enqueue.call_count)
+        start.assert_called_once()
+        notify.assert_called_once()
         self.assertEqual(30, service.get_executor_workers())
         stored = [db.get_job(job["id"]) for job in jobs]
         self.assertEqual([30, 30], [job["batch_workers"] for job in stored])
         self.assertEqual(["pending", "pending"], [job["status"] for job in stored])
         self.assertEqual(1, len({job["batch_id"] for job in stored}))
+        self.assertEqual([1, 2], [job["batch_index"] for job in stored])
+        from core.storage import registration
+        from core.storage.operations import store as operation
+        for job in stored:
+            self.assertTrue(job["registration_dispatch_ready"])
+            self.assertTrue(job["debug_enabled"])
+            self.assertEqual("pending", job["debug_state"])
+            self.assertEqual(snapshot, job["config_snapshot"])
+            attempt = registration.get_attempt_by_job(job["id"])
+            self.assertEqual(job["attempt_id"], attempt["id"])
+            self.assertEqual("not_created", attempt["target_status"])
+            runs = registration.list_runs(attempt["id"])
+            self.assertEqual([(job["id"], "queued")], [(run["job_id"], run["status"]) for run in runs])
+            task = operation.find_task_by_source("registration_jobs", str(job["id"]), include_runs=True)
+            self.assertEqual((attempt["id"], "queued"), (task["attempt_id"], task["status"]))
+
+    def test_batch_submission_preserves_business_attempt_with_separate_projection_schema(self):
+        from core.storage import registration
+        from core.storage.operations import store as operation
+        from tests.support_pg import drop_schema, temporary_schema_name
+
+        operation_schema = temporary_schema_name("registration_projection")
+        self.addCleanup(drop_schema, operation_schema)
+        with patch.dict(os.environ, {"OPERATION_TASK_DB_SCHEMA": operation_schema}), \
+                patch.object(service, "start_dispatcher"), \
+                patch.object(service, "notify_dispatch"), \
+                patch.object(service, "require_registration_deployment"), \
+                patch.object(service, "registration_config_snapshot", return_value={"registration_driver": "protocol_oss_2"}):
+            jobs = service.submit_registration(count=2, email_source="outlook", workers=2)
+            for job in jobs:
+                attempt = registration.get_attempt_by_job(job["id"])
+                self.assertEqual(job["attempt_id"], attempt["id"])
+                self.assertEqual("pending", attempt["target_status"])
+                self.assertEqual(job["id"], registration.list_runs(attempt["id"])[0]["job_id"])
+                task = operation.find_task_by_source("registration_jobs", str(job["id"]), include_runs=True)
+                self.assertEqual("not_created", task["target_status"])
