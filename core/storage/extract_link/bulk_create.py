@@ -6,7 +6,6 @@ import uuid
 
 from core.accounts.plans import promotion as plus_promotion
 from core import db
-from core.operations import task_gateway
 from core.storage import postgres as postgres_store, records as record_store
 from core.storage.operations import bulk_submission, common, store as operation
 
@@ -42,11 +41,6 @@ def _normalize_ids(account_ids: Iterable[int]) -> tuple[list[int], int]:
     return values, duplicates
 
 
-def _config_snapshot(snapshot: object) -> dict:
-    from core.extract_link.service import EXTRACT_CONFIG_ALLOWLIST
-    return task_gateway.normalize_config_snapshot(snapshot, allowlist=EXTRACT_CONFIG_ALLOWLIST)
-
-
 def _chunk_create(
     ids: list[int], *, data: Mapping[str, object], config_snapshot: object,
     batch_id: int | None, first_ordinal: int, allow_no_promotion: bool,
@@ -54,10 +48,9 @@ def _chunk_create(
     if not ids:
         return 0, 0, 0
     operation.init()
-    normalized_config = _config_snapshot(config_snapshot)
+    from core.extract_link.service import EXTRACT_CONFIG_ALLOWLIST
     source_data = dict(data)
     source_data.pop("config_snapshot", None)
-    source_data["config_snapshot"] = normalized_config
     source_data["workbench_action"] = "create"
     now = db._now()
     table = postgres_store.qualified(record_store.ACCOUNTS.name)
@@ -123,6 +116,7 @@ def _chunk_create(
                 "trigger": "extract_workbench", "source_system": "native_operations",
                 "source_id": f"extract-workbench:{account_id}:{uuid.uuid4().hex}",
                 "resource_family": "openai_interactive", "data": payload,
+                "config_snapshot": config_snapshot, "config_allowlist": EXTRACT_CONFIG_ALLOWLIST,
                 "batch_id": batch_id, "batch_ordinal": ordinal,
             })
         try:

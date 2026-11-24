@@ -134,22 +134,21 @@ class ExtractSubmissionPerformanceTests(PostgresTestCase):
             cur.execute(f"SELECT ordinal FROM {operation._table('operation_batch_items')} WHERE batch_id=%s", (result["batch_id"],))
             self.assertEqual([1], [row["ordinal"] for row in cur.fetchall()])
 
-    def test_item_sql_failure_rolls_back_task_and_continues_with_same_config_revision(self):
+    def test_chunk_sql_failure_rolls_back_all_task_and_account_claim_facts(self):
         ids = self.accounts([{}, {}, {}])
-        original_insert = operation_runtime._insert_runtime_run
-
-        def fail_second(cur, **kwargs):
-            if kwargs["account_id"] == ids[1]:
+        from core.storage.operations import bulk_submission
+        original_create = bulk_submission.create_specs
+        def fail_chunk(specs, *, conn):
+            original_create(specs, conn=conn)
+            with conn.cursor() as cur:
                 cur.execute("SELECT 1 / 0")
-            return original_insert(cur, **kwargs)
-
-        with self.provider_patches(), patch.object(operation_runtime, "_insert_runtime_run", side_effect=fail_second):
+        with self.provider_patches(), patch.object(bulk_submission, "create_specs", side_effect=fail_chunk):
             result = extract_link_service.create_workbench_batch(provider_id="lumen_flow", mode="extract_only", limit=3)
-        self.assertEqual((2, 0, 1), tuple(result[key] for key in ("started", "skipped", "failed")))
-        self.assertEqual("failed", record_store.get_row(record_store.ACCOUNTS, ids[1])["extract_link_status"])
+        self.assertEqual((0, 0, 3), tuple(result[key] for key in ("started", "skipped", "failed")))
+        self.assertTrue(all(record_store.get_row(record_store.ACCOUNTS, value).get("extract_link_status") not in {"queued", "running"} for value in ids))
         with operation._connect() as conn, conn.cursor() as cur:
-            cur.execute(f"SELECT task.account_id, item.ordinal FROM {operation._table('operation_tasks')} task JOIN {operation._table('operation_batch_items')} item ON item.task_id=task.id WHERE task.batch_id=%s ORDER BY item.ordinal", (result["batch_id"],))
-            self.assertEqual([(ids[0], 1), (ids[2], 2)], [(row["account_id"], row["ordinal"]) for row in cur.fetchall()])
+            cur.execute(f"SELECT count(*) AS n FROM {operation._table('operation_tasks')} WHERE batch_id=%s", (result["batch_id"],))
+            self.assertEqual(0, cur.fetchone()["n"])
 
     def test_busy_unique_violation_keeps_outer_transaction_usable(self):
         ids = self.accounts([{}, {}])
@@ -160,7 +159,7 @@ class ExtractSubmissionPerformanceTests(PostgresTestCase):
         }):
             result = extract_link_service.create_workbench_batch(provider_id="lumen_flow", mode="extract_only", limit=2)
         self.assertEqual((1, 1, 0), tuple(result[key] for key in ("started", "skipped", "failed")))
-        self.assertEqual("failed", record_store.get_row(record_store.ACCOUNTS, ids[0])["extract_link_status"])
+        self.assertIsNone(record_store.get_row(record_store.ACCOUNTS, ids[0]).get("extract_link_status"))
         self.assertEqual("queued", record_store.get_row(record_store.ACCOUNTS, ids[1])["extract_link_status"])
 
     def test_concurrent_busy_submissions_reuse_their_two_outer_connections(self):
