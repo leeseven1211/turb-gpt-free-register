@@ -441,3 +441,73 @@ class NativeRetryCollectionTests(PostgresTestCase):
             self.assertEqual(retry_account["codex_active_run_id"], retry["run_id"])
             self.assertEqual(retry_account["codex_status"], "success")
             self.assertEqual(retry_account["codex_credential_state"], "valid")
+
+    def test_twenty_parent_retries_reconcile_without_per_target_sql_or_savepoints(self):
+        from psycopg import Cursor
+        originals, targets = self.ready_retries("twofa_setup", count=20)
+        parents = []
+        for index, original in enumerate(originals):
+            parent = store.create_runtime_task(task_type="account_completion", account_id=None,
+                email=f"parent-{index}@example.test", resource_family="completion_coordinator")
+            parents.append(parent)
+            with store._connect() as conn, conn.cursor() as cur:
+                cur.execute(f"UPDATE {store._table('operation_runs')} SET status='partial_success' WHERE id=%s",
+                            (parent["run"]["id"],))
+                cur.execute(f"UPDATE {store._table('operation_tasks')} SET status='partial_success' WHERE id=%s",
+                            (parent["id"],))
+                cur.execute(f"UPDATE {store._table('operation_tasks')} SET parent_task_id=%s WHERE id=%s",
+                            (parent["id"], original["task_id"]))
+        statements = []
+        execute = Cursor.execute
+
+        def measured(cursor, query, params=None, **kwargs):
+            statements.append(str(query))
+            return execute(cursor, query, params, **kwargs)
+
+        with store._connect() as conn, patch.object(Cursor, "execute", measured):
+            receipts = adapters.submit_chunk(conn, targets, self.context("twofa_setup"))
+        self.assertEqual({row["disposition"] for row in receipts}, {"created"})
+        self.assertLessEqual(len(statements), 32, f"{len(statements)} SQL")
+        self.assertFalse(any("SAVEPOINT" in query for query in statements))
+        for parent in parents:
+            task = self.task_row(parent["id"])
+            self.assertEqual(task["status"], "waiting")
+            self.assertNotEqual(task["last_run_id"], parent["run"]["id"])
+            old = store.get_run(parent["run"]["id"])
+            self.assertEqual(old["status"], "partial_success")
+
+    def test_twenty_password_handoffs_reconcile_without_per_target_sql_or_savepoints(self):
+        from psycopg import Cursor
+        originals, targets = self.ready_retries("password_setup", count=20)
+        parents = []
+        for index, original in enumerate(originals, 1):
+            job_id = records.insert_row(records.JOBS, {"email": f"native-retry-{index}@example.test",
+                "account_id": index, "status": "partial_success"})
+            parent = store.create_runtime_task(task_type="registration_resume", account_id=None,
+                email=f"native-retry-{index}@example.test", source_system="registration_chains",
+                source_id=str(job_id), resource_family="registration_chain",
+                data={"completion_handoff": {"task_id": original["task_id"], "run_id": original["run_id"],
+                    "remaining_error": ""}})
+            parents.append(parent)
+            with store._connect() as conn, conn.cursor() as cur:
+                cur.execute(f"UPDATE {store._table('operation_runs')} SET status='partial_success',source_id=%s WHERE id=%s",
+                            (str(job_id), parent["run"]["id"]))
+                cur.execute(f"UPDATE {store._table('operation_tasks')} SET status='partial_success' WHERE id=%s",
+                            (parent["id"],))
+        statements = []
+        execute = Cursor.execute
+
+        def measured(cursor, query, params=None, **kwargs):
+            statements.append(str(query))
+            return execute(cursor, query, params, **kwargs)
+
+        with store._connect() as conn, patch.object(Cursor, "execute", measured):
+            receipts = adapters.submit_chunk(conn, targets, self.context("password_setup"))
+        self.assertEqual({row["disposition"] for row in receipts}, {"created"})
+        self.assertLessEqual(len(statements), 34, f"{len(statements)} SQL")
+        self.assertFalse(any("SAVEPOINT" in query for query in statements))
+        for parent, child in zip(parents, receipts, strict=True):
+            task = self.task_row(parent["id"])
+            self.assertEqual(task["status"], "waiting")
+            run = store.get_run(task["last_run_id"])
+            self.assertEqual(run["result_summary"]["completion_handoff"]["run_id"], child["run_id"])

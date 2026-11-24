@@ -7,7 +7,8 @@ import uuid
 
 from core.operations import run_log
 from core.storage import records
-from core.storage.operations import bulk_schema, common, projection
+from core.storage.operations import common
+from core.storage.operations.bulk_retry_projection import refresh_batches_many
 
 _CHUNK_SIZE = 500
 _NATIVE_TYPES = frozenset({
@@ -44,19 +45,11 @@ def _claim_stage(conn, specs: list[dict], *, operation_key: str, queued_at: str)
 
 
 def _refresh_previous_batches(cur, batch_ids: set[int]) -> None:
-    if not batch_ids:
-        return
-    # 受管批次由保存新轮回执的集合 outbox 投影；传统批次仍保留原有收口义务。
-    if bulk_schema._READY_KEY == f"{common.postgres_store.database_url()}::{common._schema_name()}":
-        cur.execute(f"SELECT batch_id FROM {common._table('operation_batch_controls')} WHERE batch_id=ANY(%s)",
-                    (sorted(batch_ids),))
-        batch_ids -= {int(row["batch_id"]) for row in cur.fetchall()}
-    if batch_ids:
-        projection._refresh_batches(cur, sorted(batch_ids))
+    refresh_batches_many(cur, batch_ids)
 
 
 def retry_native_many(conn, specifications: list[dict], *, operation_key: str) -> dict[int, dict]:
-    """返回普通目标回执；带父收口等特殊义务的目标留给原重试路径。
+    """集合追加新执行并收口父任务，返回每个已识别原生目标的回执。
 
     调用方已持新轮 control/target/account 锁。这里不锁或继承旧轮 target，
     不提交事务、不触发外部执行；新 Run 的归属与 outbox 仍由提交方保存回执。
@@ -85,14 +78,6 @@ def _retry_chunk(conn, specs: list[dict], *, operation_key: str, task_counts: Co
                 WHERE task_id=ANY(%s) ORDER BY task_id,run_no DESC,id DESC) latest ON latest.id=r.id
             ORDER BY r.task_id,r.id""", (task_ids,))
         previous = {int(row["task_id"]): dict(row) for row in cur.fetchall()}
-        password_ids = [str(task_id) for task_id, task in tasks.items() if task["task_type"] == "password_setup"]
-        handoff_ids = set()
-        if password_ids:
-            cur.execute(f"""SELECT data->'completion_handoff'->>'task_id' AS child_task_id
-                FROM {common._table('operation_runs')}
-                WHERE data ? 'completion_handoff'
-                  AND data->'completion_handoff'->>'task_id'=ANY(%s)""", (password_ids,))
-            handoff_ids = {int(row["child_task_id"]) for row in cur.fetchall()}
         eligible = []
         for spec in specs:
             task_id = int(spec["task_id"])
@@ -101,9 +86,8 @@ def _retry_chunk(conn, specs: list[dict], *, operation_key: str, task_counts: Co
                 output[spec["target_round_id"]] = _receipt(spec, disposition="not_executed",
                     reason_code="operation_precondition_changed")
                 continue
-            # 仅特殊父/注册续跑收口、传统其他领域以及异常重复身份沿用既有路径。
-            if (task.get("parent_task_id") or task_id in handoff_ids or task_counts[task_id] > 1
-                    or task.get("task_type") not in _NATIVE_TYPES or task.get("task_type") != operation_key
+            # 其他领域及异常重复身份仍沿原身份处理；父/注册收口在写后集合执行。
+            if (task_counts[task_id] > 1 or task.get("task_type") not in _NATIVE_TYPES or task.get("task_type") != operation_key
                     or int(task.get("account_id") or 0) != spec["account_id"]):
                 continue
             prior = previous.get(task_id) or {}
@@ -188,6 +172,19 @@ def _retry_chunk(conn, specs: list[dict], *, operation_key: str, task_counts: Co
                         THEN a.codex_status ELSE 'retrying' END,updated_at=%s,data=a.data || %s::jsonb
                 FROM jsonb_to_recordset(%s::jsonb) s(account_id BIGINT,run_id BIGINT)
                 WHERE a.id=s.account_id""", (queued_at, json.dumps({"updated_at": queued_at}), payload))
+        parent_ids = sorted({int(tasks[row["task_id"]]["parent_task_id"]) for row in rows
+                             if tasks[row["task_id"]].get("parent_task_id")})
+        registration_ids = set()
+        if parent_ids:
+            from core.storage.operations.bulk_retry_reconcile import reconcile_parents_many
+            reconciled = reconcile_parents_many(cur, parent_ids, child_task_ids=[row["task_id"] for row in rows])
+            batch_ids.update(reconciled["batch_ids"])
+            registration_ids.update(reconciled["registration_run_ids"])
+        password_ids = [row["task_id"] for row in rows if tasks[row["task_id"]]["task_type"] == "password_setup"]
+        if password_ids or registration_ids:
+            from core.storage.operations.bulk_retry_registration import reconcile_registration_many
+            batch_ids.update(reconcile_registration_many(cur, child_task_ids=password_ids,
+                                                         parent_run_ids=registration_ids))
         _refresh_previous_batches(cur, batch_ids)
         for row in rows:
             output[row["target_round_id"]] = {"target_round_id": row["target_round_id"],
