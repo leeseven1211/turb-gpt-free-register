@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 from unittest.mock import patch
 
+from psycopg import Cursor
+
 from core import account_task_store
 from core.storage import records as record_store
 from core.storage.operations import store as operation
@@ -102,3 +104,25 @@ class ExtractBulkCreateTests(PostgresTestCase):
         with operation._connect() as conn, conn.cursor() as cur:
             cur.execute(f"SELECT count(*) AS n FROM {operation._table('operation_tasks')}")
             self.assertEqual(0, cur.fetchone()["n"])
+
+    def test_chunk_query_and_connection_budget_is_constant_for_multiple_targets(self):
+        ids = self.accounts(12)
+        queries = []
+        execute = Cursor.execute
+        def record(cur, query, *args, **kwargs):
+            queries.append(str(query))
+            return execute(cur, query, *args, **kwargs)
+        with patch.object(Cursor, "execute", record), patch.object(operation, "_connect", wraps=operation._connect) as connects:
+            result = bulk_create.create_tasks(ids, data={"provider_id": "legacy", "mode": "extract_only"},
+                config_snapshot={"revision": 1, "values": {}})
+        self.assertEqual(12, result["started"])
+        self.assertLessEqual(connects.call_count, 1)
+        business = [query for query in queries if query.lstrip().upper().startswith(("SELECT", "INSERT", "UPDATE"))]
+        self.assertLessEqual(len(business), 12)
+
+    def test_failed_chunk_preserves_skipped_count(self):
+        ids = self.accounts(1)
+        with patch.object(bulk_create.bulk_submission, "create_specs", side_effect=RuntimeError("synthetic")):
+            result = bulk_create.create_tasks([ids[0], 999999], data={"provider_id": "legacy"},
+                config_snapshot={"revision": 1, "values": {}})
+        self.assertEqual({"started": 0, "skipped": 1, "failed": 1}, result)

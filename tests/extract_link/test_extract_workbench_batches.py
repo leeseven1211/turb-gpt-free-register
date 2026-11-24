@@ -834,10 +834,14 @@ class ExtractWorkbenchBatchStorageTests(PostgresTestCase):
 
     def test_changed_account_is_skipped_after_candidate_snapshot(self):
         ids = self.accounts([{}, {}])
-        original = extract_link_service.db.claim_account_extract
-        def claim(account_id, **kwargs):
-            return False if account_id == ids[1] else original(account_id, **kwargs)
-        with self.provider_patches(), patch.object(extract_link_service.db, "claim_account_extract", side_effect=claim):
+        from core.storage.extract_link import bulk_create
+        original = bulk_create.create_tasks
+        def claim(account_ids, **kwargs):
+            record_store.patch_row(record_store.ACCOUNTS, ids[1], {
+                "extract_link_status": "queued", "extract_link_queued_at": datetime.now().isoformat(timespec="seconds"),
+            })
+            return original(account_ids, **kwargs)
+        with self.provider_patches(), patch.object(bulk_create, "create_tasks", side_effect=claim):
             result = extract_link_service.create_workbench_batch(provider_id="lumen_flow", mode="extract_only", limit=2)
         self.assertEqual(1, result["started"])
         self.assertEqual(1, result["skipped"])

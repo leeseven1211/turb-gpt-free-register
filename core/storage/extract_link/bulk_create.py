@@ -14,9 +14,10 @@ _MAX_CHUNK = 500
 
 
 class _ChunkFailure(RuntimeError):
-    def __init__(self, failed_count: int, cause: Exception):
+    def __init__(self, failed_count: int, skipped_count: int, cause: Exception):
         super().__init__(str(cause))
         self.failed_count = int(failed_count)
+        self.skipped_count = int(skipped_count)
         self.__cause__ = cause
 
 
@@ -128,7 +129,7 @@ def _chunk_create(
             created = bulk_submission.create_specs(specs, conn=conn)
         except Exception as exc:
             # 让连接上下文看到异常并回滚本块的 claim；不能留下无 Task 的 queued 账号。
-            raise _ChunkFailure(len(claimed_ids), exc) from exc
+            raise _ChunkFailure(len(claimed_ids), skipped, exc) from exc
         started = sum(1 for row in created if row.get("accepted"))
         failed = len(created) - started
         return started, skipped, failed
@@ -149,9 +150,10 @@ def create_tasks(
         try:
             block_started, block_skipped, block_failed = _chunk_create(
                 block, data=data, config_snapshot=config_snapshot, batch_id=batch_id,
-                first_ordinal=int(first_ordinal) + offset, allow_no_promotion=allow_no_promotion,
+                first_ordinal=int(first_ordinal) + started, allow_no_promotion=allow_no_promotion,
             )
         except _ChunkFailure as exc:
+            skipped += exc.skipped_count
             failed += exc.failed_count
             continue
         started += block_started; skipped += block_skipped; failed += block_failed
