@@ -137,14 +137,15 @@ def create(data):
             'api_version': 2, 'error_code': None,
             'idempotency_retention_seconds': snapshot.get('idempotency_retention_seconds', 604800),
         }, conn=conn)
+        from core.storage.email.collections import insert_many
+        intents = []
         for position in range(amount):
             intent = 'turb-import:' + hashlib.sha256(f'{batch_id}:{position}'.encode()).hexdigest()
-            record_store.insert_row(record_store.EMAIL_BUTLER_IMPORT_ITEMS, {
-                'batch_id': batch_id, 'position': position, 'address_norm': '',
+            intents.append({'batch_id': batch_id, 'position': position, 'address_norm': '',
                 'acquisition_id': intent, 'idempotency_key': intent, 'external_ref': intent,
                 'candidate': None, 'status': 'pending', 'error_code': None,
-                'api_version': 2, 'requested_provider': snapshot['filters']['provider'],
-            }, conn=conn)
+                'api_version': 2, 'requested_provider': snapshot['filters']['provider']})
+        insert_many(conn, record_store.EMAIL_BUTLER_IMPORT_ITEMS, intents)
         # The request and every frozen remote intent commit together. A Web
         # crash after commit cannot lose execution handoff or allocate again.
         store.request_execution(batch_id, conn=conn)
