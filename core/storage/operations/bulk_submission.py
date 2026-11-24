@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 import json
+import hashlib
 import uuid
 
 from core.operations import run_log
@@ -73,7 +74,11 @@ def create_specs(specifications: Sequence[Mapping], *, conn) -> list[dict]:
         return row["source_system"], row["source_id"]
 
     def fingerprint(row):
-        return row["account_id"], row["task_type"], row["resource_family"], row["data"]
+        stored = row.get("submission_fingerprint")
+        if stored:
+            return stored
+        value = [row["account_id"], row["email"], row["task_type"], row["resource_family"], row["data"]]
+        return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
 
     unique = {}
     for row in rows:
@@ -81,6 +86,8 @@ def create_specs(specifications: Sequence[Mapping], *, conn) -> list[dict]:
         if prior is not None and fingerprint(prior) != fingerprint(row):
             raise ValueError("idempotency_key_conflict")
         unique.setdefault(identity(row), row)
+    for row in unique.values():
+        row["fingerprint"] = fingerprint(row)
     with conn.cursor(row_factory=dict_row) as cur:
         # 完整命名空间按同一顺序锁定，覆盖account_id=None及跨账号同source竞争。
         cur.execute(
@@ -91,7 +98,9 @@ def create_specs(specifications: Sequence[Mapping], *, conn) -> list[dict]:
         payload = json.dumps(list(unique.values()), ensure_ascii=False, default=str)
         cur.execute(
             f"""SELECT t.id AS task_id,t.source_system,t.source_id,t.account_id,t.task_type,
-                       t.last_run_id AS run_id,r.status,r.resource_family,r.data
+                       t.last_run_id AS run_id,t.email_snapshot AS email,
+                       r.status,r.resource_family,t.data,
+                       t.data->>'_bulk_submission_fingerprint' AS submission_fingerprint
                 FROM {common._table('operation_tasks')} t
                 LEFT JOIN {common._table('operation_runs')} r ON r.id=t.last_run_id
                 WHERE (t.source_system,t.source_id) IN (
@@ -114,10 +123,11 @@ def create_specs(specifications: Sequence[Mapping], *, conn) -> list[dict]:
                      next_actions,trigger,data)
                     SELECT s.task_uuid,s.source_system,s.source_id,s.batch_id,s.task_type,'account',
                            s.account_id,s.account_id,s.email,s.task_type,'queued','pending','queued',
-                           '[]'::jsonb,s.trigger,s.data
+                           '[]'::jsonb,s.trigger,
+                           s.data || jsonb_build_object('_bulk_submission_fingerprint',s.fingerprint)
                     FROM jsonb_to_recordset(%s::jsonb) AS s(
                         task_uuid TEXT,source_system TEXT,source_id TEXT,batch_id BIGINT,
-                        task_type TEXT,account_id BIGINT,email TEXT,trigger TEXT,data JSONB)
+                        task_type TEXT,account_id BIGINT,email TEXT,trigger TEXT,data JSONB,fingerprint TEXT)
                     RETURNING id,task_uuid,source_system,source_id""",
                 (fresh_payload,),
             )
@@ -189,7 +199,7 @@ def create_specs(specifications: Sequence[Mapping], *, conn) -> list[dict]:
                 "run_id": int(owned["run_id"]),
                 "status": str(owned.get("status") or "queued"),
                 "account_id": row["account_id"],
-                "email": row["email"],
+                "email": owned["email"],
                 "source_system": row["source_system"],
                 "source_id": row["source_id"],
                 "trigger": row["trigger"],

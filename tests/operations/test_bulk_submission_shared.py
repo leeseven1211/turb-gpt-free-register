@@ -59,7 +59,7 @@ class SharedBulkSubmissionTests(PostgresTestCase):
         self.assertEqual(result[0]["task_id"], result[1]["task_id"])
         for changed in (
             {"account_id": 8}, {"task_type": "live_check"}, {"data": {"mode": "b"}},
-            {"resource_family": "completion_coordinator"},
+            {"resource_family": "completion_coordinator"}, {"email": "changed@example.test"},
         ):
             with self.subTest(changed=changed), self.assertRaisesRegex(ValueError, "idempotency_key_conflict"):
                 with common._connect() as conn:
@@ -72,6 +72,25 @@ class SharedBulkSubmissionTests(PostgresTestCase):
             values = list(pool.map(lambda _: create(), range(2)))
         self.assertEqual(values[0]["task_id"], values[1]["task_id"])
         self.assertEqual(sorted(item["reused"] for item in values), [False, True])
+
+    def test_worker_runtime_data_does_not_change_submission_fingerprint(self):
+        schema.reset_operation_ready()
+        schema.init_operation_schema()
+        spec = {"task_type": "plan_check", "account_id": 7, "email": "a@example.test",
+                "source_id": "immutable-submission", "data": {"mode": "a"}}
+        with common._connect() as conn:
+            first = bulk_submission.create_specs([spec], conn=conn)[0]
+            with conn.cursor() as cur:
+                cur.execute(f"""UPDATE {common._table('operation_runs')}
+                    SET data=data || '{{"remote_intent":{{"synthetic":true}},"failure_context":"synthetic"}}'::jsonb
+                    WHERE id=%s""", (first["run_id"],))
+                cur.execute(f"""UPDATE {common._table('operation_tasks')}
+                    SET data=data || '{{"failure_context":"synthetic"}}'::jsonb WHERE id=%s""", (first["task_id"],))
+        with common._connect() as conn:
+            replay = bulk_submission.create_specs([spec], conn=conn)[0]
+        self.assertTrue(replay["reused"])
+        self.assertEqual(replay["task_id"], first["task_id"])
+        self.assertEqual(replay["email"], "a@example.test")
 
     def test_configuration_requires_explicit_allowlist_and_rollback_is_shared(self):
         schema.reset_operation_ready()
