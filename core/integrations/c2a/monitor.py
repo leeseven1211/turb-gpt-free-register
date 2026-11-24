@@ -15,7 +15,7 @@ from config.concurrency import policy_values
 from core import db
 from core.accounts.plans.client import normalize_token, token_claims
 from core.bulk_operations import service as bulk_service
-from core.integrations.c2a import client, manual_sync
+from core.integrations.c2a import client, manual_sync, monitor_submission
 from core.operations import concurrency, task_gateway
 from core.runtime import scheduler_state
 from core.runtime.periodic import PeriodicThread
@@ -466,15 +466,21 @@ def _submit_uploads(backend: str, submissions: list[tuple], summary: dict, now: 
         if not target.get("key"):
             target.update(key=f"c2a-upload:{uuid.uuid4().hex}", token_generation=row["source_generation"])
     store.save_repairs(backend, (row for row, _, _, _ in submissions))
+    if not submissions:
+        return
+    checkpoint()
+    try:
+        receipts = monitor_submission.queue_targets(
+            [(account, remote_id, target["key"]) for _, account, remote_id, target in submissions],
+            expected_backend=backend, trigger=_TASK,
+        )
+    except Exception as exc:
+        receipts = [exc] * len(submissions)
     changed = []
-    for row, account, remote_id, target in submissions:
-        checkpoint()
-        try:
-            queued = manual_sync.queue_target(account, remote_id, expected_backend=backend,
-                                              idempotency_key=target["key"], trigger=_TASK)
-        except Exception as exc:
-            code = _code(getattr(exc, "code", None), "c2a_upload_queue_failed")
-            _note(summary, code, stage="sync_submit", error=exc)
+    for (row, _, _, target), queued in zip(submissions, receipts):
+        if isinstance(queued, Exception):
+            code = _code(getattr(queued, "code", None), "c2a_upload_queue_failed")
+            _note(summary, code, stage="sync_submit", error=queued)
             target.update(last_code=code, next_attempt_at=now + _cooldown())
         else:
             if queued.get("accepted") and queued.get("task_id") and queued.get("run_id"):

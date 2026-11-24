@@ -48,7 +48,16 @@ class C2AMonitorTests(PostgresTestCase):
         }))
         self.stack.enter_context(patch("core.accounts.liveness.service.deployment_unavailable", return_value=None))
         self.remote_list = self.stack.enter_context(patch.object(client, "list_configured_accounts", return_value=[], create=True))
-        self.queued_upload = self.stack.enter_context(patch.object(manual_sync, "queue_target", side_effect=self._queue_target, create=True))
+        self.queued_upload = Mock(side_effect=self._queue_target)
+        # 状态机用例隔离受理边界；真实集合事务由 test_c2a_monitor_submission 覆盖。
+        self.stack.enter_context(patch.object(
+            monitor.monitor_submission, "queue_targets",
+            side_effect=lambda targets, *, expected_backend, trigger: [
+                self.queued_upload(account, remote_id, expected_backend=expected_backend,
+                                   idempotency_key=key, trigger=trigger)
+                for account, remote_id, key in targets
+            ],
+        ))
         self.store.init()
         bulk.init()
 
