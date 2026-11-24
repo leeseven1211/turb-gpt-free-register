@@ -17,8 +17,11 @@
 - `tests/operations/test_task_center_actions.py` 保留单条契约并验证批量集合读取、运行状态校验与空 Run 回执。
 - `npm --prefix frontend run generate:api`、`npm --prefix frontend run check:api` 和 Task 6 路径的 `git diff --check` 均通过。
 
-注册 `/api/jobs/retry-bulk` 仍调用既有驱动分支与原重跑服务。`/api/jobs/batches/<batch_id>/stop` 保留运行中逐 Job 的协作取消。注册本次验收使用本地事实和隔离数据库，涵盖历史归属与选中范围。
+`/api/jobs/batches/<batch_id>/stop` 保留运行中逐 Job 的协作取消。注册本次验收使用本地事实和隔离数据库，涵盖历史归属与选中范围。
 
-追加叶模块（未接路由）
+后续集成
 
-- `core/storage/operations/bulk_facts.py:38` 增加 `request_cancel_runs_many`，按选中 Run 预取、Run→Task 固定锁序、租约取消标记、事件和 managed change 同一事务受理，仅接受 queued Run，避免把运行中终止降级为集合强杀。当前注册批量提交和 retry 仍需要沿用 `registration.service` 的 driver/Attempt/Run 单任务边界，尚未接入新路由。
+- `37d28d6f` 和 `c2909563` 接入新注册集合受理。Job、Attempt、RegistrationRun 和任务中心投影在同一个事务创建。每次写入最多 500 项，整个批次原子提交并唤醒调度一次。测试复现并修复分离 schema 的兼容投影误写业务 Attempt 外键。501 项触发器证实按 500 和 1 分为两条语句，受理顺序和原始批次大小均保留。相关隔离 PostgreSQL 测试 122 项通过。
+- `e034f9a3` 将普通排队任务接入集合取消。按选中 Run 一次更新 Run、Task、租约和事件。托管和特定领域采用原有控制服务。相关隔离 PostgreSQL 测试 48 项和 26 个子测试通过。
+- `13897e32` 将 `/api/jobs/retry-bulk` 的普通注册重试和继续验证接入集合准入。沿用原服务校验后，事务按注册根任务加锁，核验终态、活动子任务、Attempt 和邮箱删除状态，原子创建重跑事实和投影。仍缺少 Attempt 或投影的历史记录进入兼容回填。套餐、Codex 和账号配置进入各自的提交服务。接口继续返回 `started`、`reused` 和 `skipped`。真实 PostgreSQL 的语句触发器将两根任务的 Job 写入从两条语句降为一条，覆盖同根复用、写入前状态变化、原邮箱、配置、调试和分批参数。相关测试 158 项和 84 个子测试通过。
+- 任务中心的非托管原生 retry 仍走单 Run 的既有受理方式。
