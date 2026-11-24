@@ -31,6 +31,8 @@ def cpa_routes(monkeypatch):
     monkeypatch.setattr(accounts.account_bulk_reads, "local_codex_filenames", lambda emails: {})
     monkeypatch.setattr(codex.db, "read_codex_credential",
                         lambda name: ('{"email":"example@example.test"}', name))
+    monkeypatch.setattr(codex.codex_bulk_reads, "read_many",
+                        lambda names: {name: {"email": "example@example.test"} for name in names})
     monkeypatch.setattr(codex.db, "mark_codex_exported", Mock())
     return app.test_client()
 
@@ -38,7 +40,7 @@ def cpa_routes(monkeypatch):
 @pytest.mark.parametrize("method,path,body", [
     ("POST", "/api/accounts/download-cpa-bulk", {"account_ids": [1], "prepare": True}),
     ("GET", "/api/codex/download-from-cpa/local.json", None),
-    ("POST", "/api/codex/download-bulk-from-cpa", {"filenames": ["local.json"]}),
+    ("POST", "/api/codex/download-bulk-from-cpa", {"filenames": ["codex-local.json"]}),
 ])
 @pytest.mark.parametrize("exc_class,curl_code,error_code,message", [
     (SSLError, CurlECode.SSL_CONNECT_ERROR, "cpa_tls_error", "CPA TLS 连接失败"),
@@ -134,10 +136,12 @@ def test_codex_bulk_reuses_one_remote_list_and_keeps_first_matching_file(cpa_rou
     valid = Mock(status_code=200, infos={}, text='{"type":"codex"}')
     transport = Mock(side_effect=[listed, valid, valid])
     monkeypatch.setattr(oauth.curl_requests, "Session", Mock(return_value=Mock(request=transport)))
-    monkeypatch.setattr(codex.db, "read_codex_credential",
-                        lambda name: (json.dumps({"email": f"{name[0]}@example.test"}), name))
+    monkeypatch.setattr(codex.codex_bulk_reads, "read_many",
+                        lambda names: {name: {"email": f"{index}@example.test"}
+                                       for index, name in enumerate(names, start=1)})
 
-    response = cpa_routes.post("/api/codex/download-bulk-from-cpa", json={"filenames": ["1.json", "2.json"]})
+    response = cpa_routes.post("/api/codex/download-bulk-from-cpa",
+                               json={"filenames": ["codex-local-1.json", "codex-local-2.json"]})
 
     assert response.status_code == 200
     with zipfile.ZipFile(io.BytesIO(response.data)) as archive:
@@ -151,12 +155,13 @@ def test_codex_bulk_reuses_one_remote_list_failure_for_all_files(cpa_routes, mon
     transport = Mock(side_effect=Timeout("读取 CPA 超时", code=CurlECode.OPERATION_TIMEDOUT))
     monkeypatch.setattr(oauth.curl_requests, "Session", Mock(return_value=Mock(request=transport)))
 
-    response = cpa_routes.post("/api/codex/download-bulk-from-cpa", json={"filenames": ["1.json", "2.json"]})
+    response = cpa_routes.post("/api/codex/download-bulk-from-cpa",
+                               json={"filenames": ["codex-local-1.json", "codex-local-2.json"]})
 
     assert response.status_code == 502
     payload = response.get_json()
     assert payload["error_code"] == "cpa_timeout"
     assert [(entry["filename"], entry["error_code"]) for entry in payload["errors"]] == [
-        ("1.json", "cpa_timeout"), ("2.json", "cpa_timeout"),
+        ("codex-local-1.json", "cpa_timeout"), ("codex-local-2.json", "cpa_timeout"),
     ]
     assert transport.call_count == 1

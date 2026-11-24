@@ -18,6 +18,7 @@ from flask import Response, jsonify, make_response, redirect, render_template, r
 from core import account_task_store
 from core.storage import admin_repository
 from core.storage.codex import bulk_mutations as codex_bulk_mutations
+from core.storage.codex import bulk_reads as codex_bulk_reads
 from core.codex import bulk_submission as codex_bulk_submission
 from core.operations import bulk_mutation_worker
 from core.operations.bulk_mutation_service import public_submission
@@ -254,13 +255,20 @@ def create_codex_blueprint(context: WebUIContext):
         list_seconds = download_seconds = zip_seconds = 0.0
         cpa_files = None
         cpa_list_error = None
+        local_read_error = None
+        try:
+            local_credentials = codex_bulk_reads.read_many(filenames)
+        except Exception as exc:
+            local_credentials, local_read_error = {}, exc
         with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
             for fname in filenames:
                 if not isinstance(fname, str):
                     errors.append({"filename": str(fname), "error": "非字符串"})
                     continue
                 try:
-                    content, real_fname = db.read_codex_credential(fname)
+                    if local_read_error is not None:
+                        raise local_read_error
+                    content, real_fname = codex_bulk_reads.read_credential(local_credentials, fname)
                     try:
                         local = _json.loads(content)
                     except Exception:
@@ -361,12 +369,19 @@ def create_codex_blueprint(context: WebUIContext):
 
         bundle = []
         errors = []
+        local_read_error = None
+        try:
+            local_credentials = codex_bulk_reads.read_many(filenames)
+        except Exception as exc:
+            local_credentials, local_read_error = {}, exc
         for fname in filenames:
             if not isinstance(fname, str):
                 errors.append({"filename": str(fname), "error": "非字符串"})
                 continue
             try:
-                content, real_fname = db.read_codex_credential(fname)
+                if local_read_error is not None:
+                    raise local_read_error
+                content, real_fname = codex_bulk_reads.read_credential(local_credentials, fname)
                 parsed = _json.loads(content)
                 bundle.append({"filename": real_fname, "data": parsed})
             except Exception as exc:

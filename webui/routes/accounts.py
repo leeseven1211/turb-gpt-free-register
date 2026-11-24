@@ -1122,96 +1122,24 @@ def create_accounts_blueprint(context: WebUIContext):
 
     @bp.post("/api/accounts/extract-link-bulk")
     def api_accounts_extract_link_bulk():
-        """批量提链。Body {account_ids:[...], link_type?, cdk?}。"""
+        """集合受理账号页提链；远端执行继续使用原生 legacy handler。"""
         unavailable = _feature_unavailable("extract_link")
         if unavailable:
             return unavailable
-        data = request.get_json(silent=True) or {}
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return jsonify({"ok": False, "error": "请求体必须是 JSON 对象"}), 400
         ids = data.get("account_ids") or data.get("ids") or []
         if not isinstance(ids, list) or not ids:
             return jsonify({"ok": False, "error": "account_ids 必须是非空数组"}), 400
         if len(ids) > 500:
             return jsonify({"ok": False, "error": "单次最多提链 500 个账号"}), 400
-
-        started = []
-        busy = []
-        failed = []
-        skipped = []
-        seen = set()
-        items = []
-        for raw in ids:
-            try:
-                acc_id = int(raw)
-            except Exception:
-                skipped.append({"id": raw, "reason": "ID 非法"})
-                continue
-            if acc_id in seen:
-                continue
-            seen.add(acc_id)
-            acc = db.get_account(acc_id)
-            if not acc:
-                skipped.append({"id": acc_id, "reason": "账号不存在"})
-                continue
-            email = acc.get("email")
-            if db.account_is_deactivated(acc):
-                skipped.append({"id": acc_id, "email": email, "reason": "账号已废号"})
-                continue
-            if not _is_extract_eligible(acc):
-                skipped.append({"id": acc_id, "email": email, "reason": "不是已确认的 Plus 免费试用账号"})
-                continue
-            token = (acc.get("access_token") or "").strip()
-            if not token:
-                skipped.append({"id": acc_id, "email": email, "reason": "缺少 access_token"})
-                continue
-            items.append(acc)
-
-        batch_id = account_task_store.create_batch(
-            action_type="extract_link",
-            trigger="manual_bulk",
-            total_count=len(items),
-        ) if items else None
-        for acc in items:
-            acc_id = int(acc.get("id") or 0)
-            email = acc.get("email") or ""
-            token = (acc.get("access_token") or "").strip()
-            try:
-                payment_options = {
-                    key: data.get(key)
-                    for key in ("paypal_region_selected", "paypal_country", "paypal_currency", "paypal_region")
-                    if key in data
-                }
-                queued = extract_link_service.enqueue_account_extract(
-                    account_id=acc_id,
-                    email=email,
-                    access_token=token,
-                    trigger="manual_bulk",
-                    link_type=data.get("link_type"),
-                    cdk=data.get("cdk"),
-                    payment_options=payment_options,
-                    batch_id=batch_id,
-                )
-            except Exception as exc:
-                failed.append({"id": acc_id, "email": email, "error": f"{type(exc).__name__}: {exc}"})
-                continue
-            item = {"id": acc_id, "email": email, **{k: v for k, v in queued.items() if k != "future"}}
-            if queued.get("accepted"):
-                started.append(item)
-            elif queued.get("busy"):
-                busy.append(item)
-            else:
-                failed.append(item)
-        return jsonify({
-            "ok": True,
-            "started": started,
-            "started_count": len(started),
-            "busy": busy,
-            "busy_count": len(busy),
-            "failed": failed,
-            "failed_count": len(failed),
-            "skipped": skipped,
-            "skipped_count": len(skipped),
-            "batch_id": batch_id,
-        }), 202
+        from core.extract_link.account_bulk import submit_accounts
+        result = submit_accounts(ids, link_type=data.get("link_type"), cdk=data.get("cdk"),
+            payment_options={key: data[key] for key in (
+                "paypal_region_selected", "paypal_country", "paypal_currency", "paypal_region",
+            ) if key in data})
+        return jsonify(public_submission(result)), 202
 
     @bp.post("/api/accounts/<int:acc_id>/codex/upload-sub2")
     def api_account_codex_upload_sub2(acc_id: int):

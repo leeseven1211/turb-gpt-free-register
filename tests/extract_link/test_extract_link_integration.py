@@ -611,33 +611,35 @@ class ExtractLinkTypesEndpointTests(PostgresTestCase):
         self.assertEqual(response.get_json()["items"][0]["type"], "pix")
 
     def test_bulk_extract_creates_batch_and_attaches_each_task(self):
-        accounts = {
-            7: {"id": 7, "email": "masked-7@example.com", "current_plan_type": "free", "plus_promo_kind": "free_trial", "plus_trial_eligible": True, "access_token": "token-7"},
-            8: {"id": 8, "email": "masked-8@example.com", "current_plan_type": "free", "plus_promo_kind": "free_trial", "plus_trial_eligible": True, "access_token": "token-8"},
-        }
-        queued = iter([
-            {"accepted": True, "busy": False, "task_id": 701, "status": "queued", "link_type": "pix"},
-            {"accepted": True, "busy": False, "task_id": 702, "status": "queued", "link_type": "pix"},
-        ])
+        from core.storage import records
+        from core.storage.operations import store
+
+        ids = self.seed(records.ACCOUNTS, [{
+            "email": f"masked-{value}@example.test", "current_plan_type": "free",
+            "plus_promo_kind": "free_trial", "access_token": "synthetic-token",
+        } for value in (7, 8)])
         with (
             patch("webui.routes.accounts._feature_unavailable", return_value=None),
-            patch.object(extract_link_service.db, "get_account", side_effect=lambda account_id: accounts.get(int(account_id))),
-            patch("webui.routes.accounts.account_task_store.create_batch", return_value="batch-1") as create_batch,
-            patch.object(extract_link_service, "enqueue_account_extract", side_effect=lambda **kwargs: next(queued)) as enqueue,
+            patch.object(extract_link_service, "_provider_mode_enabled", return_value=True),
+            patch.object(extract_link_service, "_cdk", return_value="synthetic-cdk"),
+            patch("core.operations.task_gateway.notify_dispatch"),
+            patch.object(extract_link_service, "enqueue_account_extract", side_effect=AssertionError("单条提交")),
         ):
             client = create_app(auth_code="test-auth").test_client()
             response = client.post(
                 "/api/accounts/extract-link-bulk",
-                json={"account_ids": [7, 8]},
+                json={"account_ids": ids, "link_type": "pix"},
                 headers={"X-Auth-Code": "test-auth"},
             )
 
         self.assertEqual(202, response.status_code)
         payload = response.get_json()
-        self.assertEqual("batch-1", payload["batch_id"])
-        self.assertEqual([701, 702], [item["task_id"] for item in payload["started"]])
-        create_batch.assert_called_once_with(action_type="extract_link", trigger="manual_bulk", total_count=2)
-        self.assertEqual(["batch-1", "batch-1"], [call.kwargs["batch_id"] for call in enqueue.call_args_list])
+        self.assertEqual(2, payload["started_count"])
+        with store._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"SELECT id,batch_id,account_id FROM {store._table('operation_tasks')} ORDER BY account_id")
+            tasks = [dict(row) for row in cur.fetchall()]
+        self.assertEqual([int(item["task_id"]) for item in payload["started"]], [row["id"] for row in tasks])
+        self.assertEqual([int(payload["batch_id"])] * 2, [row["batch_id"] for row in tasks])
 
     def test_half_price_promotion_is_rejected_before_cdk_enqueue(self):
         account = {

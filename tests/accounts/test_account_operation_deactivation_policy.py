@@ -101,6 +101,9 @@ class AccountOperationDeactivationPolicyTests(unittest.TestCase):
             patch("webui.routes.accounts.account_bulk_submission.submit_accounts",
                   return_value={"accepted": False, "skipped": [{"id": 7, "reason": "账号已废号"}],
                                 "skipped_count": 1}),
+            patch("core.extract_link.account_bulk.submit_accounts",
+                  return_value={"ok": True, "started": [], "started_count": 0,
+                                "skipped": [{"id": 7, "reason": "账号已废号"}], "skipped_count": 1}),
             patch("webui.routes.accounts.plan_check_service.enqueue_account_plan_check") as enqueue_plan,
             patch("webui.routes.accounts.extract_link_service.enqueue_account_extract") as enqueue_extract,
         ):

@@ -676,13 +676,14 @@ def _enabled_link_type_order() -> tuple[str, ...]:
     return DEFAULT_LINK_TYPE_ORDER
 
 
-def _select_account_link_type(*, account: dict, requested: str | None) -> tuple[str, str | None]:
+def _select_account_link_type(*, account: dict, requested: str | None,
+                              enabled_type_order: tuple[str, ...] | None = None) -> tuple[str, str | None]:
     """账号已失败当前类型时，按网站启用顺序切换其它类型。"""
     selected = _link_type(requested)
     failed = _failed_link_types(account)
     if selected not in failed:
         return selected, None
-    for candidate in _enabled_link_type_order():
+    for candidate in _enabled_link_type_order() if enabled_type_order is None else enabled_type_order:
         if candidate not in failed:
             return candidate, selected
     raise ValueError("该账号已记录所有当前启用提链类型均失败，请更换账号或清理失败标记")

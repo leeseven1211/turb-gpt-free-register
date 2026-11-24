@@ -177,7 +177,8 @@ class CodexBulkMutationTests(PostgresTestCase):
         self.assertEqual([self.row(name)["exported_count"] for name in self.names], [5, 4])
 
     def test_bulk_download_keeps_content_and_per_file_error_when_credential_disappears(self):
-        with patch.object(db, "read_codex_credential", return_value=('{"email":"gone@example.test"}', "codex-gone.json")):
+        with patch.object(codex.codex_bulk_reads, "read_many",
+                          return_value={"codex-gone.json": {"email": "gone@example.test"}}):
             response = self.client.post("/api/codex/download-bulk", json={"filenames": ["codex-gone.json"]})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json["count"], 1)
