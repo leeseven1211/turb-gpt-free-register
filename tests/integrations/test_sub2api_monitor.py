@@ -34,6 +34,11 @@ class Sub2ApiMonitorTests(PostgresTestCase):
         self.patch("db.read_codex_credential", side_effect=lambda _: (json.dumps(self.content), ""))
         self.active = self.patch("operation_runtime_store.active_run_for_account", return_value=None)
         self.run = self.patch("operation_runtime_store.get_run", return_value={"id": 11, "status": "running"})
+        self.stack.enter_context(patch.object(self.monitor.collection_store, "accounts", side_effect=self.collection_accounts))
+        self.stack.enter_context(patch.object(self.monitor.collection_store, "snapshot", side_effect=self.collection_snapshot))
+        self.stack.enter_context(patch.object(self.monitor.collection_store, "enqueue_due_many",
+            side_effect=lambda *args, **kwargs: self.drain()))
+        self.stack.enter_context(patch.object(self.monitor.monitor_collections.Scan, "flush", self.collection_flush()))
         self.patch("_now", return_value=1000.0)
         for key, value in {"SUB2API_MONITOR_ENABLED": True, "SUB2API_MONITOR_INTERVAL_SECONDS": 300,
                            "SUB2API_MONITOR_COOLDOWN_SECONDS": 300, "SUB2API_MONITOR_MAX_PER_CYCLE": 20,
@@ -42,6 +47,63 @@ class Sub2ApiMonitorTests(PostgresTestCase):
 
     def patch(self, name, **kwargs):
         return self.stack.enter_context(patch("core.integrations.sub2api.monitor." + name, **kwargs))
+
+    def collection_accounts(self, account_ids, emails):
+        """旧状态机 fixture 迁到集合读边界；真实 SQL 行为另由集合 PG 测试验证。"""
+        result = {}
+        for address in emails:
+            row = self.monitor.db.get_account_by_email(address)
+            if row:
+                result[row["id"]] = row
+        for account_id in account_ids:
+            row = self.monitor.db.get_account(account_id)
+            if row:
+                result[row["id"]] = row
+        return list(result.values())
+
+    def collection_snapshot(self, backend, account_ids):
+        states = {row["account_id"]: row for row in self.store.list_repairs(backend, active_only=False)
+                  if row["account_id"] in account_ids}
+        credentials = []
+        for raw in self.monitor.db.list_codex_accounts(archived="all"):
+            try:
+                content = json.loads(self.monitor.db.read_codex_credential(raw["filename"])[0])
+            except Exception:
+                content = None
+            credentials.append({**raw, "id": 1, "content": content})
+        run_ids = {int(row.get("run_id") or 0) for row in states.values()} - {0}
+        return {"states": states, "credentials": credentials,
+                "runs": {key: self.run(key) for key in run_ids},
+                "active": {key: value for key in account_ids if (value := self.active(key))},
+                "jobs": []}
+
+    def collection_flush(self):
+        fixture = self
+
+        def flush(scan, summary, **kwargs):
+            for account_id, state in list(scan.changed.items()):
+                fields = {key: value for key, value in state.items() if key in fixture.store._REPAIR_FIELDS}
+                fixture.store.save_repair(scan.backend, account_id, **fields)
+            for account, state in scan.oauth:
+                result = fixture.oauth(account["id"], trigger="sub2api_monitor",
+                    remote_account_ids=state["remote_account_ids"], backend_identity=scan.backend)
+                if result.get("accepted") or result.get("busy"):
+                    fixture.store.save_repair(scan.backend, account["id"], stage="reauth_wait",
+                        run_id=result.get("run_id"), task_id=result.get("task_id"), last_code="reauth_pending")
+                    summary["reauth_queued"] += int(bool(result.get("accepted")))
+            for item in scan.sync:
+                result = fixture.sync(item["filename"], remote_account_ids=item["remote_account_ids"],
+                    trigger="sub2api_monitor", expected_backend=scan.backend)
+                items = result.get("items") or []
+                if any(row.get("status") in {"cancelled", "blocked_archived", "blocked_missing_credential",
+                                             "blocked_credential_identity"} or (
+                        not fixture.monitor._enabled() and row.get("status") == "pending"
+                        and row.get("error_code") and not row.get("dispatch_requested")) for row in items):
+                    code = "sub2api_sync_cancelled" if any(row.get("status") == "cancelled" for row in items) else "sync_requires_manual_review"
+                    fixture.store.save_repair(scan.backend, item["account_id"], stage="waiting_manual",
+                        manual_requested=False, last_code=code, next_attempt_at=fixture.monitor._now() + fixture.monitor._cooldown())
+
+        return flush
 
     def seed_refresh_wait(self, *, manual_requested=False, targets=None):
         return self.store.save_repair("test-backend", 42, stage="refresh_wait", run_id=11,
@@ -492,6 +554,10 @@ class ManualSub2ApiContinuationTests(PostgresTestCase):
         self.refresh = self.stack.enter_context(patch.object(monitor.token_refresh_service, "enqueue_refresh", side_effect=self.enqueue_refresh))
         self.oauth = self.stack.enter_context(patch.object(monitor.operation_service, "enqueue_oauth"))
         self.stack.enter_context(patch.object(monitor, "_automatic_login_ready", return_value=True))
+        self.stack.enter_context(patch.object(monitor.operation_service, "_config_snapshot",
+            return_value={"oauth_driver": "protocol"}))
+        self.stack.enter_context(patch.object(monitor.operation_service, "_feature_ready", return_value=(True, "")))
+        self.stack.enter_context(patch.object(monitor.operation_service, "_deployment_unavailable", return_value=None))
         for key in ("SUB2API_MONITOR_ENABLED", "SUB2API_SYNC_RETRY_ENABLED"):
             self.stack.enter_context(patch.object(monitor._cfg, key, False))
         self.settlement_fixture = install_native_settlement_fixture(self, timeout=10)
@@ -595,7 +661,10 @@ class ManualSub2ApiContinuationTests(PostgresTestCase):
         operation.finish_run(repair["run_id"], status="success")
         self.monitor._run_once()
         self.assertEqual({71, 72}, {job["remote_account_id"] for job in self.store.list_jobs(filename=self.filename)})
-        self.oauth.assert_called_once()
+        self.oauth.assert_not_called()
+        created = operation.get_run(repair["run_id"])
+        self.assertEqual(created["data"]["sub2api_targets"],
+                         {"backend_identity": "manual-backend", "remote_account_ids": [71, 72]})
         self.scan.assert_called_once()
 
     def test_manual_sync_failure_stops_continuation_without_enabling_retries(self):

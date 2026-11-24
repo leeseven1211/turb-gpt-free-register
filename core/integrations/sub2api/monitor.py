@@ -9,6 +9,7 @@ import re
 import time
 import uuid
 from collections import Counter
+from contextvars import ContextVar
 from typing import Any
 
 from config import email as email_config
@@ -22,6 +23,8 @@ from core.runtime.periodic import PeriodicThread
 from core.storage import sub2api as repair_store
 from core.storage.operations import runtime as operation_runtime_store
 from core.operations import task_gateway
+from core.integrations.sub2api import monitor_collections
+from core.storage import sub2api_monitor as collection_store
 
 logger = logging.getLogger(__name__)
 _TASK = "sub2api_monitor"
@@ -30,6 +33,7 @@ _ACTIVE = {"queued", "running", "cancelling", "settling", "waiting", "retrying",
 _SUCCESS = {"success", "succeeded", "completed"}
 _WAIT_STAGES = {"refresh_wait", "reauth_wait", "refresh_submitting", "reauth_submitting"}
 _CONTINUATION_STAGES = _WAIT_STAGES | {"sync_wait"}
+_SCAN = ContextVar("sub2api_monitor_scan", default=None)
 
 
 def _now() -> float:
@@ -99,6 +103,9 @@ def _remote_error(row: dict) -> str:
 
 def _automatic_login_ready(account: dict) -> bool:
     """只读检查已保存的登录/收件资料；不申请邮箱或改动认证设置。"""
+    scan = _SCAN.get()
+    if scan is not None:
+        return scan.login_ready(account)
     if account.get("email_invalid"):
         return False
     email = str(account.get("email") or "")
@@ -127,6 +134,9 @@ def _automatic_login_ready(account: dict) -> bool:
 
 
 def _save(backend: str, account_id: int, state: dict, **changes) -> dict:
+    scan = _SCAN.get()
+    if scan is not None:
+        return scan.save(account_id, state, **changes)
     fields = {key: value for key, value in state.items() if key in {
         "stage", "remote_account_ids", "source_generation", "run_id", "task_id", "next_attempt_at",
         "last_code", "attempt_count", "last_sync_generation", "last_sync_at", "manual_requested",
@@ -150,10 +160,14 @@ def _queue_sync(backend: str, account_id: int, state: dict, filename: str, gener
     # 先持久化阶段。即使排队完成后进程退出，下轮也只会幂等补传。
     state = _save(backend, account_id, state, stage="sync_wait", source_generation=generation, last_code="sync_pending")
     items = []
-    if not newly_queued:
+    scan = _SCAN.get()
+    if not newly_queued and scan is None:
         items = [row for row in repair_store.list_jobs(filename=filename, backend=backend)
                  if row.get("generation") == generation and row.get("remote_account_id") in targets]
-    if {row.get("remote_account_id") for row in items} == set(targets):
+    if scan is not None:
+        result = scan.queue_sync(account_id, state, filename, generation)
+        items = result.get("items") or []
+    elif {row.get("remote_account_id") for row in items} == set(targets):
         # 已经排队的目标由补传生产者继续投递；查询状态不能重新启用失败重试。
         result = {"accepted": True, "items": items}
     else:
@@ -184,6 +198,10 @@ def _start_reauth(backend: str, account: dict, state: dict, generation: str, sum
         _cool(backend, account_id, state, "automatic_login_material_missing")
         _reason(summary, "automatic_login_material_missing")
         return
+    scan = _SCAN.get()
+    if scan is not None:
+        scan.start_reauth(account, state, generation)
+        return
     state = _save(backend, account_id, state, stage="reauth_submitting", source_generation=generation,
                   run_id=None, task_id=None, last_code="reauth_submitting", next_attempt_at=_now() + _cooldown())
     result = operation_service.enqueue_oauth(account_id, trigger=_TASK,
@@ -210,7 +228,8 @@ def _run_failure_code(run: dict, row: dict) -> str:
 
 def _process(backend: str, account: dict, rows: list[dict], remote: list[dict], summary: dict) -> None:
     account_id = int(account["id"])
-    state = repair_store.get_repair(backend, account_id) or {}
+    scan = _SCAN.get()
+    state = (scan.states.get(account_id) if scan is not None else repair_store.get_repair(backend, account_id)) or {}
     stage = str(state.get("stage") or "")
     scoped_scan = bool(summary.get("group_ids"))
     if stage not in _CONTINUATION_STAGES and not remote:
@@ -249,7 +268,8 @@ def _process(backend: str, account: dict, rows: list[dict], remote: list[dict], 
         return
     filename = str(row.get("filename") or "")
     try:
-        content = _object(db.read_codex_credential(filename)[0])
+        content = (_object((scan.by_filename.get(filename) or {}).get("content")) if scan is not None
+                   else _object(db.read_codex_credential(filename)[0]))
         if not content or (content.get("email") and str(content["email"]).lower() != str(account["email"]).lower()):
             raise ValueError("credential_identity_mismatch")
         generation = jobs.credential_generation(content)
@@ -258,7 +278,8 @@ def _process(backend: str, account: dict, rows: list[dict], remote: list[dict], 
         return
     source = str(state.get("source_generation") or "")
     run_id = int(state.get("run_id") or 0)
-    run = operation_runtime_store.get_run(run_id) if run_id else None
+    run = ((scan.runs.get(run_id) if scan is not None else operation_runtime_store.get_run(run_id))
+           if run_id else None)
     run_status = str((run or {}).get("status") or "").lower()
     sync_receipt = _object(_object((run or {}).get("result_summary")).get("sub2api_sync"))
     stopped_code = str(state.get("last_code") or "")
@@ -279,7 +300,8 @@ def _process(backend: str, account: dict, rows: list[dict], remote: list[dict], 
             _queue_sync(backend, account_id, state, filename, generation, summary)
             return
         if not run:
-            active = operation_runtime_store.active_run_for_account(account_id)
+            active = (scan.active.get(account_id) if scan is not None
+                      else operation_runtime_store.active_run_for_account(account_id))
             if active:
                 _save(backend, account_id, state, stage=stage.replace("submitting", "wait"), run_id=active.get("id"), task_id=active.get("task_id"))
             else:
@@ -302,7 +324,7 @@ def _process(backend: str, account: dict, rows: list[dict], remote: list[dict], 
     if stage == "sync_wait":
         _queue_sync(backend, account_id, state, filename, generation, summary)
         return
-    if operation_runtime_store.active_run_for_account(account_id):
+    if (scan.active.get(account_id) if scan is not None else operation_runtime_store.active_run_for_account(account_id)):
         _reason(summary, "account_busy")
         return
     if float(state.get("next_attempt_at") or 0) > _now():
@@ -362,10 +384,6 @@ def _run_once(*, force: bool = False, continuation_only: bool = False) -> dict:
     summary = {"enabled": enabled, "continuation_only": continuation_only, "group_ids": [], "remote_errors": 0, "accounts": 0, "processed": 0,
                "refresh_queued": 0, "reauth_queued": 0, "sync_queued": 0, "reasons": {}}
     try:
-        jobs.enqueue_due()
-    except Exception:
-        _reason(summary, "sync_retry_scan_failed")
-    try:
         summary["group_ids"] = client.configured_monitor_group_ids()
     except client.Sub2ApiSyncError:
         _reason(summary, "remote_scan_failed")
@@ -375,7 +393,13 @@ def _run_once(*, force: bool = False, continuation_only: bool = False) -> dict:
         if not backend:
             _reason(summary, "backend_not_configured")
             return summary
-        rows = db.list_codex_accounts(archived="all")
+        collection_store.initialize()
+        jobs.register_handler()
+        try:
+            collection_store.enqueue_due_many(backend, include_retries=jobs._enabled())
+            task_gateway.notify_dispatch()
+        except Exception:
+            _reason(summary, "sync_retry_scan_failed")
         repairs = _continuation_repairs(backend) if continuation_only else repair_store.list_repairs(backend, active_only=True)
         if continuation_only:
             if not repairs:
@@ -392,12 +416,22 @@ def _run_once(*, force: bool = False, continuation_only: bool = False) -> dict:
             _reason(summary, "remote_scan_failed")
     summary["remote_errors"] = len(remote)
     by_account: dict[int, tuple[dict, list[dict]]] = {}
+    try:
+        selected = collection_store.accounts(
+            [int(row.get("account_id") or 0) for row in repairs],
+            {_remote_email(row) for row in remote if _remote_email(row)},
+        )
+    except Exception:
+        _reason(summary, "local_state_unavailable")
+        return summary
+    by_id = {row["id"]: row for row in selected}
+    by_email = {str(row.get("email") or "").lower(): row for row in selected}
     for item in remote:
         email = _remote_email(item)
         if not email:
             _reason(summary, "remote_email_missing")
             continue
-        account = db.get_account_by_email(email)
+        account = by_email.get(email)
         if not account:
             _reason(summary, "local_account_missing")
             continue
@@ -409,38 +443,60 @@ def _run_once(*, force: bool = False, continuation_only: bool = False) -> dict:
     for repair in repairs:
         account_id = int(repair.get("account_id") or 0)
         if account_id and account_id not in by_account:
-            account = db.get_account(account_id)
+            account = by_id.get(account_id)
             if account:
                 by_account[account_id] = (account, [])
-            elif repair.get("stage") in _CONTINUATION_STAGES:
-                _cool(backend, account_id, repair, "local_account_missing", stage="waiting_manual")
-                _reason(summary, "local_account_missing")
-            elif repair.get("manual_requested"):
-                _save(backend, account_id, repair, manual_requested=False, last_code="local_account_missing")
     summary["accounts"] = len(by_account)
     limit = max(1, int(getattr(_cfg, "SUB2API_MONITOR_MAX_PER_CYCLE", 20) or 20))
     # 待续阶段优先，不让长异常列表挤占已完成授权后的补传。
     pending_ids = {int(item.get("account_id") or 0) for item in repairs}
-    for account_id, (account, items) in sorted(by_account.items(), key=lambda pair: (pair[0] not in pending_ids, pair[0])):
-        if summary["refresh_queued"] + summary["reauth_queued"] + summary["sync_queued"] >= limit:
-            _reason(summary, "cycle_limit")
-            break
-        try:
-            with repair_store.repair_lock(backend, account_id) as acquired:
-                if not acquired:
-                    _reason(summary, "account_busy")
-                    continue
-                if force:
-                    _save(backend, account_id, repair_store.get_repair(backend, account_id) or {}, manual_requested=True)
-                _process(backend, account, rows, items, summary)
-                if force:
-                    current = repair_store.get_repair(backend, account_id) or {}
-                    if current.get("manual_requested") and current.get("stage") not in _CONTINUATION_STAGES:
-                        _save(backend, account_id, current, manual_requested=False)
-                summary["processed"] += 1
-        except Exception:
-            # 不把原始异常写入摘要，第三方异常可能带 Token 或邮箱。
-            _reason(summary, "repair_processing_failed")
+    try:
+        candidate_ids = set(by_account) | pending_ids
+        with collection_store.repair_locks(backend, candidate_ids) as acquired:
+            facts = collection_store.snapshot(backend, acquired)
+            scan = monitor_collections.Scan(backend, by_id, facts)
+            token = _SCAN.set(scan)
+            try:
+                for repair in repairs:
+                    account_id = int(repair.get("account_id") or 0)
+                    if account_id not in acquired or account_id in by_id:
+                        continue
+                    state = scan.states.get(account_id) or repair
+                    if state.get("stage") in _CONTINUATION_STAGES:
+                        _cool(backend, account_id, state, "local_account_missing", stage="waiting_manual")
+                        _reason(summary, "local_account_missing")
+                    elif state.get("manual_requested"):
+                        _save(backend, account_id, state, manual_requested=False, last_code="local_account_missing")
+                for account_id, (account, items) in sorted(by_account.items(), key=lambda pair: (pair[0] not in pending_ids, pair[0])):
+                    if summary["refresh_queued"] + len(scan.oauth) + summary["sync_queued"] >= limit:
+                        _reason(summary, "cycle_limit")
+                        break
+                    if account_id not in acquired:
+                        _reason(summary, "account_busy")
+                        continue
+                    if force:
+                        _save(backend, account_id, scan.states.get(account_id) or {}, manual_requested=True)
+                    before = dict(scan.states.get(account_id) or {})
+                    try:
+                        _process(backend, account, scan.credentials, items, summary)
+                    except Exception:
+                        # 单目标决策错误不把半份阶段留在整批提交中。
+                        scan.states[account_id] = before
+                        scan.changed.pop(account_id, None)
+                        _reason(summary, "repair_processing_failed")
+                        continue
+                    if force:
+                        current = scan.states.get(account_id) or {}
+                        if current.get("manual_requested") and current.get("stage") not in _CONTINUATION_STAGES:
+                            _save(backend, account_id, current, manual_requested=False)
+                    summary["processed"] += 1
+                scan.flush(summary, include_retries=jobs._enabled(), now=_now(), cooldown=_cooldown())
+            finally:
+                _SCAN.reset(token)
+    except Exception:
+        # 集合事实和子任务共享事务，存储故障不能返回已受理数量。
+        summary.update(reauth_queued=0, sync_queued=0)
+        _reason(summary, "repair_processing_failed")
     return summary
 
 
