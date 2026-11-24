@@ -32,3 +32,44 @@ class OperationQuery:
         values = asdict(self)
         values.pop("include_batches")
         return values
+
+
+@dataclass(frozen=True)
+class BulkItemResult:
+    """批量命令中的单项目回执。"""
+
+    target: object
+    status: str
+    reason_code: str | None = None
+    result: object | None = None
+
+
+@dataclass(frozen=True)
+class BulkMutationResult:
+    """批量命令的不可变统一回执。"""
+
+    operation: str
+    items: tuple[BulkItemResult, ...] = ()
+    duplicate_count: int = 0
+    idempotency_key: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "items", tuple(self.items))
+        if self.duplicate_count < 0:
+            raise ValueError("duplicate_count must be non-negative")
+
+    @property
+    def total_count(self) -> int:
+        return len(self.items)
+
+    @property
+    def succeeded_count(self) -> int:
+        return sum(item.status == "succeeded" for item in self.items)
+
+    @property
+    def failed_count(self) -> int:
+        return sum(item.status == "failed" for item in self.items)
+
+    @property
+    def skipped_count(self) -> int:
+        return sum(item.status == "skipped" for item in self.items)
