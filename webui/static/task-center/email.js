@@ -1,22 +1,23 @@
 import { B as e, C as t, F as n, G as r, H as i, K as a, L as o, Q as s, S as c, X as l, _ as u, d, dt as f, et as p, ft as m, g as h, h as g, j as _, k as v, l as y, lt as b, m as x, n as S, s as C, st as w, v as T, x as E } from "./_plugin-vue_export-helper-BSZsFlS8.js";
 import { n as D, r as O, t as k } from "./client-B5R_MNgP.js";
-import { a as A, c as j, i as M, n as N, o as ee, r as P, s as F, t as te } from "./ListFilterSummary-C8h8bMwn.js";
-import { t as I } from "./ListResult-CPVXnLlZ.js";
-import { t as ne } from "./ListPagination-DURVj-Kj.js";
-import { n as L, t as R } from "./time-DOD6oyhP.js";
-import { n as z, t as B } from "./ColumnResizer-CPJ9UuoZ.js";
-import { t as re } from "./ListToolbar-DwVj9ZQa.js";
-import { t as V } from "./useNativeDialog-DWisXYg9.js";
-import { r as H } from "./taskIds-BlchWwUp.js";
+import { a as A, i as j, r as M, t as N } from "./bulkMutations-3wwPI3-H.js";
+import { a as ee, c as P, i as F, n as te, o as ne, r as I, s as L, t as R } from "./ListFilterSummary-C8h8bMwn.js";
+import { t as z } from "./ListResult-CPVXnLlZ.js";
+import { t as re } from "./ListPagination-DURVj-Kj.js";
+import { n as ie, t as B } from "./time-DOD6oyhP.js";
+import { n as ae, t as V } from "./ColumnResizer-CPJ9UuoZ.js";
+import { t as oe } from "./ListToolbar-DwVj9ZQa.js";
+import { t as se } from "./useNativeDialog-DWisXYg9.js";
+import { r as ce } from "./taskIds-BlchWwUp.js";
 // src/features/email/presentation.ts
-var U = {
+var H = {
 	all: "全部邮箱池",
 	outlook: "Outlook",
 	generic_api: "通用 API",
 	cloudflare_domain: "域名邮箱",
 	icloud_hide: "iCloud 隐藏邮箱",
 	email_butler: "Butler 本地邮箱"
-}, W = {
+}, U = {
 	available: "可用",
 	used: "已用",
 	pending_sync: "导入处理中",
@@ -24,7 +25,7 @@ var U = {
 	replaced: "换绑后邮箱",
 	failed: "失败",
 	disabled: "已停用"
-}, ie = {
+}, le = {
 	available: "待领取",
 	pending_sync: "导入处理中",
 	tombstone: "本地已删除",
@@ -33,29 +34,29 @@ var U = {
 	replaced: "换绑后邮箱",
 	failed: "失败",
 	disabled: "已停用"
-}, G = {
+}, W = {
 	available: "历史未领取",
 	disabled: "已停用",
 	reserved: "归属已保留",
 	used: "已绑定账号",
 	replaced: "换绑后地址",
 	retired: "历史停用"
-}, K = (e) => ({
+}, G = (e) => ({
 	source: e.source,
 	email: e.email
-}), q = (e) => `${e.source}|${e.email}`, J = (e) => e instanceof Error ? e.message : String(e);
-function ae(e, t = 10) {
+}), K = (e) => `${e.source}|${e.email}`, q = (e) => e instanceof Error ? e.message : String(e);
+function ue(e, t = 10) {
 	let n = Array.from(e);
 	return n.length > t ? n.slice(0, t - 1).join("") + "…" : e;
 }
-function Y(e, t, n = "neutral") {
+function J(e, t, n = "neutral") {
 	return {
-		label: ae(e),
+		label: ue(e),
 		detail: t,
 		tone: n
 	};
 }
-function X(e) {
+function Y(e) {
 	let t = e.resource_meta || {};
 	if (e.source === "outlook") {
 		let e = [
@@ -82,10 +83,10 @@ function X(e) {
 		detail: "由来源服务管理"
 	};
 }
-function oe(e) {
+function X(e) {
 	return [e.registered_account_id ? `账号 #${e.registered_account_id}` : "", e.root_task_id ? `任务 #${e.root_task_id}` : ""].filter(Boolean).join(" · ") || (["available", "disabled"].includes(e.state || "") ? "尚未领取" : "历史归属");
 }
-function se(e) {
+function de(e) {
 	return {
 		service_fact_sync_pending: "导入处理中",
 		registration_confirmed: "注册成功保护",
@@ -115,7 +116,7 @@ function Z(e, t) {
 		try {
 			await t(r, o), o() && (e.error = "");
 		} catch (t) {
-			o() && !D(t) && (e.error = J(t));
+			o() && !D(t) && (e.error = q(t));
 		} finally {
 			o() && (e.loading = !1, a = void 0);
 		}
@@ -141,7 +142,7 @@ function Z(e, t) {
 	};
 }
 // src/features/email/useEmailInventory.ts
-function ce(e, t) {
+function fe(e, t) {
 	let n = s({
 		items: [],
 		parents: [],
@@ -182,7 +183,7 @@ function ce(e, t) {
 			let i = await e.derivationSummary(t);
 			r() && (n.parents = i.parents || [], n.summaryError = "");
 		} catch (e) {
-			r() && !(e instanceof Error && e.name === "AbortError") && (n.summaryError = `子地址历史读取失败：${J(e)}`);
+			r() && !(e instanceof Error && e.name === "AbortError") && (n.summaryError = `子地址历史读取失败：${q(e)}`);
 		}
 	});
 	function a(e) {
@@ -190,7 +191,7 @@ function ce(e, t) {
 		t.length && (Object.assign(n.filters, e), n.page = 1, t.some((e) => e !== "q") && n.selected.clear(), i.schedule(t.every((e) => e === "q") ? 250 : 0));
 	}
 	function o(e, t) {
-		t ? n.selected.set(q(e), K(e)) : n.selected.delete(q(e));
+		t ? n.selected.set(K(e), G(e)) : n.selected.delete(K(e));
 	}
 	function c(e) {
 		for (let t of n.items) o(t, e);
@@ -199,7 +200,7 @@ function ce(e, t) {
 		try {
 			await t.onInventoryChanged();
 		} catch (e) {
-			n.receipt = Y(n.receipt?.label || "已接收", `${n.receipt?.detail || ""}\n显示刷新失败：${J(e)}`, "warning");
+			n.receipt = J(n.receipt?.label || "已接收", `${n.receipt?.detail || ""}\n显示刷新失败：${q(e)}`, "warning");
 		}
 		i.refresh();
 	}
@@ -210,30 +211,37 @@ function ce(e, t) {
 				await e();
 			} catch (e) {
 				if (e instanceof Error && e.name === "AbortError") return;
-				n.receipt = Y("操作失败", J(e), "danger"), t.notify(`操作失败：${J(e)}`);
+				if (e instanceof N) {
+					n.receipt = J("批量命令已受理", e.message, "warning"), t.notify(e.message);
+					return;
+				}
+				n.receipt = J("操作失败", q(e), "danger"), t.notify(`操作失败：${q(e)}`);
 			} finally {
 				n.busy = !1;
 			}
 		}
 	}
-	function d(e, t) {
+	let d = () => ({ onAccepted: (e) => {
+		n.receipt = J("批量命令已受理", `正在执行（命令 ${e.command_id}）`, "warning");
+	} });
+	function f(e, t) {
 		let n = e.skipped || [], r = Array.isArray(e.deleted) ? e.deleted : [], i = e.lease_retained_count || r.filter((e) => e.sync?.lease_retained).length;
 		return `${t === "delete" ? "本地已移除" : "已更新"} ${t === "delete" ? e.deleted_count || 0 : e.updated_count || 0} 个${i ? `，其中 ${i} 个已保留原租约` : ""}，跳过 ${n.length} 个` + n.map((e) => `\n${e.email}：${e.reason || "未返回具体原因"}`).join("");
 	}
-	async function f() {
-		let r = Array.from(n.selected.values(), K), i = n.filters.source;
+	async function p() {
+		let r = Array.from(n.selected.values(), G), i = n.filters.source;
 		r.length && !n.busy && await u(async () => {
 			if (!await t.confirm(`确定从本地邮箱池移除选中的 ${r.length} 个邮箱吗？\n\n保留使用历史；缺少注册完成回执时保留原租约，确认账号未创建后才可退还。已确认注册成功的邮箱不能删除。`)) return;
 			let a = await e.bulkDelete({
 				items: r,
 				source: i
-			});
-			for (let e of Array.isArray(a.deleted) ? a.deleted : []) n.selected.delete(q(e));
-			n.receipt = Y("删除结果", d(a, "delete"), "success"), await l();
+			}, d());
+			for (let e of Array.isArray(a.deleted) ? a.deleted : []) r.some((t) => K(t) === K(e)) && n.selected.delete(K(e));
+			n.receipt = J("删除结果", f(a, "delete"), a.skipped?.length ? "warning" : "success"), await l();
 		});
 	}
-	async function p(r) {
-		let i = Array.from(n.selected.values(), K), a = n.filters.source;
+	async function m(r) {
+		let i = Array.from(n.selected.values(), G), a = n.filters.source;
 		if (!i.length || n.busy) return;
 		let o = {
 			available: "未使用/可用",
@@ -247,18 +255,18 @@ function ce(e, t) {
 				status: r,
 				source: a,
 				note: `批量标记${o}`
-			});
-			for (let e of i) n.selected.delete(q(e));
-			n.receipt = Y("状态更新", d(s, "status"), "success"), await l();
+			}, d());
+			for (let e of Array.isArray(s.updated) ? s.updated : []) i.some((t) => K(t) === K(e)) && n.selected.delete(K(e));
+			n.receipt = J("状态更新", f(s, "status"), s.skipped?.length ? "warning" : "success"), await l();
 		});
 	}
-	async function m(r, i) {
-		let a = K(r);
+	async function h(r, i) {
+		let a = G(r);
 		await u(async () => {
 			if (i === "delete") {
 				if (!await t.confirm(`确定从本地邮箱池移除 ${a.email}？\n\n保留使用历史；缺少注册完成回执时保留原租约，确认账号未创建后才可退还。已确认注册成功的邮箱不能删除。`)) return;
 				let r = await e.delete(a);
-				r.deleted ? (n.selected.delete(q(a)), n.receipt = Y("本地已移除", r.sync?.message || "本地已移除，保留使用历史", "success"), await l()) : n.receipt = Y("未移除", r.reason || "邮箱未移除", "warning");
+				r.deleted ? (n.selected.delete(K(a)), n.receipt = J("本地已移除", r.sync?.message || "本地已移除，保留使用历史", "success"), await l()) : n.receipt = J("未移除", r.reason || "邮箱未移除", "warning");
 			} else {
 				if (["replaced", "pending_sync"].includes(r.status || "")) return;
 				let t = {
@@ -271,12 +279,12 @@ function ce(e, t) {
 					...a,
 					status: i,
 					note: t[i]
-				}), n.receipt = Y("状态已更新", `${a.email}：${t[i]}`, "success"), await l();
+				}), n.receipt = J("状态已更新", `${a.email}：${t[i]}`, "success"), await l();
 			}
 		});
 	}
-	async function h(n) {
-		let i = K(n);
+	async function g(n) {
+		let i = G(n);
 		await u(async () => {
 			r = new AbortController();
 			let n = r.signal, a = await e.secret(i, n);
@@ -286,15 +294,15 @@ function ce(e, t) {
 			}
 		});
 	}
-	async function g() {
-		let i = n.items.map(K);
+	async function _() {
+		let i = n.items.map(G);
 		i.length && await u(async () => {
 			r = new AbortController();
 			let a = r.signal, o = await e.secrets(i, a);
 			if (a.aborted) return;
 			let s = (o.values || []).map((e) => e.value).filter(Boolean).join("\n");
 			if (!s) throw Error("当前页没有可复制内容");
-			await t.clipboard(s), n.receipt = Y("已复制当前页", (o.skipped || []).map((e) => `${e.email}：${e.reason}`).join("\n") || `已复制 ${i.length} 个邮箱素材`, "success"), t.notify("已复制当前页邮箱素材");
+			await t.clipboard(s), n.receipt = J("已复制当前页", (o.skipped || []).map((e) => `${e.email}：${e.reason}`).join("\n") || `已复制 ${i.length} 个邮箱素材`, "success"), t.notify("已复制当前页邮箱素材");
 		});
 	}
 	return {
@@ -309,11 +317,11 @@ function ce(e, t) {
 		updateFilters: a,
 		toggle: o,
 		togglePage: c,
-		bulkDelete: f,
-		bulkStatus: p,
-		rowAction: m,
-		copyRow: h,
-		copyPage: g,
+		bulkDelete: p,
+		bulkStatus: m,
+		rowAction: h,
+		copyRow: g,
+		copyPage: _,
 		resetFilters() {
 			Object.assign(n.filters, {
 				source: "all",
@@ -334,7 +342,7 @@ function ce(e, t) {
 	};
 }
 // src/features/email/useEmailHistory.ts
-var le = () => ({
+var pe = () => ({
 	source: "all",
 	parent_id: "",
 	q: "",
@@ -344,13 +352,13 @@ var le = () => ({
 	created_from: "",
 	created_to: ""
 });
-function ue(e, t) {
+function me(e, t) {
 	let n = s({
 		items: [],
 		total: 0,
 		page: 1,
 		size: 50,
-		filters: le(),
+		filters: pe(),
 		parentEmail: "",
 		selected: /* @__PURE__ */ new Map(),
 		loading: !1,
@@ -396,10 +404,10 @@ function ue(e, t) {
 			for (let t of n.items) a(t, e);
 		},
 		resetFilters() {
-			Object.assign(n.filters, le()), n.parentEmail = "", n.selected.clear(), n.page = 1, r.schedule();
+			Object.assign(n.filters, pe()), n.parentEmail = "", n.selected.clear(), n.page = 1, r.schedule();
 		},
 		scopeParent(e) {
-			Object.assign(n.filters, le(), {
+			Object.assign(n.filters, pe(), {
 				source: e.source,
 				parent_id: String(e.id)
 			}), n.parentEmail = e.email, n.selected.clear(), n.page = 1, r.schedule();
@@ -417,9 +425,9 @@ function ue(e, t) {
 			let e = n.selected.size ? Array.from(n.selected.values()) : n.items;
 			if (!e.length) t.notify("当前没有可复制的子邮箱");
 			else try {
-				await t.clipboard(e.map((e) => e.email).filter(Boolean).join("\n")), n.receipt = Y("已复制", `已复制 ${e.length} 条历史子邮箱`, "success");
+				await t.clipboard(e.map((e) => e.email).filter(Boolean).join("\n")), n.receipt = J("已复制", `已复制 ${e.length} 条历史子邮箱`, "success");
 			} catch (e) {
-				n.receipt = Y("复制失败", J(e), "danger");
+				n.receipt = J("复制失败", q(e), "danger");
 			}
 		}
 	};
@@ -442,7 +450,7 @@ var Q = {
 		hint: "每行一个已在 Butler 长期租用的完整邮箱地址；手动导入仅恢复本人原租约。需要补充新邮箱时使用“从 Butler 导入”。"
 	}
 };
-function de(e, t) {
+function he(e, t) {
 	let n = s({
 		open: !1,
 		source: "outlook",
@@ -477,7 +485,7 @@ function de(e, t) {
 			let i = await e.localPreview(t, o.signal);
 			return d !== a || !r || document.hidden || !n.open || s !== JSON.stringify(l()) ? null : (n.preview = i, c = s, i);
 		} catch (e) {
-			return d === a && !D(e) && (n.error = J(e)), null;
+			return d === a && !D(e) && (n.error = q(e)), null;
 		} finally {
 			d === a && (n.loading = !1);
 		}
@@ -494,15 +502,15 @@ function de(e, t) {
 				return;
 			}
 			let o = await e.localImport(r), s = `邮箱导入：解析 ${o.parsed || 0} 行，已接收 ${o.accepted_count ?? o.inserted ?? 0}，跳过 ${o.skipped || 0}；导入处理中 ${o.pending_sync_count || 0}，无效 ${o.invalid || 0} 行，忽略多余字段 ${o.extra_fields || 0} 个` + (o.invalid_rows || []).map((e) => `\n第 ${e.line} 行：${e.reason}`).join("");
-			n.receipt = Y("导入已接收", s, "success"), JSON.stringify(l()) === i && (n.text = "", u());
+			n.receipt = J("导入已接收", s, "success"), JSON.stringify(l()) === i && (n.text = "", u());
 			try {
 				await t.onInventoryChanged();
 			} catch (e) {
-				n.receipt = Y("导入已接收", `${s}\n显示刷新失败：${J(e)}`, "warning");
+				n.receipt = J("导入已接收", `${s}\n显示刷新失败：${q(e)}`, "warning");
 			}
 			t.notify("邮箱导入已接收");
 		} catch (e) {
-			n.error = J(e), n.receipt = e instanceof k && e.status >= 400 && e.status < 500 ? Y("导入被拒绝", `导入被拒绝：${J(e)}。已保留原素材。`, "danger") : Y("导入结果未确认", `导入响应未确认：${J(e)}。已保留原素材，请先核对库存；不会自动重复提交。`, "danger");
+			n.error = q(e), n.receipt = e instanceof k && e.status >= 400 && e.status < 500 ? J("导入被拒绝", `导入被拒绝：${q(e)}。已保留原素材。`, "danger") : J("导入结果未确认", `导入响应未确认：${q(e)}。已保留原素材，请先核对库存；不会自动重复提交。`, "danger");
 		} finally {
 			n.busy = !1;
 		}
@@ -527,7 +535,7 @@ function de(e, t) {
 	};
 }
 // src/features/email/butlerLabels.ts
-var fe = [
+var ge = [
 	{
 		value: "icloud_hme",
 		label: "iCloud 隐藏邮箱"
@@ -548,13 +556,13 @@ var fe = [
 		value: "auto",
 		label: "全部来源"
 	}
-], pe = {
+], _e = {
 	source_unavailable: "来源不可用",
 	active_same_service: "OpenAI 已租用",
 	other_service_exclusive: "其他服务占用",
 	history_blocked: "历史占用限制",
 	cooldown: "冷却中"
-}, me = {
+}, ve = {
 	global_capacity: "等待全局业务空位",
 	type_capacity: "等待邮箱导入空位",
 	batch_capacity: "等待当前导入批次空位",
@@ -563,7 +571,7 @@ var fe = [
 	concurrency_policy_migration_required: "等待保存部署并发策略",
 	concurrency_policy_invalid: "等待修正并发策略",
 	concurrency_policy_missing: "等待补齐邮箱导入并发策略"
-}, he = {
+}, ye = {
 	local_email_conflict: "本地已有或被其他任务占用",
 	handoff_rejected: "Butler 拒绝交接",
 	handoff_unconfirmed: "Butler 交接请求未收到回执，可继续原批次恢复",
@@ -603,16 +611,16 @@ var fe = [
 	acquisition_identity_mismatch: "Butler 原交接对应的邮箱身份不一致",
 	icloud_identity_unavailable: "Butler 原邮箱身份当前不可用",
 	inventory_storage_unavailable: "Butler 数据库暂时不可用，可继续原批次"
-}, ge = "turb.butler-import.v1", _e = (e) => [
+}, be = "turb.butler-import.v1", xe = (e) => [
 	"completed",
 	"succeeded",
 	"done"
-].includes(e || ""), ve = (e) => [
+].includes(e || ""), Se = (e) => [
 	"pending",
 	"queued",
 	"running",
 	"processing"
-].includes(e || ""), ye = (e) => JSON.stringify([
+].includes(e || ""), Ce = (e) => JSON.stringify([
 	e.updated_at,
 	e.status,
 	e.imported,
@@ -623,14 +631,14 @@ var fe = [
 	e.error_code,
 	e.blocked_by
 ]);
-function be(e, t, n) {
+function we(e, t, n) {
 	let r = s({
 		open: !1,
 		filters: {
 			provider: "icloud_hme",
 			count: 10
 		},
-		providers: [...fe],
+		providers: [...ge],
 		preview: null,
 		request: null,
 		batch: null,
@@ -658,7 +666,7 @@ function be(e, t, n) {
 		r.storageError = !0, r.error = "无法读取浏览器中的导入记录；请先恢复浏览器存储后再导入。";
 	}
 	function b() {
-		r.request && n.storage.setItem(ge, JSON.stringify({
+		r.request && n.storage.setItem(be, JSON.stringify({
 			...r.request,
 			...r.batch ? {
 				batch_id: r.batch.batch_id,
@@ -673,7 +681,7 @@ function be(e, t, n) {
 	function C() {
 		S(), c++, u?.abort(), u = void 0, m = null, r.polling = !1, clearTimeout(p);
 	}
-	let w = x(() => ve(r.batch?.status)), T = x(() => r.batch?.status === "cancelled" || !!r.batch && !r.batch.can_retry && !Number(r.batch.unknown || r.batch.internal_unknown_count || 0) && [
+	let w = x(() => Se(r.batch?.status)), T = x(() => r.batch?.status === "cancelled" || !!r.batch && !r.batch.can_retry && !Number(r.batch.unknown || r.batch.internal_unknown_count || 0) && [
 		"completed",
 		"succeeded",
 		"done",
@@ -681,7 +689,7 @@ function be(e, t, n) {
 		"partial_success",
 		"failed",
 		"rejected"
-	].includes(r.batch.status)), E = x(() => !!r.request && !r.busy && !r.polling && r.batch?.status !== "cancelled" && !w.value && !r.resumePending && (!r.batch || r.batch.can_retry === !0)), O = x(() => !!r.batch && r.batch.can_cancel !== !1 && r.batch.status !== "cancelled" && !_e(r.batch.status)), A = x(() => {
+	].includes(r.batch.status)), E = x(() => !!r.request && !r.busy && !r.polling && r.batch?.status !== "cancelled" && !w.value && !r.resumePending && (!r.batch || r.batch.can_retry === !0)), O = x(() => !!r.batch && r.batch.can_cancel !== !1 && r.batch.status !== "cancelled" && !xe(r.batch.status)), A = x(() => {
 		if (r.resumePending) return "正在恢复原批次";
 		let e = r.batch;
 		return e ? {
@@ -703,14 +711,14 @@ function be(e, t, n) {
 		let e = r.batch;
 		if (!e) return "可以关闭窗口，已保存原请求；重新打开后可恢复结果。";
 		let t = [e.status === "cancelled" ? "已停止后续导入。已导入邮箱、原租约和失败记录均保留；已发出的请求仍会保存结果。" : w.value || r.resumePending ? "可以关闭窗口，导入会在后台继续；刷新页面也能恢复。" : e.can_retry ? "可继续原批次处理剩余邮箱，已导入的邮箱会保留。" : "已导入的邮箱已加入本地库存，可以关闭窗口或新建导入。"];
-		for (let n of e.blocked_by || []) t.push(me[n] || `等待准入（${n}）`);
-		e.error_code && t.push(`${he[e.error_code] || "批次异常"}（${e.error_code}）`);
-		for (let [n, r] of Object.entries(e.error_counts || {})) t.push(`${he[n] || "处理异常"}（${n}）：${r} 个`);
+		for (let n of e.blocked_by || []) t.push(ve[n] || `等待准入（${n}）`);
+		e.error_code && t.push(`${ye[e.error_code] || "批次异常"}（${e.error_code}）`);
+		for (let [n, r] of Object.entries(e.error_counts || {})) t.push(`${ye[n] || "处理异常"}（${n}）：${r} 个`);
 		return e.internal_unknown_count && t.push(`原请求仍有 ${e.internal_unknown_count} 个待核实回执，保留原批次恢复；内部状态：${e.internal_status || "未记录"}。`), t.join("\n");
 	}), M = x(() => {
 		let e = r.preview;
 		if (!e) return "";
-		let t = Object.entries(pe).filter(([t]) => Number.isSafeInteger(e.availability_buckets?.[t]) && Number(e.availability_buckets?.[t]) > 0).map(([t, n]) => `${n} ${e.availability_buckets[t]} 个`);
+		let t = Object.entries(_e).filter(([t]) => Number.isSafeInteger(e.availability_buckets?.[t]) && Number(e.availability_buckets?.[t]) > 0).map(([t, n]) => `${n} ${e.availability_buckets[t]} 个`);
 		return `当前可用 ${Number(e.available || 0)} 个 · 本次可导入 ${Number(e.selected || 0)} 个。${t.length ? `${Number.isSafeInteger(e.resource_total) ? `当前查询范围 ${e.resource_total} 个` : "当前查询范围"}：${t.join(" · ")}。` : ""}Butler“未租用”不等于可用于 OpenAI。查询不占用库存；确认后由 Butler 分配地址，导入时再核对本地占用。`;
 	});
 	function N() {
@@ -721,7 +729,7 @@ function be(e, t, n) {
 		!e || e === h || _ || w.value && h >= 0 && v() - g < 15e3 || (_ = Promise.resolve().then(() => t.onInventoryChanged()).then(() => {
 			h = e;
 		}, (e) => {
-			r.error = `邮箱已导入，但显示未完全刷新：${J(e)}`;
+			r.error = `邮箱已导入，但显示未完全刷新：${q(e)}`;
 		}).finally(() => {
 			_ = null, g = v(), !w.value && Number(r.batch?.imported || 0) !== e && ee();
 		}));
@@ -740,7 +748,7 @@ function be(e, t, n) {
 			can_retry: !1,
 			can_cancel: !1
 		} : e.batch;
-		r.resumePending && (ve(i.status) || ye(i) !== r.resumePending) && (r.resumePending = null), r.batch = i, i.status === "cancelled" && (r.resumePending = null, c++, u?.abort(), r.polling = !1, clearTimeout(p));
+		r.resumePending && (Se(i.status) || Ce(i) !== r.resumePending) && (r.resumePending = null), r.batch = i, i.status === "cancelled" && (r.resumePending = null, c++, u?.abort(), r.polling = !1, clearTimeout(p));
 		try {
 			b();
 		} catch {
@@ -751,7 +759,7 @@ function be(e, t, n) {
 	async function F() {
 		if (!y() || !r.open || r.request || r.busy) return;
 		let t = { ...r.filters };
-		if (S(), r.error = "", !fe.some((e) => e.value === t.provider)) {
+		if (S(), r.error = "", !ge.some((e) => e.value === t.provider)) {
 			r.error = "请选择支持的邮箱来源";
 			return;
 		}
@@ -770,7 +778,7 @@ function be(e, t, n) {
 				filters: t
 			}, i.selected || (r.error = "当前没有可用于 OpenAI 的邮箱，请在 Butler 按目标服务核对来源状态、历史占用和冷却限制后刷新数量。");
 		} catch (e) {
-			n === o && !D(e) && (r.error = `查询可用数量失败：${J(e)}`);
+			n === o && !D(e) && (r.error = `查询可用数量失败：${q(e)}`);
 		} finally {
 			n === o && (r.previewing = !1);
 		}
@@ -778,7 +786,7 @@ function be(e, t, n) {
 	function te(e) {
 		r.request || (Object.assign(r.filters, e), S(), r.error = "", y() && r.open && (f = setTimeout(() => void F(), 400)));
 	}
-	async function I() {
+	async function ne() {
 		if (r.open = !0, r.storageError) return;
 		if (r.batch) {
 			await z();
@@ -796,11 +804,11 @@ function be(e, t, n) {
 			if (t !== o || !y() || !r.open) return;
 			n.providers?.length && (r.providers = n.providers);
 		} catch (e) {
-			t === o && !D(e) && (r.error = `读取导入选项失败：${J(e)}`);
+			t === o && !D(e) && (r.error = `读取导入选项失败：${q(e)}`);
 		}
 		t === o && await F();
 	}
-	function ne() {
+	function I() {
 		r.open = !1, S();
 	}
 	async function L() {
@@ -812,7 +820,7 @@ function be(e, t, n) {
 		r.busy = !0, r.error = "";
 		try {
 			let n = await (i ? e.retryBatch(i.batch_id, t) : e.createBatch(t));
-			i && (r.resumePending = ye(i)), P(n);
+			i && (r.resumePending = Ce(i)), P(n);
 		} catch (e) {
 			if (!r.batch && e instanceof k && [
 				"import_preview_not_found",
@@ -820,11 +828,11 @@ function be(e, t, n) {
 				"import_preview_empty",
 				"import_snapshot_conflict"
 			].includes(e.code)) try {
-				n.storage.removeItem(ge), r.request = null, S(), r.error = `导入尚未开始：${J(e)}。请重新预览。`;
+				n.storage.removeItem(be), r.request = null, S(), r.error = `导入尚未开始：${q(e)}。请重新预览。`;
 			} catch {
 				r.error = "导入尚未开始，但原记录暂未清除；请恢复浏览器存储后重试原请求。";
 			}
-			else r.error = `导入请求失败：${J(e)}。请${r.batch ? "继续原批次" : "重试原请求"}恢复，已保留原编号。`;
+			else r.error = `导入请求失败：${q(e)}。请${r.batch ? "继续原批次" : "重试原请求"}恢复，已保留原编号。`;
 		} finally {
 			r.busy = !1, N();
 		}
@@ -860,31 +868,31 @@ function be(e, t, n) {
 				if (t !== c || !y() || r.batch?.batch_id !== n) return;
 				r.error = "", P(i);
 			} catch (e) {
-				t === c && !D(e) && (r.error = `暂时无法读取原批次：${J(e)}。请重开此窗口恢复查看。`);
+				t === c && !D(e) && (r.error = `暂时无法读取原批次：${q(e)}。请重开此窗口恢复查看。`);
 			} finally {
 				t === c && (r.polling = !1, m = null, N());
 			}
 		})();
 		m = i, await i;
 	}
-	async function B() {
+	async function re() {
 		if (r.busy || !O.value || !r.batch) return;
 		let t = r.batch.batch_id;
 		r.busy = !0, r.error = "";
 		try {
 			let n = await e.cancelBatch(t);
-			if (P(n), n.batch.status !== "cancelled" && !_e(n.batch.status)) throw Error("服务端未返回终止回执");
+			if (P(n), n.batch.status !== "cancelled" && !xe(n.batch.status)) throw Error("服务端未返回终止回执");
 			c++, u?.abort(), m = null, r.polling = !1;
 		} catch (e) {
-			r.error = `终止请求失败：${J(e)}。已保留原批次，请重试终止或查看原批次状态。`;
+			r.error = `终止请求失败：${q(e)}。已保留原批次，请重试终止或查看原批次状态。`;
 		} finally {
 			r.busy = !1, N();
 		}
 	}
-	async function re() {
+	async function ie() {
 		if (!(!T.value || r.busy || r.polling)) {
 			try {
-				n.storage.removeItem(ge);
+				n.storage.removeItem(be);
 			} catch {
 				r.error = "无法清除上次导入记录，请恢复浏览器存储后重试。";
 				return;
@@ -892,7 +900,7 @@ function be(e, t, n) {
 			C(), r.request = null, r.batch = null, r.resumePending = null, r.error = "", h = -1, g = 0, await F();
 		}
 	}
-	function V(e) {
+	function B(e) {
 		if (e.key === "turb.butler-import.v1" && e.newValue && r.batch) try {
 			let t = JSON.parse(e.newValue);
 			if (t.batch_id !== r.batch.batch_id || t.batch_status !== "cancelled") return;
@@ -904,7 +912,7 @@ function be(e, t, n) {
 			};
 		} catch {}
 	}
-	return window.addEventListener("storage", V), {
+	return window.addEventListener("storage", B), {
 		state: r,
 		isRunning: w,
 		canReset: T,
@@ -913,32 +921,32 @@ function be(e, t, n) {
 		batchTitle: A,
 		batchDetails: j,
 		availability: M,
-		open: I,
-		close: ne,
+		open: ne,
+		close: I,
 		preview: F,
 		changeFilters: te,
 		apply: R,
 		retry: L,
 		poll: z,
-		cancel: B,
-		reset: re,
+		cancel: re,
+		reset: ie,
 		setActive(e) {
-			a || e === i || (i = e, e ? r.batch ? z() : r.open && !r.request && I() : C());
+			a || e === i || (i = e, e ? r.batch ? z() : r.open && !r.request && ne() : C());
 		},
 		dispose() {
-			a = !0, C(), window.removeEventListener("storage", V);
+			a = !0, C(), window.removeEventListener("storage", B);
 		}
 	};
 }
 // src/features/email/EmailOverview.vue?vue&type=script&setup=true&lang.ts
-var xe = ["aria-busy"], Se = { class: "em-heading" }, Ce = ["disabled"], we = {
+var Te = ["aria-busy"], Ee = { class: "em-heading" }, De = ["disabled"], Oe = {
 	key: 0,
 	class: "em-error",
 	role: "alert"
-}, Te = { class: "em-source-visibility" }, Ee = ["aria-expanded"], De = { class: "em-source-cards" }, Oe = { class: "em-source-title" }, ke = { class: "em-source-number" }, Ae = { key: 0 }, je = {
+}, ke = { class: "em-source-visibility" }, Ae = ["aria-expanded"], je = { class: "em-source-cards" }, Me = { class: "em-source-title" }, Ne = { class: "em-source-number" }, Pe = { key: 0 }, Fe = {
 	key: 1,
 	role: "status"
-}, Me = { class: "em-import-prompt" }, Ne = { class: "em-actions" }, Pe = /* @__PURE__ */ t({
+}, Ie = { class: "em-import-prompt" }, Le = { class: "em-actions" }, Re = /* @__PURE__ */ t({
 	__name: "EmailOverview",
 	props: {
 		sources: {},
@@ -955,7 +963,7 @@ var xe = ["aria-busy"], Se = { class: "em-heading" }, Ce = ["disabled"], we = {
 		"butlerImport"
 	],
 	setup(t, { emit: i }) {
-		let a = t, s = i, c = (e) => e === !0 || e === "true", l = (e) => e.kind === "local_pool" || (e.default_visible === void 0 ? c(e.enabled) || c(e.dependency) : c(e.default_visible)), f = x(() => a.sources.filter((e) => !l(e)).length), p = x(() => a.expanded ? a.sources : a.sources.filter(l)), _ = (e) => e.kind !== "on_demand" && !!U[e.source] && e.source !== "all";
+		let a = t, s = i, c = (e) => e === !0 || e === "true", l = (e) => e.kind === "local_pool" || (e.default_visible === void 0 ? c(e.enabled) || c(e.dependency) : c(e.default_visible)), f = x(() => a.sources.filter((e) => !l(e)).length), p = x(() => a.expanded ? a.sources : a.sources.filter(l)), _ = (e) => e.kind !== "on_demand" && !!H[e.source] && e.source !== "all";
 		function v(e) {
 			return e.kind === "local_pool" ? "本地库存" : c(e.enabled) ? "已启用" : c(e.dependency) ? "收码依赖" : c(e.history_available) || Number(e.total) > 0 ? "历史/已停用" : "未启用";
 		}
@@ -964,32 +972,32 @@ var xe = ["aria-busy"], Se = { class: "em-heading" }, Ce = ["disabled"], we = {
 			"aria-label": "邮箱资源平台",
 			"aria-busy": t.loading
 		}, [
-			g("div", Se, [a[5] ||= g("div", null, [g("h2", null, "本地邮箱库存"), g("p", null, "仅从本地库存领取邮箱，用完后请从 Butler 或其他来源手动导入。")], -1), g("button", {
+			g("div", Ee, [a[5] ||= g("div", null, [g("h2", null, "本地邮箱库存"), g("p", null, "仅从本地库存领取邮箱，用完后请从 Butler 或其他来源手动导入。")], -1), g("button", {
 				class: "em-button",
 				disabled: t.loading,
 				onClick: a[0] ||= (e) => s("refresh")
-			}, m(t.loading ? "刷新中…" : "刷新资源"), 9, Ce)]),
-			t.error ? (n(), T("p", we, [E(m(t.error) + " ", 1), g("button", {
+			}, m(t.loading ? "刷新中…" : "刷新资源"), 9, De)]),
+			t.error ? (n(), T("p", Oe, [E(m(t.error) + " ", 1), g("button", {
 				class: "em-button",
 				onClick: a[1] ||= (e) => s("refresh")
 			}, "重试")])) : u("", !0),
-			g("div", Te, [g("span", null, m(f.value ? "默认显示已启用服务和当前收码依赖" : "当前没有未启用的邮箱服务"), 1), f.value ? (n(), T("button", {
+			g("div", ke, [g("span", null, m(f.value ? "默认显示已启用服务和当前收码依赖" : "当前没有未启用的邮箱服务"), 1), f.value ? (n(), T("button", {
 				key: 0,
 				class: "em-button",
 				"aria-expanded": t.expanded,
 				onClick: a[2] ||= (e) => s("expand")
-			}, m(t.expanded ? "隐藏未启用" : `显示未启用（${f.value}）`), 9, Ee)) : u("", !0)]),
-			g("div", De, [(n(!0), T(d, null, o(p.value, (t) => (n(), h(e(_(t) ? "button" : "article"), {
+			}, m(t.expanded ? "隐藏未启用" : `显示未启用（${f.value}）`), 9, Ae)) : u("", !0)]),
+			g("div", je, [(n(!0), T(d, null, o(p.value, (t) => (n(), h(e(_(t) ? "button" : "article"), {
 				key: t.source,
 				type: _(t) ? "button" : void 0,
 				class: b(["em-source-card", { "is-clickable": _(t) }]),
 				onClick: (e) => _(t) && s("source", t.source)
 			}, {
 				default: r(() => [
-					g("div", Oe, [g("strong", null, m(t.label || w(U)[t.source] || t.source), 1), g("span", null, m(v(t)), 1)]),
-					g("strong", ke, m(t.kind === "on_demand" ? "按需" : t.available ?? 0), 1),
+					g("div", Me, [g("strong", null, m(t.label || w(H)[t.source] || t.source), 1), g("span", null, m(v(t)), 1)]),
+					g("strong", Ne, m(t.kind === "on_demand" ? "按需" : t.available ?? 0), 1),
 					g("p", null, m(t.kind === "on_demand" ? "运行时领取 / 创建" : `总数 ${t.total || 0} · 已用 ${t.used || 0} · 失败 ${t.failed || 0} · 停用 ${t.disabled || 0}`), 1),
-					t.dependency_reason ? (n(), T("small", Ae, m(t.dependency_reason), 1)) : u("", !0)
+					t.dependency_reason ? (n(), T("small", Pe, m(t.dependency_reason), 1)) : u("", !0)
 				]),
 				_: 2
 			}, 1032, [
@@ -997,12 +1005,12 @@ var xe = ["aria-busy"], Se = { class: "em-heading" }, Ce = ["disabled"], we = {
 				"class",
 				"onClick"
 			]))), 128))]),
-			p.value.length ? u("", !0) : (n(), T("p", je, m(t.loading ? "正在加载邮箱资源…" : "暂无已启用邮箱服务，可显示未启用的服务。"), 1)),
-			g("section", Me, [a[6] ||= g("div", null, [
+			p.value.length ? u("", !0) : (n(), T("p", Fe, m(t.loading ? "正在加载邮箱资源…" : "暂无已启用邮箱服务，可显示未启用的服务。"), 1)),
+			g("section", Ie, [a[6] ||= g("div", null, [
 				g("span", null, "Email Butler"),
 				g("h3", null, "手动补充本地库存"),
 				g("p", null, "从 Butler 选择 iCloud HME 母邮箱或子邮箱导入，也可粘贴已有完整地址。注册任务仅领取本地库存。")
-			], -1), g("div", Ne, [g("button", {
+			], -1), g("div", Le, [g("button", {
 				class: "em-button em-primary",
 				"data-butler-opener": "",
 				onClick: a[3] ||= (e) => s("butlerImport")
@@ -1010,31 +1018,31 @@ var xe = ["aria-busy"], Se = { class: "em-heading" }, Ce = ["disabled"], we = {
 				class: "em-button",
 				onClick: a[4] ||= (e) => s("localImport")
 			}, "粘贴导入")])])
-		], 8, xe));
+		], 8, Te));
 	}
-}), Fe = {
+}), ze = {
 	key: 0,
 	class: "em-filter-field"
-}, Ie = ["aria-label"], Le = ["data-filter-value"], Re = [
+}, Be = ["aria-label"], Ve = ["data-filter-value"], He = [
 	"name",
 	"value",
 	"checked"
-], ze = ["data-filter-value"], Be = [
+], Ue = ["data-filter-value"], We = [
 	"name",
 	"value",
 	"checked",
 	"onChange"
-], Ve = { key: 0 }, He = {
+], Ge = { key: 0 }, Ke = {
 	key: 1,
 	class: "em-filter-field"
-}, Ue = [
+}, qe = [
 	"aria-label",
 	"type",
 	"value"
-], We = {
+], Je = {
 	key: 2,
 	class: "em-filter-field"
-}, Ge = ["aria-label", "value"], Ke = { class: "list-filter-actions" }, $ = /* @__PURE__ */ t({
+}, Ye = ["aria-label", "value"], Xe = { class: "list-filter-actions" }, $ = /* @__PURE__ */ t({
 	__name: "EmailColumnFilter",
 	props: {
 		label: {},
@@ -1058,7 +1066,7 @@ var xe = ["aria-busy"], Se = { class: "em-heading" }, Ce = ["disabled"], we = {
 		function b(e) {
 			v || s("change", e.target.value);
 		}
-		return (t, i) => (n(), h(M, {
+		return (t, i) => (n(), h(F, {
 			label: e.label,
 			active: f.value,
 			summary: [e.value, e.endValue].filter(Boolean).join(" 至 "),
@@ -1066,7 +1074,7 @@ var xe = ["aria-busy"], Se = { class: "em-heading" }, Ce = ["disabled"], we = {
 			"onUpdate:open": i[4] ||= (e) => c.value = e
 		}, {
 			default: r(() => [
-				e.options ? (n(), T("div", Fe, [E(m(e.label) + " ", 1), g("div", {
+				e.options ? (n(), T("div", ze, [E(m(e.label) + " ", 1), g("div", {
 					class: "list-filter-options",
 					role: "radiogroup",
 					"aria-label": e.label
@@ -1079,7 +1087,7 @@ var xe = ["aria-busy"], Se = { class: "em-heading" }, Ce = ["disabled"], we = {
 					value: e.emptyValue || "",
 					checked: !e.value || e.value === (e.emptyValue || ""),
 					onChange: i[0] ||= (t) => s("change", e.emptyValue || "")
-				}, null, 40, Re), i[5] ||= g("span", null, "全部", -1)], 8, Le), (n(!0), T(d, null, o(_.value, (t) => (n(), T("label", {
+				}, null, 40, He), i[5] ||= g("span", null, "全部", -1)], 8, Ve), (n(!0), T(d, null, o(_.value, (t) => (n(), T("label", {
 					key: t.value,
 					class: "list-filter-option",
 					"data-filter-value": t.value
@@ -1090,10 +1098,10 @@ var xe = ["aria-busy"], Se = { class: "em-heading" }, Ce = ["disabled"], we = {
 						value: t.value,
 						checked: e.value === t.value,
 						onChange: (e) => s("change", t.value)
-					}, null, 40, Be),
+					}, null, 40, We),
 					g("span", null, m(t.label), 1),
-					t.count === void 0 ? u("", !0) : (n(), T("small", Ve, m(t.count), 1))
-				], 8, ze))), 128))], 8, Ie)])) : (n(), T("label", He, [E(m(e.label) + " ", 1), g("input", {
+					t.count === void 0 ? u("", !0) : (n(), T("small", Ge, m(t.count), 1))
+				], 8, Ue))), 128))], 8, Be)])) : (n(), T("label", Ke, [E(m(e.label) + " ", 1), g("input", {
 					"aria-label": e.label,
 					type: e.type === "date" || e.type === "range" ? "date" : "search",
 					multiple: !1,
@@ -1101,14 +1109,14 @@ var xe = ["aria-busy"], Se = { class: "em-heading" }, Ce = ["disabled"], we = {
 					onCompositionstart: i[1] ||= (e) => l(v) ? v.value = !0 : v = !0,
 					onCompositionend: y,
 					onInput: b
-				}, null, 40, Ue)])),
-				e.type === "range" ? (n(), T("label", We, [i[6] ||= E("结束日期", -1), g("input", {
+				}, null, 40, qe)])),
+				e.type === "range" ? (n(), T("label", Je, [i[6] ||= E("结束日期", -1), g("input", {
 					type: "date",
 					"aria-label": `${e.label}结束`,
 					value: e.endValue,
 					onInput: i[2] ||= (e) => s("end", e.target.value)
-				}, null, 40, Ge)])) : u("", !0),
-				g("div", Ke, [g("button", {
+				}, null, 40, Ye)])) : u("", !0),
+				g("div", Xe, [g("button", {
 					type: "button",
 					onClick: i[3] ||= (t) => {
 						s("change", e.emptyValue || ""), e.type === "range" && s("end", "");
@@ -1123,15 +1131,15 @@ var xe = ["aria-busy"], Se = { class: "em-heading" }, Ce = ["disabled"], we = {
 			"open"
 		]));
 	}
-}), qe = {
+}), Ze = {
 	key: 0,
 	class: "em-receipt",
 	role: "status"
-}, Je = /* @__PURE__ */ t({
+}, Qe = /* @__PURE__ */ t({
 	__name: "EmailReceipt",
 	props: { receipt: {} },
 	setup(e) {
-		return (t, i) => e.receipt ? (n(), T("div", qe, [c(I, {
+		return (t, i) => e.receipt ? (n(), T("div", Ze, [c(z, {
 			label: e.receipt.label,
 			title: e.receipt.detail,
 			tone: e.receipt.tone
@@ -1144,35 +1152,35 @@ var xe = ["aria-busy"], Se = { class: "em-heading" }, Ce = ["disabled"], we = {
 			"tone"
 		])])) : u("", !0);
 	}
-}), Ye = ["aria-busy"], Xe = {
+}), $e = ["aria-busy"], et = {
 	key: 0,
 	class: "ui-list-count"
-}, Ze = {
+}, tt = {
 	key: 1,
 	class: "em-bulk-actions",
 	role: "group",
 	"aria-label": "选中邮箱批量操作"
-}, Qe = ["disabled"], $e = ["disabled"], et = ["disabled"], tt = ["disabled"], nt = ["disabled"], rt = ["disabled"], it = {
+}, nt = ["disabled"], rt = ["disabled"], it = ["disabled"], at = ["disabled"], ot = ["disabled"], st = ["disabled"], ct = {
 	key: 0,
 	class: "ui-list-feedback is-error",
 	role: "alert"
-}, at = {
+}, lt = {
 	key: 1,
 	class: "ui-list-feedback is-error",
 	role: "alert"
-}, ot = { class: "ui-col-check" }, st = [
+}, ut = { class: "ui-col-check" }, dt = [
 	"checked",
 	"indeterminate",
 	"disabled"
-], ct = { class: "ui-col-check" }, lt = [
+], ft = { class: "ui-col-check" }, pt = [
 	"aria-label",
 	"checked",
 	"onChange"
-], ut = [
+], mt = [
 	"aria-label",
 	"title",
 	"onClick"
-], dt = { class: "em-source" }, ft = { class: "ui-row-actions em-row-actions" }, pt = ["disabled", "onClick"], mt = ["disabled", "onClick"], ht = ["disabled", "aria-label"], gt = ["disabled", "onClick"], _t = /* @__PURE__ */ t({
+], ht = { class: "em-source" }, gt = { class: "ui-row-actions em-row-actions" }, _t = ["disabled", "onClick"], vt = ["disabled", "onClick"], yt = ["disabled", "aria-label"], bt = ["disabled", "onClick"], xt = /* @__PURE__ */ t({
 	__name: "EmailInventory",
 	props: {
 		owner: {},
@@ -1199,7 +1207,7 @@ var xe = ["aria-busy"], Se = { class: "em-heading" }, Ce = ["disabled"], we = {
 		}), i(() => l.items, () => {
 			C && _.value && (_.value.scrollTop = 0, C = !1);
 		}, { flush: "post" });
-		let D = z({
+		let D = ae({
 			defaults: [
 				40,
 				228,
@@ -1215,33 +1223,33 @@ var xe = ["aria-busy"], Se = { class: "em-heading" }, Ce = ["disabled"], we = {
 			totalStorageKey: "gpt_console_table_total_outlook",
 			min: 28,
 			max: 2e4
-		}), O = x(() => l.items.filter((e) => l.selected.has(q(e))).length), k = x(() => Object.entries(l.filters).filter(([e, t]) => t && (e !== "source" || t !== "all")).map(([e, t]) => ({
+		}), O = x(() => l.items.filter((e) => l.selected.has(K(e))).length), k = x(() => Object.entries(l.filters).filter(([e, t]) => t && (e !== "source" || t !== "all")).map(([e, t]) => ({
 			key: e,
 			label: `${{
 				q: "邮箱",
 				source: "类型",
 				status: "状态",
 				used_date: "最近使用日期"
-			}[e]}：${e === "source" ? U[t] || t : e === "status" && W[t] || t}`,
+			}[e]}：${e === "source" ? H[t] || t : e === "status" && U[t] || t}`,
 			removeLabel: `移除${e}筛选`
-		}))), M = x(() => Object.entries(U).filter(([e]) => e !== "all").map(([e, t]) => ({
+		}))), A = x(() => Object.entries(H).filter(([e]) => e !== "all").map(([e, t]) => ({
 			value: e,
 			label: t,
 			count: l.facets.source ? l.facets.source.find((t) => t.value === e)?.count ?? 0 : void 0
-		}))), V = x(() => [.../* @__PURE__ */ new Set([
-			...Object.keys(W),
+		}))), j = x(() => [.../* @__PURE__ */ new Set([
+			...Object.keys(U),
 			...(l.facets.status || []).map((e) => e.value),
 			l.filters.status
 		])].filter(Boolean).map((e) => ({
 			value: e,
-			label: W[e] || e,
+			label: U[e] || e,
 			count: l.facets.status ? l.facets.status.find((t) => t.value === e)?.count ?? 0 : void 0
-		}))), H = (e) => l.parents.find((t) => t.source === e.source && String(t.parent_id) === String(e.id) && Number(t.child_count) > 0), G = (e) => e.service_sync_error || e.note || e.disabled_reason || "", K = {
+		}))), M = (e) => l.parents.find((t) => t.source === e.source && String(t.parent_id) === String(e.id) && Number(t.child_count) > 0), N = (e) => e.service_sync_error || e.note || e.disabled_reason || "", F = {
 			available: "恢复可用",
 			disabled: "停用",
 			failed: "标失败"
 		};
-		function J(e) {
+		function se(e) {
 			return {
 				available: "success",
 				used: "active",
@@ -1250,7 +1258,7 @@ var xe = ["aria-busy"], Se = { class: "em-heading" }, Ce = ["disabled"], we = {
 				failed: "danger"
 			}[e || ""] || "neutral";
 		}
-		function ae(e) {
+		function ce(e) {
 			return {
 				available: "success",
 				used_unbound: "active",
@@ -1260,11 +1268,11 @@ var xe = ["aria-busy"], Se = { class: "em-heading" }, Ce = ["disabled"], we = {
 				failed: "danger"
 			}[e || ""] || "neutral";
 		}
-		function Y(e) {
-			let t = X(e).text;
+		function W(e) {
+			let t = Y(e).text;
 			return t.includes("缺少") ? "danger" : t.includes("已配置") ? "success" : "neutral";
 		}
-		function oe(e) {
+		function G(e) {
 			return {
 				outlook: "#377dff",
 				generic_api: "#7c5cf0",
@@ -1273,27 +1281,27 @@ var xe = ["aria-busy"], Se = { class: "em-heading" }, Ce = ["disabled"], we = {
 				email_butler: "#1f9d75"
 			}[e] || "#98a2b3";
 		}
-		function Z(e) {
-			return Object.entries(K).filter(([t]) => t !== e.status);
+		function q(e) {
+			return Object.entries(F).filter(([t]) => t !== e.status);
 		}
-		function ce(e, t) {
+		function ue(e, t) {
 			S.value = null, a.owner.rowAction(e, t);
 		}
-		function le(e) {
+		function J(e) {
 			a.owner.updateFilters({ [e]: e === "source" ? "all" : "" });
 		}
-		function ue(e) {
+		function X(e) {
 			return e.last_activity_at || e.used_at || e.updated_at || e.created_at;
 		}
-		function Q(e) {
-			return `${e.used_at ? "最近使用" : e.last_activity_at ? "最近更新" : "导入时间"}：${L(ue(e))}${e.synced_at ? `\n同步：${L(e.synced_at)}` : ""}`;
+		function Z(e) {
+			return `${e.used_at ? "最近使用" : e.last_activity_at ? "最近更新" : "导入时间"}：${ie(X(e))}${e.synced_at ? `\n同步：${ie(e.synced_at)}` : ""}`;
 		}
 		return (t, i) => (n(), T("section", {
 			class: "ui-list em-list em-inventory",
 			"aria-label": "邮箱池",
 			"aria-busy": w(l).loading
 		}, [
-			c(re, {
+			c(oe, {
 				class: "em-toolbar",
 				filtered: k.value.length > 0
 			}, {
@@ -1307,7 +1315,7 @@ var xe = ["aria-busy"], Se = { class: "em-heading" }, Ce = ["disabled"], we = {
 						class: "ui-button",
 						disabled: w(l).busy || !w(l).items.length,
 						onClick: i[5] ||= (t) => e.owner.copyPage()
-					}, "复制当前页", 8, nt),
+					}, "复制当前页", 8, ot),
 					g("button", {
 						class: "ui-button",
 						"data-butler-opener": "",
@@ -1325,48 +1333,48 @@ var xe = ["aria-busy"], Se = { class: "em-heading" }, Ce = ["disabled"], we = {
 						class: "ui-button",
 						disabled: w(l).loading,
 						onClick: i[9] ||= (t) => e.owner.refresh()
-					}, "刷新", 8, rt)
+					}, "刷新", 8, st)
 				]),
 				default: r(() => [
-					w(l).selected.size ? (n(), T("span", Xe, "已选 " + m(w(l).selected.size) + " 个邮箱", 1)) : u("", !0),
-					w(l).selected.size ? (n(), T("div", Ze, [
+					w(l).selected.size ? (n(), T("span", et, "已选 " + m(w(l).selected.size) + " 个邮箱", 1)) : u("", !0),
+					w(l).selected.size ? (n(), T("div", tt, [
 						g("button", {
 							class: "ui-button",
 							disabled: w(l).busy,
 							onClick: i[0] ||= (t) => e.owner.bulkStatus("available")
-						}, "标记未使用", 8, Qe),
+						}, "标记未使用", 8, nt),
 						g("button", {
 							class: "ui-button",
 							disabled: w(l).busy,
 							onClick: i[1] ||= (t) => e.owner.bulkStatus("disabled")
-						}, "停用选中", 8, $e),
+						}, "停用选中", 8, rt),
 						g("button", {
 							class: "ui-button",
 							disabled: w(l).busy,
 							onClick: i[2] ||= (t) => e.owner.bulkStatus("failed")
-						}, "标失败", 8, et),
+						}, "标失败", 8, it),
 						g("button", {
 							class: "ui-button ui-button--danger",
 							disabled: w(l).busy,
 							onClick: i[3] ||= (t) => e.owner.bulkDelete()
-						}, "删除选中", 8, tt)
+						}, "删除选中", 8, at)
 					])) : u("", !0),
-					c(te, {
+					c(R, {
 						items: k.value,
-						onRemove: le
+						onRemove: J
 					}, null, 8, ["items"])
 				]),
 				_: 1
 			}, 8, ["filtered"]),
-			w(l).error ? (n(), T("div", it, [E(m(w(l).error) + " ", 1), g("button", {
+			w(l).error ? (n(), T("div", ct, [E(m(w(l).error) + " ", 1), g("button", {
 				class: "ui-link",
 				onClick: i[10] ||= (t) => e.owner.refresh()
 			}, "重试")])) : u("", !0),
-			w(l).summaryError ? (n(), T("div", at, [E(m(w(l).summaryError) + " ", 1), g("button", {
+			w(l).summaryError ? (n(), T("div", lt, [E(m(w(l).summaryError) + " ", 1), g("button", {
 				class: "ui-link",
 				onClick: i[11] ||= (t) => e.owner.refreshDerivationSummary()
 			}, "重试")])) : u("", !0),
-			c(Je, { receipt: w(l).receipt }, null, 8, ["receipt"]),
+			c(Qe, { receipt: w(l).receipt }, null, 8, ["receipt"]),
 			g("div", {
 				ref_key: "tableViewport",
 				ref: _,
@@ -1384,14 +1392,14 @@ var xe = ["aria-busy"], Se = { class: "em-heading" }, Ce = ["disabled"], we = {
 					style: f({ width: `${e}px` })
 				}, null, 4))), 128))]),
 				g("thead", null, [g("tr", null, [
-					g("th", ot, [g("input", {
+					g("th", ut, [g("input", {
 						type: "checkbox",
 						"aria-label": "全选当前页邮箱资源",
 						checked: !!w(l).items.length && O.value === w(l).items.length,
 						indeterminate: O.value > 0 && O.value < w(l).items.length,
 						disabled: !w(l).items.length,
 						onChange: i[12] ||= (t) => e.owner.togglePage(t.target.checked)
-					}, null, 40, st), c(B, {
+					}, null, 40, dt), c(V, {
 						label: "选择",
 						onStart: i[13] ||= (e) => w(D).resize(0, e),
 						onNudge: i[14] ||= (e) => w(D).resizeWithKeyboard(0, e)
@@ -1401,7 +1409,7 @@ var xe = ["aria-busy"], Se = { class: "em-heading" }, Ce = ["disabled"], we = {
 						value: w(l).filters.q,
 						active: e.active,
 						onChange: i[15] ||= (t) => e.owner.updateFilters({ q: t })
-					}, null, 8, ["value", "active"]), c(B, {
+					}, null, 8, ["value", "active"]), c(V, {
 						label: "邮箱",
 						onStart: i[16] ||= (e) => w(D).resize(1, e),
 						onNudge: i[17] ||= (e) => w(D).resizeWithKeyboard(1, e)
@@ -1410,14 +1418,14 @@ var xe = ["aria-busy"], Se = { class: "em-heading" }, Ce = ["disabled"], we = {
 						label: "类型",
 						value: w(l).filters.source,
 						"empty-value": "all",
-						options: M.value,
+						options: A.value,
 						active: e.active,
 						onChange: i[18] ||= (t) => e.owner.updateFilters({ source: t })
 					}, null, 8, [
 						"value",
 						"options",
 						"active"
-					]), c(B, {
+					]), c(V, {
 						label: "类型",
 						onStart: i[19] ||= (e) => w(D).resize(2, e),
 						onNudge: i[20] ||= (e) => w(D).resizeWithKeyboard(2, e)
@@ -1425,24 +1433,24 @@ var xe = ["aria-busy"], Se = { class: "em-heading" }, Ce = ["disabled"], we = {
 					g("th", null, [c($, {
 						label: "状态",
 						value: w(l).filters.status,
-						options: V.value,
+						options: j.value,
 						active: e.active,
 						onChange: i[21] ||= (t) => e.owner.updateFilters({ status: t })
 					}, null, 8, [
 						"value",
 						"options",
 						"active"
-					]), c(B, {
+					]), c(V, {
 						label: "状态",
 						onStart: i[22] ||= (e) => w(D).resize(3, e),
 						onNudge: i[23] ||= (e) => w(D).resizeWithKeyboard(3, e)
 					})]),
-					g("th", null, [i[37] ||= E("使用情况", -1), c(B, {
+					g("th", null, [i[37] ||= E("使用情况", -1), c(V, {
 						label: "使用情况",
 						onStart: i[24] ||= (e) => w(D).resize(4, e),
 						onNudge: i[25] ||= (e) => w(D).resizeWithKeyboard(4, e)
 					})]),
-					g("th", null, [i[38] ||= E("凭证配置", -1), c(B, {
+					g("th", null, [i[38] ||= E("凭证配置", -1), c(V, {
 						label: "凭证配置",
 						onStart: i[26] ||= (e) => w(D).resize(5, e),
 						onNudge: i[27] ||= (e) => w(D).resizeWithKeyboard(5, e)
@@ -1453,131 +1461,131 @@ var xe = ["aria-busy"], Se = { class: "em-heading" }, Ce = ["disabled"], we = {
 						value: w(l).filters.used_date,
 						active: e.active,
 						onChange: i[28] ||= (t) => e.owner.updateFilters({ used_date: t })
-					}, null, 8, ["value", "active"]), c(B, {
+					}, null, 8, ["value", "active"]), c(V, {
 						label: "最近活动",
 						onStart: i[29] ||= (e) => w(D).resize(6, e),
 						onNudge: i[30] ||= (e) => w(D).resizeWithKeyboard(6, e)
 					})]),
-					g("th", null, [i[39] ||= E("备注 / 原因", -1), c(B, {
+					g("th", null, [i[39] ||= E("备注 / 原因", -1), c(V, {
 						label: "备注 / 原因",
 						onStart: i[31] ||= (e) => w(D).resize(7, e),
 						onNudge: i[32] ||= (e) => w(D).resizeWithKeyboard(7, e)
 					})]),
-					g("th", null, [i[40] ||= E("操作", -1), c(B, {
+					g("th", null, [i[40] ||= E("操作", -1), c(V, {
 						label: "操作",
 						onStart: i[33] ||= (e) => w(D).resize(8, e),
 						onNudge: i[34] ||= (e) => w(D).resizeWithKeyboard(8, e)
 					})])
 				])]),
 				g("tbody", null, [(n(!0), T(d, null, o(w(l).items, (t) => (n(), T("tr", {
-					key: w(q)(t),
-					class: b({ "is-selected": w(l).selected.has(w(q)(t)) })
+					key: w(K)(t),
+					class: b({ "is-selected": w(l).selected.has(w(K)(t)) })
 				}, [
-					g("td", ct, [g("input", {
+					g("td", ft, [g("input", {
 						type: "checkbox",
 						"aria-label": `选择邮箱 ${t.email}`,
-						checked: w(l).selected.has(w(q)(t)),
+						checked: w(l).selected.has(w(K)(t)),
 						onChange: (n) => e.owner.toggle(t, n.target.checked)
-					}, null, 40, lt)]),
-					g("td", null, [H(t) ? (n(), T("button", {
+					}, null, 40, pt)]),
+					g("td", null, [M(t) ? (n(), T("button", {
 						key: 0,
 						class: "em-cell-button",
 						"aria-label": `查看 ${t.email} 的历史子地址`,
 						title: [
 							t.email,
 							t.remote_label,
-							`历史子地址 ${H(t)?.child_count} 个`
+							`历史子地址 ${M(t)?.child_count} 个`
 						].filter(Boolean).join(" · "),
 						onClick: (e) => s("parent", t)
-					}, [c(P, {
+					}, [c(I, {
 						text: t.email,
-						secondary: `查看历史 · ${H(t)?.child_count} 个`
-					}, null, 8, ["text", "secondary"])], 8, ut)) : (n(), h(P, {
+						secondary: `查看历史 · ${M(t)?.child_count} 个`
+					}, null, 8, ["text", "secondary"])], 8, mt)) : (n(), h(I, {
 						key: 1,
 						text: t.email,
 						secondary: t.remote_label || void 0
 					}, null, 8, ["text", "secondary"]))]),
-					g("td", null, [c(P, { text: w(U)[t.source] || t.source }, {
-						default: r(() => [g("span", dt, [g("i", {
-							style: f({ background: oe(t.source) }),
+					g("td", null, [c(I, { text: w(H)[t.source] || t.source }, {
+						default: r(() => [g("span", ht, [g("i", {
+							style: f({ background: G(t.source) }),
 							"aria-hidden": "true"
-						}, null, 4), E(m(w(U)[t.source] || t.source), 1)])]),
+						}, null, 4), E(m(w(H)[t.source] || t.source), 1)])]),
 						_: 2
 					}, 1032, ["text"])]),
-					g("td", null, [c(P, { text: w(W)[t.status || ""] || t.status || "状态记录缺失" }, {
-						default: r(() => [g("span", { class: b(["em-tone", `is-${J(t.status)}`]) }, [i[41] ||= g("i", { "aria-hidden": "true" }, null, -1), E(m(w(W)[t.status || ""] || t.status || "状态记录缺失"), 1)], 2)]),
+					g("td", null, [c(I, { text: w(U)[t.status || ""] || t.status || "状态记录缺失" }, {
+						default: r(() => [g("span", { class: b(["em-tone", `is-${se(t.status)}`]) }, [i[41] ||= g("i", { "aria-hidden": "true" }, null, -1), E(m(w(U)[t.status || ""] || t.status || "状态记录缺失"), 1)], 2)]),
 						_: 2
 					}, 1032, ["text"])]),
-					g("td", null, [c(P, {
-						text: w(ie)[t.usage_state || t.status || ""] || t.usage_state || t.status || "状态记录缺失",
+					g("td", null, [c(I, {
+						text: w(le)[t.usage_state || t.status || ""] || t.usage_state || t.status || "状态记录缺失",
 						secondary: t.usage_state === "bound" && t.registered_account_id ? `账号 #${t.registered_account_id}` : void 0
 					}, {
-						default: r(() => [g("span", { class: b(["em-tone", `is-${ae(t.usage_state || t.status)}`]) }, [i[42] ||= g("i", { "aria-hidden": "true" }, null, -1), E(m(w(ie)[t.usage_state || t.status || ""] || t.usage_state || t.status || "状态记录缺失"), 1)], 2)]),
+						default: r(() => [g("span", { class: b(["em-tone", `is-${ce(t.usage_state || t.status)}`]) }, [i[42] ||= g("i", { "aria-hidden": "true" }, null, -1), E(m(w(le)[t.usage_state || t.status || ""] || t.usage_state || t.status || "状态记录缺失"), 1)], 2)]),
 						_: 2
 					}, 1032, ["text", "secondary"])]),
-					g("td", null, [c(I, {
-						label: w(X)(t).text,
-						title: w(X)(t).detail,
-						tone: Y(t)
+					g("td", null, [c(z, {
+						label: w(Y)(t).text,
+						title: w(Y)(t).detail,
+						tone: W(t)
 					}, {
-						details: r(() => [E(m(w(X)(t).detail), 1)]),
+						details: r(() => [E(m(w(Y)(t).detail), 1)]),
 						_: 2
 					}, 1032, [
 						"label",
 						"title",
 						"tone"
 					])]),
-					g("td", null, [c(I, v({ ref_for: !0 }, {
-						label: w(R)(ue(t)).text,
-						secondary: w(R)(ue(t)).secondary
-					}, { title: Q(t) }), {
-						details: r(() => [E(m(Q(t)), 1)]),
+					g("td", null, [c(z, v({ ref_for: !0 }, {
+						label: w(B)(X(t)).text,
+						secondary: w(B)(X(t)).secondary
+					}, { title: Z(t) }), {
+						details: r(() => [E(m(Z(t)), 1)]),
 						_: 2
 					}, 1040, ["title"])]),
-					g("td", null, [G(t) ? (n(), h(I, {
+					g("td", null, [N(t) ? (n(), h(z, {
 						key: 0,
 						"data-email-note": "",
-						label: w(se)(t),
-						title: G(t),
+						label: w(de)(t),
+						title: N(t),
 						tone: t.service_sync_error ? "danger" : "neutral"
 					}, {
-						details: r(() => [E(m(G(t)), 1)]),
+						details: r(() => [E(m(N(t)), 1)]),
 						_: 2
 					}, 1032, [
 						"label",
 						"title",
 						"tone"
-					])) : (n(), h(P, {
+					])) : (n(), h(I, {
 						key: 1,
 						text: "—"
 					}))]),
-					g("td", null, [g("div", ft, [
+					g("td", null, [g("div", gt, [
 						g("button", {
 							class: "ui-link",
 							disabled: w(l).busy,
 							onClick: (n) => e.owner.copyRow(t)
-						}, "复制素材", 8, pt),
+						}, "复制素材", 8, _t),
 						g("button", {
 							class: "ui-link ui-link--danger",
 							disabled: w(l).busy,
 							onClick: (n) => e.owner.rowAction(t, "delete")
-						}, "删除", 8, mt),
-						["replaced", "pending_sync"].includes(t.status || "") ? u("", !0) : (n(), h(w(j), {
+						}, "删除", 8, vt),
+						["replaced", "pending_sync"].includes(t.status || "") ? u("", !0) : (n(), h(w(P), {
 							key: 0,
-							open: S.value === w(q)(t),
+							open: S.value === w(K)(t),
 							modal: !1,
-							"onUpdate:open": (e) => S.value = e ? w(q)(t) : null
+							"onUpdate:open": (e) => S.value = e ? w(K)(t) : null
 						}, {
-							default: r(() => [c(w(A), { "as-child": "" }, {
+							default: r(() => [c(w(ee), { "as-child": "" }, {
 								default: r(() => [g("button", {
 									type: "button",
 									class: "ui-link",
 									disabled: w(l).busy,
 									"aria-label": `更多邮箱操作 ${t.email}`
-								}, "更多", 8, ht)]),
+								}, "更多", 8, yt)]),
 								_: 2
-							}, 1024), c(w(ee), null, {
-								default: r(() => [c(w(F), {
+							}, 1024), c(w(ne), null, {
+								default: r(() => [c(w(L), {
 									class: "em-row-menu",
 									"aria-label": `${t.email} 的更多操作`,
 									side: "bottom",
@@ -1587,13 +1595,13 @@ var xe = ["aria-busy"], Se = { class: "em-heading" }, Ce = ["disabled"], we = {
 									"hide-when-detached": "",
 									onOpenAutoFocus: i[35] ||= y(() => {}, ["prevent"])
 								}, {
-									default: r(() => [(n(!0), T(d, null, o(Z(t), ([e, r]) => (n(), T("button", {
+									default: r(() => [(n(!0), T(d, null, o(q(t), ([e, r]) => (n(), T("button", {
 										key: e,
 										type: "button",
 										class: b({ "is-danger": e === "failed" }),
 										disabled: w(l).busy,
-										onClick: (n) => ce(t, e)
-									}, m(r), 11, gt))), 128))]),
+										onClick: (n) => ue(t, e)
+									}, m(r), 11, bt))), 128))]),
 									_: 2
 								}, 1032, ["aria-label"])]),
 								_: 2
@@ -1601,7 +1609,7 @@ var xe = ["aria-busy"], Se = { class: "em-heading" }, Ce = ["disabled"], we = {
 							_: 2
 						}, 1032, ["open", "onUpdate:open"]))
 					])])
-				], 2))), 128)), w(l).items.length ? u("", !0) : (n(), h(N, {
+				], 2))), 128)), w(l).items.length ? u("", !0) : (n(), h(te, {
 					key: 0,
 					colspan: 9,
 					loading: w(l).loading,
@@ -1612,7 +1620,7 @@ var xe = ["aria-busy"], Se = { class: "em-heading" }, Ce = ["disabled"], we = {
 					text: "调整筛选条件或导入新的邮箱资源。"
 				}, null, 8, ["loading", "error"]))])
 			], 4)], 544),
-			c(ne, {
+			c(re, {
 				compact: "",
 				page: w(l).page,
 				size: w(l).size,
@@ -1636,32 +1644,32 @@ var xe = ["aria-busy"], Se = { class: "em-heading" }, Ce = ["disabled"], we = {
 				"onUpdate:page",
 				"onUpdate:size"
 			])
-		], 8, Ye));
+		], 8, $e));
 	}
-}), vt = ["aria-busy"], yt = { class: "ui-list-count" }, bt = ["disabled"], xt = {
+}), St = ["aria-busy"], Ct = { class: "ui-list-count" }, wt = ["disabled"], Tt = {
 	key: 0,
 	class: "ui-list-feedback is-error",
 	role: "alert"
-}, St = {
+}, Et = {
 	class: "ui-table-scroll",
 	tabindex: "0",
 	"aria-label": "历史子邮箱列表，可横向滚动"
-}, Ct = { class: "ui-col-check" }, wt = [
+}, Dt = { class: "ui-col-check" }, Ot = [
 	"checked",
 	"indeterminate",
 	"disabled"
-], Tt = { class: "ui-col-check" }, Et = [
+], kt = { class: "ui-col-check" }, At = [
 	"aria-label",
 	"checked",
 	"onChange"
-], Dt = { class: "em-source" }, Ot = /* @__PURE__ */ t({
+], jt = { class: "em-source" }, Mt = /* @__PURE__ */ t({
 	__name: "EmailHistory",
 	props: {
 		owner: {},
 		active: { type: Boolean }
 	},
 	setup(e) {
-		let t = e, i = t.owner.state, a = z({
+		let t = e, i = t.owner.state, a = ae({
 			defaults: [
 				40,
 				248,
@@ -1682,7 +1690,7 @@ var xe = ["aria-busy"], Se = { class: "em-heading" }, Ce = ["disabled"], we = {
 		}, {
 			value: "outlook",
 			label: "Outlook"
-		}], p = Object.entries(G).map(([e, t]) => ({
+		}], p = Object.entries(W).map(([e, t]) => ({
 			value: e,
 			label: t
 		}));
@@ -1716,7 +1724,7 @@ var xe = ["aria-busy"], Se = { class: "em-heading" }, Ce = ["disabled"], we = {
 				related_q: "关联账号/任务",
 				created_from: "生成开始",
 				created_to: "生成结束"
-			}[e]}：${e === "source" ? U[t] || t : e === "state" ? G[t] || t : e === "parent_id" ? i.parentEmail || `#${t}` : t}`,
+			}[e]}：${e === "source" ? H[t] || t : e === "state" ? W[t] || t : e === "parent_id" ? i.parentEmail || `#${t}` : t}`,
 			removeLabel: `移除${e}筛选`
 		})));
 		function C(e) {
@@ -1728,7 +1736,7 @@ var xe = ["aria-busy"], Se = { class: "em-heading" }, Ce = ["disabled"], we = {
 			"aria-busy": w(i).loading
 		}, [
 			x[30] ||= g("p", { class: "ui-list-note" }, "子邮箱由你手动准备并导入本地库存；此处可查看、筛选和复制已有记录，Turb 不会自动生成。", -1),
-			c(re, {
+			c(oe, {
 				"data-email-count-row": "",
 				filtered: S.value.length > 0
 			}, {
@@ -1742,24 +1750,24 @@ var xe = ["aria-busy"], Se = { class: "em-heading" }, Ce = ["disabled"], we = {
 						class: "ui-button",
 						disabled: !w(i).items.length && !w(i).selected.size,
 						onClick: x[1] ||= (t) => e.owner.copy()
-					}, m(w(i).selected.size ? "复制选中" : "复制当前页"), 9, bt),
+					}, m(w(i).selected.size ? "复制选中" : "复制当前页"), 9, wt),
 					g("button", {
 						class: "ui-link",
 						onClick: x[2] ||= (...e) => w(a).resetColumns && w(a).resetColumns(...e)
 					}, "恢复列宽")
 				]),
-				default: r(() => [g("span", yt, [E(m(w(i).total) + " 条历史记录", 1), g("small", null, "当前页 " + m(w(i).items.length) + " 条" + m(w(i).selected.size ? ` · 已选 ${w(i).selected.size}` : ""), 1)]), c(te, {
+				default: r(() => [g("span", Ct, [E(m(w(i).total) + " 条历史记录", 1), g("small", null, "当前页 " + m(w(i).items.length) + " 条" + m(w(i).selected.size ? ` · 已选 ${w(i).selected.size}` : ""), 1)]), c(R, {
 					items: S.value,
 					onRemove: C
 				}, null, 8, ["items"])]),
 				_: 1
 			}, 8, ["filtered"]),
-			w(i).error ? (n(), T("div", xt, [E(m(w(i).error) + " ", 1), g("button", {
+			w(i).error ? (n(), T("div", Tt, [E(m(w(i).error) + " ", 1), g("button", {
 				class: "ui-link",
 				onClick: x[3] ||= (t) => e.owner.refresh()
 			}, "重试")])) : u("", !0),
-			c(Je, { receipt: w(i).receipt }, null, 8, ["receipt"]),
-			g("div", St, [g("table", {
+			c(Qe, { receipt: w(i).receipt }, null, 8, ["receipt"]),
+			g("div", Et, [g("table", {
 				class: "ui-table em-table",
 				style: f({ "--ui-table-width": `${w(a).total.value}px` })
 			}, [
@@ -1768,14 +1776,14 @@ var xe = ["aria-busy"], Se = { class: "em-heading" }, Ce = ["disabled"], we = {
 					style: f({ width: `${e}px` })
 				}, null, 4))), 128))]),
 				g("thead", null, [g("tr", null, [
-					g("th", Ct, [g("input", {
+					g("th", Dt, [g("input", {
 						type: "checkbox",
 						"aria-label": "全选当前页子邮箱",
 						checked: !!w(i).items.length && s.value === w(i).items.length,
 						indeterminate: s.value > 0 && s.value < w(i).items.length,
 						disabled: !w(i).items.length,
 						onChange: x[4] ||= (t) => e.owner.togglePage(t.target.checked)
-					}, null, 40, wt), c(B, {
+					}, null, 40, Ot), c(V, {
 						label: "选择",
 						onStart: x[5] ||= (e) => w(a).resize(0, e),
 						onNudge: x[6] ||= (e) => w(a).resizeWithKeyboard(0, e)
@@ -1785,7 +1793,7 @@ var xe = ["aria-busy"], Se = { class: "em-heading" }, Ce = ["disabled"], we = {
 						value: w(i).filters.q,
 						active: e.active,
 						onChange: x[7] ||= (t) => e.owner.updateFilters({ q: t })
-					}, null, 8, ["value", "active"]), c(B, {
+					}, null, 8, ["value", "active"]), c(V, {
 						label: "子邮箱",
 						onStart: x[8] ||= (e) => w(a).resize(1, e),
 						onNudge: x[9] ||= (e) => w(a).resizeWithKeyboard(1, e)
@@ -1795,7 +1803,7 @@ var xe = ["aria-busy"], Se = { class: "em-heading" }, Ce = ["disabled"], we = {
 						value: w(i).filters.parent_q,
 						active: e.active,
 						onChange: x[10] ||= (t) => e.owner.updateFilters({ parent_q: t })
-					}, null, 8, ["value", "active"]), c(B, {
+					}, null, 8, ["value", "active"]), c(V, {
 						label: "母邮箱",
 						onStart: x[11] ||= (e) => w(a).resize(2, e),
 						onNudge: x[12] ||= (e) => w(a).resizeWithKeyboard(2, e)
@@ -1807,7 +1815,7 @@ var xe = ["aria-busy"], Se = { class: "em-heading" }, Ce = ["disabled"], we = {
 						options: l,
 						active: e.active,
 						onChange: x[13] ||= (t) => e.owner.updateFilters({ source: t })
-					}, null, 8, ["value", "active"]), c(B, {
+					}, null, 8, ["value", "active"]), c(V, {
 						label: "来源",
 						onStart: x[14] ||= (e) => w(a).resize(3, e),
 						onNudge: x[15] ||= (e) => w(a).resizeWithKeyboard(3, e)
@@ -1822,7 +1830,7 @@ var xe = ["aria-busy"], Se = { class: "em-heading" }, Ce = ["disabled"], we = {
 						"value",
 						"options",
 						"active"
-					]), c(B, {
+					]), c(V, {
 						label: "状态",
 						onStart: x[17] ||= (e) => w(a).resize(4, e),
 						onNudge: x[18] ||= (e) => w(a).resizeWithKeyboard(4, e)
@@ -1832,7 +1840,7 @@ var xe = ["aria-busy"], Se = { class: "em-heading" }, Ce = ["disabled"], we = {
 						value: w(i).filters.related_q,
 						active: e.active,
 						onChange: x[19] ||= (t) => e.owner.updateFilters({ related_q: t })
-					}, null, 8, ["value", "active"]), c(B, {
+					}, null, 8, ["value", "active"]), c(V, {
 						label: "关联账号 / 任务",
 						onStart: x[20] ||= (e) => w(a).resize(5, e),
 						onNudge: x[21] ||= (e) => w(a).resizeWithKeyboard(5, e)
@@ -1849,12 +1857,12 @@ var xe = ["aria-busy"], Se = { class: "em-heading" }, Ce = ["disabled"], we = {
 						"value",
 						"end-value",
 						"active"
-					]), c(B, {
+					]), c(V, {
 						label: "生成时间",
 						onStart: x[24] ||= (e) => w(a).resize(6, e),
 						onNudge: x[25] ||= (e) => w(a).resizeWithKeyboard(6, e)
 					})]),
-					g("th", null, [x[28] ||= E("操作", -1), c(B, {
+					g("th", null, [x[28] ||= E("操作", -1), c(V, {
 						label: "操作",
 						onStart: x[26] ||= (e) => w(a).resize(7, e),
 						onNudge: x[27] ||= (e) => w(a).resizeWithKeyboard(7, e)
@@ -1864,32 +1872,32 @@ var xe = ["aria-busy"], Se = { class: "em-heading" }, Ce = ["disabled"], we = {
 					key: String(t.id),
 					class: b({ "is-selected": w(i).selected.has(String(t.id)) })
 				}, [
-					g("td", Tt, [g("input", {
+					g("td", kt, [g("input", {
 						type: "checkbox",
 						"aria-label": `选择历史子邮箱 ${t.email}`,
 						checked: w(i).selected.has(String(t.id)),
 						onChange: (n) => e.owner.toggle(t, n.target.checked)
-					}, null, 40, Et)]),
-					g("td", null, [c(P, { text: t.email }, null, 8, ["text"])]),
-					g("td", null, [c(P, {
+					}, null, 40, At)]),
+					g("td", null, [c(I, { text: t.email }, null, 8, ["text"])]),
+					g("td", null, [c(I, {
 						text: t.parent_email || "—",
 						secondary: `母资源 #${t.parent_id || "—"}`
 					}, null, 8, ["text", "secondary"])]),
-					g("td", null, [c(P, { text: w(U)[t.source] || t.source }, {
-						default: r(() => [g("span", Dt, [g("i", {
+					g("td", null, [c(I, { text: w(H)[t.source] || t.source }, {
+						default: r(() => [g("span", jt, [g("i", {
 							style: f({ background: y(t.source) }),
 							"aria-hidden": "true"
-						}, null, 4), E(m(w(U)[t.source] || t.source), 1)])]),
+						}, null, 4), E(m(w(H)[t.source] || t.source), 1)])]),
 						_: 2
 					}, 1032, ["text"])]),
-					g("td", null, [c(P, { text: w(G)[t.state || ""] || t.state || "状态记录缺失" }, {
-						default: r(() => [g("span", { class: b(["em-tone", `is-${_(t.state)}`]) }, [x[29] ||= g("i", { "aria-hidden": "true" }, null, -1), E(m(w(G)[t.state || ""] || t.state || "状态记录缺失"), 1)], 2)]),
+					g("td", null, [c(I, { text: w(W)[t.state || ""] || t.state || "状态记录缺失" }, {
+						default: r(() => [g("span", { class: b(["em-tone", `is-${_(t.state)}`]) }, [x[29] ||= g("i", { "aria-hidden": "true" }, null, -1), E(m(w(W)[t.state || ""] || t.state || "状态记录缺失"), 1)], 2)]),
 						_: 2
 					}, 1032, ["text"])]),
-					g("td", null, [c(P, { text: w(oe)(t) }, null, 8, ["text"])]),
-					g("td", null, [c(P, v({ ref_for: !0 }, w(R)(t.created_at)), null, 16)]),
-					g("td", null, [c(P, { text: "只读" })])
-				], 2))), 128)), w(i).items.length ? u("", !0) : (n(), h(N, {
+					g("td", null, [c(I, { text: w(X)(t) }, null, 8, ["text"])]),
+					g("td", null, [c(I, v({ ref_for: !0 }, w(B)(t.created_at)), null, 16)]),
+					g("td", null, [c(I, { text: "只读" })])
+				], 2))), 128)), w(i).items.length ? u("", !0) : (n(), h(te, {
 					key: 0,
 					colspan: 8,
 					loading: w(i).loading,
@@ -1900,7 +1908,7 @@ var xe = ["aria-busy"], Se = { class: "em-heading" }, Ce = ["disabled"], we = {
 					text: "请从 Email Butler 等来源手动准备邮箱，再导入本地库存。"
 				}, null, 8, ["loading", "error"]))])
 			], 4)]),
-			c(ne, {
+			c(re, {
 				page: w(i).page,
 				size: w(i).size,
 				total: w(i).total,
@@ -1921,24 +1929,24 @@ var xe = ["aria-busy"], Se = { class: "em-heading" }, Ce = ["disabled"], we = {
 				"onUpdate:page",
 				"onUpdate:size"
 			])
-		], 8, vt));
+		], 8, St));
 	}
-}), kt = ["aria-busy"], At = { class: "em-dialog-head" }, jt = { class: "em-dialog-body" }, Mt = {
+}), Nt = ["aria-busy"], Pt = { class: "em-dialog-head" }, Ft = { class: "em-dialog-body" }, It = {
 	key: 0,
 	class: "em-error",
 	role: "alert"
-}, Nt = { class: "em-field" }, Pt = ["value", "disabled"], Ft = ["value"], It = { class: "em-field" }, Lt = [
+}, Lt = { class: "em-field" }, Rt = ["value", "disabled"], zt = ["value"], Bt = { class: "em-field" }, Vt = [
 	"value",
 	"placeholder",
 	"disabled"
-], Rt = { class: "em-help" }, zt = {
+], Ht = { class: "em-help" }, Ut = {
 	key: 1,
 	class: "em-field"
-}, Bt = ["value", "disabled"], Vt = {
+}, Wt = ["value", "disabled"], Gt = {
 	key: 2,
 	class: "em-preview",
 	"aria-label": "导入前检查"
-}, Ht = { class: "em-stats" }, Ut = { key: 0 }, Wt = { key: 1 }, Gt = { class: "em-dialog-foot" }, Kt = ["disabled"], qt = ["disabled"], Jt = /* @__PURE__ */ t({
+}, Kt = { class: "em-stats" }, qt = { key: 0 }, Jt = { key: 1 }, Yt = { class: "em-dialog-foot" }, Xt = ["disabled"], Zt = ["disabled"], Qt = /* @__PURE__ */ t({
 	__name: "EmailLocalImport",
 	props: {
 		owner: {},
@@ -1946,7 +1954,7 @@ var xe = ["aria-busy"], Se = { class: "em-heading" }, Ce = ["disabled"], we = {
 	},
 	setup(e) {
 		let t = e, r = t.owner.state, i = p();
-		return V(i, () => r.open, () => t.active), (t, a) => (n(), T("dialog", {
+		return se(i, () => r.open, () => t.active), (t, a) => (n(), T("dialog", {
 			ref_key: "dialog",
 			ref: i,
 			class: "em-dialog",
@@ -1956,15 +1964,15 @@ var xe = ["aria-busy"], Se = { class: "em-heading" }, Ce = ["disabled"], we = {
 			onCancel: a[7] ||= y((t) => e.owner.close(), ["prevent"]),
 			onClick: a[8] ||= (t) => t.target === i.value && e.owner.close()
 		}, [
-			g("div", At, [a[9] ||= g("div", null, [g("h3", { id: "emailLocalImportTitle" }, "导入邮箱资源"), g("p", null, "手动补充本地库存；Outlook 和通用 API 保留原格式，Butler 类型每行粘贴一个完整 iCloud HME 地址。")], -1), g("button", {
+			g("div", Pt, [a[9] ||= g("div", null, [g("h3", { id: "emailLocalImportTitle" }, "导入邮箱资源"), g("p", null, "手动补充本地库存；Outlook 和通用 API 保留原格式，Butler 类型每行粘贴一个完整 iCloud HME 地址。")], -1), g("button", {
 				class: "em-button",
 				"aria-label": "关闭邮箱导入",
 				onClick: a[0] ||= (t) => e.owner.close()
 			}, "关闭")]),
-			g("div", jt, [
-				c(Je, { receipt: w(r).receipt }, null, 8, ["receipt"]),
-				w(r).error ? (n(), T("p", Mt, m(w(r).error), 1)) : u("", !0),
-				g("label", Nt, [a[10] ||= E("导入类型", -1), g("select", {
+			g("div", Ft, [
+				c(Qe, { receipt: w(r).receipt }, null, 8, ["receipt"]),
+				w(r).error ? (n(), T("p", It, m(w(r).error), 1)) : u("", !0),
+				g("label", Lt, [a[10] ||= E("导入类型", -1), g("select", {
 					"aria-label": "导入类型",
 					value: w(r).source,
 					disabled: w(r).busy,
@@ -1972,17 +1980,17 @@ var xe = ["aria-busy"], Se = { class: "em-heading" }, Ce = ["disabled"], we = {
 				}, [(n(!0), T(d, null, o(w(Q), (e, t) => (n(), T("option", {
 					key: t,
 					value: t
-				}, m(e.label), 9, Ft))), 128))], 40, Pt)]),
+				}, m(e.label), 9, zt))), 128))], 40, Rt)]),
 				a[16] ||= g("p", { class: "em-help" }, "注册任务只领取本地可用库存；Butler 导入会交接原地址，不自动生成邮箱。", -1),
-				g("label", It, [a[11] ||= E("邮箱资源", -1), g("textarea", {
+				g("label", Bt, [a[11] ||= E("邮箱资源", -1), g("textarea", {
 					"aria-label": "邮箱资源",
 					value: w(r).text,
 					placeholder: w(Q)[w(r).source].placeholder,
 					disabled: w(r).busy,
 					onInput: a[2] ||= (t) => e.owner.update({ text: t.target.value })
-				}, null, 40, Lt)]),
-				g("p", Rt, m(w(Q)[w(r).source].hint), 1),
-				w(r).source === "generic_api" ? (n(), T("label", zt, [
+				}, null, 40, Vt)]),
+				g("p", Ht, m(w(Q)[w(r).source].hint), 1),
+				w(r).source === "generic_api" ? (n(), T("label", Ut, [
 					a[12] ||= E("批次有效期（可选）", -1),
 					g("input", {
 						"aria-label": "批次有效期",
@@ -1991,12 +1999,12 @@ var xe = ["aria-busy"], Se = { class: "em-heading" }, Ce = ["disabled"], we = {
 						disabled: w(r).busy,
 						placeholder: "2026-12-01T12:00:00+08:00",
 						onInput: a[3] ||= (t) => e.owner.update({ expiresAt: t.target.value })
-					}, null, 40, Bt),
+					}, null, 40, Wt),
 					a[13] ||= g("small", null, "只补充未在第三字段填写有效期的通用 API 邮箱；留空保留旧两段格式，不会推算有效期。", -1)
 				])) : u("", !0),
-				w(r).preview ? (n(), T("section", Vt, [
+				w(r).preview ? (n(), T("section", Gt, [
 					a[15] ||= g("strong", null, "导入前检查", -1),
-					g("div", Ht, [(n(!0), T(d, null, o([
+					g("div", Kt, [(n(!0), T(d, null, o([
 						["输入行数", w(r).preview.total_lines],
 						["可解析", w(r).preview.valid],
 						["可新增", w(r).preview.new],
@@ -2004,11 +2012,11 @@ var xe = ["aria-busy"], Se = { class: "em-heading" }, Ce = ["disabled"], we = {
 						["输入重复", w(r).preview.duplicate_in_input],
 						["无效行", w(r).preview.invalid]
 					], (e) => (n(), T("div", { key: String(e[0]) }, [g("strong", null, m(e[1] || 0), 1), g("span", null, m(e[0]), 1)]))), 128))]),
-					w(r).preview.extra_fields ? (n(), T("p", Ut, "检测到 " + m(w(r).preview.extra_fields) + " 个多余字段，导入时会忽略。", 1)) : u("", !0),
-					w(r).preview.invalid_rows?.length ? (n(), T("details", Wt, [a[14] ||= g("summary", null, "无效行详情", -1), (n(!0), T(d, null, o(w(r).preview.invalid_rows, (e) => (n(), T("p", { key: e.line }, "第 " + m(e.line) + " 行：" + m(e.reason), 1))), 128))])) : u("", !0)
+					w(r).preview.extra_fields ? (n(), T("p", qt, "检测到 " + m(w(r).preview.extra_fields) + " 个多余字段，导入时会忽略。", 1)) : u("", !0),
+					w(r).preview.invalid_rows?.length ? (n(), T("details", Jt, [a[14] ||= g("summary", null, "无效行详情", -1), (n(!0), T(d, null, o(w(r).preview.invalid_rows, (e) => (n(), T("p", { key: e.line }, "第 " + m(e.line) + " 行：" + m(e.reason), 1))), 128))])) : u("", !0)
 				])) : u("", !0)
 			]),
-			g("div", Gt, [
+			g("div", Yt, [
 				g("button", {
 					class: "em-button",
 					onClick: a[4] ||= (t) => e.owner.close()
@@ -2017,35 +2025,35 @@ var xe = ["aria-busy"], Se = { class: "em-heading" }, Ce = ["disabled"], we = {
 					class: "em-button",
 					disabled: w(r).loading || w(r).busy,
 					onClick: a[5] ||= (t) => e.owner.preview()
-				}, m(w(r).loading ? "解析中…" : "解析预览"), 9, Kt),
+				}, m(w(r).loading ? "解析中…" : "解析预览"), 9, Xt),
 				g("button", {
 					class: "em-button em-primary",
 					"data-local-submit": "",
 					disabled: w(r).busy || w(r).loading || !w(r).text.trim() || !!w(r).preview && !w(r).preview.new,
 					onClick: a[6] ||= (t) => e.owner.submit()
-				}, m(w(r).busy ? "正在导入…" : "导入到邮箱池"), 9, qt)
+				}, m(w(r).busy ? "正在导入…" : "导入到邮箱池"), 9, Zt)
 			])
-		], 40, kt));
+		], 40, Nt));
 	}
-}), Yt = ["aria-busy"], Xt = { class: "em-dialog-head" }, Zt = { id: "emailButlerImportDescription" }, Qt = { class: "em-dialog-body" }, $t = {
+}), $t = ["aria-busy"], en = { class: "em-dialog-head" }, tn = { id: "emailButlerImportDescription" }, nn = { class: "em-dialog-body" }, rn = {
 	key: 0,
 	class: "em-dialog-fields"
-}, en = { class: "em-field" }, tn = ["value", "disabled"], nn = ["value"], rn = { class: "em-field" }, an = ["value", "disabled"], on = {
+}, an = { class: "em-field" }, on = ["value", "disabled"], sn = ["value"], cn = { class: "em-field" }, ln = ["value", "disabled"], un = {
 	key: 1,
 	class: "em-error",
 	role: "alert"
-}, sn = {
+}, dn = {
 	key: 2,
 	role: "status",
 	"aria-live": "polite"
-}, cn = {
+}, fn = {
 	key: 3,
 	class: "em-preview",
 	"aria-label": "Butler 导入结果"
-}, ln = ["max", "value"], un = { class: "em-stats" }, dn = {
+}, pn = ["max", "value"], mn = { class: "em-stats" }, hn = {
 	role: "status",
 	"aria-live": "polite"
-}, fn = { class: "em-help em-preserve-lines" }, pn = { key: 1 }, mn = { key: 2 }, hn = { key: 3 }, gn = { class: "em-dialog-foot" }, _n = ["disabled"], vn = ["disabled"], yn = ["disabled"], bn = ["disabled"], xn = /* @__PURE__ */ t({
+}, gn = { class: "em-help em-preserve-lines" }, _n = { key: 1 }, vn = { key: 2 }, yn = { key: 3 }, bn = { class: "em-dialog-foot" }, xn = ["disabled"], Sn = ["disabled"], Cn = ["disabled"], wn = ["disabled"], Tn = /* @__PURE__ */ t({
 	__name: "EmailButlerImport",
 	props: {
 		owner: {},
@@ -2053,7 +2061,7 @@ var xe = ["aria-busy"], Se = { class: "em-heading" }, Ce = ["disabled"], we = {
 	},
 	setup(e) {
 		let t = e, i = t.owner.state, a = p();
-		V(a, () => i.open, () => t.active);
+		se(a, () => i.open, () => t.active);
 		let s = x(() => Number(i.batch?.imported || 0) + Number(i.batch?.skipped || 0) + Number(i.batch?.failed || 0) + Number(i.batch?.unknown || 0)), l = x(() => t.active && !!i.request && !i.open && ![
 			"completed",
 			"succeeded",
@@ -2076,14 +2084,14 @@ var xe = ["aria-busy"], Se = { class: "em-heading" }, Ce = ["disabled"], we = {
 			onCancel: f[10] ||= y((t) => e.owner.close(), ["prevent"]),
 			onClick: f[11] ||= (t) => t.target === a.value && e.owner.close()
 		}, [
-			g("div", Xt, [g("div", null, [f[12] ||= g("h3", { id: "emailButlerImportTitle" }, "从 Butler 导入邮箱", -1), g("p", Zt, m(w(i).request ? "导入进度会自动保存，可随时关闭窗口。" : "从 Butler 分配长期租用的邮箱，加入本地库存后使用。"), 1)]), g("button", {
+			g("div", en, [g("div", null, [f[12] ||= g("h3", { id: "emailButlerImportTitle" }, "从 Butler 导入邮箱", -1), g("p", tn, m(w(i).request ? "导入进度会自动保存，可随时关闭窗口。" : "从 Butler 分配长期租用的邮箱，加入本地库存后使用。"), 1)]), g("button", {
 				class: "em-button",
 				"aria-label": "关闭 Butler 导入窗口",
 				onClick: f[1] ||= (t) => e.owner.close()
 			}, "关闭")]),
-			g("div", Qt, [
-				w(i).request ? u("", !0) : (n(), T("div", $t, [
-					g("label", en, [f[13] ||= E("邮箱类型", -1), g("select", {
+			g("div", nn, [
+				w(i).request ? u("", !0) : (n(), T("div", rn, [
+					g("label", an, [f[13] ||= E("邮箱类型", -1), g("select", {
 						"aria-label": "Butler 邮箱类型",
 						value: w(i).filters.provider,
 						disabled: w(i).storageError || w(i).busy,
@@ -2091,8 +2099,8 @@ var xe = ["aria-busy"], Se = { class: "em-heading" }, Ce = ["disabled"], we = {
 					}, [(n(!0), T(d, null, o(w(i).providers, (e) => (n(), T("option", {
 						key: e.value,
 						value: e.value
-					}, m(e.label), 9, nn))), 128))], 40, tn)]),
-					g("label", rn, [f[14] ||= E("导入数量", -1), g("input", {
+					}, m(e.label), 9, sn))), 128))], 40, on)]),
+					g("label", cn, [f[14] ||= E("导入数量", -1), g("input", {
 						"aria-label": "Butler 导入数量",
 						type: "number",
 						min: "1",
@@ -2101,30 +2109,30 @@ var xe = ["aria-busy"], Se = { class: "em-heading" }, Ce = ["disabled"], we = {
 						value: w(i).filters.count,
 						disabled: w(i).storageError || w(i).busy,
 						onInput: f[3] ||= (t) => e.owner.changeFilters({ count: Number(t.target.value) })
-					}, null, 40, an)]),
+					}, null, 40, ln)]),
 					f[15] ||= g("p", { class: "em-help" }, "不足时按预览可用数量导入，确认后由 Butler 分配完整地址。", -1)
 				])),
-				w(i).error ? (n(), T("p", on, m(w(i).error), 1)) : u("", !0),
-				w(i).request ? u("", !0) : (n(), T("p", sn, m(w(i).previewing ? "正在查询当前可用数量…" : e.owner.availability.value), 1)),
-				w(i).request ? (n(), T("section", cn, [
+				w(i).error ? (n(), T("p", un, m(w(i).error), 1)) : u("", !0),
+				w(i).request ? u("", !0) : (n(), T("p", dn, m(w(i).previewing ? "正在查询当前可用数量…" : e.owner.availability.value), 1)),
+				w(i).request ? (n(), T("section", fn, [
 					g("h4", null, m(e.owner.batchTitle.value), 1),
 					w(i).batch ? (n(), T(d, { key: 0 }, [
 						g("progress", {
 							max: Math.max(Number(w(i).batch.total || 0), 1),
 							value: Math.min(s.value, Number(w(i).batch.total || 0)),
 							"aria-label": "邮箱导入进度"
-						}, null, 8, ln),
-						g("div", un, [(n(!0), T(d, null, o([
+						}, null, 8, pn),
+						g("div", mn, [(n(!0), T(d, null, o([
 							["已导入", w(i).batch.imported],
 							["待处理", w(i).batch.pending],
 							["租用中", w(i).batch.submitting],
 							["已跳过", w(i).batch.skipped],
 							["失败", Number(w(i).batch.failed || 0) + Number(w(i).batch.unknown || 0)]
 						], (e) => (n(), T("div", { key: String(e[0]) }, [g("strong", null, m(e[1] || 0), 1), g("span", null, m(e[0]), 1)]))), 128))]),
-						g("p", dn, "已处理 " + m(s.value) + " / " + m(w(i).batch.total || 0) + " 个，本次请求 " + m(w(i).batch.requested || 0) + " 个。", 1)
+						g("p", hn, "已处理 " + m(s.value) + " / " + m(w(i).batch.total || 0) + " 个，本次请求 " + m(w(i).batch.requested || 0) + " 个。", 1)
 					], 64)) : u("", !0),
-					c(I, {
-						label: w(ae)(e.owner.batchTitle.value),
+					c(z, {
+						label: w(ue)(e.owner.batchTitle.value),
 						title: e.owner.batchDetails.value,
 						tone: w(i).batch?.status === "cancelled" ? "neutral" : w(i).batch?.failed ? "warning" : "active"
 					}, {
@@ -2135,13 +2143,13 @@ var xe = ["aria-busy"], Se = { class: "em-heading" }, Ce = ["disabled"], we = {
 						"title",
 						"tone"
 					]),
-					g("p", fn, m(w(i).batch?.status === "cancelled" ? "已停止后续导入，原结果与租约保留。" : e.owner.isRunning.value || w(i).resumePending ? "可以关闭窗口，导入会在后台继续。" : w(i).batch?.can_retry ? "可继续原批次处理剩余邮箱，已导入的邮箱会保留。" : "已保存原导入记录。"), 1),
-					w(i).request.filters ? (n(), T("small", pn, "来源：" + m(w(fe).find((e) => e.value === w(i).request?.filters?.provider)?.label || w(i).request.filters.provider) + " · 原请求数量 " + m(w(i).request.filters.count), 1)) : u("", !0),
-					w(i).batch ? (n(), T("small", mn, "批次：" + m(w(i).batch.batch_id), 1)) : u("", !0),
-					w(i).request ? (n(), T("small", hn, "原请求：" + m(w(i).request.request_id), 1)) : u("", !0)
+					g("p", gn, m(w(i).batch?.status === "cancelled" ? "已停止后续导入，原结果与租约保留。" : e.owner.isRunning.value || w(i).resumePending ? "可以关闭窗口，导入会在后台继续。" : w(i).batch?.can_retry ? "可继续原批次处理剩余邮箱，已导入的邮箱会保留。" : "已保存原导入记录。"), 1),
+					w(i).request.filters ? (n(), T("small", _n, "来源：" + m(w(ge).find((e) => e.value === w(i).request?.filters?.provider)?.label || w(i).request.filters.provider) + " · 原请求数量 " + m(w(i).request.filters.count), 1)) : u("", !0),
+					w(i).batch ? (n(), T("small", vn, "批次：" + m(w(i).batch.batch_id), 1)) : u("", !0),
+					w(i).request ? (n(), T("small", yn, "原请求：" + m(w(i).request.request_id), 1)) : u("", !0)
 				])) : u("", !0)
 			]),
-			g("div", gn, [
+			g("div", bn, [
 				g("button", {
 					class: "em-button",
 					onClick: f[4] ||= (t) => e.owner.close()
@@ -2151,13 +2159,13 @@ var xe = ["aria-busy"], Se = { class: "em-heading" }, Ce = ["disabled"], we = {
 					class: "em-button em-danger",
 					disabled: w(i).busy,
 					onClick: f[5] ||= (t) => e.owner.cancel()
-				}, m(w(i).busy ? "正在终止…" : "终止批次"), 9, _n)) : u("", !0),
+				}, m(w(i).busy ? "正在终止…" : "终止批次"), 9, xn)) : u("", !0),
 				e.owner.canReset.value ? (n(), T("button", {
 					key: 1,
 					class: "em-button",
 					disabled: w(i).busy || w(i).polling,
 					onClick: f[6] ||= (t) => e.owner.reset()
-				}, "新建导入", 8, vn)) : u("", !0),
+				}, "新建导入", 8, Sn)) : u("", !0),
 				w(i).request ? e.owner.canRetry.value ? (n(), T("button", {
 					key: 3,
 					class: "em-button em-primary",
@@ -2166,15 +2174,15 @@ var xe = ["aria-busy"], Se = { class: "em-heading" }, Ce = ["disabled"], we = {
 					class: "em-button",
 					disabled: w(i).busy || w(i).previewing || w(i).storageError,
 					onClick: f[7] ||= (t) => e.owner.preview()
-				}, "刷新可用数量", 8, yn), g("button", {
+				}, "刷新可用数量", 8, Cn), g("button", {
 					class: "em-button em-primary",
 					disabled: w(i).busy || w(i).previewing || w(i).storageError || !w(i).preview?.selected,
 					onClick: f[8] ||= (t) => e.owner.apply()
-				}, m(w(i).preview?.selected ? `开始导入 ${w(i).preview.selected} 个` : "开始导入"), 9, bn)], 64))
+				}, m(w(i).preview?.selected ? `开始导入 ${w(i).preview.selected} 个` : "开始导入"), 9, wn)], 64))
 			])
-		], 40, Yt)], 64));
+		], 40, $t)], 64));
 	}
-}), Sn = { class: "em-page" }, Cn = /* @__PURE__ */ t({
+}), En = { class: "em-page" }, Dn = /* @__PURE__ */ t({
 	__name: "EmailPageShell",
 	props: {
 		api: {},
@@ -2191,12 +2199,12 @@ var xe = ["aria-busy"], Se = { class: "em-heading" }, Ce = ["disabled"], we = {
 		}), d = Z(u, async (e, t) => {
 			let n = await r.api.overview(e);
 			t() && (u.sources = n.email?.supply?.sources || n.email?.sources || []);
-		}), f = ce(r.api, r.deps), m = ue(r.api, r.deps), h = {
+		}), f = fe(r.api, r.deps), m = me(r.api, r.deps), h = {
 			...r.deps,
 			async onInventoryChanged() {
 				f.refresh(), m.refresh(), d.refresh(), await r.deps.onInventoryChanged();
 			}
-		}, g = de(r.api, h), v = be(r.api, h, { storage: {
+		}, g = he(r.api, h), v = we(r.api, h, { storage: {
 			getItem: (e) => localStorage.getItem(e),
 			setItem: (e, t) => localStorage.setItem(e, t),
 			removeItem: (e) => localStorage.removeItem(e)
@@ -2253,8 +2261,8 @@ var xe = ["aria-busy"], Se = { class: "em-heading" }, Ce = ["disabled"], we = {
 			openImport: A,
 			openButlerImport: j,
 			closeDialogs: S
-		}), (e, t) => (n(), T("div", Sn, [
-			a(c(Pe, {
+		}), (e, t) => (n(), T("div", En, [
+			a(c(Re, {
 				sources: u.sources,
 				expanded: u.expanded,
 				loading: u.loading,
@@ -2272,7 +2280,7 @@ var xe = ["aria-busy"], Se = { class: "em-heading" }, Ce = ["disabled"], we = {
 				"error",
 				"butler-label"
 			]), [[C, i.value === "overview"]]),
-			a(c(_t, {
+			a(c(xt, {
 				owner: w(f),
 				active: o.value && l.value && i.value === "list",
 				"butler-label": y.value,
@@ -2284,15 +2292,15 @@ var xe = ["aria-busy"], Se = { class: "em-heading" }, Ce = ["disabled"], we = {
 				"active",
 				"butler-label"
 			]), [[C, i.value === "list"]]),
-			a(c(Ot, {
+			a(c(Mt, {
 				owner: w(m),
 				active: o.value && l.value && i.value === "derivations"
 			}, null, 8, ["owner", "active"]), [[C, i.value === "derivations"]]),
-			c(Jt, {
+			c(Qt, {
 				owner: w(g),
 				active: o.value && l.value
 			}, null, 8, ["owner", "active"]),
-			c(xn, {
+			c(Tn, {
 				owner: w(v),
 				active: o.value && l.value
 			}, null, 8, ["owner", "active"])
@@ -2300,7 +2308,7 @@ var xe = ["aria-busy"], Se = { class: "em-heading" }, Ce = ["disabled"], we = {
 	}
 });
 // src/api/email.ts
-function wn(e = (e, t) => O(e, t, H)) {
+function On(e = (e, t) => O(e, t, e.startsWith("/api/bulk-mutations/") || e === "/api/outlook/status-bulk" || e === "/api/outlook/delete-bulk" ? M : ce)) {
 	let t = (t, n) => e(t, { signal: n }), n = (t, n, r) => e(t, {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
@@ -2339,9 +2347,9 @@ function wn(e = (e, t) => O(e, t, H)) {
 			field: "copy_line"
 		}, t),
 		status: (e) => n("/api/outlook/status", e),
-		bulkStatus: (e) => n("/api/outlook/status-bulk", e),
+		bulkStatus: async (t, n) => j(await A(e, "/api/outlook/status-bulk", t, n), "email", "update"),
 		delete: (e) => n("/api/outlook/delete", e),
-		bulkDelete: (e) => n("/api/outlook/delete-bulk", e),
+		bulkDelete: async (t, n) => j(await A(e, "/api/outlook/delete-bulk", t, n), "email", "delete"),
 		localPreview: (e, t) => n("/api/outlook/import-preview", e, t),
 		localImport: (e) => n("/api/outlook/import", e),
 		options: (e) => t("/api/email-butler/import-options", e),
@@ -2353,9 +2361,9 @@ function wn(e = (e, t) => O(e, t, H)) {
 	};
 }
 // src/email.ts
-function Tn(e, t) {
-	let n = S(Cn, {
-		api: wn(),
+function kn(e, t) {
+	let n = S(Dn, {
+		api: On(),
 		deps: t,
 		initialView: t.view || "overview",
 		initialVisible: t.visible || !1
@@ -2373,4 +2381,4 @@ function Tn(e, t) {
 		destroy: () => n.unmount()
 	};
 }
-export { Tn as mountEmail };
+export { kn as mountEmail };
