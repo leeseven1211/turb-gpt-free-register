@@ -10,27 +10,49 @@ import json
 import uuid
 
 from core.operations import run_log
+from core.operations import task_gateway
 from core.storage.operations import common
-from core.storage.operations import schema
 from psycopg.rows import dict_row
+
+
+def create_batch(*, conn, task_type: str, requested_count: int, trigger: str, title: str) -> dict:
+    batch_uuid = uuid.uuid4().hex
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            f"""INSERT INTO {common._table('operation_batches')}
+                (batch_uuid,source_system,source_id,batch_type,title,status,requested_count,created_by,data)
+                VALUES (%s,'native_operations',%s,%s,%s,'queued',%s,%s,'{{}}'::jsonb)
+                RETURNING id,batch_uuid""",
+            (batch_uuid, batch_uuid, str(task_type), str(title), max(0, int(requested_count)), str(trigger)),
+        )
+        return dict(cur.fetchone())
 
 
 def create_specs(specifications: Sequence[Mapping], *, conn) -> list[dict]:
     """集合创建普通 durable Task/Run/Event，按输入顺序返回受理回执。"""
     if not specifications:
         return []
-    schema.init_operation_schema()
     rows = []
     for index, raw in enumerate(specifications, 1):
         spec = dict(raw)
         task_type = str(spec.get("task_type") or "").strip()
         source_system = str(spec.get("source_system") or "native_operations").strip() or "native_operations"
-        source_id = str(spec.get("source_id") or "").strip() or uuid.uuid4().hex
+        source_id = str(spec.get("source_id") or spec.get("idempotency_key") or "").strip() or uuid.uuid4().hex
         account_id = spec.get("account_id")
         account_id = int(account_id) if account_id is not None else None
         task_uuid, run_uuid = uuid.uuid4().hex, uuid.uuid4().hex
+        payload = dict(spec.get("data") or {})
+        if "config_snapshot" in payload:
+            raise ValueError("bulk_config_snapshot_requires_allowlist")
+        if spec.get("config_snapshot") is not None:
+            if spec.get("config_allowlist") is None:
+                raise ValueError("bulk_config_snapshot_requires_allowlist")
+            payload["config_snapshot"] = task_gateway.normalize_config_snapshot(
+                spec["config_snapshot"], allowlist=spec["config_allowlist"],
+            )
+        if spec.get("parent_task_id"):
+            raise ValueError("bulk_parent_task_not_supported")
         rows.append({
-            **spec,
             "task_type": task_type,
             "source_system": source_system,
             "source_id": source_id,
@@ -45,13 +67,31 @@ def create_specs(specifications: Sequence[Mapping], *, conn) -> list[dict]:
             "batch_id": int(spec["batch_id"]) if spec.get("batch_id") is not None else None,
             "batch_ordinal": int(spec.get("batch_ordinal") or index),
             "log_file": str(run_log.build_path(task_uuid=task_uuid, run_no=1, run_uuid=run_uuid)),
-            "data": common._scrub(dict(spec.get("data") or {})),
+            "data": common._scrub(payload),
         })
+    def identity(row):
+        return row["source_system"], row["source_id"]
+
+    def fingerprint(row):
+        return row["account_id"], row["task_type"], row["resource_family"], row["data"]
+
+    unique = {}
+    for row in rows:
+        prior = unique.get(identity(row))
+        if prior is not None and fingerprint(prior) != fingerprint(row):
+            raise ValueError("idempotency_key_conflict")
+        unique.setdefault(identity(row), row)
     with conn.cursor(row_factory=dict_row) as cur:
-        payload = json.dumps(rows, ensure_ascii=False)
+        # 完整命名空间按同一顺序锁定，覆盖account_id=None及跨账号同source竞争。
+        cur.execute(
+            """SELECT pg_advisory_xact_lock(hashtextextended(value,0))
+               FROM unnest(%s::text[]) AS value ORDER BY value""",
+            (sorted(f"{common._schema_name()}:native-submission:{system}:{source}" for system, source in unique),),
+        )
+        payload = json.dumps(list(unique.values()), ensure_ascii=False, default=str)
         cur.execute(
             f"""SELECT t.id AS task_id,t.source_system,t.source_id,t.account_id,t.task_type,
-                       t.last_run_id AS run_id,r.status
+                       t.last_run_id AS run_id,r.status,r.resource_family,r.data
                 FROM {common._table('operation_tasks')} t
                 LEFT JOIN {common._table('operation_runs')} r ON r.id=t.last_run_id
                 WHERE (t.source_system,t.source_id) IN (
@@ -61,7 +101,10 @@ def create_specs(specifications: Sequence[Mapping], *, conn) -> list[dict]:
             (payload,),
         )
         existing = {(row["source_system"], row["source_id"]): dict(row) for row in cur.fetchall()}
-        fresh = [row for row in rows if (row["source_system"], row["source_id"]) not in existing]
+        for key, prior in existing.items():
+            if fingerprint(prior) != fingerprint(unique[key]):
+                raise ValueError("idempotency_key_conflict")
+        fresh = [row for row in unique.values() if identity(row) not in existing]
         if fresh:
             fresh_payload = json.dumps(fresh, ensure_ascii=False)
             cur.execute(
@@ -154,4 +197,4 @@ def create_specs(specifications: Sequence[Mapping], *, conn) -> list[dict]:
         return result
 
 
-__all__ = ["create_specs"]
+__all__ = ["create_batch", "create_specs"]

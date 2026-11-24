@@ -5,6 +5,8 @@ from core.storage.operations import bulk_submission, schema
 from core.storage.operations import common
 from tests.support_pg import PostgresTestCase
 from psycopg.rows import dict_row
+from concurrent.futures import ThreadPoolExecutor
+from unittest.mock import patch
 
 
 class SharedBulkSubmissionTests(PostgresTestCase):
@@ -46,3 +48,54 @@ class SharedBulkSubmissionTests(PostgresTestCase):
             ], conn=conn)
         self.assertEqual([row["task_id"] for row in second], [row["task_id"] for row in first])
         self.assertTrue(all(row["reused"] for row in second))
+
+    def test_conflicting_identity_duplicate_specs_and_concurrent_source_are_explicit(self):
+        schema.reset_operation_ready()
+        schema.init_operation_schema()
+        spec = {"task_type": "plan_check", "account_id": 7, "email": "a@example.test",
+                "source_id": "idempotent-shared", "data": {"mode": "a"}}
+        with common._connect() as conn:
+            result = bulk_submission.create_specs([spec, spec], conn=conn)
+        self.assertEqual(result[0]["task_id"], result[1]["task_id"])
+        for changed in (
+            {"account_id": 8}, {"task_type": "live_check"}, {"data": {"mode": "b"}},
+            {"resource_family": "completion_coordinator"},
+        ):
+            with self.subTest(changed=changed), self.assertRaisesRegex(ValueError, "idempotency_key_conflict"):
+                with common._connect() as conn:
+                    bulk_submission.create_specs([{**spec, **changed}], conn=conn)
+        concurrent = {**spec, "source_id": "concurrent-shared", "account_id": None}
+        def create():
+            with common._connect() as conn:
+                return bulk_submission.create_specs([concurrent], conn=conn)[0]
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            values = list(pool.map(lambda _: create(), range(2)))
+        self.assertEqual(values[0]["task_id"], values[1]["task_id"])
+        self.assertEqual(sorted(item["reused"] for item in values), [False, True])
+
+    def test_configuration_requires_explicit_allowlist_and_rollback_is_shared(self):
+        schema.reset_operation_ready()
+        schema.init_operation_schema()
+        spec = {"task_type": "live_check", "account_id": None, "source_id": "allowlist"}
+        with self.assertRaisesRegex(ValueError, "requires_allowlist"):
+            with common._connect() as conn:
+                bulk_submission.create_specs([{**spec, "data": {"config_snapshot": {"unlisted": 1}}}], conn=conn)
+        with self.assertRaisesRegex(RuntimeError, "rollback"):
+            with common._connect() as conn:
+                bulk_submission.create_specs([{
+                    **spec, "config_snapshot": {"allowed": 1, "unlisted": 2}, "config_allowlist": ("allowed",),
+                }], conn=conn)
+                raise RuntimeError("rollback")
+        with common._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"SELECT count(*) AS n FROM {common._table('operation_tasks')} WHERE source_id='allowlist'")
+            self.assertEqual(cur.fetchone()["n"], 0)
+
+    def test_shared_primitive_does_not_initialize_schema_inside_locked_transaction(self):
+        schema.reset_operation_ready()
+        schema.init_operation_schema()
+        with patch.object(schema, "init_operation_schema", side_effect=AssertionError("nested initialization")):
+            with common._connect() as conn:
+                result = bulk_submission.create_specs([{
+                    "task_type": "live_check", "account_id": None, "source_id": "no-cold-init",
+                }], conn=conn)
+        self.assertTrue(result[0]["accepted"])
