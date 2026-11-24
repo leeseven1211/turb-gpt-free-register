@@ -1,188 +1,254 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack
+from unittest.mock import patch
 
 import pytest
 
-from core.operations import bulk_mutation_worker as worker
+from core.operations import bulk_mutation_worker as worker, task_gateway
 from core.operations.bulk_mutations import BulkItemResult
-from core.operations.task_gateway import OperationResult
+from core.operations.runtime import OperationCancelled
+from core.storage.operations import bulk_mutations as commands, store as operation
+from tests.support_pg import PostgresTestCase
 
 
 @pytest.fixture(autouse=True)
-def _reset_worker_registry(monkeypatch):
-    worker._HANDLERS.clear()
-    worker._RUNTIME_REGISTERED = False
+def _restore_registries():
+    from core.operations import concurrency
+    names = ('_DISPATCH_HANDLERS', '_DISPATCH_CAPACITY_HANDLERS', '_OPERATION_HANDLERS',
+        '_OPERATION_ACTIONS', '_OPERATION_ACTION_SOURCES', '_OPERATION_HANDLER_ALLOWLISTS')
+    snapshots = {name:dict(getattr(task_gateway, name)) for name in names}
+    old_handlers = dict(worker._HANDLERS)
+    old_registered = worker._RUNTIME_REGISTERED
+    old_aliases = dict(concurrency._ALIASES)
     yield
     worker._HANDLERS.clear()
-    worker._RUNTIME_REGISTERED = False
+    worker._HANDLERS.update(old_handlers)
+    worker._RUNTIME_REGISTERED = old_registered
+    concurrency._ALIASES.clear()
+    concurrency._ALIASES.update(old_aliases)
+    for name, values in snapshots.items():
+        getattr(task_gateway, name).clear()
+        getattr(task_gateway, name).update(values)
 
 
-def test_register_handler_and_submit_duplicate_idempotency_key(monkeypatch):
-    calls = []
-
-    def handler(chunk, parameters):
-        calls.append((tuple(chunk), dict(parameters)))
-        return [BulkItemResult(key=item, status="updated") for item in chunk]
-
-    worker.register_bulk_mutation_handler("archive", handler)
-    assert worker.registered_bulk_mutation_operations() == ("archive",)
-
-    submitted = []
-
-    def submit(**kwargs):
-        submitted.append(kwargs)
-        return {
-            "accepted": True,
-            "reused": len(submitted) > 1,
-            "task_id": 11,
-            "run_id": 21,
-            "status": "queued",
-        }
-
-    monkeypatch.setattr(worker.task_gateway, "submit_durable_operation", submit)
-    first = worker.submit_bulk_mutation(
-        "archive", [1, 2], {"mode": "soft", "password": "do-not-store"},
-        idempotency_key="request-1", trigger="manual",
-    )
-    second = worker.submit_bulk_mutation(
-        "archive", [1, 2], {"mode": "soft", "password": "do-not-store"},
-        idempotency_key="request-1", trigger="manual",
-    )
-
-    assert first["run_id"] == second["run_id"]
-    assert submitted[0]["data"]["parameters"] == {"mode": "soft"}
-    assert "password" not in submitted[0]["data"]["parameters"]
-    assert submitted[0]["task_type"] == worker.TASK_TYPE
-    assert submitted[0]["source_id"].startswith("bulk:")
-    assert submitted[0]["source_id"] == submitted[1]["source_id"]
+def test_unknown_operation_is_rejected_before_persistence():
+    with pytest.raises(ValueError, match="bulk_handler_not_registered"):
+        worker.submit_bulk_mutation("unregistered-test", [1], {},
+            idempotency_key="unknown", trigger="manual")
 
 
-def test_worker_claims_and_calls_handler_by_chunks(monkeypatch):
-    seen = []
-    context = _Context(
-        run_id=31,
-        task_id=41,
-        run={
-            "id": 31,
-            "task_id": 41,
-            "data": {
-                "operation": "archive",
-                "targets": [1, 2, 3],
-                "parameters": {"mode": "soft"},
-                "chunk_size": 2,
-                "idempotency_key": "request-2",
-            },
-        },
-    )
-
-    def handler(chunk, parameters):
-        seen.append((tuple(chunk), dict(parameters)))
-        return [BulkItemResult(key=item, status="updated") for item in chunk]
-
-    worker.register_bulk_mutation_handler("archive", handler)
-    result = worker._handle_claimed_bulk_mutation(context)
-
-    assert [chunk for chunk, _ in seen] == [(1, 2), (3,)]
-    assert result.status == "success"
-    assert result.summary["updated_count"] == 3
-    assert [event["detail"]["chunk_index"] for event in context.events] == [0, 1]
+def test_parameters_require_allowlist_and_reject_sensitive_fields():
+    worker.register_bulk_mutation_handler("test_allowlist", lambda chunk, parameters, *, conn: [],
+        parameter_allowlist=("note", "session"))
+    for parameters in ({"other": 1}, {"session": "secret"}, {"note": object()}):
+        with pytest.raises((ValueError, TypeError)):
+            worker.submit_bulk_mutation("test_allowlist", [1], parameters,
+                idempotency_key="invalid", trigger="manual")
 
 
-def test_repeated_claim_skips_completed_chunks_and_keeps_reason_code(monkeypatch):
-    seen = []
-    first_context = _Context(
-        run_id=51,
-        task_id=61,
-        run={
-            "id": 51,
-            "task_id": 61,
-            "data": {
-                "operation": "archive",
-                "targets": [1, 2, 3, 4],
-                "parameters": {},
-                "chunk_size": 2,
-                "idempotency_key": "request-3",
-            },
-        },
-    )
-
-    def handler(chunk, parameters):
-        seen.append(tuple(chunk))
-        if tuple(chunk) == (1, 2):
-            return [
-                BulkItemResult(key=1, status="updated"),
-                BulkItemResult(key=2, status="failed", reason_code="target_locked"),
-            ]
-        return [BulkItemResult(key=item, status="updated") for item in chunk]
-
-    worker.register_bulk_mutation_handler("archive", handler)
-    first = worker._handle_claimed_bulk_mutation(first_context)
-    assert first.status == "partial_success"
-
-    second_context = _Context(
-        run_id=51,
-        task_id=61,
-        run={**first_context.run, "data": first_context.run["data"]},
-        events=list(first_context.events),
-    )
-    second = worker._handle_claimed_bulk_mutation(second_context)
-
-    assert seen == [(1, 2), (3, 4)]
-    failed = next(item for item in second.summary["items"] if item["key"] == 2)
-    assert failed["reason_code"] == "target_locked"
-    assert second.summary["failed_count"] == 1
+def test_invalid_chunk_size_and_foreign_run_are_rejected_before_claim():
+    for size in (0, 501, True):
+        with pytest.raises(ValueError, match="invalid_bulk_chunk_size"):
+            worker.register_bulk_mutation_handler("chunk_validation", lambda chunk, parameters, *, conn: [], chunk_size=size)
+    with patch.object(task_gateway, '_operation') as storage, patch.object(task_gateway, '_execute_operation_handler') as execute:
+        storage.return_value.get_run.return_value = {'id':4,'task_type':'codex_retry',
+            'source_system':'native_operations','data':{'command_id':1}}
+        assert worker.run_bulk_mutation(4)['status'] == 'not_bulk_mutation'
+        execute.assert_not_called()
 
 
-def test_run_bulk_mutation_delegates_to_durable_gateway(monkeypatch):
-    called = []
-    monkeypatch.setattr(
-        worker.task_gateway,
-        "_execute_operation_handler",
-        lambda task_type, run_id: called.append((task_type, run_id)) or {"status": "success"},
-    )
+class BulkMutationWorkerTests(PostgresTestCase):
+    def setUp(self):
+        self.stack = ExitStack()
+        self.addCleanup(self.stack.close)
+        from core import account_task_store
+        self.stack.enter_context(patch.object(account_task_store, "_SCHEMA", self.schema))
+        self.stack.enter_context(patch.object(account_task_store, "_READY_KEY", ""))
+        operation.reset_ready()
+        operation.init()
+        commands.init()
+        with operation._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"CREATE TABLE IF NOT EXISTS {operation._table('test_bulk_counters')} "
+                "(id bigint PRIMARY KEY, value integer NOT NULL DEFAULT 0)")
 
-    assert worker.run_bulk_mutation(99) == {"status": "success"}
-    assert called == [(worker.TASK_TYPE, 99)]
+    def _register(self, name="test_increment", *, handler=None, parameter_allowlist=()):
+        def increment(chunk, parameters, *, conn):
+            with conn.cursor() as cur:
+                cur.execute(f"INSERT INTO {operation._table('test_bulk_counters')} (id,value) "
+                    "SELECT value,1 FROM unnest(%s::bigint[]) value "
+                    "ON CONFLICT(id) DO UPDATE SET value=test_bulk_counters.value+1", (list(chunk),))
+            return [BulkItemResult(key=key, status="updated") for key in chunk]
+        worker.register_bulk_mutation_handler(name, handler or increment,
+            parameter_allowlist=parameter_allowlist)
+        return increment
 
+    def _submit(self, targets, *, key="request", operation_name="test_increment", parameters=None):
+        return worker.submit_bulk_mutation(operation_name, targets, parameters or {},
+            idempotency_key=key, trigger="manual")
 
-def test_mapping_handler_result_preserves_failure_reason_code():
-    context = _Context(
-        run_id=71,
-        task_id=81,
-        run={
-            "id": 71,
-            "task_id": 81,
-            "data": {
-                "operation": "archive",
-                "targets": [1],
-                "parameters": {},
-            },
-        },
-    )
-    worker.register_bulk_mutation_handler(
-        "archive",
-        lambda chunk, parameters: {
-            1: {"status": "failed", "reason_code": "already_deleted"},
-        },
-    )
+    def _claim(self, submitted, *, execution="test-worker"):
+        run = operation.claim_run(submitted["run_id"], execution_id=execution, worker_pid=123)
+        self.assertIsNotNone(run)
+        return task_gateway.OperationHandlerContext(run, execution_id=execution)
 
-    result = worker._handle_claimed_bulk_mutation(context)
+    def _counters(self):
+        with operation._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"SELECT id,value FROM {operation._table('test_bulk_counters')} ORDER BY id")
+            return {row['id']: row['value'] for row in cur.fetchall()}
 
-    assert result.status == "failed"
-    assert result.summary["items"][0]["reason_code"] == "already_deleted"
+    def test_complete_targets_and_receipts_survive_above_five_thousand(self):
+        self._register()
+        submitted = self._submit(list(range(5001)))
+        command = commands.get_command(submitted["command_id"])
+        self.assertEqual(list(range(5001)), command["targets"])
+        run = operation.get_run(submitted["run_id"])
+        self.assertEqual({"command_id", "operation", "bulk_mutation"}, set(run["data"]))
+        result = worker._handle_claimed_bulk_mutation(self._claim(submitted))
+        self.assertEqual(5001, result.summary["updated_count"])
+        persisted = commands.get_command_result(submitted["command_id"])
+        self.assertEqual(5001, len(persisted["items"]))
+        self.assertEqual(list(range(5001)), [item["key"] for item in persisted["items"]])
+        self.assertEqual({1}, set(self._counters().values()))
+        events = operation.list_task_events(submitted["task_id"], run_id=submitted["run_id"], limit=100)
+        self.assertTrue(events["items"])
+        self.assertTrue(all("items" not in event["detail"] for event in events["items"]))
 
+    def test_crash_after_business_write_rolls_back_chunk_and_reentry_does_not_increment_twice(self):
+        increment = self._register()
+        submitted = self._submit([1, 2])
+        context = self._claim(submitted)
 
-@dataclass
-class _Context:
-    run_id: int
-    task_id: int
-    run: dict
-    events: list[dict] = field(default_factory=list)
+        def crash(chunk, parameters, *, conn):
+            increment(chunk, parameters, conn=conn)
+            raise KeyboardInterrupt("simulated crash before receipt")
 
-    def report(self, **event):
-        self.events.append(event)
-        return event
+        worker.register_bulk_mutation_handler("test_increment", crash)
+        with self.assertRaises(KeyboardInterrupt):
+            worker._handle_claimed_bulk_mutation(context)
+        self.assertEqual({}, self._counters())
+        self.assertEqual([], commands.get_command_result(submitted["command_id"])["items"])
+        self._register()
+        first = worker._handle_claimed_bulk_mutation(context)
+        second = worker._handle_claimed_bulk_mutation(context)
+        self.assertEqual(2, first.summary["updated_count"])
+        self.assertEqual(2, second.summary["updated_count"])
+        self.assertEqual({1: 1, 2: 1}, self._counters())
 
-    def checkpoint(self):
-        return None
+    def test_committed_chunk_receipt_survives_new_run_after_interruption(self):
+        increment = self._register()
+        submitted = self._submit(list(range(501)))
+        context = self._claim(submitted)
+
+        def crash_second(chunk, parameters, *, conn):
+            if chunk[0] == 500:
+                raise KeyboardInterrupt("worker restart")
+            return increment(chunk, parameters, conn=conn)
+
+        worker.register_bulk_mutation_handler("test_increment", crash_second)
+        with self.assertRaises(KeyboardInterrupt):
+            worker._handle_claimed_bulk_mutation(context)
+        operation.finish_run(context.run_id, status="interrupted", execution_id=context.execution_id)
+        retry = operation.retry_runtime_task(submitted["task_id"])
+        self._register()
+        next_context = self._claim({**submitted, "run_id": retry["id"]}, execution="replacement-worker")
+        result = worker._handle_claimed_bulk_mutation(next_context)
+        self.assertEqual(501, result.summary["updated_count"])
+        self.assertEqual(501, len(commands.get_command_result(submitted["command_id"])["items"]))
+        self.assertEqual({1}, set(self._counters().values()))
+
+    def test_same_key_different_payload_conflicts_and_concurrent_same_key_creates_once(self):
+        self._register(parameter_allowlist=("note",))
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(lambda _: self._submit([1, 2], parameters={"note": "a"}), range(2)))
+        self.assertEqual(results[0]["command_id"], results[1]["command_id"])
+        self.assertEqual(results[0]["run_id"], results[1]["run_id"])
+        with self.assertRaisesRegex(ValueError, "idempotency_key_conflict"):
+            self._submit([1, 3], parameters={"note": "a"})
+        with self.assertRaisesRegex(ValueError, "idempotency_key_conflict"):
+            self._submit([1, 2], parameters={"note": "b"})
+        with operation._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"SELECT count(*) AS n FROM {operation._table('operation_bulk_mutation_commands')}")
+            self.assertEqual(1, cur.fetchone()["n"])
+            cur.execute(f"SELECT count(*) AS n FROM {operation._table('operation_tasks')} WHERE task_type='bulk_mutation'")
+            self.assertEqual(1, cur.fetchone()["n"])
+
+    def test_cancel_between_chunks_preserves_committed_chunk_and_stops_remaining(self):
+        self._register()
+        submitted = self._submit(list(range(501)))
+        context = self._claim(submitted)
+        original_report = context.report
+
+        def report(**event):
+            stored = original_report(**event)
+            if event.get("event_type") == "bulk.chunk.completed":
+                operation.request_run_cancel(context.run_id, reason="test cancellation")
+            return stored
+
+        with patch.object(context, "report", report):
+            with self.assertRaises(OperationCancelled):
+                worker._handle_claimed_bulk_mutation(context)
+        self.assertEqual(500, len(self._counters()))
+        self.assertEqual(500, len(commands.get_command_result(submitted["command_id"])["items"]))
+
+    def test_missing_result_is_failed_and_failure_reason_is_durable(self):
+        self._register(handler=lambda chunk, parameters, *, conn: [
+            BulkItemResult(key=1, status="failed", reason_code="target_locked")])
+        submitted = self._submit([1, 2])
+        result = worker._handle_claimed_bulk_mutation(self._claim(submitted))
+        self.assertEqual(2, result.summary["failed_count"])
+        persisted = commands.get_command_result(submitted["command_id"])
+        self.assertEqual(["target_locked", "bulk_result_missing"],
+            [item["reason_code"] for item in persisted["items"]])
+
+    def test_failed_chunk_rolls_back_mutation_and_records_stable_reason(self):
+        increment = self._register()
+        def fail(chunk, parameters, *, conn):
+            increment(chunk, parameters, conn=conn)
+            raise RuntimeError("synthetic")
+        self._register(handler=fail)
+        submitted = self._submit([1])
+        result = worker._handle_claimed_bulk_mutation(self._claim(submitted))
+        self.assertEqual("failed", result.status)
+        self.assertEqual({}, self._counters())
+        self.assertEqual("bulk_chunk_failed",
+            commands.get_command_result(submitted["command_id"])["items"][0]["reason_code"])
+
+    def test_stale_execution_fence_cannot_mutate_or_store_receipt(self):
+        self._register()
+        submitted = self._submit([1])
+        context = self._claim(submitted)
+        with operation._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"UPDATE {operation._table('operation_runs')} SET execution_id='new-owner' WHERE id=%s", (context.run_id,))
+        with self.assertRaises(PermissionError):
+            worker._handle_claimed_bulk_mutation(context)
+        self.assertEqual({}, self._counters())
+        self.assertEqual([], commands.get_command_result(submitted["command_id"])["items"])
+
+    def test_submission_rollback_leaves_neither_command_nor_task(self):
+        self._register()
+        actual_attach = commands.attach_task
+        def reject(*args, **kwargs):
+            actual_attach(*args, **kwargs)
+            raise RuntimeError('abort queue transaction')
+        with patch.object(commands, 'attach_task', reject):
+            with self.assertRaisesRegex(RuntimeError, 'abort queue transaction'):
+                self._submit([1])
+        with operation._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"SELECT count(*) AS n FROM {operation._table('operation_bulk_mutation_commands')}")
+            self.assertEqual(0, cur.fetchone()['n'])
+            cur.execute(f"SELECT count(*) AS n FROM {operation._table('operation_tasks')} WHERE task_type='bulk_mutation'")
+            self.assertEqual(0, cur.fetchone()['n'])
+
+    def test_after_commit_observes_committed_data_and_reentry_reissues_idempotent_notification(self):
+        increment = self._register()
+        observed = []
+        def after_commit(chunk, parameters, items):
+            observed.append((self._counters(), len(items)))
+        worker.register_bulk_mutation_handler('test_increment', increment, after_commit=after_commit)
+        submitted = self._submit([1, 2])
+        context = self._claim(submitted)
+        worker._handle_claimed_bulk_mutation(context)
+        worker._handle_claimed_bulk_mutation(context)
+        self.assertEqual([({1:1,2:1},2),({1:1,2:1},2)], observed)

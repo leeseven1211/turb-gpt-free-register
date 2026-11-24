@@ -2325,22 +2325,22 @@ def dispatcher_status() -> dict[str, object]:
         }
 
 
-def register_bulk_mutation_handler(operation: str, handler: Callable[..., Any]) -> None:
-    """Lazy forwarder for the durable bulk mutation worker boundary."""
+def register_bulk_mutation_handler(operation: str, handler: Callable[..., Any], **kwargs: Any) -> None:
+    """惰性转发批量命令的业务 handler 注册与参数白名单。"""
     from core.operations.bulk_mutation_worker import register_bulk_mutation_handler as register
 
-    return register(operation, handler)
+    return register(operation, handler, **kwargs)
 
 
 def submit_bulk_mutation(*args: Any, **kwargs: Any) -> dict[str, Any]:
-    """Lazy forwarder for submitting one idempotent bulk mutation command."""
+    """惰性转发幂等批量命令提交。"""
     from core.operations.bulk_mutation_worker import submit_bulk_mutation as submit
 
     return submit(*args, **kwargs)
 
 
 def run_bulk_mutation(run_id: int) -> dict[str, Any]:
-    """Lazy forwarder for executing one claimed bulk mutation Run."""
+    """惰性转发批量命令 Run 的领取与执行。"""
     from core.operations.bulk_mutation_worker import run_bulk_mutation as run
 
     return run(run_id)
