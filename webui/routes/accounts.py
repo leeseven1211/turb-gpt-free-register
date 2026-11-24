@@ -22,6 +22,7 @@ from core.accounts import registration_retry as account_registration_retry
 from core import account_task_store
 from core.storage import admin_repository
 from core.storage.accounts import bulk_mutations as account_bulk_mutations
+from core.storage.accounts import bulk_reads as account_bulk_reads
 from core.storage.task_query_context import task_query
 from core.codex import operation_service as codex_operation_service, retry_service as codex_retry_service, token_refresh_service as codex_token_refresh_service
 from core import db
@@ -745,6 +746,7 @@ def create_accounts_blueprint(context: WebUIContext):
         values = []
         skipped = []
         seen = set()
+        accounts = account_bulk_reads.read_accounts(ids, include_session=field == "chatgpt_session")
         for raw in ids:
             try:
                 acc_id = int(raw)
@@ -754,19 +756,34 @@ def create_accounts_blueprint(context: WebUIContext):
             if acc_id in seen:
                 continue
             seen.add(acc_id)
-            acc = db.get_account(acc_id)
+            acc = accounts.get(acc_id)
             if not acc:
-                skipped.append({"id": acc_id, "reason": "账号不存在"})
+                skipped.append({"id": account_bulk_reads.public_id(acc_id), "reason": "账号不存在"})
+                continue
+            if acc.get("__read_error_type"):
+                skipped.append({"id": account_bulk_reads.public_id(acc_id), "reason": "账号素材读取失败"})
                 continue
             try:
-                value = _account_secret_value_for_api(acc_id, acc, field)
+                if field == "chatgpt_session":
+                    session = acc.get("chatgpt_session")
+                    if isinstance(session, str):
+                        try:
+                            session = json.loads(session)
+                        except (TypeError, ValueError):
+                            session = None
+                    value = json.dumps(session, ensure_ascii=False, indent=2) if isinstance(session, dict) else ""
+                else:
+                    value = _account_secret_value(db.decorate_account(acc), field)
             except ValueError as exc:
                 return jsonify({"ok": False, "error": str(exc)}), 400
             if value:
-                values.append({"id": acc_id, "email": acc.get("email"), "value": value})
+                values.append({"id": account_bulk_reads.public_id(acc_id), "email": acc.get("email"), "value": value})
             else:
-                skipped.append({"id": acc_id, "email": acc.get("email"), "reason": "值为空"})
-        return jsonify({"ok": True, "field": field, "values": values, "count": len(values), "skipped": skipped})
+                skipped.append({"id": account_bulk_reads.public_id(acc_id), "email": acc.get("email"), "reason": "值为空"})
+        response = jsonify({"ok": True, "field": field, "values": values, "count": len(values), "skipped": skipped})
+        response.headers["Cache-Control"] = "no-store, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        return response
 
     @bp.post("/api/accounts/download-session-bulk")
     def api_accounts_download_session_bulk():
@@ -777,8 +794,12 @@ def create_accounts_blueprint(context: WebUIContext):
             return jsonify({"ok": False, "error_code": "invalid_account_ids", "error": "account_ids 必须是非空数组"}), 400
         if len(ids) > 5000:
             return jsonify({"ok": False, "error_code": "invalid_account_ids", "error": "单次最多下载 5000 个账号"}), 400
-        if any(type(acc_id) is not int or not 0 < acc_id < 2**63 for acc_id in ids):
+        if any(not (type(acc_id) is int and 0 < acc_id < 2**63
+                    or isinstance(acc_id, str) and re.fullmatch(r"[1-9][0-9]*", acc_id)
+                    and 0 < int(acc_id) < 2**63) for acc_id in ids):
             return jsonify({"ok": False, "error_code": "invalid_account_ids", "error": "账号 ID 必须是有效正整数"}), 400
+        ids = list(dict.fromkeys(int(value) for value in ids))
+        accounts = account_bulk_reads.read_accounts(ids, include_session=True)
 
         added = []
         skipped = []
@@ -788,22 +809,24 @@ def create_accounts_blueprint(context: WebUIContext):
             for acc_id in dict.fromkeys(ids):
                 email = ""
                 try:
-                    account = record_store.get_row(record_store.ACCOUNTS, acc_id)
+                    account = accounts.get(acc_id)
                     if account is None:
-                        skipped.append({"id": acc_id, "error_code": "account_not_found", "reason": "账号不存在"})
+                        skipped.append({"id": account_bulk_reads.public_id(acc_id), "error_code": "account_not_found", "reason": "账号不存在"})
                         continue
                     email = str(account.get("email") or "").strip()
+                    if account.get("__read_error_type"):
+                        raise RuntimeError("账号素材读取失败")
                     session = account.get("chatgpt_session")
                 except Exception as exc:
                     logger.warning("批量导出 Session：账号 #%s 读取失败（%s）", acc_id, type(exc).__name__)
                     skipped.append({
-                        "id": acc_id, "email": email, "error_code": "session_read_failed",
+                        "id": account_bulk_reads.public_id(acc_id), "email": email, "error_code": "session_read_failed",
                         "reason": f"读取 Session 失败，请重试（{type(exc).__name__}）",
                     })
                     continue
                 if session is None:
                     skipped.append({
-                        "id": acc_id, "email": email, "error_code": "session_missing",
+                        "id": account_bulk_reads.public_id(acc_id), "email": email, "error_code": "session_missing",
                         "reason": "未保存 Session，请先刷新 AT 重新登录补齐",
                     })
                     continue
@@ -814,7 +837,7 @@ def create_accounts_blueprint(context: WebUIContext):
                         session = False
                 if not isinstance(session, dict) or not isinstance(session.get("accessToken"), str) or not session["accessToken"].strip():
                     skipped.append({
-                        "id": acc_id, "email": email, "error_code": "session_invalid",
+                        "id": account_bulk_reads.public_id(acc_id), "email": email, "error_code": "session_invalid",
                         "reason": "已保存的 Session 缺少有效 accessToken，请先刷新 AT",
                     })
                     continue
@@ -823,7 +846,7 @@ def create_accounts_blueprint(context: WebUIContext):
                 safe_email = re.sub(r"[^A-Za-z0-9@._+-]", "_", email)[:120] or "account"
                 filename = f"{acc_id}-{safe_email}.json"
                 archive.writestr(filename, json.dumps(session, ensure_ascii=False, indent=2) + "\n")
-                added.append({"id": acc_id, "email": email, "filename": filename})
+                added.append({"id": account_bulk_reads.public_id(acc_id), "email": email, "filename": filename})
 
             manifest = {
                 "exported_at": now.isoformat(timespec="seconds"), "source": "accounts-session",
@@ -1755,14 +1778,13 @@ def create_accounts_blueprint(context: WebUIContext):
             return jsonify({"ok": False, "error": f"读取 CPA auth-files 失败: {type(exc).__name__}: {exc}"}), 502
         list_seconds = time.perf_counter() - started_at
 
-        # 建立 email -> 本地 codex 文件名索引；有本地文件名时传给 CPA 匹配逻辑可提升命中率。
+        # 只集合读取选中账号及其凭证文件名；远端文件清单仍只请求一次。
+        accounts = account_bulk_reads.read_accounts(ids)
         local_by_email: dict[str, str] = {}
         try:
-            for item in db.list_codex_accounts():
-                email_key = str(item.get("email") or "").strip().lower()
-                fname = str(item.get("filename") or "").strip()
-                if email_key and fname and email_key not in local_by_email:
-                    local_by_email[email_key] = fname
+            local_by_email = account_bulk_reads.local_codex_filenames(
+                account.get("email") for account in accounts.values()
+            )
         except Exception:
             local_by_email = {}
 
@@ -1783,9 +1805,12 @@ def create_accounts_blueprint(context: WebUIContext):
                     continue
                 seen_ids.add(acc_id)
 
-                acc = db.get_account(acc_id)
+                acc = accounts.get(acc_id)
                 if not acc:
-                    errors.append({"id": acc_id, "error": "账号不存在"})
+                    errors.append({"id": account_bulk_reads.public_id(acc_id), "error": "账号不存在"})
+                    continue
+                if acc.get("__read_error_type"):
+                    errors.append({"id": account_bulk_reads.public_id(acc_id), "error": "账号素材读取失败"})
                     continue
                 email = str(acc.get("email") or "").strip()
                 if not email:
@@ -1816,21 +1841,24 @@ def create_accounts_blueprint(context: WebUIContext):
                     zf.writestr(arcname, cpa_text)
                     zip_seconds += time.perf_counter() - zip_started_at
                     added.append({
-                        "id": acc_id,
+                        "id": account_bulk_reads.public_id(acc_id),
                         "email": email,
                         "local_filename": local_filename,
                         "cpa_filename": cpa_name,
                         "cpa_meta": meta,
                     })
-                    if local_filename:
-                        try:
-                            db.mark_codex_exported(local_filename)
-                        except Exception:
-                            pass
                 except CpaDownloadError as exc:
-                    errors.append({"id": acc_id, "email": email, **error_payload(exc)})
+                    errors.append({"id": account_bulk_reads.public_id(acc_id), "email": email, **error_payload(exc)})
                 except Exception as exc:
-                    errors.append({"id": acc_id, "email": email, "error": f"{type(exc).__name__}: {exc}"})
+                    errors.append({"id": account_bulk_reads.public_id(acc_id), "email": email, "error": f"{type(exc).__name__}: {exc}"})
+
+            exported_names = list(dict.fromkeys(item["local_filename"] for item in added if item["local_filename"]))
+            if exported_names:
+                from core.storage.codex import bulk_mutations as codex_bulk_mutations
+                try:
+                    codex_bulk_mutations.mark_exported_many(exported_names)
+                except Exception:
+                    pass
 
             manifest = {
                 "exported_at": _dt.now().isoformat(timespec="seconds"),

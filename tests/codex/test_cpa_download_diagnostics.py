@@ -26,8 +26,9 @@ def cpa_routes(monkeypatch):
     monkeypatch.setattr(codex, "_feature_unavailable", lambda name: None)
     monkeypatch.setattr(oauth, "_cpa_management_origin", lambda: "https://cpa.example.test")
     monkeypatch.setattr(oauth, "_cpa_management_key", lambda: "私有测试管理密钥")
-    monkeypatch.setattr(accounts.db, "get_account", lambda acc_id: {"email": "example@example.test"})
-    monkeypatch.setattr(accounts.db, "list_codex_accounts", lambda: [])
+    monkeypatch.setattr(accounts.account_bulk_reads, "read_accounts",
+                        lambda ids, **kwargs: {int(acc_id): {"email": "example@example.test"} for acc_id in ids})
+    monkeypatch.setattr(accounts.account_bulk_reads, "local_codex_filenames", lambda emails: {})
     monkeypatch.setattr(codex.db, "read_codex_credential",
                         lambda name: ('{"email":"example@example.test"}', name))
     monkeypatch.setattr(codex.db, "mark_codex_exported", Mock())
@@ -105,7 +106,8 @@ def test_account_cpa_download_preserves_partial_zip_and_tls_diagnosis(cpa_routes
     valid = Mock(status_code=200, infos={}, text='{"type":"codex"}')
     tls_failure = SSLError("私有代理诊断", code=CurlECode.SSL_CONNECT_ERROR)
     transport = Mock(side_effect=[listed, valid, tls_failure])
-    monkeypatch.setattr(accounts.db, "get_account", lambda acc_id: {"email": f"{acc_id}@example.test"})
+    monkeypatch.setattr(accounts.account_bulk_reads, "read_accounts",
+                        lambda ids, **kwargs: {int(acc_id): {"email": f"{acc_id}@example.test"} for acc_id in ids})
     monkeypatch.setattr(oauth.curl_requests, "Session", Mock(return_value=Mock(request=transport)))
 
     response = cpa_routes.post("/api/accounts/download-cpa-bulk", json={"account_ids": [1, 2]})

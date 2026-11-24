@@ -134,18 +134,19 @@ class AccountSessionDownloadTests(PostgresTestCase):
         )
 
     def test_one_read_failure_does_not_discard_other_exported_sessions(self):
+        from core.storage.accounts import bulk_reads
         first, second = self.seed(record_store.ACCOUNTS, [
             {"email": "unreadable@example.test", "chatgpt_session": '{"accessToken":"first-at"}'},
             {"email": "readable@example.test", "chatgpt_session": '{"accessToken":"second-at"}'},
         ])
-        original_get = record_store.get_row
+        original_decode = bulk_reads._decode_account
 
-        def read_account(spec, account_id):
-            if account_id == first:
+        def read_account(row):
+            if row["id"] == first:
                 raise RuntimeError("private-error-context")
-            return original_get(spec, account_id)
+            return original_decode(row)
 
-        with patch("webui.routes.accounts.record_store.get_row", side_effect=read_account):
+        with patch.object(bulk_reads, "_decode_account", side_effect=read_account):
             response = self._post({"account_ids": [first, second], "prepare": True})
 
         self.assertEqual(response.status_code, 200)
