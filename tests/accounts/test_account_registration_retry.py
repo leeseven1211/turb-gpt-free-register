@@ -59,11 +59,11 @@ class AccountRegistrationRetryTests(PostgresTestCase):
     def test_single_route_continues_original_registration_and_whitelists_result(self):
         account = self._account()
         job, _ = self._chain(account)
-        with patch.object(registration_service, "retry_job", return_value={
+        with patch.object(registration_service, "retry_jobs", return_value={job: {
             "ok": True, "created": True, "job": {"id": 81, "access_token": "private-token"},
             "source_job_id": job, "retry_action": "registration_resume", "message": "已创建",
             "operation_task_id": 91, "run_id": 92, "private_context": "private",
-        }) as execute:
+        }}) as execute:
             response = self._post(account)
         self.assertEqual(202, response.status_code)
         result = response.get_json()
@@ -71,7 +71,7 @@ class AccountRegistrationRetryTests(PostgresTestCase):
         self.assertEqual({"account_id": account, "job_id": 81, "source_job_id": job,
                           "retry_action": "registration_resume", "message": "已创建",
                           "operation_task_id": 91, "run_id": 92}, result["started"][0])
-        execute.assert_called_once_with(job)
+        execute.assert_called_once_with([job], workers=1)
         self.assertNotIn("private", str(result))
 
     def test_list_finds_original_attempt_when_job_account_id_is_empty(self):
@@ -87,7 +87,7 @@ class AccountRegistrationRetryTests(PostgresTestCase):
         self.assertIsInstance(projection, dict)
         self.assertFalse(projection["available"])
         self.assertIn("原注册", projection["reason"])
-        with patch.object(registration_service, "retry_job") as execute:
+        with patch.object(registration_service, "retry_jobs") as execute:
             result = self._post(account).get_json()
         self.assertEqual(account, result["skipped"][0]["account_id"])
         execute.assert_not_called()
@@ -105,7 +105,7 @@ class AccountRegistrationRetryTests(PostgresTestCase):
         root, attempt = self._chain(account)
         self._child(root, attempt, account, status="success")
         self.assertFalse(self._projection(account)["available"])
-        with patch.object(registration_service, "retry_job") as execute:
+        with patch.object(registration_service, "retry_jobs") as execute:
             result = self._post(account).get_json()
         self.assertEqual(1, result["skipped_count"])
         execute.assert_not_called()
@@ -117,7 +117,7 @@ class AccountRegistrationRetryTests(PostgresTestCase):
         projection = self._projection(account)
         self.assertTrue(projection["active"])
         self.assertFalse(projection["available"])
-        with patch.object(registration_service, "retry_job") as execute:
+        with patch.object(registration_service, "retry_jobs") as execute:
             result = self._post(account).get_json()
         self.assertEqual(child, result["reused"][0]["job_id"])
         self.assertEqual(0, result["started_count"])
@@ -142,9 +142,9 @@ class AccountRegistrationRetryTests(PostgresTestCase):
         account = self._account()
         job, _ = self._chain(account)
         missing = self._account("no-job@example.test")
-        with patch.object(registration_service, "retry_job", return_value={
+        with patch.object(registration_service, "retry_jobs", return_value={job: {
             "ok": True, "created": True, "job": {"id": 81}, "retry_action": "registration_resume", "message": "已创建",
-        }) as execute:
+        }}) as execute:
             response = self.client.post("/api/accounts/registration-retry-bulk", json={
                 "account_ids": [account, account, missing, 999999],
             }, headers=self.headers)
@@ -152,10 +152,31 @@ class AccountRegistrationRetryTests(PostgresTestCase):
         self.assertEqual(202, response.status_code)
         self.assertEqual(1, result["started_count"])
         self.assertEqual(2, result["skipped_count"])
-        execute.assert_called_once_with(job)
+        execute.assert_called_once_with([job], workers=1)
+
+    def test_bulk_submits_eligible_sources_once_and_keeps_individual_outcomes(self):
+        first = self._account("first@example.test")
+        first_job, _ = self._chain(first, email="first@example.test")
+        second = self._account("second@example.test")
+        second_job, _ = self._chain(second, email="second@example.test")
+        unavailable = self._account("unavailable@example.test")
+        with patch.object(registration_service, "retry_jobs", return_value={
+            first_job: {"ok": True, "created": True, "job": {"id": 81}, "message": "已创建"},
+            second_job: {"ok": True, "reused": True, "job": {"id": 82}, "message": "已在执行"},
+        }) as execute, patch.object(registration_service, "retry_job") as single:
+            response = self.client.post("/api/accounts/registration-retry-bulk", json={
+                "account_ids": [first, unavailable, second, first],
+            }, headers=self.headers)
+        result = response.get_json()
+        self.assertEqual(202, response.status_code)
+        execute.assert_called_once_with([first_job, second_job], workers=1)
+        single.assert_not_called()
+        self.assertEqual([first], [item["account_id"] for item in result["started"]])
+        self.assertEqual([second], [item["account_id"] for item in result["reused"]])
+        self.assertEqual([unavailable], [item["account_id"] for item in result["skipped"]])
 
     def test_malformed_bulk_and_single_bodies_are_rejected(self):
-        with patch.object(registration_service, "retry_job") as execute:
+        with patch.object(registration_service, "retry_jobs") as execute:
             for payload in ([], {}, {"account_ids": []}, {"account_ids": "1"}, {"account_ids": [True]},
                             {"account_ids": [0]}, {"account_ids": [1.5]}, {"account_ids": [2**63]},
                             {"account_ids": list(range(1, 502))}):
@@ -174,7 +195,7 @@ class AccountRegistrationRetryTests(PostgresTestCase):
         root, attempt = self._chain(account)
         self.assertTrue(self._projection(account)["available"])
         child = self._child(root, attempt, account, status="pending")
-        with patch.object(registration_service, "retry_job") as execute:
+        with patch.object(registration_service, "retry_jobs") as execute:
             result = self._post(account).get_json()
         self.assertEqual(child, result["reused"][0]["job_id"])
         execute.assert_not_called()
@@ -192,7 +213,7 @@ class AccountRegistrationRetryTests(PostgresTestCase):
         self._chain(account)
         with patch("webui.runtime.WebUIContext.enqueue_account_completion", return_value={
             "accepted": True, "task_id": 81,
-        }) as complete, patch.object(registration_service, "retry_job") as execute:
+        }) as complete, patch.object(registration_service, "retry_jobs") as execute:
             client = create_app(auth_code="retry-test").test_client()
             result = client.post(f"/api/accounts/{account}/action", json={"action": "complete"}, headers=self.headers)
         self.assertEqual(202, result.status_code)
@@ -225,7 +246,7 @@ class AccountRegistrationRetryTests(PostgresTestCase):
         root, _ = self._chain(account, job_account=False, status="running")
         records.patch_row(records.JOBS, root, {"email": ""})
         self.assertTrue(self._projection(account)["active"])
-        with patch.object(registration_service, "retry_job") as execute:
+        with patch.object(registration_service, "retry_jobs") as execute:
             result = self._post(account).get_json()
         self.assertEqual(root, result["reused"][0]["job_id"])
         execute.assert_not_called()
@@ -269,7 +290,7 @@ class AccountRegistrationRetryTests(PostgresTestCase):
         account = self._account(account_status="deactivated")
         self._chain(account)
         self.assertFalse(self._projection(account)["available"])
-        with patch.object(registration_service, "retry_job") as execute:
+        with patch.object(registration_service, "retry_jobs") as execute:
             result = self._post(account).get_json()
         self.assertIn("废号", result["skipped"][0]["reason"])
         execute.assert_not_called()
@@ -303,7 +324,7 @@ class AccountRegistrationRetryTests(PostgresTestCase):
         self.assertTrue(projection["active"])
         self.assertFalse(projection["available"])
         self.assertEqual(child, projection["source_job_id"])
-        with patch.object(registration_service, "retry_job") as execute:
+        with patch.object(registration_service, "retry_jobs") as execute:
             response = self._post(account)
         result = response.get_json()
         self.assertEqual(1, result["reused_count"])

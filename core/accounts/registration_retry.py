@@ -187,13 +187,26 @@ def _result_item(account_id: int, source: dict, result: Mapping) -> dict:
 
 
 def retry_accounts(account_ids: list[int]) -> dict:
-    """每次点击重新核验来源，再交原重跑入口复验并派发。"""
+    """每次点击重新核验来源，再将合格来源集合交注册服务复验并派发。"""
     ids = validate_account_ids(account_ids)
     try:
         projections = project_accounts([{"id": ident} for ident in ids])
     except Exception:
         logger.exception("读取原注册任务来源失败，未派发注册重跑")
         projections = {ident: unavailable("原注册任务状态暂不可用，请刷新后重试") for ident in ids}
+    source_ids = list(dict.fromkeys(
+        projections[ident]["source_job_id"] for ident in ids
+        if projections[ident]["available"] and not projections[ident]["active"]
+    ))
+    results = {}
+    if source_ids:
+        try:
+            # 既有任务链继续沿用原批次额度，注册服务会从每个来源恢复实际 workers。
+            results = registration_service.retry_jobs(source_ids, workers=1)
+        except Exception:
+            logger.exception("账号原注册集合重跑入队失败")
+            results = {source_id: {"error": "原注册任务入队失败，请刷新任务状态后重试"}
+                       for source_id in source_ids}
     started, reused, skipped = [], [], []
     for ident in ids:
         source = projections[ident]
@@ -203,12 +216,7 @@ def retry_accounts(account_ids: list[int]) -> dict:
         if not source["available"]:
             skipped.append({"account_id": ident, "reason": source["reason"]})
             continue
-        try:
-            result = registration_service.retry_job(source["source_job_id"])
-        except Exception:
-            logger.exception("账号原注册重跑入队失败：account_id=%s", ident)
-            skipped.append({"account_id": ident, "reason": "原注册任务入队失败，请刷新任务状态后重试"})
-            continue
+        result = results.get(source["source_job_id"]) or {}
         if source.get("action") == "twofa" and not result.get("ok"):
             skipped.append({"account_id": ident, "reason": result.get("error") or "账号配置缺项尚未入队，可稍后重跑"})
         elif result.get("reused") or result.get("busy"):
