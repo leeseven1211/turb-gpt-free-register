@@ -41,11 +41,17 @@ def read_receipt(command_id: int, *, offset: int = 0, limit: int = DEFAULT_PAGE_
 
 def resume_interrupted_commands() -> int:
     """Retry only after existing orphan recovery releases execution ownership."""
+    from core.operations import bulk_terminate_command
     operations = worker.registered_bulk_mutation_operations()
-    if worker.TASK_TYPE not in task_gateway.registered_dispatch_types() or not operations:
-        return 0
+    registered = task_gateway.registered_dispatch_types()
+    recoverable = []
+    if worker.TASK_TYPE in registered and operations:
+        recoverable.extend(commands.list_recoverable_commands(operations))
+    if bulk_terminate_command.TASK_TYPE in registered:
+        recoverable.extend(commands.list_recoverable_commands(
+            (bulk_terminate_command.OPERATION,), task_types=(bulk_terminate_command.TASK_TYPE,)))
     queued = 0
-    for command in commands.list_recoverable_commands(operations):
+    for command in recoverable:
         run = runtime.retry_runtime_task(
             command["task_id"], expected_previous_run_id=command["run_id"], trigger="bulk_worker_restart",
         )
@@ -56,8 +62,10 @@ def resume_interrupted_commands() -> int:
 
 
 def worker_status(dispatcher: dict) -> dict:
-    registered = (worker.TASK_TYPE in dispatcher.get("registered_task_types", ())
-                  and bool(worker.registered_bulk_mutation_operations()))
+    from core.operations import bulk_terminate_command
+    types = dispatcher.get("registered_task_types", ())
+    registered = ((worker.TASK_TYPE in types and bool(worker.registered_bulk_mutation_operations()))
+                  or bulk_terminate_command.TASK_TYPE in types)
     return {
         "started": registered and dispatcher.get("started") is True,
         "alive": registered and dispatcher.get("alive") is True,

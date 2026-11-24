@@ -877,29 +877,25 @@ class OperationRouteMigrationPhase2Tests(unittest.TestCase):
                 self.assertEqual("cancelled", response.get_json()["state"])
 
     def test_bulk_terminate_skips_queued_task(self):
+        from core.operations import bulk_terminate_command
         client = self._client()
-        queued = self._task(status="queued", runs=[{"id": 56, "status": "queued"}])
-        running = self._task(id=42, status="running", runs=[{"id": 57, "status": "running"}])
         with (
-            patch.object(operation, "get_action_tasks_many", create=True, return_value={41: queued, 42: running}),
-            patch.object(task_gateway, "operation_action", return_value=None),
-            patch.object(action_service.codex_operation_service, "terminate", return_value={
-                "ok": True, "state": "attention_required",
-            }) as terminate,
+            patch.object(bulk_terminate_command, "submit", return_value={
+                "ok": True, "accepted": True, "command_id": 81, "task_id": 82, "run_id": 83,
+            }) as submit,
+            patch.object(action_service, "accept_bulk_operation_action", side_effect=AssertionError("HTTP execution")),
         ):
             response = client.post(
                 "/api/operations/bulk",
                 json={"action": "terminate", "task_ids": [41, 42]},
             )
 
-        self.assertEqual(200, response.status_code)
+        self.assertEqual(202, response.status_code)
         payload = response.get_json()
-        self.assertEqual(1, payload["accepted_count"])
-        self.assertEqual(42, payload["accepted"][0]["task_id"])
-        self.assertEqual("attention_required", payload["accepted"][0]["state"])
-        self.assertEqual(1, payload["skipped_count"])
-        self.assertIn("执行中", payload["skipped"][0]["error"])
-        terminate.assert_called_once_with(run_id=57)
+        self.assertTrue(payload["accepted"])
+        self.assertEqual("81", payload["command_id"])
+        self.assertNotIn("accepted_count", payload)
+        submit.assert_called_once_with([41, 42], request_key=None)
 
     def test_operation_list_exposes_short_error_code_and_summary(self):
         client = self._client()

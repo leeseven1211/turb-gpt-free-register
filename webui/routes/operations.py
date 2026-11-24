@@ -234,6 +234,17 @@ def create_operations_blueprint(context: WebUIContext):
         if len(task_ids) > 100:
             return jsonify({"ok": False, "error": "单次最多处理 100 个任务"}), 400
 
+        if action == "terminate":
+            from core.operations import bulk_terminate_command
+            from core.operations.bulk_mutation_service import public_submission
+            from webui.routes.bulk_mutations import submission_error
+            try:
+                result = bulk_terminate_command.submit(
+                    task_ids, request_key=request.headers.get("Idempotency-Key"))
+            except (ValueError, TypeError) as exc:
+                return submission_error(exc)
+            return jsonify(public_submission(result)), 202
+
         result = action_service.accept_bulk_operation_action(
             action, task_ids, request_key=request.headers.get("Idempotency-Key"), operation_logger=logger,
         )

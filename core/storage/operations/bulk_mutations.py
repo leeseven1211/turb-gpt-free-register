@@ -245,7 +245,8 @@ def read_receipt_page(command_id: int, *, offset: int, limit: int) -> dict:
         return dict(row)
 
 
-def list_recoverable_commands(operations: tuple[str, ...], *, limit: int = 100) -> list[dict]:
+def list_recoverable_commands(operations: tuple[str, ...], *, limit: int = 100,
+                              task_types: tuple[str, ...] = ("bulk_mutation",)) -> list[dict]:
     """Only the current attempt of a native orphan with released ownership may resume."""
     init()
     with common._connect() as conn, conn.cursor() as cur:
@@ -255,7 +256,7 @@ def list_recoverable_commands(operations: tuple[str, ...], *, limit: int = 100) 
             JOIN {common._table('operation_runs')} r ON r.id = t.last_run_id AND r.task_id = t.id
             JOIN {common._table(_COMMANDS)} c ON c.task_id = t.id
                 AND r.data->>'command_id' = c.id::text
-            WHERE t.task_type = 'bulk_mutation' AND t.source_system = 'native_operations'
+            WHERE t.task_type = ANY(%s) AND t.source_system = 'native_operations'
               AND t.status = 'interrupted' AND r.status = 'interrupted'
               AND r.result_summary->>'recovery_reason' = 'worker_restart'
               AND r.cancel_requested_at IS NULL AND c.operation = ANY(%s)
@@ -268,7 +269,7 @@ def list_recoverable_commands(operations: tuple[str, ...], *, limit: int = 100) 
                   WHERE lease.run_id = r.id AND lease.expires_at > now()
               )
             ORDER BY r.id LIMIT %s
-        """, (list(operations), limit))
+        """, (list(task_types), list(operations), limit))
         return list(cur.fetchall())
 
 
@@ -282,7 +283,7 @@ def queue_counts() -> dict:
                        WHERE status IN ('running', 'cancelling', 'settling', 'stopping')
                    ) AS active_commands
             FROM {common._table('operation_tasks')}
-            WHERE task_type = 'bulk_mutation' AND source_system = 'native_operations'
+            WHERE task_type IN ('bulk_mutation','task_terminate_bulk') AND source_system = 'native_operations'
               AND status IN ('queued', 'running', 'cancelling', 'settling', 'stopping')
         """)
         return dict(cur.fetchone())
