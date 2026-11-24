@@ -40,6 +40,7 @@ from core.operations.errors import REGISTRATION_REQUEST_UNKNOWN_CAUSE_CODES
 
 if TYPE_CHECKING:
     from core.storage.registration.bulk_retry import RetryAdmission
+    from core.storage.registration.retry_followups import RetryFollowup
 
 logger = logging.getLogger('core.registration_service')
 
@@ -3077,7 +3078,9 @@ def _run_codex_retry_job(
 
 def _submit_registration_account_setup(
     source: dict, account: dict, snapshot: dict, *, debug_enabled: bool = False,
-) -> dict:
+    _followups: list["RetryFollowup"] | None = None,
+    _root: dict | None = None, _attempt: dict | None = None,
+) -> dict | None:
     """原注册缺项交给原生账号 Run，执行器负责真实账号租约和重启恢复。"""
     from config.account import completion_settings
     from core.accounts.password_evidence import password_is_confirmed
@@ -3126,6 +3129,15 @@ def _submit_registration_account_setup(
         "proxy_country_override": snapshot.get("retry_proxy_country_override") if driver == "roxy" else None,
     }
     captured = task_gateway.normalize_config_snapshot(settings, allowlist=tuple(settings))
+    if _followups is not None:
+        from core.storage.registration.retry_followups import RetryFollowup
+
+        _followups.append(RetryFollowup(
+            source=source, account=account, action="twofa", config_snapshot=captured,
+            config_allowlist=tuple(captured), data=data, trigger="registration_job_retry",
+            root=_root, attempt=_attempt,
+        ))
+        return None
     existing = operation_task_store.find_task_by_source("webui_runtime", source_id)
     parent = operation_task_store.find_task_by_source(
         "registration_jobs", str(source["id"]), include_runs=True,
@@ -4254,6 +4266,7 @@ def retry_job(
     proxy_country: str | None = None,
     _admissions: list["RetryAdmission"] | None = None,
     _facts: "_RetryFacts | None" = None,
+    _followups: list["RetryFollowup"] | None = None,
 ) -> dict | None:
     """按原身份重跑终态任务，显式驱动或国家覆盖只冻结到新子任务。"""
     if workers is not None:
@@ -4372,6 +4385,23 @@ def retry_job(
     if action == "plan_check":
         if not email or account_id is None:
             return {"ok": False, "error": "已保存账号信息不完整，无法查询套餐", "status": 409}
+        if _followups is not None:
+            from core.accounts.plans import service as plan_service
+            from core.operations import task_gateway
+            from core.storage.registration.retry_followups import RetryFollowup
+
+            if not str((account or {}).get("access_token") or "").strip():
+                return {"ok": False, "error": "账号缺少 access_token", "status": 409}
+            snapshot = task_gateway.normalize_config_snapshot(
+                plan_service.get_config_snapshot(), allowlist=plan_service.PLAN_CONFIG_ALLOWLIST,
+            )
+            _followups.append(RetryFollowup(
+                source=source, account=account, action=action, config_snapshot=snapshot,
+                config_allowlist=tuple(snapshot), trigger="registration_retry_plan_check",
+                data={"timezone_offset_min": "-", "proxy_source": plan_service._captured_proxy_source("plan-check")},
+                root=root_job, attempt=attempt,
+            ))
+            return None
         try:
             from core.accounts.plans.service import enqueue_account_plan_check
 
@@ -4402,6 +4432,22 @@ def retry_job(
         from core.codex import operation_service as codex_operation_service
         from core import operation_task_store
 
+        if _followups is not None:
+            from core.storage.registration.retry_followups import RetryFollowup
+
+            snapshot = codex_operation_service._config_snapshot()
+            unavailable = codex_operation_service._deployment_unavailable(snapshot)
+            if unavailable:
+                return {"ok": False, "status": 503 if unavailable.get("unavailable") else 409, **unavailable}
+            enabled, reason = codex_operation_service._feature_ready(snapshot)
+            if not enabled:
+                return {"ok": False, "status": 503, "feature": "codex_retry", "error": reason, "unavailable": True}
+            _followups.append(RetryFollowup(
+                source=source, account=account, action=action, config_snapshot=snapshot,
+                config_allowlist=tuple(snapshot), data={}, trigger="registration_job_retry",
+                root=root_job, attempt=attempt,
+            ))
+            return None
         parent = operation_task_store.find_task_by_source(
             "registration_jobs", str(job_id), include_runs=True,
         )
@@ -4452,6 +4498,7 @@ def retry_job(
             return {"ok": False, "error": "已保存账号信息不完整，无法执行账号补跑", "status": 409}
         return _submit_registration_account_setup(
             source, account, retry_snapshot, debug_enabled=retry_debug_enabled,
+            _followups=_followups, _root=root_job, _attempt=attempt,
         )
     unavailable = registration_deployment_unavailable(retry_snapshot)
     if unavailable:
@@ -4686,16 +4733,15 @@ def retry_jobs(job_ids: list[int], *, workers: int, debug_enabled: bool | None =
     from core.storage.registration.bulk_retry import RetryAdmission, admit
 
     plans: list[RetryAdmission] = []
+    followups: list["RetryFollowup"] = []
     results = {}
     options = {} if debug_enabled is None else {"debug_enabled": debug_enabled}
     facts = _prefetch_retry_facts(job_ids)
     for job_id in job_ids:
         snapshot = facts[job_id]
-        if snapshot.source is not None and _attempt_id_for_job(snapshot.source) is None:
-            # Legacy account lookup has no durable association and checks historical duplicates.
-            result = retry_job(job_id, workers=workers, **options)
-        else:
-            result = retry_job(job_id, workers=workers, _admissions=plans, _facts=snapshot, **options)
+        result = retry_job(
+            job_id, workers=workers, _admissions=plans, _facts=snapshot, _followups=followups, **options,
+        )
         if result is not None:
             results[job_id] = result
     pending = []
@@ -4708,8 +4754,6 @@ def retry_jobs(job_ids: list[int], *, workers: int, debug_enabled: bool | None =
     started = []
     for plan in reversed(pending):
         outcome = admissions[plan.source_id]
-        if outcome is None:
-            continue
         if isinstance(outcome, dict):
             results[plan.source_id] = outcome
         else:
@@ -4724,15 +4768,75 @@ def retry_jobs(job_ids: list[int], *, workers: int, debug_enabled: bool | None =
     if started:
         # 与逐条入口一样，默认并发沿用最后一个创建成功的原批次设置。
         configure_submission_workers(started[0].workers)
-    for plan in pending:
-        if admissions[plan.source_id] is None:
-            # 部署前的历史记录可能尚未建立完整 Attempt/任务投影，沿用兼容回填入口。
-            logger.info("[Service] 注册重试沿用历史兼容入口：job_id=%s", plan.source_id)
-            results[plan.source_id] = retry_job(plan.source_id, workers=workers, **options)
     if started:
         start_dispatcher()
         notify_dispatch()
+    if followups:
+        from core.operations import task_gateway
+        from core.storage.registration.retry_followups import admit as admit_followups
+
+        try:
+            outcomes = admit_followups(followups)
+        except Exception:
+            logger.exception("批量注册后处理入队失败")
+            outcomes = {int(plan.source["id"]): {
+                "accepted": False, "busy": False, "status": 503, "error": "账号补跑入队失败，请刷新后重试",
+            } for plan in followups}
+        for plan in followups:
+            outcome = outcomes[int(plan.source["id"])]
+            if plan.action == "codex" and outcome.get("accepted") and not outcome.get("reused"):
+                task_run_log.append(
+                    outcome.get("log_file"), level="INFO", message="Codex operation 已进入数据库队列",
+                    task_id=outcome.get("task_id"), run_id=outcome.get("run_id"), stage="queued",
+                    event_type="note.info",
+                )
+            results[int(plan.source["id"])] = _followup_retry_result(
+                plan, outcome, debug_enabled=debug_enabled,
+            )
+        if any(result.get("accepted") and not result.get("reused") for result in outcomes.values()):
+            task_gateway.notify_dispatch()
     return results
+
+
+def _followup_retry_result(plan: "RetryFollowup", queued: dict, *, debug_enabled: bool | None = None) -> dict:
+    source_id = int(plan.source["id"])
+    action = plan.action
+    if debug_enabled is None:
+        debug_enabled = bool(plan.source.get("debug_enabled")) if action != "twofa" else bool(plan.data.get("debug_enabled"))
+    debug_notice = ({
+        "debug_enabled": False,
+        "debug_warning": ("原生账号配置暂不支持完整网络抓包，已保留步骤日志" if action == "twofa"
+                          else "此类补跑暂不支持完整网络抓包，已正常入队并保留步骤日志"),
+    } if debug_enabled else {})
+    accepted, busy = bool(queued.get("accepted")), bool(queued.get("busy"))
+    if action == "plan_check":
+        if not accepted and not busy:
+            return {"ok": False, "error": queued.get("error") or "套餐查询入队失败",
+                    "status": queued.get("status", 409)}
+        return {"ok": True, "created": accepted, "reused": busy, "retry_action": action,
+                "source_job_id": source_id, "operation_task_id": queued.get("task_id"),
+                "run_id": queued.get("run_id"), "message": "套餐查询已入队" if accepted else "已有套餐查询正在执行",
+                **debug_notice}
+    if action == "codex":
+        if not accepted:
+            return {"ok": False, "error": queued.get("error") or "Codex 补跑入队失败",
+                    **queued, **debug_notice}
+        return {"ok": True, "created": True, "reused": False, "retry_action": action,
+                "source_job_id": source_id, "operation_task_id": queued["task_id"], "run_id": queued["run_id"],
+                "job": plan.source,
+                "message": f"已创建 Codex 子任务 #{queued['task_id']}，attempt #{queued['run_id']}", **debug_notice}
+    if busy and not accepted:
+        return {**queued, "ok": False, "status": queued.get("status", 409),
+                "source_job_id": source_id, "retry_action": action,
+                "error": "账号已有其它操作正在执行，本次密码缺项尚未入队，可稍后重跑", **debug_notice}
+    return {
+        **queued, "ok": accepted or busy, "status": 200 if accepted or busy else queued.get("status", 409),
+        "created": accepted and not bool(queued.get("reused")), "reused": busy or bool(queued.get("reused")),
+        "source_job_id": source_id, "retry_action": action, "operation_task_id": queued.get("task_id"),
+        "message": ("账号缺项已交给原生账号配置任务" if accepted else "已有账号配置任务正在执行" if busy
+                    else queued.get("error") or "账号配置任务未入队"),
+        "job": plan.source, **debug_notice,
+    }
 
 
 def cancel_pending_jobs(*, batch_id: str | None = None) -> int:
@@ -4848,19 +4952,43 @@ def request_stop_batch(batch_id: str, *, cancel_pending: bool = False) -> dict:
         return {"ok": False, "error": "批次不存在", "status": 404}
 
     cancelled = cancel_pending_jobs(batch_id=batch_key) if cancel_pending else 0
+    from core.storage.registration.batch_stop import request_stops, retained_sources
+
+    selected = [int(row["id"]) for row in jobs if row.get("status") in ("running", "stopping")]
+    with _STOP_LOCK:
+        active = {ident for ident in selected if ident in _ACTIVE_JOBS and _STOP_EVENTS.get(ident) is not None}
+        for ident in active:
+            _STOP_EVENTS[ident].set()
+        for ident in set(selected) - active:
+            _STOP_EVENTS.pop(ident, None)
+            _ACTIVE_JOBS.discard(ident)
+    outcomes = request_stops(selected, active_job_ids=active, now_iso=_now_iso())
+    missing_sources = retained_sources([
+        row.get("email") for row in outcomes.values()
+        if row.get("_stop_changed") and row.get("status") == "stopped" and not row.get("email_source")
+    ])
     stopping = 0
     stopped = 0
     completed = 0
-    for row in jobs:
-        if row.get("status") not in ("running", "stopping"):
-            continue
-        result = request_stop_job(int(row["id"]))
-        if result.get("state") == "stopping":
+    for ident in selected:
+        row = outcomes.get(ident) or {}
+        state = row.get("status")
+        if state == "stopping":
             stopping += 1
-        elif result.get("state") == "stopped":
+        elif state == "stopped":
             stopped += 1
-        elif result.get("state") in ("success", "failed", "cancelled", "partial_success"):
+        elif state in ("success", "failed", "cancelled", "partial_success"):
             completed += 1
+        if not row.get("_stop_changed"):
+            continue
+        if state == "stopped":
+            _retain_job_email(str(row.get("email") or "").strip() or None, "任务实例不存在，注册结果无法确认",
+                              source=str(row.get("email_source") or missing_sources.get(
+                                  str(row.get("email") or "").strip().lower()) or "") or None)
+        message = ("用户手动停止：未找到运行中的任务实例，已直接标记为已停止。" if state == "stopped"
+                   else "用户手动停止：已发送停止信号，任务会在当前步骤检查点退出。")
+        task_run_log.append(row.get("log_file"), level="WARNING", message=message, task_id=ident,
+                            stage="cancelling", event_type="run.cancel_requested")
 
     return {
         "ok": True,

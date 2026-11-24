@@ -5,7 +5,7 @@ from psycopg import Cursor
 
 from core import db
 from core.registration import service
-from core.storage import postgres, registration
+from core.storage import postgres, records, registration
 from core.storage.operations import store as operation_store
 from core.storage.registration import bulk_retry
 from tests.support_pg import PostgresTestCase
@@ -213,3 +213,96 @@ class RegistrationRetryBulkTests(PostgresTestCase):
         prefetch.assert_called_once_with([root["id"] for root in roots])
         admit.assert_called_once()
         assert [plan.source_id for plan in admit.call_args.args[0]] == [root["id"] for root in roots]
+
+    def test_legacy_roots_without_attempts_are_backfilled_in_the_collection_transaction(self):
+        records.init()
+        roots = []
+        for index in range(2):
+            row = db._new_job_row(
+                email_source="outlook", email=f"legacy-{index}@example.test",
+                batch_id="legacy-selected", batch_index=index + 1, batch_size=2, batch_workers=3,
+                data={"config_snapshot": {"registration_driver": "protocol_oss_2", "proxy_country": "JP"}},
+            )
+            row["status"] = "failed"
+            row["id"] = records.insert_row(records.JOBS, row)
+            roots.append(db.get_job(row["id"]))
+        plans = [bulk_retry.RetryAdmission(
+            source=root, root=root, attempt=None, action="registration", email=root["email"],
+            email_source="outlook", account=None, batch_id=root["batch_id"], batch_index=root["batch_index"],
+            batch_size=root["batch_size"], workers=3, config_snapshot=root["config_snapshot"], debug_enabled=False,
+        ) for root in roots]
+        with patch.object(db, "create_retry_job", side_effect=AssertionError("unexpected single-item fallback")):
+            result = bulk_retry.admit(plans)
+        for root in roots:
+            child, created = result[root["id"]]
+            assert created
+            child = db.get_job(child["id"])
+            assert child["root_job_id"] == root["id"]
+            assert child["parent_job_id"] == root["id"]
+            assert child["email"] == root["email"]
+            assert child["batch_workers"] == 3
+            attempt = registration.get_attempt(child["attempt_id"])
+            assert attempt["root_job_id"] == root["id"]
+            assert attempt["email"] == root["email"]
+            assert len(registration.list_runs(attempt["id"])) == 1
+            task = operation_store.find_task_by_source("registration_jobs", str(child["id"]), include_runs=True)
+            assert task["status"] == "queued"
+            assert db.get_job(root["id"])["attempt_id"] is None
+
+    def test_missing_projection_is_backfilled_without_single_item_fallback(self):
+        root = self._root("projection-gap@example.test", "projection-gap")
+        with postgres.connect() as conn, conn.cursor() as cur:
+            cur.execute(f"DELETE FROM {postgres.qualified('operation_tasks')}")
+            cur.execute(f"DELETE FROM {postgres.qualified('operation_batches')}")
+        with patch.object(db, "create_retry_job", side_effect=AssertionError("unexpected single-item fallback")):
+            body = self._request([root["id"]])
+        assert body["started_count"] == 1, body
+        [result] = body["started"]
+        assert result["job"]["attempt_id"] == root["attempt_id"]
+        assert len(registration.list_runs(root["attempt_id"])) == 2
+
+    def test_legacy_backfill_and_retry_roll_back_together(self):
+        records.init()
+        row = db._new_job_row(email_source="outlook", email="legacy-rollback@example.test",
+                              batch_id="legacy-rollback", data={"config_snapshot": {"registration_driver": "protocol_oss_2"}})
+        row["status"] = "failed"
+        source_id = records.insert_row(records.JOBS, row)
+        source = db.get_job(source_id)
+        plan = bulk_retry.RetryAdmission(
+            source=source, root=source, attempt=None, action="registration", email=source["email"],
+            email_source="outlook", account=None, batch_id=source["batch_id"], batch_index=1,
+            batch_size=1, workers=3, config_snapshot=source["config_snapshot"], debug_enabled=False,
+        )
+        with patch.object(bulk_retry, "_insert_facts", side_effect=RuntimeError("injected retry write failure")):
+            with self.assertRaisesRegex(RuntimeError, "injected retry write failure"):
+                bulk_retry.admit([plan])
+        with postgres.connect() as conn, conn.cursor() as cur:
+            for table in ("registration_attempts", "registration_runs", "operation_tasks", "operation_batches"):
+                cur.execute(f"SELECT count(*) FROM {postgres.qualified(table)}")
+                assert cur.fetchone()[0] == 0, table
+        assert db.get_job(source_id)["attempt_id"] is None
+
+    def test_historical_attempt_with_only_root_job_id_keeps_run_sequence(self):
+        root = self._root("root-id-only@example.test", "root-id-only")
+        with postgres.connect() as conn, conn.cursor() as cur:
+            cur.execute(f"""UPDATE {postgres.qualified('registration_attempts')}
+                SET source_root_job_id=NULL WHERE id=%s""", (root["attempt_id"],))
+        body = self._request([root["id"]])
+        assert body["started_count"] == 1, body
+        [item] = body["started"]
+        assert item["job"]["attempt_id"] == root["attempt_id"]
+        runs = registration.list_runs(root["attempt_id"])
+        assert [row["run_no"] for row in runs] == [2, 1]
+        assert registration.get_attempt(root["attempt_id"])["source_root_job_id"] is None
+
+    def test_historical_root_id_only_attempt_with_active_run_is_not_retried(self):
+        root = self._root("root-id-active@example.test", "root-id-active")
+        with postgres.connect() as conn, conn.cursor() as cur:
+            cur.execute(f"""UPDATE {postgres.qualified('registration_attempts')}
+                SET source_root_job_id=NULL WHERE id=%s""", (root["attempt_id"],))
+            cur.execute(f"""UPDATE {postgres.qualified('registration_runs')}
+                SET status='running',completed_at=NULL WHERE attempt_id=%s""", (root["attempt_id"],))
+        body = self._request([root["id"]])
+        assert body["started_count"] == 0, body
+        assert "Attempt" in body["skipped"][0]["reason"]
+        assert len(registration.list_runs(root["attempt_id"])) == 1

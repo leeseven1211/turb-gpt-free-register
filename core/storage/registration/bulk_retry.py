@@ -72,8 +72,8 @@ def _deleted_addresses(cur, addresses: list[str]) -> set[str]:
     return {row['email'] for row in cur.fetchall()}
 
 
-def admit(plans: list[RetryAdmission]) -> dict[int, tuple[dict, bool] | dict | None]:
-    """Return created/reused Jobs, validation errors, or a historical compatibility fallback."""
+def admit(plans: list[RetryAdmission]) -> dict[int, tuple[dict, bool] | dict]:
+    """Return created/reused Jobs or per-source validation errors in one transaction."""
     if not plans:
         return {}
     registration.init()
@@ -83,6 +83,8 @@ def admit(plans: list[RetryAdmission]) -> dict[int, tuple[dict, bool] | dict | N
     runs = postgres.qualified('registration_runs')
     tasks = common._table('operation_tasks')
     op_attempts = common._table('registration_attempts')
+    projection_root = ("COALESCE(a.source_root_job_id,a.root_job_id)" if common._schema_name() == postgres.schema_name()
+                       else "a.source_root_job_id")
     batches = common._table('operation_batches')
     queue = common._table('operation_projection_queue')
     ids = sorted({ident for p in plans for ident in (p.source_id, p.root_id)})
@@ -97,8 +99,10 @@ def admit(plans: list[RetryAdmission]) -> dict[int, tuple[dict, bool] | dict | N
         cur.execute(f'SELECT batch_id FROM {queue} WHERE batch_id=ANY(%s) ORDER BY batch_id FOR UPDATE',
                     (sorted(batch_ids.values()),))
         cur.fetchall()
-        cur.execute(f'SELECT * FROM {attempts} WHERE source_root_job_id=ANY(%s) ORDER BY id FOR UPDATE', (roots,))
-        locked_attempts = {row['source_root_job_id']: registration._row(row) for row in cur.fetchall()}
+        cur.execute(f"""SELECT * FROM {attempts}
+            WHERE source_root_job_id=ANY(%s) OR root_job_id=ANY(%s) ORDER BY id FOR UPDATE""", (roots, roots))
+        locked_attempts = {row['source_root_job_id'] or row['root_job_id']: registration._row(row)
+                           for row in cur.fetchall()}
         cur.execute(f'SELECT * FROM {jobs} WHERE id=ANY(%s) ORDER BY id FOR NO KEY UPDATE', (ids,))
         locked_jobs = {row['id']: records.merge_row(records.JOBS, row) for row in cur.fetchall()}
         cur.execute(f"""SELECT DISTINCT ON (root_job_id) * FROM {jobs}
@@ -116,11 +120,12 @@ def admit(plans: list[RetryAdmission]) -> dict[int, tuple[dict, bool] | dict | N
                        FROM {runs} WHERE attempt_id=ANY(%s) GROUP BY attempt_id""",
                     ([a['id'] for a in locked_attempts.values()],))
         run_state = {row['attempt_id']: row for row in cur.fetchall()}
-        cur.execute(f"""SELECT a.id,a.source_root_job_id,a.target_status,t.id AS root_task_id
+        cur.execute(f"""SELECT a.id,{projection_root} AS source_root_job_id,
+                              a.target_status,t.id AS root_task_id
                        FROM {op_attempts} a JOIN {tasks} t ON t.attempt_id=a.id
                        AND t.source_system='registration_chains'
-                       AND t.source_id=a.source_root_job_id::text || ':registration'
-                       WHERE a.source_root_job_id=ANY(%s)""", (roots,))
+                       AND t.source_id={projection_root}::text || ':registration'
+                       WHERE {projection_root}=ANY(%s)""", (roots,))
         projected = {row['source_root_job_id']: row for row in cur.fetchall()}
         addresses = sorted({address for p in plans for address in (
             _normalized_address(p.email),
@@ -133,10 +138,13 @@ def admit(plans: list[RetryAdmission]) -> dict[int, tuple[dict, bool] | dict | N
         cur.execute(f"""SELECT id,email,updated_at FROM {postgres.qualified(records.ACCOUNTS.name)}
                         WHERE id=ANY(%s) ORDER BY id FOR NO KEY UPDATE""", (account_ids,))
         current_accounts = {row['id']: row for row in cur.fetchall()}
+        batch_ids[None] = None
 
         results = {}
         to_create = {}
         to_reuse = []
+        legacy = []
+        candidates = []
         for plan in plans:
             ident, root = plan.source_id, plan.root_id
             source = locked_jobs.get(ident)
@@ -157,23 +165,34 @@ def admit(plans: list[RetryAdmission]) -> dict[int, tuple[dict, bool] | dict | N
                 active = active_children[root]
                 results[ident] = ((active, False) if active['job_type'] == plan.action else
                                   _error(f"已有其他类型重试任务 #{active['id']} 在排队或运行中"))
-            elif (attempt is None or plan.attempt is None or root not in projected or plan.batch_id not in batch_ids
-                  or source.get('attempt_id') != attempt['id'] or plan.root.get('attempt_id') != attempt['id']
-                  or attempt.get('root_job_id') != root or attempt['id'] not in run_state):
-                # The old entry point can backfill pre-Attempt Jobs and missing projections.
-                results[ident] = None
-            elif run_state[attempt['id']]['active']:
-                results[ident] = _error('同一 Attempt 已有运行在排队或执行中')
             elif plan.account_id is not None and (
                     not (current_account := current_accounts.get(plan.account_id)) or
                     current_account['updated_at'] != plan.account.get('updated_at') or
                     _normalized_address(current_account['email']) != _normalized_address(plan.email)
             ):
                 results[ident] = _error(_CHANGED)
-            elif root in to_create:
+            elif (attempt is None or plan.attempt is None or root not in projected or plan.batch_id not in batch_ids
+                  or source.get('attempt_id') != attempt['id'] or plan.root.get('attempt_id') != attempt['id']
+                  or attempt.get('root_job_id') != root or attempt['id'] not in run_state):
+                legacy.append(plan)
+                candidates.append(plan)
+            elif run_state[attempt['id']]['active']:
+                results[ident] = _error('同一 Attempt 已有运行在排队或执行中')
+            else:
+                candidates.append(plan)
+
+        if legacy:
+            from core.storage.registration.bulk_retry_legacy import prepare
+
+            prepare(cur, legacy, attempts=locked_attempts, projected=projected, batch_ids=batch_ids,
+                    run_state=run_state)
+        for plan in candidates:
+            if run_state[locked_attempts[plan.root_id]["id"]]["active"]:
+                results[plan.source_id] = _error('同一 Attempt 已有运行在排队或执行中')
+            elif plan.root_id in to_create:
                 to_reuse.append(plan)
             else:
-                to_create[root] = plan
+                to_create[plan.root_id] = plan
 
         if to_create:
             inserted = _insert_facts(cur, list(to_create.values()), locked_attempts, run_state, history,
@@ -286,7 +305,7 @@ def _insert_facts(cur, plans, attempts, run_state, history, projected, batch_ids
     cur.execute(f"""WITH dirty_batches AS (
         INSERT INTO {queue} AS q (batch_id,reason,source_system,source_id,status,requested_at,available_at)
         SELECT batch_id,'registration_job_updated','registration_jobs',max(job_id)::text,'queued',now(),now()
-        FROM {source} GROUP BY batch_id ORDER BY batch_id
+        FROM {source} WHERE batch_id IS NOT NULL GROUP BY batch_id ORDER BY batch_id
         ON CONFLICT (batch_id) DO UPDATE SET
             reason=EXCLUDED.reason,source_system=EXCLUDED.source_system,source_id=EXCLUDED.source_id,
             requested_at=EXCLUDED.requested_at,status=CASE WHEN q.status='running' THEN 'running' ELSE 'queued' END,

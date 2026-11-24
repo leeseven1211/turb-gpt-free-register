@@ -7,6 +7,7 @@ from core import db
 from core.codex import operation_service as codex_operation_service
 from core.registration import service as registration_service
 from core.storage import postgres, records, registration
+from core.storage.operations import store as operation_store
 from tests.support_pg import PostgresTestCase
 from webui.app import create_app
 
@@ -356,10 +357,15 @@ class AccountRegistrationRetryTests(PostgresTestCase):
         account = self._account(access_token="valid-token", codex_status="failed", plan_check_status="success",
                                 totp_secret="test-secret")
         self._chain(account)
-        with patch.object(codex_operation_service, "submit", return_value={
-            "accepted": False, "busy": True, "task_id": 91, "run_id": 92,
-            "error": "该账号已有排队或运行中的账号操作", "status": "running",
-        }):
+        active = operation_store.create_runtime_task(
+            task_type="fixture_auth", account_id=account, email="pending@example.test",
+            resource_family="openai_interactive",
+        )
+        with (
+            patch.object(codex_operation_service, "_config_snapshot", return_value={"oauth_driver": "protocol"}),
+            patch.object(codex_operation_service, "_deployment_unavailable", return_value=None),
+            patch.object(codex_operation_service, "_feature_ready", return_value=(True, "")),
+        ):
             response = self._post(account)
         result = response.get_json()
         self.assertEqual(202, response.status_code)
@@ -367,7 +373,7 @@ class AccountRegistrationRetryTests(PostgresTestCase):
         self.assertEqual(0, result["skipped_count"])
         self.assertEqual(1, result["reused_count"])
         item = result["reused"][0]
-        self.assertEqual(91, item["task_id"])
-        self.assertEqual(92, item["run_id"])
+        self.assertEqual(active["id"], item["task_id"])
+        self.assertEqual(active["run"]["id"], item["run_id"])
         self.assertEqual("codex", item["retry_action"])
         self.assertIn("已有", item["message"])
