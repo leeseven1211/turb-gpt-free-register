@@ -125,7 +125,11 @@ def cancel_runs_many(conn, requests: list[dict]) -> dict[int, dict | None]:
             bulk_runtime.record_managed_changes_many(
                 conn, {row["target_round_id"] for row in managed},
             )
-    replies = {row["id"]: {key: row[key] for key in ("id", "task_id", "status", "batch_id")} for row in changed}
+    replies = {
+        row["id"]: {**{key: row[key] for key in ("id", "task_id", "status", "batch_id")},
+                    "log_file": current[row["id"]].get("log_file")}
+        for row in changed
+    }
     for run_id in ids:
         if run_id in replies:
             continue

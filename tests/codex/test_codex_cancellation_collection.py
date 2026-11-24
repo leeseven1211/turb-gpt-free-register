@@ -184,6 +184,17 @@ class CodexCancellationCollectionTests(PostgresTestCase):
                         "WHERE event_type='run.cancel_requested'")
             self.assertEqual("native_operations", cur.fetchone()["source_system"])
 
+    def test_shared_cancel_returns_the_original_log_path_for_local_reporting(self):
+        run = self.create_runs([1])[0]
+        original = operations.get_run(run["run_id"])
+        self.assertTrue(original["log_file"])
+        with common._connect() as conn:
+            reply = cancellation.cancel_runs_many(conn, [
+                {"id": run["run_id"], "expected_status": "queued", "reason": "fixture"},
+            ])[run["run_id"]]
+        self.assertEqual(original["log_file"], reply["log_file"])
+        self.assertEqual(original["task_id"], reply["task_id"])
+
     def test_missing_exact_run_is_reported_missing(self):
         original = self.create_runs([1])[0]
         with common._connect() as conn:
