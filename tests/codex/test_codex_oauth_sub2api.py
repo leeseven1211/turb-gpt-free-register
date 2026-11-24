@@ -71,7 +71,8 @@ class CodexOAuthSub2ApiTests(PostgresTestCase):
             patch.object(
                 sub2api_client, "upload_and_enable_configured_codex_oauth_credential",
                 create=True, side_effect=sync_error,
-                return_value={"ok": True, "uploaded": True, "enabled": True, "sub2api_account_id": 42},
+                return_value={"ok": True, "uploaded": True, "enabled": True, "sub2api_account_id": 42,
+                              "backend_identity": "backend-test"},
             ) as upload,
         ):
             self._oauth_grant = grant

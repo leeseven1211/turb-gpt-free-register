@@ -128,6 +128,184 @@ class Sub2ApiJobTests(PostgresTestCase):
         self.jobs.queue_sync(self.filename, remote_account_ids=[41])
         self.assertEqual("queued", self.rows()[0]["status"])
 
+    def test_missing_target_reconciles_existing_healthy_replacement_without_upload(self):
+        self.credential["account_id"] = "stable-provider-account"
+        codex.save_codex_credential_record(self.filename, self.credential)
+        self.store.save_repair(
+            "backend-a", self.account_id, stage="sync_wait", remote_account_ids=[41],
+            source_generation=self.jobs.credential_generation(self.credential),
+        )
+        self.jobs.queue_sync(self.filename, remote_account_ids=[41])
+        previous = self.rows()[0]
+        with patch.object(
+            self.jobs.client, "update_and_enable_configured_account",
+            side_effect=self.jobs.client.Sub2ApiSyncError(
+                "resolve_account", "sub2api_account_missing", "模拟旧目标不存在",
+                sub2api_account_id=41,
+            ),
+        ), patch.object(self.jobs.client, "find_confirmed_replacement", return_value=42):
+            result = self.execute(previous["run_id"])
+        self.assertTrue(result["ok"])
+        by_target = {row["remote_account_id"]: row for row in self.rows()}
+        self.assertEqual("superseded", by_target[41]["status"])
+        self.assertEqual("success", by_target[42]["status"])
+        repair = self.store.get_repair("backend-a", self.account_id)
+        self.assertEqual([42], repair["remote_account_ids"])
+        self.assertEqual("idle", repair["stage"])
+        credential = records.get_row_by(records.CODEX_CREDENTIALS, "filename", self.filename)
+        self.assertEqual(0, int(credential.get("sub2_uploaded_count") or 0))
+
+    def test_missing_target_without_replacement_evidence_remains_retryable(self):
+        self.jobs.queue_sync(self.filename, remote_account_ids=[41])
+        with patch.object(
+            self.jobs.client, "update_and_enable_configured_account",
+            side_effect=self.jobs.client.Sub2ApiSyncError(
+                "resolve_account", "sub2api_account_missing", "模拟旧目标不存在",
+                sub2api_account_id=41,
+            ),
+        ), patch.object(self.jobs.client, "find_confirmed_replacement", return_value=None):
+            result = self.execute(self.rows()[0]["run_id"])
+        self.assertFalse(result["ok"])
+        self.assertEqual("pending", self.rows()[0]["status"])
+        self.assertEqual("sub2api_account_missing", self.rows()[0]["error_code"])
+
+    def test_cancellation_after_replacement_lookup_keeps_old_job_cancelled(self):
+        self.credential["account_id"] = "stable-provider-account"
+        codex.save_codex_credential_record(self.filename, self.credential)
+        self.jobs.queue_sync(self.filename, remote_account_ids=[41])
+        run_id = self.rows()[0]["run_id"]
+
+        def cancel_during_lookup(*args, **kwargs):
+            operation.request_run_cancel(run_id, reason="用户取消补传")
+            return 42
+
+        with patch.object(
+            self.jobs.client, "update_and_enable_configured_account",
+            side_effect=self.jobs.client.Sub2ApiSyncError(
+                "resolve_account", "sub2api_account_missing", "模拟旧目标不存在",
+                sub2api_account_id=41,
+            ),
+        ), patch.object(self.jobs.client, "find_confirmed_replacement", side_effect=cancel_during_lookup):
+            self.execute(run_id)
+        self.assertEqual([(41, "cancelled")], [
+            (row["remote_account_id"], row["status"]) for row in self.rows()
+        ])
+
+    def test_replacement_lookup_cannot_confirm_a_newer_credential_generation(self):
+        self.credential["account_id"] = "stable-provider-account"
+        codex.save_codex_credential_record(self.filename, self.credential)
+        self.jobs.queue_sync(self.filename, remote_account_ids=[41])
+        original = self.rows()[0]
+        newer = {**self.credential, "access_token": "newer-access"}
+
+        def rotate_during_lookup(*args, **kwargs):
+            codex.save_codex_credential_record(self.filename, newer)
+            return 42
+
+        with patch.object(
+            self.jobs.client, "update_and_enable_configured_account",
+            side_effect=self.jobs.client.Sub2ApiSyncError(
+                "resolve_account", "sub2api_account_missing", "模拟旧目标不存在",
+                sub2api_account_id=41,
+            ),
+        ), patch.object(self.jobs.client, "find_confirmed_replacement", side_effect=rotate_during_lookup):
+            result = self.execute(original["run_id"])
+        self.assertTrue(result["ok"])
+        self.assertEqual([41], [row["remote_account_id"] for row in self.rows()])
+        self.assertEqual(self.jobs.credential_generation(newer), self.rows()[0]["generation"])
+        self.assertNotEqual("superseded", self.rows()[0]["status"])
+        credential = records.get_row_by(records.CODEX_CREDENTIALS, "filename", self.filename)
+        self.assertIsNone(credential.get("sub2_sync_error"))
+
+    def test_normal_oauth_success_records_current_target_and_upload_count(self):
+        from core.codex import sub2api_sync
+
+        self.credential["account_id"] = "stable-provider-account"
+        codex.save_codex_credential_record(self.filename, self.credential)
+        with patch.object(
+            self.jobs.client, "upload_and_enable_configured_codex_oauth_credential",
+            return_value={"uploaded": True, "enabled": True, "sub2api_account_id": 42,
+                          "backend_identity": "backend-a"},
+        ):
+            result = sub2api_sync.sync_confirmed_credential(
+                {"file_path": self.filename}, email=self.credential["email"],
+                checkpoint=lambda: None, assert_lease=lambda: None,
+            )
+        self.assertEqual("success", result["status"])
+        self.assertEqual([(42, "success")], [
+            (row["remote_account_id"], row["status"]) for row in self.rows()
+        ])
+        credential = records.get_row_by(records.CODEX_CREDENTIALS, "filename", self.filename)
+        self.assertEqual(1, credential["sub2_uploaded_count"])
+
+    def test_success_receipt_does_not_attach_to_recreated_same_filename(self):
+        from core.codex import sub2api_sync
+
+        original = records.get_row_by(records.CODEX_CREDENTIALS, "filename", self.filename)
+
+        def recreate_during_upload(*args, **kwargs):
+            records.delete_rows(records.CODEX_CREDENTIALS, [original["id"]])
+            codex.save_codex_credential_record(self.filename, self.credential)
+            return {"uploaded": True, "enabled": True, "sub2api_account_id": 42,
+                    "backend_identity": "backend-a"}
+
+        with patch.object(
+            self.jobs.client, "upload_and_enable_configured_codex_oauth_credential",
+            side_effect=recreate_during_upload,
+        ):
+            result = sub2api_sync.sync_confirmed_credential(
+                {"file_path": self.filename}, email=self.credential["email"],
+                checkpoint=lambda: None, assert_lease=lambda: None,
+            )
+        self.assertTrue(result["uploaded"])
+        self.assertEqual("sub2api_local_confirmation_conflict", result["error_code"])
+        replacement = records.get_row_by(records.CODEX_CREDENTIALS, "filename", self.filename)
+        self.assertNotEqual(original["id"], replacement["id"])
+        self.assertEqual(0, int(replacement.get("sub2_uploaded_count") or 0))
+        self.assertIsNone(replacement.get("sub2_sync_error"))
+        self.assertEqual([], self.rows())
+
+    def test_success_receipt_follows_renamed_credential_by_original_id(self):
+        from core.codex import sub2api_sync
+
+        original = records.get_row_by(records.CODEX_CREDENTIALS, "filename", self.filename)
+        new_name = "codex-sync-job@example.test-plus.json"
+
+        def rename_during_upload(*args, **kwargs):
+            records.patch_row(records.CODEX_CREDENTIALS, original["id"], {"filename": new_name})
+            return {"uploaded": True, "enabled": True, "sub2api_account_id": 42,
+                    "backend_identity": "backend-a"}
+
+        with patch.object(
+            self.jobs.client, "upload_and_enable_configured_codex_oauth_credential",
+            side_effect=rename_during_upload,
+        ):
+            result = sub2api_sync.sync_confirmed_credential(
+                {"file_path": self.filename}, email=self.credential["email"],
+                checkpoint=lambda: None, assert_lease=lambda: None,
+            )
+        self.assertEqual("success", result["status"])
+        current = records.get_row(records.CODEX_CREDENTIALS, original["id"])
+        self.assertEqual(1, current["sub2_uploaded_count"])
+        self.assertEqual(new_name, self.store.list_jobs()[0]["filename"])
+
+    def test_token_refresh_success_records_same_shared_confirmation(self):
+        from core.codex import token_refresh_service
+
+        codex.mark_codex_sub2_uploaded(self.filename)
+        with patch.object(
+            self.jobs.client, "upload_and_enable_configured_codex_oauth_credential",
+            return_value={"uploaded": True, "enabled": True, "sub2api_account_id": 42,
+                          "backend_identity": "backend-a"},
+        ), patch.object(token_refresh_service._cfg, "CODEX_TOKEN_AUTO_SYNC_SUB2API", True):
+            result = token_refresh_service._sync_sub2_if_needed(self.filename)
+        self.assertEqual("success", result["status"])
+        self.assertEqual([(42, "success")], [
+            (row["remote_account_id"], row["status"]) for row in self.rows()
+        ])
+        credential = records.get_row_by(records.CODEX_CREDENTIALS, "filename", self.filename)
+        self.assertEqual(2, credential["sub2_uploaded_count"])
+
     def test_new_credential_generation_rejects_old_worker_result(self):
         self.jobs.queue_sync(self.filename, remote_account_ids=[41])
         previous = self.rows()[0]

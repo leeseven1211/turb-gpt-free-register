@@ -2496,6 +2496,7 @@ _SUB2API_ERROR_DETAILS = {
     "sub2api_manual_execution_failed": ("local_execution", "SUB2-LOCAL-002", "手动上传本地执行异常，具体阶段已保留"),
     "sub2api_client_error": ("local_execution", "SUB2-LOCAL-003", "Sub2API 客户端处理异常，尚无远端根因证据"),
     "sub2api_sync_execution_error": ("local_execution", "SUB2-LOCAL-004", "Sub2API 补传执行异常，具体阶段已保留"),
+    "sub2api_local_confirmation_conflict": ("local_writeback", "SUB2-LOCAL-005", "远端同步已完成，本地凭据或任务状态已变化，回执尚未写回"),
     "sub2api_sync_failed": ("confirmation", "SUB2-CONFIRM-002", "Sub2API 同步未完成，原失败阶段保留"),
 }
 

@@ -449,6 +449,51 @@ def update_and_enable_configured_account(auth_json: dict[str, Any], account_id: 
     return _update_account(_capture_config(expected_backend), auth_json, account_id, checkpoint=checkpoint, enable=True)
 
 
+def find_confirmed_replacement(
+    auth_json: dict[str, Any], missing_account_id: int, *,
+    checkpoint: Callable[[], None] | None = None, expected_backend: str | None = None,
+) -> int | None:
+    """只读确认失效目标的唯一替代；邮箱、稳定账号身份与实际凭据必须同时一致。"""
+    config = _capture_config(expected_backend)
+    email = _validate_credential(auth_json, config)
+    identity = str(auth_json.get("account_id") or auth_json.get("chatgpt_account_id") or "").strip()
+    if not identity or not all(
+        str(auth_json.get(field) or "").strip() for field in ("access_token", "refresh_token")
+    ):
+        return None
+    matches = []
+    for candidate in _list_accounts(config, email=email, checkpoint=checkpoint):
+        remote_id = _positive_id(candidate["id"])
+        if remote_id == missing_account_id:
+            continue
+        remote = _request_json(
+            config, "get", f"/api/v1/admin/accounts/{remote_id}",
+            stage="resolve_account", checkpoint=checkpoint, account_id=remote_id,
+        )
+        credentials = remote.get("credentials") if isinstance(remote, dict) else None
+        if not isinstance(credentials, dict):
+            continue
+        remote_identity = str(credentials.get("chatgpt_account_id") or credentials.get("account_id") or "").strip()
+        if (
+            str(remote.get("id")) != str(remote_id)
+            or str(remote.get("platform") or "").lower() != "openai"
+            or str(remote.get("type") or "").lower() != "oauth"
+            or str(remote.get("status") or "").lower() != "active"
+            or remote.get("schedulable") is not True
+            or remote.get("error_message")
+            or _remote_email(remote) != email
+            or remote_identity != identity
+        ):
+            continue
+        if all(
+            not auth_json.get(field) or credentials.get(field) == auth_json[field]
+            for field in ("access_token", "refresh_token")
+        ):
+            matches.append(remote_id)
+    _checkpoint(checkpoint, config=config, stage="resolve_account")
+    return matches[0] if len(matches) == 1 else None
+
+
 def _configured_upload(auth_json: dict[str, Any], *, checkpoint: Callable[[], None] | None, enable: bool, expected_backend: str | None = None) -> dict[str, Any]:
     config = _capture_config(expected_backend)
     email = _validate_credential(auth_json, config)

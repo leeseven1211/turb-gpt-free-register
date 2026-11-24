@@ -1077,11 +1077,13 @@ def _sync_sub2_if_needed(filename: str) -> dict[str, Any]:
     if int(row.get("sub2_uploaded_count") or 0) <= 0:
         return {"status": "not_previously_uploaded"}
 
-    from core.integrations.sub2api import client as sub2api_client
+    from core.integrations.sub2api import client as sub2api_client, jobs
 
     text, _ = db.read_codex_credential(filename)
     try:
-        result = sub2api_client.upload_and_enable_configured_codex_oauth_credential(json.loads(text))
+        credential = json.loads(text)
+        credential_id = jobs.sync_credential_id(filename, credential)
+        result = sub2api_client.upload_and_enable_configured_codex_oauth_credential(credential)
     except Exception as exc:
         error = _safe_error(exc)
         db.mark_codex_sub2_sync_error(filename, error)
@@ -1100,8 +1102,19 @@ def _sync_sub2_if_needed(filename: str) -> dict[str, Any]:
             logger.exception("Codex 刷新后的 sub2api 待补传状态保存失败")
             summary["retry_error_code"] = "sub2api_retry_persist_failed"
         return summary
-    db.mark_codex_sub2_uploaded(filename)
-    return {"status": "success", "updated": result.get("updated"), "uploaded": True, "enabled": bool(result.get("enabled")), "sub2api_account_id": result.get("sub2api_account_id")}
+    confirmed = jobs.record_sync_success(credential_id, credential, result)
+    if not confirmed:
+        return {
+            "status": "failed", "stage": "persist_metadata",
+            "error_code": "sub2api_local_confirmation_conflict",
+            "error": "远端同步已完成，本地凭据或任务状态已变化，本次回执未写回",
+            "uploaded": bool(result.get("uploaded")), "enabled": bool(result.get("enabled")),
+            "sub2api_account_id": result.get("sub2api_account_id"),
+            "local_confirmation": False,
+        }
+    return {"status": "success", "updated": result.get("updated"), "uploaded": True,
+            "enabled": bool(result.get("enabled")), "sub2api_account_id": result.get("sub2api_account_id"),
+            "local_confirmation": confirmed}
 
 
 def _run_data(run: Mapping[str, Any]) -> dict[str, Any]:

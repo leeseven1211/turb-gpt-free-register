@@ -5,6 +5,15 @@ from core.operations.errors import _SUB2API_ERROR_DETAILS, classify_task_error
 
 
 class Sub2ApiErrorClassificationTests(unittest.TestCase):
+    def test_confirmation_conflict_keeps_remote_success_and_local_writeback_category(self):
+        result = classify_task_error(
+            "本地凭据已变化", task_type="sub2api_sync", task_status="failed",
+            result_summary={"error_code": "sub2api_local_confirmation_conflict", "stage": "persist_metadata"},
+        )
+        self.assertEqual("external.sub2api.local_writeback", result["code"])
+        self.assertEqual("SUB2-LOCAL-005", result["display_code"])
+        self.assertEqual("persist_metadata", result["stage"])
+
     def test_every_registered_code_has_specific_category_and_stage(self):
         for code, (category, display, _message) in _SUB2API_ERROR_DETAILS.items():
             with self.subTest(code=code):

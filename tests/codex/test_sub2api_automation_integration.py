@@ -3,7 +3,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from core.codex import operation_service, sub2api_sync, token_refresh_service
-from core.integrations.sub2api import client
+from core.integrations.sub2api import client, jobs
 
 
 class Sub2ApiAutomationIntegrationTests(unittest.TestCase):
@@ -56,15 +56,19 @@ class Sub2ApiAutomationIntegrationTests(unittest.TestCase):
             token_refresh_service.db, "get_account_by_email", return_value={}
         ), patch.object(token_refresh_service.db, "read_codex_credential", return_value=(
             '{"email":"refresh@example.test","access_token":"synthetic-token"}', filename
-        )), patch.object(token_refresh_service.db, "mark_codex_sub2_uploaded"), patch.object(
+        )), patch.object(jobs, "sync_credential_id", return_value=12), patch.object(
+            jobs, "record_sync_success", return_value=True,
+        ) as confirm, patch.object(
             client, "upload_and_enable_configured_codex_oauth_credential",
-            return_value={"uploaded": True, "enabled": True, "sub2api_account_id": 41},
+            return_value={"uploaded": True, "enabled": True, "sub2api_account_id": 41,
+                          "backend_identity": "backend-test"},
         ) as sync:
             result = token_refresh_service._sync_sub2_if_needed(filename)
         get_credential.assert_called_once_with(filename)
         sync.assert_called_once_with({"email": "refresh@example.test", "access_token": "synthetic-token"})
         self.assertEqual("success", result["status"])
         self.assertTrue(result["enabled"])
+        self.assertEqual(12, confirm.call_args.args[0])
 
     def test_failed_oauth_sync_saves_retry_without_repeating_authorization(self):
         from core.integrations.sub2api import jobs

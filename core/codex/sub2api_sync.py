@@ -38,6 +38,9 @@ def sync_confirmed_credential(
         credential = json.loads(text)
         if not isinstance(credential, dict) or str(credential.get("email") or "").strip().casefold() != email.strip().casefold():
             raise Sub2ApiSyncError(stage, "sub2api_credential_identity_mismatch", "本次凭证邮箱与授权账号不一致")
+        from core.integrations.sub2api import jobs
+
+        credential_id = jobs.sync_credential_id(filename, credential)
         stage = "upload"
         synced = sub2api_client.upload_and_enable_configured_codex_oauth_credential(credential, checkpoint=checkpoint)
         backend_identity = synced.get("backend_identity") or ""
@@ -46,11 +49,21 @@ def sync_confirmed_credential(
         account_id = synced.get("sub2api_account_id")
         stage = "persist_metadata"
         assert_lease()
-        codex_store.mark_codex_sub2_uploaded(filename)
+        confirmed = jobs.record_sync_success(credential_id, credential, synced)
+        if not confirmed:
+            return {
+                "status": "failed", "stage": stage,
+                "error_code": "sub2api_local_confirmation_conflict",
+                "error": "远端同步已完成，本地凭据或任务状态已变化，本次回执未写回",
+                "uploaded": uploaded, "enabled": enabled,
+                "sub2api_account_id": account_id, "backend_identity": backend_identity,
+                "local_confirmation": False,
+            }
         return {
             "status": "success", "uploaded": uploaded, "enabled": enabled,
             "sub2api_account_id": account_id,
             "backend_identity": synced.get("backend_identity") or backend_identity,
+            "local_confirmation": confirmed,
         }
     except (OperationCancelled, OperationLeaseLost) as exc:
         uploaded = bool(getattr(exc, "sub2api_uploaded", uploaded))

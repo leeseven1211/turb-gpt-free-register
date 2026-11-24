@@ -38,6 +38,49 @@ class Sub2ApiClientTests(unittest.TestCase):
         self.assertEqual([c.args[0].rsplit("/", 1)[-1] for c in post.call_args_list], ["clear-error", "schedulable"])
         self.assertNotIn("new-refresh", str(result))
 
+    def test_missing_target_reconciles_only_one_healthy_identical_oauth_account(self):
+        auth = {**self.auth, "account_id": "same-provider-account"}
+        replacement = {
+            **self.remote, "id": 42, "status": "active", "schedulable": True,
+            "credentials": {**auth, "chatgpt_account_id": "same-provider-account"},
+        }
+        with patch.object(client.requests, "get", side_effect=[
+            self.response({"items": [replacement], "pages": 1}),
+            self.response(replacement),
+        ]), patch.object(client.requests, "put") as put, patch.object(client.requests, "post") as post:
+            result = client.find_confirmed_replacement(auth, 41)
+        self.assertEqual(42, result)
+        put.assert_not_called()
+        post.assert_not_called()
+
+    def test_missing_target_keeps_retry_without_unique_same_credential_evidence(self):
+        auth = {**self.auth, "account_id": "same-provider-account"}
+        replacement = {
+            **self.remote, "id": 42, "status": "active", "schedulable": True,
+            "credentials": {**auth, "chatgpt_account_id": "same-provider-account"},
+        }
+        changes = [
+            {"credentials": {**replacement["credentials"], "chatgpt_account_id": "other-account"}},
+            {"credentials": {**replacement["credentials"], "refresh_token": "other-refresh"}},
+            {"credentials": {**replacement["credentials"], "email": "other@example.test"}},
+            {"status": "error"}, {"schedulable": False}, {"error_message": "HTTP 401"},
+        ]
+        for change in changes:
+            with self.subTest(change=change), patch.object(client.requests, "get", side_effect=[
+                self.response({"items": [replacement], "pages": 1}),
+                self.response({**replacement, **change}),
+            ]):
+                self.assertIsNone(client.find_confirmed_replacement(auth, 41))
+        other = {**replacement, "id": 43}
+        with patch.object(client.requests, "get", side_effect=[
+            self.response({"items": [replacement, other], "pages": 1}),
+            self.response(replacement), self.response(other),
+        ]):
+            self.assertIsNone(client.find_confirmed_replacement(auth, 41))
+        with patch.object(client.requests, "get") as get:
+            self.assertIsNone(client.find_confirmed_replacement(self.auth, 41))
+        get.assert_not_called()
+
     def test_target_update_maps_codex_fields_and_ignores_unrelated_local_fields(self):
         auth = {**self.auth, "account_id": "new-account", "expired": "2026-12-01T00:00:00Z", "type": "codex", "model_mapping": {"unsafe": "override"}, "extra": {"unsafe": True}}
         with patch.object(client.requests, "get", return_value=self.response(self.remote)), patch.object(client.requests, "put", return_value=self.response({})) as put, patch.object(client.requests, "post", return_value=self.response({})):

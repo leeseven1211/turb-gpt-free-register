@@ -5,9 +5,11 @@ from __future__ import annotations
 import hashlib
 import json
 import threading
+import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 
+from psycopg.errors import LockNotAvailable
 from psycopg.rows import dict_row
 
 from core.storage import postgres
@@ -19,6 +21,7 @@ _REPAIR_FIELDS = frozenset(
     {
         "stage",
         "remote_account_ids",
+        "superseded_targets",
         "source_generation",
         "run_id",
         "task_id",
@@ -128,7 +131,15 @@ def queue(
             (filename, credential_id, backend),
         )
         existing = list(cur.fetchall())
-        targets = remote_ids or [row["remote_account_id"] or row["target_key"] for row in existing] or [0]
+        targets = (
+            remote_ids
+            or [
+                row["remote_account_id"] or row["target_key"]
+                for row in existing
+                if row["status"] != "superseded"
+            ]
+            or [0]
+        )
         results = []
         for target in dict.fromkeys(targets):
             row = next((r for r in existing if r["target_key"] == target or r["remote_account_id"] == target), None)
@@ -159,6 +170,9 @@ def queue(
                     )
                     row = cur.fetchone()
                 changed = row["generation"] != generation
+                if row["status"] == "superseded" and trigger != "manual":
+                    results.append(_public(row))
+                    continue
                 # 成功和活跃 Run 在同一代际幂等；巡检反复查询不会重复上传。
                 if changed or (row["status"] not in (*ACTIVE, "success") and trigger == "manual"):
                     cur.execute(
@@ -334,7 +348,7 @@ def cancel(job_id, *, generation, run_id, execution_id):
             f"""UPDATE {_table()} j SET status='cancelled',stage='cancelled',
             dispatch_requested=FALSE,error_code='sub2api_sync_cancelled',error='用户已停止补传，可手动再次排队',updated_at=now()
             FROM {operation._table("operation_runs")} r WHERE j.id=%s AND j.generation=%s AND j.run_id=%s
-            AND r.id=j.run_id AND r.execution_id=%s""",
+            AND r.id=j.run_id AND r.execution_id=%s AND j.status<>'superseded'""",
             (job_id, generation, run_id, execution_id),
         )
         return cur.rowcount == 1
@@ -365,7 +379,8 @@ def finish(
             f"SELECT * FROM {_table()} WHERE id=%s AND generation=%s AND run_id=%s FOR UPDATE",
             (job_id, generation, run_id),
         )
-        if not cur.fetchone():
+        row = cur.fetchone()
+        if not row or row["status"] == "superseded":
             return False
         if write_metadata is not None:
             write_metadata()
@@ -388,6 +403,300 @@ def finish(
         return True
 
 
+def _normalise_replaced_targets(value) -> dict[str, int]:
+    if not isinstance(value, dict):
+        return {}
+    result = {}
+    for old, new in value.items():
+        try:
+            old_id, new_id = int(old), int(new)
+        except (TypeError, ValueError):
+            continue
+        if old_id > 0 and new_id > 0 and old_id != new_id:
+            result[str(old_id)] = new_id
+    return result
+
+
+def _repair_targets(data: dict, incoming=None) -> tuple[list[int], dict[str, int]]:
+    mapping = _normalise_replaced_targets(data.get("superseded_targets"))
+    mapping.update(_normalise_replaced_targets(incoming))
+    for old in list(mapping):
+        seen = {old}
+        target = mapping[old]
+        while str(target) in mapping and str(target) not in seen:
+            seen.add(str(target))
+            target = mapping[str(target)]
+        mapping[old] = target
+    raw_targets = data.get("remote_account_ids") or []
+    targets = []
+    for value in raw_targets:
+        try:
+            target = int(value)
+        except (TypeError, ValueError):
+            continue
+        if target <= 0:
+            continue
+        target = mapping.get(str(target), target)
+        if target not in targets:
+            targets.append(target)
+    return targets, mapping
+
+
+def _confirm_success_job(cur, *, credential, account, backend, generation, remote_account_id, count_upload):
+    cur.execute(
+        f"""SELECT * FROM {_table()}
+        WHERE credential_id=%s AND backend=%s AND (target_key=%s OR remote_account_id=%s)
+        ORDER BY id FOR UPDATE NOWAIT""",
+        (int(credential["id"]), backend, remote_account_id, remote_account_id),
+    )
+    rows = list(cur.fetchall())
+    if rows:
+        if any(row["status"] in {"cancelled", "superseded"} for row in rows):
+            return None, False
+        counted = any(
+            row["generation"] == generation and row["trigger"] == "confirmation_counted" for row in rows
+        )
+        count_now = bool(count_upload and not counted)
+        cur.execute(
+            f"""UPDATE {_table()} SET filename=%s,remote_account_id=%s,account_id=%s,email=%s,
+            generation=%s,status='success',stage='complete',error_code=NULL,error=NULL,
+            trigger=%s,task_id=NULL,run_id=NULL,dispatch_requested=FALSE,
+            next_attempt_at=now(),updated_at=now()
+            WHERE id=ANY(%s) RETURNING *""",
+            (
+                credential["filename"],
+                int(remote_account_id),
+                int(account["id"]) if account else None,
+                account["email"] if account else credential["content"]["email"],
+                generation,
+                "confirmation_counted" if counted or count_upload else "confirmation",
+                [row["id"] for row in rows],
+            ),
+        )
+        return cur.fetchone(), count_now
+    cur.execute(
+        f"""INSERT INTO {_table()}
+        (filename,backend,target_key,remote_account_id,account_id,credential_id,email,generation,
+         status,stage,trigger,dispatch_requested,next_attempt_at)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'success','complete',%s,FALSE,now())
+        RETURNING *""",
+        (
+            credential["filename"],
+            backend,
+            int(remote_account_id),
+            int(remote_account_id),
+            int(account["id"]) if account else None,
+            int(credential["id"]),
+            account["email"] if account else credential["content"]["email"],
+            generation,
+            "confirmation_counted" if count_upload else "confirmation",
+        ),
+    )
+    return cur.fetchone(), bool(count_upload)
+
+
+def confirm_sync(
+    *,
+    credential_id: int,
+    backend: str,
+    generation: str,
+    remote_account_id: int,
+    replaced_job_id: int | None = None,
+    replaced_run_id: int | None = None,
+    fence: dict | None = None,
+    count_upload: bool = False,
+) -> bool:
+    """在凭证身份和代际确认后记录远端成功，并可原子替代失效目标。"""
+    try:
+        credential_id = int(credential_id)
+        remote_account_id = int(remote_account_id)
+    except (TypeError, ValueError):
+        return False
+    if credential_id <= 0 or remote_account_id <= 0 or not str(backend).strip() or not str(generation).strip():
+        return False
+    if replaced_job_id is not None:
+        try:
+            replaced_job_id = int(replaced_job_id)
+            replaced_run_id = int(replaced_run_id)
+        except (TypeError, ValueError):
+            return False
+        if replaced_job_id <= 0 or replaced_run_id <= 0:
+            return False
+    if fence is not None and replaced_run_id is None:
+        return False
+
+    init()
+    try:
+        with postgres.connect(row_factory=dict_row) as conn, conn.cursor() as cur:
+            return _confirm_sync(
+                conn, cur, credential_id=credential_id, backend=backend, generation=generation,
+                remote_account_id=remote_account_id, replaced_job_id=replaced_job_id,
+                replaced_run_id=replaced_run_id, fence=fence, count_upload=count_upload,
+            )
+    except LockNotAvailable:
+        # 补传生产者先锁目标再创建账号任务；对账不反向等待它，回滚后沿原入口重试。
+        return False
+
+
+def _confirm_sync(
+    conn, cur, *, credential_id, backend, generation, remote_account_id,
+    replaced_job_id, replaced_run_id, fence, count_upload,
+):
+    from core.storage import records
+    from core.storage.operations import store as operation
+
+    snapshot = records.get_row(records.CODEX_CREDENTIALS, credential_id, conn=conn)
+    if not snapshot or not isinstance(snapshot.get("content"), dict):
+        return False
+    email = str(snapshot["content"].get("email") or "").strip()
+    account = records.get_row_by(records.ACCOUNTS, "email", email, lower=True, conn=conn)
+    if account:
+        # 与巡检整轮决策使用相同锁键，锁内再读取身份，避免旧扫描覆盖替代结果。
+        cur.execute(
+            "SELECT pg_try_advisory_xact_lock(hashtextextended(%s,0))",
+            (_repair_lock_key(backend, account["id"]),),
+        )
+        if not cur.fetchone()["pg_try_advisory_xact_lock"]:
+            return False
+    if replaced_job_id is not None:
+        if not account:
+            return False
+        # Run → 账号 → 凭证 → 目标，与执行 fence 的顺序一致；取消事实必须在事务内再核对。
+        cur.execute(
+            f"SELECT * FROM {operation._table('operation_runs')} WHERE id=%s FOR UPDATE",
+            (replaced_run_id,),
+        )
+        run = cur.fetchone()
+        if (
+            not run or run["account_id"] != account["id"] or run.get("cancel_requested_at")
+            or run["status"] in {"cancelled", "cancelling", "stopping", "stopped", "terminated"}
+        ):
+            return False
+        if fence is not None:
+            try:
+                operation.fence_execution(
+                    cur, replaced_run_id, execution_id=str(fence["execution_id"]),
+                    lease_token=str(fence["lease_token"]),
+                )
+            except (KeyError, PermissionError):
+                return False
+    if account:
+        account = records.get_row(records.ACCOUNTS, account["id"], conn=conn, for_update=True)
+        if not account or str(account.get("email") or "").strip().casefold() != email.casefold():
+            return False
+    credential = records.get_row(records.CODEX_CREDENTIALS, credential_id, conn=conn, for_update=True)
+    if not credential or credential.get("archived") or not isinstance(credential.get("content"), dict):
+        return False
+    content = credential["content"]
+    if (
+        not email or str(content.get("email") or "").strip().casefold() != email.casefold()
+        or credential_generation(content) != generation
+    ):
+        return False
+    cur.execute(
+        "SELECT pg_try_advisory_xact_lock(hashtextextended(%s,0))",
+        (_table() + str(credential_id) + backend,),
+    )
+    if not cur.fetchone()["pg_try_advisory_xact_lock"]:
+        return False
+
+    old_job = repair = None
+    repair_data = {}
+    if replaced_job_id is not None:
+        provider_account_id = str(content.get("account_id") or content.get("chatgpt_account_id") or "").strip()
+        if not provider_account_id:
+            return False
+        cur.execute(f"SELECT * FROM {_table()} WHERE id=%s FOR UPDATE NOWAIT", (replaced_job_id,))
+        old_job = cur.fetchone()
+        if (
+            not old_job or old_job["credential_id"] != credential_id or old_job["backend"] != backend
+            or old_job["generation"] != generation or old_job["run_id"] != replaced_run_id
+            or old_job["status"] in {"cancelled", "superseded"}
+            or old_job["remote_account_id"] in (None, remote_account_id)
+        ):
+            return False
+        cur.execute(
+            f"""SELECT * FROM {postgres.qualified("sub2api_monitor_repairs")}
+            WHERE backend=%s AND account_id=%s FOR UPDATE NOWAIT""",
+            (backend, int(account["id"])),
+        )
+        repair = cur.fetchone()
+        if repair:
+            repair_data = dict(repair.get("data") or {})
+            if str(repair_data.get("last_code") or "") in {"sub2api_sync_cancelled", "repair_cancelled"}:
+                return False
+            targets, _ = _repair_targets(repair_data)
+            if int(old_job["remote_account_id"]) not in targets:
+                return False
+
+    confirmed, count_now = _confirm_success_job(
+        cur, credential=credential, account=account, backend=backend, generation=generation,
+        remote_account_id=remote_account_id, count_upload=count_upload,
+    )
+    if confirmed is None:
+        return False
+    if count_now:
+        records.patch_row(
+            records.CODEX_CREDENTIALS, credential_id,
+            {
+                "sub2_uploaded_count": int(credential.get("sub2_uploaded_count") or 0) + 1,
+                "sub2_uploaded_at": datetime.now(timezone.utc).isoformat(), "sub2_sync_error": None,
+            },
+            conn=conn,
+        )
+
+    if old_job is None:
+        return True
+    cur.execute(
+        f"""UPDATE {_table()} SET status='superseded',stage='superseded',
+        dispatch_requested=FALSE,updated_at=now() WHERE id=%s""",
+        (replaced_job_id,),
+    )
+    if str(credential.get("sub2_sync_error") or "").startswith("sub2api_account_missing:"):
+        cur.execute(
+            f"""SELECT 1 FROM {_table()} WHERE credential_id=%s AND generation=%s
+            AND status NOT IN ('success','superseded') LIMIT 1""",
+            (credential_id, generation),
+        )
+        if not cur.fetchone():
+            # 只读对账可清除已经消失的旧 404，不增加上传次数，也不掩盖其他目标失败。
+            records.patch_row(records.CODEX_CREDENTIALS, credential_id, {"sub2_sync_error": None}, conn=conn)
+    if not repair:
+        return True
+    targets, mapping = _repair_targets(repair_data)
+    targets = list(dict.fromkeys(
+        remote_account_id if target == old_job["remote_account_id"] else target for target in targets
+    ))
+    mapping[str(int(old_job["remote_account_id"]))] = remote_account_id
+    remaining = []
+    for target in targets:
+        cur.execute(
+            f"""SELECT 1 FROM {_table()} WHERE credential_id=%s AND backend=%s
+            AND generation=%s AND remote_account_id=%s AND status='success' LIMIT 1""",
+            (credential_id, backend, generation, int(target)),
+        )
+        if cur.fetchone():
+            remaining.append(target)
+    complete = len(remaining) == len(targets)
+    repair_data.update(
+        remote_account_ids=targets, superseded_targets=mapping, source_generation=generation,
+        stage="idle" if complete else "sync_wait",
+    )
+    if complete:
+        repair_data.update(
+            last_sync_generation=generation, last_sync_at=time.time(),
+            last_code="sync_complete", manual_requested=False,
+        )
+    else:
+        repair_data.update(last_code="sync_pending")
+    cur.execute(
+        f"""UPDATE {postgres.qualified("sub2api_monitor_repairs")} SET data=%s::jsonb,updated_at=now()
+        WHERE backend=%s AND account_id=%s""",
+        (json.dumps(repair_data, ensure_ascii=False), backend, int(account["id"])),
+    )
+    return cur.rowcount == 1
+
+
 def save_repair(backend_key, account_id, **fields):
     """巡检阶段白名单，不接收凭证或任意远端正文。"""
     unknown = set(fields) - _REPAIR_FIELDS
@@ -395,10 +704,26 @@ def save_repair(backend_key, account_id, **fields):
         raise ValueError("巡检状态包含未允许字段：" + ",".join(sorted(unknown)))
     init()
     with postgres.connect(row_factory=dict_row) as conn, conn.cursor() as cur:
+        table = postgres.qualified("sub2api_monitor_repairs")
         cur.execute(
-            f"""INSERT INTO {postgres.qualified("sub2api_monitor_repairs")} (backend,account_id,data)
+            f"SELECT data FROM {table} WHERE backend=%s AND account_id=%s FOR UPDATE",
+            (backend_key, int(account_id)),
+        )
+        existing = cur.fetchone()
+        existing_data = dict(existing["data"] or {}) if existing else {}
+        targets, mapping = _repair_targets(existing_data, fields.get("superseded_targets"))
+        if "remote_account_ids" in fields:
+            incoming = dict(existing_data)
+            incoming["remote_account_ids"] = fields.get("remote_account_ids")
+            incoming["superseded_targets"] = mapping
+            targets, _ = _repair_targets(incoming)
+            fields["remote_account_ids"] = targets
+        if mapping:
+            fields["superseded_targets"] = mapping
+        cur.execute(
+            f"""INSERT INTO {table} (backend,account_id,data)
             VALUES (%s,%s,%s::jsonb) ON CONFLICT(backend,account_id) DO UPDATE
-            SET data={postgres.qualified("sub2api_monitor_repairs")}.data || EXCLUDED.data,updated_at=now() RETURNING *""",
+            SET data={table}.data || EXCLUDED.data,updated_at=now() RETURNING *""",
             (backend_key, int(account_id), json.dumps(fields, ensure_ascii=False, default=str)),
         )
         return _repair_row(cur.fetchone())
@@ -440,7 +765,7 @@ def list_repairs(backend_key, active_only=True):
 def repair_lock(backend_key, account_id):
     """会话级 PostgreSQL 锁覆盖整轮决策；其他进程可直接跳过占用账号。"""
     init()
-    key = postgres.qualified("sub2api_monitor_repairs") + str(backend_key) + ":" + str(int(account_id))
+    key = _repair_lock_key(backend_key, account_id)
     with postgres.connect() as conn, conn.cursor() as cur:
         cur.execute("SELECT pg_try_advisory_lock(hashtextextended(%s,0))", (key,))
         acquired = bool(cur.fetchone()[0])
@@ -449,3 +774,7 @@ def repair_lock(backend_key, account_id):
         finally:
             if acquired:
                 cur.execute("SELECT pg_advisory_unlock(hashtextextended(%s,0))", (key,))
+
+
+def _repair_lock_key(backend_key, account_id):
+    return postgres.qualified("sub2api_monitor_repairs") + str(backend_key) + ":" + str(int(account_id))
