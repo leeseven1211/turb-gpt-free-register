@@ -238,24 +238,25 @@ def set_email_invalid_many(
                      for item in items)
 
 
-def register_handlers():
-    """由 Web/Worker 的组装入口显式调用；导入模块本身不安装运行时。"""
-    from core.operations import task_gateway
+def register_handlers(register=None):
+    """提供命令定义及其 Worker 回调。"""
+    if register is None:
+        from core.operations.task_gateway import register_bulk_mutation_handler as register
 
-    task_gateway.register_bulk_mutation_handler(
+    register(
         "account_archive", lambda chunk, params, *, conn=None: archive_many(
             chunk, archived=params.get("archived", True), conn=conn,
         ),
         parameter_allowlist=("archived",),
     )
-    task_gateway.register_bulk_mutation_handler(
+    register(
         "account_delete", lambda chunk, params, *, conn=None: delete_many(chunk, conn=conn),
     )
-    task_gateway.register_bulk_mutation_handler(
+    register(
         "account_note", lambda chunk, params, *, conn=None: update_note_many(chunk, note=params.get("note", ""), conn=conn),
         parameter_allowlist=("note",),
     )
-    task_gateway.register_bulk_mutation_handler(
+    register(
         "account_email_invalid", _email_invalid_handler,
         parameter_allowlist=("invalid", "reason", "expected_emails", "icloud_account_id", "source"),
     )

@@ -56,12 +56,18 @@ def _mark_exported(filenames, *, errors=None):
 
 
 def _submit_codex_mutation(operation, filenames, parameters):
-    command = bulk_mutation_worker.submit_bulk_mutation(
-        operation, filenames, parameters,
-        idempotency_key=str(request.headers.get("Idempotency-Key") or uuid.uuid4()),
-        trigger="manual_bulk",
-    )
-    return jsonify({"ok": True, "accepted": True, **command}), 202
+    from core.operations.bulk_mutation_service import public_submission
+    from webui.routes.bulk_mutations import submission_error
+
+    try:
+        command = bulk_mutation_worker.submit_bulk_mutation(
+            operation, filenames, parameters,
+            idempotency_key=str(request.headers.get("Idempotency-Key") or uuid.uuid4()),
+            trigger="manual_bulk",
+        )
+    except (TypeError, ValueError) as exc:
+        return submission_error(exc)
+    return jsonify({"ok": True, "accepted": True, **public_submission(command)}), 202
 
 
 def create_codex_blueprint(context: WebUIContext):

@@ -112,21 +112,22 @@ def mark_exported_many(filenames, *, conn=None) -> BulkMutationResult:
     return _mutate_many(filenames, "codex_mark_exported", conn=conn)
 
 
-def register_handlers() -> None:
+def register_handlers(register=None) -> None:
     """由 runtime assembly 显式安装，无模块导入注册副作用。"""
-    from core.operations.bulk_mutation_worker import register_bulk_mutation_handler
+    if register is None:
+        from core.operations.bulk_mutation_worker import register_bulk_mutation_handler as register
 
-    register_bulk_mutation_handler(
+    register(
         "codex_archive", lambda chunk, parameters, *, conn: archive_many(
             chunk, bool(parameters.get("archived", True)), conn=conn,
         ),
         parameter_allowlist=("archived",),
     )
-    register_bulk_mutation_handler("codex_delete", lambda chunk, parameters, *, conn: delete_many(chunk, conn=conn))
-    register_bulk_mutation_handler(
+    register("codex_delete", lambda chunk, parameters, *, conn: delete_many(chunk, conn=conn))
+    register(
         "codex_reset_export", lambda chunk, parameters, *, conn: reset_exported_many(chunk, conn=conn),
     )
-    register_bulk_mutation_handler(
+    register(
         "codex_mark_exported", lambda chunk, parameters, *, conn: mark_exported_many(chunk, conn=conn),
     )
 

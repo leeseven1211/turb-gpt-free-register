@@ -154,7 +154,7 @@ class CodexBulkMutationTests(PostgresTestCase):
                 )
                 self.assertEqual(response.status_code, 202)
                 self.assertTrue(response.json["accepted"])
-                self.assertEqual(response.json["run_id"], 456)
+                self.assertEqual(response.json["run_id"], "456")
                 self.assertNotIn("updated_count", response.json)
         self.assertEqual(calls, [
             ("codex_archive", self.names, {"archived": False}, "same-command", "manual_bulk"),

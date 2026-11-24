@@ -181,3 +181,107 @@ def get_command_result(command_id: int) -> dict:
             'updated_count':sum(item['status']=='updated' for item in items),
             'failed_count':sum(item['status']=='failed' for item in items),
             'skipped_count':sum(item['status']=='skipped' for item in items)}
+
+
+def read_receipt_page(command_id: int, *, offset: int, limit: int) -> dict:
+    """Read the current Run and item page from the same PostgreSQL snapshot."""
+    init()
+    with common._connect() as conn, conn.cursor() as cur:
+        cur.execute(f"""
+            WITH command AS (
+                SELECT c.id AS command_id, c.operation, c.task_id, r.id AS run_id,
+                       CASE
+                           WHEN r.status = 'interrupted' AND r.cancel_requested_at IS NULL
+                               AND r.result_summary->>'recovery_reason' = 'worker_restart' THEN 'queued'
+                           WHEN r.status IS NOT NULL THEN r.status
+                           WHEN (c.result->>'failed_count')::integer = 0 THEN 'success'
+                           WHEN (c.result->>'updated_count')::integer > 0 THEN 'partial_success'
+                           ELSE 'failed'
+                       END AS status,
+                       jsonb_array_length(c.input_targets) AS requested_count,
+                       jsonb_array_length(c.targets) AS unique_count,
+                       c.duplicate_count, c.result
+                FROM {common._table(_COMMANDS)} c
+                LEFT JOIN {common._table('operation_tasks')} t ON t.id = c.task_id
+                LEFT JOIN {common._table('operation_runs')} r ON r.id = t.last_run_id
+                WHERE c.id = %s
+            ), running_items AS MATERIALIZED (
+                SELECT receipt.chunk_index, item.value, item.position
+                FROM command c
+                JOIN {common._table(_RECEIPTS)} receipt USING (command_id)
+                CROSS JOIN LATERAL jsonb_array_elements(receipt.items)
+                    WITH ORDINALITY AS item(value, position)
+                WHERE c.result IS NULL
+            ), running_counts AS (
+                SELECT count(*) AS item_count,
+                       count(*) FILTER (WHERE value->>'status' = 'updated') AS updated_count,
+                       count(*) FILTER (WHERE value->>'status' = 'skipped') AS skipped_count,
+                       count(*) FILTER (WHERE value->>'status' = 'failed') AS failed_count
+                FROM running_items
+            ), page AS (
+                SELECT page_items.value, page_items.chunk_index, page_items.position
+                FROM (
+                    SELECT value, chunk_index, position FROM running_items
+                    UNION ALL
+                    SELECT item.value, 0, item.position FROM command c
+                    CROSS JOIN LATERAL jsonb_array_elements(c.result->'items')
+                        WITH ORDINALITY AS item(value, position)
+                ) page_items
+                ORDER BY chunk_index, position
+                LIMIT %s OFFSET %s
+            )
+            SELECT command_id, operation, task_id, run_id, status, requested_count, unique_count, duplicate_count,
+                   COALESCE(jsonb_array_length(result->'items'), item_count) AS item_count,
+                   COALESCE((result->>'updated_count')::integer, updated_count) AS updated_count,
+                   COALESCE((result->>'skipped_count')::integer, skipped_count) AS skipped_count,
+                   COALESCE((result->>'failed_count')::integer, failed_count) AS failed_count,
+                   COALESCE((SELECT jsonb_agg(value ORDER BY chunk_index, position) FROM page), '[]'::jsonb) AS items
+            FROM command CROSS JOIN running_counts
+        """, (command_id, limit, offset))
+        row = cur.fetchone()
+        if row is None:
+            raise LookupError("bulk_command_not_found")
+        return dict(row)
+
+
+def list_recoverable_commands(operations: tuple[str, ...], *, limit: int = 100) -> list[dict]:
+    """Only the current attempt of a native orphan with released ownership may resume."""
+    init()
+    with common._connect() as conn, conn.cursor() as cur:
+        cur.execute(f"""
+            SELECT c.task_id, r.id AS run_id
+            FROM {common._table('operation_tasks')} t
+            JOIN {common._table('operation_runs')} r ON r.id = t.last_run_id AND r.task_id = t.id
+            JOIN {common._table(_COMMANDS)} c ON c.task_id = t.id
+                AND r.data->>'command_id' = c.id::text
+            WHERE t.task_type = 'bulk_mutation' AND t.source_system = 'native_operations'
+              AND t.status = 'interrupted' AND r.status = 'interrupted'
+              AND r.result_summary->>'recovery_reason' = 'worker_restart'
+              AND r.cancel_requested_at IS NULL AND c.operation = ANY(%s)
+              AND NOT EXISTS (
+                  SELECT 1 FROM {common._permit_table()} p
+                  WHERE p.run_id = r.id AND p.released_at IS NULL
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM {common._table('account_operation_leases')} lease
+                  WHERE lease.run_id = r.id AND lease.expires_at > now()
+              )
+            ORDER BY r.id LIMIT %s
+        """, (list(operations), limit))
+        return list(cur.fetchall())
+
+
+def queue_counts() -> dict:
+    """Aggregate live queue facts without fetching command payloads or receipts."""
+    init()
+    with common._connect() as conn, conn.cursor() as cur:
+        cur.execute(f"""
+            SELECT count(*) FILTER (WHERE status = 'queued') AS queued_commands,
+                   count(*) FILTER (
+                       WHERE status IN ('running', 'cancelling', 'settling', 'stopping')
+                   ) AS active_commands
+            FROM {common._table('operation_tasks')}
+            WHERE task_type = 'bulk_mutation' AND source_system = 'native_operations'
+              AND status IN ('queued', 'running', 'cancelling', 'settling', 'stopping')
+        """)
+        return dict(cur.fetchone())

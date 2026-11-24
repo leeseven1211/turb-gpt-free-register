@@ -167,6 +167,7 @@ def recover_before_dispatchers(runtime_logger: logging.Logger | None = None) -> 
     recovered_operation_runs = operation_task_store.recover_interrupted_runtime_runs()
     if recovered_operation_runs:
         active_logger.warning("已收口 %s 个因 WebUI 重启中断的原生账号操作", recovered_operation_runs)
+    _resume_bulk_commands(active_logger)
     repaired_compatibility_projections = operation_task_store.repair_stale_compatibility_projections()
     if repaired_compatibility_projections:
         active_logger.warning(
@@ -374,6 +375,17 @@ def reconcile_recovered_projections(operation_logger: logging.Logger | None = No
         return 0
 
 
+def _resume_bulk_commands(active_logger) -> None:
+    from core.operations.bulk_mutation_service import resume_interrupted_commands
+
+    try:
+        count = resume_interrupted_commands()
+        if count:
+            active_logger.info("已重新排队 %s 个失联的批量命令", count)
+    except Exception:
+        active_logger.exception("恢复失联的批量命令失败")
+
+
 def recover_stale_runtime_runs(operation_logger: logging.Logger | None = None) -> int:
     """收口失联 Run 并恢复领域投影；调用频率由既有 dispatcher 决定。"""
     active_logger = operation_logger or logger
@@ -382,6 +394,7 @@ def recover_stale_runtime_runs(operation_logger: logging.Logger | None = None) -
     except Exception:
         active_logger.exception("周期性恢复中断 Run 失败")
         return 0
+    _resume_bulk_commands(active_logger)
     reconcile_recovered_projections(active_logger)
     try:
         from core.extract_link import service as extract_link_service

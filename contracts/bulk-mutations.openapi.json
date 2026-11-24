@@ -1,0 +1,90 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Turb bulk mutation receipt API",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/api/bulk-mutations/{command_id}": {
+      "get": {
+        "operationId": "getBulkMutationReceipt",
+        "parameters": [
+          {
+            "name": "command_id",
+            "in": "path",
+            "required": true,
+            "schema": {"type": "string"}
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {"type": "integer", "minimum": 0, "default": 0}
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {"type": "integer", "minimum": 1, "maximum": 5000, "default": 500}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Bulk command status and a complete page of item receipts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BulkMutationReceiptPage"
+                }
+              }
+            }
+          },
+          "400": {"description": "Invalid pagination"},
+          "404": {"description": "Unknown command"}
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "BulkMutationItem": {
+        "type": "object",
+        "required": ["key", "status", "reason_code", "reason", "data"],
+        "properties": {
+          "key": {},
+          "status": {"type": "string", "enum": ["updated", "skipped", "failed"]},
+          "reason_code": {"type": ["string", "null"]},
+          "reason": {"type": "string"},
+          "data": {}
+        }
+      },
+      "BulkMutationReceiptPage": {
+        "type": "object",
+        "required": [
+          "ok", "command_id", "operation", "status", "requested_count",
+          "unique_count", "duplicate_count", "updated_count", "skipped_count",
+          "failed_count", "item_count", "offset", "limit", "next_offset", "items"
+        ],
+        "properties": {
+          "ok": {"type": "boolean"},
+          "command_id": {"type": "string"},
+          "task_id": {"type": ["string", "null"]},
+          "run_id": {"type": ["string", "null"]},
+          "operation": {"type": "string"},
+          "status": {"type": "string"},
+          "requested_count": {"type": "integer"},
+          "unique_count": {"type": "integer"},
+          "duplicate_count": {"type": "integer"},
+          "updated_count": {"type": "integer"},
+          "skipped_count": {"type": "integer"},
+          "failed_count": {"type": "integer"},
+          "item_count": {"type": "integer"},
+          "offset": {"type": "integer"},
+          "limit": {"type": "integer"},
+          "next_offset": {"type": ["integer", "null"]},
+          "items": {"type": "array", "items": {"$ref": "#/components/schemas/BulkMutationItem"}}
+        }
+      }
+    }
+  }
+}

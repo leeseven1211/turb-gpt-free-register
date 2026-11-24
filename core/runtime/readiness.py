@@ -4,7 +4,7 @@ from __future__ import annotations
 REQUIRED_COMPONENTS = (
     'settlement',
     'registration_dispatcher', 'operation_dispatcher', 'dependency_dispatcher',
-    'projection_worker', 'bulk_workers', 'butler_import_dispatcher',
+    'projection_worker', 'bulk_workers', 'bulk_mutations', 'butler_import_dispatcher',
     'config_observer', 'deactivation_scanner', 'at_refresher', 'codex_refresher',
     'sub2api_sync', 'sub2api_monitor', 'c2a_monitor', 'auth_context_cleanup', 'task_retention',
 )
@@ -67,6 +67,7 @@ def compatibility_status(*, mode: str, source: str, ready: bool, state: str,
         'dependency_dispatcher': components.get('dependency_dispatcher'),
         'projection_worker': components.get('projection_worker'),
         'bulk_operations': components.get('bulk_workers'),
+        'bulk_mutations': components.get('bulk_mutations'),
         'settlement': components.get('settlement'),
         'counts': sanitized_counts(counts),
         'components': components, 'config_observer': config,

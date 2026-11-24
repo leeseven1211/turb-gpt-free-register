@@ -24,7 +24,7 @@ COMPONENT_NAMES = frozenset({
     'sentinel_handler', 'sub2api_monitor_handler', 'sub2api_upload_handler', 'c2a_sync_handler', 'c2a_monitor_handler',
     'verify_handlers', 'recover_before_dispatchers', 'projection_worker',
     'registration_dispatcher', 'operation_dispatcher', 'dependency_handler',
-    'dependency_dispatcher', 'bulk_workers', 'recover_ready_dependencies',
+    'dependency_dispatcher', 'bulk_workers', 'bulk_mutations', 'recover_ready_dependencies',
     'recover_local_artifacts', 'sms_cancel_worker', 'recover_account_background_state',
     'deactivation_scanner', 'at_refresher', 'codex_refresher', 'sub2api_sync',
     'sub2api_monitor', 'c2a_monitor', 'auth_context_cleanup', 'task_retention', 'email_usage_reports',
@@ -39,6 +39,7 @@ COUNT_NAMES = frozenset({'accepted', 'active', 'active_batches', 'pending_owner_
                         'legacy_release_pending', 'legacy_release_inflight',
                         'legacy_renewal_pending',
                         'registration_pending',
+                        'queued_commands', 'active_commands',
                         *SETTLEMENT_COUNT_NAMES})
 _BOOL_FIELDS = frozenset({'started', 'alive', 'healthy', 'running', 'idle', 'disabled', 'stopping',
                           'thread_alive'})

@@ -31,6 +31,7 @@ from core.accounts.plans import service as plan_check_service
 from core.sms import provider as sms_provider
 from core.registration import service as svc
 from core.operations.errors import classify_task_error
+from core.operations.bulk_mutation_registry import register_commands
 from config import codex as codex_config
 from webui import config_editor
 from webui.auth import init_auth, register_auth_routes
@@ -48,6 +49,7 @@ from webui.routes.operations import create_operations_blueprint
 from webui.routes.proxy_traffic import create_proxy_traffic_blueprint
 from webui.routes.health import create_health_blueprint
 from webui.routes.bulk import create_bulk_blueprint
+from webui.routes.bulk_mutations import create_bulk_mutations_blueprint
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +75,7 @@ def create_app(auth_code: str | None = None) -> Flask:
     app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 300
     init_auth(app, auth_code=auth_code)
     register_auth_routes(app)
+    register_commands()
 
     context = WebUIContext(app=app, logger=logger)
     for factory in (
@@ -83,6 +86,7 @@ def create_app(auth_code: str | None = None) -> Flask:
         create_jobs_blueprint,
         create_operations_blueprint,
         create_bulk_blueprint,
+        create_bulk_mutations_blueprint,
         create_proxy_traffic_blueprint,
         create_codex_blueprint,
         create_integrations_blueprint,

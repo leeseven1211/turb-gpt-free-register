@@ -61,6 +61,8 @@ def probe():
         assert runtime.owner is None
         assert not task_gateway.registered_dispatch_types()
         assert not task_gateway.registered_operation_types()
+        from core.operations.bulk_mutation_worker import registered_bulk_mutation_operations
+        assert not registered_bulk_mutation_operations(), "Web installed executable bulk callbacks"
         for task_type in sorted(RUNTIME_TYPES | NATIVE_TYPES):
             source = "webui_runtime" if task_type in RUNTIME_TYPES else "native_operations"
             for action in ("retry", "cancel", "terminate"):

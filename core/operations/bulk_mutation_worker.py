@@ -33,13 +33,18 @@ class BulkChunkFailed(RuntimeError):
 
 
 @dataclass(frozen=True)
-class _Handler:
-    callback: Callable[..., Any]
+class _Definition:
     parameter_allowlist: frozenset[str]
     chunk_size: int
+
+
+@dataclass(frozen=True)
+class _Handler:
+    callback: Callable[..., Any]
     after_commit: Callable[..., Any] | None = None
 
 
+_DEFINITIONS: dict[str, _Definition] = {}
 _HANDLERS: dict[str, _Handler] = {}
 
 
@@ -105,22 +110,31 @@ def register_runtime_handler() -> bool:
         return True
 
 
-def register_bulk_mutation_handler(operation: str, handler: Callable[..., Any], *,
-        parameter_allowlist: Iterable[str] = (), chunk_size: int = 500,
-        after_commit: Callable[..., Any] | None = None) -> None:
-    """handler 固定接收 ``(chunk, parameters, *, conn)``，连接由块事务拥有。"""
+def register_bulk_mutation_definition(operation: str, _handler=None, *,
+        parameter_allowlist: Iterable[str] = (), chunk_size: int = 500, after_commit=None) -> None:
+    """Install the acceptance contract and discard execution callbacks."""
     name = _operation_name(operation)
-    if not callable(handler):
-        raise TypeError('bulk_handler_not_callable')
-    if after_commit is not None and not callable(after_commit):
-        raise TypeError('bulk_after_commit_not_callable')
     if type(chunk_size) is not int or not 1 <= chunk_size <= 500:
         raise ValueError('invalid_bulk_chunk_size')
     allowed = frozenset(parameter_allowlist)
     if any(not isinstance(key, str) for key in allowed):
         raise TypeError('bulk_parameter_allowlist_must_be_strings')
     with _HANDLER_LOCK:
-        _HANDLERS[name] = _Handler(handler, allowed, chunk_size, after_commit)
+        _DEFINITIONS[name] = _Definition(allowed, chunk_size)
+
+
+def register_bulk_mutation_handler(operation: str, handler: Callable[..., Any], *,
+        parameter_allowlist: Iterable[str] = (), chunk_size: int = 500,
+        after_commit: Callable[..., Any] | None = None) -> None:
+    """handler 固定接收 ``(chunk, parameters, *, conn)``，连接由块事务拥有。"""
+    if not callable(handler):
+        raise TypeError('bulk_handler_not_callable')
+    if after_commit is not None and not callable(after_commit):
+        raise TypeError('bulk_after_commit_not_callable')
+    name = _operation_name(operation)
+    with _HANDLER_LOCK:
+        register_bulk_mutation_definition(name, parameter_allowlist=parameter_allowlist, chunk_size=chunk_size)
+        _HANDLERS[name] = _Handler(handler, after_commit)
 
 
 def submit_bulk_mutation(operation: str, targets: Iterable[object], parameters: Mapping[str, Any] | None,
@@ -128,15 +142,15 @@ def submit_bulk_mutation(operation: str, targets: Iterable[object], parameters: 
     """完整命令与 durable task/run 在同一事务内创建；同键异内容显式冲突。"""
     name = _operation_name(operation)
     with _HANDLER_LOCK:
-        handler = _HANDLERS.get(name)
-    if handler is None:
+        definition = _DEFINITIONS.get(name)
+    if definition is None:
         raise ValueError('bulk_handler_not_registered')
     if not isinstance(idempotency_key, str) or not idempotency_key.strip() or len(idempotency_key) > 200:
         raise ValueError('invalid_idempotency_key')
     if parameters is not None and not isinstance(parameters, Mapping):
         raise TypeError('bulk_parameters_must_be_mapping')
     supplied = parameters or {}
-    if set(supplied) - handler.parameter_allowlist:
+    if set(supplied) - definition.parameter_allowlist:
         raise ValueError('bulk_parameter_not_allowed')
     if any(not isinstance(key,str) or _sensitive_name(key) for key in supplied):
         raise ValueError('bulk_sensitive_field')
@@ -158,7 +172,7 @@ def submit_bulk_mutation(operation: str, targets: Iterable[object], parameters: 
     with task_gateway._operation()._connect() as conn:
         command, reused = commands.create_command(operation=name, request_key_hash=request_hash,
             payload_hash=payload_hash,input_targets=raw,targets=list(normalized.targets),
-            parameters=safe_parameters,chunk_size=handler.chunk_size,
+            parameters=safe_parameters,chunk_size=definition.chunk_size,
             duplicate_count=normalized.duplicate_count,conn=conn)
         command_id = int(command['id'])
         submitted = task_gateway.submit_durable_operation(task_type=TASK_TYPE, account_id=None, email='',
@@ -327,5 +341,5 @@ def _handle_claimed_bulk_mutation(context) -> OperationResult:
     return OperationResult(status,summary,'批量命令执行完成')
 
 
-__all__ = ['TASK_TYPE','register_runtime_handler','register_bulk_mutation_handler',
+__all__ = ['TASK_TYPE','register_runtime_handler','register_bulk_mutation_definition','register_bulk_mutation_handler',
     'registered_bulk_mutation_operations','submit_bulk_mutation','run_bulk_mutation','BulkChunkFailed']

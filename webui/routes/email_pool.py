@@ -578,8 +578,10 @@ def create_email_pool_blueprint(context: WebUIContext):
         return _single_pool_status(data, "outlook" if source == "all" else source)
 
     def _submit_pool_bulk(operation, *, parameters):
+        from core.operations.bulk_mutation_service import public_submission
         from core.operations.bulk_mutation_worker import submit_bulk_mutation
         from core.storage.email import bulk_mutations
+        from webui.routes.bulk_mutations import submission_error
 
         data = request.get_json(silent=True)
         if not isinstance(data, dict):
@@ -595,10 +597,12 @@ def create_email_pool_blueprint(context: WebUIContext):
         key = str(request.headers.get("Idempotency-Key") or data.get("idempotency_key") or uuid.uuid4().hex).strip()
         if not key or len(key) > 200:
             return jsonify({"ok": False, "error": "请求编号无效"}), 400
-        bulk_mutations.register_handlers()
-        receipt = submit_bulk_mutation(operation, list(targets), parameters,
-            idempotency_key=key, trigger="manual_" + operation)
-        return jsonify({**receipt, "ok": True, "accepted": True}), 202
+        try:
+            receipt = submit_bulk_mutation(operation, list(targets), parameters,
+                idempotency_key=key, trigger="manual_" + operation)
+        except (TypeError, ValueError) as exc:
+            return submission_error(exc)
+        return jsonify({**public_submission(receipt), "ok": True, "accepted": True}), 202
 
     @bp.post("/api/outlook/status-bulk")
     def api_outlook_status_bulk():

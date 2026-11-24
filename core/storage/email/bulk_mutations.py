@@ -233,9 +233,10 @@ def _after_commit(chunk, parameters, items):
         compat_export.schedule(kinds[source])
 
 
-def register_handlers():
+def register_handlers(register=None):
     """由运行时显式安装；业务写入与完整分块回执使用 Worker 提供的同一事务。"""
-    from core.operations.bulk_mutation_worker import register_bulk_mutation_handler
-    register_bulk_mutation_handler('email_pool_status', _handle_status_chunk,
+    if register is None:
+        from core.operations.bulk_mutation_worker import register_bulk_mutation_handler as register
+    register('email_pool_status', _handle_status_chunk,
         parameter_allowlist=('status', 'note'), after_commit=_after_commit)
-    register_bulk_mutation_handler('email_pool_delete', _handle_delete_chunk, after_commit=_after_commit)
+    register('email_pool_delete', _handle_delete_chunk, after_commit=_after_commit)
