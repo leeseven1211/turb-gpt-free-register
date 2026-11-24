@@ -77,9 +77,10 @@ class ExtractBulkCreateTests(PostgresTestCase):
         with operation._connect() as conn, conn.cursor() as cur:
             cur.execute(f"SELECT task.data, run.data FROM {operation._table('operation_tasks')} task JOIN {operation._table('operation_runs')} run ON run.task_id=task.id ORDER BY task.id")
             rows = cur.fetchall()
+            cur.execute(f"SELECT ordinal FROM {operation._table('operation_batch_items')} WHERE batch_id=%s ORDER BY ordinal", (batch["id"],))
+            ordinals = [row["ordinal"] for row in cur.fetchall()]
         self.assertTrue(all("UNRELATED_SECRET" not in str(row) for row in rows))
-        cur.execute(f"SELECT ordinal FROM {operation._table('operation_batch_items')} WHERE batch_id=%s ORDER BY ordinal", (batch["id"],))
-        self.assertEqual([41, 42], [row["ordinal"] for row in cur.fetchall()])
+        self.assertEqual([41, 42], ordinals)
 
     def test_501_targets_are_chunked_and_ordinal_continues(self):
         ids = self.accounts(501)
