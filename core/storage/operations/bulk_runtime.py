@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
+
 from core.storage import records
 from core.storage.operations import bulk_schema, store
 from core.storage.operations.bulk_common import (
@@ -154,6 +156,87 @@ def record_managed_change(conn, target_round_id: int, *, event_kind: str = "fact
             ),
         )
         return revision
+
+
+def record_managed_changes_many(conn, target_round_ids, *, event_kind: str = "fact_changed") -> dict[int, int]:
+    """调用方先持 controls/target 锁；集合写入同一事务的链事实及持久通知。"""
+    ids = sorted({int(value) for value in target_round_ids})
+    if not ids:
+        return {}
+    with conn.cursor() as cur:
+        cur.execute(
+            f"SELECT * FROM {table('operation_batch_target_rounds')} WHERE id=ANY(%s) ORDER BY id FOR UPDATE",
+            (ids,),
+        )
+        targets = list(cur.fetchall())
+        if len(targets) != len(ids):
+            raise BulkError("managed_target_missing", "批量目标不存在", 404)
+        cur.execute(
+            f"""SELECT l.target_round_id,r.id,r.status,r.started_at,r.result_summary,l.relation,l.execution_generation
+            FROM {table('operation_batch_run_links')} l JOIN {table('operation_runs')} r ON r.id=l.run_id
+            WHERE l.target_round_id=ANY(%s) AND l.relation=ANY(%s)""",
+            (ids, list(OWNED)),
+        )
+        owned = defaultdict(list)
+        for row in cur.fetchall():
+            owned[row["target_round_id"]].append(row)
+        cur.execute(
+            f"""SELECT l.target_round_id,d.status,d.payload->>'parent_run_id' AS parent_run_id
+            FROM {table('operation_task_dependencies')} d
+            JOIN {table('operation_tasks')} task ON task.source_system=d.parent_source_system
+              AND (task.source_id=d.parent_source_id
+                   OR (d.parent_source_system='webui_runtime' AND task.id::text=d.parent_source_id))
+            JOIN {table('operation_batch_run_links')} l ON l.task_id=task.id AND l.target_round_id=ANY(%s)
+            WHERE d.payload->>'parent_run_id' IS NULL OR d.payload->>'parent_run_id'=l.run_id_snapshot::text""",
+            (ids,),
+        )
+        dependencies = defaultdict(list)
+        for row in cur.fetchall():
+            dependencies[row["target_round_id"]].append(row)
+        changes = []
+        for target in targets:
+            runs = owned[target["id"]]
+            started = target["chain_started_at"] is not None or any(
+                row["started_at"] is not None
+                or row["status"] in ("running", "waiting", "cancelling", "settling", "stopping")
+                for row in runs
+            )
+            active = any(row["status"] in ACTIVE_RUNS for row in runs)
+            dependency_rows = dependencies[target["id"]]
+            pending = any(row["status"] in ("waiting", "ready", "running") for row in dependency_rows)
+            roots = [row for row in runs if row["relation"] in ("owned_root", "owned_continuation")]
+            latest = max(roots, key=lambda row: row["execution_generation"]) if roots else None
+            if latest and (latest.get("result_summary") or {}).get("awaiting_steps"):
+                # 与单项钩子一致：只认当前父Run对应的完成依赖，不提前关闭partial链。
+                pending = pending or not any(
+                    row["status"] == "completed" and row["parent_run_id"] == str(latest["id"])
+                    for row in dependency_rows
+                )
+            closed = (bool(runs) and not active and not pending) or target["admission_state"] in (
+                "not_executed", "cancelled",
+            )
+            changes.append({"id": target["id"], "started": started, "closed": closed,
+                "state": "closed" if closed else "started" if started else target["chain_state"]})
+        cur.execute(
+            f"""WITH changed AS (
+                UPDATE {table('operation_batch_target_rounds')} target SET
+                    source_revision=target.source_revision+1,chain_state=item.state,
+                    chain_started_at=CASE WHEN item.started
+                        THEN COALESCE(target.chain_started_at,now()) ELSE target.chain_started_at END,
+                    chain_closed_at=CASE WHEN item.closed
+                        THEN COALESCE(target.chain_closed_at,now()) ELSE NULL END
+                FROM jsonb_to_recordset(%s::jsonb) AS item(id bigint,state text,started boolean,closed boolean)
+                WHERE target.id=item.id RETURNING target.id,target.source_revision
+            ), events AS (
+                INSERT INTO {table('operation_projection_outbox')}
+                    (event_key,consumer_kind,target_round_id,source_kind,source_id,source_revision,event_kind)
+                SELECT 'bulk_target:target_round:'||id||':'||source_revision||':'||%s,
+                    'bulk_target',id,'target_round',id,source_revision,%s FROM changed
+                ON CONFLICT(event_key) DO NOTHING
+            ) SELECT id,source_revision FROM changed""",
+            (dumps(changes), event_kind, event_kind),
+        )
+        return {row["id"]: row["source_revision"] for row in cur.fetchall()}
 
 
 def inherit_managed_run(

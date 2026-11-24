@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from core.storage.operations import bulk_schema, store
+from core.storage.operations import bulk_schema
 from core.storage.operations.bulk_common import (
     BulkError,
     ACTIVE_RUNS,
@@ -20,7 +20,8 @@ from core.storage.operations.bulk_common import (
     require_row,
 )
 from core.storage.operations.bulk_batches import _cancel_preparing
-from core.storage.operations.bulk_runtime import record_managed_change
+from core.storage.operations.bulk_runtime import record_managed_changes_many
+from core.storage.operations.bulk_control_facts import cancel_owned_runs_many
 from core.storage.operations.bulk_projection import _complete_rounds, _sync_legacy
 
 
@@ -185,9 +186,11 @@ def settle_control(
         _complete_rounds(cur, batch_id)
         _sync_legacy(cur, batch_id, values)
         round_ids = [x["id"] for x in rounds]
-    if cancel_run is None:
-        cancel_run = store.request_run_cancel
     with connect() as conn, conn.cursor() as cur:
+        # controls → target → 账号 → Task → Run，与准入和领域事实事务保持同一锁序。
+        require_row(
+            cur, f"SELECT batch_id FROM {table('operation_batch_controls')} WHERE batch_id=%s FOR SHARE", (batch_id,)
+        )
         # 两个阶段之间可能被新owner接管；必须重读命令和游标，旧worker不得继续执行取消。
         command = require_row(
             cur, f"SELECT * FROM {table('operation_batch_control_commands')} WHERE id=%s FOR UPDATE", (command_id,)
@@ -204,27 +207,31 @@ def settle_control(
             (round_ids, command["action"], command["settlement_cursor"], max(1, min(100, limit))),
         )
         targets = [dict(x) for x in cur.fetchall()]
-        for target in targets:
-            cur.execute(
-                f"""SELECT l.run_id FROM {table("operation_batch_run_links")} l
-              JOIN {table("operation_runs")} r ON r.id=l.run_id WHERE l.target_round_id=%s
-              AND l.relation=ANY(%s) AND r.status=ANY(%s) ORDER BY l.task_id,l.run_id""",
-                (target["id"], list(OWNED), list(ACTIVE_RUNS)),
-            )
-            run_ids = [x["run_id"] for x in cur.fetchall()]
-            for run_id in run_ids:
-                cancel_run(
-                    run_id,
-                    reason="批量任务请求停止" if command["action"] == "request_stop" else "批量任务取消未开始",
-                    conn=conn,
+        target_ids = [target["id"] for target in targets]
+        if targets:
+            reason = "批量任务请求停止" if command["action"] == "request_stop" else "批量任务取消未开始"
+            if cancel_run is None:
+                active_targets = cancel_owned_runs_many(conn, target_ids, reason=reason)
+            else:
+                # 保留显式回调扩展点；默认本地取消始终使用上面的集合事务。
+                cur.execute(
+                    f"""SELECT l.target_round_id,l.run_id FROM {table('operation_batch_run_links')} l
+                    JOIN {table('operation_runs')} r ON r.id=l.run_id WHERE l.target_round_id=ANY(%s)
+                    AND l.relation=ANY(%s) AND r.status=ANY(%s) ORDER BY l.task_id,l.run_id""",
+                    (target_ids, list(OWNED), list(ACTIVE_RUNS)),
                 )
-            if not run_ids:
+                links = list(cur.fetchall())
+                active_targets = {row["target_round_id"] for row in links}
+                for link in links:
+                    cancel_run(link["run_id"], reason=reason, conn=conn)
+            without_runs = [target_id for target_id in target_ids if target_id not in active_targets]
+            if without_runs:
                 cur.execute(
                     f"""UPDATE {table("operation_batch_target_rounds")} SET admission_state='cancelled',
-                  reason_code='batch_cancelled' WHERE id=%s""",
-                    (target["id"],),
+                  reason_code='batch_cancelled' WHERE id=ANY(%s)""",
+                    (without_runs,),
                 )
-            record_managed_change(conn, target["id"])
+            record_managed_changes_many(conn, target_ids)
         if targets:
             cur.execute(
                 f"""UPDATE {table("operation_batch_control_commands")} SET settlement_cursor=%s,
