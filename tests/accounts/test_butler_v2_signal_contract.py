@@ -44,11 +44,30 @@ class V2SignalContractTests(PostgresTestCase):
         with patch.object(mail_scan, 'scheduler_enabled', return_value=True), patch.object(
                 mail_scan.db, 'list_accounts', return_value=[account]), patch.object(
                 mail_scan.db, 'update_account_deactivation_mail') as update, patch.object(
-                mail_scan, 'enqueue_bulk') as enqueue:
+                mail_scan, 'enqueue_bulk') as enqueue, patch.object(
+                mail_scan.mail_store, 'update_many') as update_many:
             result = mail_scan.enqueue_due_accounts()
         self.assertEqual(result, {'started': 0, 'skipped': 1})
         enqueue.assert_not_called()
         update.assert_not_called()
+        update_many.assert_not_called()
+
+    def test_scheduled_unsupported_projection_uses_bounded_collections(self):
+        accounts = [
+            {'id': number, 'email_source': 'email_butler', 'deactivation_mail_checked_at': 'old-check'}
+            for number in range(1, 502)
+        ]
+        with patch.object(mail_scan, 'scheduler_enabled', return_value=True), patch.object(
+                mail_scan.db, 'list_accounts', return_value=accounts), patch.object(
+                mail_scan.db, 'update_account_deactivation_mail', side_effect=AssertionError('per-account write')), patch.object(
+                mail_scan.mail_store, 'update_many', side_effect=lambda values: list(values)) as update_many, patch.object(
+                mail_scan, 'enqueue_bulk') as enqueue:
+            result = mail_scan.enqueue_due_accounts()
+        self.assertEqual({'started': 0, 'skipped': 501}, result)
+        self.assertEqual([500, 1], [len(call.args[0]) for call in update_many.call_args_list])
+        self.assertTrue(all(payload['preserve_checked_at']
+                            for call in update_many.call_args_list for payload in call.args[0].values()))
+        enqueue.assert_not_called()
 
     def test_historical_imap_route_remains_scannable_after_global_butler_switch(self):
         rows = [{'id': 1, 'email_source': 'icloud_hide', 'email': 'direct@icloud.com'},

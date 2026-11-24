@@ -84,6 +84,51 @@ class DeactivationMailCollectionTests(PostgresTestCase):
         self.assertEqual([store.get_row(store.ACCOUNTS, i)['deactivation_mail_scan_status'] for i in range(1, 5)],
                          ['success', 'success', 'unsupported', 'failed'])
 
+    def test_cloudflare_acceptance_does_not_lock_the_unrelated_hme_anchor(self):
+        self.seed(store.ACCOUNTS, [
+            {'id': 1, 'email': 'anchor@icloud.test', 'email_source': 'icloud_hide'},
+            {'id': 2, 'email': 'cloud@example.test', 'email_source': 'cloudflare'},
+        ])
+        load = mail_scan.mail_store.load_many
+        locked_ids = []
+        def load_selected(account_ids, *, conn):
+            locked_ids.append(list(account_ids))
+            return load(account_ids, conn=conn)
+        with patch.object(mail_scan.mail_store, 'load_many', side_effect=load_selected), \
+             patch.object(mail_scan.account_task_store, 'notify_dispatch'):
+            accepted = mail_scan.enqueue_bulk([2])
+        self.assertEqual(1, len(accepted['started']))
+        self.assertEqual([[2]], locked_ids)
+
+    def test_hme_relocks_with_global_anchor_without_rolling_back_the_callers_transaction(self):
+        self.seed(store.ACCOUNTS, [
+            {'id': 1, 'email': 'anchor@icloud.test', 'email_source': 'icloud_hide'},
+            {'id': 2, 'email': 'alias@icloud.test', 'email_source': 'icloud_hide'},
+            {'id': 3, 'email': 'sentinel@example.test'},
+        ])
+        schema.init_operation_schema()
+        load = mail_scan.mail_store.load_many
+        locked_ids = []
+        def load_selected(account_ids, *, conn):
+            locked_ids.append(list(account_ids))
+            return load(account_ids, conn=conn)
+        with common._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"UPDATE {store._qualified(store.ACCOUNTS)} SET data=data || %s::jsonb WHERE id=3",
+                        ('{"caller_write": true}',))
+            token = common._SETTLEMENT_CONNECTION.set(conn)
+            try:
+                with patch.object(mail_scan.mail_store, 'load_many', side_effect=load_selected), \
+                     patch.object(mail_scan.account_task_store, 'notify_dispatch'):
+                    accepted = mail_scan.enqueue_bulk([2])
+            finally:
+                common._SETTLEMENT_CONNECTION.reset(token)
+        self.assertEqual([[2], [1, 2]], locked_ids)
+        self.assertEqual(1, len(accepted['started']))
+        self.assertTrue(store.get_row(store.ACCOUNTS, 3)['caller_write'])
+        with common._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"SELECT account_id FROM {common._table('operation_runs')}")
+            self.assertEqual(1, cur.fetchone()['account_id'])
+
     def test_recovery_collection_does_not_overwrite_newer_queued_projection(self):
         self.seed(store.ACCOUNTS, [
             {'id': 1, 'email': 'old@icloud.test', 'deactivation_mail_scan_status': 'running',

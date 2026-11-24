@@ -215,6 +215,34 @@ class DeactivationMailReportingTests(unittest.TestCase):
             progress = build_progress_snapshot(901, 902, "deactivation_mail", {"status": "failed"}, events)
             self.assertEqual("failed", next(step for step in progress["main_steps"] if step["id"] == "mailbox_scan")["state"])
 
+    def test_hme_result_events_are_bounded_blocks_with_complete_scrubbed_details(self):
+        from core.storage.operations.common import _scrub
+
+        entries = [{"account_id": number, "email": f"alias{number}@example.test"} for number in range(1, 252)]
+        with self._scenario(source="icloud_hide") as scenario:
+            scenario.scans["icloud_hide"].side_effect = None
+            scenario.scans["icloud_hide"].return_value = {
+                entry["email"]: {"ok": True, "detected": False} for entry in entries
+            }
+            scenario.scans["icloud_hide"].return_value[entries[-1]["email"]] = {
+                "ok": False, "error": "最后一个别名扫描失败",
+            }
+            self._group(scenario, entries)
+            result_events = [event for event in scenario.events if event.get("event_type", "").startswith("note.")]
+            self.assertEqual(3, len(result_events))
+            details = [_scrub(event["detail"]) for event in result_events]
+            self.assertEqual([100, 100, 51], [len(detail["account_results"]) for detail in details])
+            results = [item for detail in details for item in detail["account_results"]]
+            self.assertEqual(list(range(1, 252)), [item["account_id"] for item in results])
+            self.assertEqual("failed", results[-1]["result_status"])
+            self.assertEqual("最后一个别名扫描失败", results[-1]["error"])
+            self.assertEqual("最后一个别名扫描失败", details[-1]["error"])
+            self.assertEqual(251, details[-1]["completed_count"])
+            self.assertEqual(250, details[-1]["success_count"])
+            self.assertEqual(1, details[-1]["failed_count"])
+            self.assertEqual("ERROR", result_events[-1]["level"])
+            self.assertEqual("failed", scenario.finish.call_args.kwargs["status"])
+
     def test_hme_provider_exception_closes_actual_scan_stage(self):
         with self._scenario(source="icloud_hide") as scenario:
             scenario.scans["icloud_hide"].side_effect = service.ForwardIMAPError("模拟共享邮箱失败")
@@ -272,9 +300,10 @@ class DeactivationMailReportingTests(unittest.TestCase):
             ], self._states(scenario))
             self.assertEqual("cancelled", scenario.finish.call_args.kwargs["status"])
             self.assertEqual(1, scenario.finish.call_args.kwargs["result_summary"]["completed_count"])
-            account_events = [event for event in scenario.events if event.get("detail", {}).get("account_id")]
+            account_events = [event for event in scenario.events if event.get("detail", {}).get("account_results")]
             self.assertEqual([(7, "success"), (8, "cancelled")], [
-                (event["detail"]["account_id"], event["detail"]["result_status"]) for event in account_events
+                (item["account_id"], item["result_status"])
+                for event in account_events for item in event["detail"]["account_results"]
             ])
             self.assertTrue(all(event["event_type"].startswith("note.") for event in account_events))
             events = [{

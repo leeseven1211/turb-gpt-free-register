@@ -467,19 +467,41 @@ def _scan_hme_group(
     active_stage = "preflight"
     processed: dict[int, str] = {}
 
-    def report_account(account_id: int, status: str, message: str, *, error: str | None = None) -> None:
+    def report_accounts(results: dict[int, dict]) -> None:
+        if not results:
+            return
+        items = []
+        for account_id, result in results.items():
+            status = result["status"]
+            item = {
+                "account_id": account_id, "result_status": status,
+                "message": "发现高置信度封号邮件" if result.get("detected") else
+                    "未发现封号邮件" if status == "success" else
+                    "当前邮箱服务不支持封号邮件扫描" if status == "unsupported" else
+                    "封号邮件扫描已取消" if status == "cancelled" else "封号邮件扫描失败",
+            }
+            if result.get("error"):
+                item["error"] = str(result["error"])[:500]
+            items.append(item)
         detail = {
-            "account_id": account_id,
             "email_source": "icloud_hide",
             "scan_mode": _HME_SCAN_MODE,
-            "result_status": status,
+            "account_count": len(items),
+            "account_results": items,
+            "completed_count": len(processed),
+            **{f"{status}_count": sum(value == status for value in processed.values())
+               for status in ("success", "unsupported", "failed", "cancelled")},
         }
-        if error:
-            detail["error"] = error[:500]
-        level = "INFO" if status == "success" else "WARNING" if status in {"cancelled", "unsupported"} else "ERROR"
-        # 单个别名的结果不代表共享扫描已完成；主阶段只由批次汇总收口。
+        errors = [item["error"] for item in items if item.get("error")]
+        if errors:
+            detail["error"] = errors[-1]
+        statuses = {item["result_status"] for item in items}
+        level = "ERROR" if "failed" in statuses else "WARNING" if statuses & {"cancelled", "unsupported"} else "INFO"
+        # 一个事件保存本块所有逐项结果，避免每个别名开启一个日志事务。
+        # 块大小不超过 100，保证通用日志清洗的 120 项限制不会截掉任何明细。
+        # 分块结果不代表共享扫描已完成；主阶段只由最终汇总收口。
         event = {
-            "stage": active_stage, "message": message, "detail": detail,
+            "stage": active_stage, "message": f"已保存 {len(items)} 个 HME 别名扫描结果", "detail": detail,
             "event_type": f"note.{level.lower()}", "level": level,
         }
         try:
@@ -489,7 +511,7 @@ def _scan_hme_group(
         except Exception:
             # A reporting failure must not prevent the remaining aliases from
             # receiving their independent database result.
-            logger.exception("[DeactivationMail] HME 账号事件写入失败: account_id=%s", account_id)
+            logger.exception("[DeactivationMail] HME 分块结果事件写入失败")
 
     def mark_remaining(status: str, error: str) -> int:
         remaining = [entry for entry in entries if int(entry["account_id"]) not in processed]
@@ -509,9 +531,8 @@ def _scan_hme_group(
                 continue
             for account_id in committed:
                 processed[account_id] = status
-                report_account(account_id, status,
-                    "封号邮件扫描已取消" if status == "cancelled" else "封号邮件扫描失败", error=safe_error)
                 count += 1
+            report_accounts({account_id: {"status": status, "error": safe_error} for account_id in committed})
         return count
 
     try:
@@ -583,14 +604,8 @@ def _scan_hme_group(
                 payloads = {account_id: {"status": "failed", "trigger": trigger, "error": error} for account_id in payloads}
                 committed = mail_store.update_many(payloads)
             for account_id in committed:
-                payload = payloads[account_id]
-                status = payload["status"]
-                processed[account_id] = status
-                report_account(account_id, status,
-                    "发现高置信度封号邮件" if payload.get("detected") else
-                    "未发现封号邮件" if status == "success" else
-                    "当前邮箱服务不支持封号邮件扫描" if status == "unsupported" else "封号邮件扫描失败",
-                    error=payload.get("error") or None)
+                processed[account_id] = payloads[account_id]["status"]
+            report_accounts({account_id: payloads[account_id] for account_id in committed})
             if len(committed) != len(payloads):
                 raise RuntimeError("部分 HME 账号不存在，未写入扫描结果")
 
@@ -905,11 +920,20 @@ def _enqueue_native_bulk(
     batch_value = _numeric_batch_id(batch_id)
     fresh_count = 0
     with common._connect() as conn, conn.cursor() as cur:
-        # HME uses one stable global anchor even for disjoint selected aliases.
-        # Find it first to keep every account lock in ID order.
-        anchor = mail_store.hme_anchor(conn=conn)
-        lock_ids = sorted(set(ids) | ({int(anchor["id"])} if anchor else set()))
+        # 先锁选中账号再判定来源，Cloudflare 不需要持有 HME 全局锚点锁。
+        # HME 必须先释放本轮锁，再把共享锚点一起按 ID 顺序重锁，避免倒序锁。
+        # SAVEPOINT 只回滚本轮锁，不影响 _connect 可能继承的调用方事务。
+        cur.execute("SAVEPOINT deactivation_mail_targets")
+        lock_ids = ids
         accounts = mail_store.load_many(lock_ids, conn=conn)
+        anchor = None
+        if any(str(account.get("email_source") or "").strip().lower() == "icloud_hide"
+               and "@" in str(account.get("email") or "") for account in accounts.values()):
+            cur.execute("ROLLBACK TO SAVEPOINT deactivation_mail_targets")
+            anchor = mail_store.hme_anchor(conn=conn)
+            lock_ids = sorted(set(ids) | ({int(anchor["id"])} if anchor else set()))
+            accounts = mail_store.load_many(lock_ids, conn=conn)
+        cur.execute("RELEASE SAVEPOINT deactivation_mail_targets")
         hme, ordinary, projections = [], [], {}
         for account_id in ids:
             account = accounts.get(account_id)
