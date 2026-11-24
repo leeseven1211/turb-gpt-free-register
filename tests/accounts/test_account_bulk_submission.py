@@ -180,6 +180,29 @@ class AccountBulkSubmissionTests(PostgresTestCase):
         self.assertEqual(result["failed"][0]["error_code"], "c2a_account_deactivated")
         self.assertEqual(result["skipped"][-1]["error_code"], "c2a_local_account_missing")
 
+    def test_c2a_config_capture_failure_returns_classified_json_without_creating_tasks(self):
+        from core.integrations.c2a.client import C2AError
+        from webui.app import create_app
+        self.account(7)
+        self.account(8, account_status="deactivated")
+        client = create_app(auth_code="synthetic-auth").test_client()
+        with patch("webui.routes.accounts._feature_unavailable", return_value=None), \
+                patch("core.integrations.c2a.client.configured_backend_identity",
+                      side_effect=C2AError("configuration", "c2a_config_invalid", "private-synthetic-secret")) as capture, \
+                patch("core.operations.task_gateway.notify_dispatch") as notify:
+            response = client.post("/api/accounts/c2a/sync-bulk", json={"account_ids": ["bad", 7, 8, 99]},
+                                   headers={"X-Auth-Code": "synthetic-auth"})
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(response.json["queued_count"], 0)
+        self.assertEqual(response.json["failed_count"], 2)
+        self.assertEqual([item["error_code"] for item in response.json["failed"]],
+                         ["c2a_config_invalid", "c2a_account_deactivated"])
+        self.assertEqual(response.json["skipped_count"], 2)
+        self.assertNotIn("private-synthetic-secret", response.get_data(as_text=True))
+        self.assertEqual(self.tasks(), [])
+        capture.assert_called_once()
+        notify.assert_not_called()
+
     def test_sql_count_is_bounded_for_twenty_targets(self):
         for account_id in range(1, 22):
             self.account(account_id)

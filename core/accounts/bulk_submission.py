@@ -103,6 +103,8 @@ def _prepare(account, *, operation, trigger, parameters, settings, raw_snapshot)
         except ValueError as exc:
             return None, {"reason": str(exc), "error": str(exc), "error_code": getattr(exc, "code", "c2a_manual_queue_failed"),
                           "submission_failed": True}
+        if parameters.get("backend_error"):
+            return None, {**parameters["backend_error"], "submission_failed": True}
         return {"backend_identity": parameters["backend_identity"]}, {}
     if not email:
         return None, {"reason": "账号邮箱为空"}
@@ -188,7 +190,17 @@ def submit_accounts(account_ids, *, operation, trigger="manual_bulk", parameters
         parameters["proxy_source"] = service._captured_proxy_source("token-refresh" if operation == "token" else "live-check")
     elif operation == "c2a":
         from core.integrations.c2a import client
-        parameters["backend_identity"] = client.configured_backend_identity()
+        try:
+            parameters["backend_identity"] = client.configured_backend_identity()
+        except client.C2AError as exc:
+            parameters["backend_error"] = {
+                "error_code": exc.code,
+                "error": "C2A 配置无效，请检查 API 地址、管理 Key 与请求超时设置",
+            }
+        except Exception:
+            parameters["backend_error"] = {
+                "error_code": "c2a_manual_queue_failed", "error": "C2A 重新导入入队失败，请查看服务日志",
+            }
     records.init()
     schema.init_operation_schema()
     started, ready, busy, failed = [], [], [], []
