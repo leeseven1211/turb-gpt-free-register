@@ -1,6 +1,7 @@
 import type {components} from './schema';
 import {ApiError, request as clientRequest} from './client';
 import {optionalTaskId,parseTaskJson,taskId,type TaskId,type TaskResponse} from './taskIds';
+import {bulkMutationRequest,submitBulkMutation,type BulkMutationOptions} from './bulkMutations';
 export type {TaskId} from './taskIds';
 const request=<T>(path:string,options:RequestInit={})=>clientRequest<T>(path,options,parseTaskJson);
 
@@ -81,6 +82,22 @@ function operationBody(path:string,body:object):string {
   return `${prefix}${prefix.length>1?',':''}"task_ids":[${ids.map(id=>String(taskId(id))).join(',')}]}`;
 }
 
+async function terminateBulk(taskIds:TaskId[],options:BulkMutationOptions={}):Promise<ActionResponse> {
+  const result=await submitBulkMutation((path,init)=>{
+    if(init?.method==='POST')return bulkMutationRequest(path,{...init,
+      body:operationBody(path,{action:'terminate',task_ids:taskIds})});
+    return bulkMutationRequest(path,init);
+  },'/api/operations/bulk',{action:'terminate',task_ids:taskIds},options);
+  if(!Array.isArray(result.items))return result as ActionResponse;
+  const accepted=result.items.filter(item=>item.status==='updated').map(item=>({
+    task_id:taskId(item.key),state:String(item.data?.state||'stopped'),message:String(item.data?.message||''),
+  }));
+  const skipped=result.items.filter(item=>item.status!=='updated').map(item=>({
+    task_id:taskId(item.key),error:item.reason||'操作未接受',
+  }));
+  return {...result,ok:true,accepted,accepted_count:accepted.length,skipped,skipped_count:skipped.length};
+}
+
 export const tasksApi = {
   list: (query: TaskQuery, signal?: AbortSignal) => request<OperationList>(`/api/operations?${queryString(query)}`, {signal}),
   detail: (id: TaskId, signal?: AbortSignal) => request<OperationDetail>(`/api/operations/${taskId(id)}?include_events=0`, {signal}),
@@ -94,7 +111,9 @@ export const tasksApi = {
   action: (id: TaskId, action: TaskAction) => action === 'retry'
     ? operationIntent(`retry:${taskId(id)}`, `/api/operations/${taskId(id)}/retry`)
     : request<ActionResponse>(`/api/operations/${taskId(id)}/${action}`, {method: 'POST'}),
-  bulk: (action: TaskAction, taskIds: TaskId[]) => action === 'retry'
+  bulk: (action: TaskAction, taskIds: TaskId[], options?:BulkMutationOptions) => action === 'terminate'
+    ? terminateBulk(taskIds,options)
+    : action === 'retry'
     ? operationIntent('bulk:retry', '/api/operations/bulk', {action, task_ids: taskIds})
     : request<ActionResponse>('/api/operations/bulk', {method: 'POST', headers: {'Content-Type': 'application/json'},
       body: operationBody('/api/operations/bulk',{action, task_ids: taskIds})}),

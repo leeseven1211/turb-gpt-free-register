@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import {computed, nextTick, ref, watch} from 'vue';
 import {tasksApi, type OperationTask, type TaskAction, type TaskFilters, type TaskId} from '../../api/tasks';
+import {BulkMutationPendingError} from '../../api/bulkMutations';
 import TaskDetail from './detail/TaskDetail.vue';
 import TaskFiltersMenu from './TaskFilters.vue';
 import {clearColumnFilter, filterColumns, filterSummary, isFilterActive} from './filterDefinitions';
@@ -88,7 +89,12 @@ async function bulk(action: TaskAction) {
   if (!window.confirm(`确定${labels[action]}选中的 ${targets.length} 个任务吗？\n\n${help}`)) return;
   busy.value = true; actionError.value = ''; notice.value = ''; skipped.value = [];
   try {
-    const result = await tasksApi.bulk(action, targets.map(task => task.id));
+    const ids = targets.map(task => task.id);
+    const result = action === 'terminate'
+      ? await tasksApi.bulk(action, ids, {onAccepted: receipt => {
+        notice.value = `终止请求已受理，正在等待结果（命令 ${receipt.command_id}）`;
+      }})
+      : await tasksApi.bulk(action, ids);
     const accepted = Array.isArray(result.accepted) ? result.accepted : [];
     skipped.value = (result.skipped || []).map(item => ({id: item.task_id, message: item.error || item.message || '操作未接受'}));
     const acceptedCount = Number(result.accepted_count ?? accepted.length);
@@ -96,12 +102,13 @@ async function bulk(action: TaskAction) {
       const cancelled = accepted.filter(item => item.state === 'cancelled').length;
       const cancelling = accepted.filter(item => item.state === 'cancelling').length;
       notice.value = `已取消 ${cancelled} 个，取消中 ${cancelling} 个${acceptedCount - cancelled - cancelling > 0 ? `，已受理 ${acceptedCount - cancelled - cancelling} 个` : ''}`;
-      const acceptedIds = new Set(accepted.map(item => String(item.task_id)));
-      selected.value = new Set([...selected.value].filter(id => !acceptedIds.has(String(id))));
-    } else { notice.value = `已${labels[action]} ${acceptedCount} 个`; selected.value = new Set(); }
+    } else { notice.value = `已${labels[action]} ${acceptedCount} 个`; }
+    const acceptedIds = new Set(accepted.map(item => String(item.task_id)));
+    selected.value = new Set([...selected.value].filter(id => !acceptedIds.has(String(id))));
     if (skipped.value.length) notice.value += `，跳过 ${skipped.value.length} 个`;
     await refresh(); emit('changed');
-  } catch (cause) { actionError.value = `${labels[action]}失败：${cause instanceof Error ? cause.message : String(cause)}`; }
+  } catch (cause) { actionError.value = cause instanceof BulkMutationPendingError
+    ? cause.message : `${labels[action]}失败：${cause instanceof Error ? cause.message : String(cause)}`; }
   finally { busy.value = false; }
 }
 defineExpose({open, refresh, track, closeDetail, setVisible});

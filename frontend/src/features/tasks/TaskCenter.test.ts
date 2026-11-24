@@ -6,6 +6,7 @@ import TaskFilters from './TaskFilters.vue';
 import TaskFilterFields from './TaskFilterFields.vue';
 import {filterColumns} from './filterDefinitions';
 import {emptyFilters, tasksApi} from '../../api/tasks';
+import {BulkMutationPendingError} from '../../api/bulkMutations';
 vi.mock('../../api/tasks', async importOriginal => ({...await importOriginal<typeof import('../../api/tasks')>(), tasksApi: {list: vi.fn(), receipts: vi.fn(), action: vi.fn(), bulk: vi.fn()}}));
 const wrappers: ReturnType<typeof mount>[] = [];
 beforeEach(() => {
@@ -203,4 +204,25 @@ it('批量取消按实际回执区分已取消与取消中，并保留跳过和�
   expect(wrapper.get('.tc-feedback').text()).toContain('#13：任务状态已变化，请刷新后重试');
   const checked = wrapper.findAll<HTMLInputElement>('tbody input[type="checkbox"]').filter(input => input.element.checked);
   expect(checked.map(input => input.attributes('aria-label'))).toEqual(['选择任务 #13', '选择任务 #14']);
+});
+
+it('批量终止按实际回执只清除成功选择，查询未确认时保留命令提示', async () => {
+  vi.spyOn(window, 'confirm').mockReturnValue(true);
+  const items = [21, 22].map(id => ({id, task_type: 'plan_check', status: 'running', source_system: 'native_operations'}));
+  vi.mocked(tasksApi.list).mockResolvedValue({ok: true, items, total: 2, page: 1, page_size: 20, revision: 'terminate'});
+  vi.mocked(tasksApi.bulk).mockResolvedValueOnce({ok: true, accepted_count: 1, accepted: [{task_id: 21, state: 'stopped'}],
+    skipped: [{task_id: 22, error: '原执行已变化'}], skipped_count: 1})
+    .mockRejectedValueOnce(new BulkMutationPendingError('9007199254740993', {accepted: true, command_id: '9007199254740993'}));
+  const wrapper = mount(TaskCenter, {global: {stubs: {TaskDetail: true}}}); wrappers.push(wrapper);
+  wrapper.vm.setVisible(true); await flushPromises();
+  await wrapper.get('input[aria-label="全选当前页任务"]').setValue(true);
+  const terminate = () => wrapper.findAll('.tc-bulk-actions button').find(button => button.text().startsWith('终止运行'))!;
+  await terminate().trigger('click'); await flushPromises();
+  expect(wrapper.get('.tc-feedback').text()).toContain('已终止运行 1 个，跳过 1 个');
+  expect(wrapper.findAll<HTMLInputElement>('tbody input[type="checkbox"]').filter(input => input.element.checked)
+    .map(input => input.attributes('aria-label'))).toEqual(['选择任务 #22']);
+  await terminate().trigger('click'); await flushPromises();
+  expect(wrapper.get('.tc-feedback').text()).toContain('9007199254740993');
+  expect(wrapper.get('.tc-feedback').text()).not.toContain('终止运行失败');
+  expect(wrapper.get<HTMLInputElement>('tbody input[aria-label="选择任务 #22"]').element.checked).toBe(true);
 });

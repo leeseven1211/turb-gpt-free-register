@@ -39,6 +39,7 @@ export const labels: Record<string, Record<string, string>> = {
     email_change:'换绑邮箱', password_change:'修改密码', twofa_change:'修改 2FA',
     codex_retry:'Codex 补跑', codex_token_refresh:'Codex Token 刷新', sub2api_sync:'sub2api 凭据同步',
     live_check:'查活', token_refresh:'AT 刷新', plan_check:'查套餐', deactivation_mail:'查封号邮件', extract_link:'提炼',
+    bulk_mutation:'批量数据操作', task_terminate_bulk:'批量终止任务',
   },
   trigger: {
     manual:'手动', manual_bulk:'手动批量', manual_retry:'失败重跑', scheduled:'定时',
