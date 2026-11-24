@@ -83,6 +83,43 @@ class BulkOperationFactTests(PostgresTestCase):
             cur.execute(f"SELECT count(*) AS total FROM {operation._table('operation_runs')}")
             self.assertEqual(3, cur.fetchone()["total"])
 
+    def test_default_cancel_updates_only_selected_queued_runs_in_one_statement(self):
+        selected = [self._task(status="queued"), self._task(status="queued")]
+        running, omitted = self._task(status="running"), self._task(status="queued")
+        counts = operation._table("cancel_statement_count")
+        count_write = operation._table("count_cancel_write")
+        runs = operation._table("operation_runs")
+        with operation._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"CREATE TABLE {counts} (updated boolean)")
+            cur.execute(
+                f"CREATE FUNCTION {count_write}() RETURNS trigger LANGUAGE plpgsql AS "
+                f"$$ BEGIN INSERT INTO {counts} VALUES (true); RETURN NULL; END $$"
+            )
+            cur.execute(
+                f"CREATE TRIGGER count_cancel_write AFTER UPDATE ON {runs} "
+                f"FOR EACH STATEMENT EXECUTE FUNCTION {count_write}()"
+            )
+        with (
+            patch.object(task_gateway, "operation_action", return_value=task_gateway.default_operation_cancel),
+            patch.object(task_gateway, "notify_dispatch") as notify,
+        ):
+            response = self.client.post("/api/operations/bulk", json={
+                "action": "cancel", "task_ids": [selected[0], running, selected[1]],
+            })
+            notify.assert_called_once()
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual(selected, [item["task_id"] for item in response.json["accepted"]])
+        self.assertEqual([running], [item["task_id"] for item in response.json["skipped"]])
+        with operation._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"SELECT count(*) AS total FROM {counts}")
+            self.assertEqual(1, cur.fetchone()["total"])
+            cur.execute(f"SELECT task_id,status FROM {runs} ORDER BY task_id")
+            self.assertEqual(dict(zip([*selected, running, omitted], ["cancelled", "cancelled", "running", "queued"])),
+                             {row["task_id"]: row["status"] for row in cur.fetchall()})
+            cur.execute(f"SELECT task_id FROM {operation._table('operation_events')} WHERE event_type='run.cancel_requested'")
+            self.assertEqual(set(selected), {row["task_id"] for row in cur.fetchall()})
+
     def test_managed_retry_creates_one_round_per_original_batch(self):
         bulk.init()
         accounts = self.seed(records.ACCOUNTS, [

@@ -226,6 +226,7 @@ def accept_bulk_operation_action(
 
     tasks = operation_task_store.get_action_tasks_many(task_ids)
     managed_retries = _accept_managed_retries(tasks, request_key=request_key) if action == "retry" else {}
+    cancelled = _accept_pending_cancellations(tasks) if action == "cancel" else {}
     accepted: list[dict] = []
     skipped: list[dict] = []
     for task_id in task_ids:
@@ -246,6 +247,12 @@ def accept_bulk_operation_action(
             continue
         if task_id in managed_retries:
             payload, status = managed_retries[task_id]
+        elif task_id in cancelled:
+            error = cancelled[task_id]
+            payload, status = (
+                ({"ok": False, "error": error}, 409) if error else
+                ({"ok": True, "state": "cancelled", "message": "已记录停止请求，任务将在安全检查点收口"}, 200)
+            )
         elif action == "retry" and request_key and len(request_key) > 128:
             payload, status = {"ok": False, "error": "Idempotency-Key 不能超过 128 字符"}, 422
         else:
@@ -272,6 +279,43 @@ def accept_bulk_operation_action(
         "skipped": skipped,
         "skipped_count": len(skipped),
     }
+
+
+def _accept_pending_cancellations(tasks: dict[int, dict]) -> dict[int, str | None]:
+    from core.storage.operations import bulk_facts
+
+    selected: dict[int, int] = {}
+    reasons: dict[int, str] = {}
+    for task_id, task in tasks.items():
+        if task.get("status") != "queued" or task.get("_managed_target_round_id"):
+            continue
+        handler = task_gateway.operation_action(
+            task.get("task_type") or "", "cancel", source_system=task.get("source_system"),
+        )
+        if handler is task_gateway.default_operation_cancel:
+            reason = "用户手动停止统一 durable operation"
+        elif handler is cancel_runtime_task and task.get("source_system") == RUNTIME_SOURCE_SYSTEM:
+            reason = "用户手动停止 WebUI durable operation"
+        else:
+            continue
+        run = next((
+            run for run in reversed(task.get("runs") or [])
+            if run.get("status") == "queued"
+        ), None)
+        if run and run.get("id") and not (run.get("data") or {}).get("bulk_target_round_id"):
+            run_id = int(run["id"])
+            selected[task_id] = run_id
+            reasons[run_id] = reason
+    if not selected:
+        return {}
+    try:
+        replies = bulk_facts.request_cancel_runs_many(reasons)
+    except Exception:
+        action_logger.exception("批量取消普通排队任务失败")
+        return dict.fromkeys(selected, "停止入口异常，请刷新后重试")
+    if any(reason is None for reason in replies.values()):
+        task_gateway.notify_dispatch()
+    return {task_id: replies[run_id] for task_id, run_id in selected.items()}
 
 
 def _accept_managed_retries(

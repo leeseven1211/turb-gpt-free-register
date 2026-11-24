@@ -1,13 +1,14 @@
 """集合读取和变更任务中心及注册的本地事实。"""
 from __future__ import annotations
 
+import json
+import uuid
 from collections.abc import Iterable
 from typing import Any
 
 from core.operations import run_log
 from core.storage import postgres, records as record_store, registration
 from core.storage.operations import common, projection, schema
-from core.bulk_operations import execution as bulk_execution
 
 
 def delete_tasks_many(task_ids: Iterable[int]) -> dict[str, Any]:
@@ -75,85 +76,81 @@ def delete_tasks_many(task_ids: Iterable[int]) -> dict[str, Any]:
     }
 
 
-def request_cancel_runs_many(
-    run_ids: Iterable[int],
-    *,
-    expected_status: str | None = None,
-    reason: str = "用户手动取消",
-) -> dict[str, Any]:
-    """在一个事务内受理选中排队 Run 的协作式取消。"""
-    normalized = sorted({
-        int(value) for value in run_ids
-        if not isinstance(value, bool) and int(value) > 0
-    })
-    if not normalized:
-        return {"cancelled": [], "cancelled_count": 0, "skipped": [], "skipped_count": 0}
+def request_cancel_runs_many(run_reasons: dict[int, str]) -> dict[int, str | None]:
+    """取消仍是当前执行且未开始的普通 Run，返回各 Run 的跳过原因。"""
+    if not run_reasons:
+        return {}
     schema.init_operation_schema()
-    cancelled: list[int] = []
-    skipped: list[dict[str, Any]] = []
-    batch_ids: set[int] = set()
+    ids = sorted(run_reasons)
+    runs = common._table("operation_runs")
+    tasks = common._table("operation_tasks")
     with common._connect() as conn, conn.cursor() as cur:
-        for run_id in normalized:
-            managed = bulk_execution.lock_run(conn, run_id)
+        cur.execute(
+            f"""SELECT id,task_id,status FROM {runs}
+                WHERE id = ANY(%s) ORDER BY id FOR UPDATE""",
+            (ids,),
+        )
+        selected = {row["id"]: row for row in cur.fetchall()}
+        if not selected:
+            return dict.fromkeys(ids, "执行实例不存在")
+        cur.execute(
+            f"""SELECT id FROM {tasks}
+                WHERE id = ANY(%s) ORDER BY id FOR UPDATE""",
+            (sorted({row["task_id"] for row in selected.values()}),),
+        )
+        candidates = [
+            {"id": run_id, "reason": common._text(reason, 500),
+             "message": common._text(reason, 1400), "event_uuid": uuid.uuid4().hex}
+            for run_id, reason in run_reasons.items()
+            if run_id in selected and selected[run_id]["status"] == "queued"
+        ]
+        cancelled = set()
+        if candidates:
             cur.execute(
-                f"""SELECT run.*, task.status AS task_status
-                    FROM {common._table('operation_runs')} run
-                    JOIN {common._table('operation_tasks')} task ON task.id=run.task_id
-                    WHERE run.id=%s FOR UPDATE OF run,task""",
-                (run_id,),
-            )
-            row = cur.fetchone()
-            if not row:
-                skipped.append({"run_id": run_id, "error": "执行实例不存在"})
-                continue
-            status = str(row.get("status") or "").strip().lower()
-            if expected_status and status != str(expected_status).strip().lower():
-                skipped.append({"run_id": run_id, "error": "任务状态已变化，请刷新后重试"})
-                continue
-            if status != "queued":
-                skipped.append({"run_id": run_id, "error": "只有排队中的任务可以取消"})
-                continue
-            cur.execute(
-                f"""UPDATE {common._table('operation_runs')}
+                f"""
+                WITH selected AS (
+                    SELECT * FROM jsonb_to_recordset(%s::jsonb)
+                    AS input(id bigint, reason text, message text, event_uuid text)
+                ), cancelled AS (
+                    UPDATE {runs} run
                     SET status='cancelled', cancel_requested_at=COALESCE(cancel_requested_at, now()),
-                        cancel_reason=%s, heartbeat_at=now(), completed_at=now()
-                    WHERE id=%s RETURNING *""",
-                (common._text(reason, 500), run_id),
+                        cancel_reason=selected.reason, heartbeat_at=now(), completed_at=now()
+                    FROM selected, {tasks} task
+                    WHERE run.id=selected.id AND run.status='queued' AND task.id=run.task_id
+                      AND task.last_run_id=run.id AND task.status='queued'
+                      AND NOT (run.data ? 'bulk_target_round_id')
+                      AND NOT (task.data ? 'bulk_target_round_id')
+                      AND lower(COALESCE(task.data->>'deleted_by_user', 'false')) <> 'true'
+                    RETURNING run.id,run.task_id,run.source_system,run.batch_id,
+                              selected.event_uuid, selected.message
+                ), task_updates AS (
+                    UPDATE {tasks} task
+                    SET status='cancelled',current_stage='complete',completed_at=now(),updated_at=now()
+                    FROM cancelled WHERE task.id=cancelled.task_id
+                ), lease_updates AS (
+                    UPDATE {common._table('account_operation_leases')} lease SET cancel_requested_at=now()
+                    FROM cancelled WHERE lease.run_id=cancelled.id
+                ), events AS (
+                    INSERT INTO {common._table('operation_events')}
+                        (event_uuid,task_id,run_id,source_system,source_id,level,stage,event_type,message,detail)
+                    SELECT event_uuid,task_id,id,source_system,event_uuid,'WARNING','complete',
+                           'run.cancel_requested',message,'{{"previous_status":"queued","status":"cancelled"}}'::jsonb
+                    FROM cancelled
+                )
+                SELECT id,batch_id FROM cancelled
+                """,
+                (json.dumps(candidates, ensure_ascii=False),),
             )
-            updated = cur.fetchone()
-            cur.execute(
-                f"""UPDATE {common._table('operation_tasks')}
-                    SET status='cancelled', current_stage='complete', completed_at=now(), updated_at=now()
-                    WHERE id=%s""",
-                (int(row["task_id"]),),
-            )
-            cur.execute(
-                f"UPDATE {common._table('account_operation_leases')} SET cancel_requested_at=now() WHERE run_id=%s",
-                (run_id,),
-            )
-            cur.execute(
-                f"""INSERT INTO {common._table('operation_events')}
-                    (event_uuid,task_id,run_id,source_system,source_id,level,stage,event_type,message,detail)
-                    VALUES (%s,%s,%s,%s,%s,'WARNING','complete','run.cancel_requested',%s,%s::jsonb)""",
-                (
-                    common._uuid("event", f"bulk_cancel:{run_id}"),
-                    int(row["task_id"]), run_id, str(row["source_system"] or "native_operations"),
-                    common._uuid("cancel", run_id), common._text(reason, 1400),
-                    common._json({"previous_status": status, "status": "cancelled"}),
-                ),
-            )
-            if row.get("batch_id"):
-                batch_ids.add(int(row["batch_id"]))
-            bulk_execution.changed(conn, managed, event_kind="run.cancel_requested")
-            cancelled.append(run_id)
-    if batch_ids:
-        with common._connect() as conn, conn.cursor() as cur:
-            projection._refresh_batches(cur, batch_ids)
+            changed = cur.fetchall()
+            cancelled = {row["id"] for row in changed}
+            batch_ids = {row["batch_id"] for row in changed if row["batch_id"]}
+            if batch_ids:
+                projection._refresh_batches(cur, batch_ids)
     return {
-        "cancelled": cancelled,
-        "cancelled_count": len(cancelled),
-        "skipped": skipped,
-        "skipped_count": len(skipped),
+        run_id: None if run_id in cancelled else (
+            "任务状态已变化，请刷新后重试" if run_id in selected else "执行实例不存在"
+        )
+        for run_id in ids
     }
 
 
