@@ -297,6 +297,7 @@ class UnconfirmedRegistrationRetryTests(unittest.TestCase):
         client = resume_tests.ResumeRetryChainTests._client()
         with patch("core.bulk_operations.service.retry_managed_task", return_value=None), \
              patch.object(operations.operation_task_store, "get_task", side_effect=lambda *a, **kw: copy.deepcopy(task)), \
+             patch.object(operations.operation_task_store, "get_action_tasks_many", side_effect=lambda ids: {9: copy.deepcopy(task)}), \
              patch.object(svc.db, "get_job", return_value=job), \
              patch.object(svc.db, "get_successful_retry_for_job", return_value=None), \
              patch.object(svc, "_account_for_job", return_value=None), \
@@ -306,7 +307,8 @@ class UnconfirmedRegistrationRetryTests(unittest.TestCase):
             single = client.post("/api/operations/9/retry")
             bulk = client.post("/api/operations/bulk", json={"action": "retry", "task_ids": [9]})
         self.assertEqual(single.status_code, 200)
-        self.assertEqual(bulk.get_json()["accepted_count"], 1)
+        self.assertEqual(bulk.get_json()["accepted_count"], 1, bulk.get_json())
+        self.assertEqual(create.call_count, 2)
         for call in create.call_args_list:
             self.assertEqual(call.kwargs["email"], job["email"])
             self.assertEqual(call.kwargs["email_source"], "icloud_hide")

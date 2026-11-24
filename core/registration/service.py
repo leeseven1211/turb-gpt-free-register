@@ -16,6 +16,7 @@ import threading
 import time
 import uuid
 from contextlib import ExitStack
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -3396,6 +3397,10 @@ def _enrich_account_registration_state(account: dict | None) -> dict | None:
         attempt = registration_store.get_latest_attempt_by_account(int(account_id))
     except Exception:
         return account
+    return _with_registration_state(account, attempt)
+
+
+def _with_registration_state(account: dict, attempt: dict | None) -> dict:
     if not attempt:
         return account
     enriched = dict(account)
@@ -4248,6 +4253,7 @@ def retry_job(
     debug_enabled: bool | None = None,
     proxy_country: str | None = None,
     _admissions: list["RetryAdmission"] | None = None,
+    _facts: "_RetryFacts | None" = None,
 ) -> dict | None:
     """按原身份重跑终态任务，显式驱动或国家覆盖只冻结到新子任务。"""
     if workers is not None:
@@ -4264,7 +4270,7 @@ def retry_job(
         if not isinstance(proxy_country, str) or not _normalize_registration_country(proxy_country):
             return {"ok": False, "error": "proxy_country 必须是有效的两位国家码", "status": 400}
         retry_country = _normalize_registration_country(proxy_country)
-    source = db.get_job(job_id)
+    source = _facts.source if _facts is not None else db.get_job(job_id)
     if source is None:
         return {"ok": False, "error": "任务不存在", "status": 404}
     # 终态会先于 worker 的代理、调试记录器及浏览器资源收口写入数据库。
@@ -4272,8 +4278,17 @@ def retry_job(
     if is_job_worker_active(job_id):
         return {"ok": False, "error": "原任务仍在收口，暂不能重跑", "status": 409}
 
-    account = _enrich_account_registration_state(_account_for_job(source))
-    retry_info = get_retry_info(source, account_override=account)
+    if _facts is None:
+        account = _enrich_account_registration_state(_account_for_job(source))
+        retry_info = get_retry_info(source, account_override=account)
+    else:
+        account = _facts.account
+        retry_info = _build_retry_info(
+            source, account=account if _facts.successful is None else None,
+            successful_retry=_facts.successful, attempt=_facts.source_attempt,
+            attempt_read_failed=(_attempt_id_for_job(source) is not None and _facts.source_attempt is None),
+            root_job=_facts.root,
+        )
     if not retry_info["retryable"]:
         reason = retry_info.get("retry_reason") or f"当前状态不支持重试：{source.get('status')}"
         return {"ok": False, "error": reason, "status": 409}
@@ -4289,10 +4304,14 @@ def retry_job(
         "debug_warning": "此类补跑暂不支持完整网络抓包，已正常入队并保留步骤日志",
     } if retry_debug_enabled and action in {"codex", "plan_check"} else {})
     root_id = int(source.get("root_job_id") or source.get("id") or job_id)
-    root_record = db.get_job(root_id)
+    root_record = _facts.root if _facts is not None else db.get_job(root_id)
     root_job = root_record or source
     attempt_job = root_job if _attempt_id_for_job(root_job) is not None else source
-    attempt, attempt_read_failed = _read_linked_attempt_for_job(attempt_job)
+    if _facts is None:
+        attempt, attempt_read_failed = _read_linked_attempt_for_job(attempt_job)
+    else:
+        attempt = _facts.root_attempt if attempt_job is root_job else _facts.source_attempt
+        attempt_read_failed = _attempt_id_for_job(attempt_job) is not None and attempt is None
     if attempt_read_failed:
         return {"ok": False, "error": _ATTEMPT_READ_FAILED_RETRY_REASON, "status": 409}
     if _attempt_is_deactivated(attempt):
@@ -4607,6 +4626,61 @@ def _reused_retry_result(
     }
 
 
+@dataclass(frozen=True)
+class _RetryFacts:
+    source: dict | None
+    root: dict | None = None
+    source_attempt: dict | None = None
+    root_attempt: dict | None = None
+    account: dict | None = None
+    successful: dict | None = None
+
+
+def _prefetch_retry_facts(job_ids: list[int]) -> dict[int, _RetryFacts]:
+    from core.storage import registration
+
+    jobs = _retry_jobs_by_ids(job_ids)
+    terminal = [job for job in jobs.values() if job["status"] in _RETRYABLE_REGISTRATION_JOB_STATUSES]
+    roots = dict(jobs)
+    missing_root_ids = sorted({_root_job_id_for_job(job) for job in terminal} - jobs.keys())
+    roots.update(_retry_jobs_by_ids(missing_root_ids))
+    attempt_ids = sorted({
+        attempt_id for job in (*terminal, *roots.values())
+        if (attempt_id := _attempt_id_for_job(job)) is not None
+    })
+    try:
+        attempts = registration.get_attempts_by_ids(attempt_ids)
+    except Exception:
+        logger.exception("批量读取重跑关联 Attempt 失败")
+        attempts = {}
+    accounts = db.get_accounts_for_jobs(
+        terminal,
+        attempts_by_root={
+            root_id: attempts[attempt_id] for root_id, root in roots.items()
+            if (attempt_id := _attempt_id_for_job(root)) in attempts
+        },
+    )
+    account_ids = sorted({
+        int(row["id"]) for row in accounts.values() if not str(row.get("access_token") or "").strip()
+    })
+    try:
+        account_attempts = registration.get_latest_attempts_by_accounts(account_ids)
+    except Exception:
+        account_attempts = {}
+    successful = db.get_successful_retries_for_jobs(terminal)
+    facts = dict.fromkeys(job_ids, _RetryFacts(source=None))
+    for job_id, job in jobs.items():
+        root = roots.get(_root_job_id_for_job(job))
+        account = accounts.get(job_id)
+        facts[job_id] = _RetryFacts(
+            source=job, root=root, source_attempt=attempts.get(_attempt_id_for_job(job)),
+            root_attempt=attempts.get(_attempt_id_for_job(root or job)),
+            account=_with_registration_state(account, account_attempts.get(account["id"])) if account else None,
+            successful=successful.get(job_id),
+        )
+    return facts
+
+
 def retry_jobs(job_ids: list[int], *, workers: int, debug_enabled: bool | None = None) -> dict[int, dict]:
     """Validate each source through the regular retry policy, then admit registration runs together."""
     from core.storage.registration.bulk_retry import RetryAdmission, admit
@@ -4614,8 +4688,14 @@ def retry_jobs(job_ids: list[int], *, workers: int, debug_enabled: bool | None =
     plans: list[RetryAdmission] = []
     results = {}
     options = {} if debug_enabled is None else {"debug_enabled": debug_enabled}
+    facts = _prefetch_retry_facts(job_ids)
     for job_id in job_ids:
-        result = retry_job(job_id, workers=workers, _admissions=plans, **options)
+        snapshot = facts[job_id]
+        if snapshot.source is not None and _attempt_id_for_job(snapshot.source) is None:
+            # Legacy account lookup has no durable association and checks historical duplicates.
+            result = retry_job(job_id, workers=workers, **options)
+        else:
+            result = retry_job(job_id, workers=workers, _admissions=plans, _facts=snapshot, **options)
         if result is not None:
             results[job_id] = result
     pending = []

@@ -248,9 +248,8 @@ def _insert_facts(cur, plans, attempts, run_state, history, projected, batch_ids
         (run_uuid,attempt_id,job_id,run_no,action_type,status,heartbeat_at,data)
         SELECT registration_uuid,attempt_id,job_id,run_no,action,'queued',now(),registration_config
         FROM {source}""", (payload,))
-    cur.execute(f"""UPDATE {registration_attempts} a SET updated_at=now(),
-        email_snapshot=CASE WHEN a.email_snapshot='' THEN f.email ELSE a.email_snapshot END,
-        email=COALESCE(NULLIF(a.email,''),f.email),data=a.data || f.attempt_config
+    cur.execute(f"""UPDATE {registration_attempts} a
+        SET updated_at=now(),data=a.data || f.attempt_config
         FROM {source} WHERE a.id=f.attempt_id""", (payload,))
     cur.execute(f"""INSERT INTO {tasks} AS task
         (task_uuid,source_system,source_id,batch_id,root_task_id,parent_task_id,task_type,target_type,target_id,

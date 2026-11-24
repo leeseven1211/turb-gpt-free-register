@@ -494,6 +494,15 @@ def get_attempt(attempt_id: int) -> dict | None:
         return _attempt_from_cursor(cur, int(attempt_id))
 
 
+def get_attempts_by_ids(attempt_ids: list[int]) -> dict[int, dict]:
+    if not attempt_ids:
+        return {}
+    init()
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(f"SELECT * FROM {_table('registration_attempts')} WHERE id=ANY(%s)", (attempt_ids,))
+        return {row["id"]: _row(row) for row in cur.fetchall()}
+
+
 def get_attempt_by_job(job_id: int) -> dict | None:
     init()
     with _connect() as conn, conn.cursor() as cur:
@@ -544,6 +553,19 @@ def get_latest_attempt_by_account(account_id: int) -> dict | None:
             (int(account_id),),
         )
         return _row(cur.fetchone())
+
+
+def get_latest_attempts_by_accounts(account_ids: list[int]) -> dict[int, dict]:
+    if not account_ids:
+        return {}
+    init()
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"SELECT DISTINCT ON (account_id) * FROM {_table('registration_attempts')} "
+            "WHERE account_id=ANY(%s) ORDER BY account_id,updated_at DESC,id DESC",
+            (account_ids,),
+        )
+        return {row["account_id"]: _row(row) for row in cur.fetchall()}
 
 
 def list_attempts(*, limit: int = 100, checkpoint: str | None = None) -> list[dict]:

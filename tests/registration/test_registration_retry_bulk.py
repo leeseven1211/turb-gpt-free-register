@@ -1,4 +1,7 @@
+import threading
 from unittest.mock import patch
+
+from psycopg import Cursor
 
 from core import db
 from core.registration import service
@@ -139,3 +142,44 @@ class RegistrationRetryBulkTests(PostgresTestCase):
         assert task["root_task_id"] == original["id"]
         assert task["parent_task_id"] == original["id"]
         assert registration.list_runs(root["attempt_id"])[0]["action_type"] == "registration_resume"
+
+    def test_bulk_prefetch_preserves_existing_attempt_email_identity(self):
+        root = self._root("unlinked-address@example.test", "prefetch")
+        with postgres.connect() as conn, conn.cursor() as cur:
+            cur.execute(f"""UPDATE {postgres.qualified('registration_attempts')}
+                            SET email=NULL WHERE id=%s""", (root["attempt_id"],))
+        body = self._request([root["id"]])
+        assert body["started_count"] == 1
+        attempt = registration.get_attempt(root["attempt_id"])
+        assert (attempt["email"], attempt["email_snapshot"]) == (None, "unlinked-address@example.test")
+
+    def test_bulk_reads_selected_jobs_and_attempts_as_collections(self):
+        first = self._root("first-prefetch@example.test", "first-prefetch")
+        second = self._root("second-prefetch@example.test", "second-prefetch")
+        with (patch.object(db, "get_job", wraps=db.get_job) as read_job,
+              patch.object(registration, "get_attempt", wraps=registration.get_attempt) as read_attempt,
+              patch.object(db, "get_successful_retry_for_job", wraps=db.get_successful_retry_for_job) as read_retry):
+            body = self._request([first["id"], second["id"]])
+        assert body["started_count"] == 2
+        assert (read_job.call_count, read_attempt.call_count, read_retry.call_count) == (0, 0, 0)
+
+    def test_retry_prefetch_query_count_is_constant_for_multiple_roots(self):
+        roots = [self._root(f"query-budget-{index}@example.test", f"query-budget-{index}")
+                 for index in range(5)]
+        execute = Cursor.execute
+        owner_thread = threading.get_ident()
+        counts = []
+        for selected in (roots[:1], roots):
+            statements = []
+
+            def capture(cursor, query, *args, **kwargs):
+                if threading.get_ident() == owner_thread:
+                    statements.append(str(query))
+                return execute(cursor, query, *args, **kwargs)
+
+            with patch.object(Cursor, "execute", capture):
+                facts = service._prefetch_retry_facts([root["id"] for root in selected])
+            assert set(facts) == {root["id"] for root in selected}
+            assert all(facts[root["id"]].source_attempt["id"] == root["attempt_id"] for root in selected)
+            counts.append(len(statements))
+        assert 0 < counts[0] == counts[1] <= 8, counts
