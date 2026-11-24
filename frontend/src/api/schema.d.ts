@@ -184,7 +184,7 @@ export interface paths {
         put?: never;
         /**
          * 批量执行现有任务操作
-         * @description 按任务 ID 返回受理和跳过结果。批量托管任务重跑按原批次创建一个目标集合轮次。
+         * @description 按任务 ID 返回受理和跳过结果。批量托管任务重跑按原批次创建一个目标集合轮次。terminate 返回持久命令，执行结果通过批量命令回执接口分页查询。
          */
         post: operations["bulkOperations"];
         delete?: never;
@@ -583,6 +583,17 @@ export interface components {
             };
         } & {
             [key: string]: unknown;
+        };
+        BulkTerminationSubmission: {
+            ok: boolean;
+            accepted: boolean;
+            command_id: string;
+            task_id: string;
+            run_id: string;
+            /** @enum {string} */
+            operation: "operation_terminate";
+            status?: string;
+            reused: boolean;
         };
         BulkActionResponse: {
             ok: boolean;
@@ -1206,7 +1217,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
-                /** @description 托管任务重跑的可选幂等键，在原批次内绑定本次目标集合。 */
+                /** @description 批量操作的可选幂等键；retry 最多 128 字符，terminate 最多 200 字符，同键绑定同一目标集合。 */
                 "Idempotency-Key"?: string;
             };
             path?: never;
@@ -1231,6 +1242,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["BulkActionResponse"];
+                };
+            };
+            /** @description 批量终止命令已持久受理，尚未确认各目标执行结果 */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BulkTerminationSubmission"];
                 };
             };
             /** @description 参数无效 */
