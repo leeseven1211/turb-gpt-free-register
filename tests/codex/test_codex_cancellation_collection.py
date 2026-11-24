@@ -234,6 +234,15 @@ class CodexCancellationCollectionTests(PostgresTestCase):
             operations.get_run(item["run_id"])["status"] for item in original
         ])
 
+    def test_idle_shared_connection_is_not_committed_before_the_caller(self):
+        run = self.create_runs([1])[0]
+        with common._connect() as conn:
+            cancellation.cancel_runs_many(conn, [
+                {"id": run["run_id"], "expected_status": "queued", "reason": "fixture"},
+            ])
+            conn.rollback()
+        self.assertEqual("queued", operations.get_run(run["run_id"])["status"])
+
     def test_managed_cancellation_has_bounded_sql_and_updates_only_selected_target_facts(self):
         bulk.reset_ready()
         bulk.init()

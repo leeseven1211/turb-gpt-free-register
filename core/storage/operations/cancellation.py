@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 import uuid
 
+from psycopg.pq import TransactionStatus
+
 from core.storage import records
 from core.storage.operations import bulk_retry_projection, bulk_runtime, common
 
@@ -16,6 +18,9 @@ def cancel_runs_many(conn, requests: list[dict]) -> dict[int, dict | None]:
     runs_table = common._table("operation_runs")
     tasks_table = common._table("operation_tasks")
     ids = sorted(expected_runs)
+    if conn.info.transaction_status == TransactionStatus.IDLE:
+        # 先开启调用方事务，让内层 transaction() 只释放保存点，保留调用方提交权。
+        conn.execute("BEGIN")
     with conn.transaction(), conn.cursor() as cur:
         managed = []
         if bulk_runtime._enabled():
