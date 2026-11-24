@@ -38,38 +38,32 @@ class OperationQuery:
 class BulkItemResult:
     """批量命令中的单项目回执。"""
 
-    target: object
+    key: object
     status: str
     reason_code: str | None = None
-    result: object | None = None
+    reason: str = ""
+    data: object | None = None
+
+    def __post_init__(self) -> None:
+        if self.status not in {"updated", "skipped", "failed"}:
+            raise ValueError("invalid bulk item status")
 
 
 @dataclass(frozen=True)
 class BulkMutationResult:
     """批量命令的不可变统一回执。"""
 
-    operation: str
-    items: tuple[BulkItemResult, ...] = ()
+    requested_count: int = 0
+    unique_count: int = 0
     duplicate_count: int = 0
+    updated_count: int = 0
+    skipped_count: int = 0
+    failed_count: int = 0
+    items: tuple[BulkItemResult, ...] = ()
+    chunks: tuple[dict, ...] = ()
+    operation: str = ""
     idempotency_key: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "items", tuple(self.items))
-        if self.duplicate_count < 0:
-            raise ValueError("duplicate_count must be non-negative")
-
-    @property
-    def total_count(self) -> int:
-        return len(self.items)
-
-    @property
-    def succeeded_count(self) -> int:
-        return sum(item.status == "succeeded" for item in self.items)
-
-    @property
-    def failed_count(self) -> int:
-        return sum(item.status == "failed" for item in self.items)
-
-    @property
-    def skipped_count(self) -> int:
-        return sum(item.status == "skipped" for item in self.items)
+        object.__setattr__(self, "chunks", tuple(self.chunks))
