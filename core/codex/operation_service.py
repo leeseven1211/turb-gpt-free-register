@@ -709,62 +709,9 @@ def submit_bulk(
     title: str = "批量补跑 Codex OAuth",
     workers: int | None = None,
 ) -> dict:
-    ids: list[int] = []
-    for raw in account_ids:
-        try:
-            value = int(raw)
-        except (TypeError, ValueError):
-            continue
-        if value not in ids:
-            ids.append(value)
-    if not ids:
-        return {"accepted": False, "error": "没有可补跑的账号"}
-    snapshot = _config_snapshot()
-    unavailable = _deployment_unavailable(snapshot)
-    if unavailable:
-        return unavailable
-    enabled, reason = _feature_ready(snapshot)
-    if not enabled:
-        return {"accepted": False, "feature": "codex_retry", "error": reason, "unavailable": True}
-    batch = operation_task_store.create_runtime_batch(
-        batch_type="codex_retry",
-        title=title,
-        requested_count=len(ids),
-        trigger=trigger,
-    )
-    started: list[dict] = []
-    skipped: list[dict] = []
-    for ordinal, account_id in enumerate(ids, 1):
-        account = db.get_account(account_id)
-        if not account:
-            skipped.append({"id": account_id, "reason": "账号不存在"})
-            continue
-        email = str(account.get("email") or "").strip()
-        queued = submit(
-            email,
-            trigger=trigger,
-            batch_id=int(batch["id"]),
-            batch_ordinal=ordinal,
-            dispatch=False,
-        )
-        if queued.get("accepted"):
-            started.append(queued)
-        else:
-            skipped.append({"id": account_id, "email": email, "reason": queued.get("error") or "无法入队"})
-    operation_task_store.set_runtime_batch_skipped(int(batch["id"]), skipped)
-    if not started:
-        operation_task_store.mark_runtime_batch_empty(int(batch["id"]), status="failed")
-    if started:
-        _dispatch_bulk([int(item["run_id"]) for item in started])
-    return {
-        "accepted": bool(started),
-        "batch_id": int(batch["id"]),
-        "batch_uuid": batch.get("batch_uuid"),
-        "started": started,
-        "started_count": len(started),
-        "workers": configured_workers(),
-        "skipped": skipped,
-    }
+    from core.codex.bulk_submission import submit_reauthorization
+
+    return submit_reauthorization(account_ids=account_ids, trigger=trigger, title=title)
 
 
 def session_diagnostic_target_supported(task: Mapping[str, Any], driver: str | None) -> bool:

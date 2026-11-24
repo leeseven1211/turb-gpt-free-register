@@ -107,6 +107,16 @@ def queue_account(account: dict) -> dict[str, Any]:
     return queue_filename(str(row.get("filename") or ""))
 
 
+def queue_filenames(filenames, *, trigger="manual_upload") -> dict[str, Any]:
+    from core.codex.bulk_submission import submit_upload
+    return submit_upload(filenames=filenames, trigger=trigger)
+
+
+def queue_accounts(account_ids, *, trigger="manual_upload") -> dict[str, Any]:
+    from core.codex.bulk_submission import submit_upload
+    return submit_upload(account_ids=account_ids, trigger=trigger)
+
+
 def _bound_reference(data: dict, *, expected_email: str, conn=None, for_update: bool = False) -> dict:
     credential_id = int(data.get("credential_id") or 0)
     reference = records.get_row(records.CODEX_CREDENTIALS, credential_id, conn=conn, for_update=for_update) if credential_id else None
