@@ -76,6 +76,8 @@ class FlaskRouteContractTests(PostgresTestCase):
         "/api/operations/receipts\tGET\tapi_operation_receipt_statuses",
         "/api/bulk-mutations/<int:command_id>\tGET\tbulk_mutations.get_receipt",
         "/api/codex/reset-export-bulk\tPOST\tapi_codex_reset_export_bulk",
+        "/api/extract-workbench/tasks/actions-bulk\tPOST\tperform_extract_workbench_actions_bulk",
+        "/api/extract-workbench/tasks/payment-entries\tPOST\textract_workbench_task_payment_entries",
     }
 
     def test_public_route_map_matches_refactor_baseline(self):

@@ -95,6 +95,6 @@ class BulkCommandRecoveryTests(PostgresTestCase):
         with TemporaryDirectory() as directory, patch.object(process, "_RUNTIME", None), \
                 patch.object(process, "_LIFECYCLE", None), patch.dict(worker._HANDLERS, clear=True):
             assembly.install(RuntimeBootstrap("worker", "bulk-integration", Path(directory), "a" * 40))
-            self.assertTrue({"account_archive", "codex_delete", "email_pool_status"}
+            self.assertTrue({"account_archive", "codex_delete", "email_pool_status", "extract_sync_status"}
                             <= set(worker.registered_bulk_mutation_operations()))
             self.assertIn(worker.TASK_TYPE, task_gateway.registered_dispatch_types())

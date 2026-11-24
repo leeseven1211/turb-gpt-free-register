@@ -16,6 +16,7 @@ from core.extract_link.contracts import safe_payment_artifact
 from core.extract_link.workbench_analytics import workbench_analytics
 from core.extract_link.workbench_queries import public_workbench_item
 from core.operations.presentation import public_result_status
+from core.operations import task_gateway
 from webui.blueprint import LegacyEndpointBlueprint
 from webui.runtime import WebUIContext
 
@@ -727,6 +728,57 @@ def create_extract_workbench_blueprint(context: WebUIContext):
         response = jsonify({"ok": True, "entry": entry})
         response.headers["Cache-Control"] = "no-store"
         return response
+
+    @bp.post("/api/extract-workbench/tasks/payment-entries")
+    def extract_workbench_task_payment_entries():
+        data, error = _parse_object_body({"task_ids"})
+        if error is not None:
+            return error
+        task_ids = data.get("task_ids")
+        if not isinstance(task_ids, list) or not task_ids or len(task_ids) > 5000:
+            return _error("task_ids 必须是 1 至 5000 个有效任务 ID", 400)
+        try:
+            result = extract_link_service.extract_workbench_payment_entries(task_ids)
+        except (TypeError, ValueError) as exc:
+            return _error(str(exc), 400)
+        except Exception as exc:
+            return _service_error("批量支付入口读取", exc)
+        response = jsonify(result)
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+    @bp.post("/api/extract-workbench/tasks/actions-bulk")
+    def perform_extract_workbench_actions_bulk():
+        data, error = _parse_object_body({"task_ids", "action", "idempotency_key"})
+        if error is not None:
+            return error
+        task_ids = data.get("task_ids")
+        action = data.get("action")
+        if not isinstance(task_ids, list) or not task_ids or len(task_ids) > 5000:
+            return _error("task_ids 必须是 1 至 5000 个有效任务 ID", 400)
+        if action != "sync_status":
+            return _error("批量操作只支持 sync_status", 400)
+        key = request.headers.get("Idempotency-Key") or request.headers.get("X-Account-Request-Key") or data.get("idempotency_key")
+        if not isinstance(key, str) or not 1 <= len(key.strip()) <= 200:
+            return _error("缺少有效的批量操作请求编号", 400)
+        try:
+            from core.extract_link import workbench_bulk
+            normalized = workbench_bulk.normalize_ids(task_ids)
+            queued = task_gateway.submit_bulk_mutation(
+                "extract_sync_status", normalized, {},
+                idempotency_key=key.strip(), trigger="extract_workbench_sync_status_bulk",
+            )
+        except (TypeError, ValueError) as exc:
+            message = str(exc)
+            return jsonify({"ok": False, "error": message}), 409 if message == "idempotency_key_conflict" else 400
+        except Exception as exc:
+            return _service_error("批量任务操作", exc)
+        payload = {name: (str(value) if name in {"command_id", "task_id", "run_id"} and value is not None else value)
+                   for name, value in queued.items()}
+        payload.update({"ok": True, "accepted": True, "operation": "extract_sync_status",
+                        "requested_count": len(task_ids), "unique_count": len(set(normalized)),
+                        "duplicate_count": len(task_ids) - len(set(normalized))})
+        return jsonify(payload), 202
 
     @bp.post("/api/extract-workbench/tasks/<int:task_id>/payment-query-credential")
     def restore_extract_workbench_payment_query_credential(task_id: int):

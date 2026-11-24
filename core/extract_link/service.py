@@ -2565,82 +2565,34 @@ def create_workbench_tasks(
     if not ids or len(ids) > 500:
         raise ValueError("账号数量必须在 1 至 500 之间")
 
-    started = skipped = failed = 0
-    from core.accounts.plans import promotion as plus_promotion
-    from core.storage.operations import store as operation
-    register_operation_handlers()
-    for account_id in ids:
-        # 批次逐项提交使用短事务，资格、占用及持久化共享当前账号行锁。
-        with (operation._connect() if _submission_context is not None else nullcontext(None)) as conn:
-            account = db.get_account(account_id, **({"conn": conn, "for_update": True} if conn is not None else {}))
-            if not account or account.get("archived") or db.account_is_deactivated(account):
-                skipped += 1
-                continue
-            try:
-                if not (plus_promotion.is_extract_link_eligible(account) or (
-                    allow_no_promotion and plus_promotion.is_extract_link_eligible(account, allow_no_promotion=True)
-                )):
-                    skipped += 1
-                    continue
-            except Exception:
-                skipped += 1
-                continue
-            if not str(account.get("access_token") or "").strip():
-                skipped += 1
-                continue
-            if not db.claim_account_extract(account_id, trigger="extract_workbench", link_type=link_type, **({"conn": conn} if conn is not None else {})):
-                skipped += 1
-                continue
-            email = str(account.get("email") or "").strip()
-            data = {
-                "provider_id": provider_id,
-                "mode": mode,
-                "payment_source": payment_source,
-                "link_type": link_type,
-                "options": safe_options,
-                "workbench_action": "create",
-            }
-            if allow_no_promotion:
-                data["allow_no_promotion"] = True
-            try:
-                submitted = account_task_store.submit_durable_operation(
-                    task_type="extract_link",
-                    account_id=account_id,
-                    email=email,
-                    trigger="extract_workbench",
-                    source_system="native_operations",
-                    source_id=f"extract-workbench:{account_id}:{uuid.uuid4().hex}",
-                    resource_family="openai_interactive",
-                    data=data,
-                    **({"config_snapshot": _submission_context["config_snapshot"]}
-                       if _submission_context is not None else {"config_snapshot_provider": get_config_snapshot}),
-                    **({"conn": conn, "batch_ordinal": int(_submission_context["next_ordinal"])}
-                       if conn is not None else {}),
-                    config_allowlist=EXTRACT_CONFIG_ALLOWLIST,
-                    dispatch=dispatch,
-                    **({"batch_id": int(batch_id)} if batch_id is not None else {}),
-                )
-            except Exception:
-                db.update_account_extract(account_id, {
-                    "status": "failed", "ok": False, "link_type": link_type,
-                    "message": "提链任务持久化失败", "error": "提链任务持久化失败",
-                }, **({"conn": conn} if conn is not None else {}))
-                failed += 1
-                continue
-            if not submitted.get("accepted"):
-                db.update_account_extract(account_id, {
-                    "status": "failed", "ok": False, "link_type": link_type,
-                    "message": "提链任务未能入队", "error": str(submitted.get("error") or "提链任务未能入队")[:300],
-                }, **({"conn": conn} if conn is not None else {}))
-                skipped += 1
-                continue
-            db.update_account_extract(account_id, {
-                "status": "queued", "ok": False, "link_type": link_type, "message": "已入队",
-            }, **({"conn": conn} if conn is not None else {}))
-            started += 1
-            if _submission_context is not None:
-                _submission_context["next_ordinal"] += 1
-    return {"started": started, "skipped": skipped, "failed": failed}
+    # 账号准入、占用、Task/Run/Event 创建在一个集合事务块中完成。外部提链
+    # provider 仍由既有 Worker 按单账号执行；此处只替换请求线程的逐项持久化。
+    from core.storage.extract_link import bulk_create
+
+    config_snapshot = (
+        (_submission_context or {}).get("config_snapshot")
+        if _submission_context is not None else get_config_snapshot()
+    )
+    data = {
+        "provider_id": provider_id,
+        "mode": mode,
+        "payment_source": payment_source,
+        "link_type": link_type,
+        "options": safe_options,
+    }
+    result = bulk_create.create_tasks(
+        ids,
+        data=data,
+        config_snapshot=config_snapshot,
+        batch_id=batch_id,
+        first_ordinal=int((_submission_context or {}).get("next_ordinal") or 1),
+        allow_no_promotion=allow_no_promotion,
+    )
+    if _submission_context is not None:
+        _submission_context["next_ordinal"] += int(result.get("started") or 0)
+    if dispatch and result.get("started"):
+        account_task_store.notify_dispatch()
+    return result
 
 
 def list_workbench_tasks(
@@ -2749,9 +2701,7 @@ def workbench_batch_detail(batch_id: int, *, public_status: bool = False) -> dic
 
 def cancel_workbench_batch(batch_id: int) -> dict | None:
     """取消指定工作台批次的排队 Run，保留已经开始执行的任务。"""
-    from core.storage import records as record_store
     from core.storage.extract_link import batches as extract_link_batches
-    from core.storage.operations import store as operation
 
     if isinstance(batch_id, bool) or not isinstance(batch_id, int) or batch_id < 1:
         raise ValueError("batch_id 参数无效")
@@ -2771,69 +2721,11 @@ def cancel_workbench_batch(batch_id: int) -> dict | None:
         if created_at >= _WORKBENCH_PROCESS_STARTED_AT:
             raise ValueError("批次正在入队，请等待入队结束后再取消")
 
-    # 先读取完整批次快照，再执行取消，避免列表缩短后翻页漏项。
-    # 读取时不按排队状态筛选，worker 开始执行不会挤动后续分页。
-    queued_runs = {}
-    cancelled_runs = set()
-    page = 1
-    page_size = 200
-    while True:
-        tasks = operation.list_tasks(
-            batch_id=batch_id, task_type="extract_link", source="native_operations",
-            page=page, page_size=page_size,
-        )
-        items = tasks["items"]
-        for task in items:
-            run_id = task.get("last_run_id")
-            if not run_id:
-                continue
-            if task.get("status") == "queued":
-                queued_runs[int(run_id)] = int(task.get("account_id") or 0)
-            elif task.get("status") == "cancelled" and task.get("account_id"):
-                cancelled_runs.add(int(run_id))
-        if page * page_size >= tasks["total"] or len(items) < page_size:
-            break
-        page += 1
-
-    cancelled = skipped = failed = 0
-    changed = False
-    for run_id, account_id in sorted(queued_runs.items()):
-        try:
-            account = record_store.get_row(record_store.ACCOUNTS, account_id, include_version=True) if account_id else None
-            version = account.get("__record_version") if account else None
-            result = operation.request_run_cancel(
-                run_id, reason="用户取消提链批次的排队任务", expected_status="queued",
-            )
-            if result.get("cancel_skipped") or result.get("status") != "cancelled":
-                skipped += 1
-                continue
-            changed = True
-            if account_id and not extract_link_batches.sync_cancelled_account_extraction(
-                run_id, expected_account_version=version,
-            ):
-                failed += 1
-                logger.warning("[提链] 批次取消后的账号状态未同步：batch_id=%s run_id=%s", batch_id, run_id)
-                continue
-            cancelled += 1
-        except LookupError:
-            skipped += 1
-        except Exception as exc:
-            failed += 1
-            logger.warning("[提链] 批次排队取消失败：batch_id=%s run_id=%s error_type=%s",
-                batch_id, run_id, type(exc).__name__)
-    # 重复操作只补齐已取消任务的账号状态，不重复统计为本次新取消。
-    for run_id in sorted(cancelled_runs):
-        try:
-            if not extract_link_batches.sync_cancelled_account_extraction(run_id):
-                failed += 1
-                logger.warning("[提链] 批次已取消任务的账号状态未同步：batch_id=%s run_id=%s", batch_id, run_id)
-        except Exception as exc:
-            failed += 1
-            logger.warning("[提链] 批次已取消任务的账号状态同步失败：batch_id=%s run_id=%s error_type=%s",
-                batch_id, run_id, type(exc).__name__)
-    if changed:
+    from core.storage.extract_link import bulk_cancel
+    result = bulk_cancel.cancel_batch(batch_id)
+    if result.get("cancelled") or result.get("failed"):
         account_task_store.notify_dispatch()
-    return {"batch_id": batch_id, "cancelled": cancelled, "skipped": skipped, "failed": failed}
+    return result
 
 
 def extract_workbench_task_link(task_id: int, kind: str) -> dict | None:
@@ -2911,6 +2803,12 @@ def extract_workbench_task_payment_entry(task_id: int) -> dict | None:
     )):
         return None
     return entry
+
+
+def extract_workbench_payment_entries(task_ids) -> dict:
+    """一次读取多个任务已保存的本地支付产物；不查询远端、不创建任务。"""
+    from core.extract_link import workbench_bulk
+    return workbench_bulk.payment_entries(task_ids)
 
 
 def extract_workbench_task_detail(task_id: int, *, public_status: bool = False) -> dict | None:

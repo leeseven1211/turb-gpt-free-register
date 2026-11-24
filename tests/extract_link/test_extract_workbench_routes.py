@@ -20,6 +20,46 @@ class ExtractWorkbenchRouteTests(unittest.TestCase):
         app.register_blueprint(extract_workbench.create_extract_workbench_blueprint(context))
         self.client = app.test_client()
 
+    def test_bulk_payment_entries_is_one_local_collection_read(self):
+        result = {"ok": True, "items": [{"task_id": "9007199254740993", "status": "updated",
+            "entry": {"payment_url": "https://pay.example.test/order"}}],
+            "requested_count": 2, "unique_count": 1, "duplicate_count": 1}
+        with patch.object(extract_workbench.extract_link_service, "extract_workbench_payment_entries",
+                          return_value=result) as read:
+            response = self.client.post("/api/extract-workbench/tasks/payment-entries",
+                json={"task_ids": ["9007199254740993", "9007199254740993"]})
+        self.assertEqual(200, response.status_code)
+        self.assertEqual(result, response.get_json())
+        self.assertEqual("no-store", response.headers["Cache-Control"])
+        read.assert_called_once_with(["9007199254740993", "9007199254740993"])
+
+    def test_bulk_sync_returns_command_acceptance_without_calling_single_action(self):
+        with patch.object(extract_workbench.task_gateway, "submit_bulk_mutation",
+                return_value={"accepted": True, "command_id": 10, "task_id": 11, "run_id": 12}) as submit, \
+                patch.object(extract_workbench.extract_link_service, "perform_extract_workbench_action") as single:
+            response = self.client.post("/api/extract-workbench/tasks/actions-bulk",
+                headers={"Idempotency-Key": "bulk-extract-test"},
+                json={"task_ids": ["1", 2, "1"], "action": "sync_status"})
+        self.assertEqual(202, response.status_code)
+        body = response.get_json()
+        self.assertEqual("10", body["command_id"])
+        self.assertEqual(1, body["duplicate_count"])
+        self.assertNotIn("updated_count", body)
+        single.assert_not_called()
+        submit.assert_called_once_with("extract_sync_status", ["1", "2", "1"], {},
+            idempotency_key="bulk-extract-test", trigger="extract_workbench_sync_status_bulk")
+
+    def test_bulk_sync_rejects_invalid_targets_and_payment_action(self):
+        with patch.object(extract_workbench.task_gateway, "submit_bulk_mutation") as submit:
+            for targets, action in (([True], "sync_status"), (["0"], "sync_status"),
+                                    (["1"], "auto_payment"), ([], "sync_status")):
+                with self.subTest(targets=targets, action=action):
+                    response = self.client.post("/api/extract-workbench/tasks/actions-bulk",
+                        headers={"Idempotency-Key": "bulk-extract-test"},
+                        json={"task_ids": targets, "action": action})
+                    self.assertEqual(400, response.status_code)
+        submit.assert_not_called()
+
     def test_cancel_batch_returns_only_result_counts(self):
         with patch.object(extract_workbench.extract_link_service, "cancel_workbench_batch", create=True,
             return_value={"batch_id": 7, "cancelled": 803, "skipped": 2, "failed": 1, "private_data": "private"}) as cancel:

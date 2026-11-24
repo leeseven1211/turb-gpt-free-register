@@ -3,8 +3,9 @@ from core.operations import bulk_mutation_worker as worker, task_gateway
 from core.storage.accounts import bulk_mutations as accounts
 from core.storage.codex import bulk_mutations as codex
 from core.storage.email import bulk_mutations as email
+from core.extract_link import workbench_bulk as extract
 
-_DOMAINS = (accounts, codex, email)
+_DOMAINS = (accounts, codex, email, extract)
 
 
 def register_commands() -> None:
