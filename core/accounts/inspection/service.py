@@ -10,6 +10,7 @@ from core.accounts.plans import service as plan_check_service
 from core.operations import run_log as task_run_log
 from core.storage import accounts
 from core.storage.accounts import inspections as store
+from core.storage.operations import bulk_facts
 from core.operations import task_gateway
 from core.accounts.plans.client import normalize_token, decode_jwt_payload_unverified
 from core.operations.runtime import OperationCancelled
@@ -104,9 +105,14 @@ def _handle(context):
 
 
 def cancel_inspection(inspection_id):
-    for run_id,status in store.active_child_runs(int(inspection_id)):
-        if status in store.ACTIVE:
-            task_gateway._operation().request_run_cancel(run_id,reason="用户停止本次账号巡检")
+    children=store.active_child_runs(int(inspection_id))
+    reason="用户停止本次账号巡检"
+    queued={run_id:reason for run_id,status in children if status == "queued"}
+    cancelled=bulk_facts.request_cancel_runs_many(queued)
+    for run_id,status in children:
+        # 排队 Run 可能在集合取消前已被领取，仍交由原控制路径处理。
+        if status in store.ACTIVE and (status != "queued" or cancelled.get(run_id) is not None):
+            task_gateway._operation().request_run_cancel(run_id,reason=reason)
     task_gateway._operation().reconcile_parent_task(int(inspection_id))
     task_gateway.notify_dispatch()
     return {"ok":True,"task_id":int(inspection_id)}
@@ -148,7 +154,6 @@ def start_inspection(*,workers=None,archived="0",idempotency_key=None):
     if type(workers) is not int or not 1 <= workers <= 16:
         raise ValueError("巡检并发必须为 1–16 的整数，实际并发同时受账号操作共享预算限制")
     store.validate_scope(archived)
-    register_operation_handlers()
     config=task_gateway.normalize_config_snapshot(get_config_snapshot(),allowlist=CONFIG_ALLOWLIST)
     task_id,created=store.create_inspection(archived=archived,workers=workers,config_snapshot=config,idempotency_key=idempotency_key)
     if created:

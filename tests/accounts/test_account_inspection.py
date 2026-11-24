@@ -3,17 +3,21 @@ from __future__ import annotations
 
 import base64
 import json
+import threading
 import time
 from types import SimpleNamespace
 from unittest import TestCase
 from unittest.mock import patch
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 
 from core.storage import records as record_store
+from core.storage import postgres as postgres_store
 from core.operations import run_log as task_run_log
 from core.accounts.inspection import service as service
 from core.storage.accounts import inspections as store
 from core.storage.operations import store as operation
+from core.storage.operations import common as operation_common
 from core.storage.operations import legacy_task_store
 from core.operations import task_gateway
 from tests.support_pg import PostgresTestCase
@@ -23,6 +27,43 @@ from tests.support_settlement import install_native_settlement_fixture
 def token(exp):
     payload=base64.urlsafe_b64encode(json.dumps({"exp":exp}).encode()).decode().rstrip("=")
     return "header."+payload+".signature"
+
+
+@contextmanager
+def operation_queries(*, fail_batch_item=False):
+    """记录真实 SQL；故障在快照写入阶段注入，保留数据库回滚行为。"""
+    queries=[]
+    owner_thread=threading.get_ident()
+    original=operation_common._connect
+    class Cursor:
+        def __init__(self, cursor):
+            self.cursor=cursor
+        def __enter__(self):
+            self.cursor.__enter__()
+            return self
+        def __exit__(self,*args):
+            return self.cursor.__exit__(*args)
+        def execute(self,query,params=None,**kwargs):
+            if threading.get_ident() == owner_thread:
+                queries.append(str(query))
+                if fail_batch_item and "INSERT INTO" in str(query) and "operation_batch_items" in str(query):
+                    raise RuntimeError("模拟快照写入失败")
+            return self.cursor.execute(query,params,**kwargs)
+        def __getattr__(self,name):
+            return getattr(self.cursor,name)
+    class Connection:
+        def __init__(self,conn):
+            self.conn=conn
+        def cursor(self,*args,**kwargs):
+            return Cursor(self.conn.cursor(*args,**kwargs))
+        def __getattr__(self,name):
+            return getattr(self.conn,name)
+    @contextmanager
+    def connect():
+        with original() as conn:
+            yield Connection(conn)
+    with patch.object(operation_common,"_connect",side_effect=connect):
+        yield queries
 
 
 class InspectionTokenTests(TestCase):
@@ -128,6 +169,14 @@ class AccountInspectionTests(PostgresTestCase):
         with patch.object(service.account_operation_executor, "configured_workers", return_value=20):
             service.start_inspection()
         self.assertEqual(16, self.summary()["workers"])
+
+    def test_submission_does_not_register_worker_execution_handlers(self):
+        self.account()
+        with patch.object(service,"register_operation_handlers",
+                          side_effect=AssertionError("受理请求不得注册 Worker 执行器")):
+            result=service.start_inspection(workers=2)
+        self.assertTrue(result["created"])
+        self.assertEqual(1,self.summary()["total_count"])
 
     def test_expired_refresh_and_plan_use_original_session_and_save_at_first(self):
         account_id=self.account(access_token=token(1))
@@ -242,6 +291,30 @@ class AccountInspectionTests(PostgresTestCase):
         service.cancel_inspection(parent)
         self.assertTrue(all(status == "cancelled" for _,status in store.child_runs(parent)))
 
+    def test_queued_cancel_sql_count_does_not_grow_per_child(self):
+        for number in range(30):
+            self.account(number)
+        parent=self.start()
+        with operation_queries() as queries:
+            service.cancel_inspection(parent)
+        self.assertLessEqual(len(queries),25)
+        self.assertEqual(30,len(store.child_runs(parent)))
+        self.assertTrue(all(status == "cancelled" for _,status in store.child_runs(parent)))
+        self.assertIsNone(store.list_inspections()["active"])
+
+    def test_cancel_preserves_running_child_cancellation_request(self):
+        self.account(1)
+        self.account(2)
+        parent=self.start()
+        child_ids=[run_id for run_id,_ in store.child_runs(parent)]
+        run_id=child_ids[0]
+        operation.claim_run(run_id,execution_id="inspection-cancel",worker_pid=1)
+        service.cancel_inspection(parent)
+        running=operation.get_run(run_id)
+        self.assertEqual("cancelling",running["status"])
+        self.assertIsNotNone(running["cancel_requested_at"])
+        self.assertEqual("cancelled",operation.get_run(child_ids[1])["status"])
+
     def test_parent_cancel_targets_retried_run_and_keeps_original_failure(self):
         self.account(access_token=token(1))
         parent=self.start()
@@ -335,14 +408,45 @@ class AccountInspectionTests(PostgresTestCase):
 
     def test_start_rolls_back_if_child_creation_fails(self):
         self.account()
-        original=store._task
-        def failing(cur,**kwargs):
-            if kwargs["kind"] == store.ITEM_TYPE:
-                raise RuntimeError("模拟快照写入失败")
-            return original(cur,**kwargs)
-        with patch.object(store,"_task",side_effect=failing),self.assertRaises(RuntimeError):
+        with operation_queries(fail_batch_item=True),self.assertRaises(RuntimeError):
             store.create_inspection()
         self.assertEqual(0,store.list_inspections()["total"])
+        with operation._connect() as conn,conn.cursor() as cur:
+            for table in ("operation_batches","operation_tasks","operation_runs","operation_batch_items","operation_events"):
+                cur.execute(f"SELECT count(*) AS n FROM {operation._table(table)}")
+                self.assertEqual(0,cur.fetchone()["n"],table)
+
+    def test_snapshot_sql_count_does_not_grow_per_account(self):
+        # 跨越 500 行分块，包含已废、忙碌和可入队账号，避免 JSON 截断或逐项补写。
+        record_store.init()
+        with operation._connect() as conn,conn.cursor() as cur:
+            cur.execute(f"""INSERT INTO {postgres_store.qualified(record_store.ACCOUNTS.name)}
+                (email,created_at,updated_at,deactivated)
+                SELECT 'inspection-'||n||'@example.test','2026-10-19T10:00:00',
+                    '2026-10-19T10:00:00',n % 3=0 FROM generate_series(1,501) AS n""")
+        operation.create_runtime_task(task_type="live_check",account_id=1,email="inspection-1@example.test")
+        with operation_queries() as queries:
+            parent=self.start(config_snapshot={"test_setting":"snapshot"})
+        self.assertLessEqual(len(queries),40,"\n".join(" ".join(query.split())[:180] for query in queries))
+        with operation._connect() as conn,conn.cursor() as cur:
+            cur.execute(f"""SELECT t.id,t.parent_task_id,t.root_task_id,t.last_run_id,t.data,
+                i.ordinal,i.run_id,r.task_id AS run_task_id,e.event_type
+                FROM {operation._table('operation_tasks')} t
+                JOIN {operation._table('operation_batch_items')} i ON i.task_id=t.id
+                JOIN {operation._table('operation_runs')} r ON r.id=i.run_id
+                JOIN {operation._table('operation_events')} e ON e.run_id=r.id
+                WHERE t.parent_task_id=%s ORDER BY i.ordinal""",(parent,))
+            children=cur.fetchall()
+        self.assertEqual(list(range(1,502)),[row["ordinal"] for row in children])
+        for child in children:
+            self.assertEqual(parent,child["root_task_id"])
+            self.assertEqual(child["id"],child["run_task_id"])
+            self.assertEqual(child["run_id"],child["last_run_id"])
+            self.assertEqual("run.queued",child["event_type"])
+            self.assertEqual({"test_setting":"snapshot"},child["data"]["config_snapshot"])
+        self.assertEqual(501,self.summary()["total_count"])
+        self.assertEqual(167,self.summary()["deactivated_skipped_count"])
+        self.assertEqual(1,self.summary()["live_failed_count"])
 
     def test_http_auth_parameter_validation_and_history(self):
         from webui.app import create_app

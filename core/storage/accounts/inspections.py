@@ -36,6 +36,92 @@ def _task(cur, *, kind, batch_id, parent_id=None, account_id=None, email="", dat
     return task_id, int(run["id"])
 
 
+def _create_children(cur, *, accounts, batch_id, parent_id, config_snapshot):
+    """同事务分块写入巡检快照，BatchItem 始终绑定首次 Run。"""
+    if not accounts:
+        return
+    cur.execute(f"""SELECT DISTINCT account_id FROM {operation._table('operation_runs')}
+        WHERE account_id=ANY(%s) AND resource_family='openai_interactive' AND status=ANY(%s)""",
+        ([int(account["id"]) for account in accounts],list(ACTIVE)))
+    busy_ids={int(row["account_id"]) for row in cur.fetchall()}
+    for offset in range(0,len(accounts),500):
+        rows=[]
+        for ordinal,account in enumerate(accounts[offset:offset+500],offset+1):
+            account_id=int(account["id"])
+            dead=bool(account["deactivated"]) or str(account.get("live_check_status") or "").strip().lower() == "deactivated"
+            busy=account_id in busy_ids
+            task_uuid=uuid.uuid4().hex
+            run_uuid=uuid.uuid4().hex
+            row={"task_uuid":task_uuid,"run_uuid":run_uuid,"event_uuid":uuid.uuid4().hex,
+                 "account_id":account_id,"email":account["email"],"ordinal":ordinal,
+                 "cancellation_token":uuid.uuid4().hex,
+                 "log_file":task_run_log.build_path(task_uuid=task_uuid,run_no=1,run_uuid=run_uuid),
+                 "resource_family":"inspection_snapshot" if dead or busy else "openai_interactive",
+                 "data":json.loads(operation._json({"inspection_id":parent_id,"target_account_id":account_id,
+                                                    "config_snapshot":config_snapshot or {}}))}
+            if dead or busy:
+                reason="账号已标记为已废，跳过 AT 检查、刷新及套餐查询" if dead else "账号已有排队或运行中的操作，本次未能入队"
+                if dead and account.get("original_error"):
+                    reason += "；原因：" + task_run_log.redact_text(account["original_error"],1500)
+                row.update(status="success" if dead else "failed",error_message=None if dead else reason,
+                    result_summary=json.loads(operation._json({
+                        "inspection_outcome":"deactivated_skipped" if dead else "rejected",
+                        "checked":False,"invalid":False,"error":reason})))
+            rows.append(row)
+        cur.execute(f"""INSERT INTO {operation._table('operation_tasks')}
+            (task_uuid,source_system,source_id,batch_id,parent_task_id,root_task_id,task_type,
+             target_type,target_id,account_id,email_snapshot,requested_action,status,target_status,current_stage,trigger,data)
+            SELECT task_uuid,'native_operations',task_uuid,%s,%s,%s,%s,'account',account_id,
+                account_id,email,%s,'queued','pending','queued','inspection',data
+            FROM jsonb_to_recordset(%s::jsonb) AS input(task_uuid text,account_id bigint,email text,data jsonb)
+            RETURNING id,task_uuid""",
+            (batch_id,parent_id,parent_id,ITEM_TYPE,ITEM_TYPE,json.dumps(rows,ensure_ascii=False)))
+        task_ids={row["task_uuid"]:int(row["id"]) for row in cur.fetchall()}
+        for row in rows:
+            row["task_id"]=task_ids[row["task_uuid"]]
+        cur.execute(f"""INSERT INTO {operation._table('operation_runs')}
+            (run_uuid,task_id,run_no,source_system,source_id,status,batch_id,account_id,
+             resource_family,cancellation_token,log_file,data)
+            SELECT run_uuid,task_id,1,'native_operations',run_uuid,'queued',%s,account_id,
+                resource_family,cancellation_token,log_file,data
+            FROM jsonb_to_recordset(%s::jsonb) AS input(run_uuid text,task_id bigint,account_id bigint,
+                resource_family text,cancellation_token text,log_file text,data jsonb)
+            RETURNING id,task_id""",(batch_id,json.dumps(rows,ensure_ascii=False)))
+        run_ids={int(row["task_id"]):int(row["id"]) for row in cur.fetchall()}
+        for row in rows:
+            row["run_id"]=run_ids[row["task_id"]]
+        # _json 会脱敏并截断列表，仅用于每条业务 data，不能用于 SQL 行集合。
+        payload=json.dumps(rows,ensure_ascii=False)
+        cur.execute(f"""UPDATE {operation._table('operation_tasks')} task SET last_run_id=input.run_id
+            FROM jsonb_to_recordset(%s::jsonb) AS input(task_id bigint,run_id bigint)
+            WHERE task.id=input.task_id""",(payload,))
+        cur.execute(f"""INSERT INTO {operation._table('operation_batch_items')} (batch_id,task_id,run_id,ordinal)
+            SELECT %s,task_id,run_id,ordinal FROM jsonb_to_recordset(%s::jsonb)
+            AS input(task_id bigint,run_id bigint,ordinal integer)""",(batch_id,payload))
+        cur.execute(f"""INSERT INTO {operation._table('operation_events')}
+            (event_uuid,task_id,run_id,source_system,source_id,level,stage,event_type,message,detail)
+            SELECT event_uuid,task_id,run_id,'native_operations',event_uuid,'INFO','queued',
+                'run.queued','任务已加入队列','{{}}'::jsonb
+            FROM jsonb_to_recordset(%s::jsonb) AS input(event_uuid text,task_id bigint,run_id bigint)""",(payload,))
+        terminal=[row for row in rows if row.get("status")]
+        if terminal:
+            cur.execute(f"""WITH input AS (
+                SELECT * FROM jsonb_to_recordset(%s::jsonb)
+                AS value(task_id bigint,run_id bigint,status text,result_summary jsonb,error_message text)
+            ), run_updates AS (
+                UPDATE {operation._table('operation_runs')} run SET status=input.status,
+                    resource_family='openai_interactive',completed_at=now(),
+                    result_summary=input.result_summary,error_message=input.error_message
+                FROM input WHERE run.id=input.run_id
+            )
+            UPDATE {operation._table('operation_tasks')} task SET status=input.status,
+                completed_at=now(),error_message=input.error_message
+            FROM input WHERE task.id=input.task_id""",(json.dumps(terminal,ensure_ascii=False),))
+        for row in rows:
+            task_run_log.append(row["log_file"],level="INFO",message="任务已加入队列",
+                task_id=row["task_id"],run_id=row["run_id"],stage="queued",event_type="run.queued")
+
+
 def create_inspection(*, archived="0", workers=3, config_snapshot=None, idempotency_key=None):
     """创建快照与全部子任务必须同事务提交，dispatch 仅在提交后唤醒。"""
     validate_scope(archived)
@@ -67,34 +153,13 @@ def create_inspection(*, archived="0", workers=3, config_snapshot=None, idempote
             (key,key,PARENT_TYPE,len(accounts),operation._json(data)))
         batch_id = int(cur.fetchone()["id"])
         parent_id, parent_run = _task(cur,kind=PARENT_TYPE,batch_id=batch_id,data=data,status="waiting")
-        for ordinal, account in enumerate(accounts,1):
-            account_id = int(account["id"])
-            cur.execute(f"SELECT 1 FROM {operation._table('operation_runs')} WHERE account_id=%s AND resource_family='openai_interactive' AND status=ANY(%s) LIMIT 1",
-                        (account_id,list(ACTIVE)))
-            busy = bool(cur.fetchone())
-            dead = bool(account["deactivated"]) or str(account.get("live_check_status") or "").strip().lower() == "deactivated"
-            item = {"inspection_id":parent_id,"target_account_id":account_id,"config_snapshot":config_snapshot or {}}
-            task_id, run_id = _task(cur,kind=ITEM_TYPE,batch_id=batch_id,parent_id=parent_id,
-                account_id=account_id,email=account["email"],data=item,
-                resource_family="inspection_snapshot" if dead or busy else "openai_interactive")
-            cur.execute(f"INSERT INTO {operation._table('operation_batch_items')} (batch_id,task_id,run_id,ordinal) VALUES (%s,%s,%s,%s)",
-                        (batch_id,task_id,run_id,ordinal))
-            if dead or busy:
-                reason = "账号已标记为已废，跳过 AT 检查、刷新及套餐查询" if dead else "账号已有排队或运行中的操作，本次未能入队"
-                if dead and account.get("original_error"):
-                    reason += "；原因：" + task_run_log.redact_text(account["original_error"], 1500)
-                summary = {"inspection_outcome":"deactivated_skipped" if dead else "rejected",
-                           "checked":False,"invalid":False,"error":reason}
-                terminal = "success" if dead else "failed"
-                cur.execute(f"UPDATE {operation._table('operation_runs')} SET status=%s,resource_family='openai_interactive',completed_at=now(),result_summary=%s::jsonb,error_message=%s WHERE id=%s",
-                            (terminal,operation._json(summary),None if dead else reason,run_id))
-                cur.execute(f"UPDATE {operation._table('operation_tasks')} SET status=%s,completed_at=now(),error_message=%s WHERE id=%s",(terminal,None if dead else reason,task_id))
+        _create_children(cur,accounts=accounts,batch_id=batch_id,parent_id=parent_id,config_snapshot=config_snapshot)
         if accounts:
             operation._reconcile_parent_task_cur(cur,parent_id)
         else:
             cur.execute(f"UPDATE {operation._table('operation_tasks')} SET status='success',completed_at=now() WHERE id=%s",(parent_id,))
             cur.execute(f"UPDATE {operation._table('operation_runs')} SET status='success',completed_at=now() WHERE id=%s",(parent_run,))
-        operation._refresh_batches(cur,[batch_id])
+            operation._refresh_batches(cur,[batch_id])
         return parent_id, True
 
 
