@@ -17,6 +17,8 @@ from flask import Response, jsonify, make_response, redirect, render_template, r
 
 from core import account_task_store
 from core.storage import admin_repository
+from core.storage.codex import bulk_mutations as codex_bulk_mutations
+from core.operations import bulk_mutation_worker
 from core.codex import operation_service as codex_operation_service, retry_service as codex_retry_service, token_refresh_service as codex_token_refresh_service
 from core import db
 from core.accounts.deactivation import mail_scan as deactivation_mail_service
@@ -33,6 +35,34 @@ from webui.runtime import WebUIContext
 from webui.route_helpers import _feature_unavailable
 
 logger = logging.getLogger(__name__)
+
+
+def _codex_mutation_item(result):
+    item = result.items[0]
+    if item.reason_code == "invalid_filename" or item.status == "failed":
+        raise ValueError(item.reason or "凭证状态写入失败")
+    return item
+
+
+def _mark_exported(filenames, *, errors=None):
+    result = codex_bulk_mutations.mark_exported_many(filenames)
+    for item in result.items:
+        if item.status == "updated":
+            continue
+        reason = f"凭证不存在: {item.key}" if item.reason_code == "not_found" else (item.reason or "凭证状态写入失败")
+        if errors is None:
+            raise ValueError(reason)
+        errors.append({"filename": item.key, "error": f"ValueError: {reason}"})
+
+
+def _submit_codex_mutation(operation, filenames, parameters):
+    command = bulk_mutation_worker.submit_bulk_mutation(
+        operation, filenames, parameters,
+        idempotency_key=str(request.headers.get("Idempotency-Key") or uuid.uuid4()),
+        trigger="manual_bulk",
+    )
+    return jsonify({"ok": True, "accepted": True, **command}), 202
+
 
 def create_codex_blueprint(context: WebUIContext):
     bp = LegacyEndpointBlueprint("codex", __name__)
@@ -128,12 +158,12 @@ def create_codex_blueprint(context: WebUIContext):
         if not filename:
             return jsonify({"ok": False, "error": "filename 必填"}), 400
         try:
-            rec = db.archive_codex(filename=filename, archived=archived)
+            item = _codex_mutation_item(codex_bulk_mutations.archive_many([filename], archived))
         except ValueError as exc:
             return jsonify({"ok": False, "error": str(exc)}), 400
-        if rec is None:
+        if item.status != "updated":
             return jsonify({"ok": False, "error": f"凭证不存在: {filename}"}), 404
-        return jsonify({"ok": True, "filename": filename, "archived": archived, "record": rec})
+        return jsonify({"ok": True, "filename": filename, "archived": archived, "record": item.data})
 
     @bp.post("/api/codex/archive-bulk")
     def api_codex_archive_bulk():
@@ -145,26 +175,7 @@ def create_codex_blueprint(context: WebUIContext):
             return jsonify({"ok": False, "error": "filenames 必须是非空数组"}), 400
         if len(filenames) > 1000:
             return jsonify({"ok": False, "error": "单次最多 1000 个"}), 400
-        updated = []
-        skipped = []
-        seen = set()
-        for fname in filenames:
-            if not isinstance(fname, str) or not fname:
-                skipped.append({"filename": str(fname), "reason": "非法文件名"})
-                continue
-            if fname in seen:
-                continue
-            seen.add(fname)
-            try:
-                rec = db.archive_codex(filename=fname, archived=archived)
-            except ValueError as exc:
-                skipped.append({"filename": fname, "reason": str(exc)})
-                continue
-            if rec is None:
-                skipped.append({"filename": fname, "reason": "凭证不存在"})
-            else:
-                updated.append({"filename": fname, "archived": archived})
-        return jsonify({"ok": True, "updated": updated, "updated_count": len(updated), "archived": archived, "skipped": skipped})
+        return _submit_codex_mutation("codex_archive", filenames, {"archived": archived})
 
     @bp.get("/api/codex/download/<path:filename>")
     def api_codex_download(filename: str):
@@ -176,7 +187,7 @@ def create_codex_blueprint(context: WebUIContext):
             content, fname = db.read_codex_credential(filename)
         except ValueError as exc:
             return jsonify({"ok": False, "error": str(exc)}), 404
-        db.mark_codex_exported(fname)
+        _mark_exported([fname])
         return Response(
             content,
             mimetype="application/json",
@@ -209,7 +220,7 @@ def create_codex_blueprint(context: WebUIContext):
             return jsonify({"ok": False, **error_payload(exc)}), 502
         except Exception as exc:
             return jsonify({"ok": False, "error": f"{type(exc).__name__}: {exc}"}), 502
-        db.mark_codex_exported(fname)
+        _mark_exported([fname])
         return Response(
             cpa_text,
             mimetype="application/json",
@@ -288,11 +299,11 @@ def create_codex_blueprint(context: WebUIContext):
                     zf.writestr(arcname, cpa_text)
                     zip_seconds += time.perf_counter() - zip_started_at
                     added.append({"local_filename": real_fname, "cpa_filename": cpa_name})
-                    db.mark_codex_exported(real_fname)
                 except CpaDownloadError as exc:
                     errors.append({"filename": fname, **error_payload(exc)})
                 except Exception as exc:
                     errors.append({"filename": fname, "error": f"{type(exc).__name__}: {exc}"})
+            _mark_exported([item["local_filename"] for item in added], errors=errors)
             manifest = {
                 "exported_at": _dt.now().isoformat(timespec="seconds"),
                 "source": "cpa",
@@ -362,10 +373,10 @@ def create_codex_blueprint(context: WebUIContext):
                 content, real_fname = db.read_codex_credential(fname)
                 parsed = _json.loads(content)
                 bundle.append({"filename": real_fname, "data": parsed})
-                db.mark_codex_exported(real_fname)
             except Exception as exc:
                 errors.append({"filename": fname, "error": f"{type(exc).__name__}: {exc}"})
 
+        _mark_exported([item["filename"] for item in bundle], errors=errors)
         now = _dt.now()
         result = {
             "exported_at": now.isoformat(timespec="seconds"),
@@ -390,10 +401,22 @@ def create_codex_blueprint(context: WebUIContext):
         if not fname:
             return jsonify({"ok": False, "error": "filename 为空"}), 400
         try:
-            db.reset_codex_exported(fname)
+            item = _codex_mutation_item(codex_bulk_mutations.reset_exported_many([fname]))
+            if item.status != "updated":
+                raise ValueError(f"凭证不存在: {fname}")
         except Exception as exc:
             return jsonify({"ok": False, "error": str(exc)}), 400
         return jsonify({"ok": True})
+
+    @bp.post("/api/codex/reset-export-bulk")
+    def api_codex_reset_export_bulk():
+        data = request.get_json(silent=True) or {}
+        filenames = data.get("filenames") or []
+        if not isinstance(filenames, list) or not filenames:
+            return jsonify({"ok": False, "error": "filenames 必须是非空数组"}), 400
+        if len(filenames) > 1000:
+            return jsonify({"ok": False, "error": "单次最多 1000 个"}), 400
+        return _submit_codex_mutation("codex_reset_export", filenames, {})
 
     @bp.post("/api/codex/delete")
     def api_codex_delete():
@@ -403,10 +426,10 @@ def create_codex_blueprint(context: WebUIContext):
         if not fname:
             return jsonify({"ok": False, "error": "filename 为空"}), 400
         try:
-            deleted = db.delete_codex_credential(fname)
+            item = _codex_mutation_item(codex_bulk_mutations.delete_many([fname]))
         except Exception as exc:
             return jsonify({"ok": False, "error": str(exc)}), 400
-        if not deleted:
+        if item.status != "updated":
             return jsonify({"ok": False, "error": "凭证文件不存在"}), 404
         return jsonify({"ok": True, "deleted": fname})
 
@@ -419,23 +442,7 @@ def create_codex_blueprint(context: WebUIContext):
             return jsonify({"ok": False, "error": "filenames 必须是非空数组"}), 400
         if len(filenames) > 1000:
             return jsonify({"ok": False, "error": "单次最多删除 1000 个"}), 400
-        deleted = []
-        skipped = []
-        seen = set()
-        for fname in filenames:
-            fname = str(fname or "").strip()
-            if not fname or fname in seen:
-                continue
-            seen.add(fname)
-            try:
-                ok = db.delete_codex_credential(fname)
-                if ok:
-                    deleted.append(fname)
-                else:
-                    skipped.append({"filename": fname, "reason": "文件不存在"})
-            except Exception as exc:
-                skipped.append({"filename": fname, "reason": f"{type(exc).__name__}: {exc}"})
-        return jsonify({"ok": True, "deleted": deleted, "deleted_count": len(deleted), "skipped": skipped})
+        return _submit_codex_mutation("codex_delete", filenames, {})
 
     @bp.post("/api/codex/stop")
     def api_codex_stop():
