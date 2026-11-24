@@ -89,6 +89,42 @@ class CodexBulkSubmissionTests(PostgresTestCase):
         self.assertGreater(first["data"]["credential_id"], 0)
         self.assertNotIn("private-", str(first["data"]))
 
+    def test_upload_backend_config_failure_keeps_both_bulk_routes_classified(self):
+        from webui.app import create_app
+
+        app_client = create_app(auth_code="synthetic-auth").test_client()
+        for endpoint, body, identity in (
+            ("/api/accounts/codex/upload-sub2-bulk",
+             {"account_ids": [self.ids[0], "bad", 999999]}, {"id": str(self.ids[0])}),
+            ("/api/codex/upload-sub2-bulk",
+             {"filenames": [self.names[0], "../bad.json", "codex-missing.json"]},
+             {"filename": self.names[0]}),
+        ):
+            with self.subTest(endpoint=endpoint), \
+                    patch("webui.routes.accounts._feature_unavailable", return_value=None), \
+                    patch.object(client, "configured_backend_identity",
+                                 side_effect=client.Sub2ApiSyncError(
+                                     "configuration", "sub2api_config_invalid",
+                                     "private-synthetic-secret")) as capture, \
+                    patch.object(task_gateway, "notify_dispatch") as notify:
+                response = app_client.post(
+                    endpoint, json=body, headers={"X-Auth-Code": "synthetic-auth"},
+                )
+            self.assertEqual(response.status_code, 202)
+            self.assertEqual(response.json["queued_count"], 0)
+            self.assertEqual(response.json["failed_count"], 1)
+            self.assertEqual(response.json["skipped_count"], 2)
+            self.assertEqual(response.json["failed"][0]["error_code"], "sub2api_config_invalid")
+            self.assertEqual({key: response.json["failed"][0][key] for key in identity}, identity)
+            self.assertNotIn("private-synthetic-secret", response.get_data(as_text=True))
+            capture.assert_called_once()
+            notify.assert_not_called()
+        with operations._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"SELECT COUNT(*) AS n FROM {operations._table('operation_tasks')}")
+            self.assertEqual(cur.fetchone()["n"], 0)
+            cur.execute(f"SELECT COUNT(*) AS n FROM {operations._table('operation_batches')}")
+            self.assertEqual(cur.fetchone()["n"], 0)
+
     def test_busy_missing_deactivated_and_refresh_unknown_are_stable_skips(self):
         records.patch_row(records.ACCOUNTS, self.ids[1], {"account_status": "deactivated"})
         records.patch_row(records.CODEX_CREDENTIALS, 3, {"oauth_refresh_error": token_refresh_service.REQUEST_UNKNOWN})

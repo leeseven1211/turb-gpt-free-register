@@ -54,6 +54,7 @@ def _submit(kind, *, account_ids=(), filenames=(), trigger="manual_bulk", title=
     from core.storage.sub2api import credential_generation
 
     ids, skipped = _ids(account_ids)
+    failed, backend_error = [], None
     names = _names(filenames)
     for name in names:
         if not _filename_valid(name):
@@ -72,7 +73,18 @@ def _submit(kind, *, account_ids=(), filenames=(), trigger="manual_bulk", title=
                                                           allowlist=refresh._CONFIG_ALLOWLIST)
     else:
         snapshot = None
-        backend = client.configured_backend_identity()
+        try:
+            backend = client.configured_backend_identity()
+        except client.Sub2ApiSyncError as exc:
+            backend_error = {
+                "error_code": exc.code,
+                "error": "Sub2API 配置无效，请检查目标地址、请求超时与上传参数",
+            }
+        except Exception:
+            backend_error = {
+                "error_code": "sub2api_manual_queue_failed",
+                "error": "手动上传入队失败，请查看服务日志",
+            }
     records.init()
     schema.init_operation_schema()
     with records.transaction() as conn:
@@ -171,6 +183,10 @@ def _submit(kind, *, account_ids=(), filenames=(), trigger="manual_bulk", title=
                     item.update(task_id=active[account_id]["task_id"], run_id=active[account_id]["id"])
                 skipped.append(item)
                 continue
+            if backend_error is not None:
+                # 仍先保留逐目标资格回执；公共配置失败只捕获一次，不反射异常正文。
+                failed.append({**base, **backend_error})
+                continue
             if account_id:
                 seen_accounts.add(account_id)
             data = {}
@@ -202,7 +218,9 @@ def _submit(kind, *, account_ids=(), filenames=(), trigger="manual_bulk", title=
                 spec["config_snapshot"] = (prior.get("data") or {}).get("config_snapshot") or {}
         prior_batches = {row["batch_id"] for row in previous.values() if row.get("batch_id")}
         reused_only = bool(specs) and len(previous) == len(specs) and len(prior_batches) == 1
-        if reused_only:
+        if backend_error is not None:
+            batch, created = None, []
+        elif reused_only:
             first = next(iter(previous.values()))
             batch = {"id": first["batch_id"], "batch_uuid": first.get("batch_uuid")}
             created = [{**previous[spec["source_id"]], "accepted": True, "reused": True}
@@ -212,7 +230,7 @@ def _submit(kind, *, account_ids=(), filenames=(), trigger="manual_bulk", title=
             created = storage.create_tasks(conn, specs, batch["id"])
         if kind != "sub2api_manual_upload":
             storage.project_queued(conn, created)
-        if not reused_only:
+        if batch is not None and not reused_only:
             storage.finish_batch(conn, batch["id"], skipped, bool(created))
         accepted = [{**identity, "accepted": True, "busy": False, "task_id": row["task_id"],
                      "run_id": row["run_id"], "account_id": row["account_id"], "email": row["email"],
@@ -223,8 +241,9 @@ def _submit(kind, *, account_ids=(), filenames=(), trigger="manual_bulk", title=
     if kind == "sub2api_manual_upload":
         return {"ok": True, "accepted": True, "status": "queued", "queued": accepted,
                 "queued_count": len(accepted), "uploaded": [], "uploaded_count": 0,
-                "failed": [], "failed_count": 0, "skipped": skipped, "skipped_count": len(skipped),
-                "batch_id": batch["id"]}
+                "failed": failed, "failed_count": len(failed),
+                "skipped": skipped, "skipped_count": len(skipped),
+                "batch_id": batch["id"] if batch is not None else None}
     return {"accepted": bool(accepted), "batch_id": batch["id"], "batch_uuid": batch["batch_uuid"],
             "started": accepted, "started_count": len(accepted), "skipped": skipped,
             **({"workers": oauth.configured_workers()} if kind == "codex_retry" else {})}
