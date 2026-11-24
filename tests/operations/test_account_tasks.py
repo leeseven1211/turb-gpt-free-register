@@ -11,12 +11,16 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import Mock, call, patch
 
+from psycopg import Cursor
+
 from core import account_task_store, operation_task_store
+from core.accounts import bulk_submission as account_bulk_submission
 from core.codex import retry_service as codex_retry_service
 from core.codex import bulk_submission as codex_bulk_submission
 from core.accounts.liveness import service as live_check_service
 from core.storage import postgres as postgres_store, records as record_store
 from core.storage.operations import store as operation_store
+from core.storage.operations import common as operation_common
 from core.codex.roxy import oauth as roxy_codex_oauth
 from core.operations import run_log as task_run_log
 from core.operations import task_gateway
@@ -1056,18 +1060,17 @@ class AccountTaskApiTests(PostgresTestCase):
 
     def test_token_refresh_bulk_accepts_more_than_500_accounts_and_deduplicates_ids(self):
         account_ids = self.seed(record_store.ACCOUNTS, [
-            {"email": f"refresh-{index}@example.test"} for index in range(501)
+            {"email": f"refresh-{index}@example.test", "access_token": "saved-token"} for index in range(501)
         ])
         app = create_app(auth_code="test-auth")
         client = app.test_client()
         client.environ_base["HTTP_X_AUTH_CODE"] = "test-auth"
         with (
             patch("core.runtime.capabilities.require_feature", return_value=(True, "")),
-            patch.object(account_task_store, "create_batch", return_value="refresh-batch") as create_batch,
-            patch.object(
-                live_check_service, "enqueue_account_live_check", return_value={"accepted": True},
-            ) as enqueue,
-            patch.object(record_store, "list_rows", wraps=record_store.list_rows) as load_accounts,
+            patch.object(live_check_service, "deployment_unavailable", return_value=None),
+            patch.object(live_check_service, "enqueue_account_live_check", side_effect=AssertionError("single enqueue")),
+            patch.object(account_bulk_submission, "submit_accounts", wraps=account_bulk_submission.submit_accounts) as submit,
+            patch("core.operations.task_gateway.notify_dispatch") as notify,
         ):
             response = client.post(
                 "/api/accounts/refresh-token-bulk",
@@ -1078,49 +1081,68 @@ class AccountTaskApiTests(PostgresTestCase):
         payload = response.get_json()
         self.assertTrue(payload["ok"])
         self.assertEqual(501, payload["started_count"])
-        self.assertEqual(account_ids, [item["id"] for item in payload["started"]])
+        self.assertEqual([str(value) for value in account_ids], [item["id"] for item in payload["started"]])
         self.assertEqual([], payload["skipped"])
         self.assertEqual(0, payload["failed_count"])
-        create_batch.assert_called_once_with(
-            action_type="token_refresh", trigger="manual_bulk", total_count=501,
+        submit.assert_called_once_with(
+            [*account_ids, account_ids[0], str(account_ids[-1])],
+            operation="token", trigger="token_refresh_manual", request_key=None,
         )
-        self.assertEqual(account_ids, [item.kwargs["account_id"] for item in enqueue.call_args_list])
-        self.assertTrue(all(item.kwargs["force_refresh"] for item in enqueue.call_args_list))
-        load_accounts.assert_called_once()
-        self.assertIs(record_store.ACCOUNTS, load_accounts.call_args.args[0])
+        notify.assert_called_once()
+        with operation_common._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"SELECT batch_type,requested_count,created_by FROM {operation_common._table('operation_batches')}")
+            self.assertEqual([{
+                "batch_type": "token_refresh", "requested_count": 501, "created_by": "token_refresh_manual",
+            }], [dict(row) for row in cur.fetchall()])
+            cur.execute(f"SELECT r.account_id,t.task_type,t.trigger,r.data FROM {operation_common._table('operation_runs')} r "
+                        f"JOIN {operation_common._table('operation_tasks')} t ON t.id=r.task_id ORDER BY r.account_id")
+            runs = cur.fetchall()
+        self.assertEqual(account_ids, [row["account_id"] for row in runs])
+        self.assertTrue(all(row["task_type"] == "token_refresh" and row["trigger"] == "token_refresh_manual"
+                            and row["data"]["force_refresh"] for row in runs))
 
     def test_bulk_account_preflight_preserves_results_and_uses_one_read(self):
-        active_id, deactivated_id = self.seed(record_store.ACCOUNTS, [
-            {"email": "ready@example.test", "access_token": "synthetic-at"},
+        *active_ids, deactivated_id = self.seed(record_store.ACCOUNTS, [
+            *[{"email": f"ready-{action}@example.test", "access_token": "synthetic-at"}
+              for action in ("live", "token", "plan")],
             {"email": "deactivated@example.test", "account_status": "deactivated"},
         ])
         overflow_id = 2**63
-        ids = [overflow_id, deactivated_id, "bad-id", active_id, str(active_id)]
+        missing_id = 2**63 - 1
         app = create_app(auth_code="test-auth")
         client = app.test_client()
         client.environ_base["HTTP_X_AUTH_CODE"] = "test-auth"
-        for action, service, expected_skips in (
-            ("check-live", "live_check_service.enqueue_account_live_check",
-             [("bad-id", "ID 非法"), (overflow_id, "账号不存在"), (deactivated_id, "账号已标记为封号")]),
-            ("refresh-token", "live_check_service.enqueue_account_live_check",
-             [("bad-id", "ID 非法"), (overflow_id, "账号不存在"), (deactivated_id, "账号已标记为封号")]),
-            ("check-plan", "plan_check_service.enqueue_account_plan_check",
-             [(overflow_id, "账号不存在"), (deactivated_id, "账号已废号"), ("bad-id", "ID 非法")]),
-        ):
+        original_execute = Cursor.execute
+        for action, active_id in zip(("check-live", "refresh-token", "check-plan"), active_ids):
+            ids = [missing_id, overflow_id, deactivated_id, "bad-id", active_id, str(active_id)]
+            account_reads = []
+            def count_reads(cursor, query, *args, **kwargs):
+                if str(query).startswith(f"SELECT * FROM {record_store._qualified(record_store.ACCOUNTS)} WHERE id=ANY"):
+                    account_reads.append(str(query))
+                return original_execute(cursor, query, *args, **kwargs)
             with (
                 self.subTest(action=action),
                 patch("core.runtime.capabilities.require_feature", return_value=(True, "")),
-                patch.object(account_task_store, "create_batch", return_value="bulk-batch"),
-                patch(f"webui.routes.accounts.{service}", return_value={"accepted": True}) as enqueue,
-                patch.object(record_store, "list_rows", wraps=record_store.list_rows) as load_accounts,
+                patch.object(live_check_service, "deployment_unavailable", return_value=None),
+                patch.object(live_check_service, "enqueue_account_live_check", side_effect=AssertionError("single enqueue")),
+                patch("core.accounts.plans.service.enqueue_account_plan_check", side_effect=AssertionError("single enqueue")),
+                patch.object(account_bulk_submission, "submit_accounts", wraps=account_bulk_submission.submit_accounts) as submit,
+                patch("core.operations.task_gateway.notify_dispatch"),
+                patch.object(Cursor, "execute", count_reads),
             ):
                 response = client.post(f"/api/accounts/{action}-bulk", json={"account_ids": ids})
                 self.assertEqual(202, response.status_code)
                 payload = response.get_json()
-                self.assertEqual([active_id], [item["id"] for item in payload["started"]])
-                self.assertEqual(expected_skips, [(item["id"], item["reason"]) for item in payload["skipped"]])
-                load_accounts.assert_called_once()
-                enqueue.assert_called_once()
+                self.assertEqual([str(active_id)], [item["id"] for item in payload["started"]])
+                self.assertEqual([
+                    (str(overflow_id), "ID 非法"), ("bad-id", "ID 非法"),
+                    (str(missing_id), "账号不存在"), (str(deactivated_id), "账号已废号"),
+                ], [(item["id"], item["reason"]) for item in payload["skipped"]])
+                self.assertEqual(1, len(account_reads))
+                submit.assert_called_once()
+                self.assertEqual((ids,), submit.call_args.args)
+                run = operation_task_store.get_run(payload["started"][0]["run_id"])
+                self.assertEqual(active_id, run["account_id"])
 
     def test_token_refresh_bulk_still_requires_nonempty_id_array(self):
         app = create_app(auth_code="test-auth")
@@ -1128,8 +1150,7 @@ class AccountTaskApiTests(PostgresTestCase):
         client.environ_base["HTTP_X_AUTH_CODE"] = "test-auth"
         with (
             patch("core.runtime.capabilities.require_feature", return_value=(True, "")),
-            patch.object(account_task_store, "create_batch") as create_batch,
-            patch.object(live_check_service, "enqueue_account_live_check") as enqueue,
+            patch.object(account_bulk_submission, "submit_accounts") as submit,
         ):
             for invalid_ids in (None, [], "1,2", {"id": 1}, 1):
                 with self.subTest(account_ids=invalid_ids):
@@ -1139,52 +1160,77 @@ class AccountTaskApiTests(PostgresTestCase):
                     self.assertEqual(400, response.status_code)
                     self.assertFalse(response.get_json()["ok"])
 
-        create_batch.assert_not_called()
-        enqueue.assert_not_called()
+        submit.assert_not_called()
 
     def test_live_check_and_token_refresh_are_separate_api_actions(self):
         app = create_app(auth_code="test-auth")
         client = app.test_client()
         client.environ_base["HTTP_X_AUTH_CODE"] = "test-auth"
-        account = {"id": 7, "email": "a@example.com", "access_token": "saved-token"}
+        self.seed(record_store.ACCOUNTS, [
+            {"id": 7, "email": "live@example.test", "access_token": "saved-token"},
+            {"id": 8, "email": "refresh@example.test", "access_token": "saved-token"},
+        ])
         with (
             patch("core.runtime.capabilities.require_feature", return_value=(True, "")),
-            patch.object(account_task_store, "create_batch", side_effect=["live-batch", "refresh-batch"]),
-            patch.object(live_check_service, "enqueue_account_live_check", return_value={"accepted": True}) as enqueue,
-            patch.object(record_store, "list_rows", return_value=[account]),
+            patch.object(live_check_service, "deployment_unavailable", return_value=None),
+            patch.object(live_check_service, "enqueue_account_live_check", side_effect=AssertionError("single enqueue")),
+            patch.object(account_bulk_submission, "submit_accounts", wraps=account_bulk_submission.submit_accounts) as submit,
+            patch("core.operations.task_gateway.notify_dispatch"),
         ):
             live_response = client.post("/api/accounts/check-live-bulk", json={"account_ids": [7]})
-            refresh_response = client.post("/api/accounts/refresh-token-bulk", json={"account_ids": [7]})
+            refresh_response = client.post("/api/accounts/refresh-token-bulk", json={"account_ids": [8]})
 
         self.assertEqual(202, live_response.status_code)
         self.assertEqual(202, refresh_response.status_code)
-        self.assertEqual(2, enqueue.call_count)
-        live_call, refresh_call = enqueue.call_args_list
+        self.assertEqual(2, submit.call_count)
+        live_call, refresh_call = submit.call_args_list
+        self.assertEqual("live", live_call.kwargs["operation"])
         self.assertEqual("manual_bulk", live_call.kwargs["trigger"])
-        self.assertFalse(live_call.kwargs["force_refresh"])
+        self.assertEqual("token", refresh_call.kwargs["operation"])
         self.assertEqual("token_refresh_manual", refresh_call.kwargs["trigger"])
-        self.assertTrue(refresh_call.kwargs["force_refresh"])
+        for response, task_type, force_refresh in (
+            (live_response, "live_check", False), (refresh_response, "token_refresh", True),
+        ):
+            self.assertEqual(1, response.json["started_count"])
+            run = operation_task_store.get_run(response.json["started"][0]["run_id"])
+            self.assertEqual(task_type, run["task_type"])
+            self.assertEqual(force_refresh, run["data"]["force_refresh"])
 
     def test_live_check_bulk_forwards_explicit_driver_override_only_to_live_tasks(self):
         app = create_app(auth_code="test-auth")
         client = app.test_client()
         client.environ_base["HTTP_X_AUTH_CODE"] = "test-auth"
-        account = {"id": 7, "email": "a@example.com", "access_token": "saved-token"}
+        self.seed(record_store.ACCOUNTS, [
+            {"id": 7, "email": "a@example.test", "access_token": "saved-token"},
+            {"id": 8, "email": "b@example.test", "access_token": "saved-token"},
+        ])
         with (
             patch("core.runtime.capabilities.require_feature", return_value=(True, "")),
-            patch.object(account_task_store, "create_batch", return_value="live-batch"),
-            patch.object(live_check_service, "enqueue_account_live_check", return_value={"accepted": True}) as enqueue,
-            patch.object(record_store, "list_rows", return_value=[account]),
+            patch.object(live_check_service, "deployment_unavailable", return_value=None),
+            patch.object(live_check_service, "enqueue_account_live_check", side_effect=AssertionError("single enqueue")),
+            patch.object(account_bulk_submission, "submit_accounts", wraps=account_bulk_submission.submit_accounts) as submit,
+            patch("core.operations.task_gateway.notify_dispatch"),
             patch("config.account.ACCOUNT_LIVE_CHECK_BROWSER_ENABLED", True),
         ):
             response = client.post(
                 "/api/accounts/check-live-bulk",
                 json={"account_ids": [7], "driver": "browser_roxy"},
             )
+            refresh = client.post(
+                "/api/accounts/refresh-token-bulk",
+                json={"account_ids": [8], "driver": "browser_roxy"},
+            )
 
         self.assertEqual(202, response.status_code)
-        enqueue.assert_called_once()
-        self.assertEqual("browser_roxy", enqueue.call_args.kwargs["driver"])
+        self.assertEqual(202, refresh.status_code)
+        self.assertEqual("browser_roxy", submit.call_args_list[0].kwargs["parameters"]["driver"])
+        self.assertNotIn("parameters", submit.call_args_list[1].kwargs)
+        self.assertEqual(1, response.json["started_count"])
+        self.assertEqual(1, refresh.json["started_count"])
+        live_run = operation_task_store.get_run(response.json["started"][0]["run_id"])
+        refresh_run = operation_task_store.get_run(refresh.json["started"][0]["run_id"])
+        self.assertEqual("browser_roxy", live_run["data"]["driver"])
+        self.assertIsNone(refresh_run["data"]["driver"])
 
     def test_live_check_bulk_rejects_invalid_driver_before_loading_accounts(self):
         app = create_app(auth_code="test-auth")
