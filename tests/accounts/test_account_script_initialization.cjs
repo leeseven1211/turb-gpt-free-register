@@ -67,6 +67,9 @@ test('账号脚本按模板顺序初始化且关键事件只绑定一次', async
   }
   assert.equal(toolbar.calls.length,34,'所有工具栏入口一次点击只调用一次边界');
   assert.deepEqual(toolbar.calls.map(([descriptor])=>descriptor),ACCOUNT_TOOLBAR_BUTTONS.map(button=>button.action));
-  const usage=JSON.parse(toolbar.storage.value);
-  for(const button of ACCOUNT_TOOLBAR_BUTTONS)assert.equal(usage[button.id],1,'只由同一个 Vue handler 计数一次');
+  assert.deepEqual(toolbar.ids(),[
+    'btnCopySelectedTokensV2','btnRefreshSelectedTokenV2','btnCopySelectedLinesV2',
+    'btnRetrySelectedCodexV2','btnArchiveSelectedAccountsV2',
+  ]);
+  assert.equal(toolbar.storage.writes.length,0,'工具栏点击不写入历史使用次数');
 });

@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import {computed,onBeforeUnmount,onMounted,ref,shallowRef} from 'vue';
+import {onBeforeUnmount,onMounted,ref,shallowRef} from 'vue';
 import type {AccountActionContext} from './useAccounts';
 import {ACCOUNT_TOOLBAR_BUTTONS,ACCOUNT_TOOLBAR_SECTIONS,type AccountToolbarButton,type AccountToolbarCapabilities,type AccountToolbarInvoke,type AccountToolbarState} from './accountToolbar';
-import {useAccountQuickActions,type AccountQuickActionRuntime} from './useAccountQuickActions';
+import {ACCOUNT_QUICK_ACTION_DEFAULTS} from './useAccountQuickActions';
 const props=defineProps<{
   state:AccountToolbarState;capabilities:AccountToolbarCapabilities;getContext:()=>AccountActionContext;
-  invoke:AccountToolbarInvoke;runtime:AccountQuickActionRuntime;notify?:(message:string)=>void;
+  invoke:AccountToolbarInvoke;notify?:(message:string)=>void;
 }>();
 const toolbar=ref<HTMLElement>(),more=ref<HTMLDetailsElement>(),summary=ref<HTMLElement>();
 const sections=ACCOUNT_TOOLBAR_SECTIONS.map(title=>({
@@ -14,11 +14,7 @@ const sections=ACCOUNT_TOOLBAR_SECTIONS.map(title=>({
 }));
 const buttonsById=new Map(ACCOUNT_TOOLBAR_BUTTONS.map(item=>[item.id,item]));
 const pending=shallowRef<ReadonlySet<string>>(new Set());
-const usage=useAccountQuickActions(ACCOUNT_TOOLBAR_BUTTONS.map(item=>item.id),props.runtime,()=>{
-  const root=toolbar.value,doc=root?.ownerDocument;
-  return !!(more.value?.open||doc?.querySelector('dialog[open]')||root?.contains(doc?.activeElement??null));
-});
-const quickItems=computed(()=>usage.quickIds.value.map(id=>buttonsById.get(id)!));
+const quickItems=ACCOUNT_QUICK_ACTION_DEFAULTS.map(id=>buttonsById.get(id)!);
 const gate=(item:AccountToolbarButton)=>item.feature?props.capabilities[item.feature]:undefined;
 const unavailable=(item:AccountToolbarButton)=>gate(item)?.enabled===false;
 const disabled=(item:AccountToolbarButton)=>(item.selection&&props.state.selectedCount===0)||pending.value.has(item.action)||!!props.state.pending?.[item.action];
@@ -53,12 +49,11 @@ function fitMenu(){
 }
 function onToggle(){
   fitMenu();
-  usage.schedule();
 }
 async function invoke(item:AccountToolbarButton,event:MouseEvent){
   const trigger=event.currentTarget as HTMLButtonElement;
   if(disabled(item)||unavailable(item)||trigger.disabled||trigger.getAttribute('aria-disabled')==='true')return;
-  usage.record(item.id);pending.value=new Set([...pending.value,item.action]);
+  pending.value=new Set([...pending.value,item.action]);
   try{await props.invoke(item.action,props.getContext(),trigger);}
   catch(error){props.notify?.(error instanceof Error?error.message:'账号操作失败，请稍后重试。');}
   finally{const next=new Set(pending.value);next.delete(item.action);pending.value=next;}
@@ -69,20 +64,17 @@ onMounted(()=>{
   const viewport=documentOwner?.defaultView;
   viewport?.addEventListener('resize',fitMenu);
   viewport?.addEventListener('scroll',fitMenu,{passive:true});
-  documentOwner?.addEventListener('close',usage.schedule,true);
-  usage.refresh();
 });
 onBeforeUnmount(()=>{
   const viewport=documentOwner?.defaultView;
   viewport?.removeEventListener('resize',fitMenu);
   viewport?.removeEventListener('scroll',fitMenu);
-  documentOwner?.removeEventListener('close',usage.schedule,true);
 });
-defineExpose({refreshQuickActions:usage.refresh});
+defineExpose({refreshQuickActions:()=>{}});
 </script>
 <template>
   <div class="accounts-command-deck" id="accountsCommandDeck">
-    <div ref="toolbar" class="jobs-toolbar-v2 list-action-toolbar" id="accountsToolbarV2" :class="{'has-selection':state.selectedCount>0}" @focusout="usage.schedule">
+    <div ref="toolbar" class="jobs-toolbar-v2 list-action-toolbar" id="accountsToolbarV2" :class="{'has-selection':state.selectedCount>0}">
       <span class="list-selection-hint" id="accountsSelectedHintV2">{{ state.selectedCount?`已选 ${state.selectedCount} 个账号`:'选择账号后批量操作' }}</span>
 
       <details ref="more" class="toolbar-overflow" id="accountsMoreActionsV2" @toggle="onToggle" @keydown.esc="dismiss">
@@ -95,7 +87,7 @@ defineExpose({refreshQuickActions:usage.refresh});
           </div>
         </div>
       </details>
-      <div class="acc-v2-btn-group account-quick-actions" id="accountsQuickActionsV2" role="group" aria-label="常用账号操作，按此浏览器使用次数排序" title="显示此浏览器使用次数最多的五项操作，批量操作一次算一次">
+      <div class="acc-v2-btn-group account-quick-actions" id="accountsQuickActionsV2" role="group" aria-label="常用账号操作" title="固定显示五项常用账号操作">
         <button v-for="item in quickItems" :key="item.id" :data-account-shortcut="item.id" type="button"
           v-bind="buttonAttributes(item)" @click="invoke(item,$event)">{{ label(item) }}</button>
       </div>
