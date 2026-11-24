@@ -720,6 +720,7 @@ def create_email_pool_blueprint(context: WebUIContext):
         deleted: list[dict] = []
         skipped: list[dict] = []
         seen: set[str] = set()
+        grouped: dict[str, list[str]] = {}
         for raw_item in emails:
             if isinstance(raw_item, dict):
                 email = (str(raw_item.get("email") or "")).strip()
@@ -736,29 +737,39 @@ def create_email_pool_blueprint(context: WebUIContext):
             if key in seen:
                 continue
             seen.add(key)
-            if local_email_imports.pool_mutation_protected(_pool_row_for_source(email, item_source)):
-                skipped.append({"email": email, "source": item_source,
-                    "reason": "邮箱已确认注册成功，不能删除", "reason_code": "registration_confirmed"})
+            grouped.setdefault(item_source, []).append(email)
+
+        bulk_sources = {"outlook", "generic_api", "icloud_hide", "cloudflare_domain"}
+        for item_source, addresses in grouped.items():
+            if item_source in bulk_sources:
+                outcome = db.delete_pool_emails(item_source, addresses)
+                deleted_emails = set(outcome.get("deleted") or [])
+                for email in outcome.get("deleted") or []:
+                    deleted.append({"email": email, "source": item_source, "local_deleted": True,
+                                    "sync": _email_sync_status(item_source, email)})
+                for item in outcome.get("skipped") or []:
+                    skipped.append({"email": item.get("email"), "source": item_source,
+                                    "reason": item.get("reason") or "邮箱不存在",
+                                    "reason_code": item.get("reason_code") or "email_not_found"})
                 continue
-            deleted_ok = (
-                local_email_imports.delete_butler_email(email)
-                if item_source == "email_butler"
-                else db.delete_generic_api_email(email)
-                if item_source == "generic_api"
-                else db.delete_domain_email(email)
-                if item_source == "cloudflare_domain"
-                else db.delete_icloud_hide_email(email)
-                if item_source == "icloud_hide"
-                else db.delete_outlook(email)
-            )
-            if deleted_ok:
-                deleted.append({"email": email, "source": item_source, "local_deleted": True,
-                    "sync": _email_sync_status(item_source, email)})
-            else:
-                confirmed = local_email_imports.pool_mutation_protected(_pool_row_for_source(email, item_source))
-                skipped.append({"email": email, "source": item_source,
-                    "reason": "邮箱已确认注册成功，不能删除" if confirmed else "邮箱不存在",
-                    "reason_code": "registration_confirmed" if confirmed else "email_not_found"})
+            for email in addresses:
+                if local_email_imports.pool_mutation_protected(_pool_row_for_source(email, item_source)):
+                    skipped.append({"email": email, "source": item_source,
+                        "reason": "邮箱已确认注册成功，不能删除", "reason_code": "registration_confirmed"})
+                    continue
+                deleted_ok = (
+                    local_email_imports.delete_butler_email(email)
+                    if item_source == "email_butler"
+                    else db.delete_outlook(email)
+                )
+                if deleted_ok:
+                    deleted.append({"email": email, "source": item_source, "local_deleted": True,
+                        "sync": _email_sync_status(item_source, email)})
+                else:
+                    confirmed = local_email_imports.pool_mutation_protected(_pool_row_for_source(email, item_source))
+                    skipped.append({"email": email, "source": item_source,
+                        "reason": "邮箱已确认注册成功，不能删除" if confirmed else "邮箱不存在",
+                        "reason_code": "registration_confirmed" if confirmed else "email_not_found"})
 
         return jsonify({
             "ok": True,
