@@ -6,7 +6,7 @@ Worker 重启后可以从这些事件恢复，跳过已经确认完成的分块�
 """
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import asdict
 import hashlib
 import inspect
@@ -188,7 +188,7 @@ def _chunk_items(chunk: tuple[Any, ...], raw: Any) -> list[dict[str, Any]]:
                 values.append(BulkItemResult(key=key, status=str(value or "updated")))
     elif isinstance(raw, BulkItemResult):
         values = [raw]
-    elif isinstance(raw, Sequence) and not isinstance(raw, (str, bytes)):
+    elif isinstance(raw, Iterable) and not isinstance(raw, (str, bytes, Mapping)):
         values = list(raw)
     else:
         values = [raw]
