@@ -124,6 +124,8 @@ def _prepare_sync(row):
             "account_id": row.get("account_id"), "parent_task_id": row.get("parent_task_id"),
             "batch_id": latest.get("batch_id"), "source_run_id": latest.get("id"),
             "provider_id": provider, "resource_family": latest.get("resource_family") or "openai_interactive",
+            "_managed_source_locked": row.get("_managed_source_locked", False),
+            "_managed_source": row.get("_managed_source"),
             "data": merged}, "", ""
 
 
