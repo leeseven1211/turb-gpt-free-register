@@ -367,26 +367,8 @@ def create_email_pool_blueprint(context: WebUIContext):
             return jsonify({"ok": False, "error": "items 必须是非空数组"}), 400
         if len(items) > 500:
             return jsonify({"ok": False, "error": "单次最多读取 500 条"}), 400
-        values, skipped, seen = [], [], set()
-        for raw in items:
-            item = raw if isinstance(raw, dict) else {"email": raw}
-            email = str(item.get("email") or "").strip()
-            source = str(item.get("source") or data.get("source") or "outlook").strip()
-            key = (source, email.lower())
-            if not email or key in seen:
-                continue
-            seen.add(key)
-            try:
-                value = (local_email_imports.butler_email_secret(email, field) if source == "email_butler"
-                         else db.email_pool_secret(source, email, field))
-            except (LookupError, ValueError) as exc:
-                skipped.append({"source": source, "email": email, "reason": str(exc)})
-                continue
-            if value:
-                values.append({"source": source, "email": email, "value": value})
-            else:
-                skipped.append({"source": source, "email": email, "reason": "值为空"})
-        return jsonify({"ok": True, "field": field, "values": values, "count": len(values), "skipped": skipped})
+        from core.storage.email.secrets import read_many
+        return jsonify(read_many(items, field, default_source=str(data.get("source") or "outlook")))
 
     @bp.post("/api/outlook/import-preview")
     def api_outlook_import_preview():
@@ -572,39 +554,28 @@ def create_email_pool_blueprint(context: WebUIContext):
             "extra_fields": parsed["extra_fields"],
         })
 
+    def _single_pool_status(data, source, *, domain=False):
+        from core.storage.email import bulk_mutations
+        email = str(data.get("email") or "").strip()
+        status = str(data.get("status") or "").strip()
+        allowed = ("available", "used", "failed") if domain else ("available", "used", "failed", "disabled")
+        if not email or status not in allowed:
+            return jsonify({"ok": False, "error": "email 或 status 非法"}), 400
+        try:
+            results = bulk_mutations.update_status_many([{"source": source, "email": email}], status, data.get("note"))
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+        item = results[0]
+        if item.status != "updated":
+            return jsonify({"ok": False, "error": item.reason, "error_code": item.reason_code}), (404 if item.reason_code == "email_not_found" else 409)
+        bulk_mutations._after_commit((), {}, results)
+        return jsonify({"ok": True, "updated": True})
+
     @bp.post("/api/outlook/status")
     def api_outlook_status():
-        """手动改邮箱状态：body {email, status, note?, source?}。status ∈ available/used/failed/disabled。"""
         data = request.get_json(silent=True) or {}
-        email = (data.get("email") or "").strip()
-        status = (data.get("status") or "").strip()
-        if not email or status not in ("available", "used", "failed", "disabled"):
-            return jsonify({"ok": False, "error": "email 或 status 非法"}), 400
-        source = (data.get("source") or _pool_source_arg()).strip()
-        if source == "all":
-            source = "outlook"
-        current = _pool_row_for_source(email, source)
-        if _pool_import_pending(current):
-            return jsonify({'ok': False, 'error': '邮箱导入尚未完成，请稍后再试',
-                'error_code': 'service_fact_sync_pending'}), 409
-        if status == "available" and str((current or {}).get("status") or "").strip().lower() == "replaced":
-            return jsonify({"ok": False, "error": "换绑后邮箱不能恢复为可用"}), 409
-        if source == "email_butler":
-            try:
-                updated = local_email_imports.set_butler_status(email, status=status, note=data.get("note"))
-            except ValueError as exc:
-                return jsonify({"ok": False, "error": str(exc)}), 409
-        elif source == "generic_api":
-            updated = db.release_generic_api_email(email, status=status, note=data.get("note"))
-        elif source == "cloudflare_domain":
-            updated = db.release_domain_email(email, status=status, note=data.get("note"))
-        elif source == "icloud_hide":
-            updated = db.release_icloud_hide_email(email, status=status, note=data.get("note"))
-        else:
-            updated = db.release_outlook(email, status=status, note=data.get("note"))
-        if not updated:
-            return jsonify({"ok": False, "error": "邮箱不存在"}), 404
-        return jsonify({"ok": True, "updated": True})
+        source = str(data.get("source") or _pool_source_arg()).strip()
+        return _single_pool_status(data, "outlook" if source == "all" else source)
 
     def _submit_pool_bulk(operation, *, parameters):
         from core.operations.bulk_mutation_worker import submit_bulk_mutation
@@ -643,37 +614,29 @@ def create_email_pool_blueprint(context: WebUIContext):
             return jsonify({"ok": False, "error": "备注须为不超过 2000 个字符的文本"}), 400
         return _submit_pool_bulk("email_pool_status", parameters={"status": status, "note": note})
 
-    @bp.post("/api/outlook/delete")
-    def api_outlook_delete():
-        """从本地邮箱池移除未确认注册成功的邮箱：body {email}。"""
-        data = request.get_json(silent=True) or {}
-        email = (data.get("email") or "").strip()
+    def _single_pool_delete(data, source):
+        from core.storage.email import bulk_mutations
+        email = str(data.get("email") or "").strip()
         if not email:
             return jsonify({"ok": False, "error": "email 为空"}), 400
-        source = (data.get("source") or _pool_source_arg()).strip()
-        if source == "all":
-            source = "outlook"
-        if local_email_imports.pool_mutation_protected(_pool_row_for_source(email, source)):
-            return jsonify({"ok": True, "deleted": False, "local_deleted": False,
-                "reason": "邮箱已确认注册成功，不能删除", "reason_code": "registration_confirmed"})
-        deleted = (
-            local_email_imports.delete_butler_email(email)
-            if source == "email_butler"
-            else db.delete_generic_api_email(email)
-            if source == "generic_api"
-            else db.delete_domain_email(email)
-            if source == "cloudflare_domain"
-            else db.delete_icloud_hide_email(email)
-            if source == "icloud_hide"
-            else db.delete_outlook(email)
-        )
-        if not deleted and local_email_imports.pool_mutation_protected(_pool_row_for_source(email, source)):
-            return jsonify({"ok": True, "deleted": False, "local_deleted": False,
-                "reason": "邮箱已确认注册成功，不能删除", "reason_code": "registration_confirmed"})
+        try:
+            results = bulk_mutations.delete_many([{"source": source, "email": email}])
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+        item = results[0]
+        deleted = item.status == "updated"
+        if deleted:
+            bulk_mutations._after_commit((), {}, results)
         return jsonify({"ok": True, "deleted": deleted, "local_deleted": deleted,
             "sync": _email_sync_status(source, email) if deleted else None,
-            "reason": "" if deleted else "邮箱不存在或当前状态不允许删除",
-            "reason_code": "" if deleted else "email_delete_not_allowed"})
+            "reason": item.reason if not deleted else "",
+            "reason_code": item.reason_code if not deleted else ""})
+
+    @bp.post("/api/outlook/delete")
+    def api_outlook_delete():
+        data = request.get_json(silent=True) or {}
+        source = str(data.get("source") or _pool_source_arg()).strip()
+        return _single_pool_delete(data, "outlook" if source == "all" else source)
 
     @bp.post("/api/outlook/delete-bulk")
     def api_outlook_delete_bulk():
@@ -688,21 +651,10 @@ def create_email_pool_blueprint(context: WebUIContext):
 
     @bp.post("/api/domain-pool/status")
     def api_domain_pool_status():
-        data = request.get_json(silent=True) or {}
-        email = (data.get("email") or "").strip()
-        status = (data.get("status") or "").strip()
-        if not email or status not in ("available", "used", "failed"):
-            return jsonify({"ok": False, "error": "email 或 status 非法"}), 400
-        db.release_domain_email(email, status=status, note=data.get("note"))
-        return jsonify({"ok": True})
+        return _single_pool_status(request.get_json(silent=True) or {}, "cloudflare_domain", domain=True)
 
     @bp.post("/api/domain-pool/delete")
     def api_domain_pool_delete():
-        data = request.get_json(silent=True) or {}
-        email = (data.get("email") or "").strip()
-        if not email:
-            return jsonify({"ok": False, "error": "email 为空"}), 400
-        deleted = db.delete_domain_email(email)
-        return jsonify({"ok": True, "deleted": deleted})
+        return _single_pool_delete(request.get_json(silent=True) or {}, "cloudflare_domain")
 
     return bp
