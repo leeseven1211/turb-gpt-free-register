@@ -17,7 +17,7 @@ export interface EmailRow extends EmailIdentity {
  remote_active?:boolean|null;remote_label?:string|null;last_activity_at?:string;used_at?:string;updated_at?:string;created_at?:string;synced_at?:string;
  service_sync_error?:string;note?:string;disabled_reason?:string;error_code?:string;reason_code?:string;disabled_reason_code?:string;
 }
-export interface InventoryQuery {page:number;size:number;source:string;q:string;status:string;used_date:string}
+export interface InventoryQuery {page:number;size:number;source:string;q:string;status:string;used_date:string;usage?:string}
 export interface Facet {value:string;count?:number}
 export interface InventoryResponse {items:EmailRow[];total:number;facets?:{source?:Facet[];status?:Facet[]};page?:number;page_size?:number}
 export interface HistoryRow {id:number|string;source:string;email:string;parent_id?:number|string;parent_email?:string;state?:string;registered_account_id?:number|string|null;root_task_id?:number|string|null;created_at?:string}

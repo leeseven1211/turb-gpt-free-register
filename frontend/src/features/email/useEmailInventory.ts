@@ -4,7 +4,7 @@ import type {EmailIdentity,EmailMountDependencies,EmailRow,InventoryResponse,Mut
 import {deletionWarning,identity,keyOf,message,receipt} from './presentation';
 import {readScope} from './readScope';
 export function useEmailInventory(api:EmailApi,deps:EmailMountDependencies){
- const state=reactive({items:[] as EmailRow[],parents:[] as ParentHistory[],total:0,page:1,size:20,filters:{source:'all',q:'',status:'',used_date:''},facets:{} as NonNullable<InventoryResponse['facets']>,selected:new Map<string,EmailIdentity>(),loading:false,error:'',summaryError:'',busy:false,receipt:null as Receipt|null});
+ const state=reactive({items:[] as EmailRow[],parents:[] as ParentHistory[],total:0,page:1,size:20,filters:{source:'all',q:'',status:'',used_date:'',usage:''},facets:{} as NonNullable<InventoryResponse['facets']>,selected:new Map<string,EmailIdentity>(),loading:false,error:'',summaryError:'',busy:false,receipt:null as Receipt|null});
  let copyController:AbortController|undefined;
  const scope=readScope(state,async(signal,valid)=>{
   for(let correction=0;correction<2;correction++){
@@ -50,7 +50,7 @@ export function useEmailInventory(api:EmailApi,deps:EmailMountDependencies){
  async function copyRow(row:EmailIdentity){const item=identity(row);await write(async()=>{copyController=new AbortController();const signal=copyController.signal;const result=await api.secret(item,signal);if(signal.aborted)return;if(!result.value)throw new Error('对应内容为空');await deps.clipboard(result.value);deps.notify('已复制');});}
  async function copyPage(){const items=state.items.map(identity);if(!items.length)return;await write(async()=>{copyController=new AbortController();const signal=copyController.signal;const result=await api.secrets(items,signal);if(signal.aborted)return;const text=(result.values||[]).map(row=>row.value).filter(Boolean).join('\n');if(!text)throw new Error('当前页没有可复制内容');await deps.clipboard(text);state.receipt=receipt('已复制当前页',(result.skipped||[]).map(row=>`${row.email}：${row.reason}`).join('\n')||`已复制 ${items.length} 个邮箱素材`,'success');deps.notify('已复制当前页邮箱素材');});}
  return{state,refresh:scope.refresh,setActive(value:boolean){if(!value)copyController?.abort();scope.setActive(value);},dispose(){copyController?.abort();scope.dispose();},updateFilters,toggle,togglePage,bulkDelete,bulkStatus,rowAction,copyRow,copyPage,
-  resetFilters(){Object.assign(state.filters,{source:'all',q:'',status:'',used_date:''});state.selected.clear();state.page=1;scope.schedule();},
+  resetFilters(){Object.assign(state.filters,{source:'all',q:'',status:'',used_date:'',usage:''});state.selected.clear();state.page=1;scope.schedule();},
   setPage(value:number){if(!Number.isSafeInteger(value))return;state.page=Math.max(1,Math.min(value,Math.max(1,Math.ceil(state.total/state.size))));scope.schedule();},
   setSize(value:number){if(!Number.isSafeInteger(value)||value<1||value>500)return;state.size=value;state.page=1;scope.schedule();},
   async refreshDerivationSummary(){if(!scope.eligible())return;await scope.refresh();},

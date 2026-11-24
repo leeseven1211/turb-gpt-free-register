@@ -7,7 +7,6 @@ import ListFilterSummary from '../../components/ListFilterSummary.vue';
 import {dateTimeLines,formatDateTime} from '../../shared/time';
 import {useColumnWidths} from '../../shared/useColumnWidths';
 import EmailColumnFilter from './EmailColumnFilter.vue';
-import EmailReceipt from './EmailReceipt.vue';
 import ColumnResizer from '../../components/ColumnResizer.vue';
 import TableState from '../../components/TableState.vue';
 import ListToolbar from '../../components/ListToolbar.vue';
@@ -31,9 +30,10 @@ watch(()=>state.items,()=>{
 },{flush:'post'});
 const widths=useColumnWidths({defaults:[40,228,112,104,120,160,140,164,228],storageKey:'gpt_console_table_widths_outlook',totalStorageKey:'gpt_console_table_total_outlook',min:28,max:20000});
 const checked=computed(()=>state.items.filter(row=>state.selected.has(keyOf(row))).length);
-const chips=computed(()=>Object.entries(state.filters).filter(([key,value])=>value&&(key!=='source'||value!=='all')).map(([key,value])=>({key,label:`${({q:'邮箱',source:'类型',status:'状态',used_date:'最近使用日期'} as Record<string,string>)[key]}：${key==='source'?sourceLabels[value]||value:key==='status'?statusLabels[value]||value:value}`,removeLabel:`移除${key}筛选`})));
+const chips=computed(()=>Object.entries(state.filters).filter(([key,value])=>value&&(key!=='source'||value!=='all')).map(([key,value])=>({key,label:`${({q:'邮箱',source:'类型',status:'状态',used_date:'最近使用日期',usage:'使用情况'} as Record<string,string>)[key]}：${key==='source'?sourceLabels[value]||value:key==='status'?statusLabels[value]||value:key==='usage'?({bound:'已绑定',used_unbound:'未绑定'} as Record<string,string>)[value]||value:value}`,removeLabel:`移除${key}筛选`})));
 const sources=computed(()=>Object.entries(sourceLabels).filter(([key])=>key!=='all').map(([value,label])=>({value,label,count:state.facets.source?state.facets.source.find(row=>row.value===value)?.count??0:undefined})));
 const statuses=computed(()=>[...new Set([...Object.keys(statusLabels),...(state.facets.status||[]).map(row=>row.value),state.filters.status])].filter(Boolean).map(value=>({value,label:statusLabels[value]||value,count:state.facets.status?state.facets.status.find(row=>row.value===value)?.count??0:undefined})));
+const usageOptions=[{value:'bound',label:'已绑定'},{value:'used_unbound',label:'未绑定'}];
 const parent=(row:EmailRow)=>state.parents.find(item=>item.source===row.source&&String(item.parent_id)===String(row.id)&&Number(item.child_count)>0);
 const note=(row:EmailRow)=>row.service_sync_error||row.note||row.disabled_reason||'';
 type ValueTone='success'|'active'|'warning'|'danger'|'neutral';
@@ -65,7 +65,6 @@ function activityDetail(row:EmailRow){return`${row.used_at?'最近使用':row.la
   </ListToolbar>
   <div v-if="state.error" class="ui-list-feedback is-error" role="alert">{{ state.error }} <button class="ui-link" @click="owner.refresh()">重试</button></div>
   <div v-if="state.summaryError" class="ui-list-feedback is-error" role="alert">{{ state.summaryError }} <button class="ui-link" @click="owner.refreshDerivationSummary()">重试</button></div>
-  <EmailReceipt :receipt="state.receipt"/>
   <div ref="tableViewport" class="ui-table-scroll em-table-wrap" role="region" tabindex="0" aria-label="邮箱列表，可滚动" @scroll="openAction=null"><table class="ui-table ui-table--sticky-end em-table" :style="{'--ui-table-width':`${widths.total.value}px`}">
    <colgroup><col v-for="(value,index) in widths.widths.value" :key="index" :style="{width:`${value}px`}"></colgroup>
    <thead><tr>
@@ -73,7 +72,7 @@ function activityDetail(row:EmailRow){return`${row.used_at?'最近使用':row.la
     <th><EmailColumnFilter label="邮箱" :value="state.filters.q" :active="active" @change="owner.updateFilters({q:$event})"/><ColumnResizer label="邮箱" @start="widths.resize(1,$event)" @nudge="widths.resizeWithKeyboard(1,$event)"/></th>
     <th><EmailColumnFilter label="类型" :value="state.filters.source" empty-value="all" :options="sources" :active="active" @change="owner.updateFilters({source:$event})"/><ColumnResizer label="类型" @start="widths.resize(2,$event)" @nudge="widths.resizeWithKeyboard(2,$event)"/></th>
     <th><EmailColumnFilter label="状态" :value="state.filters.status" :options="statuses" :active="active" @change="owner.updateFilters({status:$event})"/><ColumnResizer label="状态" @start="widths.resize(3,$event)" @nudge="widths.resizeWithKeyboard(3,$event)"/></th>
-    <th>使用情况<ColumnResizer label="使用情况" @start="widths.resize(4,$event)" @nudge="widths.resizeWithKeyboard(4,$event)"/></th><th>凭证配置<ColumnResizer label="凭证配置" @start="widths.resize(5,$event)" @nudge="widths.resizeWithKeyboard(5,$event)"/></th><th><EmailColumnFilter label="最近活动" type="date" :value="state.filters.used_date" :active="active" @change="owner.updateFilters({used_date:$event})"/><ColumnResizer label="最近活动" @start="widths.resize(6,$event)" @nudge="widths.resizeWithKeyboard(6,$event)"/></th><th>备注 / 原因<ColumnResizer label="备注 / 原因" @start="widths.resize(7,$event)" @nudge="widths.resizeWithKeyboard(7,$event)"/></th><th>操作<ColumnResizer label="操作" @start="widths.resize(8,$event)" @nudge="widths.resizeWithKeyboard(8,$event)"/></th>
+    <th><EmailColumnFilter label="使用情况" :value="state.filters.usage" :options="usageOptions" :active="active" @change="owner.updateFilters({usage:$event})"/><ColumnResizer label="使用情况" @start="widths.resize(4,$event)" @nudge="widths.resizeWithKeyboard(4,$event)"/></th><th>凭证配置<ColumnResizer label="凭证配置" @start="widths.resize(5,$event)" @nudge="widths.resizeWithKeyboard(5,$event)"/></th><th><EmailColumnFilter label="最近活动" type="date" :value="state.filters.used_date" :active="active" @change="owner.updateFilters({used_date:$event})"/><ColumnResizer label="最近活动" @start="widths.resize(6,$event)" @nudge="widths.resizeWithKeyboard(6,$event)"/></th><th>备注 / 原因<ColumnResizer label="备注 / 原因" @start="widths.resize(7,$event)" @nudge="widths.resizeWithKeyboard(7,$event)"/></th><th>操作<ColumnResizer label="操作" @start="widths.resize(8,$event)" @nudge="widths.resizeWithKeyboard(8,$event)"/></th>
    </tr></thead>
    <tbody><tr v-for="row in state.items" :key="keyOf(row)" :class="{'is-selected':state.selected.has(keyOf(row))}">
     <td class="ui-col-check"><input type="checkbox" :aria-label="`选择邮箱 ${row.email}`" :checked="state.selected.has(keyOf(row))" @change="owner.toggle(row,($event.target as HTMLInputElement).checked)"></td>
