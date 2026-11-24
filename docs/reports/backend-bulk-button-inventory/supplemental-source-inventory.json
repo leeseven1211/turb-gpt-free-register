@@ -1,0 +1,798 @@
+{
+  "templates": [
+    {
+      "file": "webui/templates/index.html",
+      "line": 70,
+      "tag": "button",
+      "id": "",
+      "label": "     总览 ",
+      "handler": "",
+      "attributes": {
+        "type": "button",
+        "data-tab": "overview",
+        "class": "sidebar-item active"
+      },
+      "form": {}
+    },
+    {
+      "file": "webui/templates/index.html",
+      "line": 77,
+      "tag": "button",
+      "id": "",
+      "label": "   注册 Live ",
+      "handler": "",
+      "attributes": {
+        "type": "button",
+        "data-tab": "register",
+        "class": "sidebar-item"
+      },
+      "form": {}
+    },
+    {
+      "file": "webui/templates/index.html",
+      "line": 82,
+      "tag": "button",
+      "id": "",
+      "label": " 发起注册",
+      "handler": "",
+      "attributes": {
+        "type": "button",
+        "class": "is-active",
+        "data-view": "launch"
+      },
+      "form": {}
+    },
+    {
+      "file": "webui/templates/index.html",
+      "line": 86,
+      "tag": "button",
+      "id": "",
+      "label": "   账号 ",
+      "handler": "",
+      "attributes": {
+        "type": "button",
+        "data-tab": "accounts",
+        "class": "sidebar-item"
+      },
+      "form": {}
+    },
+    {
+      "file": "webui/templates/index.html",
+      "line": 91,
+      "tag": "button",
+      "id": "",
+      "label": " 活跃账号",
+      "handler": "",
+      "attributes": {
+        "type": "button",
+        "class": "is-active",
+        "data-view": "active"
+      },
+      "form": {}
+    },
+    {
+      "file": "webui/templates/index.html",
+      "line": 92,
+      "tag": "button",
+      "id": "",
+      "label": " 归档账号",
+      "handler": "",
+      "attributes": {
+        "type": "button",
+        "data-view": "archived"
+      },
+      "form": {}
+    },
+    {
+      "file": "webui/templates/index.html",
+      "line": 96,
+      "tag": "button",
+      "id": "",
+      "label": "   Codex 授权 ",
+      "handler": "",
+      "attributes": {
+        "type": "button",
+        "data-tab": "codex",
+        "class": "sidebar-item"
+      },
+      "form": {}
+    },
+    {
+      "file": "webui/templates/index.html",
+      "line": 101,
+      "tag": "button",
+      "id": "",
+      "label": " 活跃账号",
+      "handler": "",
+      "attributes": {
+        "type": "button",
+        "class": "is-active",
+        "data-view": "active"
+      },
+      "form": {}
+    },
+    {
+      "file": "webui/templates/index.html",
+      "line": 102,
+      "tag": "button",
+      "id": "",
+      "label": " 归档账号",
+      "handler": "",
+      "attributes": {
+        "type": "button",
+        "data-view": "archived"
+      },
+      "form": {}
+    },
+    {
+      "file": "webui/templates/index.html",
+      "line": 106,
+      "tag": "button",
+      "id": "",
+      "label": "   批量任务 ",
+      "handler": "",
+      "attributes": {
+        "type": "button",
+        "data-tab": "bulk",
+        "class": "sidebar-item"
+      },
+      "form": {}
+    },
+    {
+      "file": "webui/templates/index.html",
+      "line": 111,
+      "tag": "button",
+      "id": "",
+      "label": " 批次列表",
+      "handler": "",
+      "attributes": {
+        "type": "button",
+        "data-bulk-nav": "list"
+      },
+      "form": {}
+    },
+    {
+      "file": "webui/templates/index.html",
+      "line": 112,
+      "tag": "button",
+      "id": "",
+      "label": " 新建批次",
+      "handler": "",
+      "attributes": {
+        "type": "button",
+        "data-bulk-nav": "create"
+      },
+      "form": {}
+    },
+    {
+      "file": "webui/templates/index.html",
+      "line": 115,
+      "tag": "button",
+      "id": "",
+      "label": "   任务中心 统一 ",
+      "handler": "",
+      "attributes": {
+        "type": "button",
+        "data-tab": "tasks",
+        "class": "sidebar-item"
+      },
+      "form": {}
+    },
+    {
+      "file": "webui/templates/index.html",
+      "line": 120,
+      "tag": "button",
+      "id": "",
+      "label": "   提链工作台 ",
+      "handler": "",
+      "attributes": {
+        "type": "button",
+        "data-tab": "extract-workbench",
+        "class": "sidebar-item",
+        "aria-controls": "extractWorkbenchNav",
+        "aria-expanded": "false"
+      },
+      "form": {}
+    },
+    {
+      "file": "webui/templates/index.html",
+      "line": 125,
+      "tag": "button",
+      "id": "",
+      "label": " 任务列表",
+      "handler": "",
+      "attributes": {
+        "type": "button",
+        "class": "sidebar-subnav-item",
+        "data-tab": "extract-workbench"
+      },
+      "form": {}
+    },
+    {
+      "file": "webui/templates/index.html",
+      "line": 126,
+      "tag": "button",
+      "id": "",
+      "label": " 提链统计",
+      "handler": "",
+      "attributes": {
+        "type": "button",
+        "class": "sidebar-subnav-item",
+        "data-tab": "extract-stats"
+      },
+      "form": {}
+    },
+    {
+      "file": "webui/templates/index.html",
+      "line": 130,
+      "tag": "button",
+      "id": "",
+      "label": "   邮箱池 ",
+      "handler": "",
+      "attributes": {
+        "type": "button",
+        "data-tab": "outlook",
+        "class": "sidebar-item"
+      },
+      "form": {}
+    },
+    {
+      "file": "webui/templates/index.html",
+      "line": 135,
+      "tag": "button",
+      "id": "",
+      "label": " 资源总览",
+      "handler": "",
+      "attributes": {
+        "type": "button",
+        "class": "is-active",
+        "data-view": "overview"
+      },
+      "form": {}
+    },
+    {
+      "file": "webui/templates/index.html",
+      "line": 136,
+      "tag": "button",
+      "id": "",
+      "label": " 邮箱列表",
+      "handler": "",
+      "attributes": {
+        "type": "button",
+        "data-view": "list"
+      },
+      "form": {}
+    },
+    {
+      "file": "webui/templates/index.html",
+      "line": 137,
+      "tag": "button",
+      "id": "",
+      "label": " 历史子邮箱",
+      "handler": "",
+      "attributes": {
+        "type": "button",
+        "data-view": "derivations"
+      },
+      "form": {}
+    },
+    {
+      "file": "webui/templates/index.html",
+      "line": 141,
+      "tag": "button",
+      "id": "",
+      "label": "   代理与流量 ",
+      "handler": "",
+      "attributes": {
+        "type": "button",
+        "data-tab": "proxy-traffic",
+        "class": "sidebar-item"
+      },
+      "form": {}
+    },
+    {
+      "file": "webui/templates/index.html",
+      "line": 146,
+      "tag": "button",
+      "id": "",
+      "label": " 代理池库存",
+      "handler": "",
+      "attributes": {
+        "type": "button",
+        "class": "is-active",
+        "data-view": "pool"
+      },
+      "form": {}
+    },
+    {
+      "file": "webui/templates/index.html",
+      "line": 147,
+      "tag": "button",
+      "id": "",
+      "label": " 租约与流量",
+      "handler": "",
+      "attributes": {
+        "type": "button",
+        "data-view": "records"
+      },
+      "form": {}
+    },
+    {
+      "file": "webui/templates/index.html",
+      "line": 151,
+      "tag": "button",
+      "id": "",
+      "label": "     配置  0 ",
+      "handler": "",
+      "attributes": {
+        "type": "button",
+        "data-tab": "config",
+        "class": "sidebar-item"
+      },
+      "form": {}
+    },
+    {
+      "file": "webui/templates/index.html",
+      "line": 161,
+      "tag": "button",
+      "id": "",
+      "label": "     退出登录 ",
+      "handler": "",
+      "attributes": {
+        "type": "submit"
+      },
+      "form": {
+        "class": "sidebar-logout",
+        "method": "post",
+        "action": "/logout"
+      }
+    },
+    {
+      "file": "webui/templates/index.html",
+      "line": 174,
+      "tag": "button",
+      "id": "mobileNavToggle",
+      "label": "  ",
+      "handler": "",
+      "attributes": {
+        "type": "button",
+        "class": "mobile-nav-toggle",
+        "id": "mobileNavToggle",
+        "aria-label": "打开导航",
+        "aria-expanded": "false"
+      },
+      "form": {}
+    },
+    {
+      "file": "webui/templates/index.html",
+      "line": 177,
+      "tag": "button",
+      "id": "navHistoryBack",
+      "label": "  ",
+      "handler": "",
+      "attributes": {
+        "type": "button",
+        "class": "nav-history-back",
+        "id": "navHistoryBack",
+        "aria-label": "返回上一个菜单",
+        "title": "返回上一个菜单",
+        "disabled": null
+      },
+      "form": {}
+    },
+    {
+      "file": "webui/templates/index.html",
+      "line": 266,
+      "tag": "button",
+      "id": "btnCloseLiveLog",
+      "label": " 关闭",
+      "handler": "",
+      "attributes": {
+        "class": "btn",
+        "id": "btnCloseLiveLog",
+        "style": "float:right;min-height:28px;"
+      },
+      "form": {}
+    },
+    {
+      "file": "webui/templates/index.html",
+      "line": 307,
+      "tag": "button",
+      "id": "btnCloseQrPanel",
+      "label": " 关闭",
+      "handler": "closeQrModal()",
+      "attributes": {
+        "class": "btn",
+        "id": "btnCloseQrPanel",
+        "onclick": "closeQrModal()"
+      },
+      "form": {}
+    },
+    {
+      "file": "webui/templates/login.html",
+      "line": 47,
+      "tag": "button",
+      "id": "togglePassword",
+      "label": "           ",
+      "handler": "",
+      "attributes": {
+        "class": "toggle-password",
+        "id": "togglePassword",
+        "type": "button",
+        "aria-label": "显示授权码",
+        "title": "显示/隐藏"
+      },
+      "form": {
+        "class": "card",
+        "method": "post",
+        "action": "{{ login_url }}",
+        "aria-describedby": "loginDescription"
+      }
+    },
+    {
+      "file": "webui/templates/login.html",
+      "line": 67,
+      "tag": "button",
+      "id": "loginSubmit",
+      "label": " 进入控制台",
+      "handler": "",
+      "attributes": {
+        "class": "submit",
+        "id": "loginSubmit",
+        "type": "submit"
+      },
+      "form": {
+        "class": "card",
+        "method": "post",
+        "action": "{{ login_url }}",
+        "aria-describedby": "loginDescription"
+      }
+    }
+  ],
+  "dynamic_js": [
+    {
+      "file": "webui/static/js/pages/accounts/bridge.js",
+      "line": 123,
+      "source": "document.createElement('button')",
+      "label": "document.createElement('button')"
+    },
+    {
+      "file": "webui/static/js/pages/accounts/page.js",
+      "line": 970,
+      "source": "<button data-plan-check=\"${esc(r.id)}\" disabled title=\"套餐查询正在执行，完成后可再次查询\">${label}</button>",
+      "label": "${label}"
+    },
+    {
+      "file": "webui/static/js/pages/accounts/page.js",
+      "line": 972,
+      "source": "<button data-plan-check=\"${esc(r.id)}\" title=\"查询当前套餐以及 Go、Plus 免费试用或折扣优惠\">查套餐</button>",
+      "label": "查套餐"
+    },
+    {
+      "file": "webui/static/js/pages/accounts/page.js",
+      "line": 1004,
+      "source": "<button disabled title=\"${esc(r.extract_link_message || '提链任务执行中')}\">提链中…</button>",
+      "label": "提链中…"
+    },
+    {
+      "file": "webui/static/js/pages/accounts/page.js",
+      "line": 1009,
+      "source": "<button class=\"good\" data-extract-link=\"${esc(r.id)}\" title=\"${esc(failedReason ? '重新提链；上次失败原因：' + failedReason : '为已确认 Plus 免费试用资格的 free 账号创建提链任务')}\">提链</button>",
+      "label": "提链"
+    },
+    {
+      "file": "webui/static/js/pages/accounts/page.js",
+      "line": 1016,
+      "source": "<button class=\"danger\" data-codex-stop=\"${esc(r.email)}\" title=\"协作式停止该账号正在进行的 Codex 补跑\">${exec === 'cancelling' ? '停止中…' : '停止补跑'}</button>",
+      "label": "${exec === 'cancelling' ? '停止中…' : '停止补跑'}"
+    },
+    {
+      "file": "webui/static/js/pages/accounts/page.js",
+      "line": 1020,
+      "source": "<button data-codex-retry=\"${esc(r.email)}\" title=\"重新跑一次 Codex 授权；按实际验证要求使用邮箱 OTP 和手机接码\">${label}</button>",
+      "label": "${label}"
+    },
+    {
+      "file": "webui/static/js/pages/accounts/page.js",
+      "line": 1056,
+      "source": "<button type=\"button\" class=\"acc-v2-token-state is-${attrEsc(state.key)}\" data-account-copy-secret=\"access_token\" data-account-id=\"${esc(r.id)}\" title=\"${esc(state.title)}\">${esc(label)}</button>",
+      "label": "${esc(label)}"
+    },
+    {
+      "file": "webui/static/js/pages/accounts/page.js",
+      "line": 1063,
+      "source": "<button type=\"button\" class=\"acc-v2-token-copy\" data-account-copy-secret=\"account_password\" data-account-id=\"${esc(r.id)}\" title=\"本地已保存；点击复制账号密码。本地保存不代表远端已接受。\">复制</button>",
+      "label": "复制"
+    },
+    {
+      "file": "webui/static/js/pages/accounts/page.js",
+      "line": 1082,
+      "source": "<button type=\"button\" data-account-totp-copy=\"${esc(r.id)}\" title=\"获取并复制当前 6 位 TOTP 验证码\">复制</button>",
+      "label": "复制"
+    },
+    {
+      "file": "webui/static/js/pages/accounts/page.js",
+      "line": 1083,
+      "source": "<button type=\"button\" data-account-action=\"twofa\" data-account-id=\"${esc(r.id)}\"${accountIsDeactivated(r) ? ' disabled title=\"账号已停用，无法补充 2FA\"' : ' title=\"为该账号补充 Authenticator 2FA\"'}>补充</button>",
+      "label": "补充"
+    },
+    {
+      "file": "webui/static/js/pages/accounts/page.js",
+      "line": 1133,
+      "source": "<button type=\"button\" data-deactivation-mail-check=\"${esc(r.id)}\"${disabledAttr} title=\"${esc(buttonTitle)}\">复查</button>",
+      "label": "复查"
+    },
+    {
+      "file": "webui/static/js/pages/accounts/page.js",
+      "line": 1139,
+      "source": "<button type=\"button\" data-account-registration-task=\"${esc(retry.source_job_id)}\" data-account-id=\"${esc(r.id)}\" title=\"${esc(retry.reason || '原注册任务正在执行')}\">查看进行中的注册任务</button>",
+      "label": "查看进行中的注册任务"
+    },
+    {
+      "file": "webui/static/js/pages/accounts/page.js",
+      "line": 1141,
+      "source": "<button type=\"button\" data-account-registration-retry=\"${esc(r.id)}\" title=\"${esc(retry.reason || '复用原注册记录，继续未完成步骤')}\">${esc(retry.label || '重跑注册')}</button>",
+      "label": "${esc(retry.label || '重跑注册')}"
+    },
+    {
+      "file": "webui/static/js/pages/accounts/page.js",
+      "line": 1142,
+      "source": "<button type=\"button\" title=\"${esc(retry.reason || '当前没有可重跑的原注册任务')}\" disabled>重跑注册</button>",
+      "label": "重跑注册"
+    },
+    {
+      "file": "webui/static/js/pages/accounts/page.js",
+      "line": 1144,
+      "source": "<button type=\"button\" data-account-copy-secret=\"copy_line\" data-account-id=\"${esc(r.id)}\">复制整行</button>",
+      "label": "复制整行"
+    },
+    {
+      "file": "webui/static/js/pages/accounts/page.js",
+      "line": 1145,
+      "source": "<button type=\"button\" data-account-copy-secret=\"chatgpt_session\" data-account-id=\"${esc(r.id)}\" title=\"复制完整 ChatGPT session JSON\">复制 ChatGPT session</button>",
+      "label": "复制 ChatGPT session"
+    },
+    {
+      "file": "webui/static/js/pages/accounts/page.js",
+      "line": 1146,
+      "source": "<button type=\"button\" data-account-copy-secret=\"account_password\" data-account-id=\"${esc(r.id)}\">复制账号密码</button>",
+      "label": "复制账号密码"
+    },
+    {
+      "file": "webui/static/js/pages/accounts/page.js",
+      "line": 1147,
+      "source": "<button type=\"button\" data-account-action=\"password\" data-account-id=\"${esc(r.id)}\">补密码</button>",
+      "label": "补密码"
+    },
+    {
+      "file": "webui/static/js/pages/accounts/page.js",
+      "line": 1148,
+      "source": "<button type=\"button\" data-account-action=\"twofa\" data-account-id=\"${esc(r.id)}\">补 2FA</button>",
+      "label": "补 2FA"
+    },
+    {
+      "file": "webui/static/js/pages/accounts/page.js",
+      "line": 1149,
+      "source": "<button type=\"button\" data-account-action=\"password_change\" data-account-id=\"${esc(r.id)}\">修改密码</button>",
+      "label": "修改密码"
+    },
+    {
+      "file": "webui/static/js/pages/accounts/page.js",
+      "line": 1150,
+      "source": "<button type=\"button\" data-account-action=\"twofa_change\" data-account-id=\"${esc(r.id)}\">修改 2FA</button>",
+      "label": "修改 2FA"
+    },
+    {
+      "file": "webui/static/js/pages/accounts/page.js",
+      "line": 1151,
+      "source": "<button type=\"button\" data-account-action=\"complete\" data-account-id=\"${esc(r.id)}\">补全账号</button>",
+      "label": "补全账号"
+    },
+    {
+      "file": "webui/static/js/pages/accounts/page.js",
+      "line": 1153,
+      "source": "<button type=\"button\" data-account-email-change=\"${esc(r.id)}\" title=\"协议自动领取新邮箱并换绑；不会启动浏览器\">换绑邮箱</button>",
+      "label": "换绑邮箱"
+    },
+    {
+      "file": "webui/static/js/pages/accounts/page.js",
+      "line": 1154,
+      "source": "<button type=\"button\" onclick=\"checkSelectedLive([Number('${esc(r.id)}')], this); return false;\" title=\"只在线验证现有 Token；不会发送邮箱验证码或刷新 AT\">查活</button>",
+      "label": "查活"
+    },
+    {
+      "file": "webui/static/js/pages/accounts/page.js",
+      "line": 1155,
+      "source": "<button type=\"button\" onclick=\"refreshSelectedToken([Number('${esc(r.id)}')], this); return false;\" title=\"${esc(accountAtRefreshUiSettings().title)}\">刷新AT</button>",
+      "label": "刷新AT"
+    },
+    {
+      "file": "webui/static/js/pages/accounts/page.js",
+      "line": 1156,
+      "source": "<button type=\"button\" data-account-restore=\"${esc(r.id)}\" title=\"已确认 OpenAI 恢复访问权限后，解除本地停用标记\">已解封，恢复账号</button>",
+      "label": "已解封，恢复账号"
+    },
+    {
+      "file": "webui/static/js/pages/accounts/page.js",
+      "line": 1157,
+      "source": "<button type=\"button\" data-account-email-invalid=\"${esc(r.id)}\" data-invalid=\"${r.email_invalid === true ? '0' : '1'}\" title=\"仅更新独立邮箱失效标记，不修改 OpenAI 账号状态\">${r.email_invalid === true ? '解除邮箱失效' : '标记邮箱失效'}</button>",
+      "label": "${r.email_invalid === true ? '解除邮箱失效' : '标记邮箱失效'}"
+    },
+    {
+      "file": "webui/static/js/pages/accounts/page.js",
+      "line": 1158,
+      "source": "<button type=\"button\" data-account-task-history=\"${esc(r.email)}\" title=\"在任务实例中查看该账号的 Codex 补跑、查活、AT 刷新、套餐和封号邮件历史\">任务记录</button>",
+      "label": "任务记录"
+    },
+    {
+      "file": "webui/static/js/pages/accounts/page.js",
+      "line": 1166,
+      "source": "<button type=\"button\" data-account-archive=\"${esc(r.id)}\" data-archived=\"${r.archived ? '0' : '1'}\" title=\"${r.archived ? '恢复到默认账号列表' : '归档后默认账号列表不再显示'}\">${r.archived ? '恢复' : '归档'}</button>",
+      "label": "${r.archived ? '恢复' : '归档'}"
+    },
+    {
+      "file": "webui/static/js/pages/accounts/page.js",
+      "line": 1167,
+      "source": "<button type=\"button\" class=\"danger\" data-account-delete=\"${esc(r.id)}\" data-email=\"${esc(r.email)}\" title=\"删除该账号本地记录；不可撤销\">删除账号</button>",
+      "label": "删除账号"
+    },
+    {
+      "file": "webui/static/js/pages/codex/page.js",
+      "line": 43,
+      "source": "document.createElement('button')",
+      "label": "document.createElement('button')"
+    },
+    {
+      "file": "webui/static/js/pages/config/page.js",
+      "line": 40,
+      "source": "document.createElement('button')",
+      "label": "document.createElement('button')"
+    },
+    {
+      "file": "webui/static/js/pages/email/page.js",
+      "line": 36,
+      "source": "document.createElement('button')",
+      "label": "document.createElement('button')"
+    },
+    {
+      "file": "webui/static/js/pages/operations/page.js",
+      "line": 48,
+      "source": "document.createElement('button')",
+      "label": "document.createElement('button')"
+    },
+    {
+      "file": "webui/static/js/shared/account-filters.js",
+      "line": 51,
+      "source": "<button type=\"button\" class=\"bulk-filter-chip\" data-clear-query=\"${attrEsc(key)}\">${esc(title)}<span aria-hidden=\"true\">×</span><span class=\"bulk-sr-only\">移除此条件</span></button>",
+      "label": "${esc(title)} ×  移除此条件"
+    },
+    {
+      "file": "webui/static/js/shared/account-filters.js",
+      "line": 86,
+      "source": "<button type=\"button\" data-close-filter aria-label=\"关闭${attrEsc(title)}筛选\">完成</button>",
+      "label": "完成"
+    },
+    {
+      "file": "webui/static/js/shared/common.js",
+      "line": 267,
+      "source": "<button onclick=\"pagerGo('${id}',-1)\"${p.page <= 1 ? ' disabled' : ''}>← 上一页</button>",
+      "label": "← 上一页"
+    },
+    {
+      "file": "webui/static/js/shared/common.js",
+      "line": 269,
+      "source": "<button onclick=\"pagerGo('${id}',1)\"${p.page >= totalPages ? ' disabled' : ''}>下一页 →</button>",
+      "label": "= totalPages ? ' disabled' : ''}>下一页 →"
+    },
+    {
+      "file": "webui/static/js/shared/common.js",
+      "line": 291,
+      "source": "<button type=\"button\" aria-label=\"第 ${i} 页\" onclick=\"pagerGoTo('${id}',${i})\">${i}</button>",
+      "label": "${i}"
+    },
+    {
+      "file": "webui/static/js/shared/common.js",
+      "line": 300,
+      "source": "<button type=\"button\" onclick=\"pagerGo('${id}',-1)\"${p.page <= 1 ? ' disabled' : ''} title=\"上一页\" aria-label=\"上一页\">‹</button>",
+      "label": "‹"
+    },
+    {
+      "file": "webui/static/js/shared/common.js",
+      "line": 302,
+      "source": "<button type=\"button\" onclick=\"pagerGo('${id}',1)\"${p.page >= totalPages ? ' disabled' : ''} title=\"下一页\" aria-label=\"下一页\">›</button>",
+      "label": "= totalPages ? ' disabled' : ''} title=\"下一页\" aria-label=\"下一页\">›"
+    },
+    {
+      "file": "webui/static/js/shared/common.js",
+      "line": 318,
+      "source": "<button type=\"submit\"${jumpDisabled}>跳转</button>",
+      "label": "跳转"
+    },
+    {
+      "file": "webui/static/js/shared/common.js",
+      "line": 676,
+      "source": "<button type=\"button\" class=\"column-filter-option\" role=\"${select.multiple ? 'menuitemcheckbox' : 'menuitemradio'}\"\n      data-column-filter-option=\"${attrEsc(option.value)}\"${statusFilter && option.value ? ` data-filter-status=\"${attrEsc(option.value)}\"` : ''} aria-checked=\"${option.selected ? 'true' : 'false'}\">\n      <span>${esc(option.textContent || option.label || '全部')}</span>\n      <svg class=\"column-filter-option-check\" viewBox=\"0 0 16 16\" aria-hidden=\"true\">${select.multiple ? '<rect x=\"1\" y=\"1\" width=\"14\" height=\"14\" rx=\"3\"></rect>' : ''}<path d=\"m3 8.3 3.1 3L13 4.7\"></path></svg>\n    </button>",
+      "label": "${esc(option.textContent || option.label || '全部')} \n       ${select.multiple ? '  ' : ''}"
+    },
+    {
+      "file": "webui/static/js/shared/common.js",
+      "line": 724,
+      "source": "<button type=\"button\" class=\"column-filter-chip\" data-clear-filter-id=\"${attrEsc(item.id)}\" title=\"清除 ${attrEsc(item.label)} 筛选\"><span>${esc(item.label)}：${esc(item.value)}</span><span class=\"column-filter-chip-close\" aria-hidden=\"true\">×</span></button>",
+      "label": "${esc(item.label)}：${esc(item.value)}  ×"
+    },
+    {
+      "file": "webui/static/js/shared/common.js",
+      "line": 725,
+      "source": "<button type=\"button\" class=\"column-filter-summary-clear\" data-clear-all-column-filters=\"${attrEsc(scope)}\">清除全部</button>",
+      "label": "清除全部"
+    },
+    {
+      "file": "webui/static/js/shared/common.js",
+      "line": 755,
+      "source": "<button type=\"button\" class=\"column-filter-trigger\" data-column-filter-trigger aria-expanded=\"false\" aria-label=\"${attrEsc(filterLabel)}\"><span class=\"column-filter-trigger-label\">${esc(label)}</span>${columnFilterIcon(type)}</button>",
+      "label": "${esc(label)} ${columnFilterIcon(type)}"
+    },
+    {
+      "file": "webui/static/js/shared/common.js",
+      "line": 763,
+      "source": "<button type=\"button\" class=\"column-filter-clear-inline\" data-clear-column-filter aria-label=\"清空${attrEsc(label)}筛选\" title=\"清空\">×</button>",
+      "label": "×"
+    },
+    {
+      "file": "webui/static/js/shared/common.js",
+      "line": 773,
+      "source": "<button type=\"button\" data-close-column-filter>完成</button>",
+      "label": "完成"
+    },
+    {
+      "file": "webui/static/js/shared/common.js",
+      "line": 785,
+      "source": "<button type=\"button\" class=\"column-filter-date-clear\" data-clear-column-filter>清除日期</button>",
+      "label": "清除日期"
+    },
+    {
+      "file": "webui/static/js/shared/common.js",
+      "line": 939,
+      "source": "<button class=\"${cls}\" data-copy-id=\"${id}\" ${id?'':'disabled'}>${label}</button>",
+      "label": "${label}"
+    },
+    {
+      "file": "webui/static/js/shared/page-bridge.js",
+      "line": 44,
+      "source": "document.createElement('button')",
+      "label": "document.createElement('button')"
+    }
+  ],
+  "library_components_to_check": [
+    {
+      "file": "frontend/src/components/FilterPopover.vue",
+      "line": 10,
+      "source": "<PopoverTrigger as-child>"
+    },
+    {
+      "file": "frontend/src/components/FilterPopover.vue",
+      "line": 24,
+      "source": "<PopoverClose class=\"tc-filter-popover-close list-filter-popover__close\" :aria-label=\"`关闭${label}筛选`\" title=\"关闭筛选\">"
+    },
+    {
+      "file": "frontend/src/features/accounts/AccountsTable.vue",
+      "line": 72,
+      "source": "<PopoverRoot :open=\"visible&&!stale&&openAction===entry.id\" :modal=\"false\" @update:open=\"openAction=$event?entry.id:null\"><PopoverTrigger as-child><button type=\"button\" class=\"acc-v2-more-btn\" :disabled=\"stale\" aria-label=\"更多账号操作\">更多</button></PopoverTrigger><PopoverPortal><PopoverContent class=\"ac-row-menu accounts-table-v2\" :data-account-menu=\"entry.id\" side=\"bottom\" align=\"end\" :side-offset=\"4\" :collision-padding=\"8\" @open-auto-focus.prevent><div class=\"acc-v2-more-menu ac-menu-content\" @click=\"handleRowClick($event,entry.row)\" v-html=\"entry.menu\"></div></PopoverContent></PopoverPortal></PopoverRoot>"
+    },
+    {
+      "file": "frontend/src/features/bulk/BulkTargets.vue",
+      "line": 37,
+      "source": "<DialogRoot v-model:open=\"dialogOpen\"><DialogPortal><DialogOverlay class=\"bulk-vue-overlay\"/><DialogContent class=\"bulk-vue-dialog\" @close-auto-focus=\"restore\"><DialogTitle>账号执行详情</DialogTitle><DialogDescription>{{dialogRow?.account}} · 账号 #{{dialogRow?.accountId}}</DialogDescription><dl v-if=\"dialogRow\" class=\"bulk-vue-result-details\"><dt>结果 / 阶段</dt><dd>{{dialogRow.state}} · {{dialogRow.stage||'—'}}</dd><dt>结果摘要</dt><dd>{{dialogRow.summary}}</dd><template v-if=\"dialogRow.capabilities\"><dt>能力结果</dt><dd>{{dialogRow.capabilities}}</dd></template><dt>错误分类 / 错误码</dt><dd>{{dialogRow.reasonContent||'—'}}</dd><dt>所属执行</dt><dd>{{dialogRow.taskId?'任务 #'+dialogRow.taskId:'尚未创建执行'}}{{dialogRow.runId?' · 运行 #'+dialogRow.runId:''}}</dd><template v-if=\"dialogRow.blockerTaskId\"><dt>占用任务（其他执行）</dt><dd>#{{dialogRow.blockerTaskId}}</dd></template></dl><DialogClose class=\"jobs-tb-btn\" data-close-detail>关闭</DialogClose></DialogContent></DialogPortal></DialogRoot>"
+    },
+    {
+      "file": "frontend/src/features/codex/CodexTable.vue",
+      "line": 69,
+      "source": "<PopoverTrigger as-child><button type=\"button\" class=\"ui-link\" :aria-label=\"`更多操作 ${row.filename}`\" :disabled=\"busy\">更多</button></PopoverTrigger>"
+    },
+    {
+      "file": "frontend/src/features/email/EmailInventory.vue",
+      "line": 87,
+      "source": "<td><div class=\"ui-row-actions em-row-actions\"><button class=\"ui-link\" :disabled=\"state.busy\" @click=\"owner.copyRow(row)\">复制素材</button><button class=\"ui-link ui-link--danger\" :disabled=\"state.busy\" @click=\"owner.rowAction(row,'delete')\">删除</button><PopoverRoot v-if=\"!['replaced','pending_sync'].includes(row.status||'')\" :open=\"openAction===keyOf(row)\" :modal=\"false\" @update:open=\"openAction=$event?keyOf(row):null\"><PopoverTrigger as-child><button type=\"button\" class=\"ui-link\" :disabled=\"state.busy\" :aria-label=\"`更多邮箱操作 ${row.email}`\">更多</button></PopoverTrigger><PopoverPortal><PopoverContent class=\"em-row-menu\" :aria-label=\"`${row.email} 的更多操作`\" side=\"bottom\" align=\"end\" :side-offset=\"6\" :collision-padding=\"10\" hide-when-detached @open-auto-focus.prevent><button v-for=\"([status,label]) in actionsFor(row)\" :key=\"status\" type=\"button\" :class=\"{'is-danger':status==='failed'}\" :disabled=\"state.busy\" @click=\"runMore(row,status)\">{{ label }}</button></PopoverContent></PopoverPortal></PopoverRoot></div></td>"
+    }
+  ]
+}

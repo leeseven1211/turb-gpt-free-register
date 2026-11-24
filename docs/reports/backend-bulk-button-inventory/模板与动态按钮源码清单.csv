@@ -1,0 +1,95 @@
+﻿来源,文件,行号,标签或片段,按钮文案,处理函数或表单
+HTML模板,webui/templates/index.html,70,button,     总览 ,{}
+HTML模板,webui/templates/index.html,77,button,   注册 Live ,{}
+HTML模板,webui/templates/index.html,82,button, 发起注册,{}
+HTML模板,webui/templates/index.html,86,button,   账号 ,{}
+HTML模板,webui/templates/index.html,91,button, 活跃账号,{}
+HTML模板,webui/templates/index.html,92,button, 归档账号,{}
+HTML模板,webui/templates/index.html,96,button,   Codex 授权 ,{}
+HTML模板,webui/templates/index.html,101,button, 活跃账号,{}
+HTML模板,webui/templates/index.html,102,button, 归档账号,{}
+HTML模板,webui/templates/index.html,106,button,   批量任务 ,{}
+HTML模板,webui/templates/index.html,111,button, 批次列表,{}
+HTML模板,webui/templates/index.html,112,button, 新建批次,{}
+HTML模板,webui/templates/index.html,115,button,   任务中心 统一 ,{}
+HTML模板,webui/templates/index.html,120,button,   提链工作台 ,{}
+HTML模板,webui/templates/index.html,125,button, 任务列表,{}
+HTML模板,webui/templates/index.html,126,button, 提链统计,{}
+HTML模板,webui/templates/index.html,130,button,   邮箱池 ,{}
+HTML模板,webui/templates/index.html,135,button, 资源总览,{}
+HTML模板,webui/templates/index.html,136,button, 邮箱列表,{}
+HTML模板,webui/templates/index.html,137,button, 历史子邮箱,{}
+HTML模板,webui/templates/index.html,141,button,   代理与流量 ,{}
+HTML模板,webui/templates/index.html,146,button, 代理池库存,{}
+HTML模板,webui/templates/index.html,147,button, 租约与流量,{}
+HTML模板,webui/templates/index.html,151,button,     配置  0 ,{}
+HTML模板,webui/templates/index.html,161,button,     退出登录 ,"{'class': 'sidebar-logout', 'method': 'post', 'action': '/logout'}"
+HTML模板,webui/templates/index.html,174,button,  ,{}
+HTML模板,webui/templates/index.html,177,button,  ,{}
+HTML模板,webui/templates/index.html,266,button, 关闭,{}
+HTML模板,webui/templates/index.html,307,button, 关闭,closeQrModal()
+HTML模板,webui/templates/login.html,47,button,           ,"{'class': 'card', 'method': 'post', 'action': '{{ login_url }}', 'aria-describedby': 'loginDescription'}"
+HTML模板,webui/templates/login.html,67,button, 进入控制台,"{'class': 'card', 'method': 'post', 'action': '{{ login_url }}', 'aria-describedby': 'loginDescription'}"
+JS动态生成,webui/static/js/pages/accounts/bridge.js,123,document.createElement('button'),document.createElement('button'),见源码事件委托
+JS动态生成,webui/static/js/pages/accounts/page.js,970,"<button data-plan-check=""${esc(r.id)}"" disabled title=""套餐查询正在执行，完成后可再次查询"">${label}</button>",${label},见源码事件委托
+JS动态生成,webui/static/js/pages/accounts/page.js,972,"<button data-plan-check=""${esc(r.id)}"" title=""查询当前套餐以及 Go、Plus 免费试用或折扣优惠"">查套餐</button>",查套餐,见源码事件委托
+JS动态生成,webui/static/js/pages/accounts/page.js,1004,"<button disabled title=""${esc(r.extract_link_message || '提链任务执行中')}"">提链中…</button>",提链中…,见源码事件委托
+JS动态生成,webui/static/js/pages/accounts/page.js,1009,"<button class=""good"" data-extract-link=""${esc(r.id)}"" title=""${esc(failedReason ? '重新提链；上次失败原因：' + failedReason : '为已确认 Plus 免费试用资格的 free 账号创建提链任务')}"">提链</button>",提链,见源码事件委托
+JS动态生成,webui/static/js/pages/accounts/page.js,1016,"<button class=""danger"" data-codex-stop=""${esc(r.email)}"" title=""协作式停止该账号正在进行的 Codex 补跑"">${exec === 'cancelling' ? '停止中…' : '停止补跑'}</button>",${exec === 'cancelling' ? '停止中…' : '停止补跑'},见源码事件委托
+JS动态生成,webui/static/js/pages/accounts/page.js,1020,"<button data-codex-retry=""${esc(r.email)}"" title=""重新跑一次 Codex 授权；按实际验证要求使用邮箱 OTP 和手机接码"">${label}</button>",${label},见源码事件委托
+JS动态生成,webui/static/js/pages/accounts/page.js,1056,"<button type=""button"" class=""acc-v2-token-state is-${attrEsc(state.key)}"" data-account-copy-secret=""access_token"" data-account-id=""${esc(r.id)}"" title=""${esc(state.title)}"">${esc(label)}</button>",${esc(label)},见源码事件委托
+JS动态生成,webui/static/js/pages/accounts/page.js,1063,"<button type=""button"" class=""acc-v2-token-copy"" data-account-copy-secret=""account_password"" data-account-id=""${esc(r.id)}"" title=""本地已保存；点击复制账号密码。本地保存不代表远端已接受。"">复制</button>",复制,见源码事件委托
+JS动态生成,webui/static/js/pages/accounts/page.js,1082,"<button type=""button"" data-account-totp-copy=""${esc(r.id)}"" title=""获取并复制当前 6 位 TOTP 验证码"">复制</button>",复制,见源码事件委托
+JS动态生成,webui/static/js/pages/accounts/page.js,1083,"<button type=""button"" data-account-action=""twofa"" data-account-id=""${esc(r.id)}""${accountIsDeactivated(r) ? ' disabled title=""账号已停用，无法补充 2FA""' : ' title=""为该账号补充 Authenticator 2FA""'}>补充</button>",补充,见源码事件委托
+JS动态生成,webui/static/js/pages/accounts/page.js,1133,"<button type=""button"" data-deactivation-mail-check=""${esc(r.id)}""${disabledAttr} title=""${esc(buttonTitle)}"">复查</button>",复查,见源码事件委托
+JS动态生成,webui/static/js/pages/accounts/page.js,1139,"<button type=""button"" data-account-registration-task=""${esc(retry.source_job_id)}"" data-account-id=""${esc(r.id)}"" title=""${esc(retry.reason || '原注册任务正在执行')}"">查看进行中的注册任务</button>",查看进行中的注册任务,见源码事件委托
+JS动态生成,webui/static/js/pages/accounts/page.js,1141,"<button type=""button"" data-account-registration-retry=""${esc(r.id)}"" title=""${esc(retry.reason || '复用原注册记录，继续未完成步骤')}"">${esc(retry.label || '重跑注册')}</button>",${esc(retry.label || '重跑注册')},见源码事件委托
+JS动态生成,webui/static/js/pages/accounts/page.js,1142,"<button type=""button"" title=""${esc(retry.reason || '当前没有可重跑的原注册任务')}"" disabled>重跑注册</button>",重跑注册,见源码事件委托
+JS动态生成,webui/static/js/pages/accounts/page.js,1144,"<button type=""button"" data-account-copy-secret=""copy_line"" data-account-id=""${esc(r.id)}"">复制整行</button>",复制整行,见源码事件委托
+JS动态生成,webui/static/js/pages/accounts/page.js,1145,"<button type=""button"" data-account-copy-secret=""chatgpt_session"" data-account-id=""${esc(r.id)}"" title=""复制完整 ChatGPT session JSON"">复制 ChatGPT session</button>",复制 ChatGPT session,见源码事件委托
+JS动态生成,webui/static/js/pages/accounts/page.js,1146,"<button type=""button"" data-account-copy-secret=""account_password"" data-account-id=""${esc(r.id)}"">复制账号密码</button>",复制账号密码,见源码事件委托
+JS动态生成,webui/static/js/pages/accounts/page.js,1147,"<button type=""button"" data-account-action=""password"" data-account-id=""${esc(r.id)}"">补密码</button>",补密码,见源码事件委托
+JS动态生成,webui/static/js/pages/accounts/page.js,1148,"<button type=""button"" data-account-action=""twofa"" data-account-id=""${esc(r.id)}"">补 2FA</button>",补 2FA,见源码事件委托
+JS动态生成,webui/static/js/pages/accounts/page.js,1149,"<button type=""button"" data-account-action=""password_change"" data-account-id=""${esc(r.id)}"">修改密码</button>",修改密码,见源码事件委托
+JS动态生成,webui/static/js/pages/accounts/page.js,1150,"<button type=""button"" data-account-action=""twofa_change"" data-account-id=""${esc(r.id)}"">修改 2FA</button>",修改 2FA,见源码事件委托
+JS动态生成,webui/static/js/pages/accounts/page.js,1151,"<button type=""button"" data-account-action=""complete"" data-account-id=""${esc(r.id)}"">补全账号</button>",补全账号,见源码事件委托
+JS动态生成,webui/static/js/pages/accounts/page.js,1153,"<button type=""button"" data-account-email-change=""${esc(r.id)}"" title=""协议自动领取新邮箱并换绑；不会启动浏览器"">换绑邮箱</button>",换绑邮箱,见源码事件委托
+JS动态生成,webui/static/js/pages/accounts/page.js,1154,"<button type=""button"" onclick=""checkSelectedLive([Number('${esc(r.id)}')], this); return false;"" title=""只在线验证现有 Token；不会发送邮箱验证码或刷新 AT"">查活</button>",查活,见源码事件委托
+JS动态生成,webui/static/js/pages/accounts/page.js,1155,"<button type=""button"" onclick=""refreshSelectedToken([Number('${esc(r.id)}')], this); return false;"" title=""${esc(accountAtRefreshUiSettings().title)}"">刷新AT</button>",刷新AT,见源码事件委托
+JS动态生成,webui/static/js/pages/accounts/page.js,1156,"<button type=""button"" data-account-restore=""${esc(r.id)}"" title=""已确认 OpenAI 恢复访问权限后，解除本地停用标记"">已解封，恢复账号</button>",已解封，恢复账号,见源码事件委托
+JS动态生成,webui/static/js/pages/accounts/page.js,1157,"<button type=""button"" data-account-email-invalid=""${esc(r.id)}"" data-invalid=""${r.email_invalid === true ? '0' : '1'}"" title=""仅更新独立邮箱失效标记，不修改 OpenAI 账号状态"">${r.email_invalid === true ? '解除邮箱失效' : '标记邮箱失效'}</button>",${r.email_invalid === true ? '解除邮箱失效' : '标记邮箱失效'},见源码事件委托
+JS动态生成,webui/static/js/pages/accounts/page.js,1158,"<button type=""button"" data-account-task-history=""${esc(r.email)}"" title=""在任务实例中查看该账号的 Codex 补跑、查活、AT 刷新、套餐和封号邮件历史"">任务记录</button>",任务记录,见源码事件委托
+JS动态生成,webui/static/js/pages/accounts/page.js,1166,"<button type=""button"" data-account-archive=""${esc(r.id)}"" data-archived=""${r.archived ? '0' : '1'}"" title=""${r.archived ? '恢复到默认账号列表' : '归档后默认账号列表不再显示'}"">${r.archived ? '恢复' : '归档'}</button>",${r.archived ? '恢复' : '归档'},见源码事件委托
+JS动态生成,webui/static/js/pages/accounts/page.js,1167,"<button type=""button"" class=""danger"" data-account-delete=""${esc(r.id)}"" data-email=""${esc(r.email)}"" title=""删除该账号本地记录；不可撤销"">删除账号</button>",删除账号,见源码事件委托
+JS动态生成,webui/static/js/pages/codex/page.js,43,document.createElement('button'),document.createElement('button'),见源码事件委托
+JS动态生成,webui/static/js/pages/config/page.js,40,document.createElement('button'),document.createElement('button'),见源码事件委托
+JS动态生成,webui/static/js/pages/email/page.js,36,document.createElement('button'),document.createElement('button'),见源码事件委托
+JS动态生成,webui/static/js/pages/operations/page.js,48,document.createElement('button'),document.createElement('button'),见源码事件委托
+JS动态生成,webui/static/js/shared/account-filters.js,51,"<button type=""button"" class=""bulk-filter-chip"" data-clear-query=""${attrEsc(key)}"">${esc(title)}<span aria-hidden=""true"">×</span><span class=""bulk-sr-only"">移除此条件</span></button>",${esc(title)} ×  移除此条件,见源码事件委托
+JS动态生成,webui/static/js/shared/account-filters.js,86,"<button type=""button"" data-close-filter aria-label=""关闭${attrEsc(title)}筛选"">完成</button>",完成,见源码事件委托
+JS动态生成,webui/static/js/shared/common.js,267,"<button onclick=""pagerGo('${id}',-1)""${p.page <= 1 ? ' disabled' : ''}>← 上一页</button>",← 上一页,见源码事件委托
+JS动态生成,webui/static/js/shared/common.js,269,"<button onclick=""pagerGo('${id}',1)""${p.page >= totalPages ? ' disabled' : ''}>下一页 →</button>",= totalPages ? ' disabled' : ''}>下一页 →,见源码事件委托
+JS动态生成,webui/static/js/shared/common.js,291,"<button type=""button"" aria-label=""第 ${i} 页"" onclick=""pagerGoTo('${id}',${i})"">${i}</button>",${i},见源码事件委托
+JS动态生成,webui/static/js/shared/common.js,300,"<button type=""button"" onclick=""pagerGo('${id}',-1)""${p.page <= 1 ? ' disabled' : ''} title=""上一页"" aria-label=""上一页"">‹</button>",‹,见源码事件委托
+JS动态生成,webui/static/js/shared/common.js,302,"<button type=""button"" onclick=""pagerGo('${id}',1)""${p.page >= totalPages ? ' disabled' : ''} title=""下一页"" aria-label=""下一页"">›</button>","= totalPages ? ' disabled' : ''} title=""下一页"" aria-label=""下一页"">›",见源码事件委托
+JS动态生成,webui/static/js/shared/common.js,318,"<button type=""submit""${jumpDisabled}>跳转</button>",跳转,见源码事件委托
+JS动态生成,webui/static/js/shared/common.js,676,"<button type=""button"" class=""column-filter-option"" role=""${select.multiple ? 'menuitemcheckbox' : 'menuitemradio'}""
+      data-column-filter-option=""${attrEsc(option.value)}""${statusFilter && option.value ? ` data-filter-status=""${attrEsc(option.value)}""` : ''} aria-checked=""${option.selected ? 'true' : 'false'}"">
+      <span>${esc(option.textContent || option.label || '全部')}</span>
+      <svg class=""column-filter-option-check"" viewBox=""0 0 16 16"" aria-hidden=""true"">${select.multiple ? '<rect x=""1"" y=""1"" width=""14"" height=""14"" rx=""3""></rect>' : ''}<path d=""m3 8.3 3.1 3L13 4.7""></path></svg>
+    </button>","${esc(option.textContent || option.label || '全部')} 
+       ${select.multiple ? '  ' : ''}",见源码事件委托
+JS动态生成,webui/static/js/shared/common.js,724,"<button type=""button"" class=""column-filter-chip"" data-clear-filter-id=""${attrEsc(item.id)}"" title=""清除 ${attrEsc(item.label)} 筛选""><span>${esc(item.label)}：${esc(item.value)}</span><span class=""column-filter-chip-close"" aria-hidden=""true"">×</span></button>",${esc(item.label)}：${esc(item.value)}  ×,见源码事件委托
+JS动态生成,webui/static/js/shared/common.js,725,"<button type=""button"" class=""column-filter-summary-clear"" data-clear-all-column-filters=""${attrEsc(scope)}"">清除全部</button>",清除全部,见源码事件委托
+JS动态生成,webui/static/js/shared/common.js,755,"<button type=""button"" class=""column-filter-trigger"" data-column-filter-trigger aria-expanded=""false"" aria-label=""${attrEsc(filterLabel)}""><span class=""column-filter-trigger-label"">${esc(label)}</span>${columnFilterIcon(type)}</button>",${esc(label)} ${columnFilterIcon(type)},见源码事件委托
+JS动态生成,webui/static/js/shared/common.js,763,"<button type=""button"" class=""column-filter-clear-inline"" data-clear-column-filter aria-label=""清空${attrEsc(label)}筛选"" title=""清空"">×</button>",×,见源码事件委托
+JS动态生成,webui/static/js/shared/common.js,773,"<button type=""button"" data-close-column-filter>完成</button>",完成,见源码事件委托
+JS动态生成,webui/static/js/shared/common.js,785,"<button type=""button"" class=""column-filter-date-clear"" data-clear-column-filter>清除日期</button>",清除日期,见源码事件委托
+JS动态生成,webui/static/js/shared/common.js,939,"<button class=""${cls}"" data-copy-id=""${id}"" ${id?'':'disabled'}>${label}</button>",${label},见源码事件委托
+JS动态生成,webui/static/js/shared/page-bridge.js,44,document.createElement('button'),document.createElement('button'),见源码事件委托
+组件库按钮核对,frontend/src/components/FilterPopover.vue,10,<PopoverTrigger as-child>,,需核对as-child是否已有原生按钮
+组件库按钮核对,frontend/src/components/FilterPopover.vue,24,"<PopoverClose class=""tc-filter-popover-close list-filter-popover__close"" :aria-label=""`关闭${label}筛选`"" title=""关闭筛选"">",,需核对as-child是否已有原生按钮
+组件库按钮核对,frontend/src/features/accounts/AccountsTable.vue,72,"<PopoverRoot :open=""visible&&!stale&&openAction===entry.id"" :modal=""false"" @update:open=""openAction=$event?entry.id:null""><PopoverTrigger as-child><button type=""button"" class=""acc-v2-more-btn"" :disabled=""stale"" aria-label=""更多账号操作"">更多</button></PopoverTrigger><PopoverPortal><PopoverContent class=""ac-row-menu accounts-table-v2"" :data-account-menu=""entry.id"" side=""bottom"" align=""end"" :side-offset=""4"" :collision-padding=""8"" @open-auto-focus.prevent><div class=""acc-v2-more-menu ac-menu-content"" @click=""handleRowClick($event,entry.row)"" v-html=""entry.menu""></div></PopoverContent></PopoverPortal></PopoverRoot>",,需核对as-child是否已有原生按钮
+组件库按钮核对,frontend/src/features/bulk/BulkTargets.vue,37,"<DialogRoot v-model:open=""dialogOpen""><DialogPortal><DialogOverlay class=""bulk-vue-overlay""/><DialogContent class=""bulk-vue-dialog"" @close-auto-focus=""restore""><DialogTitle>账号执行详情</DialogTitle><DialogDescription>{{dialogRow?.account}} · 账号 #{{dialogRow?.accountId}}</DialogDescription><dl v-if=""dialogRow"" class=""bulk-vue-result-details""><dt>结果 / 阶段</dt><dd>{{dialogRow.state}} · {{dialogRow.stage||'—'}}</dd><dt>结果摘要</dt><dd>{{dialogRow.summary}}</dd><template v-if=""dialogRow.capabilities""><dt>能力结果</dt><dd>{{dialogRow.capabilities}}</dd></template><dt>错误分类 / 错误码</dt><dd>{{dialogRow.reasonContent||'—'}}</dd><dt>所属执行</dt><dd>{{dialogRow.taskId?'任务 #'+dialogRow.taskId:'尚未创建执行'}}{{dialogRow.runId?' · 运行 #'+dialogRow.runId:''}}</dd><template v-if=""dialogRow.blockerTaskId""><dt>占用任务（其他执行）</dt><dd>#{{dialogRow.blockerTaskId}}</dd></template></dl><DialogClose class=""jobs-tb-btn"" data-close-detail>关闭</DialogClose></DialogContent></DialogPortal></DialogRoot>",,需核对as-child是否已有原生按钮
+组件库按钮核对,frontend/src/features/codex/CodexTable.vue,69,"<PopoverTrigger as-child><button type=""button"" class=""ui-link"" :aria-label=""`更多操作 ${row.filename}`"" :disabled=""busy"">更多</button></PopoverTrigger>",,需核对as-child是否已有原生按钮
+组件库按钮核对,frontend/src/features/email/EmailInventory.vue,87,"<td><div class=""ui-row-actions em-row-actions""><button class=""ui-link"" :disabled=""state.busy"" @click=""owner.copyRow(row)"">复制素材</button><button class=""ui-link ui-link--danger"" :disabled=""state.busy"" @click=""owner.rowAction(row,'delete')"">删除</button><PopoverRoot v-if=""!['replaced','pending_sync'].includes(row.status||'')"" :open=""openAction===keyOf(row)"" :modal=""false"" @update:open=""openAction=$event?keyOf(row):null""><PopoverTrigger as-child><button type=""button"" class=""ui-link"" :disabled=""state.busy"" :aria-label=""`更多邮箱操作 ${row.email}`"">更多</button></PopoverTrigger><PopoverPortal><PopoverContent class=""em-row-menu"" :aria-label=""`${row.email} 的更多操作`"" side=""bottom"" align=""end"" :side-offset=""6"" :collision-padding=""10"" hide-when-detached @open-auto-focus.prevent><button v-for=""([status,label]) in actionsFor(row)"" :key=""status"" type=""button"" :class=""{'is-danger':status==='failed'}"" :disabled=""state.busy"" @click=""runMore(row,status)"">{{ label }}</button></PopoverContent></PopoverPortal></PopoverRoot></div></td>",,需核对as-child是否已有原生按钮
