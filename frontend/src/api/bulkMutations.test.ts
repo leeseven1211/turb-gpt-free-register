@@ -1,8 +1,23 @@
 import {afterEach,describe,expect,it,vi} from 'vitest';
 import {BulkMutationPendingError,parseBulkMutationJson,projectBulkMutation,submitBulkMutation} from './bulkMutations';
+import {ApiError} from './client';
 
 afterEach(()=>vi.useRealTimers());
 describe('durable bulk mutation receipts',()=>{
+ it.each([400,409])('preserves HTTP %s rejection before the command has been accepted',async status=>{
+  const failure=new ApiError('选择无效或幂等冲突',status,'request_rejected'),send=vi.fn().mockRejectedValue(failure);
+  await expect(submitBulkMutation(send,'/api/accounts/archive-bulk',{})).rejects.toBe(failure);
+  expect(send).toHaveBeenCalledTimes(1);
+ });
+ it('retains the accepted command and exact query error without claiming mutation failure',async()=>{
+  const failure=new ApiError('登录已失效',401,'session_expired'),send=vi.fn()
+   .mockResolvedValueOnce({accepted:true,command_id:'104'}).mockRejectedValueOnce(failure);
+  await expect(submitBulkMutation(send,'/api/accounts/archive-bulk',{})).rejects.toMatchObject({
+   name:'BulkMutationPendingError',commandId:'104',cause:failure,status:401,code:'session_expired',
+   message:expect.stringMatching(/已受理.*104.*结果查询失败.*登录已失效/),
+  });
+  expect(send.mock.calls.filter(call=>call[1]?.method==='POST')).toHaveLength(1);
+ });
  it.each(['stopped','deactivated','unsupported','attention_required'])('recognizes durable %s as terminal without polling forever',async status=>{
   vi.useFakeTimers();
   const send=vi.fn().mockResolvedValueOnce({accepted:true,command_id:'103'}).mockResolvedValueOnce({status,items:[],next_offset:null});

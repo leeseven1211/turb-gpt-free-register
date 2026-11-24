@@ -1,4 +1,4 @@
-import {request} from './client';
+import {ApiError,request} from './client';
 import {parseTaskJson} from './taskIds';
 
 export type BulkMutationRequest=(path:string,options?:RequestInit)=>Promise<unknown>;
@@ -13,9 +13,12 @@ export interface BulkMutationOptions {
  onAccepted?(receipt:BulkMutationReceipt):void;
 }
 export class BulkMutationPendingError extends Error {
- constructor(public readonly commandId:string,public readonly receipt:BulkMutationReceipt){
-  super(`批量命令已受理，仍在执行或等待结果确认（命令 ${commandId}）。请在任务中心查看进度，勿重复提交。`);
+ readonly status?:number;
+ readonly code?:string;
+ constructor(public readonly commandId:string,public readonly receipt:BulkMutationReceipt,cause?:unknown){
+  super(`批量命令已受理，仍在执行或等待结果确认（命令 ${commandId}）。${cause instanceof ApiError?`结果查询失败：${cause.message}。`:''}请在任务中心查看进度，勿重复提交。`,cause===undefined?undefined:{cause});
   this.name='BulkMutationPendingError';
+  if(cause instanceof ApiError){this.status=cause.status;this.code=cause.code;}
  }
 }
 function object(value:unknown):BulkMutationReceipt {
@@ -95,7 +98,7 @@ export async function submitBulkMutation(send:BulkMutationRequest,path:string,bo
   }
  };
  try{return await Promise.race([polling(),stop]);}
- catch{throw pending();}
+ catch(cause){throw cause instanceof BulkMutationPendingError?cause:new BulkMutationPendingError(commandId,initial,cause);}
  finally{if(timer!==undefined)clearTimeout(timer);if(wake)options.signal?.removeEventListener('abort',wake);}
 }
 /** The existing UI consumes legacy receipt fields; only updated item receipts acknowledge selection. */

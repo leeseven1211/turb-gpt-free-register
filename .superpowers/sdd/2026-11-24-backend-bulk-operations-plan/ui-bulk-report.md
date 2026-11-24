@@ -37,3 +37,11 @@ git diff --check
 - 所有等待超过 30 秒的命令保留原选择，用户可在任务中心查看执行结果；此改动不增加新的后台常驻前端轮询流程。
 - 后端 GET 默认页 500，next_offset=null 表示结束；前端支持显式后续分页。已提醒集成 agent 将 command/task/run 及账号 key/data.id 序列化为规范字符串。
 - 主线程仍需进行统一前后端契约验证与浏览器验收。
+
+## 后续复核和错误证据保留
+
+2026-11-24 追加核对：初始 POST 在受理后的等待 try/catch 之外，400/409 的原始 ApiError 始终保留；新增保护测试确认不转为 pending、不重发。命令已受理后的 GET 错误不能证明业务命令失败，仍使用 BulkMutationPendingError 提示原 command_id，但现在通过 cause 保留原始查询异常，并对 ApiError 保留 status/code 和用户可读查询错误信息，避免吞掉登录过期等诊断。
+
+最终前端专项验证：6 个测试文件、119 tests 通过，vue-tsc --noEmit 通过。
+
+Task 6 `a3dd26e0` 独立只读复核：此前关于同 Job 多 RegistrationRun 覆盖 running 的发现撤回。`core/storage/registration/__init__.py:413` 的唯一索引 `registration_runs_job_idx ON(job_id) WHERE job_id IS NOT NULL` 禁止该场景；历史 sibling Run 的 job_id 为 NULL，不参与对应 Job 的删除资格。没有移除约束制造回归，也没有修改 bulk_facts。Task 6 三文件隔离 PostgreSQL 复跑结果为 `79 passed, 88 subtests passed`，现有运行中 Job、排队取消、FK 解联和历史保留断言均通过；此次复核无阻断项。
