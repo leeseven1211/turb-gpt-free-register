@@ -228,9 +228,9 @@ function le(e, t) {
 			let a = await e.bulkDelete({
 				items: r,
 				source: i
-			});
+			}), o = new Set((Array.isArray(a.deleted) ? a.deleted : []).map((e) => K(e)));
 			for (let e of Array.isArray(a.deleted) ? a.deleted : []) n.selected.delete(K(e));
-			n.receipt = J("删除结果", d(a, "delete"), "success"), await l();
+			o.size && (n.items = n.items.filter((e) => !o.has(K(e))), n.total = Math.max(0, n.total - o.size)), n.receipt = J("删除结果", d(a, "delete"), "success"), l();
 		});
 	}
 	async function p(r) {
@@ -259,7 +259,7 @@ function le(e, t) {
 			if (i === "delete") {
 				if (!await t.confirm(`确定从本地邮箱池移除 ${a.email}？\n\n保留使用历史；缺少注册完成回执时保留原租约，确认账号未创建后才可退还。已确认注册成功的邮箱不能删除。`)) return;
 				let r = await e.delete(a);
-				r.deleted ? (n.selected.delete(K(a)), n.receipt = J("本地已移除", r.sync?.message || "本地已移除，保留使用历史", "success"), await l()) : n.receipt = J("未移除", r.reason || "邮箱未移除", "warning");
+				r.deleted ? (n.selected.delete(K(a)), n.items = n.items.filter((e) => K(e) !== K(a)), n.total = Math.max(0, n.total - 1), n.receipt = J("本地已移除", r.sync?.message || "本地已移除，保留使用历史", "success"), l()) : n.receipt = J("未移除", r.reason || "邮箱未移除", "warning");
 			} else {
 				if (["replaced", "pending_sync"].includes(r.status || "")) return;
 				let t = {

@@ -27,7 +27,7 @@ export function useEmailInventory(api:EmailApi,deps:EmailMountDependencies){
  }
  async function bulkDelete(){
   const items=Array.from(state.selected.values(),identity),source=state.filters.source;if(!items.length||state.busy)return;
-  await write(async()=>{if(!await deps.confirm(`确定从本地邮箱池移除选中的 ${items.length} 个邮箱吗？\n\n${deletionWarning}`))return;const result=await api.bulkDelete({items,source});for(const row of Array.isArray(result.deleted)?result.deleted:[])state.selected.delete(keyOf(row));state.receipt=receipt('删除结果',mutationDetail(result,'delete'),'success');await sharedRefresh();});
+  await write(async()=>{if(!await deps.confirm(`确定从本地邮箱池移除选中的 ${items.length} 个邮箱吗？\n\n${deletionWarning}`))return;const result=await api.bulkDelete({items,source});const removed=new Set((Array.isArray(result.deleted)?result.deleted:[]).map((row:any)=>keyOf(row)));for(const row of Array.isArray(result.deleted)?result.deleted:[])state.selected.delete(keyOf(row));if(removed.size){state.items=state.items.filter(row=>!removed.has(keyOf(row)));state.total=Math.max(0,state.total-removed.size);}state.receipt=receipt('删除结果',mutationDetail(result,'delete'),'success');void sharedRefresh();});
  }
  async function bulkStatus(status:string){
   const items=Array.from(state.selected.values(),identity),source=state.filters.source;if(!items.length||state.busy)return;
@@ -38,7 +38,7 @@ export function useEmailInventory(api:EmailApi,deps:EmailMountDependencies){
   const item=identity(row);await write(async()=>{
    if(action==='delete'){
     if(!await deps.confirm(`确定从本地邮箱池移除 ${item.email}？\n\n${deletionWarning}`))return;
-    const result=await api.delete(item);if(result.deleted){state.selected.delete(keyOf(item));state.receipt=receipt('本地已移除',result.sync?.message||'本地已移除，保留使用历史','success');await sharedRefresh();}
+    const result=await api.delete(item);if(result.deleted){state.selected.delete(keyOf(item));state.items=state.items.filter(row=>keyOf(row)!==keyOf(item));state.total=Math.max(0,state.total-1);state.receipt=receipt('本地已移除',result.sync?.message||'本地已移除，保留使用历史','success');void sharedRefresh();}
     else state.receipt=receipt('未移除',result.reason||'邮箱未移除','warning');
    }else{
     if(['replaced','pending_sync'].includes(row.status||''))return;
