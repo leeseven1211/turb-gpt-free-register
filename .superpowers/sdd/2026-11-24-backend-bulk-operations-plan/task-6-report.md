@@ -18,3 +18,7 @@
 - `npm --prefix frontend run generate:api`、`npm --prefix frontend run check:api` 和 Task 6 路径的 `git diff --check` 均通过。
 
 注册 `/api/jobs/retry-bulk` 仍调用既有驱动分支与原重跑服务。`/api/jobs/batches/<batch_id>/stop` 保留运行中逐 Job 的协作取消。注册本次验收使用本地事实和隔离数据库，涵盖历史归属与选中范围。
+
+追加叶模块（未接路由）
+
+- `core/storage/operations/bulk_facts.py:38` 增加 `request_cancel_runs_many`，按选中 Run 预取、Run→Task 固定锁序、租约取消标记、事件和 managed change 同一事务受理，仅接受 queued Run，避免把运行中终止降级为集合强杀。当前注册批量提交和 retry 仍需要沿用 `registration.service` 的 driver/Attempt/Run 单任务边界，尚未接入新路由。

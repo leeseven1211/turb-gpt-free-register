@@ -7,6 +7,7 @@ from typing import Any
 from core.operations import run_log
 from core.storage import postgres, records as record_store, registration
 from core.storage.operations import common, projection, schema
+from core.bulk_operations import execution as bulk_execution
 
 
 def delete_tasks_many(task_ids: Iterable[int]) -> dict[str, Any]:
@@ -69,6 +70,88 @@ def delete_tasks_many(task_ids: Iterable[int]) -> dict[str, Any]:
     return {
         "deleted": deleted,
         "deleted_count": len(deleted),
+        "skipped": skipped,
+        "skipped_count": len(skipped),
+    }
+
+
+def request_cancel_runs_many(
+    run_ids: Iterable[int],
+    *,
+    expected_status: str | None = None,
+    reason: str = "用户手动取消",
+) -> dict[str, Any]:
+    """在一个事务内受理选中排队 Run 的协作式取消。"""
+    normalized = sorted({
+        int(value) for value in run_ids
+        if not isinstance(value, bool) and int(value) > 0
+    })
+    if not normalized:
+        return {"cancelled": [], "cancelled_count": 0, "skipped": [], "skipped_count": 0}
+    schema.init_operation_schema()
+    cancelled: list[int] = []
+    skipped: list[dict[str, Any]] = []
+    batch_ids: set[int] = set()
+    with common._connect() as conn, conn.cursor() as cur:
+        for run_id in normalized:
+            managed = bulk_execution.lock_run(conn, run_id)
+            cur.execute(
+                f"""SELECT run.*, task.status AS task_status
+                    FROM {common._table('operation_runs')} run
+                    JOIN {common._table('operation_tasks')} task ON task.id=run.task_id
+                    WHERE run.id=%s FOR UPDATE OF run,task""",
+                (run_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                skipped.append({"run_id": run_id, "error": "执行实例不存在"})
+                continue
+            status = str(row.get("status") or "").strip().lower()
+            if expected_status and status != str(expected_status).strip().lower():
+                skipped.append({"run_id": run_id, "error": "任务状态已变化，请刷新后重试"})
+                continue
+            if status != "queued":
+                skipped.append({"run_id": run_id, "error": "只有排队中的任务可以取消"})
+                continue
+            cur.execute(
+                f"""UPDATE {common._table('operation_runs')}
+                    SET status='cancelled', cancel_requested_at=COALESCE(cancel_requested_at, now()),
+                        cancel_reason=%s, heartbeat_at=now(), completed_at=now()
+                    WHERE id=%s RETURNING *""",
+                (common._text(reason, 500), run_id),
+            )
+            updated = cur.fetchone()
+            cur.execute(
+                f"""UPDATE {common._table('operation_tasks')}
+                    SET status='cancelled', current_stage='complete', completed_at=now(), updated_at=now()
+                    WHERE id=%s""",
+                (int(row["task_id"]),),
+            )
+            cur.execute(
+                f"UPDATE {common._table('account_operation_leases')} SET cancel_requested_at=now() WHERE run_id=%s",
+                (run_id,),
+            )
+            cur.execute(
+                f"""INSERT INTO {common._table('operation_events')}
+                    (event_uuid,task_id,run_id,source_system,source_id,level,stage,event_type,message,detail)
+                    VALUES (%s,%s,%s,%s,%s,'WARNING','complete','run.cancel_requested',%s,%s::jsonb)""",
+                (
+                    common._uuid("event", f"bulk_cancel:{run_id}"),
+                    int(row["task_id"]), run_id, str(row["source_system"] or "native_operations"),
+                    common._uuid("cancel", run_id), common._text(reason, 1400),
+                    common._json({"previous_status": status, "status": "cancelled"}),
+                ),
+            )
+            if row.get("batch_id"):
+                batch_ids.add(int(row["batch_id"]))
+            bulk_execution.changed(conn, managed, event_kind="run.cancel_requested")
+            cancelled.append(run_id)
+    if batch_ids:
+        with common._connect() as conn, conn.cursor() as cur:
+            projection._refresh_batches(cur, batch_ids)
+    return {
+        "cancelled": cancelled,
+        "cancelled_count": len(cancelled),
         "skipped": skipped,
         "skipped_count": len(skipped),
     }
