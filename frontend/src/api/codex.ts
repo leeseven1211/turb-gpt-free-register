@@ -1,5 +1,6 @@
 import type {components} from './codex-schema';
 import {ApiError, request} from './client';
+import {bulkMutationRequest,projectBulkMutation,submitBulkMutation,type BulkMutationOptions} from './bulkMutations';
 
 export type CodexRow = components['schemas']['CodexRow'];
 export type CodexFacets = components['schemas']['CodexFacets'];
@@ -24,6 +25,9 @@ export function emptyCodexFilters(): CodexFilters {
 }
 function post(path: string, body: object): Promise<CodexActionResponse> {
   return request(`/api/codex/${path}`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+}
+async function bulkPost(path:string,body:object,options?:BulkMutationOptions):Promise<CodexActionResponse>{
+  return projectBulkMutation(await submitBulkMutation(bulkMutationRequest,`/api/codex/${path}`,body,options),'codex',path==='delete-bulk'?'delete':'update') as CodexActionResponse;
 }
 function record(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -88,10 +92,11 @@ export const codexApi = {
     return request(`/api/codex?${params}`, {signal});
   },
   archive: (filename: string, archived: boolean) => post('archive', {filename, archived}),
-  archiveBulk: (filenames: string[], archived: boolean) => post('archive-bulk', {filenames, archived}),
+  archiveBulk: (filenames: string[], archived: boolean,options?:BulkMutationOptions) => bulkPost('archive-bulk', {filenames, archived},options),
   delete: (filename: string) => post('delete', {filename}),
-  deleteBulk: (filenames: string[]) => post('delete-bulk', {filenames}),
+  deleteBulk: (filenames: string[],options?:BulkMutationOptions) => bulkPost('delete-bulk', {filenames},options),
   reset: (filename: string) => post('reset-export', {filename}),
+  resetBulk: (filenames:string[],options?:BulkMutationOptions)=>bulkPost('reset-export-bulk',{filenames},options),
   refreshToken: (filenames: string[]) => post('refresh-token-bulk', {filenames}),
   reauthorize: (filenames: string[]) => post('retry-bulk', {filenames}),
   uploadSub2: (filenames: string[]) => post('upload-sub2-bulk', {filenames}),

@@ -3,6 +3,21 @@ import {createEmailApi} from './email';
 
 afterEach(()=>vi.unstubAllGlobals());
 describe('email existing HTTP contracts',()=>{
+  it('uses the injected sender for accepted commands and projects final email identities',async()=>{
+    const send=vi.fn().mockResolvedValueOnce({ok:true,accepted:true,command_id:'91'})
+      .mockResolvedValueOnce({ok:true,status:'partial_success',items:[{key:'outlook:a@test',status:'updated',data:{source:'outlook',email:'a@test'}},{key:'email_butler:b@test',status:'skipped',reason:'protected'}]});
+    const result=await createEmailApi(send).bulkStatus({items:[{source:'outlook',email:'a@test'},{source:'email_butler',email:'b@test'}],status:'disabled',source:'all',note:'test'});
+    expect(result).toMatchObject({updated:[{source:'outlook',email:'a@test'}],updated_count:1,skipped:[{source:'email_butler',email:'b@test',reason:'protected'}]});
+    expect(send.mock.calls[1]![0]).toBe('/api/bulk-mutations/91');
+  });
+  it('preserves a numeric bigint command identity from the actual accepted HTTP body',async()=>{
+    const fetch=vi.fn().mockResolvedValueOnce(new Response('{"ok":true,"accepted":true,"command_id":9007199254740993,"task_id":9007199254740995}',{status:202,headers:{'Content-Type':'application/json'}}))
+      .mockResolvedValueOnce(new Response('{"ok":true,"command_id":9007199254740993,"status":"success","items":[{"key":"outlook:a@test","status":"updated"}]}',{headers:{'Content-Type':'application/json'}}));
+    vi.stubGlobal('fetch',fetch);
+    const result=await createEmailApi().bulkDelete({items:[{source:'outlook',email:'a@test'}],source:'all'});
+    expect(result).toMatchObject({deleted_count:1,deleted:[{source:'outlook',email:'a@test'}]});
+    expect(fetch.mock.calls[1]![0]).toBe('/api/bulk-mutations/9007199254740993');
+  });
   it('preserves all inventory/history filters and supports aborting reads',async()=>{
     const send=vi.fn(async(_path:string,_options?:RequestInit)=>({items:[],total:0})),api=createEmailApi(send);
     const signal=new AbortController().signal;

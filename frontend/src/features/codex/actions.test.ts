@@ -14,6 +14,20 @@ beforeEach(() => {fetchMock = vi.fn(); vi.stubGlobal('fetch', fetchMock);});
 afterEach(() => {vi.unstubAllGlobals(); vi.restoreAllMocks(); vi.useRealTimers();});
 
 describe('Codex action receipts', () => {
+  it('keeps all selections when an accepted command cannot yet be confirmed',async()=>{
+    fetchMock.mockResolvedValueOnce(json({ok:true,accepted:true,command_id:'96'},202)).mockRejectedValueOnce(new Error('offline'));
+    const actions=setup();await actions.run('deleteBulk');
+    expect(actions.selected.value.size).toBe(3);expect(actions.refresh).not.toHaveBeenCalled();
+    expect(actions.callbacks.notify).toHaveBeenLastCalledWith(expect.stringMatching(/^批量命令已受理.*96/));
+    expect(actions.error.value).not.toContain('删除失败');
+  });
+  it('uses final item receipts to clear successful filenames and display retained failures',async()=>{
+    fetchMock.mockResolvedValueOnce(json({ok:true,accepted:true,command_id:'97'},202))
+      .mockResolvedValueOnce(json({ok:true,status:'partial_success',items:[{key:'a.json',status:'updated'},{key:'b.json',status:'failed',reason:'locked'}]}));
+    const actions=setup();await actions.run('archiveBulk');
+    expect([...actions.selected.value]).toEqual(['b.json','other-page.json']);
+    expect(actions.callbacks.notify).toHaveBeenLastCalledWith(expect.stringContaining('未完成 1'));
+  });
   it('queued upload stays here, tracks existing tasks and removes only acknowledged cross-page filenames', async () => {
     const queued = [{filename: 'other-page.json', accepted: true, task_id: 71, run_id: 3}];
     fetchMock.mockResolvedValue(json({ok: true, accepted: true, queued, queued_count: 1, failed_count: 1, skipped_count: 1}, 202));

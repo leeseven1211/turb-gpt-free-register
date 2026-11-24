@@ -1,5 +1,6 @@
 import {ref, type Ref} from 'vue';
 import {codexApi, type CodexCallbacks, type CodexRow, type CodexDownload, type CodexTaskReference} from '../../api/codex';
+import {BulkMutationPendingError} from '../../api/bulkMutations';
 export type {CodexCallbacks} from '../../api/codex';
 export type CodexAction = 'download' | 'downloadCpa' | 'downloadBulk' | 'downloadBulkCpa' | 'archive' | 'archiveBulk' | 'delete' | 'deleteBulk' | 'reset' | 'refreshToken' | 'reauthorize' | 'uploadSub2';
 export interface CodexActionContext {
@@ -76,13 +77,13 @@ export function createCodexActions(context: CodexActionContext) {
           await refreshAfterCompletion(); break;
         }
         case 'archive': case 'archiveBulk': {
-          const result = action === 'archive' ? await codexApi.archive(filename, archived) : await codexApi.archiveBulk(names, archived);
+          const result = action === 'archive' ? await codexApi.archive(filename, archived) : await codexApi.archiveBulk(names, archived,{onAccepted:result=>callbacks.notify(`批量命令已受理，正在执行（命令 ${result.command_id}）`)});
           clearAcknowledged(action === 'archive' ? result.filename ? [result.filename] : [] : (result.updated || []).map(item => item.filename), names);
-          callbacks.notify(action === 'archive' ? archived ? '已归档' : '已恢复' : `${archived ? '归档' : '恢复'}成功 ${result.updated_count || 0} 个`);
+          callbacks.notify(action === 'archive' ? archived ? '已归档' : '已恢复' : `${archived ? '归档' : '恢复'}成功 ${result.updated_count || 0} 个${result.skipped?.length?`，未完成 ${result.skipped.length} 个`:''}`);
           await refreshAfterCompletion(); break;
         }
         case 'delete': case 'deleteBulk': {
-          const result = action === 'delete' ? await codexApi.delete(filename) : await codexApi.deleteBulk(names);
+          const result = action === 'delete' ? await codexApi.delete(filename) : await codexApi.deleteBulk(names,{onAccepted:result=>callbacks.notify(`批量命令已受理，正在执行（命令 ${result.command_id}）`)});
           clearAcknowledged(typeof result.deleted === 'string' ? [result.deleted] : result.deleted || [], names);
           const skipped = result.skipped?.length || 0;
           callbacks.notify(action === 'delete' ? 'Codex 凭证已删除' : `已删除 ${result.deleted_count || 0} 个${skipped ? `，跳过 ${skipped} 个` : ''}`);
@@ -113,7 +114,7 @@ export function createCodexActions(context: CodexActionContext) {
         }
       }
     } catch (failure) {
-      error.value = `${labels[action]}失败: ${message(failure)}`; callbacks.notify(error.value);
+      error.value = failure instanceof BulkMutationPendingError?failure.message:`${labels[action]}失败: ${message(failure)}`; callbacks.notify(error.value);
     } finally {busy.value = false;}
   }
   return {busy, error, uploadProgress, run, showProgress: () => callbacks.openTasks()};

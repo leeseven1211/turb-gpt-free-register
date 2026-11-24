@@ -30,13 +30,21 @@ describe('Codex HTTP contract', () => {
     ['delete', 'delete', ['a.json'], {filename: 'a.json'}],
     ['deleteBulk', 'delete-bulk', [['a.json']], {filenames: ['a.json']}],
     ['reset', 'reset-export', ['a.json'], {filename: 'a.json'}],
+    ['resetBulk', 'reset-export-bulk', [['a.json']], {filenames:['a.json']}],
     ['refreshToken', 'refresh-token-bulk', [['a.json']], {filenames: ['a.json']}],
     ['reauthorize', 'retry-bulk', [['a.json']], {filenames: ['a.json']}],
     ['uploadSub2', 'upload-sub2-bulk', [['a.json']], {filenames: ['a.json']}],
   ] as const)('uses the existing %s endpoint/body', async (method, path, args, body) => {
-    const fetch = vi.fn().mockResolvedValue(json({ok: true, accepted: true}, 202)); vi.stubGlobal('fetch', fetch);
+    const fetch = vi.fn().mockResolvedValue(json({ok: true})); vi.stubGlobal('fetch', fetch);
     await (codexApi[method] as (...args: unknown[]) => Promise<unknown>)(...args);
-    expect(fetch).toHaveBeenCalledExactlyOnceWith(`/api/codex/${path}`, {credentials: 'same-origin', method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+    expect(fetch).toHaveBeenCalledExactlyOnceWith(`/api/codex/${path}`, {credentials: 'same-origin', method: 'POST', headers: ['archive-bulk','delete-bulk','reset-export-bulk'].includes(path)?{'Content-Type': 'application/json','Idempotency-Key':expect.any(String)}:{'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+  });
+  it('bulk mutations resolve only after durable receipts and retain failed filenames',async()=>{
+    const fetch=vi.fn().mockResolvedValueOnce(json({ok:true,accepted:true,command_id:'9007199254740993'},202))
+      .mockResolvedValueOnce(json({ok:true,command_id:'9007199254740993',status:'partial_success',items:[{key:'a.json',status:'updated'},{key:'b.json',status:'failed',reason:'locked'}]}));
+    vi.stubGlobal('fetch',fetch);
+    expect(await codexApi.deleteBulk(['a.json','b.json'])).toMatchObject({deleted:['a.json'],deleted_count:1,skipped:[{filename:'b.json',reason:'locked'}]});
+    expect(fetch.mock.calls.map(call=>call[0])).toEqual(['/api/codex/delete-bulk','/api/bulk-mutations/9007199254740993']);
   });
   it('retains typed business errors and does not retry a mutation', async () => {
     const fetch = vi.fn().mockResolvedValue(json({ok: false, error: {message: '任务正在运行', code: 'busy'}}, 409)); vi.stubGlobal('fetch', fetch);

@@ -10,6 +10,27 @@ function setup(overrides:Partial<LocalAccountMutationDependencies>={}){const dep
 const posted=()=>JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
 beforeEach(()=>{fetchMock.mockReset();vi.stubGlobal('fetch',fetchMock);});afterEach(()=>vi.unstubAllGlobals());
 describe('local account mutations',()=>{
+ it('awaits accepted bulk receipts through deps.request and preserves bigint target identities',async()=>{
+  const send=vi.fn().mockResolvedValueOnce({ok:true,accepted:true,command_id:'92'})
+   .mockResolvedValueOnce({ok:true,status:'partial_success',items:[{key:'9007199254740993',status:'updated',data:{id:'9007199254740993'}},{key:'11',status:'failed',reason:'busy'}]});
+  const {actions,deps}=setup({request:send}),input=context(['9007199254740993','11']);
+  await actions.invoke('deleteSelectedAccounts',input);
+  expect(JSON.parse(String(send.mock.calls[0]?.[1]?.body)).account_ids).toEqual(['9007199254740993',11]);
+  expect(send.mock.calls[1]?.[0]).toBe('/api/bulk-mutations/92');
+  expect(deps.removeAcknowledgedSelection).toHaveBeenCalledWith(['9007199254740993'],input);
+ });
+ it('keeps selection and reports an accepted command when polling fails',async()=>{
+  const send=vi.fn().mockResolvedValueOnce({ok:true,accepted:true,command_id:'93'}).mockRejectedValueOnce(new Error('offline'));
+  const {actions,deps}=setup({request:send});await actions.invoke('deleteSelectedAccounts',context());
+  expect(deps.removeAcknowledgedSelection).not.toHaveBeenCalled();
+  expect(deps.notify).toHaveBeenLastCalledWith(expect.stringMatching(/^批量命令已受理.*93/));
+ });
+ it('clears only successful email-invalid command targets and retains skipped targets',async()=>{
+  const send=vi.fn().mockResolvedValueOnce({ok:true,accepted:true,command_id:'98'})
+   .mockResolvedValueOnce({ok:true,status:'partial_success',items:[{key:'7',status:'updated'},{key:'11',status:'skipped',reason:'email_changed'}]});
+  const {actions,deps}=setup({request:send}),input=context();await actions.invoke('setAccountsEmailInvalid:1',input);
+  expect(deps.removeAcknowledgedSelection).toHaveBeenCalledWith(['7'],input);
+ });
  it('supports existing row and toolbar descriptors without claiming unrelated actions',()=>{const {actions}=setup();for(const name of ['account-delete','account-archive:1','account-archive:0','archiveSelectedAccounts','deleteSelectedAccounts','account-email-invalid:1','setAccountsEmailInvalid:0','account-restore','deleteDeactivatedAccounts'])expect(actions.isSupported(name)).toBe(true);for(const name of ['account-delete:1','account-archive:2','account-email-invalid:x','plan-check'])expect(actions.isSupported(name)).toBe(false);});
  it('single delete accepts endpoint-bound legacy receipt without id, preserving exact confirmation/body',async()=>{fetchMock.mockResolvedValue(json({ok:true,deleted:true}));const {actions,deps}=setup();const input=context(['7']);await actions.invoke('account-delete',input);expect(deps.confirm).toHaveBeenCalledWith('确定删除账号 #7？\n\none@test\n\n会从本地账号列表、注册成功邮箱和 token 文件中移除。');expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/accounts/7/delete');expect(posted()).toEqual({});expect(deps.removeAcknowledgedSelection).toHaveBeenCalledWith(['7'],input);});
  it.each([{ok:true},{ok:true,deleted:false},{ok:true,deleted:true,id:99},null])('single delete keeps selection on unknown/unmatched receipt %j',async body=>{fetchMock.mockResolvedValue(json(body));const {actions,deps}=setup();await actions.invoke('account-delete',context(['7']));expect(deps.removeAcknowledgedSelection).not.toHaveBeenCalled();expect(deps.notify).not.toHaveBeenCalledWith('账号已删除');});

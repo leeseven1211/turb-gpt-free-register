@@ -1,8 +1,9 @@
 import {request} from './client';
 import {parseTaskJson} from './taskIds';
+import {parseBulkMutationJson,projectBulkMutation,submitBulkMutation,type BulkMutationOptions} from './bulkMutations';
 import type {BatchResponse,ButlerFilters,ButlerPreview,ButlerRequest,EmailIdentity,HistoryQuery,HistoryRow,InventoryQuery,InventoryResponse,LocalImportPayload,LocalImportResult,LocalPreview,MutationResult,ParentHistory,SourceCard} from '../features/email/contracts';
 export type EmailRequest=(path:string,options?:RequestInit)=>Promise<unknown>;
-export function createEmailApi(send:EmailRequest=(path,options)=>request(path,options,parseTaskJson)){
+export function createEmailApi(send:EmailRequest=(path,options)=>request(path,options,path.startsWith('/api/bulk-mutations/')||path==='/api/outlook/status-bulk'||path==='/api/outlook/delete-bulk'?parseBulkMutationJson:parseTaskJson)){
  const get=<T>(path:string,signal?:AbortSignal)=>send(path,{signal}) as Promise<T>;
  const post=<T>(path:string,body:unknown,signal?:AbortSignal)=>send(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),...(signal?{signal}:{})}) as Promise<T>;
  return {
@@ -13,9 +14,9 @@ export function createEmailApi(send:EmailRequest=(path,options)=>request(path,op
   secret:(item:EmailIdentity,signal?:AbortSignal)=>get<{value?:string}>(`/api/outlook/secret?${new URLSearchParams({...item,field:'copy_line'})}`,signal),
   secrets:(items:EmailIdentity[],signal?:AbortSignal)=>post<{values?:{value?:string}[];skipped?:MutationResult['skipped']}>('/api/outlook/secret-bulk',{items,field:'copy_line'},signal),
   status:(body:EmailIdentity&{status:string;note:string})=>post<MutationResult>('/api/outlook/status',body),
-  bulkStatus:(body:{items:EmailIdentity[];status:string;source:string;note:string})=>post<MutationResult>('/api/outlook/status-bulk',body),
+  bulkStatus:async(body:{items:EmailIdentity[];status:string;source:string;note:string},options?:BulkMutationOptions)=>projectBulkMutation(await submitBulkMutation(send,'/api/outlook/status-bulk',body,options),'email','update') as MutationResult,
   delete:(item:EmailIdentity)=>post<MutationResult>('/api/outlook/delete',item),
-  bulkDelete:(body:{items:EmailIdentity[];source:string})=>post<MutationResult>('/api/outlook/delete-bulk',body),
+  bulkDelete:async(body:{items:EmailIdentity[];source:string},options?:BulkMutationOptions)=>projectBulkMutation(await submitBulkMutation(send,'/api/outlook/delete-bulk',body,options),'email','delete') as MutationResult,
   localPreview:(body:LocalImportPayload,signal?:AbortSignal)=>post<LocalPreview>('/api/outlook/import-preview',body,signal),
   localImport:(body:LocalImportPayload)=>post<LocalImportResult>('/api/outlook/import',body),
   options:(signal?:AbortSignal)=>get<{providers?:{value:string;label:string}[]}>('/api/email-butler/import-options',signal),

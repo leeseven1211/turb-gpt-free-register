@@ -3,6 +3,7 @@ import type {EmailApi} from '../../api/email';
 import type {EmailIdentity,EmailMountDependencies,EmailRow,InventoryResponse,MutationResult,ParentHistory,Receipt} from './contracts';
 import {deletionWarning,identity,keyOf,message,receipt} from './presentation';
 import {readScope} from './readScope';
+import {BulkMutationPendingError} from '../../api/bulkMutations';
 export function useEmailInventory(api:EmailApi,deps:EmailMountDependencies){
  const state=reactive({items:[] as EmailRow[],parents:[] as ParentHistory[],total:0,page:1,size:20,filters:{source:'all',q:'',status:'',used_date:''},facets:{} as NonNullable<InventoryResponse['facets']>,selected:new Map<string,EmailIdentity>(),loading:false,error:'',summaryError:'',busy:false,receipt:null as Receipt|null});
  let copyController:AbortController|undefined;
@@ -19,7 +20,8 @@ export function useEmailInventory(api:EmailApi,deps:EmailMountDependencies){
  function toggle(row:EmailIdentity,checked:boolean){checked?state.selected.set(keyOf(row),identity(row)):state.selected.delete(keyOf(row));}
  function togglePage(checked:boolean){for(const row of state.items)toggle(row,checked);}
  async function sharedRefresh(){try{await deps.onInventoryChanged();}catch(cause){state.receipt=receipt(state.receipt?.label||'已接收',`${state.receipt?.detail||''}\n显示刷新失败：${message(cause)}`,'warning');}void scope.refresh();}
- async function write(run:()=>Promise<void>){if(state.busy)return;state.busy=true;try{await run();}catch(cause){if(cause instanceof Error&&cause.name==='AbortError')return;state.receipt=receipt('操作失败',message(cause),'danger');deps.notify(`操作失败：${message(cause)}`);}finally{state.busy=false;}}
+ async function write(run:()=>Promise<void>){if(state.busy)return;state.busy=true;try{await run();}catch(cause){if(cause instanceof Error&&cause.name==='AbortError')return;if(cause instanceof BulkMutationPendingError){state.receipt=receipt('批量命令已受理',cause.message,'warning');deps.notify(cause.message);return;}state.receipt=receipt('操作失败',message(cause),'danger');deps.notify(`操作失败：${message(cause)}`);}finally{state.busy=false;}}
+ const bulkOptions=()=>({onAccepted:(result:{command_id?:number|string})=>{state.receipt=receipt('批量命令已受理',`正在执行（命令 ${result.command_id}）`,'warning');}});
  function mutationDetail(result:MutationResult,kind:'delete'|'status'){
   const skipped=result.skipped||[],deleted=Array.isArray(result.deleted)?result.deleted:[];
   const retained=result.lease_retained_count||deleted.filter(row=>row.sync?.lease_retained).length;
@@ -27,12 +29,12 @@ export function useEmailInventory(api:EmailApi,deps:EmailMountDependencies){
  }
  async function bulkDelete(){
   const items=Array.from(state.selected.values(),identity),source=state.filters.source;if(!items.length||state.busy)return;
-  await write(async()=>{if(!await deps.confirm(`确定从本地邮箱池移除选中的 ${items.length} 个邮箱吗？\n\n${deletionWarning}`))return;const result=await api.bulkDelete({items,source});for(const row of Array.isArray(result.deleted)?result.deleted:[])state.selected.delete(keyOf(row));state.receipt=receipt('删除结果',mutationDetail(result,'delete'),'success');await sharedRefresh();});
+  await write(async()=>{if(!await deps.confirm(`确定从本地邮箱池移除选中的 ${items.length} 个邮箱吗？\n\n${deletionWarning}`))return;const result=await api.bulkDelete({items,source},bulkOptions());for(const row of Array.isArray(result.deleted)?result.deleted:[])if(items.some(item=>keyOf(item)===keyOf(row)))state.selected.delete(keyOf(row));state.receipt=receipt('删除结果',mutationDetail(result,'delete'),result.skipped?.length?'warning':'success');await sharedRefresh();});
  }
  async function bulkStatus(status:string){
   const items=Array.from(state.selected.values(),identity),source=state.filters.source;if(!items.length||state.busy)return;
   const label=({available:'未使用/可用',disabled:'停用',failed:'失败'} as Record<string,string>)[status]||status;
-  await write(async()=>{if(!await deps.confirm(`确定把选中的 ${items.length} 个邮箱标记为${label}吗？`))return;const result=await api.bulkStatus({items,status,source,note:`批量标记${label}`});for(const row of items)state.selected.delete(keyOf(row));state.receipt=receipt('状态更新',mutationDetail(result,'status'),'success');await sharedRefresh();});
+  await write(async()=>{if(!await deps.confirm(`确定把选中的 ${items.length} 个邮箱标记为${label}吗？`))return;const result=await api.bulkStatus({items,status,source,note:`批量标记${label}`},bulkOptions());for(const row of Array.isArray(result.updated)?result.updated:[])if(items.some(item=>keyOf(item)===keyOf(row)))state.selected.delete(keyOf(row));state.receipt=receipt('状态更新',mutationDetail(result,'status'),result.skipped?.length?'warning':'success');await sharedRefresh();});
  }
  async function rowAction(row:EmailRow,action:string){
   const item=identity(row);await write(async()=>{

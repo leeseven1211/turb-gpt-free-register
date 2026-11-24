@@ -1,4 +1,5 @@
 import type {AccountActionContext} from './useAccounts';
+import {BulkMutationPendingError,projectBulkMutation,submitBulkMutation} from '../../api/bulkMutations';
 
 export interface LocalAccountMutationDependencies {
   request(path:string,options?:RequestInit):Promise<unknown>;
@@ -19,14 +20,18 @@ function split(descriptor:string){const separator=descriptor.indexOf(':');return
 function supported(descriptor:string){const {name,value}=split(descriptor);if(['account-archive','account-email-invalid'].includes(name))return value==='0'||value==='1';if(name==='setAccountsEmailInvalid')return value===undefined||value==='0'||value==='1';return value===undefined&&['account-delete','account-restore','archiveSelectedAccounts','deleteSelectedAccounts','deleteDeactivatedAccounts'].includes(name);}
 function object(value:unknown):Record<string,unknown>{if(!value||typeof value!=='object'||Array.isArray(value))throw new Error('服务端响应格式无效');const result=value as Record<string,unknown>;if(result.ok===false)throw new Error(typeof result.error==='string'?result.error:'请求失败');return result;}
 function integerCount(value:unknown):number{const count=Number(value);if(value==null||value===''||typeof value==='boolean'||!Number.isSafeInteger(count)||count<0)throw new Error('服务端响应格式无效');return count;}
-function idsFrom(context:AccountActionContext):number[]{if(!Array.isArray(context?.accountIds))throw new Error('账号动作上下文不可用，请刷新后重试');return [...new Set(context.accountIds.map(id=>{if(typeof id!=='string'||! /^[1-9]\d*$/.test(id)||!Number.isSafeInteger(Number(id)))throw new Error('账号 ID 无效');return Number(id);} ))];}
-function acceptedIds(value:unknown,ids:readonly number[]):string[]{if(!Array.isArray(value))throw new Error('服务端响应格式无效');return [...new Set(value.map(item=>object(item).id).filter(id=>(typeof id==='number'||typeof id==='string')&&ids.includes(Number(id))).map(String))];}
+function idsFrom(context:AccountActionContext):(number|string)[]{if(!Array.isArray(context?.accountIds))throw new Error('账号动作上下文不可用，请刷新后重试');return [...new Set(context.accountIds.map(id=>{if(typeof id!=='string'||! /^[1-9]\d*$/.test(id))throw new Error('账号 ID 无效');return Number.isSafeInteger(Number(id))?Number(id):id;} ))];}
+function acceptedIds(value:unknown,ids:readonly (number|string)[]):string[]{if(!Array.isArray(value))throw new Error('服务端响应格式无效');const allowed=new Set(ids.map(String));return [...new Set(value.map(item=>object(item).id).filter(id=>(typeof id==='number'&&Number.isSafeInteger(id)||typeof id==='string')&&allowed.has(String(id))).map(String))];}
 
 /** Local mutation semantics, isolated from the list DOM and mutable legacy selection. */
 export function createLocalAccountMutations(deps:LocalAccountMutationDependencies){
   const pending=new Set<string>();
   const keyFor=(descriptor:string,context:AccountActionContext)=>descriptor.startsWith('account-')?JSON.stringify([descriptor,...context.accountIds]):split(descriptor).name;
   async function post(path:string,body:object,timeout=false){
+    if(['/api/accounts/archive-bulk','/api/accounts/delete-bulk','/api/accounts/note-bulk','/api/accounts/email-invalid-bulk'].includes(path)){
+      const result=await submitBulkMutation(deps.request,path,body,{onAccepted:receipt=>deps.notify(`批量命令已受理，正在执行（命令 ${receipt.command_id}）`)});
+      return object(projectBulkMutation(result,'accounts',path.endsWith('/delete-bulk')?'delete':'update'));
+    }
     const controller=timeout?new AbortController():undefined;
     const timer=controller?setTimeout(()=>controller.abort(),30000):undefined;
     try{return object(await deps.request(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),...(controller?{signal:controller.signal}:{})}));}
@@ -60,7 +65,7 @@ export function createLocalAccountMutations(deps:LocalAccountMutationDependencie
         restore=deps.beginBusy?.(descriptor,trigger,'更新中…')||undefined;attempted=true;
         const result=await post('/api/accounts/email-invalid-bulk',{account_ids:ids,invalid,reason,expected_emails:expectedEmails});
         const updated=integerCount(result.updated_count),skipped=Array.isArray(result.skipped)?result.skipped.length:0;
-        accepted=true;deps.notify(`${invalid?'已标记邮箱失效':'已清除本地邮箱失效标记'} ${updated} 个${skipped?`，跳过 ${skipped} 个（邮箱可能已变更）`:''}`);
+        accepted=true;if(Array.isArray(result.items)){const acknowledged=acceptedIds(result.updated,ids);if(acknowledged.length)deps.removeAcknowledgedSelection(acknowledged,context);}deps.notify(`${invalid?'已标记邮箱失效':'已清除本地邮箱失效标记'} ${updated} 个${skipped?`，跳过 ${skipped} 个（邮箱可能已变更）`:''}`);
       }else if(wholeScope){
         if(!['0','only','all'].includes(archived))throw new Error('归档范围无效');
         if(!await deps.confirm(`确定删除「${scopeLabel(archived)}」范围内全部已废账号？\n\n不限当前页，不受勾选、搜索或其他筛选影响。仅删除本地账号记录，保留邮箱池和巡检历史。此操作不可撤销。`))return;
@@ -85,7 +90,7 @@ export function createLocalAccountMutations(deps:LocalAccountMutationDependencie
         else{if(result[archive?'updated':'deleted']!==true||(archive||result.id!==undefined)&&String(result.id)!==String(id))throw new Error('服务端未确认账号操作结果');acknowledged=[String(id)];notice=archive?(targetArchived?'账号已归档':'账号已恢复'):'账号已删除';}
         accepted=true;refreshSummary=true;if(acknowledged.length)deps.removeAcknowledgedSelection(acknowledged,context);deps.notify(notice);
       }
-    }catch(error){deps.notify(`${accepted?'操作已处理，页面更新失败: ':prefix}${errorMessage(error)}`);}
+    }catch(error){deps.notify(error instanceof BulkMutationPendingError?error.message:`${accepted?'操作已处理，页面更新失败: ':prefix}${errorMessage(error)}`);}
     finally{
       if(accepted||(wholeScope&&attempted))await refresh(context,refreshSummary||wholeScope,accepted);
       try{if(attempted)deps.selectionChanged?.(context);}finally{try{restore?.();}finally{if(key)pending.delete(key);}}

@@ -7,6 +7,23 @@ const cleanups:(()=>void)[]=[];
 beforeEach(()=>{Object.defineProperty(document,'hidden',{configurable:true,value:false});});
 afterEach(()=>{cleanups.splice(0).forEach(fn=>fn());vi.useRealTimers();});
 describe('email read scope and frozen actions',()=>{
+ it('retains skipped selections after an asynchronously completed status command',async()=>{
+  const f=fixture();f.handlers.set('/api/outlook/status-bulk',()=>({ok:true,accepted:true,command_id:'94'}));
+  f.handlers.set('/api/bulk-mutations/94',()=>({ok:true,status:'partial_success',items:[{key:'outlook:a@test',status:'updated'},{key:'outlook:b@test',status:'skipped',reason:'protected'}]}));
+  const owner=useEmailInventory(f.api,f.deps);cleanups.push(owner.dispose);
+  owner.toggle({source:'outlook',email:'a@test'},true);owner.toggle({source:'outlook',email:'b@test'},true);
+  await owner.bulkStatus('disabled');
+  expect([...owner.state.selected.values()]).toEqual([{source:'outlook',email:'b@test'}]);
+  expect(owner.state.receipt?.detail).toContain('protected');
+ });
+ it('shows accepted status rather than mutation failure if result lookup is unavailable',async()=>{
+  const f=fixture();f.handlers.set('/api/outlook/delete-bulk',()=>({ok:true,accepted:true,command_id:'95'}));
+  f.handlers.set('/api/bulk-mutations/95',()=>{throw new Error('offline');});
+  const owner=useEmailInventory(f.api,f.deps);cleanups.push(owner.dispose);owner.toggle({source:'outlook',email:'a@test'},true);
+  await owner.bulkDelete();expect(owner.state.selected.size).toBe(1);
+  expect(owner.state.receipt?.tone).toBe('warning');expect(owner.state.receipt?.detail).toContain('95');
+  expect(f.deps.notify).not.toHaveBeenCalledWith(expect.stringContaining('操作失败'));
+ });
  it('ignores an older response immediately during debounce and aborts hidden reads',async()=>{
   vi.useFakeTimers();const f=fixture(),one=deferred<InventoryResponse>(),two=deferred<InventoryResponse>();let n=0;
   f.handlers.set('/api/outlook',()=>++n===1?one.promise:two.promise);
