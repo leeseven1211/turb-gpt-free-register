@@ -1347,6 +1347,7 @@ function accountRegistrationDriverLabel(value) {
     protocol: 'proto-local',
     protocol_oss: 'proto-public',
     protocol_oss_2: 'proto-sso',
+    sentinel_rs: 'Rust sentinel-rs',
     cloakbrowser: 'CloakBrowser（历史）',
   })[String(value || '').trim().toLowerCase()] || '未记录';
 }
