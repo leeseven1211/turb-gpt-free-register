@@ -142,6 +142,48 @@ class RuntimeConfigStoreTests(PostgresTestCase):
             cur.execute(f"SELECT COUNT(*) FROM {postgres_store.qualified('runtime_config_history')}")
             self.assertEqual(1, cur.fetchone()[0])
 
+    def test_large_save_uses_collection_writes_for_values_and_history(self):
+        store.write_values({}, activate=True)
+        writes = []
+        history_table = postgres_store.qualified("runtime_config_history")
+        values_table = postgres_store.qualified("runtime_config_values")
+
+        class CountWrites(psycopg.Cursor):
+            def execute(self, query, *args, **kwargs):
+                statement = str(query)
+                if statement.lstrip().startswith("INSERT") and any(
+                    table in statement for table in (history_table, values_table)
+                ):
+                    writes.append(statement)
+                return super().execute(query, *args, **kwargs)
+
+        updates = {f"BULK_{index}": f"值-{index}" for index in range(501)}
+        with psycopg.connect(postgres_store.database_url(), cursor_factory=CountWrites) as conn:
+            self.assertEqual(sorted(updates), store.write_values(updates, conn=conn))
+        self.assertEqual(2, len(writes), "整份保存的 SQL 数量不应随配置键数量增长")
+        self.assertEqual(updates, store.read_values())
+        self.assertEqual(2, store.current_revision())
+
+    def test_collection_write_failure_rolls_back_values_history_and_revision(self):
+        store.write_values({"A": "original"}, activate=True)
+        values_table = postgres_store.qualified("runtime_config_values")
+
+        class FailValuesWrite(psycopg.Cursor):
+            def execute(self, query, *args, **kwargs):
+                statement = str(query)
+                if statement.lstrip().startswith("INSERT") and values_table in statement:
+                    raise RuntimeError("集合写入故障")
+                return super().execute(query, *args, **kwargs)
+
+        with self.assertRaisesRegex(RuntimeError, "集合写入故障"):
+            with psycopg.connect(postgres_store.database_url(), cursor_factory=FailValuesWrite) as conn:
+                store.write_values({"A": "candidate", "B": "new"}, conn=conn)
+        self.assertEqual({"A": "original"}, store.read_values())
+        self.assertEqual(1, store.current_revision())
+        with postgres_store.connect() as conn, conn.cursor() as cur:
+            cur.execute(f"SELECT COUNT(*) FROM {postgres_store.qualified('runtime_config_history')}")
+            self.assertEqual(1, cur.fetchone()[0])
+
     def test_missing_wrong_and_invalid_keys_fail_without_falling_back(self):
         store.write_values({"SECRET": "private-value"}, activate=True)
         for key, code in (("", "encryption_key_missing"), ("not-fernet", "encryption_key_invalid"), (Fernet.generate_key().decode(), "decryption_failed")):

@@ -11,6 +11,7 @@ from typing import Iterable, Iterator
 import psycopg
 from cryptography.fernet import Fernet, InvalidToken
 from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
 from psycopg_pool import PoolTimeout
 
 from core.storage import postgres as postgres_store
@@ -250,18 +251,30 @@ def write_values(updates, *, conn=None, activate=False, source="webui") -> list[
             if not changed and not becoming_active:
                 return []
             revision = int(metadata["revision"]) + 1
-            for key in changed:
-                ciphertext = _encrypt(cipher, updates[key])
+            if changed:
+                # 加密只在内存逐键进行；历史和当前值分别一次集合写入，仍由整份配置事务提交。
+                payload = Jsonb([
+                    {
+                        "key": key,
+                        "old_value_encrypted": encrypted.get(key),
+                        "new_value_encrypted": _encrypt(cipher, updates[key]),
+                    }
+                    for key in changed
+                ])
                 cur.execute(
                     f"INSERT INTO {history_table} (revision, key, old_value_encrypted, new_value_encrypted, source) "
-                    "VALUES (%s, %s, %s, %s, %s)",
-                    (revision, key, encrypted.get(key), ciphertext, source),
+                    "SELECT %s, s.key, s.old_value_encrypted, s.new_value_encrypted, %s "
+                    "FROM jsonb_to_recordset(%s::jsonb) AS s("
+                    "key TEXT, old_value_encrypted TEXT, new_value_encrypted TEXT) ORDER BY s.key",
+                    (revision, source, payload),
                 )
                 cur.execute(
-                    f"INSERT INTO {values_table} (key, value_encrypted, updated_revision) VALUES (%s, %s, %s) "
+                    f"INSERT INTO {values_table} (key, value_encrypted, updated_revision) "
+                    "SELECT s.key, s.new_value_encrypted, %s "
+                    "FROM jsonb_to_recordset(%s::jsonb) AS s(key TEXT, new_value_encrypted TEXT) ORDER BY s.key "
                     "ON CONFLICT (key) DO UPDATE SET value_encrypted = EXCLUDED.value_encrypted, "
                     "updated_revision = EXCLUDED.updated_revision, updated_at = now()",
-                    (key, ciphertext, revision),
+                    (revision, payload),
                 )
             cur.execute(
                 f"UPDATE {meta_table} SET active = active OR %s, revision = %s WHERE id = 1",
