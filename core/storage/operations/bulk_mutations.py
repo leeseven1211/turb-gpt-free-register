@@ -144,7 +144,8 @@ def execute_chunk(command_id: int, chunk_index: int, *, run_id: int, execution_i
         if not chunk:
             raise ValueError('bulk_chunk_out_of_range')
         items = apply_chunk(chunk, parameters, conn=conn)
-        chunk_outcome = outcome or ('failed' if any(item['status']=='failed' for item in items) else 'updated')
+        # 正常返回的逐项失败也属于已提交结果；只有显式整块回滚标记才是 failed。
+        chunk_outcome = outcome or 'updated'
         _execution_fence(cur, command, run_id, execution_id)
         cur.execute(f'''INSERT INTO {common._table(_RECEIPTS)}
             (command_id,chunk_index,run_id,execution_id,items,outcome) VALUES (%s,%s,%s,%s,%s::jsonb,%s)''',

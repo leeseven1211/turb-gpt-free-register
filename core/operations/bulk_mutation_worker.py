@@ -249,6 +249,10 @@ def _receipt_value(value: Any) -> Any:
     """脱敏诊断文本及任意回执字段，但完整保留合法集合。"""
     from core.storage.operations import common
     if isinstance(value, str):
+        # 私钥整体先替换，不能只删 BEGIN 标头留下正文。
+        value = re.sub(r'-----BEGIN [^\r\n]*PRIVATE KEY-----.*?(?:-----END [^\r\n]*PRIVATE KEY-----|$)',
+            '[REDACTED_CREDENTIAL]',value,flags=re.I|re.S)
+        value = _SECRET_VALUE.sub('[REDACTED_CREDENTIAL]',value)
         return common._PROXY_RE.sub(r'\g<scheme>***@',
             common._JWT_RE.sub('[REDACTED_TOKEN]',value))
     if isinstance(value, Mapping):
@@ -257,6 +261,18 @@ def _receipt_value(value: Any) -> Any:
     if isinstance(value,(list,tuple)):
         return [_receipt_value(item) for item in value]
     return _json_value(value)
+
+
+def _retryable_storage_error(error: Exception) -> bool:
+    """只将连接与事务竞争等明确基础设施错误延期；契约错误形成稳定回执。"""
+    import psycopg
+    from psycopg_pool import PoolTimeout
+    if isinstance(error,(psycopg.OperationalError,psycopg.InterfaceError,PoolTimeout,
+            ConnectionError,TimeoutError)):
+        return True
+    return getattr(error,'sqlstate',None) in {
+        '40001', '40P01', '55P03', '57014',  # 序列化、死锁、锁超时、语句超时
+    }
 
 
 def _checkpoint(context) -> None:
@@ -283,6 +299,7 @@ def _handle_claimed_bulk_mutation(context) -> OperationResult:
         return OperationResult.failed('批量操作 handler 未注册',
             {'command_id':command_id,'operation':name,'reason_code':'bulk_handler_not_registered'})
     control_errors = (OperationCancelled, OperationAccountDeactivated, task_gateway.OperationLeaseLost,
+        task_gateway.OperationLeaseUnavailable,
         PermissionError, *task_gateway.SETTLEMENT_CONTROL_ERRORS)
     receipts = {}
     outcomes = []
@@ -296,14 +313,26 @@ def _handle_claimed_bulk_mutation(context) -> OperationResult:
                 execution_id=context.execution_id,apply_chunk=apply,parameters=command['parameters'])
         except control_errors:
             raise
-        except BulkChunkFailed:
-            # 仅领域明确拒绝才形成永久失败回执，技术异常保持未提交以便恢复。
+        except Exception as error:
+            if _retryable_storage_error(error):
+                logger.warning('批量块基础设施异常，保留重试：command_id=%s chunk_index=%s error_type=%s',
+                    command_id,index,type(error).__name__)
+                return context.defer(delay_seconds=1,reason='bulk_storage_retry',stage='bulk_mutation')
+            # 原异常事务已经回滚；确定性应用错误与明确领域拒绝保存稳定失败，
+            # 文案不复制异常消息，避免把敏感参数带入持久诊断或日志。
+            reason = 'bulk_chunk_failed' if isinstance(error,BulkChunkFailed) else 'bulk_handler_error'
             def failure(chunk, parameters, *, conn):
-                return [asdict(BulkItemResult(key,'failed','bulk_chunk_failed','当前分块执行失败')) for key in chunk]
-            items, reused, outcome = commands.execute_chunk(command_id,index,run_id=context.run_id,
-                execution_id=context.execution_id,apply_chunk=failure,parameters=command['parameters'],outcome='failed')
-        except Exception:
-            return context.defer(delay_seconds=1,reason='bulk_storage_retry',stage='bulk_mutation')
+                return [asdict(BulkItemResult(key,'failed',reason,'当前分块执行失败')) for key in chunk]
+            try:
+                items, reused, outcome = commands.execute_chunk(command_id,index,run_id=context.run_id,
+                    execution_id=context.execution_id,apply_chunk=failure,parameters=command['parameters'],
+                    outcome='failed' if reason=='bulk_chunk_failed' else 'handler_error')
+            except control_errors:
+                raise
+            except Exception as receipt_error:
+                if _retryable_storage_error(receipt_error):
+                    return context.defer(delay_seconds=1,reason='bulk_storage_retry',stage='bulk_mutation')
+                raise
         outcomes.append(outcome)
         if spec.after_commit is not None:
             start = index * command['chunk_size']
@@ -331,8 +360,9 @@ def _handle_claimed_bulk_mutation(context) -> OperationResult:
         lambda chunk:[receipts[key] for key in chunk],max_targets=_MAX_TARGETS,
         chunk_size=command['chunk_size'],idempotency_key=command['request_key_hash'])
     complete = {**asdict(result),'command_id':command_id}
-    complete['chunks'] = [{**chunk,'status':outcomes[index],
-        **({'reason_code':'bulk_chunk_failed'} if outcomes[index]=='failed' else {})}
+    complete['chunks'] = [{**chunk,'status':'failed' if outcomes[index] in {'failed','handler_error'} else outcomes[index],
+        **({'reason_code':'bulk_chunk_failed'} if outcomes[index]=='failed' else
+            {'reason_code':'bulk_handler_error'} if outcomes[index]=='handler_error' else {})}
         for index,chunk in enumerate(complete['chunks'])]
     commands.save_result(command_id,complete,run_id=context.run_id,execution_id=context.execution_id)
     summary = {key:value for key,value in complete.items() if key not in {'items','chunks'}}

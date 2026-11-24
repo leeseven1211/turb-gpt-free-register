@@ -75,3 +75,13 @@ GREEN 验证（安全测试库：独立 turb_test、隔离 test_ schema；通过
 RED：新增审查回归测试首次运行 `4 failed, 12 passed`，分别命中技术异常被持久化为失败、无 SQL 块切片接口、失败块状态误报 updated、等价幂等请求冲突。
 
 GREEN：安全测试库运行 `tools/test_isolated.py --profile all -- tests/operations/test_bulk_mutation_worker.py tests/operations/test_bulk_mutations.py -q`：**25 passed**。新增覆盖模拟 PostgreSQL 连接故障和提交边界故障均无业务/receipt 残留、可重试；真实块 outcome、规范幂等、仅块切片读取、note 原样与回执脱敏、float 分类。compileall、git diff --check 通过。
+
+## 三轮审查修复
+
+- 明确可重试基础设施错误：PostgreSQL OperationalError/InterfaceError、连接池超时、连接/超时异常，以及序列化失败、死锁、锁不可用和语句取消 SQLSTATE。仅该类错误延期；TypeError、ValueError、非法 status、不可序列化回执等确定性应用错误在原事务回滚后保存 `bulk_handler_error` 稳定失败回执，不再每秒永久重跑。日志只记命令、分块与异常类型；异常消息不写入诊断。取消、lease、settlement 和 execution fence 控制异常继续上抛。
+- 正常返回的逐项 failed 属于已提交结果，块状态继续为 updated；只有显式 `BulkChunkFailed` 整块拒绝加 `bulk_chunk_failed`。确定性 handler 错误的块为 failed，原因 `bulk_handler_error`。
+- 回执诊断统一使用输入已经识别的 Bearer、sk-、JWT 规则，并先替换完整私钥块再处理标记，代理凭据也继续脱敏；合法 note 业务持久内容仍原样保留。
+
+RED：新增审查回归首次 `5 failed, 18 deselected`，明确命中三个凭据模式泄漏、确定性错误无限 defer 和已提交 mixed 块误报失败。
+
+GREEN：安全隔离测试库运行 Worker + Task1：**30 passed**。真实 PostgreSQL 覆盖三类确定性契约错误均稳定失败且重入不应用业务，mixed updated/failed 仍按原项目原因保存；三类凭据模式通过递归诊断脱敏测试。compileall 与 git diff --check 通过。

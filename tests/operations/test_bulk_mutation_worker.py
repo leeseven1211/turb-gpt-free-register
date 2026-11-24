@@ -59,6 +59,18 @@ def test_invalid_chunk_size_and_foreign_run_are_rejected_before_claim():
         execute.assert_not_called()
 
 
+@pytest.mark.parametrize('secret', [
+    'Bearer synthetic-bearer-secret',
+    'sk-syntheticsecret000000000000000',
+    '-----BEGIN PRIVATE KEY-----\nsynthetic-private-value\n-----END PRIVATE KEY-----',
+])
+def test_receipt_redacts_all_credential_patterns(secret):
+    receipt = worker._receipt_value({'reason':secret,'values':[secret]})
+    assert secret not in receipt['reason']
+    assert secret not in receipt['values'][0]
+    assert 'synthetic-private-value' not in receipt['reason']
+
+
 class BulkMutationWorkerTests(PostgresTestCase):
     def setUp(self):
         self.stack = ExitStack()
@@ -235,6 +247,36 @@ class BulkMutationWorkerTests(PostgresTestCase):
         recovered = worker._handle_claimed_bulk_mutation(self._claim(submitted, execution='replacement'))
         self.assertEqual(1, recovered.summary['updated_count'])
         self.assertEqual({1:1}, self._counters())
+
+    def test_deterministic_handler_errors_are_stable_failed_receipts(self):
+        handlers = [
+            lambda chunk, parameters, *, conn: [{'key':1,'status':'invalid-status'}],
+            lambda chunk, parameters, *, conn: [BulkItemResult(1,'updated',data=object())],
+            lambda chunk, parameters, *, conn: (_ for _ in ()).throw(TypeError('synthetic contract error')),
+        ]
+        for index, handler in enumerate(handlers):
+            self._register(handler=handler)
+            submitted = self._submit([1], key=f'contract-error-{index}')
+            context = self._claim(submitted)
+            result = worker._handle_claimed_bulk_mutation(context)
+            self.assertEqual('failed', result.status)
+            receipt = commands.get_command_result(submitted['command_id'])
+            self.assertEqual('bulk_handler_error', receipt['items'][0]['reason_code'])
+            self.assertEqual('bulk_handler_error', receipt['chunks'][0]['reason_code'])
+            self.assertEqual('failed', receipt['chunks'][0]['status'])
+            self._register()
+            repeated = worker._handle_claimed_bulk_mutation(context)
+            self.assertEqual('failed', repeated.status)
+            self.assertEqual({}, self._counters())
+
+    def test_committed_mixed_item_results_do_not_imply_whole_chunk_rollback(self):
+        self._register(handler=lambda chunk, parameters, *, conn: [
+            BulkItemResult(1,'updated'),BulkItemResult(2,'failed','target_locked')])
+        submitted = self._submit([1,2])
+        worker._handle_claimed_bulk_mutation(self._claim(submitted))
+        chunk = commands.get_command_result(submitted['command_id'])['chunks'][0]
+        self.assertEqual('updated', chunk['status'])
+        self.assertNotIn('reason_code', chunk)
 
     def test_idempotency_is_operation_scoped_and_ignores_order_duplicates_and_chunk_size(self):
         increment = self._register(parameter_allowlist=('note',))
