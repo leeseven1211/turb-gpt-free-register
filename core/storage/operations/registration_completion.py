@@ -95,7 +95,7 @@ def reconcile_parent_registration_job(cur, job_id: int, *, account_id: int | Non
 
     from core.accounts.completion import completion_plan
 
-    job = records.get_row(records.JOBS, int(job_id), conn=cur, for_update=True)
+    job = records.get_row(records.JOBS, int(job_id), conn=cur.connection, for_update=True)
     if not job:
         return False
     if str(job.get("status") or "") not in {"partial_success", "failed"}:
@@ -103,7 +103,7 @@ def reconcile_parent_registration_job(cur, job_id: int, *, account_id: int | Non
     resolved_account_id = int(account_id or job.get("account_id") or 0)
     if resolved_account_id <= 0:
         return False
-    account = records.get_row(records.ACCOUNTS, resolved_account_id, conn=cur)
+    account = records.get_row(records.ACCOUNTS, resolved_account_id, conn=cur.connection)
     if not account or not str(account.get("access_token") or "").strip():
         return False
     if completion_plan(account)["missing_steps"]:
@@ -112,7 +112,7 @@ def reconcile_parent_registration_job(cur, job_id: int, *, account_id: int | Non
         records.JOBS, int(job_id),
         {"status": "success", "error_message": "",
          "completed_at": datetime.now(timezone.utc).isoformat(timespec="seconds")},
-        conn=cur,
+        conn=cur.connection,
     )
     return True
 
