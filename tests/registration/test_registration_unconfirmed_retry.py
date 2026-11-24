@@ -302,13 +302,24 @@ class UnconfirmedRegistrationRetryTests(unittest.TestCase):
              patch.object(svc.db, "get_successful_retry_for_job", return_value=None), \
              patch.object(svc, "_account_for_job", return_value=None), \
              patch.object(svc, "_read_linked_attempt_for_job", return_value=(attempt, False)), \
+             patch.object(svc, "_prefetch_retry_facts", return_value={
+                 21: svc._RetryFacts(source=job, root=job, source_attempt=attempt, root_attempt=attempt),
+             }), \
+             patch("core.storage.registration.bulk_retry.admit", return_value={
+                 21: ({"id": 22, "log_file": "/tmp/test-registration-retry.log"}, True),
+             }) as admit, \
              patch.object(svc.db, "create_retry_job", return_value=({"id": 22, "log_file": "/tmp/test-registration-retry.log"}, True)) as create, \
-             patch.object(svc, "_enqueue_job"):
+             patch.object(svc, "_enqueue_job"), \
+             patch.object(svc, "configure_submission_workers"), \
+             patch.object(svc, "start_dispatcher"), \
+             patch.object(svc, "notify_dispatch"):
             single = client.post("/api/operations/9/retry")
             bulk = client.post("/api/operations/bulk", json={"action": "retry", "task_ids": [9]})
         self.assertEqual(single.status_code, 200)
         self.assertEqual(bulk.get_json()["accepted_count"], 1, bulk.get_json())
-        self.assertEqual(create.call_count, 2)
-        for call in create.call_args_list:
-            self.assertEqual(call.kwargs["email"], job["email"])
-            self.assertEqual(call.kwargs["email_source"], "icloud_hide")
+        create.assert_called_once()
+        self.assertEqual(create.call_args.kwargs["email"], job["email"])
+        self.assertEqual(create.call_args.kwargs["email_source"], "icloud_hide")
+        [plan] = admit.call_args.args[0]
+        self.assertEqual(plan.email, job["email"])
+        self.assertEqual(plan.email_source, "icloud_hide")

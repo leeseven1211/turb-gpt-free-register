@@ -183,3 +183,33 @@ class RegistrationRetryBulkTests(PostgresTestCase):
             assert all(facts[root["id"]].source_attempt["id"] == root["attempt_id"] for root in selected)
             counts.append(len(statements))
         assert 0 < counts[0] == counts[1] <= 8, counts
+
+    def test_task_center_selected_roots_enter_one_registration_admission(self):
+        from core.storage.operations import legacy_task_store
+
+        self.enterContext(patch.object(legacy_task_store, "_SCHEMA", self.schema))
+        self.enterContext(patch.object(legacy_task_store, "_READY_KEY", ""))
+        legacy_task_store.init()
+        roots = [self._root(f"task-center-{index}@example.test", f"task-center-{index}")
+                 for index in range(2)]
+        for root in roots:
+            operation_store.sync_registration_job(root["id"])
+        task_ids = [operation_store.find_task_by_source("registration_jobs", str(root["id"]), include_runs=True)["id"]
+                    for root in roots]
+        client = create_app(auth_code="test-auth").test_client()
+        with (
+            patch.object(service, "start_dispatcher"),
+            patch.object(service, "notify_dispatch"),
+            patch.object(service, "configure_submission_workers"),
+            patch.object(service, "registration_deployment_unavailable", return_value=None),
+            patch.object(bulk_retry, "admit", wraps=bulk_retry.admit) as admit,
+            patch.object(service, "_prefetch_retry_facts", wraps=service._prefetch_retry_facts) as prefetch,
+        ):
+            response = client.post("/api/operations/bulk", json={"action": "retry", "task_ids": task_ids},
+                                   headers={"X-Auth-Code": "test-auth"})
+        assert response.status_code == 200
+        body = response.get_json()
+        assert body["accepted_count"] == 2, body
+        prefetch.assert_called_once_with([root["id"] for root in roots])
+        admit.assert_called_once()
+        assert [plan.source_id for plan in admit.call_args.args[0]] == [root["id"] for root in roots]

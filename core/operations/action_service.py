@@ -130,20 +130,15 @@ def _dispatch_operation_action(
             if not queued.get("accepted"):
                 return {"ok": False, **queued}, 503 if queued.get("unavailable") else 409
             return {"ok": True, **queued}, 202
-        next_action = (task.get("next_actions") or [{}])[0]
-        source_job_id = next_action.get("source_job_id") if isinstance(next_action, dict) else None
-        if str((next_action or {}).get("action") or "") in {"registration_resume", "registration_retry"} and source_job_id:
-            result = registration_service.retry_job(int(source_job_id))
+        source_job_id = _registration_retry_job_id(task)
+        if source_job_id is not None:
+            result = registration_service.retry_job(source_job_id)
             status = int(result.pop("status", 200 if result.get("ok") else 400))
             return result, status
         runs = task.get("runs") or []
         latest = runs[-1] if runs else {}
         source_system = str(latest.get("source_system") or "")
         source_id = str(latest.get("source_id") or "")
-        if source_system == "registration_jobs" and source_id.isdigit():
-            result = registration_service.retry_job(int(source_id))
-            status = int(result.pop("status", 200 if result.get("ok") else 400))
-            return result, status
         if source_system == "account_action_tasks" and source_id.isdigit():
             payload, status = retry_legacy_account_task(int(source_id), operation_logger=operation_logger)
             return payload, status
@@ -226,6 +221,11 @@ def accept_bulk_operation_action(
 
     tasks = operation_task_store.get_action_tasks_many(task_ids)
     managed_retries = _accept_managed_retries(tasks, request_key=request_key) if action == "retry" else {}
+    registration_retries = _accept_registration_retries(
+        {task_id: tasks[task_id] for task_id in task_ids if task_id in tasks},
+        managed_task_ids=set(managed_retries), request_key=request_key,
+        operation_logger=operation_logger,
+    ) if action == "retry" else {}
     cancelled = _accept_pending_cancellations(tasks) if action == "cancel" else {}
     accepted: list[dict] = []
     skipped: list[dict] = []
@@ -247,6 +247,8 @@ def accept_bulk_operation_action(
             continue
         if task_id in managed_retries:
             payload, status = managed_retries[task_id]
+        elif task_id in registration_retries:
+            payload, status = registration_retries[task_id]
         elif task_id in cancelled:
             error = cancelled[task_id]
             payload, status = (
@@ -279,6 +281,60 @@ def accept_bulk_operation_action(
         "skipped": skipped,
         "skipped_count": len(skipped),
     }
+
+
+def _registration_retry_job_id(task: Mapping) -> int | None:
+    """保持显式下一动作优先于最后 Run 来源的历史路由规则。"""
+    next_action = (task.get("next_actions") or [{}])[0]
+    if isinstance(next_action, Mapping):
+        source_job_id = next_action.get("source_job_id")
+        if str(next_action.get("action") or "") in {"registration_resume", "registration_retry"} and source_job_id:
+            return int(source_job_id)
+    runs = task.get("runs") or []
+    latest = runs[-1] if runs else {}
+    source_id = str(latest.get("source_id") or "")
+    if str(latest.get("source_system") or "") == "registration_jobs" and source_id.isdigit():
+        return int(source_id)
+    return None
+
+
+def _accept_registration_retries(
+    tasks: dict[int, dict],
+    *,
+    managed_task_ids: set[int],
+    request_key: str | None,
+    operation_logger: logging.Logger | None,
+) -> dict[int, tuple[dict, int]]:
+    if request_key and len(request_key) > 128:
+        return {}
+    selected: dict[int, int] = {}
+    for task_id, task in tasks.items():
+        if (task_id in managed_task_ids or task_gateway.operation_is_deactivated(task)
+                or task.get("status") in active_operation_statuses):
+            continue
+        task_type = str(task.get("task_type") or "").strip()
+        source_system = str(task.get("source_system") or "").strip()
+        if (task_gateway.operation_action(task_type, "retry", source_system=source_system) is not None
+                or source_system == "native_operations" and task_type == "codex_retry"):
+            continue
+        source_job_id = _registration_retry_job_id(task)
+        if source_job_id is not None:
+            selected[task_id] = source_job_id
+    if not selected:
+        return {}
+    try:
+        # 注册服务逐来源恢复冻结配置、原批次额度和父上下文。
+        results = registration_service.retry_jobs(list(dict.fromkeys(selected.values())), workers=1)
+    except Exception:
+        (operation_logger or action_logger).exception("任务中心批量注册重跑入队失败")
+        return {task_id: ({"ok": False, "error": "原注册任务入队失败，请刷新任务状态后重试"}, 503)
+                for task_id in selected}
+    replies = {}
+    for task_id, source_job_id in selected.items():
+        result = dict(results.get(source_job_id) or {"ok": False, "error": "原注册任务当前不可重跑"})
+        status = int(result.pop("status", 200 if result.get("ok") else 400))
+        replies[task_id] = result, status
+    return replies
 
 
 def _accept_pending_cancellations(tasks: dict[int, dict]) -> dict[int, str | None]:

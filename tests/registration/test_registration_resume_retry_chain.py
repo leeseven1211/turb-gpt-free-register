@@ -78,19 +78,32 @@ class ResumeRetryChainTests(unittest.TestCase):
              patch.object(svc, '_enrich_account_registration_state', side_effect=lambda x: x), \
              patch.object(svc, '_read_linked_attempt_for_job', return_value=(attempt, False)), \
              patch.object(svc, '_retry_jobs_by_ids', return_value={21: root}), \
+             patch.object(svc, '_prefetch_retry_facts', return_value={
+                 22: svc._RetryFacts(source=child, root=root, source_attempt=attempt,
+                                     root_attempt=attempt, account=account),
+             }), \
+             patch('core.storage.registration.bulk_retry.admit', return_value={
+                 22: ({'id': 23, 'log_file': '/tmp/resume-test.log'}, True),
+             }) as admit, \
              patch.object(svc.db, 'create_retry_job', return_value=({'id': 23, 'log_file': '/tmp/resume-test.log'}, True)) as create, \
-             patch.object(svc, '_enqueue_job', new=executor):
+             patch.object(svc, '_enqueue_job', new=executor), \
+             patch.object(svc, 'configure_submission_workers'), \
+             patch.object(svc, 'start_dispatcher'), \
+             patch.object(svc, 'notify_dispatch'):
             single = client.post('/api/operations/9/retry')
             bulk = client.post('/api/operations/bulk', json={'action': 'retry', 'task_ids': [9]})
         self.assertEqual(single.status_code, 200)
         self.assertTrue(single.get_json()['ok'])
         self.assertEqual(bulk.status_code, 200)
         self.assertEqual(bulk.get_json()['accepted_count'], 1)
-        self.assertEqual(create.call_count, 2)
-        for call in create.call_args_list:
-            self.assertEqual(call.args, (22,))
-            self.assertEqual(call.kwargs['account_id'], 44)
-            self.assertEqual(call.kwargs['email'], root['email'])
+        create.assert_called_once()
+        self.assertEqual(create.call_args.args, (22,))
+        self.assertEqual(create.call_args.kwargs['account_id'], 44)
+        self.assertEqual(create.call_args.kwargs['email'], root['email'])
+        [plan] = admit.call_args.args[0]
+        self.assertEqual(plan.source_id, 22)
+        self.assertEqual(plan.account_id, 44)
+        self.assertEqual(plan.email, root['email'])
 
     def test_child_partial_and_unknown_can_resume_with_matching_root(self):
         root, child, account, attempt = facts()
