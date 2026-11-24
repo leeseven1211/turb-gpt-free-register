@@ -193,6 +193,15 @@ def submit_chunk(conn, targets: Sequence[Mapping], context: Mapping) -> list[dic
     receipts = []
     fresh = [item for item in prepared if item["disposition"] == "ready" and not item["target"].get("source_task_id")]
     fresh_receipts = _submit_fresh(conn, fresh, context) if fresh else {}
+    retries = [item for item in prepared if item["disposition"] == "ready" and item["target"].get("source_task_id")]
+    retry_receipts = {}
+    if retries:
+        from core.storage.operations.bulk_retry_native import retry_native_many
+        retry_receipts = retry_native_many(conn, [{
+            "target_round_id": _target_round_id(item["target"]), "task_id": int(item["target"]["source_task_id"]),
+            "account_id": int(item["account"]["id"]), "account": item["account"],
+            "data": {**_task_data(key, item, context), "config_snapshot": snapshot},
+        } for item in retries], operation_key=key)
     for item in prepared:
         target = item["target"]
         receipt = {"target_round_id": _target_round_id(target), "disposition": item["disposition"], "reason_code": item["reason_code"],
@@ -203,6 +212,10 @@ def submit_chunk(conn, targets: Sequence[Mapping], context: Mapping) -> list[dic
             continue
         if not target.get("source_task_id"):
             receipts.append(fresh_receipts[_target_round_id(target)])
+            continue
+        if _target_round_id(target) in retry_receipts:
+            receipt.update(retry_receipts[_target_round_id(target)])
+            receipts.append(receipt)
             continue
         try:
             with conn.transaction():
