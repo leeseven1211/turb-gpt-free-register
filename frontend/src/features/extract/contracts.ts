@@ -1,4 +1,5 @@
 import type {TaskId} from '../../api/taskIds';
+import type {BulkMutationItem} from '../../api/bulkMutations';
 export type {TaskId} from '../../api/taskIds';
 export interface ExtractProvider {id:string;label?:string;modes?:string[];link_types?:string[];default_type?:string;concurrency?:number;payment_source?:string;payment_source_label?:string;unavailable_reason?:string}
 export interface ExtractConfig {providers:ExtractProvider[];unavailable_providers?:ExtractProvider[];default_provider?:string;batch_workers_default?:number;batch_workers_max?:number;poll?:{active_seconds?:number;idle_seconds?:number;backoff_max_seconds?:number}}
@@ -11,7 +12,10 @@ export interface ExtractBatchList {items:ExtractBatch[];total:number;page:number
 export interface CandidateFilters {query:string;source:string;date_from:string;date_to:string;extract_status:string;promotion:string}
 export interface CandidatePreview {total:number;selected_count:number;items?:{account_id:TaskId;email?:string}[]}
 export interface CreateBatchPayload {workers:number;title:string;provider_id:string;mode:string;type:string;filters:CandidateFilters;limit:number;submission_id:string}
-export interface ExtractReceipt {ok?:boolean;accepted?:boolean;batch_id?:TaskId;task_id?:TaskId;run_id?:TaskId;started?:number;skipped?:number;failed?:number;cancelled?:number;error?:string}
+export interface ExtractReceipt {command_id?:TaskId;ok?:boolean;accepted?:boolean;batch_id?:TaskId;task_id?:TaskId;run_id?:TaskId;started?:number;skipped?:number;failed?:number;cancelled?:number;error?:string}
+export interface ExtractBulkReceipt extends ExtractReceipt {command_id?:TaskId;status?:string;updated_count?:number;skipped_count?:number;failed_count?:number;items:BulkMutationItem[]}
+export interface ExtractPaymentEntryItem {task_id:TaskId;status:'updated'|'skipped'|'failed';reason_code?:string;reason?:string;entry?:PaymentEntry}
+export interface ExtractPaymentEntries {ok?:boolean;items:ExtractPaymentEntryItem[];requested_count?:number;unique_count?:number;duplicate_count?:number}
 export interface PaymentEntry {payment_page_url?:string;payment_url?:string;qr_data?:string;qr_image_url_png?:string;qr_image_url_svg?:string;amount?:string|number|null;currency?:string;expires_at?:string|number;payment_status?:string;platform_plus_status?:string|boolean}
 export interface ExtractEvent {label?:string;stage?:string;status?:string;message?:string;at?:string;created_at?:string;time?:string}
 export interface ExtractRun extends Partial<ExtractTask> {run_id:TaskId;run_no?:number;status?:string;internal_status?:string;error_message?:string;completed_at?:string}
@@ -23,7 +27,7 @@ export interface ExtractApi {
  batches(page:number,signal?:AbortSignal):Promise<ExtractBatchList>;batch(id:TaskId,signal?:AbortSignal):Promise<{item:ExtractBatch}>;
  tasks(query:ExtractQuery,signal?:AbortSignal):Promise<ExtractList>;candidates(filters:CandidateFilters,limit:number,signal?:AbortSignal):Promise<CandidatePreview>;
  create(payload:CreateBatchPayload):Promise<ExtractReceipt>;cancel(id:TaskId):Promise<ExtractReceipt>;detail(id:TaskId,signal?:AbortSignal):Promise<ExtractDetail>;
- action(id:TaskId,action:string):Promise<ExtractReceipt>;paymentEntry(id:TaskId,signal?:AbortSignal):Promise<{entry:PaymentEntry}>;
+ action(id:TaskId,action:string):Promise<ExtractReceipt>;actionBulk(ids:TaskId[],action:'sync_status'):Promise<ExtractBulkReceipt>;paymentEntries(ids:TaskId[]):Promise<ExtractPaymentEntries>;paymentEntry(id:TaskId,signal?:AbortSignal):Promise<{entry:PaymentEntry}>;
  links(id:TaskId,kind:string):Promise<{url?:string;link?:string}>;secret(id:TaskId):Promise<{value?:string;access_token?:string}>;
  analytics(days:number,provider:string,signal?:AbortSignal):Promise<ExtractAnalytics>;export(query:ExtractQuery):Promise<Blob>;
 }

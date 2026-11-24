@@ -4,6 +4,7 @@ import {createExtractBatch} from './useExtractBatch';
 import {createExtractArtifacts} from './useExtractArtifacts';
 import {createExtractStats} from './useExtractStats';
 import type {ExtractApi} from './contracts';
+import {BulkMutationPendingError} from '../../api/bulkMutations';
 const deferred=<T,>()=>{let resolve!:(value:T)=>void,reject!:(error:Error)=>void;const promise=new Promise<T>((a,b)=>{resolve=a;reject=b;});return{promise,resolve,reject};};
 export const apiStub=()=>({config:vi.fn(async()=>({providers:[{id:'legacy',modes:['extract_only','auto_payment'],link_types:['upi'],default_type:'upi'}],batch_workers_default:2})),summary:vi.fn(async()=>({today_extracted:1})),batches:vi.fn(async()=>({items:[],total:0,page:1,page_size:20})),batch:vi.fn(async()=>({item:{batch_id:4}})),tasks:vi.fn(async()=>({items:[],total:0,page:1,page_size:20,counts:{}})),candidates:vi.fn(async()=>({total:800,selected_count:100,items:[]})),create:vi.fn(async()=>({ok:true,batch_id:9,started:500})),cancel:vi.fn(async()=>({ok:true,cancelled:1})),detail:vi.fn(async()=>({item:{task_id:1},events:[]})),action:vi.fn(async()=>({ok:true,accepted:true})),paymentEntry:vi.fn(async()=>({ok:true,entry:{payment_url:'https://pay.example/'}})),links:vi.fn(async()=>({url:'https://pay.example/'})),secret:vi.fn(async()=>({value:'secret'})),analytics:vi.fn(async()=>({ok:true,totals:{total:1},daily:[],providers:[],modes:[],failures:[]})),export:vi.fn(async()=>new Blob(['csv']))}) as unknown as ExtractApi;
 afterEach(()=>vi.useRealTimers());
@@ -133,4 +134,29 @@ describe('receipts belong to a specific submission',()=>{
   expect(b.state.receipt).toEqual(accepted);expect(b.state.error).toBe('');
   b.destroy();
  });
+});
+
+
+describe('extract selected collection commands',()=>{
+ it('reads only selected usable payment entries once and copies safe results once',async()=>{
+  const api=apiStub(),copyText=vi.fn(async()=>{}),notify=vi.fn();
+  vi.mocked(api.tasks).mockResolvedValue({items:[{task_id:'9007199254740993',email:'first@example.test',has_payment_entry:true},{task_id:2,email:'missing@example.test'},{task_id:3,email:'qr@example.test',has_qr:true}],total:3,page:1,counts:{}});
+  const paymentEntries=vi.fn(async()=>({items:[{task_id:'9007199254740993',status:'updated' as const,entry:{payment_page_url:'javascript:unsafe',payment_url:'https://pay.example.test/local'}},{task_id:'3',status:'updated' as const,entry:{qr_data:'plain-qr'}}]}));Object.assign(api,{paymentEntries});
+  const owner=createExtractWorkbench({api,copyText,notify});await owner.load();['9007199254740993','2','3'].forEach(id=>owner.state.selected.add(id));await owner.bulkAction('links');
+  expect(paymentEntries).toHaveBeenCalledOnce();expect(paymentEntries).toHaveBeenCalledWith(['9007199254740993',3]);expect(api.paymentEntry).not.toHaveBeenCalled();expect(copyText).toHaveBeenCalledWith('first@example.test\thttps://pay.example.test/local\nqr@example.test\tplain-qr');expect(notify).toHaveBeenCalledWith('已复制 2 条支付链接，跳过 1 个');owner.destroy();
+ });
+ it('awaits one bulk sync result and does not report accepted work as finished',async()=>{
+  const api=apiStub(),pending=deferred<any>(),notify=vi.fn(),actionBulk=vi.fn(()=>pending.promise);Object.assign(api,{actionBulk});
+  vi.mocked(api.tasks).mockResolvedValue({items:[{task_id:'9007199254740993'},{task_id:2}],total:2,page:1,counts:{}});
+  const owner=createExtractWorkbench({api,notify});await owner.load();owner.state.selected.add('9007199254740993');owner.state.selected.add('2');const action=owner.bulkAction('sync');await owner.bulkAction('sync');
+  expect(actionBulk).toHaveBeenCalledOnce();expect(actionBulk).toHaveBeenCalledWith(['9007199254740993',2],'sync_status');expect(api.action).not.toHaveBeenCalled();expect(notify).not.toHaveBeenCalled();expect(owner.state.bulkBusy).toBe(true);
+  pending.resolve({ok:true,command_id:'4',status:'partial_success',items:[{key:'9007199254740993',status:'updated',data:{task_id:'9007199254740993',run_id:'5'}},{key:'2',status:'skipped',reason:'任务仍在执行'}]});await action;
+  expect(notify).toHaveBeenCalledWith('原单同步已入队：1 个，跳过 1 个');expect(owner.state.receipt?.command_id).toBe('4');expect(owner.state.selected.has('9007199254740993')).toBe(false);expect(owner.state.selected.has('2')).toBe(true);owner.destroy();
+ });
+});
+
+it('retains an accepted sync command when waiting stops without claiming failure or resubmitting',async()=>{
+ const api=apiStub(),notify=vi.fn(),actionBulk=vi.fn(async()=>{throw new BulkMutationPendingError('99',{command_id:'99',accepted:true});});Object.assign(api,{actionBulk});vi.mocked(api.tasks).mockResolvedValue({items:[{task_id:1}],total:1,page:1,counts:{}});
+ const owner=createExtractWorkbench({api,notify});await owner.load();owner.state.selected.add('1');await owner.bulkAction('sync');
+ expect(actionBulk).toHaveBeenCalledOnce();expect(owner.state.receipt).toMatchObject({command_id:'99',accepted:true});expect(owner.state.error).toBe('');expect(owner.state.selected.has('1')).toBe(true);expect(notify).toHaveBeenCalledWith(expect.stringContaining('仍在执行'));owner.destroy();
 });

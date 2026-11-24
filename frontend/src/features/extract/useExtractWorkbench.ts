@@ -1,6 +1,7 @@
 import {reactive} from 'vue';
 import {createExtractApi} from '../../api/extract';
 import {taskId} from '../../api/taskIds';
+import {BulkMutationPendingError} from '../../api/bulkMutations';
 import type {TaskId,ExtractApi,ExtractBatch,ExtractConfig,ExtractDeps,ExtractList,ExtractLoadOptions,ExtractQuery,ExtractReceipt,ExtractTask} from './contracts';
 import {download,message,paymentUrl,selectedCsv} from './presentation';
 const blankQuery=():ExtractQuery=>({page:1,size:20,provider:'',mode:'',status:'',query:'',batch:''});
@@ -92,11 +93,34 @@ export function createExtractWorkbench(input:ExtractDeps={}){
   if(action==='clear'){state.selected.clear();return;}if(action==='export'){await exportRows(false);return;}if(state.bulkBusy)return;
   const rows=state.items.filter(item=>state.selected.has(String(item.task_id))),ids=rows.map(row=>row.task_id);if(!ids.length)return;
   state.bulkBusy=true;try{
-   if(action==='links'){const lines:string[]=[];let skipped=0;for(const row of rows){if(!row.has_payment_entry&&!row.has_payment_link&&!row.has_qr){skipped++;continue;}try{const {entry}=await api.paymentEntry(row.task_id);const value=paymentUrl(entry.payment_page_url)||paymentUrl(entry.payment_url)||entry.qr_data;if(value)lines.push(`${row.email||''}\t${value}`);else skipped++;}catch{skipped++;}}if(lines.length){await (input.copyText?input.copyText(lines.join('\n')):navigator.clipboard.writeText(lines.join('\n')));notify(`已复制 ${lines.length} 条支付链接${skipped?`，跳过 ${skipped} 个`:''}`);}else notify('所选任务没有可复制的支付入口');return;}
-   if(action!=='sync'&&action!=='sync_status')throw Error('不支持的批量操作');let accepted=0,failed=0;
-   for(const id of ids){try{const result=await api.action(id,'sync_status');if(result.accepted===true){accepted++;state.receipt=result;}else failed++;}catch{failed++;}}
-   notify(`已提交同步：${accepted} 个${failed?`，失败 ${failed} 个`:''}`);await load({force:true});
-  }catch(error){state.error=message(error);}finally{state.bulkBusy=false;}
+   if(action==='links'){
+    const candidates=rows.filter(row=>row.has_payment_entry||row.has_payment_link||row.has_qr);
+    let skipped=rows.length-candidates.length;const lines:string[]=[];
+    if(candidates.length){
+     const result=await api.paymentEntries(candidates.map(row=>row.task_id));
+     const entries=new Map(result.items.map(item=>[String(item.task_id),item]));
+     for(const row of candidates){
+      const item=entries.get(String(row.task_id)),entry=item?.status==='updated'?item.entry:undefined;
+      const value=entry&&(paymentUrl(entry.payment_page_url)||paymentUrl(entry.payment_url)||entry.qr_data);
+      if(value)lines.push(`${row.email||''}\t${value}`);else skipped++;
+     }
+    }
+    if(lines.length){await (input.copyText?input.copyText(lines.join('\n')):navigator.clipboard.writeText(lines.join('\n')));notify(`已复制 ${lines.length} 条支付链接${skipped?`，跳过 ${skipped} 个`:''}`);}else notify('所选任务没有可复制的支付入口');return;
+   }
+   if(action!=='sync'&&action!=='sync_status')throw Error('不支持的批量操作');
+   const result=await api.actionBulk(ids,'sync_status');state.receipt=result;
+   let accepted=0,skipped=0,failed=0;
+   for(const item of result.items){
+    if(item.status==='updated'){accepted++;state.selected.delete(String(item.data?.task_id??item.key));}
+    else if(item.status==='failed')failed++;else skipped++;
+   }
+   notify(`原单同步已入队：${accepted} 个${skipped?`，跳过 ${skipped} 个`:''}${failed?`，失败 ${failed} 个`:''}`);
+   // 回执属于当前提交；后续列表读取失败不能把已确认的入队改成失败。
+   await load({force:true});
+  }catch(error){
+   if(error instanceof BulkMutationPendingError){state.receipt={command_id:error.commandId,accepted:true};notify(error.message);}
+   else state.error=message(error);
+  }finally{state.bulkBusy=false;}
  }
  async function cancelBatch(options:{confirmed?:boolean}={}){
   const id=state.query.batch;if(!id||state.cancellingBatch)return;state.cancellingBatch=id;

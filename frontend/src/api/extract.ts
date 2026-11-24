@@ -1,7 +1,8 @@
 import {request,ApiError} from './client';
 import {parseTaskJson,taskId} from './taskIds';
+import {bulkMutationRequest,submitBulkMutation} from './bulkMutations';
 import type {TaskId} from './taskIds';
-import type {ExtractApi,ExtractDeps,ExtractQuery,ExtractList,ExtractBatchList,ExtractAnalytics,ExtractConfig,ExtractReceipt} from '../features/extract/contracts';
+import type {ExtractApi,ExtractDeps,ExtractQuery,ExtractList,ExtractBatchList,ExtractAnalytics,ExtractConfig,ExtractReceipt,ExtractBulkReceipt,ExtractPaymentEntries} from '../features/extract/contracts';
 const base='/api/extract-workbench';
 export function extractParams(query:ExtractQuery){const p=new URLSearchParams({provider_id:query.provider,mode:query.mode,status:query.status,query:query.query,page:String(query.page),page_size:String(query.size)});if(query.batch)p.set('batch_id',String(taskId(query.batch)));return p;}
 export function createExtractApi(deps:Pick<ExtractDeps,'dataSource'|'statsDataSource'>={}):ExtractApi {
@@ -19,6 +20,18 @@ export function createExtractApi(deps:Pick<ExtractDeps,'dataSource'|'statsDataSo
   create:payload=>post<ExtractReceipt>(`${base}/batches`,payload),cancel:id=>post(`${base}/batches/${encodeURIComponent(taskId(id))}/cancel`),
   detail:async(id,signal)=>{const value=await read<Awaited<ReturnType<ExtractApi['detail']>>>(idPath(id),{signal});if(!value.item||String(value.item.task_id)!==String(id))throw new Error('提链详情响应不匹配');return value;},
   action:(id,action)=>post(`${idPath(id)}/actions`,{action}),
+  async actionBulk(ids,action){
+   const task_ids=ids.map(id=>String(taskId(id)));
+   const result=await submitBulkMutation(deps.dataSource||bulkMutationRequest,`${base}/tasks/actions-bulk`,{task_ids,action});
+   if(!Array.isArray(result.items))throw new Error('批量同步缺少逐项回执');
+   return result as ExtractBulkReceipt;
+  },
+  async paymentEntries(ids){
+   const task_ids=ids.map(id=>String(taskId(id))),value=await post<ExtractPaymentEntries>(`${base}/tasks/payment-entries`,{task_ids});
+   if(!Array.isArray(value.items))throw new Error('批量支付入口响应无效');
+   for(const item of value.items)if(!task_ids.includes(String(taskId(item.task_id))))throw new Error('批量支付入口响应不匹配');
+   return value;
+  },
   async paymentEntry(id,signal){const value=await post<Awaited<ReturnType<ExtractApi['paymentEntry']>>>(`${idPath(id)}/payment-entry`,{},signal);if(!value.entry||!['payment_page_url','payment_url','qr_data','qr_image_url_png','qr_image_url_svg'].some(key=>typeof value.entry[key as keyof typeof value.entry]==='string'&&value.entry[key as keyof typeof value.entry]))throw new Error('当前任务没有已保存的支付入口');return value;},
   links:(id,kind)=>post(`${idPath(id)}/links`,{kind}),
   secret:id=>read(`/api/accounts/${encodeURIComponent(taskId(id))}/secret?field=access_token`),
