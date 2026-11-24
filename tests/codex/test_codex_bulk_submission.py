@@ -196,22 +196,22 @@ class CodexBulkSubmissionTests(PostgresTestCase):
             self.assertEqual(operations.get_run(queued["run"]["id"])["status"], "queued")
 
     def test_stop_does_not_overwrite_result_when_run_finishes_after_prefetch(self):
-        from core.storage.operations import runtime
+        from core.storage.operations import cancellation
         queued = operations.create_runtime_task(task_type="codex_retry", account_id=self.ids[0],
                                                email="bulk-0@example.test")
         records.patch_row(records.ACCOUNTS, self.ids[0], {"codex_active_run_id": queued["run"]["id"]})
-        cancel = runtime.request_run_cancel
+        cancel = cancellation.cancel_runs_many
 
-        def finish_before_cancel(run_id, *, conn, **kwargs):
+        def finish_before_cancel(conn, expected_runs, **kwargs):
             with conn.cursor() as cur:
-                cur.execute(f"UPDATE {operations._table('operation_runs')} SET status='success' WHERE id=%s", (run_id,))
+                cur.execute(f"UPDATE {operations._table('operation_runs')} SET status='success' WHERE id=%s", (queued["run"]["id"],))
                 cur.execute(f"UPDATE {operations._table('operation_tasks')} SET status='success' WHERE id=%s", (queued["id"],))
             records.patch_row(records.ACCOUNTS, self.ids[0],
                               {"codex_execution_status": "empty", "codex_last_run_status": "success",
                                "codex_active_run_id": 0}, conn=conn)
-            return cancel(run_id, conn=conn, **kwargs)
+            return cancel(conn, expected_runs, **kwargs)
 
-        with patch.object(runtime, "request_run_cancel", side_effect=finish_before_cancel):
+        with patch.object(cancellation, "cancel_runs_many", side_effect=finish_before_cancel):
             result = self.service.cancel_reauthorization(account_ids=self.ids[:1])
         self.assertEqual(result["stopped_count"], 0)
         self.assertEqual(result["skipped"][0]["reason_code"], "run_state_changed")

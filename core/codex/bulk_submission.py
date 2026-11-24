@@ -264,7 +264,7 @@ def submit_upload(*, account_ids=(), filenames=(), trigger="manual_upload"):
 
 def cancel_reauthorization(*, account_ids=(), emails=()):
     """一次集合预取账号与活动 Run，再按精确 Run 发出取消信号。"""
-    from core.storage.operations import runtime as operation_runtime
+    from core.storage.operations import cancellation
     ids, skipped = _ids(account_ids)
     normalized_emails = list(dict.fromkeys(
         str(value or "").strip() for value in emails if isinstance(value, str) and str(value or "").strip()
@@ -282,6 +282,11 @@ def cancel_reauthorization(*, account_ids=(), emails=()):
             (active.get(int(entry[1]["id"])) or {}).get("id", 2**63) if entry[1] else 2**63,
             int(entry[1]["id"]) if entry[1] else 2**63,
         ))
+        target_ids = {int(account["id"]) for _, account in targets if account is not None}
+        cancellations = cancellation.cancel_runs_many(conn, [
+            {"id": int(run["id"]), "expected_status": run["status"], "reason": "用户手动停止 Codex 补跑"}
+            for account_id, run in active.items() if account_id in target_ids
+        ])
         stopped = []
         seen = set()
         for (kind, value), account in targets:
@@ -298,12 +303,8 @@ def cancel_reauthorization(*, account_ids=(), emails=()):
                 skipped.append({"id": int(account["id"]), "email": shown_email,
                                 "reason": "未处于补跑中", "reason_code": "run_not_active"})
                 continue
-            try:
-                result = operation_runtime.request_run_cancel(
-                    int(run["id"]), reason="用户手动停止 Codex 补跑",
-                    expected_status=run["status"], conn=conn,
-                )
-            except LookupError:
+            result = cancellations.get(int(run["id"]))
+            if result is None:
                 skipped.append({"id": int(account["id"]), "email": shown_email,
                                 "reason": "执行实例不存在", "reason_code": "run_missing"})
                 continue
