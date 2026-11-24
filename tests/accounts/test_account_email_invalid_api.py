@@ -60,39 +60,41 @@ class AccountEmailInvalidApiTests(TestCase):
             "ids": [7, 7], "invalid": True, "reason": " 邮箱已失效 ",
             "expected_emails": {"7": "old@example.test"}, "source": "untrusted",
         }
-        with patch("webui.routes.accounts.db.set_accounts_email_invalid", return_value={
-            **self.result, "email": "private@example.test", "access_token": "private",
-        }, create=True) as command:
+        with patch("webui.routes.accounts.task_gateway.submit_bulk_mutation", return_value={
+            "accepted": True, "task_id": 10, "run_id": 20, "command_id": 30,
+        }) as command, patch("webui.routes.accounts.db.set_accounts_email_invalid") as old_command:
             response = self.client.post(self.url, json=payload, headers=self.headers)
-        self.assertEqual(200, response.status_code)
-        command.assert_called_once_with(
-            account_ids=[7], invalid=True, reason="邮箱已失效",
-            expected_emails={7: "old@example.test"}, icloud_account_id=None, source="manual",
-        )
+        self.assertEqual(202, response.status_code)
+        self.assertEqual(command.call_args.args, ("account_email_invalid", [7], {
+            "invalid": True, "reason": "邮箱已失效", "expected_emails": {"7": "old@example.test"},
+            "icloud_account_id": None, "source": "manual",
+        }))
+        old_command.assert_not_called()
         result = response.get_json()
         self.assertTrue(result["ok"])
-        self.assertEqual(1, result["updated_count"])
+        self.assertEqual(0, result["updated_count"])
+        self.assertEqual(30, result["command_id"])
         self.assertNotIn("email", result)
         self.assertNotIn("access_token", result)
 
     def test_group_has_no_500_account_limit_and_clearing_does_not_claim_mailbox_recovery(self):
-        with patch("webui.routes.accounts.db.set_accounts_email_invalid", return_value={
-            **self.result, "matched_account_count": 700,
-        }, create=True) as command:
+        with patch("webui.routes.accounts.task_gateway.submit_bulk_mutation", return_value={
+            "accepted": True, "task_id": 10, "run_id": 20, "command_id": 30,
+        }) as command:
             response = self.client.post(self.url, json={
                 "icloud_account_id": "4", "invalid": False,
             }, headers=self.headers)
-        self.assertEqual(200, response.status_code)
-        command.assert_called_once_with(
-            account_ids=None, invalid=False, reason="", expected_emails=None,
-            icloud_account_id="4", source="manual_icloud_account_group",
-        )
-        self.assertEqual(700, response.get_json()["matched_account_count"])
+        self.assertEqual(202, response.status_code)
+        self.assertEqual(command.call_args.args, ("account_email_invalid", ["4"], {
+            "invalid": False, "reason": "", "expected_emails": None,
+            "icloud_account_id": "4", "source": "manual_icloud_account_group",
+        }))
+        self.assertEqual(0, response.get_json()["matched_account_count"])
         self.assertIn("清除", response.get_json()["message"])
         self.assertNotIn("邮箱已恢复", response.get_json()["message"])
 
     def test_storage_validation_error_is_a_client_error(self):
-        with patch("webui.routes.accounts.db.set_accounts_email_invalid", side_effect=ValueError("目标不存在"), create=True):
+        with patch("webui.routes.accounts.task_gateway.submit_bulk_mutation", side_effect=ValueError("目标不存在")):
             response = self.client.post(self.url, json={"account_ids": [7], "invalid": True}, headers=self.headers)
         self.assertEqual(400, response.status_code)
         self.assertFalse(response.get_json()["ok"])

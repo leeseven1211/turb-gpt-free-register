@@ -21,6 +21,7 @@ from core.accounts.inspection import service as account_inspection_service
 from core.accounts import registration_retry as account_registration_retry
 from core import account_task_store
 from core.storage import admin_repository
+from core.storage.accounts import bulk_mutations as account_bulk_mutations
 from core.storage.task_query_context import task_query
 from core.codex import operation_service as codex_operation_service, retry_service as codex_retry_service, token_refresh_service as codex_token_refresh_service
 from core import db
@@ -36,6 +37,7 @@ from core.accounts.search import AccountSearchError, account_search_filters, par
 from core.accounts.liveness.router import LiveCheckDriverError
 from core.accounts.plans.promotion import is_free_trial_record
 from core.operations import query_service as operation_query_service
+from core.operations import task_gateway
 from core.operations.account_receipts import normalize_request_key
 from core.operations.errors import classify_task_error
 from webui import config_editor
@@ -90,6 +92,54 @@ def create_accounts_blueprint(context: WebUIContext):
     _enqueue_account_setup = context.enqueue_account_setup
     _enqueue_account_completion = context.enqueue_account_completion
     _put_prepared_download = context.put_prepared_download
+
+    def _submit_local_account_bulk(operation, targets, parameters, *, skipped=(), deleted=False):
+        field = "deleted" if deleted else "updated"
+        compatibility = {
+            "ok": True, field: [], f"{field}_count": 0,
+            "skipped": list(skipped), "skipped_count": len(skipped),
+        }
+        if not targets:
+            return jsonify(compatibility)
+        raw_key = request.headers.get(_ACCOUNT_REQUEST_KEY_HEADER)
+        data = request.get_json(silent=True) or {}
+        try:
+            if raw_key is not None:
+                key = normalize_request_key(raw_key)
+            else:
+                key = data.get("idempotency_key") or uuid.uuid4().hex
+                if not isinstance(key, str) or not 1 <= len(key.strip()) <= 200:
+                    raise ValueError("idempotency_key 必须为 1–200 个字符")
+            account_bulk_mutations.register_handlers()
+            queued = task_gateway.submit_bulk_mutation(
+                operation, targets, parameters, idempotency_key=key, trigger=f"manual_{operation}_bulk",
+            )
+        except (ValueError, TypeError) as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+        return jsonify({
+            **compatibility, **queued, "ok": bool(queued.get("accepted") or queued.get("reused")),
+            "queued": True, "requested_count": len(targets), "operation": operation,
+        }), 202 if queued.get("accepted") or queued.get("reused") else 409
+
+    def _local_bulk_ids(data, *, limit, label):
+        raw = data.get("account_ids") or data.get("ids") or []
+        if not isinstance(raw, list) or not raw:
+            raise ValueError("account_ids 必须是非空数组")
+        if len(raw) > limit:
+            raise ValueError(f"单次最多{label} {limit} 个账号")
+        ids, skipped, seen = [], [], set()
+        for value in raw:
+            try:
+                account_id = _strict_positive_account_id(value)
+                if account_id >= 2**63:
+                    raise ValueError()
+            except ValueError:
+                skipped.append({"id": value, "reason": "ID 非法"})
+                continue
+            if account_id not in seen:
+                ids.append(account_id)
+                seen.add(account_id)
+        return ids, skipped
 
     @bp.get("/api/accounts/operation-receipt")
     @_with_account_request_key
@@ -850,25 +900,23 @@ def create_accounts_blueprint(context: WebUIContext):
                 expected_emails[int(key)] = email
             if set(expected_emails) != set(account_ids):
                 return jsonify({"ok": False, "error": "expected_emails 必须完整对应本次账号 ID"}), 400
-        try:
-            result = db.set_accounts_email_invalid(
-                account_ids=account_ids, invalid=invalid, reason=reason.strip(),
-                expected_emails=expected_emails, icloud_account_id=group,
-                source="manual_icloud_account_group" if has_group else "manual",
-            )
-        except ValueError as exc:
-            return jsonify({"ok": False, "error": str(exc)}), 400
-        counts = {
-            key: int(result.get(key) or 0) for key in (
-                "updated_count", "pool_updated_count", "allocation_updated_count",
-                "matched_account_count", "matched_pool_count", "matched_allocation_count",
-            )
-        }
-        return jsonify({
-            "ok": True, **counts, "account_ids": result.get("account_ids") or [],
-            "skipped": [{"id": item.get("id"), "reason": item.get("reason")} for item in result.get("skipped") or []],
-            "message": "已标记邮箱失效" if invalid else "已清除本地邮箱失效标记，邮箱可用性仍需确认",
+        response = _submit_local_account_bulk(
+            "account_email_invalid", [group] if has_group else account_ids,
+            {
+                "invalid": invalid, "reason": reason.strip(),
+                "expected_emails": {str(key): value for key, value in expected_emails.items()} if expected_emails is not None else None,
+                "icloud_account_id": group, "source": "manual_icloud_account_group" if has_group else "manual",
+            },
+        )
+        body, status = response if isinstance(response, tuple) else (response, 200)
+        payload = body.get_json()
+        payload.update({
+            "account_ids": [],
+            **{key: 0 for key in ("pool_updated_count", "allocation_updated_count",
+                                  "matched_account_count", "matched_pool_count", "matched_allocation_count")},
+            "message": "邮箱失效标记任务已提交" if invalid else "清除本地邮箱失效标记任务已提交，邮箱可用性仍需确认",
         })
+        return jsonify(payload), status
 
     @bp.post("/api/accounts/<int:acc_id>/restore")
     def api_account_restore(acc_id: int):
@@ -895,8 +943,8 @@ def create_accounts_blueprint(context: WebUIContext):
         """归档/取消归档一个账号。Body {archived: true|false}。"""
         data = request.get_json(silent=True) or {}
         archived = bool(data.get("archived", True))
-        updated = db.archive_account(acc_id=acc_id, archived=archived)
-        if not updated:
+        items = account_bulk_mutations.archive_many([acc_id], archived=archived)
+        if not any(item.status == "updated" for item in items):
             return jsonify({"ok": False, "error": "账号不存在"}), 404
         return jsonify({"ok": True, "updated": True, "id": acc_id, "archived": archived})
 
@@ -904,34 +952,20 @@ def create_accounts_blueprint(context: WebUIContext):
     def api_accounts_archive_bulk():
         """批量归档/取消归档账号。Body {account_ids:[...], archived:true|false}。"""
         data = request.get_json(silent=True) or {}
-        ids = data.get("account_ids") or data.get("ids") or []
         archived = bool(data.get("archived", True))
-        if not isinstance(ids, list) or not ids:
-            return jsonify({"ok": False, "error": "account_ids 必须是非空数组"}), 400
-        if len(ids) > 5000:
-            return jsonify({"ok": False, "error": "单次最多归档 5000 个账号"}), 400
-        account_ids = []
-        skipped = []
-        seen = set()
-        for raw in ids:
-            try:
-                acc_id = int(raw)
-            except (TypeError, ValueError):
-                skipped.append({"id": raw, "reason": "ID 非法"})
-                continue
-            if acc_id in seen:
-                continue
-            seen.add(acc_id)
-            account_ids.append(acc_id)
-        updated, db_skipped = db.archive_accounts(account_ids=account_ids, archived=archived)
-        skipped.extend(db_skipped)
-        return jsonify({"ok": True, "updated": updated, "updated_count": len(updated), "archived": archived, "skipped": skipped})
+        try:
+            account_ids, skipped = _local_bulk_ids(data, limit=5000, label="归档")
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+        response = _submit_local_account_bulk("account_archive", account_ids, {"archived": archived}, skipped=skipped)
+        body, status = response if isinstance(response, tuple) else (response, 200)
+        return jsonify({**body.get_json(), "archived": archived}), status
 
     @bp.post("/api/accounts/<int:acc_id>/delete")
     def api_account_delete(acc_id: int):
         """删除一个已注册账号记录。只删除本地保存的账号/token记录，不改邮箱池状态。"""
-        deleted = db.delete_account(acc_id=acc_id)
-        if not deleted:
+        items = account_bulk_mutations.delete_many([acc_id])
+        if not any(item.status == "updated" for item in items):
             return jsonify({"ok": False, "error": "账号不存在"}), 404
         return jsonify({"ok": True, "deleted": True})
 
@@ -939,32 +973,11 @@ def create_accounts_blueprint(context: WebUIContext):
     def api_accounts_delete_bulk():
         """批量删除已注册账号记录。Body {account_ids: [...]} 或 {ids: [...]}。"""
         data = request.get_json(silent=True) or {}
-        ids = data.get("account_ids") or data.get("ids") or []
-        if not isinstance(ids, list) or not ids:
-            return jsonify({"ok": False, "error": "account_ids 必须是非空数组"}), 400
-        if len(ids) > 5000:
-            return jsonify({"ok": False, "error": "单次最多删除 5000 个账号"}), 400
-        account_ids = []
-        skipped = []
-        seen = set()
-        for raw in ids:
-            try:
-                acc_id = int(raw)
-            except (TypeError, ValueError):
-                skipped.append({"id": raw, "reason": "ID 非法"})
-                continue
-            if acc_id in seen:
-                continue
-            seen.add(acc_id)
-            account_ids.append(acc_id)
-        deleted, db_skipped = db.delete_accounts(account_ids=account_ids)
-        skipped.extend(db_skipped)
-        return jsonify({
-            "ok": True,
-            "deleted": deleted,
-            "deleted_count": len(deleted),
-            "skipped": skipped,
-        })
+        try:
+            account_ids, skipped = _local_bulk_ids(data, limit=5000, label="删除")
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+        return _submit_local_account_bulk("account_delete", account_ids, {}, skipped=skipped, deleted=True)
 
     @bp.post("/api/accounts/<int:acc_id>/note")
     def api_account_note(acc_id: int):
@@ -973,8 +986,8 @@ def create_accounts_blueprint(context: WebUIContext):
         note = str(data.get("note") or "")
         if len(note) > 2000:
             return jsonify({"ok": False, "error": "备注最多 2000 个字符"}), 400
-        updated = db.update_account_note(acc_id=acc_id, note=note)
-        if not updated:
+        items = account_bulk_mutations.update_note_many([acc_id], note=note)
+        if not any(item.status == "updated" for item in items):
             return jsonify({"ok": False, "error": "账号不存在"}), 404
         return jsonify({"ok": True, "updated": True, "id": acc_id, "note": note})
 
@@ -982,37 +995,14 @@ def create_accounts_blueprint(context: WebUIContext):
     def api_accounts_note_bulk():
         """批量更新已注册账号备注。Body {account_ids: [...], note: "..."}，空字符串表示清空。"""
         data = request.get_json(silent=True) or {}
-        ids = data.get("account_ids") or data.get("ids") or []
         note = str(data.get("note") or "")
-        if not isinstance(ids, list) or not ids:
-            return jsonify({"ok": False, "error": "account_ids 必须是非空数组"}), 400
-        if len(ids) > 5000:
-            return jsonify({"ok": False, "error": "单次最多备注 5000 个账号"}), 400
         if len(note) > 2000:
             return jsonify({"ok": False, "error": "备注最多 2000 个字符"}), 400
-
-        account_ids = []
-        skipped = []
-        seen = set()
-        for raw in ids:
-            try:
-                acc_id = int(raw)
-            except (TypeError, ValueError):
-                skipped.append({"id": raw, "reason": "ID 非法"})
-                continue
-            if acc_id in seen:
-                continue
-            seen.add(acc_id)
-            account_ids.append(acc_id)
-        updated, db_skipped = db.update_accounts_note(account_ids=account_ids, note=note)
-        skipped.extend(db_skipped)
-        return jsonify({
-            "ok": True,
-            "updated": updated,
-            "updated_count": len(updated),
-            "skipped": skipped,
-            "skipped_count": len(skipped),
-        })
+        try:
+            account_ids, skipped = _local_bulk_ids(data, limit=5000, label="备注")
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+        return _submit_local_account_bulk("account_note", account_ids, {"note": note}, skipped=skipped)
 
     @bp.post("/api/accounts/check-live-bulk")
     @_with_account_request_key
