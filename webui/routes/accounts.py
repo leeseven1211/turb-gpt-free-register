@@ -447,7 +447,8 @@ def create_accounts_blueprint(context: WebUIContext):
         return jsonify({"ok": True, **result}), 202
 
     @bp.post("/api/accounts/email-change-bulk")
-    def api_accounts_email_change_bulk():
+    @_with_account_request_key
+    def api_accounts_email_change_bulk(*, account_request_key):
         """Submit one native operation batch for selected accounts."""
         data = request.get_json(silent=True) or {}
         raw_ids = data.get("account_ids") or data.get("ids") or []
@@ -456,12 +457,18 @@ def create_accounts_blueprint(context: WebUIContext):
         if len(raw_ids) > 500:
             return jsonify({"ok": False, "error": "单次最多换绑 500 个账号"}), 400
         source = str(data.get("source") or data.get("email_source") or "").strip().lower()
-        result = email_change_service.submit_email_change_bulk(
-            raw_ids,
-            source=source,
-            trigger=str(data.get("trigger") or "manual_email_change_bulk"),
-            idempotency_key=data.get("idempotency_key"),
-        )
+        try:
+            result = email_change_service.submit_email_change_bulk(
+                raw_ids,
+                source=source,
+                trigger=str(data.get("trigger") or "manual_email_change_bulk"),
+                idempotency_key=account_request_key or data.get("idempotency_key"),
+            )
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), (
+                409 if str(exc) == "idempotency_key_conflict" else 400
+            )
+        result = public_submission(result)
         if not result.get("accepted") and not result.get("started"):
             return jsonify({"ok": False, **result}), 409
         return jsonify({"ok": True, **result}), 202
@@ -588,11 +595,6 @@ def create_accounts_blueprint(context: WebUIContext):
                 seen.add(acc_id)
                 valid_ids.append(acc_id)
         seen.clear()
-        batch_id = account_task_store.create_batch(
-            action_type="deactivation_mail",
-            trigger="manual_bulk",
-            total_count=len(valid_ids),
-        ) if valid_ids else None
         for raw in ids:
             try:
                 acc_id = int(raw)
@@ -602,12 +604,16 @@ def create_accounts_blueprint(context: WebUIContext):
             if acc_id in seen:
                 continue
             seen.add(acc_id)
-        queued = deactivation_mail_service.enqueue_bulk(
-            valid_ids,
-            trigger="manual_bulk",
-            batch_id=batch_id,
-            **({"account_request_key": account_request_key} if account_request_key else {}),
-        )
+        try:
+            queued = public_submission(deactivation_mail_service.enqueue_bulk(
+                valid_ids,
+                trigger="manual_bulk",
+                **({"account_request_key": account_request_key} if account_request_key else {}),
+            ))
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), (
+                409 if str(exc) == "idempotency_key_conflict" else 400
+            )
         started.extend(queued.get("started") or [])
         busy.extend(queued.get("busy") or [])
         skipped.extend(
@@ -623,7 +629,7 @@ def create_accounts_blueprint(context: WebUIContext):
             "skipped": skipped,
             "skipped_count": len(skipped),
             "queue": deactivation_mail_service.queue_settings(),
-            "batch_id": batch_id,
+            "batch_id": queued.get("batch_id"),
         }), 202
 
     @bp.get("/api/accounts/<int:acc_id>/secret")

@@ -139,3 +139,30 @@ class EmailChangeBulkRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 409)
         self.assertEqual(response.get_json()['error'], 'idempotency_key_conflict')
 
+    def test_special_bulk_receipts_keep_large_identifiers_exact(self):
+        from core.accounts.deactivation import mail_scan
+
+        large = 2**53 + 1
+        with patch.object(service, 'submit_email_change_bulk', return_value={
+            'accepted': True, 'batch_id': large,
+            'started': [{'account_id': large, 'task_id': large + 1, 'run_id': large + 2}],
+        }):
+            response = self.app.test_client().post('/api/accounts/email-change-bulk',
+                json={'account_ids': [str(large)], 'source': 'outlook'})
+        self.assertEqual(response.status_code, 202)
+        receipt = response.get_json()
+        self.assertEqual(receipt['batch_id'], str(large))
+        self.assertEqual(receipt['started'][0]['run_id'], str(large + 2))
+        with patch("core.runtime.capabilities.require_feature", return_value=(True, "")), \
+             patch.object(mail_scan, 'enqueue_bulk', return_value={
+                 'batch_id': large,
+                 'started': [{'id': large, 'task_id': large + 1, 'run_id': large + 2}],
+             }), patch.object(mail_scan, 'queue_settings', return_value={}):
+            response = self.app.test_client().post('/api/accounts/check-deactivation-mail-bulk',
+                json={'account_ids': [str(large)]})
+        self.assertEqual(response.status_code, 202)
+        receipt = response.get_json()
+        self.assertEqual(receipt['batch_id'], str(large))
+        self.assertEqual(receipt['started'][0]['id'], str(large))
+        self.assertEqual(receipt['started'][0]['run_id'], str(large + 2))
+
