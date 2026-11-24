@@ -226,7 +226,18 @@ def accept_bulk_operation_action(
         managed_task_ids=set(managed_retries), request_key=request_key,
         operation_logger=operation_logger,
     ) if action == "retry" else {}
+    if action == "retry":
+        from core.operations.task_center_retry import accept_retries
+        native_retries = accept_retries(tasks, excluded=set(managed_retries) | set(registration_retries),
+            request_key=request_key, operation_logger=operation_logger)
+    else:
+        native_retries = {}
     cancelled = _accept_pending_cancellations(tasks) if action == "cancel" else {}
+    if action == "cancel":
+        from core.operations.task_center_cancel import accept_cancellations
+        special_cancellations = accept_cancellations(tasks)
+    else:
+        special_cancellations = {}
     accepted: list[dict] = []
     skipped: list[dict] = []
     for task_id in task_ids:
@@ -249,12 +260,16 @@ def accept_bulk_operation_action(
             payload, status = managed_retries[task_id]
         elif task_id in registration_retries:
             payload, status = registration_retries[task_id]
+        elif task_id in native_retries:
+            payload, status = native_retries[task_id]
         elif task_id in cancelled:
             error = cancelled[task_id]
             payload, status = (
                 ({"ok": False, "error": error}, 409) if error else
                 ({"ok": True, "state": "cancelled", "message": "已记录停止请求，任务将在安全检查点收口"}, 200)
             )
+        elif task_id in special_cancellations:
+            payload, status = special_cancellations[task_id]
         elif action == "retry" and request_key and len(request_key) > 128:
             payload, status = {"ok": False, "error": "Idempotency-Key 不能超过 128 字符"}, 422
         else:
