@@ -126,6 +126,8 @@ class CodexBulkSubmissionTests(PostgresTestCase):
         second = operations.create_runtime_task(
             task_type="codex_retry", account_id=self.ids[1], email="bulk-1@example.test",
         )
+        records.patch_row(records.ACCOUNTS, self.ids[0], {"codex_active_run_id": first["run"]["id"]})
+        records.patch_row(records.ACCOUNTS, self.ids[1], {"codex_active_run_id": second["run"]["id"]})
         result = self.service.cancel_reauthorization(account_ids=[self.ids[0], self.ids[1], 999999])
         self.assertEqual(result["stopped_count"], 2)
         self.assertEqual({item["run_id"] for item in result["stopped"]},
@@ -134,4 +136,68 @@ class CodexBulkSubmissionTests(PostgresTestCase):
         self.assertEqual(operations.get_run(first["run"]["id"])["status"], "cancelled")
         self.assertEqual(operations.get_run(second["run"]["id"])["status"], "cancelled")
         self.assertEqual(records.get_row(records.ACCOUNTS, self.ids[0])["codex_execution_status"], "empty")
-        self.assertEqual(records.get_row(records.ACCOUNTS, self.ids[0])["codex_active_run_id"], 0)
+        self.assertIsNone(records.get_row(records.ACCOUNTS, self.ids[0])["codex_active_run_id"])
+
+    def test_cancel_reauthorization_skips_other_task_types_sources_and_unselected_runs(self):
+        created = [
+            operations.create_runtime_task(
+                task_type=task_type, source_system=source_system,
+                account_id=self.ids[index], email=f"bulk-{index}@example.test",
+                resource_family="completion_coordinator" if task_type == "account_completion" else "openai_interactive",
+            )
+            for index, (task_type, source_system) in enumerate([
+                ("codex_token_refresh", "native_operations"),
+                ("plan_check", "native_operations"),
+                ("codex_retry", "legacy_fixture"),
+                ("account_completion", "webui_runtime"),
+                ("codex_retry", "native_operations"),
+            ])
+        ]
+        result = self.service.cancel_reauthorization(account_ids=self.ids[:4])
+        self.assertEqual(result["stopped_count"], 0)
+        self.assertEqual(len(result["skipped"]), 4)
+        for queued in created:
+            self.assertEqual(operations.get_run(queued["run"]["id"])["status"], "queued")
+
+    def test_stop_does_not_overwrite_result_when_run_finishes_after_prefetch(self):
+        from core.storage.operations import runtime
+        queued = operations.create_runtime_task(task_type="codex_retry", account_id=self.ids[0],
+                                               email="bulk-0@example.test")
+        records.patch_row(records.ACCOUNTS, self.ids[0], {"codex_active_run_id": queued["run"]["id"]})
+        cancel = runtime.request_run_cancel
+
+        def finish_before_cancel(run_id, *, conn, **kwargs):
+            with conn.cursor() as cur:
+                cur.execute(f"UPDATE {operations._table('operation_runs')} SET status='success' WHERE id=%s", (run_id,))
+                cur.execute(f"UPDATE {operations._table('operation_tasks')} SET status='success' WHERE id=%s", (queued["id"],))
+            records.patch_row(records.ACCOUNTS, self.ids[0],
+                              {"codex_execution_status": "empty", "codex_last_run_status": "success",
+                               "codex_active_run_id": 0}, conn=conn)
+            return cancel(run_id, conn=conn, **kwargs)
+
+        with patch.object(runtime, "request_run_cancel", side_effect=finish_before_cancel):
+            result = self.service.cancel_reauthorization(account_ids=self.ids[:1])
+        self.assertEqual(result["stopped_count"], 0)
+        self.assertEqual(result["skipped"][0]["reason_code"], "run_state_changed")
+        self.assertEqual(records.get_row(records.ACCOUNTS, self.ids[0])["codex_last_run_status"], "success")
+
+    def test_upload_uses_content_email_for_original_credential_identity(self):
+        records.patch_row(records.CODEX_CREDENTIALS, 1, {
+            "content": {"email": "bulk-1@example.test", "access_token": "private-at", "refresh_token": "private-rt"},
+        })
+        result = manual_upload.queue_filenames(self.names[:1])
+        run = operations.get_run(result["queued"][0]["run_id"])
+        self.assertEqual(run["account_id"], self.ids[1])
+        self.assertEqual(run["email_snapshot"], "bulk-1@example.test")
+        bound = manual_upload._bound_reference(run["data"], expected_email=run["email_snapshot"])
+        self.assertEqual(bound["filename"], self.names[0])
+
+    def test_refresh_and_retry_fall_back_to_content_email_for_legacy_rows(self):
+        records.patch_row(records.CODEX_CREDENTIALS, 1, {"email": ""})
+        result = self.service.submit_refresh(self.names[:1])
+        self.assertEqual(result["started_count"], 1)
+        self.assertEqual(result["started"][0]["account_id"], self.ids[0])
+        records.patch_row(records.CODEX_CREDENTIALS, 2, {"email": ""})
+        result = self.service.submit_reauthorization(filenames=self.names[1:2])
+        self.assertEqual(result["started_count"], 1)
+        self.assertEqual(result["started"][0]["account_id"], self.ids[1])

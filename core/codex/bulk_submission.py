@@ -7,6 +7,12 @@ from core.storage import records
 from core.storage.codex import bulk_submission as storage
 from core.storage.operations import schema
 
+_REAUTH_CONFIG_FIELDS = (
+    "oauth_driver", "auth_source", "phone_enabled", "sms_provider", "sms_country",
+    "account_proxy_mode", "account_proxy_modes", "auto_upload_sub2api",
+)
+_REFRESH_CONFIG_FIELDS = ("request_timeout",)
+
 
 def _names(values):
     return list(dict.fromkeys(str(value or "").strip() for value in values if isinstance(value, str)))
@@ -29,6 +35,13 @@ def _ids(values):
 
 def _filename_valid(name):
     return name.startswith("codex-") and name.endswith(".json") and not any(part in name for part in ("/", "\\", ".."))
+
+
+def _credential_email(row, *, content_first=False):
+    row = row or {}
+    content = row.get("content") if isinstance(row.get("content"), dict) else {}
+    value = content.get("email") if content_first else row.get("email")
+    return str(value or row.get("email") or content.get("email") or "").strip()
 
 
 def _submit(kind, *, account_ids=(), filenames=(), trigger="manual_bulk", title="Codex 批量任务"):
@@ -65,7 +78,12 @@ def _submit(kind, *, account_ids=(), filenames=(), trigger="manual_bulk", title=
         initial = storage.credentials(conn, filenames=valid_names) if valid_names else []
         selected_accounts = storage.accounts(
             conn, account_ids=ids,
-            emails=list({str(row.get("email") or "").strip().casefold() for row in initial}),
+            emails=list({
+                email.casefold() for row in initial
+                for email in (_credential_email(row), _credential_email(row, content_first=True))
+                if email
+            }),
+            for_update=False,
         )
         by_id = {row["id"]: row for row in selected_accounts}
         by_email = {str(row.get("email") or "").strip().casefold(): row for row in selected_accounts}
@@ -74,6 +92,16 @@ def _submit(kind, *, account_ids=(), filenames=(), trigger="manual_bulk", title=
             conn, filenames=valid_names,
             emails=[str(by_id[number].get("email") or "").strip().casefold() for number in ids if number in by_id],
         )
+        selected_accounts = storage.accounts(
+            conn, account_ids=ids,
+            emails=list({
+                email.casefold() for row in credential_rows
+                for email in (_credential_email(row), _credential_email(row, content_first=True))
+                if email
+            }),
+        )
+        by_id = {row["id"]: row for row in selected_accounts}
+        by_email = {str(row.get("email") or "").strip().casefold(): row for row in selected_accounts}
         by_filename = {row["filename"]: row for row in credential_rows}
         credential_by_email = {}
         for row in credential_rows:
@@ -83,16 +111,22 @@ def _submit(kind, *, account_ids=(), filenames=(), trigger="manual_bulk", title=
         targets = []
         for number in ids:
             account = by_id.get(number)
-            targets.append(({"id": number}, account, credential_by_email.get(
-                str((account or {}).get("email") or "").strip().casefold())))
+            credential = credential_by_email.get(str((account or {}).get("email") or "").strip().casefold())
+            if kind == "sub2api_manual_upload" and credential:
+                account = by_email.get(_credential_email(credential, content_first=True).casefold())
+            targets.append(({"id": number}, account, credential))
         for name in valid_names:
             credential = by_filename.get(name)
-            account = by_email.get(str((credential or {}).get("email") or "").strip().casefold())
+            account = by_email.get(_credential_email(
+                credential, content_first=kind == "sub2api_manual_upload",
+            ).casefold())
             targets.append(({"filename": name}, account, credential))
         batch = storage.create_batch(conn, kind, len(targets) + len(skipped), trigger, title)
         specs, seen_accounts, selected = [], set(), []
         for identity, account, credential in targets:
-            email = str((account or credential or {}).get("email") or "").strip()
+            email = str((account or {}).get("email") or _credential_email(
+                credential, content_first=kind == "sub2api_manual_upload",
+            )).strip()
             base = {**identity, **({"email": email} if email else {})}
             account_id = (account or {}).get("id")
             code = reason = None
@@ -102,6 +136,10 @@ def _submit(kind, *, account_ids=(), filenames=(), trigger="manual_bulk", title=
                 code, reason = "account_missing", "未找到对应的已注册账号"
             elif account and db.account_is_deactivated(account):
                 code, reason = "account_deactivated", "账号已停用"
+            elif kind == "sub2api_manual_upload" and credential and db.account_is_deactivated(
+                by_email.get(_credential_email(credential).casefold())
+            ):
+                code, reason = "account_deactivated", "关联账号已停用"
             elif kind == "codex_retry" and account_id in seen_accounts:
                 continue
             elif kind == "codex_token_refresh" and (
@@ -135,7 +173,7 @@ def _submit(kind, *, account_ids=(), filenames=(), trigger="manual_bulk", title=
                 continue
             if account_id:
                 seen_accounts.add(account_id)
-            data = {"config_snapshot": snapshot} if snapshot is not None else {}
+            data = {}
             source_id = None
             if kind == "codex_token_refresh":
                 data.update(credential_filename=credential["filename"], resource_family=refresh.RESOURCE_FAMILY)
@@ -147,8 +185,13 @@ def _submit(kind, *, account_ids=(), filenames=(), trigger="manual_bulk", title=
             if credential:
                 base["filename"] = credential["filename"]
             selected.append(base)
-            specs.append({"task_type": kind, "account_id": account_id, "email": email,
-                          "trigger": trigger, "data": data, **({"source_id": source_id} if source_id else {})})
+            specs.append({
+                "task_type": kind, "account_id": account_id, "email": email,
+                "trigger": trigger, "data": data, **({"source_id": source_id} if source_id else {}),
+                **({"config_snapshot": snapshot,
+                    "config_allowlist": _REFRESH_CONFIG_FIELDS if kind == "codex_token_refresh" else _REAUTH_CONFIG_FIELDS}
+                   if snapshot is not None else {}),
+            })
         created = storage.create_tasks(conn, specs, batch["id"])
         if kind != "sub2api_manual_upload":
             storage.project_queued(conn, created)
@@ -191,10 +234,11 @@ def cancel_reauthorization(*, account_ids=(), emails=()):
     ))
     records.init()
     with records.transaction() as conn:
-        rows = storage.accounts(conn, account_ids=ids, emails=[value.casefold() for value in normalized_emails])
+        rows = storage.accounts(conn, account_ids=ids, emails=[value.casefold() for value in normalized_emails],
+                                for_update=False)
         by_id = {int(row["id"]): row for row in rows}
         by_email = {str(row.get("email") or "").strip().casefold(): row for row in rows}
-        active = storage.active_runs(conn, by_id)
+        active = storage.reauthorization_runs(conn, by_id)
         targets = [(("id", number), by_id.get(number)) for number in ids]
         targets.extend((("email", email), by_email.get(email.casefold())) for email in normalized_emails)
         stopped = []
@@ -215,7 +259,8 @@ def cancel_reauthorization(*, account_ids=(), emails=()):
                 continue
             try:
                 result = operation_runtime.request_run_cancel(
-                    int(run["id"]), reason="用户手动停止 Codex 补跑", conn=conn,
+                    int(run["id"]), reason="用户手动停止 Codex 补跑",
+                    expected_status=run["status"], conn=conn,
                 )
             except LookupError:
                 skipped.append({"id": int(account["id"]), "email": shown_email,
@@ -227,18 +272,8 @@ def cancel_reauthorization(*, account_ids=(), emails=()):
                                 "reason_code": "run_state_changed"})
                 continue
             cancelled = result.get("status") == "cancelled"
-            records.patch_row(
-                records.ACCOUNTS,
-                int(account["id"]),
-                {
-                    "codex_execution_status": "empty" if cancelled else "cancelling",
-                    "codex_active_run_id": 0 if cancelled else int(result["id"]),
-                    "codex_last_run_status": "cancelled" if cancelled else None,
-                    "codex_error": "用户手动停止 Codex 补跑",
-                },
-                conn=conn,
-            )
             stopped.append({"id": int(account["id"]), "email": shown_email,
                             "run_id": int(result["id"]), "running": not cancelled})
+        storage.project_cancel_requested(conn, stopped)
     return {"ok": True, "stopped": stopped, "stopped_count": len(stopped),
             "skipped": skipped, "skipped_count": len(skipped)}

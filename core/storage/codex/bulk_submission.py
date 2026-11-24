@@ -20,11 +20,12 @@ def credentials(conn, *, filenames=(), emails=()):
         return [records.merge_row(records.CODEX_CREDENTIALS, row) for row in cur.fetchall()]
 
 
-def accounts(conn, *, account_ids=(), emails=()):
+def accounts(conn, *, account_ids=(), emails=(), for_update=True):
     with conn.cursor() as cur:
         cur.execute(
             f"SELECT * FROM {records._qualified(records.ACCOUNTS)} "
-            "WHERE id=ANY(%s) OR LOWER(BTRIM(email))=ANY(%s) ORDER BY id FOR UPDATE",
+            "WHERE id=ANY(%s) OR LOWER(BTRIM(email))=ANY(%s) ORDER BY id"
+            + (" FOR UPDATE" if for_update else ""),
             (list(account_ids), list(emails)),
         )
         return [records.merge_row(records.ACCOUNTS, row) for row in cur.fetchall()]
@@ -38,6 +39,36 @@ def active_runs(conn, account_ids):
             (list(account_ids), list(common._ACTIVE_RUN_STATUSES)),
         )
         return {row["account_id"]: dict(row) for row in cur.fetchall()}
+
+
+def reauthorization_runs(conn, account_ids):
+    """停止仅选择原生 Codex 授权任务，不触及其他账号任务或历史来源。"""
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""SELECT r.id,r.task_id,r.account_id,r.status FROM {common._table('operation_runs')} r
+            JOIN {common._table('operation_tasks')} t ON t.id=r.task_id
+            WHERE r.account_id=ANY(%s) AND r.resource_family='openai_interactive'
+              AND r.status=ANY(%s) AND t.task_type='codex_retry'
+              AND t.source_system='native_operations' AND r.source_system='native_operations'
+            ORDER BY r.id""", (list(account_ids), list(common._ACTIVE_RUN_STATUSES)),
+        )
+        return {row["account_id"]: dict(row) for row in cur.fetchall()}
+
+
+def project_cancel_requested(conn, stopped):
+    if not stopped:
+        return
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""UPDATE {records._qualified(records.ACCOUNTS)} a SET
+                codex_execution_status=CASE WHEN s.running THEN 'cancelling' ELSE 'empty' END,
+                codex_active_run_id=CASE WHEN s.running THEN s.run_id ELSE NULL END,
+                codex_last_run_status=CASE WHEN s.running THEN a.codex_last_run_status ELSE 'cancelled' END,
+                data=a.data || jsonb_build_object('codex_error','用户手动停止 Codex 补跑')
+            FROM jsonb_to_recordset(%s::jsonb) AS s(id BIGINT,run_id BIGINT,running BOOLEAN)
+            WHERE a.id=s.id AND a.codex_active_run_id=s.run_id""",
+            (json.dumps(stopped, ensure_ascii=False),),
+        )
 
 
 def refresh_fences(conn, account_ids):
