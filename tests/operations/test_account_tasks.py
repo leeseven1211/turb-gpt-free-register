@@ -13,10 +13,13 @@ from unittest.mock import Mock, call, patch
 
 from core import account_task_store, operation_task_store
 from core.codex import retry_service as codex_retry_service
+from core.codex import bulk_submission as codex_bulk_submission
 from core.accounts.liveness import service as live_check_service
 from core.storage import postgres as postgres_store, records as record_store
+from core.storage.operations import store as operation_store
 from core.codex.roxy import oauth as roxy_codex_oauth
 from core.operations import run_log as task_run_log
+from core.operations import task_gateway
 from core.accounts import token_refresh as token_refresh_service
 from core.auth.challenge import PasswordSetupUnsupportedError
 from core.auth.protocol.openai_auth import AccountUnusableError
@@ -1302,33 +1305,83 @@ class AccountTaskApiTests(PostgresTestCase):
         app = create_app(auth_code="test-auth")
         client = app.test_client()
         client.environ_base["HTTP_X_AUTH_CODE"] = "test-auth"
-        account = {"id": 7, "email": "a@example.com", "codex_status": "success"}
+        account_id = 2**53 + 1
+        record_store.insert_row(record_store.ACCOUNTS, {
+            "id": account_id, "email": "a@example.com", "codex_status": "success",
+        })
+        record_store.insert_row(record_store.CODEX_CREDENTIALS, {
+            "filename": "codex-a@example.com-free.json", "email": "a@example.com",
+        })
         with (
             patch("core.runtime.capabilities.require_feature", return_value=(True, "")),
-            patch.object(webui_app.db, "list_codex_accounts", return_value=[{
-                "filename": "codex-a@example.com-free.json",
-                "email": "a@example.com",
-            }]),
-            patch.object(webui_app.db, "get_account_by_email", return_value=account),
-            patch.object(webui_app.codex_operation_service, "submit_bulk", return_value={
-                "accepted": True,
-                "batch_id": 1,
-                "batch_uuid": "batch-1",
-                "started": [{"account_id": 7, "email": "a@example.com", "task_id": 89, "run_id": 90}],
-                "started_count": 1,
-                "skipped": [],
-            }) as submit_bulk,
+            patch.object(webui_app.codex_operation_service, "_config_snapshot", return_value={"oauth_driver": "protocol"}),
+            patch.object(webui_app.codex_operation_service, "_deployment_unavailable", return_value=None),
+            patch.object(webui_app.codex_operation_service, "_feature_ready", return_value=(True, "")),
+            patch.object(task_gateway, "notify_dispatch"),
         ):
             response = client.post("/api/codex/retry-bulk", json={
                 "filenames": ["codex-a@example.com-free.json"],
-                "workers": 2,
             })
 
         self.assertEqual(202, response.status_code)
         payload = response.get_json()
         self.assertEqual(1, payload["started_count"])
-        self.assertEqual(89, payload["started"][0]["task_id"])
-        submit_bulk.assert_called_once_with([7], trigger="manual_bulk")
+        started = payload["started"][0]
+        self.assertEqual("codex-a@example.com-free.json", started["filename"])
+        self.assertEqual(str(account_id), started["account_id"])
+        self.assertRegex(started["task_id"], r"^[1-9][0-9]*$")
+        self.assertRegex(started["run_id"], r"^[1-9][0-9]*$")
+        run = operation_store.get_run(int(started["run_id"]))
+        self.assertEqual("codex_retry", run["task_type"])
+        self.assertEqual(account_id, run["account_id"])
+        self.assertEqual(str(run["batch_id"]), payload["batch_id"])
+
+    def test_codex_stop_bulk_cancels_only_codex_runs(self):
+        first_id = 2**53 + 1
+        second_id = first_id + 1
+        for account_id, email in ((first_id, "codex@example.com"), (second_id, "plan@example.com")):
+            record_store.insert_row(record_store.ACCOUNTS, {"id": account_id, "email": email})
+        codex = operation_store.create_runtime_task(
+            task_type="codex_retry", account_id=first_id, email="codex@example.com",
+        )
+        plan = operation_store.create_runtime_task(
+            task_type="plan_check", account_id=second_id, email="plan@example.com",
+        )
+
+        client = create_app(auth_code="test-auth").test_client()
+        response = client.post("/api/codex/stop-bulk", json={"account_ids": [str(first_id), str(second_id)]},
+                               headers={"X-Auth-Code": "test-auth"})
+
+        self.assertEqual(200, response.status_code)
+        result = response.get_json()
+        self.assertEqual(1, result["stopped_count"])
+        self.assertEqual(1, result["skipped_count"])
+        self.assertEqual(str(first_id), result["stopped"][0]["id"])
+        self.assertEqual(str(codex["run"]["id"]), result["stopped"][0]["run_id"])
+        self.assertEqual(str(second_id), result["skipped"][0]["id"])
+        self.assertEqual("run_not_active", result["skipped"][0]["reason_code"])
+        self.assertEqual("cancelled", operation_store.get_run(codex["run"]["id"])["status"])
+        self.assertEqual("queued", operation_store.get_run(plan["run"]["id"])["status"])
+
+    def test_codex_execution_bulk_errors_are_json(self):
+        client = create_app(auth_code="test-auth").test_client()
+        client.environ_base["HTTP_X_AUTH_CODE"] = "test-auth"
+        for path, submitter, body in (
+            ("retry-bulk", "submit_reauthorization", {"account_ids": [1]}),
+            ("stop-bulk", "cancel_reauthorization", {"account_ids": [1]}),
+            ("refresh-token-bulk", "submit_refresh", {"filenames": ["codex-a.json"]}),
+        ):
+            with (
+                self.subTest(path=path),
+                patch("core.runtime.capabilities.require_feature", return_value=(True, "")),
+                patch.object(codex_bulk_submission, submitter, side_effect=ValueError("idempotency_key_conflict")),
+            ):
+                invalid = client.post(f"/api/codex/{path}", json=["not an object"])
+                self.assertEqual(400, invalid.status_code)
+                self.assertFalse(invalid.get_json()["ok"])
+                conflict = client.post(f"/api/codex/{path}", json=body)
+                self.assertEqual(409, conflict.status_code)
+                self.assertEqual("idempotency_key_conflict", conflict.get_json()["reason_code"])
 
 
 if __name__ == "__main__":

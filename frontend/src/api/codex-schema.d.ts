@@ -97,6 +97,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/codex/reset-export-bulk": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["resetExportBulkCodex"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/codex/refresh-token-bulk": {
         parameters: {
             query?: never;
@@ -123,6 +139,22 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["retryBulkCodex"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/codex/stop-bulk": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["stopBulkCodex"];
         delete?: never;
         options?: never;
         head?: never;
@@ -277,9 +309,9 @@ export interface components {
         CodexTaskReference: {
             filename?: string;
             accepted?: boolean;
-            task_id?: number;
-            run_id?: number | null;
-            account_id?: number | string | null;
+            task_id?: string;
+            run_id?: string;
+            account_id?: string | null;
             email?: string;
             status?: string;
             busy?: boolean;
@@ -287,6 +319,7 @@ export interface components {
             source_system?: string;
             source_id?: number | string;
             trigger?: string;
+            id?: string;
         } & {
             [key: string]: unknown;
         };
@@ -295,8 +328,11 @@ export interface components {
             reason?: string;
             error?: string;
             error_code?: string;
-            task_id?: number;
-            run_id?: number;
+            task_id?: string;
+            run_id?: string;
+            id?: unknown;
+            email?: string;
+            reason_code?: string;
         } & {
             [key: string]: unknown;
         };
@@ -318,7 +354,7 @@ export interface components {
             message?: string;
             accepted?: boolean;
             status?: string;
-            batch_id?: number | string | null;
+            batch_id?: string;
             batch_uuid?: string;
             workers?: number;
             started?: components["schemas"]["CodexTaskReference"][];
@@ -343,6 +379,7 @@ export interface components {
             message?: string;
             errors?: components["schemas"]["CodexSkipped"][];
             skipped?: components["schemas"]["CodexSkipped"][];
+            reason_code?: string;
         } & {
             [key: string]: unknown;
         };
@@ -356,6 +393,33 @@ export interface components {
                 };
             }[];
             errors?: components["schemas"]["CodexSkipped"][];
+        };
+        CodexMutationAccepted: {
+            /** @constant */
+            ok: true;
+            /** @constant */
+            accepted: true;
+            command_id: string;
+            task_id: string;
+            run_id: string;
+            operation: string;
+            status: string;
+            reused: boolean;
+        } & {
+            [key: string]: unknown;
+        };
+        CodexBulkStopResponse: {
+            /** @constant */
+            ok: true;
+            stopped: {
+                id: string;
+                email: string;
+                run_id: string;
+                running: boolean;
+            }[];
+            stopped_count: number;
+            skipped: components["schemas"]["CodexSkipped"][];
+            skipped_count: number;
         };
     };
     responses: never;
@@ -440,7 +504,9 @@ export interface operations {
     archiveBulkCodex: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                "Idempotency-Key"?: string;
+            };
             path?: never;
             cookie?: never;
         };
@@ -454,13 +520,22 @@ export interface operations {
             };
         };
         responses: {
-            /** @description 成功 */
-            200: {
+            /** @description 已受理。通过 GET /api/bulk-mutations/{command_id} 查询结果。 */
+            202: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["CodexActionResponse"];
+                    "application/json": components["schemas"]["CodexMutationAccepted"];
+                };
+            };
+            /** @description 幂等键已用于不同批量请求 */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CodexError"];
                 };
             };
             /** @description 业务错误 */
@@ -512,7 +587,9 @@ export interface operations {
     deleteBulkCodex: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                "Idempotency-Key"?: string;
+            };
             path?: never;
             cookie?: never;
         };
@@ -524,13 +601,22 @@ export interface operations {
             };
         };
         responses: {
-            /** @description 成功 */
-            200: {
+            /** @description 已受理。通过 GET /api/bulk-mutations/{command_id} 查询结果。 */
+            202: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["CodexActionResponse"];
+                    "application/json": components["schemas"]["CodexMutationAccepted"];
+                };
+            };
+            /** @description 幂等键已用于不同批量请求 */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CodexError"];
                 };
             };
             /** @description 业务错误 */
@@ -579,6 +665,52 @@ export interface operations {
             };
         };
     };
+    resetExportBulkCodex: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    filenames: string[];
+                };
+            };
+        };
+        responses: {
+            /** @description 已受理。通过 GET /api/bulk-mutations/{command_id} 查询结果。 */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CodexMutationAccepted"];
+                };
+            };
+            /** @description 幂等键已用于不同批量请求 */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CodexError"];
+                };
+            };
+            /** @description 业务错误 */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CodexError"];
+                };
+            };
+        };
+    };
     refreshTokenBulkCodex: {
         parameters: {
             query?: never;
@@ -594,13 +726,22 @@ export interface operations {
             };
         };
         responses: {
-            /** @description 成功 */
+            /** @description 已受理并返回后台任务引用 */
             202: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": components["schemas"]["CodexActionResponse"];
+                };
+            };
+            /** @description 未受理任何目标或幂等键冲突 */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CodexError"];
                 };
             };
             /** @description 业务错误 */
@@ -625,19 +766,74 @@ export interface operations {
             content: {
                 "application/json": {
                     filenames?: string[];
-                    account_ids?: number[];
-                    ids?: number[];
+                    account_ids?: (string | number)[];
+                    ids?: (string | number)[];
                 } | unknown | unknown | unknown;
             };
         };
         responses: {
-            /** @description 成功 */
+            /** @description 已受理并返回后台任务引用 */
             202: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": components["schemas"]["CodexActionResponse"];
+                };
+            };
+            /** @description 未受理任何目标或幂等键冲突 */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CodexError"];
+                };
+            };
+            /** @description 业务错误 */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CodexError"];
+                };
+            };
+        };
+    };
+    stopBulkCodex: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    emails?: string[];
+                    account_ids?: (string | number)[];
+                    ids?: (string | number)[];
+                } | unknown | unknown | unknown;
+            };
+        };
+        responses: {
+            /** @description 返回停止结果及跳过项 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CodexBulkStopResponse"];
+                };
+            };
+            /** @description 幂等键已用于不同批量请求 */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CodexError"];
                 };
             };
             /** @description 业务错误 */

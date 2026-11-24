@@ -201,12 +201,22 @@
           }
         },
         "responses": {
-          "200": {
-            "description": "成功",
+          "202": {
+            "description": "已受理。通过 GET /api/bulk-mutations/{command_id} 查询结果。",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/CodexActionResponse"
+                  "$ref": "#/components/schemas/CodexMutationAccepted"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "幂等键已用于不同批量请求",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CodexError"
                 }
               }
             }
@@ -221,7 +231,19 @@
               }
             }
           }
-        }
+        },
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            }
+          }
+        ]
       }
     },
     "/api/codex/delete": {
@@ -298,12 +320,22 @@
           }
         },
         "responses": {
-          "200": {
-            "description": "成功",
+          "202": {
+            "description": "已受理。通过 GET /api/bulk-mutations/{command_id} 查询结果。",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/CodexActionResponse"
+                  "$ref": "#/components/schemas/CodexMutationAccepted"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "幂等键已用于不同批量请求",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CodexError"
                 }
               }
             }
@@ -318,7 +350,19 @@
               }
             }
           }
-        }
+        },
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            }
+          }
+        ]
       }
     },
     "/api/codex/reset-export": {
@@ -367,6 +411,79 @@
         }
       }
     },
+    "/api/codex/reset-export-bulk": {
+      "post": {
+        "operationId": "resetExportBulkCodex",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "filenames": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "minItems": 1,
+                    "maxItems": 1000
+                  }
+                },
+                "required": [
+                  "filenames"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "已受理。通过 GET /api/bulk-mutations/{command_id} 查询结果。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CodexMutationAccepted"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "幂等键已用于不同批量请求",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CodexError"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "业务错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CodexError"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            }
+          }
+        ]
+      }
+    },
     "/api/codex/refresh-token-bulk": {
       "post": {
         "operationId": "refreshTokenBulkCodex",
@@ -396,11 +513,21 @@
         },
         "responses": {
           "202": {
-            "description": "成功",
+            "description": "已受理并返回后台任务引用",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/CodexActionResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "未受理任何目标或幂等键冲突",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CodexError"
                 }
               }
             }
@@ -439,7 +566,16 @@
                   "account_ids": {
                     "type": "array",
                     "items": {
-                      "type": "integer"
+                      "oneOf": [
+                        {
+                          "type": "string",
+                          "pattern": "^[1-9][0-9]*$"
+                        },
+                        {
+                          "type": "integer",
+                          "minimum": 1
+                        }
+                      ]
                     },
                     "minItems": 1,
                     "maxItems": 500
@@ -447,7 +583,16 @@
                   "ids": {
                     "type": "array",
                     "items": {
-                      "type": "integer"
+                      "oneOf": [
+                        {
+                          "type": "string",
+                          "pattern": "^[1-9][0-9]*$"
+                        },
+                        {
+                          "type": "integer",
+                          "minimum": 1
+                        }
+                      ]
                     },
                     "minItems": 1,
                     "maxItems": 500
@@ -479,11 +624,131 @@
         },
         "responses": {
           "202": {
-            "description": "成功",
+            "description": "已受理并返回后台任务引用",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/CodexActionResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "未受理任何目标或幂等键冲突",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CodexError"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "业务错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CodexError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/codex/stop-bulk": {
+      "post": {
+        "operationId": "stopBulkCodex",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "emails": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "minItems": 1,
+                    "maxItems": 500
+                  },
+                  "account_ids": {
+                    "type": "array",
+                    "items": {
+                      "oneOf": [
+                        {
+                          "type": "string",
+                          "pattern": "^[1-9][0-9]*$"
+                        },
+                        {
+                          "type": "integer",
+                          "minimum": 1
+                        }
+                      ]
+                    },
+                    "minItems": 1,
+                    "maxItems": 500
+                  },
+                  "ids": {
+                    "type": "array",
+                    "items": {
+                      "oneOf": [
+                        {
+                          "type": "string",
+                          "pattern": "^[1-9][0-9]*$"
+                        },
+                        {
+                          "type": "integer",
+                          "minimum": 1
+                        }
+                      ]
+                    },
+                    "minItems": 1,
+                    "maxItems": 500
+                  }
+                },
+                "anyOf": [
+                  {
+                    "required": [
+                      "emails"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "account_ids"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "ids"
+                    ]
+                  }
+                ],
+                "additionalProperties": false,
+                "description": "存在非空 emails 数组时优先使用邮箱，否则使用账号 ID。"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "返回停止结果及跳过项",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CodexBulkStopResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "幂等键已用于不同批量请求",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CodexError"
                 }
               }
             }
@@ -990,17 +1255,15 @@
             "type": "boolean"
           },
           "task_id": {
-            "type": "integer"
+            "type": "string",
+            "pattern": "^[1-9][0-9]*$"
           },
           "run_id": {
-            "type": [
-              "integer",
-              "null"
-            ]
+            "type": "string",
+            "pattern": "^[1-9][0-9]*$"
           },
           "account_id": {
             "type": [
-              "integer",
               "string",
               "null"
             ]
@@ -1028,6 +1291,10 @@
           },
           "trigger": {
             "type": "string"
+          },
+          "id": {
+            "type": "string",
+            "pattern": "^[1-9][0-9]*$"
           }
         },
         "required": [],
@@ -1049,10 +1316,19 @@
             "type": "string"
           },
           "task_id": {
-            "type": "integer"
+            "type": "string",
+            "pattern": "^[1-9][0-9]*$"
           },
           "run_id": {
-            "type": "integer"
+            "type": "string",
+            "pattern": "^[1-9][0-9]*$"
+          },
+          "id": {},
+          "email": {
+            "type": "string"
+          },
+          "reason_code": {
+            "type": "string"
           }
         },
         "required": [],
@@ -1133,11 +1409,8 @@
             "type": "string"
           },
           "batch_id": {
-            "type": [
-              "integer",
-              "string",
-              "null"
-            ]
+            "type": "string",
+            "pattern": "^[1-9][0-9]*$"
           },
           "batch_uuid": {
             "type": "string"
@@ -1239,6 +1512,9 @@
             "items": {
               "$ref": "#/components/schemas/CodexSkipped"
             }
+          },
+          "reason_code": {
+            "type": "string"
           }
         },
         "required": [
@@ -1286,6 +1562,108 @@
           "exported_at",
           "count",
           "credentials"
+        ],
+        "additionalProperties": false
+      },
+      "CodexMutationAccepted": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "const": true
+          },
+          "accepted": {
+            "const": true
+          },
+          "command_id": {
+            "type": "string",
+            "pattern": "^[1-9][0-9]*$"
+          },
+          "task_id": {
+            "type": "string",
+            "pattern": "^[1-9][0-9]*$"
+          },
+          "run_id": {
+            "type": "string",
+            "pattern": "^[1-9][0-9]*$"
+          },
+          "operation": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "reused": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok",
+          "accepted",
+          "command_id",
+          "task_id",
+          "run_id",
+          "operation",
+          "status",
+          "reused"
+        ],
+        "additionalProperties": true
+      },
+      "CodexBulkStopResponse": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "const": true
+          },
+          "stopped": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "pattern": "^[1-9][0-9]*$"
+                },
+                "email": {
+                  "type": "string"
+                },
+                "run_id": {
+                  "type": "string",
+                  "pattern": "^[1-9][0-9]*$"
+                },
+                "running": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "id",
+                "email",
+                "run_id",
+                "running"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "stopped_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "skipped": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CodexSkipped"
+            }
+          },
+          "skipped_count": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "ok",
+          "stopped",
+          "stopped_count",
+          "skipped",
+          "skipped_count"
         ],
         "additionalProperties": false
       }

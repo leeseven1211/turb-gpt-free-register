@@ -18,7 +18,9 @@ from flask import Response, jsonify, make_response, redirect, render_template, r
 from core import account_task_store
 from core.storage import admin_repository
 from core.storage.codex import bulk_mutations as codex_bulk_mutations
+from core.codex import bulk_submission as codex_bulk_submission
 from core.operations import bulk_mutation_worker
+from core.operations.bulk_mutation_service import public_submission
 from core.codex import operation_service as codex_operation_service, retry_service as codex_retry_service, token_refresh_service as codex_token_refresh_service
 from core import db
 from core.accounts.deactivation import mail_scan as deactivation_mail_service
@@ -33,6 +35,7 @@ from webui import config_editor
 from webui.blueprint import LegacyEndpointBlueprint
 from webui.runtime import WebUIContext
 from webui.route_helpers import _feature_unavailable
+from webui.routes.bulk_mutations import submission_error
 
 logger = logging.getLogger(__name__)
 
@@ -56,9 +59,6 @@ def _mark_exported(filenames, *, errors=None):
 
 
 def _submit_codex_mutation(operation, filenames, parameters):
-    from core.operations.bulk_mutation_service import public_submission
-    from webui.routes.bulk_mutations import submission_error
-
     try:
         command = bulk_mutation_worker.submit_bulk_mutation(
             operation, filenames, parameters,
@@ -68,6 +68,11 @@ def _submit_codex_mutation(operation, filenames, parameters):
     except (TypeError, ValueError) as exc:
         return submission_error(exc)
     return jsonify({"ok": True, "accepted": True, **public_submission(command)}), 202
+
+
+def _bulk_request_data():
+    data = request.get_json(silent=True)
+    return data if isinstance(data, dict) else {}
 
 
 def create_codex_blueprint(context: WebUIContext):
@@ -114,36 +119,21 @@ def create_codex_blueprint(context: WebUIContext):
     @bp.post("/api/codex/refresh-token-bulk")
     def api_codex_refresh_token_bulk():
         """手动刷新选中的 Codex OAuth token，不触发邮箱/短信授权。"""
-        data = request.get_json(silent=True) or {}
+        data = _bulk_request_data()
         filenames = data.get("filenames") or []
         if not isinstance(filenames, list) or not filenames:
             return jsonify({"ok": False, "error": "filenames 必须是非空数组"}), 400
         if len(filenames) > 500:
             return jsonify({"ok": False, "error": "单次最多刷新 500 个凭证"}), 400
 
-        unique = []
-        seen = set()
-        for raw in filenames:
-            filename = str(raw or "").strip()
-            if filename and filename not in seen:
-                seen.add(filename)
-                unique.append(filename)
-        batch_id = account_task_store.create_batch(
-            action_type="codex_token_refresh",
-            trigger="manual_bulk",
-            total_count=len(unique),
-        )
-        started, skipped = [], []
-        for filename in unique:
-            result = codex_token_refresh_service.enqueue_refresh(
-                filename,
-                trigger="manual_bulk",
-                batch_id=batch_id,
-            )
-            if result.get("accepted"):
-                started.append(result)
-            else:
-                skipped.append({"filename": filename, "reason": result.get("error") or "无法刷新"})
+        try:
+            result = public_submission(codex_bulk_submission.submit_refresh(filenames))
+        except (TypeError, ValueError) as exc:
+            return submission_error(exc)
+        if result.get("unavailable"):
+            return jsonify({"ok": False, **result}), 503
+        started, skipped = result.get("started") or [], result.get("skipped") or []
+
         if not started:
             return jsonify({"ok": False, "error": "没有可刷新的凭证", "skipped": skipped}), 409
         return jsonify({
@@ -152,7 +142,7 @@ def create_codex_blueprint(context: WebUIContext):
             "started": started,
             "started_count": len(started),
             "skipped": skipped,
-            "batch_id": batch_id,
+            "batch_id": result.get("batch_id"),
         }), 202
 
     @bp.post("/api/codex/archive")
@@ -174,7 +164,7 @@ def create_codex_blueprint(context: WebUIContext):
     @bp.post("/api/codex/archive-bulk")
     def api_codex_archive_bulk():
         """批量归档/取消归档 Codex 授权凭证。Body {filenames:[...], archived}。"""
-        data = request.get_json(silent=True) or {}
+        data = _bulk_request_data()
         filenames = data.get("filenames") or []
         archived = bool(data.get("archived", True))
         if not isinstance(filenames, list) or not filenames:
@@ -416,7 +406,7 @@ def create_codex_blueprint(context: WebUIContext):
 
     @bp.post("/api/codex/reset-export-bulk")
     def api_codex_reset_export_bulk():
-        data = request.get_json(silent=True) or {}
+        data = _bulk_request_data()
         filenames = data.get("filenames") or []
         if not isinstance(filenames, list) or not filenames:
             return jsonify({"ok": False, "error": "filenames 必须是非空数组"}), 400
@@ -442,7 +432,7 @@ def create_codex_blueprint(context: WebUIContext):
     @bp.post("/api/codex/delete-bulk")
     def api_codex_delete_bulk():
         """批量删除 codex 凭证文件。body {filenames:[...]}。"""
-        data = request.get_json(silent=True) or {}
+        data = _bulk_request_data()
         filenames = data.get("filenames") or []
         if not isinstance(filenames, list) or not filenames:
             return jsonify({"ok": False, "error": "filenames 必须是非空数组"}), 400
@@ -467,45 +457,22 @@ def create_codex_blueprint(context: WebUIContext):
     @bp.post("/api/codex/stop-bulk")
     def api_codex_stop_bulk():
         """批量停止 Codex 补跑。Body {emails:[...]} 或 {account_ids:[...]}。"""
-        data = request.get_json(silent=True) or {}
+        data = _bulk_request_data()
         emails = data.get("emails") or []
         ids = data.get("account_ids") or data.get("ids") or []
-        targets = []
         if isinstance(emails, list) and emails:
-            targets = [str(x or "").strip() for x in emails]
+            target_field, targets = "emails", emails
         elif isinstance(ids, list) and ids:
-            for raw in ids:
-                try:
-                    acc = db.get_account(int(raw))
-                except Exception:
-                    acc = None
-                if acc and acc.get("email"):
-                    targets.append(str(acc.get("email") or "").strip())
+            target_field, targets = "account_ids", ids
         else:
             return jsonify({"ok": False, "error": "emails 或 account_ids 必须是非空数组"}), 400
         if len(targets) > 500:
             return jsonify({"ok": False, "error": "单次最多停止 500 个"}), 400
-        stopped = []
-        skipped = []
-        seen = set()
-        for email in targets:
-            key = email.lower()
-            if not email or key in seen:
-                continue
-            seen.add(key)
-            acc = db.get_account_by_email(email)
-            if acc is None:
-                skipped.append({"email": email, "reason": "账号不存在"})
-                continue
-            if not codex_operation_service.is_retrying(email):
-                skipped.append({"email": email, "reason": "未处于补跑中"})
-                continue
-            r = codex_operation_service.request_cancel(email=email)
-            if r.get("ok"):
-                stopped.append({"email": email, "run_id": r.get("run_id"), "running": r.get("running")})
-            else:
-                skipped.append({"email": email, "reason": r.get("error") or "停止失败"})
-        return jsonify({"ok": True, "stopped": stopped, "stopped_count": len(stopped), "skipped": skipped})
+        try:
+            result = codex_bulk_submission.cancel_reauthorization(**{target_field: targets})
+        except (TypeError, ValueError) as exc:
+            return submission_error(exc)
+        return jsonify(public_submission(result))
 
     @bp.post("/api/codex/reset-retrying")
     def api_codex_reset_retrying():
@@ -575,7 +542,7 @@ def create_codex_blueprint(context: WebUIContext):
         unavailable = _feature_unavailable("codex_retry")
         if unavailable:
             return unavailable
-        data = request.get_json(silent=True) or {}
+        data = _bulk_request_data()
         ids = data.get("account_ids") or data.get("ids") or []
         filenames = data.get("filenames") or []
         if not isinstance(ids, list) or not isinstance(filenames, list):
@@ -584,50 +551,12 @@ def create_codex_blueprint(context: WebUIContext):
             return jsonify({"ok": False, "error": "account_ids 或 filenames 必须是非空数组"}), 400
         if len(ids) + len(filenames) > 500:
             return jsonify({"ok": False, "error": "单次最多选择 500 个账号"}), 400
-        skipped = []
-        selected_ids = list(ids)
-        if filenames:
-            credentials = {
-                str(item.get("filename") or ""): item
-                for item in db.list_codex_accounts(archived="all")
-            }
-            seen_filenames = set()
-            for raw in filenames:
-                filename = str(raw or "").strip()
-                if not filename or filename in seen_filenames:
-                    continue
-                seen_filenames.add(filename)
-                credential = credentials.get(filename)
-                if not credential:
-                    skipped.append({"filename": filename, "reason": "Codex 凭证不存在"})
-                    continue
-                email = str(credential.get("email") or "").strip()
-                if not email:
-                    skipped.append({"filename": filename, "reason": "凭证邮箱为空"})
-                    continue
-                account = db.get_account_by_email(email)
-                if not account:
-                    skipped.append({"filename": filename, "email": email, "reason": "未找到对应的已注册账号"})
-                    continue
-                selected_ids.append(account.get("id"))
-
-        seen_ids = set()
-        normalized_ids = []
-        for raw in selected_ids:
-            try:
-                acc_id = int(raw)
-            except (TypeError, ValueError):
-                skipped.append({"id": raw, "reason": "ID 非法"})
-                continue
-            if acc_id in seen_ids:
-                continue
-            seen_ids.add(acc_id)
-            normalized_ids.append(acc_id)
-
-        if not normalized_ids:
-            return jsonify({"ok": False, "error": "没有可补跑的账号", "skipped": skipped}), 409
-        result = codex_operation_service.submit_bulk(normalized_ids, trigger="manual_bulk")
-        result["skipped"] = skipped + list(result.get("skipped") or [])
+        try:
+            result = public_submission(codex_bulk_submission.submit_reauthorization(
+                account_ids=ids, filenames=filenames, trigger="manual_bulk",
+            ))
+        except (TypeError, ValueError) as exc:
+            return submission_error(exc)
         if not result.get("accepted"):
             return jsonify({"ok": False, **result}), 503 if result.get("unavailable") else 409
         return jsonify({

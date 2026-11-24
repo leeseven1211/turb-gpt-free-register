@@ -7,9 +7,10 @@ from unittest.mock import Mock, patch
 from core.storage import admin_repository
 from core.codex import token_refresh_service as service
 from core import db
+from core.operations import task_gateway
+from core.storage.operations import store as operation_store
 from core.storage import records as record_store
 from webui.app import create_app
-from webui.routes import codex as codex_routes
 from tests.support_pg import PostgresTestCase
 
 
@@ -243,27 +244,37 @@ class CodexOauthRefreshApiTests(PostgresTestCase):
         self.client.environ_base["HTTP_X_AUTH_CODE"] = "test-auth"
 
     def test_bulk_endpoint_creates_token_refresh_tasks(self):
-        with (
-            patch.object(codex_routes.account_task_store, "create_batch", return_value="batch-1"),
-            patch.object(service, "enqueue_refresh", return_value={
-                "accepted": True,
-                "task_id": 901,
-                "filename": "codex-a@example.com-free.json",
-                "email": "a@example.com",
-            }) as enqueue,
-        ):
-            response = self.client.post(
-                "/api/codex/refresh-token-bulk",
-                json={"filenames": ["codex-a@example.com-free.json"]},
-            )
+        account_id = 2**53 + 1
+        filename = "codex-a@example.com-free.json"
+        record_store.insert_row(record_store.ACCOUNTS, {"id": account_id, "email": "a@example.com"})
+        db.save_codex_credential_record(filename, {
+            "email": "a@example.com",
+            "type": "codex",
+            "access_token": "test-access",
+            "refresh_token": "test-refresh",
+            "expired": "2099-01-01T00:00:00Z",
+        })
+        endpoint = "/api/codex/refresh-token-bulk"
+        with patch.object(task_gateway, "notify_dispatch"):
+            response = self.client.post(endpoint, json={"filenames": [filename]})
+            busy = self.client.post(endpoint, json={"filenames": [filename]})
 
         self.assertEqual(202, response.status_code)
-        self.assertEqual(1, response.get_json()["started_count"])
-        enqueue.assert_called_once_with(
-            "codex-a@example.com-free.json",
-            trigger="manual_bulk",
-            batch_id="batch-1",
-        )
+        result = response.get_json()
+        self.assertEqual(1, result["started_count"])
+        started = result["started"][0]
+        self.assertEqual(filename, started["filename"])
+        self.assertEqual(str(account_id), started["account_id"])
+        self.assertRegex(started["task_id"], r"^[1-9][0-9]*$")
+        self.assertRegex(started["run_id"], r"^[1-9][0-9]*$")
+        run = operation_store.get_run(int(started["run_id"]))
+        self.assertEqual("codex_token_refresh", run["task_type"])
+        self.assertEqual(str(run["batch_id"]), result["batch_id"])
+        self.assertEqual(409, busy.status_code)
+        skipped = busy.get_json()["skipped"][0]
+        self.assertEqual("account_busy", skipped["reason_code"])
+        self.assertEqual(started["task_id"], skipped["task_id"])
+        self.assertEqual(started["run_id"], skipped["run_id"])
 
     def test_full_oauth_save_clears_stale_refresh_error(self):
         filename = "codex-a@example.com-free.json"
