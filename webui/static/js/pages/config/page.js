@@ -18,7 +18,6 @@ window.ConfigPage = (() => {
             invalidateApiCache('/api/config');invalidateApiCache('/api/ui-settings');
             void Promise.allSettled([loadCapabilities(),loadRegistrationEmailSources()]);
           },
-          onTaskReceipt(receipt,label) {window.TaskCenter.track([receipt],label,{open:false});},
           onNavigateTasks(target) {
             if (target.registration) {
               const register = document.getElementById('tab-register');if (register) register.dataset.moduleView = 'tasks';

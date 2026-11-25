@@ -20,7 +20,7 @@ function setup(hidden = false) {
   vi.stubGlobal('fetch', fetcher);
   const element = document.createElement('div');
   document.body.append(element);
-  mounted = mountConfig(element, {onSavedFields() {}, onTaskReceipt() {}, onNavigateTasks() {}});
+  mounted = mountConfig(element, {onSavedFields() {}, onNavigateTasks() {}});
   return {fetcher, polls: () => fetcher.mock.calls.filter(([path]) => path === '/api/maintenance/sentinel').length};
 }
 

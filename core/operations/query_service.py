@@ -136,21 +136,6 @@ def find_account_request_receipts(request_key: str) -> list[dict[str, str]]:
 
 
 @task_query()
-def get_operation_receipt_statuses(references: list[tuple[int, int | None]]) -> list[dict]:
-    """只投影回执轮询所需的公开状态与提示。"""
-    items = []
-    for row in operation_task_store.get_operation_receipt_statuses(references):
-        status = public_result_status(row["status"], {"requested_status": row["requested_status"]}) or "queued"
-        items.append({
-            "task_id": str(row["task_id"]),
-            "run_id": str(row["run_id"]) if row["run_id"] is not None else None,
-            "status": status,
-            "message": row["error_message"] or row["summary_message"] or ("已确认完成" if status == "success" else ""),
-        })
-    return items
-
-
-@task_query()
 def get_operation(task_id: int, *, include_events: bool = True) -> dict | None:
     """读取详情，公开每次运行的结果且保留完整历史和恢复能力。"""
     source = operation_task_store.get_task(task_id, include_events=include_events)

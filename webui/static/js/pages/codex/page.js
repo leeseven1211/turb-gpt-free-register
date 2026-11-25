@@ -28,7 +28,6 @@ window.CodexCredentials = (() => {
         confirm: message => confirm(message),
         operationWorkers: () => getAccountOperationWorkers(),
         openTasks: type => window.TaskCenter.open({filters: type ? {target: '', type} : {}}),
-        track: (references, label, options) => window.TaskCenter.track(references, label, options),
       });
       // 模块加载期间的导航可能已改变；先设置范围，再允许首次读取。
       instance.setArchived(archived);

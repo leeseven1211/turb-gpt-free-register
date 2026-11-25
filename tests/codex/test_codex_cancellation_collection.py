@@ -286,4 +286,3 @@ class CodexCancellationCollectionTests(PostgresTestCase):
         self.assertEqual([item["source_revision"] + (index < 21) for index, item in enumerate(before)],
                          [item["source_revision"] for item in after])
         self.assertEqual(["closed"] * 21 + ["not_started"], [item["chain_state"] for item in after])
-

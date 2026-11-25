@@ -34,7 +34,7 @@ const {createVueHarness} = require('./tests/frontend_vue_loader.cjs');
 const vue = createVueHarness();
 const EmailChange = vue.load('src/features/accounts/EmailChange.vue').default;
 vue.document.body.innerHTML = '<div id="accountEmailChangeHost"></div>';
-const calls = {requests: [], tasks: [], refresh: [], receipts: []};
+const calls = {requests: [], tasks: [], refresh: []};
 const context = {accountIds: ['7', '8'], expectedEmails: {'7': 'old@example.test', '8': 'eight@example.test'},
   rowHints: [{id: 7, email: 'old@example.test', email_source: 'outlook'}],
   querySnapshot: {schema_version: 1, entity: 'account', q: '', archived: '0', filters: {}}, archived: '0'};
@@ -49,7 +49,6 @@ const deps = {
   notify() {}, syncModalScrollLock() {},
   refreshAccounts: value => calls.refresh.push(value),
   openTasks: value => calls.tasks.push(value),
-  recordReceipt: value => calls.receipts.push(value),
 };
 const wrapper = vue.mount(EmailChange, {props: {deps}});
 const byId = id => vue.document.getElementById(id);
@@ -106,8 +105,6 @@ async function submit() {
     assert.deepEqual(JSON.parse(request.options.body), {email_source: 'outlook'});
     assert.deepEqual(calls.tasks, [{type: 'email_change', target: 'old@example.test'}]);
     assert.deepEqual(calls.refresh, [captured]);
-    assert.equal(calls.receipts[0].accountId, 7);
-    assert.equal(calls.receipts[0].oldEmail, 'old@example.test');
 """)
 
     def test_modern_submit_bulk_email_change_posts_selected_accounts(self):
@@ -141,7 +138,7 @@ async function submit() {
     }});
     await settle();
     const button = byId('btnEmailChangeSelectedV2');
-    assert.equal(button.tagName, 'BUTTON'); assert.equal(button.textContent, '批量换绑邮箱');
+    assert.equal(button.tagName, 'BUTTON'); assert.equal(button.textContent, '换绑邮箱');
     assert.equal(button.disabled, true); button.click(); assert.equal(invoked.length, 0);
     await toolbar.setProps({state: {selectedCount: 2, archived: false}}); await settle();
     assert.equal(button.disabled, false); button.click(); await settle();

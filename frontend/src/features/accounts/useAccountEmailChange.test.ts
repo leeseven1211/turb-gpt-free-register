@@ -19,7 +19,7 @@ const sources = {ok: true, sources: [
 ]};
 function setup(overrides: Partial<AccountEmailChangeDependencies> = {}) {
   const chosen: AccountEmailChangeDependencies = {request: vi.fn<AccountEmailChangeDependencies['request']>(async () => sources),
-    notify: vi.fn(), refreshAccounts: vi.fn(), openTasks: vi.fn(), recordReceipt: vi.fn(),
+    notify: vi.fn(), refreshAccounts: vi.fn(), openTasks: vi.fn(),
     syncModalScrollLock: vi.fn(), ...overrides};
   const deps = {...chosen, notify: vi.fn(chosen.notify)};
   const lifecycle = {opened: vi.fn(), closed: vi.fn(), sourcesReady: vi.fn()};
@@ -28,7 +28,7 @@ function setup(overrides: Partial<AccountEmailChangeDependencies> = {}) {
   return {owner, deps, lifecycle, scope};
 }
 
-describe('换邮 opening 和提交回执 owner', () => {
+describe('换邮 opening 和提交 owner', () => {
   it('按打开快照选择可用来源，保留不可用原因且不修改原context', async () => {
     const {owner} = setup(); const ctx = context(['7'], ' CLOUDFLARE ');
     expect(owner.openSingle(7, ctx, null)).toBe(true); await settle();
@@ -95,8 +95,6 @@ describe('换邮 opening 和提交回执 owner', () => {
       method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{"email_source":"outlook"}',
     }]);
     expect(f.owner.isOpen.value).toBe(false); expect(f.deps.openTasks).toHaveBeenCalledWith({target: 'old-7@test', type: 'email_change'});
-    expect(f.deps.recordReceipt).toHaveBeenCalledWith(expect.objectContaining({accountId: 7, oldEmail: 'old-7@test', accountIds: ['7'], stale: false,
-      result: {ok: true, accepted: true, task_id: 71, run_id: 22, message: '邮箱换绑已入队'}}));
     expect(f.lifecycle.closed).toHaveBeenCalledWith(false, null, expect.any(Number));
   });
 
@@ -121,7 +119,6 @@ describe('换邮 opening 和提交回执 owner', () => {
     response.reject(new Error('HTTP 409')); await submitting;
     expect(f.owner.isOpen.value).toBe(true); expect(f.owner.submitting.value).toBe(false);
     expect(f.owner.error.value).toBe('提交失败：HTTP 409'); expect(f.deps.openTasks).not.toHaveBeenCalled();
-    expect(f.deps.recordReceipt).not.toHaveBeenCalled();
   });
 
   it.each(['success', 'failure'] as const)('旧POST %s不能关闭改写新窗或改变新submit状态', async outcome => {
@@ -136,29 +133,27 @@ describe('换邮 opening 和提交回执 owner', () => {
     expect(f.owner.isOpen.value).toBe(true); expect(f.owner.account.value?.id).toBe(8); expect(f.owner.source.value).toBe('cloudflare');
     expect(f.owner.submitting.value).toBe(true); expect(f.owner.error.value).toBe(''); expect(f.deps.openTasks).not.toHaveBeenCalled();
     if (outcome === 'success') {
-      expect(f.deps.recordReceipt).toHaveBeenCalledWith(expect.objectContaining({stale: true, accountId: 7, oldEmail: 'old-7@test', result: {ok: true, accepted: true, task_id: 71}}));
       expect(f.deps.refreshAccounts).toHaveBeenCalledTimes(1);
     } else expect(f.deps.notify).toHaveBeenCalledWith('换绑邮箱失败: old failed');
     current.resolve({ok: true, accepted: true, task_id: 81}); await newSubmit;
     expect(f.deps.openTasks).toHaveBeenCalledExactlyOnceWith({target: 'old-8@test', type: 'email_change'});
   });
 
-  it('受理后refresh/receipt故障不把已受理当提交失败，也不重发POST', async () => {
+  it('受理后refresh故障不把已受理当提交失败，也不重发POST', async () => {
     const request = vi.fn<AccountEmailChangeDependencies['request']>().mockResolvedValueOnce(sources).mockResolvedValueOnce({ok: true, task_id: 71});
-    const f = setup({request, refreshAccounts: vi.fn(async () => {throw new Error('refresh failed');}),
-      recordReceipt: vi.fn(() => {throw new Error('track failed');})});
+    const f = setup({request, refreshAccounts: vi.fn(async () => {throw new Error('refresh failed');})});
     f.owner.openSingle(7, context(), null); await settle(); await f.owner.submit(); await settle();
     expect(request).toHaveBeenCalledTimes(2); expect(f.owner.isOpen.value).toBe(false);
     expect(f.deps.openTasks).toHaveBeenCalledWith({target: 'old-7@test', type: 'email_change'});
     expect(f.deps.notify.mock.calls.flat().join(' ')).not.toContain('换绑邮箱失败');
   });
 
-  it('卸载取消来源GET，旧POST成功仍保留回执但不导航', async () => {
+  it('卸载取消来源GET，旧POST成功仍刷新但不导航', async () => {
     const pending = deferred<unknown>(); const request = vi.fn<AccountEmailChangeDependencies['request']>().mockResolvedValueOnce(sources).mockReturnValueOnce(pending.promise);
     const f = setup({request}); f.owner.openSingle(7, context(), null); await settle(); const submitting = f.owner.submit(); f.scope.stop();
     expect(request.mock.calls[0][1]?.signal?.aborted).toBe(true); expect(request.mock.calls[1][1]?.signal).toBeUndefined();
     pending.resolve({ok: true, task_id: 71}); await submitting;
-    expect(f.deps.recordReceipt).toHaveBeenCalledWith(expect.objectContaining({stale: true, accountId: 7}));
+    expect(f.deps.refreshAccounts).toHaveBeenCalledTimes(1);
     expect(f.deps.openTasks).not.toHaveBeenCalled(); expect(f.owner.isOpen.value).toBe(false);
   });
 });

@@ -73,7 +73,6 @@ class FlaskRouteContractTests(PostgresTestCase):
         "/api/accounts/<int:acc_id>/registration-retry\tPOST\tapi_account_registration_retry",
         "/api/accounts/registration-retry-bulk\tPOST\tapi_accounts_registration_retry_bulk",
         "/api/accounts/operation-receipt\tGET\tapi_account_operation_receipt",
-        "/api/operations/receipts\tGET\tapi_operation_receipt_statuses",
         "/api/bulk-mutations/<int:command_id>\tGET\tbulk_mutations.get_receipt",
         "/api/codex/reset-export-bulk\tPOST\tapi_codex_reset_export_bulk",
         "/api/extract-workbench/tasks/actions-bulk\tPOST\tperform_extract_workbench_actions_bulk",

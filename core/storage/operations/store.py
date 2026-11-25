@@ -657,43 +657,6 @@ def get_run_task_links(run_ids: Iterable[int]) -> dict[int, dict[str, Any]]:
         return {int(row["run_id"]): dict(row) for row in cur.fetchall()}
 
 
-def get_operation_receipt_statuses(references: list[tuple[int, int | None]]) -> list[dict]:
-    """用一次有界查询读取指定 Run，旧回执用任务当前 Run 的展示状态。"""
-    task_ids, run_ids = zip(*references)
-    effective_status = _common._compatibility_run_status_sql()
-    run_status = f"CASE WHEN LOWER(BTRIM({effective_status}))='pending' THEN 'queued' ELSE LOWER(BTRIM({effective_status})) END"
-    active_statuses = _common._ACTIVE_RUN_STATUS_SQL
-    error_projection = _common._compatibility_run_projection_sql(fields=("effective_error_message",))
-    with _task_read_connection() as conn, conn.cursor() as cur:
-        cur.execute(
-            f"""
-            SELECT task.id AS task_id, wanted.run_id,
-                   COALESCE(run.status, task.status) AS status,
-                   CASE WHEN run.id IS NULL THEN task.error_message
-                        WHEN wanted.run_id IS NULL AND run.status IN ({active_statuses}) THEN NULL
-                        ELSE run.effective_error_message END AS error_message,
-                   run.requested_status, run.summary_message
-            FROM unnest(%s::bigint[], %s::bigint[]) WITH ORDINALITY AS wanted(task_id, run_id, seq)
-            JOIN {_table('operation_tasks')} task ON task.id=wanted.task_id
-            LEFT JOIN LATERAL (
-                SELECT rr.id, {run_status} AS status, {error_projection},
-                       rr.result_summary->>'requested_status' AS requested_status,
-                       rr.result_summary->>'message' AS summary_message
-                FROM {_table('operation_runs')} rr {_common._compatibility_run_joins_sql()}
-                WHERE rr.task_id=task.id AND (wanted.run_id IS NULL OR rr.id=wanted.run_id)
-                ORDER BY CASE WHEN ({run_status}) IN ({active_statuses}) THEN 0 ELSE 1 END,
-                         rr.run_no DESC, rr.id DESC
-                LIMIT 1
-            ) run ON TRUE
-            WHERE lower(COALESCE(task.data->>'deleted_by_user', '')) <> 'true'
-              AND (wanted.run_id IS NULL OR run.id IS NOT NULL)
-            ORDER BY wanted.seq
-            """,
-            (list(task_ids), list(run_ids)),
-        )
-        return [dict(row) for row in cur.fetchall()]
-
-
 def get_task(task_id: int, *, include_events: bool = True) -> dict | None:
     with _task_read_connection() as conn, conn.cursor() as cur:
         cur.execute(

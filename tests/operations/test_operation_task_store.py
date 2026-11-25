@@ -874,44 +874,6 @@ class OperationTaskStoreTests(PostgresTestCase):
                 legacy_task_id, stage="twofa", message="非法状态", state="done",
             )
 
-    def test_receipt_status_api_reads_selected_runs_and_task_fallback(self):
-        task = operation_task_store.create_runtime_task(
-            task_type="token_refresh", account_id=None, email="receipt-run@example.test", trigger="test",
-        )
-        old_run = task["run"]["id"]
-        operation_task_store.finish_run(old_run, status="attention_required", error="回执待确认")
-        active = operation_task_store.retry_runtime_task(task["id"])
-        other = operation_task_store.create_runtime_task(
-            task_type="token_refresh", account_id=None, email="receipt-other@example.test", trigger="test",
-        )
-        operation_task_store.finish_run(other["run"]["id"], status="success", result_summary={"message": "操作完成"})
-        client = create_app(auth_code="test-auth").test_client()
-        client.environ_base["HTTP_X_AUTH_CODE"] = "test-auth"
-        values = [
-            f"{task['id']}:{old_run}",
-            str(task["id"]),
-            f"{task['id']}:{other['run']['id']}",
-            f"{other['id']}:{other['run']['id']}",
-            f"{task['id']}:{active['id']}",
-        ]
-        with patch.object(operation_task_store, "get_task", side_effect=AssertionError("回执无需读取任务详情")):
-            response = client.get("/api/operations/receipts", query_string=[("ref", value) for value in values])
-        self.assertEqual(200, response.status_code)
-        self.assertEqual({"ok": True, "items": [
-            {"task_id": str(task["id"]), "run_id": str(old_run), "status": "failed", "message": "回执待确认"},
-            {"task_id": str(task["id"]), "run_id": None, "status": "queued", "message": ""},
-            {"task_id": str(other["id"]), "run_id": str(other["run"]["id"]), "status": "success", "message": "操作完成"},
-            {"task_id": str(task["id"]), "run_id": str(active["id"]), "status": "queued", "message": ""},
-        ]}, response.get_json())
-
-    def test_receipt_status_api_validates_batch_size_and_ids(self):
-        client = create_app(auth_code="test-auth").test_client()
-        client.environ_base["HTTP_X_AUTH_CODE"] = "test-auth"
-        for refs in ([], ["2:0"], ["10:9223372036854775808"], ["x"] * 21):
-            with self.subTest(refs=refs):
-                response = client.get("/api/operations/receipts", query_string=[("ref", value) for value in refs])
-                self.assertEqual(400, response.status_code)
-
     def test_incremental_event_and_run_log_api_use_explicit_contract(self):
         task = operation_task_store.create_runtime_task(
             task_type="codex_retry", account_id=909, email="runtime-log@example.com", trigger="test",

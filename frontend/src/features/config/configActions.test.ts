@@ -160,12 +160,12 @@ describe('async request ownership', () => {
     expect(actions.states.sentinel.snapshot?.running).toBe(true);
     await vi.advanceTimersByTimeAsync(6000); expect(request).toHaveBeenCalledTimes(2);
   });
-  it('accepted Sentinel, Sub2API and C2A receipts remain tracked after hide or dispose and IDs stay exact', async () => {
+  it('accepted Sentinel, Sub2API and C2A requests preserve exact IDs in local receipts', async () => {
     for (const method of ['checkSentinel', 'checkSub2Api', 'checkC2a'] as const) {
-      const pending = deferred<unknown>(); const onTaskReceipt = vi.fn(); const request = vi.fn<NonNullable<ConfigActionDependencies['request']>>(() => pending.promise);
-      const {actions} = setup(request, {onTaskReceipt}); const operation = actions[method](); await flush(); actions.dispose();
+      const pending = deferred<unknown>(); const request = vi.fn<NonNullable<ConfigActionDependencies['request']>>(() => pending.promise);
+      const {actions} = setup(request); const operation = actions[method](); await flush();
       pending.resolve({ok: true, accepted: true, task_id: '9007199254740993', run_id: '9007199254740995', running: true}); await operation;
-      expect(onTaskReceipt).toHaveBeenCalledWith({accepted: true, task_id: '9007199254740993', run_id: '9007199254740995'}, expect.any(String));
+      expect(actions.states[method === 'checkSentinel' ? 'sentinel' : method === 'checkSub2Api' ? 'sub2api' : 'c2a'].receipt).toEqual({accepted: true, task_id: '9007199254740993', run_id: '9007199254740995'});
       expect(request.mock.calls[0]![1]!.signal).toBeUndefined();
     }
   });
@@ -186,12 +186,12 @@ describe('action boundary regressions', () => {
     await Promise.all([first, second]); expect(request).toHaveBeenCalledTimes(1);
   });
   it('queued reads across repeated visibility changes cannot hide an accepted POST from single-flight', async () => {
-    const pending = deferred<unknown>(); const onTaskReceipt = vi.fn();
+    const pending = deferred<unknown>();
     const request = vi.fn<NonNullable<ConfigActionDependencies['request']>>()
       .mockResolvedValueOnce({ok: true, running: false})
       .mockImplementationOnce(() => pending.promise)
       .mockResolvedValue({ok: true, running: false});
-    const {actions} = setup(request, {onTaskReceipt});
+    const {actions} = setup(request);
     actions.setVisible('sentinel', true); await flush();
     const first = actions.checkSentinel(); await flush();
     actions.setForeground(false); actions.setForeground(true);
@@ -201,7 +201,6 @@ describe('action boundary regressions', () => {
     pending.resolve({ok: true, accepted: true, task_id: '17', run_id: '18', running: true});
     await Promise.all([first, duplicate]); await flush();
     expect(request.mock.calls.filter(([, options]) => options?.method === 'POST')).toHaveLength(1);
-    expect(onTaskReceipt).toHaveBeenCalledTimes(1);
   });
   it('a synchronous transport exception does not leave a completed inflight entry preventing retry', async () => {
     const request = vi.fn<NonNullable<ConfigActionDependencies['request']>>().mockImplementationOnce(() => {throw new Error('secret');}).mockResolvedValue({items: [{type: 'a'}]});
@@ -221,8 +220,8 @@ describe('action boundary regressions', () => {
   });
   it('the real request adapter preserves bigint JSON receipts before JSON number parsing', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{"ok":true,"accepted":true,"task_id":9007199254740993,"run_id":9007199254740995}', {headers: {'Content-Type': 'application/json'}}));
-    const fixture = ownerFixture(); const onTaskReceipt = vi.fn(); const actions = createConfigActions(fixture.owner, {onTaskReceipt}); controllers.push(actions);
-    await actions.checkSub2Api(); expect(onTaskReceipt).toHaveBeenCalledWith({accepted: true, task_id: '9007199254740993', run_id: '9007199254740995'}, 'Sub2API 异常扫描');
+    const fixture = ownerFixture(); const actions = createConfigActions(fixture.owner); controllers.push(actions);
+    await actions.checkSub2Api(); expect(actions.states.sub2api.receipt).toEqual({accepted: true, task_id: '9007199254740993', run_id: '9007199254740995'});
   });
   it('Sub2API completion reports fixed repair reason labels and keeps zero counts', async () => {
     const {actions} = setup(async () => ({ok: true, result: {remote_errors: 0, sync_queued: 0, reasons: {account_busy: 2, private_error_with_secret: 1}}}));

@@ -4,9 +4,6 @@ window.TaskCenter = (() => {
   let loading = null;
   let visible = false;
   let detailGeneration = 0;
-  let receiptNavigationGeneration = 0;
-  const pendingReceipts = [];
-  let drainingReceipts = false;
 
   function operationId(value, optional = false) {
     if (optional && (value == null || value === '' || value === 0 || value === '0')) return null;
@@ -23,36 +20,9 @@ window.TaskCenter = (() => {
     showToast(`任务中心加载失败：${error.message || error}`);
   }
 
-  function drainPendingReceipts(api) {
-    if (drainingReceipts) return;
-    drainingReceipts = true;
-    try {
-      while (pendingReceipts.length) {
-        const receipt = pendingReceipts[0];
-        api.track(receipt.references, receipt.label, {
-          navigate: receipt.generation === receiptNavigationGeneration ? receipt.navigate : false,
-        });
-        // track 是同步接收接口；只有正常返回才移交所有权。
-        if (pendingReceipts[0] === receipt) pendingReceipts.shift();
-      }
-    } catch (error) {
-      // 已挂载组件仍可使用；保留失败批次，下一次入口调用时补交。
-      showToast(`任务回执显示失败：${error.message || error}`);
-    } finally {
-      drainingReceipts = false;
-    }
-  }
-
   async function ensure() {
-    if (instance) {
-      drainPendingReceipts(instance);
-      return instance;
-    }
-    if (loading) {
-      const api = await loading;
-      drainPendingReceipts(api);
-      return api;
-    }
+    if (instance) return instance;
+    if (loading) return loading;
     const root = document.getElementById('task-center-root');
     loading = (async () => {
       let style = document.getElementById('task-center-style');
@@ -65,7 +35,6 @@ window.TaskCenter = (() => {
       }
       const module = await import(root.dataset.moduleUrl);
       instance = module.mountTaskCenter(root, {
-        onNavigate: () => activateTab('tasks'),
         onBatch: (batchId, roundId) => window.BulkTasks?.navigate('detail', {batch_id: batchId, round_id: roundId || ''}),
         onChanged: () => { if (ACTIVE_TAB === 'accounts') loadAccounts(); },
       });
@@ -83,16 +52,12 @@ window.TaskCenter = (() => {
       root.append(message, retry);
       throw error;
     });
-    const api = await loading;
-    // 交付异常不能进入上面的模块加载 catch，避免清除已挂载的组件。
-    drainPendingReceipts(api);
-    return api;
+    return loading;
   }
 
   return {
     async open(options = {}) {
       const generation = ++detailGeneration;
-      receiptNavigationGeneration += 1;
       try {
         const api = await ensure();
         if (generation !== detailGeneration) return;
@@ -105,7 +70,6 @@ window.TaskCenter = (() => {
     },
     async openDetail(taskId, runId = null, stepId = null) {
       const generation = ++detailGeneration;
-      receiptNavigationGeneration += 1;
       try {
         const api = await ensure();
         if (generation === detailGeneration) await api.open({taskId: operationId(taskId), runId: operationId(runId, true), stepId});
@@ -116,26 +80,13 @@ window.TaskCenter = (() => {
       try { await (await ensure()).refresh({metadata}); }
       catch (error) { report(error); }
     },
-    async track(references, label = '任务', options = {}) {
-      try {
-        // 只保留回执公开字段，不持有调用者数组或上传凭证内容。
-        pendingReceipts.push({
-          references: references.map(({accepted, task_id, run_id, status}) => ({accepted, task_id, run_id, status})),
-          label: String(label), navigate: options.navigate, generation: receiptNavigationGeneration,
-        });
-        await ensure();
-      }
-      catch (error) { report(error); }
-    },
     closeDetail() {
       detailGeneration += 1;
-      receiptNavigationGeneration += 1;
       instance?.closeDetail();
     },
     setVisible(value) {
       visible = Boolean(value);
       if (!visible) {
-        receiptNavigationGeneration += 1;
         instance?.setVisible(false);
         return;
       }
@@ -149,10 +100,4 @@ function loadAccountTasks({forceMetadata = false} = {}) {
 }
 function openAccountTaskLog(taskId, runId = null, stepId = null) {
   return window.TaskCenter.openDetail(taskId, runId, stepId);
-}
-function trackAcceptedOperationsV2(references, label = '任务', options = {}) {
-  return window.TaskCenter.track(references, label, options);
-}
-function showOperationReceiptsV2() {
-  return window.TaskCenter.open({filters: {}});
 }

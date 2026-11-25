@@ -6,7 +6,7 @@ function json(body: unknown, status = 200) {return new Response(JSON.stringify(b
 function setup(names = ['a.json', 'b.json', 'other-page.json']) {
   const selected = ref(new Set(names)), items = ref<CodexRow[]>([{filename: 'a.json', email: 'same@example.test', exported_count: 2, sub2_uploaded_count: 0}]);
   const archived = ref(false), refresh = vi.fn().mockResolvedValue(undefined);
-  const callbacks = {notify: vi.fn(), confirm: vi.fn().mockResolvedValue(true), openTasks: vi.fn(), track: vi.fn(), operationWorkers: () => 3};
+  const callbacks = {notify: vi.fn(), confirm: vi.fn().mockResolvedValue(true), openTasks: vi.fn(), operationWorkers: () => 3};
   return {selected, items, archived, refresh, callbacks, ...createCodexActions({selected, items, archived, refresh, callbacks})};
 }
 let fetchMock: ReturnType<typeof vi.fn>;
@@ -28,13 +28,12 @@ describe('Codex action receipts', () => {
     expect([...actions.selected.value]).toEqual(['b.json','other-page.json']);
     expect(actions.callbacks.notify).toHaveBeenLastCalledWith(expect.stringContaining('未完成 1'));
   });
-  it('queued upload stays here, tracks existing tasks and removes only acknowledged cross-page filenames', async () => {
+  it('queued upload stays here and removes only acknowledged cross-page filenames', async () => {
     const queued = [{filename: 'other-page.json', accepted: true, task_id: 71, run_id: 3}];
     fetchMock.mockResolvedValue(json({ok: true, accepted: true, queued, queued_count: 1, failed_count: 1, skipped_count: 1}, 202));
     const actions = setup(); await actions.run('uploadSub2');
     expect(JSON.parse(fetchMock.mock.calls[0]![1].body)).toEqual({filenames: ['a.json', 'b.json', 'other-page.json']});
     expect([...actions.selected.value]).toEqual(['a.json', 'b.json']);
-    expect(actions.callbacks.track).toHaveBeenCalledExactlyOnceWith(queued, '手动上传', {navigate: false});
     expect(actions.callbacks.openTasks).not.toHaveBeenCalled(); expect(actions.refresh).not.toHaveBeenCalled();
     expect(actions.callbacks.notify).toHaveBeenCalledWith('手动上传已入队 1 个，2 个未入队，可点击“查看上传进度”查看最终结果');
     expect(actions.callbacks.notify.mock.calls.flat().join(' ')).not.toContain('已上传'); expect(actions.uploadProgress.value).toBe(true);

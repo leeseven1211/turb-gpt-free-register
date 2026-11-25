@@ -19,7 +19,6 @@ export interface ConfigActionState {
 export interface RoxyWorkspace {id: string; projectId: string; label: string}
 export interface ConfigActionDependencies {
   request?: (path: string, options?: RequestInit) => Promise<unknown>;
-  onTaskReceipt?: (receipt: ConfigActionReceipt, label: string) => void;
   onNavigateTasks?: (target: {registration?: boolean; types?: string[]}) => void;
 }
 export interface ConfigActions {
@@ -130,13 +129,10 @@ export function createConfigActions(owner: ConfigDraftOwner, dependencies: Confi
     if (event.keys.some(key => key.startsWith('C2A_API_') || key.startsWith('C2A_MONITOR_'))) invalidate('c2a');
     if (event.keys.some(key => owner.field(key)?.group === '并发控制')) invalidate('concurrencyPreview');
   }));
-  function publishReceipt(raw: Record<string, unknown>, label: string): ConfigActionReceipt | null {
+  function publishReceipt(raw: Record<string, unknown>): ConfigActionReceipt | null {
     if (raw.accepted !== true) return null;
     const receipt: ConfigActionReceipt = {accepted: true, task_id: taskId(raw.task_id)};
     if (raw.run_id != null) receipt.run_id = optionalTaskId(raw.run_id);
-    // The server has accepted this work even if its originating view has left.
-    // Callback failure must never convert acceptance into a retryable POST.
-    try {dependencies.onTaskReceipt?.(receipt, label);} catch { /* The local receipt still shows acceptance. */ }
     return receipt;
   }
   function schedule(name: PollingAction) {
@@ -171,7 +167,7 @@ export function createConfigActions(owner: ConfigDraftOwner, dependencies: Confi
         if (!current()) return;
         const response = record(await Promise.resolve().then(() => request(path, {...options, ...(controller ? {signal: controller.signal} : {})})));
         if (response.ok === false) throw response;
-        const receipt = behavior.label ? publishReceipt(response, behavior.label) : null;
+        const receipt = behavior.label ? publishReceipt(response) : null;
         if (!current()) return;
         states[name].receipt = receipt;
         behavior.apply(response, receipt);

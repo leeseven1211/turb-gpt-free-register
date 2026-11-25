@@ -104,7 +104,6 @@ export function createCodexActions(context: CodexActionContext) {
             const queued = result.queued || [];
             const hasProgress = queued.some(item => item.accepted && Number(item.task_id));
             callbacks.notify(`手动上传已入队 ${result.queued_count || 0} 个${issues ? `，${issues} 个未入队` : ''}${hasProgress ? '，可点击“查看上传进度”查看最终结果' : ''}`);
-            callbacks.track(queued, '手动上传', {navigate: false});
             uploadProgress.value ||= hasProgress;
           } else {
             callbacks.notify(issues ? `已上传 ${result.uploaded_count || 0} 个，${issues} 个未完成` : `已上传 ${result.uploaded_count || 0} 个到 sub2api`);

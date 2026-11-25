@@ -161,12 +161,12 @@ test('C2A 确认窗口保存原目标，提交只通知任务中心且不创建�
   const {vueHarness} = require('./actions_fixture.cjs');
   const {effectScope} = require('../../frontend/node_modules/vue'); const scope = effectScope();
   try {
-    const tracked = [], h = fixture(['openC2aReimportConfirm', 'reimportSelectedC2a', 'submitC2aReimport']);
+    const h = fixture(['openC2aReimportConfirm', 'reimportSelectedC2a', 'submitC2aReimport']);
     const {useC2aReimport} = vueHarness.load('src/features/accounts/useC2aReimport.ts');
     const owner = scope.run(() => useC2aReimport({
       request: async (url, options) => {h.calls.requests.push({url, options}); return {accepted: true, queued_count: 1, queued: [{task_id: 4, run_id: 6}]};},
       notify: value => h.calls.toasts.push(value), refreshAccounts: () => h.owner.refresh(),
-      trackAccepted: (...args) => tracked.push(plain(args)), openTasks: value => h.calls.task.push(plain(value)),
+      openTasks: value => h.calls.task.push(plain(value)),
     }));
     h.owner.openC2a = (context, trigger) => owner.open(context, trigger);
     h.owner.submitC2a = () => owner.submit();
@@ -174,7 +174,7 @@ test('C2A 确认窗口保存原目标，提交只通知任务中心且不创建�
     await h.context.submitC2aReimport();
     assert.equal(h.calls.requests[0].url, '/api/accounts/c2a/sync-bulk');
     assert.deepEqual(JSON.parse(h.calls.requests[0].options.body), {account_ids: [7, 8]});
-    assert.deepEqual(tracked,[]);assert.deepEqual(h.calls.task,[]);
+    assert.deepEqual(h.calls.task,[]);
     assert.match(h.calls.toasts.join(''),/C2A 重新导入已入队 1 个.*任务中心/);assert.doesNotMatch(h.calls.toasts.join(''),/任务回执|已显示具体原因/);
   } finally {scope.stop();}
 });
@@ -220,7 +220,7 @@ test('换邮窗口保留打开时 email/source，翻页后提交和TaskCenter仍
     const owner = scope.run(() => useAccountEmailChange({
       request: async (url, options) => { h.calls.requests.push({url, options}); return url === '/api/email-sources'
         ? {sources: [{value: 'icloud_hide', enabled: true}, {value: 'outlook', enabled: true}]} : {ok: true, task_id: 71}; },
-      notify: value => h.calls.toasts.push(value), syncModalScrollLock() {}, recordReceipt() {},
+      notify: value => h.calls.toasts.push(value), syncModalScrollLock() {},
       refreshAccounts: value => { h.calls.refresh++; assert.equal(value.rowHints[0].email, 'seven@example.test'); },
       openTasks: filters => h.calls.task.push({filters}),
     }));
@@ -302,7 +302,7 @@ test('批次创建复制显式快照再navigate；selected=false仍保留query s
 
 test('owner卸载后显式动作回执不退回旧列表写路径', async () => {
   const h = fixture(['checkSelectedPlans']);
-  h.context.api = async (url, options) => { h.calls.requests.push({url, options}); h.owner.isReady = () => false; return {started_count: 2}; };
+  h.context.api = async (url, options) => { h.calls.requests.push({url, options}); h.owner.isReady = () => false; return {ok: true, started_count: 2}; };
   await h.context.checkSelectedPlans(h.contextData);
   assert.equal(h.calls.requests.length, 1); assert.equal(h.calls.polls, 0);
   assert.match(h.calls.toasts.join(''), /已入队/);

@@ -17,7 +17,7 @@ function createActionsFixture(context, owner) {
     reloadCodex: () => context.loadCodex?.(),
     setup:{refresh:snapshot=>context.accountActionRefresh(snapshot),pollStatuses:snapshot=>context.accountActionPollStatuses(snapshot),
       operationWorkers:()=>context.getAccountOperationWorkers?.()||3,openTasks:options=>context.window.TaskCenter.open(options),
-      openLog:id=>context.openLog?.(id),trackAcceptedOperations:(items,label)=>context.trackAcceptedOperationsV2?.(items,label),
+      openLog:id=>context.openLog?.(id),
       showRegistrationResult:(result,snapshot,open)=>context.showAccountRegistrationRetryResult?.(result,snapshot,open)},
     local:{prompt:(message,initial)=>context.prompt(message,initial),refresh:snapshot=>context.accountActionRefresh(snapshot),refreshSummary:()=>context.loadSummary?.(),
       removeAcknowledgedSelection:(ids,snapshot)=>context.accountActionRemoveAcknowledged(ids,snapshot),clearSelection:snapshot=>context.accountActionClearSelection(snapshot),selectionChanged:snapshot=>context.accountActionSelectionUi(snapshot)},

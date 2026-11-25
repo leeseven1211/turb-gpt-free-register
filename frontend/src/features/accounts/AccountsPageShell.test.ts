@@ -6,8 +6,8 @@ import {createAccountActions} from './actions';
 import type {AccountQueuedDependencies} from './queuedActions';
 import type {AccountInspectionDependencies} from './useAccountInspection';
 
-function c2aDependencies(){return{request:vi.fn(),notify:vi.fn(),refreshAccounts:vi.fn(),trackAccepted:vi.fn(),openTasks:vi.fn()};}
-function emailChangeDependencies(){return{request:vi.fn(async()=>({sources:[{value:'outlook',label:'Outlook',enabled:true}]})),notify:vi.fn(),refreshAccounts:vi.fn(),openTasks:vi.fn(),recordReceipt:vi.fn(),syncModalScrollLock:vi.fn()};}
+function c2aDependencies(){return{request:vi.fn(),notify:vi.fn(),refreshAccounts:vi.fn(),openTasks:vi.fn()};}
+function emailChangeDependencies(){return{request:vi.fn(async()=>({sources:[{value:'outlook',label:'Outlook',enabled:true}]})),notify:vi.fn(),refreshAccounts:vi.fn(),openTasks:vi.fn(),syncModalScrollLock:vi.fn()};}
 function inspectionDependencies():AccountInspectionDependencies{return{request:vi.fn(async()=>({items:[],total:0})),notify:vi.fn(),operationWorkers:()=>4,randomUUID:()=> 'inspection-key',refreshAccounts:vi.fn(),refreshSummary:vi.fn(),openTask:vi.fn(),formatDateTime:String};}
 
 let wrapper:ReturnType<typeof mount>;

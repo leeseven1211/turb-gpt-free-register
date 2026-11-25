@@ -3,22 +3,11 @@ import type {AccountActionContext} from './useAccounts';
 
 export interface EmailChangeSource {value: string; label: string; enabled: boolean; reason: string}
 export interface EmailChangeAccount {id: number; email: string; email_source: string}
-export interface EmailChangeReceipt {
-  result: Readonly<Record<string, unknown>>;
-  context: AccountActionContext;
-  mode: 'single' | 'bulk';
-  accountIds: readonly string[];
-  accountId: number | null;
-  oldEmail: string;
-  emailSource: string;
-  stale: boolean;
-}
 export interface AccountEmailChangeDependencies {
   request(path: string, options?: RequestInit): Promise<unknown>;
   notify(message: string): void;
   refreshAccounts(context: AccountActionContext): void | Promise<unknown>;
   openTasks(filters: {target: string; type: 'email_change'}): void | Promise<unknown>;
-  recordReceipt(receipt: EmailChangeReceipt): void | Promise<unknown>;
   syncModalScrollLock(): void;
   fallbackFocus?(): HTMLElement | null;
 }
@@ -149,15 +138,11 @@ export function useAccountEmailChange(deps: AccountEmailChangeDependencies, life
       if (current(session)) submitting.value = false;
     }
     const wasCurrent = current(session);
-    const receipt: EmailChangeReceipt = freeze({result: copy(result), context: session.context, mode: session.mode,
-      accountIds: session.accountIds, accountId: session.account?.id || null, oldEmail: session.account?.email || '',
-      emailSource: selectedSource, stale: !wasCurrent});
     if (session.mode === 'bulk') {
       const started = Number(result.started_count || 0), skipped = Number(result.skipped_count || 0);
       deps.notify(`批量换绑已入队 ${started} 个${skipped ? `，跳过 ${skipped} 个` : ''}`);
     } else deps.notify(String(result.message || `邮箱换绑已入队 · 任务 #${result.task_id || '-'}`));
     if (wasCurrent) close({restoreFocus: false});
-    followup(() => deps.recordReceipt(receipt), '换绑已受理，记录回执失败：');
     followup(() => deps.refreshAccounts(session.context), '换绑已受理，刷新账号失败：');
     // A newer opening, even for the same account, keeps its form and focus.
     if (wasCurrent && !disposed && !opening) {

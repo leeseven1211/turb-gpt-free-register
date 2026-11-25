@@ -19,7 +19,7 @@ function setup(extra: Partial<AccountEmailChangeDependencies> = {}) {
   const tab = document.createElement('section'); tab.innerHTML = '<div id="accountEmailChangeHost"></div>';
   document.body.append(tab); const trigger = document.createElement('button'); trigger.textContent = '换绑'; tab.prepend(trigger);
   const chosen: AccountEmailChangeDependencies = {request: vi.fn<AccountEmailChangeDependencies['request']>(async () => sources), notify: vi.fn(),
-    refreshAccounts: vi.fn(), recordReceipt: vi.fn(), openTasks: vi.fn(), syncModalScrollLock: vi.fn(), ...extra};
+    refreshAccounts: vi.fn(), openTasks: vi.fn(), syncModalScrollLock: vi.fn(), ...extra};
   const deps = {...chosen, syncModalScrollLock: vi.fn(chosen.syncModalScrollLock)};
   const w = mount(EmailChange, {attachTo: tab, props: {deps}}); wrappers.push(w);
   return {w, deps, trigger, body: new DOMWrapper(document.body)};
@@ -92,7 +92,6 @@ describe('Vue 换邮弹窗保留交互并隔离打开代次', () => {
     expect(body.get('#emailChangeModal').classes()).not.toContain('hidden'); expect(body.get('#emailChangeAccountLabel').text()).toContain('old-8@test');
     expect(body.get<HTMLButtonElement>('#btnSubmitEmailChange').element.disabled).toBe(true); expect(body.get('#btnSubmitEmailChange').text()).toBe('提交中…');
     expect(document.activeElement).toBe(cancel); expect(deps.openTasks).not.toHaveBeenCalled();
-    expect(deps.recordReceipt).toHaveBeenCalledWith(expect.objectContaining({stale: true, accountId: 7}));
     current.resolve({ok: true, task_id: 81}); await flushPromises(); expect(deps.openTasks).toHaveBeenCalledExactlyOnceWith({target: 'old-8@test', type: 'email_change'});
   });
 

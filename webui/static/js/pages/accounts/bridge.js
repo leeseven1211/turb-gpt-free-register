@@ -48,22 +48,11 @@ window.AccountsPage = (() => {
         emailChangeDependencies: {
           notify: message => showToast(message), refreshAccounts: context => accountActionRefresh(context),
           openTasks: filters => window.TaskCenter.open({filters}),
-          recordReceipt: receipt => {
-            const result = receipt.result;
-            const candidates = receipt.mode === 'single' ? [result] : [...(Array.isArray(result.started) ? result.started : []), ...(Array.isArray(result.queued) ? result.queued : [])];
-            const seen = new Set();
-            const refs = candidates.filter(item => {
-              const id = Number(item?.task_id);
-              if (!Number.isSafeInteger(id) || id <= 0 || seen.has(id)) return false;
-              seen.add(id); return true;
-            });
-            if (refs.length) return trackAcceptedOperationsV2(refs, '邮箱换绑', {navigate: false});
-          },
           syncModalScrollLock: () => updateModalScrollLock(), fallbackFocus: () => document.getElementById('btnEmailChangeSelectedV2'),
         },
         c2aDependencies: {
           notify: message => showToast(message), refreshAccounts: context => accountActionRefresh(context),
-          selectionChanged: context => accountActionSelectionUi(context), trackAccepted: (items, label, options) => trackAcceptedOperationsV2(items, label, options),
+          selectionChanged: context => accountActionSelectionUi(context),
           openTasks: options => window.TaskCenter.open(options),
           beginBusy: (trigger, label) => {
             const button = trigger || document.getElementById('btnReimportSelectedC2aV2'), old = button?.textContent;
@@ -79,7 +68,6 @@ window.AccountsPage = (() => {
           setup: {
             refresh: context => accountActionRefresh(context), pollStatuses: context => accountActionPollStatuses(context),
             operationWorkers: () => getAccountOperationWorkers(), openTasks: options => window.TaskCenter.open(options), openLog: id => openLog(id),
-            trackAcceptedOperations: (items, label) => trackAcceptedOperationsV2(items, label),
             showRegistrationResult: (result, context, open) => owner().showRegistrationResult(result, context, open),
           },
           local: {

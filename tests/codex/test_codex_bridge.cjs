@@ -8,7 +8,7 @@ const source = fs.readFileSync(path.join(__dirname, '../../webui/static/js/pages
 // 执行完整旧入口，只替换浏览器动态 import 边界。
 const executable = source.replace('import(root.dataset.moduleUrl)', 'loadCodexModule(root.dataset.moduleUrl)');
 function setup(load) {
-  const calls = {imports: [], visible: [], archived: [], refresh: 0, tasks: [], track: [], toast: [], confirm: []};
+  const calls = {imports: [], visible: [], archived: [], refresh: 0, tasks: [], toast: [], confirm: []};
   let callbacks;
   const api = {
     setVisible: value => calls.visible.push(value),
@@ -19,7 +19,7 @@ function setup(load) {
     replaceChildren() { this.children = []; }, append(...items) { this.children.push(...items); }};
   let style;
   const context = {
-    window: {TaskCenter: {open: options => calls.tasks.push(options), track: (...args) => calls.track.push(args)}},
+    window: {TaskCenter: {open: options => calls.tasks.push(options)}},
     showToast: message => calls.toast.push(message),
     confirm: message => { calls.confirm.push(message); return false; },
     getAccountOperationWorkers: () => 3,
@@ -75,7 +75,7 @@ test('旧 loadCodex 在已挂载页显式刷新，加载中不重复刷新', asy
   assert.equal(calls.refresh, 2);
 });
 
-test('动作回调保留取消确认、并发配置、主动进度与 navigate false', async () => {
+test('动作回调保留取消确认、并发配置和主动进度', async () => {
   const view = setup();
   await view.bridge.setVisible(true);
   const callbacks = view.callbacks();
@@ -84,11 +84,7 @@ test('动作回调保留取消确认、并发配置、主动进度与 navigate f
   assert.equal(callbacks.operationWorkers(), 3);
   callbacks.openTasks('codex_retry');
   callbacks.openTasks();
-  const references = [{accepted: true, task_id: 9, run_id: 10}];
-  callbacks.track(references, '手动上传', {navigate: false});
   assert.deepEqual(JSON.parse(JSON.stringify(view.calls.tasks)), [{filters: {target: '', type: 'codex_retry'}}, {filters: {}}]);
-  assert.equal(view.calls.track[0][0], references);
-  assert.equal(view.calls.track[0][2].navigate, false);
   assert.deepEqual(view.calls.toast, ['已入队']);
 });
 

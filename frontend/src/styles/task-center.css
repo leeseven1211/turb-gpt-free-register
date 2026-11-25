@@ -24,19 +24,7 @@
 .tc-subline.tc-text-danger {color:#b73542}
 /* 列表默认最多两行，长文本保留完整 title；主动展开的结果详情不截断。 */
 .tc-cell-line {display:block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;line-height:18px}
-.tc-receipts {margin-bottom:16px;padding:14px 16px;border:1px solid var(--ui-color-border);border-left:3px solid var(--ui-color-brand);border-radius:var(--ui-radius-md);background:var(--ui-color-surface)}
-.tc-receipts-header {display:flex;align-items:center;justify-content:space-between;gap:12px}
-.tc-receipts-header strong {margin-right:14px}
-.tc-receipts-header span {font-size:12px;color:var(--ui-color-text-secondary)}
-.tc-receipts details {margin-top:8px}
-.tc-receipts summary {cursor:pointer;color:var(--ui-color-brand);font-size:12px}
-.tc-receipt-list {list-style:none;margin:10px 0 0;padding:0}
-.tc-receipt-list li {display:flex;align-items:baseline;gap:10px;border-top:1px solid var(--ui-color-border);padding:7px 0;font-size:12px;flex-wrap:wrap}
-.tc-receipt-list li>span:last-child {overflow-wrap:anywhere}
 @media(max-width:1100px) {.tc-timezone {display:none}}
-@media(max-width:680px) {
- .tc-receipts-header {align-items:flex-start}.tc-receipts-header strong,.tc-receipts-header span {display:block}.tc-receipts {padding:12px}.tc-receipts-header .ui-button {padding:6px 8px}
-}
 
 /* 只为已迁移挂载点收口高度，表头和分页常驻，任务明细独立滚动。 */
 .tc-root .ui-list {flex:1 1 auto;min-height:0}
@@ -44,17 +32,12 @@
 #task-center-root {display:flex;flex:1 1 auto;min-height:0;min-width:0;width:100%}
 #task-center-root>.tc-root {display:flex;flex-direction:column;flex:1 1 auto;min-height:0;min-width:0}
 .tc-feedback {max-height:min(18dvh, 8rem);overflow:auto}
-.tc-receipts {flex:0 1 auto;max-height:32%;min-height:75px;overflow:auto}
-@media(max-width:680px) {
-  .tc-receipts {max-height:25%}
-}
 
 /* 矮窗口内让工具栏、列表和分页一起滚动；窄屏分页换行时需要更多垂直空间。 */
 @media(max-height:420px),(max-width:680px) and (max-height:520px) {
   #task-center-root>.tc-root {overflow-y:auto;overflow-x:hidden;overscroll-behavior-y:contain}
   .tc-workspace,.tc-table-scroll {flex:0 0 auto}
-  .tc-receipts {flex:0 0 auto}
-  .tc-receipts,.tc-feedback {max-height:none;overflow:visible}
+  .tc-feedback {max-height:none;overflow:visible}
 }
 
 /* 任务筛选内容与页面入口；共享触发器和浮层样式由 FilterPopover 自带。 */

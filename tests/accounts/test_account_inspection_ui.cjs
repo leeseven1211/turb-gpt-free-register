@@ -75,7 +75,7 @@ const submit = async () => {await page.get('form').trigger('submit'); await flus
     const emailScope = effectScope();
     const emailOwner = emailScope.run(() => useAccountEmailChange({
       request: async () => ({sources: [{value: 'mailcode', label: 'MailCode', enabled: true}, {value: 'xigua', label: '西瓜', enabled: false, reason: '尚未配置'}]}),
-      notify() {}, refreshAccounts() {}, openTasks() {}, recordReceipt() {}, syncModalScrollLock() {},
+      notify() {}, refreshAccounts() {}, openTasks() {}, syncModalScrollLock() {},
     }));
     try {
       emailOwner.openBulk(scope('0')); await flush();
@@ -87,7 +87,7 @@ const submit = async () => {await page.get('form').trigger('submit'); await flus
       const host = h.document.createElement('div'); host.id = 'accountEmailChangeHost'; h.document.body.append(host);
       const emailPage = h.mount(emailComponent, {props: {deps: {
         request: async () => ({sources: [{value: 'mailcode', label: 'MailCode', enabled: true}, {value: 'xigua', label: '西瓜', enabled: false, reason: '尚未配置'}]}),
-        notify() {}, refreshAccounts() {}, openTasks() {}, recordReceipt() {}, syncModalScrollLock() {},
+        notify() {}, refreshAccounts() {}, openTasks() {}, syncModalScrollLock() {},
       }}});
       emailPage.vm.openBulk(scope('0')); await flush();
       const disabled = h.document.querySelector('#emailChangeSource option[value="xigua"]');

@@ -28,13 +28,7 @@ async function run() {
         body = {manual_mode: false, registration_drivers: [], sources: [
           {value: 'outlook', label: 'Outlook', enabled: inventoryEnabled, kind: 'local_pool', reason: inventoryEnabled ? '' : unavailable},
           {value: 'email_butler', label: 'Email Butler', enabled: false, kind: 'local_pool', reason: unavailable},
-        ]};
-      } else if (route === '/api/capabilities') {
-        body = {features: {register: {enabled: registrationEnabled, reason: registrationEnabled ? '' : unavailable}},
-          email_sources: {
-            outlook: {enabled: registrationEnabled, reason: registrationEnabled ? '' : unavailable},
-            email_butler: {enabled: false, reason: unavailable},
-          }};
+        ], capabilities: {features: {register: {enabled: registrationEnabled, reason: registrationEnabled ? '' : unavailable}}}};
       } else if (route.startsWith('/api/jobs?')) body = {items: [], total: 0, progress_batches: []};
       else if (route === '/api/summary') body = {accounts: 0, email_supply: {status: 'known', total: 1, available: 1}};
       else throw new Error(`unexpected source-form request: ${route}`);
@@ -53,23 +47,22 @@ async function run() {
     await source.setValue('outlook');
     assert.equal(source.element.value, 'outlook');
     assert.deepEqual(requests.filter(route => route === '/api/email-sources'), ['/api/email-sources']);
-    assert.deepEqual(requests.filter(route => route === '/api/capabilities'), ['/api/capabilities']);
+    assert.deepEqual(requests.filter(route => route === '/api/capabilities'), []);
     assert.equal(source.find('option[value="email_butler"]').exists(), false, 'unavailable inventory is not a launch source');
 
-    // Even a previously enabled source response cannot override an explicit
-    // unavailable inventory capability. Refresh the mounted owner, not old DOM.
+    // 同一元数据响应包含来源库存与注册资格；资格不可用时保留来源选择并禁用启动。
     registrationEnabled = false;
     await registration.vm.ensureMeta(true);
     await settle();
     assert.equal(inventoryEnabled, true, 'source response remains enabled to isolate the capability guard');
-    assert.equal(source.find('option[value="outlook"]').exists(), false);
-    assert.equal(source.element.value, '');
+    assert.equal(source.find('option[value="outlook"]').exists(), true);
+    assert.equal(source.element.value, 'outlook');
     const start = registration.get('.registration-launcher button');
     assert.equal(start.element.disabled, true);
     assert.match(start.attributes('title'), new RegExp(unavailable));
     assert.match(registration.get('.registration-launch').text(), new RegExp(unavailable));
     assert.equal(requests.filter(route => route === '/api/email-sources').length, 2);
-    assert.equal(requests.filter(route => route === '/api/capabilities').length, 2);
+    assert.equal(requests.filter(route => route === '/api/capabilities').length, 0);
     registration.vm.setVisible(false);
 
     const host = document.createElement('div');
@@ -78,7 +71,7 @@ async function run() {
     const EmailChange = harness.load('src/features/accounts/EmailChange.vue').default;
     const {request} = harness.load('src/api/client.ts');
     const change = harness.mount(EmailChange, {props: {deps: {
-      request, notify() {}, refreshAccounts() {}, openTasks() {}, recordReceipt() {}, syncModalScrollLock() {},
+      request, notify() {}, refreshAccounts() {}, openTasks() {}, syncModalScrollLock() {},
     }}});
     const context = {accountIds: ['7'], expectedEmails: {'7': 'account@example.test'}, querySnapshot: {}, archived: false,
       rowHints: [{id: 7, email: 'account@example.test', email_source: 'outlook'}]};

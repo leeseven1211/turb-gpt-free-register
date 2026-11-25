@@ -17,23 +17,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/operations/receipts": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** 批量查询指定任务和执行实例的回执 */
-        get: operations["listOperationReceipts"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/operations/{task_id}": {
         parameters: {
             query?: never;
@@ -439,15 +422,6 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
-        OperationReceipts: {
-            ok: boolean;
-            items: {
-                task_id: string;
-                run_id: string | null;
-                status: string;
-                message: string;
-            }[];
-        };
         ProgressStep: {
             id: string;
             step_id?: string;
@@ -744,38 +718,6 @@ export interface operations {
             };
             /** @description 任务或执行实例不存在 */
             404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiError"];
-                };
-            };
-        };
-    };
-    listOperationReceipts: {
-        parameters: {
-            query: {
-                /** @description 任务 ID 或以冒号连接的任务 ID 与执行实例 ID。重复参数最多传入 20 项。 */
-                ref: string[];
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description 返回已找到的回执 */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["OperationReceipts"];
-                };
-            };
-            /** @description 回执查询参数无效 */
-            400: {
                 headers: {
                     [name: string]: unknown;
                 };

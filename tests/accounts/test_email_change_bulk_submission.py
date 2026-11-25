@@ -165,4 +165,3 @@ class EmailChangeBulkRouteTests(unittest.TestCase):
         self.assertEqual(receipt['batch_id'], str(large))
         self.assertEqual(receipt['started'][0]['id'], str(large))
         self.assertEqual(receipt['started'][0]['run_id'], str(large + 2))
-

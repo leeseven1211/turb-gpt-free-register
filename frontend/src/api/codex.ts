@@ -15,7 +15,6 @@ export interface CodexCallbacks {
   notify(message: string): void;
   confirm(message: string): boolean | Promise<boolean>;
   openTasks(type?: string): void;
-  track(references: CodexTaskReference[], label: string, options: {navigate: false}): void;
   operationWorkers(): number;
 }
 export interface CodexListQuery {page: number; size: number; archived: boolean; filters: CodexFilters}

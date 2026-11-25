@@ -3,7 +3,7 @@ import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
 import CodexCredentials from './CodexCredentials.vue';
 import type {CodexCallbacks} from '../../api/codex';
 const wrappers:ReturnType<typeof mount>[]=[];
-const callbacks:CodexCallbacks={notify:vi.fn(),confirm:vi.fn(()=>true),openTasks:vi.fn(),track:vi.fn(),operationWorkers:()=>2};
+const callbacks:CodexCallbacks={notify:vi.fn(),confirm:vi.fn(()=>true),openTasks:vi.fn(),operationWorkers:()=>2};
 let listFailure=false;
 const fetchMock=vi.fn(async(path:string,options?:RequestInit)=>{
   const url=new URL(path,'http://localhost');
@@ -37,7 +37,6 @@ describe('Codex整页接入',()=>{
     await w.get('#btnCodexUploadSub2V2').trigger('click');await flushPromises();
     const request=fetchMock.mock.calls.find(([url])=>url==='/api/codex/upload-sub2-bulk');
     expect(JSON.parse(String(request?.[1]?.body))).toEqual({filenames:['page-1.json','page-2.json']});
-    expect(callbacks.track).toHaveBeenCalledWith(expect.arrayContaining([expect.objectContaining({task_id:99})]),'手动上传',{navigate:false});
     expect(w.get('.cx-toolbar-main').text()).toContain('已选 1');
     expect(w.find('#btnCodexUploadProgressV2').exists()).toBe(true);
     expect(callbacks.openTasks).not.toHaveBeenCalled();

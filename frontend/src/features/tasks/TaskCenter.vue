@@ -9,16 +9,13 @@ import TaskTable from './TaskTable.vue';
 import ListPagination from '../../components/ListPagination.vue';
 import ListFilterSummary from '../../components/ListFilterSummary.vue';
 import ListToolbar from '../../components/ListToolbar.vue';
-import StatusBadge from '../../components/StatusBadge.vue';
 import {eligible, isActive, record} from './presentation';
 import {useTaskList} from './useTaskList';
-import {useReceipts, type AcceptedReference} from './useReceipts';
 import '../../styles/task-center.css';
 
-const emit = defineEmits<{navigate: []; batch: [string, string?]; changed: []}>();
-const list = useTaskList(), receipts = useReceipts();
+const emit = defineEmits<{batch: [string, string?]; changed: []}>();
+const list = useTaskList();
 const {filters, page, size, pages, total, items, facets, selected, loading, error, visible} = list;
-const {items: receiptItems, pending: pendingReceipts, error: receiptError, loading: receiptsLoading} = receipts;
 const detail = ref<InstanceType<typeof TaskDetail> | null>(null);
 const table = ref<InstanceType<typeof TaskTable> | null>(null);
 const busy = ref(false), notice = ref(''), actionError = ref('');
@@ -72,12 +69,8 @@ async function open(options: {filters?: Partial<TaskFilters>; taskId?: TaskId; r
   if (options.filters) list.applyFilters(options.filters);
   if (options.taskId) { await nextTick(); openDetail(options.taskId, options.runId, options.stepId); }
 }
-function setVisible(value: boolean) { if (!value) openFilter.value = null; list.setVisible(value); receipts.setVisible(value); }
+function setVisible(value: boolean) { if (!value) openFilter.value = null; list.setVisible(value); }
 function closeDetail() { detail.value?.close(); }
-function track(references: AcceptedReference[], title = '任务', options: {navigate?: boolean} = {}) {
-  receipts.track(references, title);
-  if (options.navigate !== false) emit('navigate');
-}
 async function refresh(options: {metadata?: boolean} = {}) {
   // 其他业务页只标记列表待刷新，返回任务中心时统一读取。
   if (visible.value) await list.refresh(options);
@@ -136,15 +129,10 @@ async function bulk(action: TaskAction) {
     ? cause.message : `${labels[action]}失败：${cause instanceof Error ? cause.message : String(cause)}`; }
   finally { busy.value = false; }
 }
-defineExpose({open, refresh, track, closeDetail, setVisible});
+defineExpose({open, refresh, closeDetail, setVisible});
 </script>
 <template>
   <section v-show="visible" class="tc-root" aria-label="统一任务中心">
-    <section v-if="receiptItems.length" class="tc-receipts" aria-label="本次提交的任务回执">
-      <div class="tc-receipts-header"><div><strong>本次提交</strong><span role="status">共 {{ receiptItems.length }} 项 · 等待/执行 {{ pendingReceipts.length }} · 成功 {{ receiptItems.filter(item => item.status === 'success').length }} · 失败或待处理 {{ receiptItems.length - pendingReceipts.length - receiptItems.filter(item => item.status === 'success').length }}</span></div><button type="button" class="ui-button" :disabled="receiptsLoading || !pendingReceipts.length" @click="receipts.refresh()">刷新回执</button></div>
-      <p v-if="receiptError" class="tc-text-danger" role="alert">{{ receiptError }}</p>
-      <details><summary>查看任务与最终结果</summary><ul class="tc-receipt-list"><li v-for="item in receiptItems" :key="`${item.task_id}:${item.run_id}`"><button type="button" class="ui-link" @click="openDetail(item.task_id, item.run_id)">{{ item.label }} #{{ item.task_id }}</button><StatusBadge :value="item.status"/><span>{{ item.message }}</span></li></ul></details>
-    </section>
     <div class="ui-list tc-workspace">
       <ListToolbar :filtered="activeFilters.length > 0">
         <span class="ui-list-count tc-count" role="status">{{ total.toLocaleString() }} 个任务</span>

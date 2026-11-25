@@ -17,7 +17,6 @@ export interface AccountSetupDependencies {
   operationWorkers(): number;
   openTasks(options: AccountTaskOpen): void | Promise<unknown>;
   openLog(jobId: number): void | Promise<unknown>;
-  trackAcceptedOperations(rows: readonly Record<string, unknown>[], label: string): void | Promise<unknown>;
   /** Render entries as text/escaped values; the action owner supplies authoritative navigation. */
   showRegistrationResult(result: RegistrationRetryReceipt, context: AccountActionContext,
     open: (entries: readonly RegistrationRetryEntry[]) => Promise<void>): void;

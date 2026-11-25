@@ -1,4 +1,4 @@
-import { $ as e, A as t, C as n, E as r, F as i, H as a, J as o, K as s, L as c, M as l, Q as u, S as d, Z as f, _ as p, d as m, et as h, ft as g, g as _, h as v, j as y, lt as b, m as x, n as S, nt as C, o as w, s as T, st as E, t as D, v as O, x as k } from "./_plugin-vue_export-helper-Btipf5Px.js";
+import { $ as e, A as t, C as n, E as r, F as i, H as a, J as o, K as s, L as c, M as l, Q as u, S as d, Z as f, _ as p, d as m, et as h, ft as g, g as _, h as v, j as y, lt as b, m as x, n as S, nt as C, o as w, s as T, st as E, t as D, v as O, x as k } from "./_plugin-vue_export-helper-CBsH_ZoE.js";
 import { n as A } from "./time-DOD6oyhP.js";
 import { r as j } from "./client-B5R_MNgP.js";
 import { a as M, n as N, r as P } from "./taskIds-BlchWwUp.js";
@@ -2238,17 +2238,13 @@ function Sr(e, t = {}) {
 			"SUB2API_API_TIMEOUT"
 		].includes(e)) && y("sub2apiGroups"), t.keys.some((e) => e.startsWith("C2A_API_") || e.startsWith("C2A_MONITOR_")) && y("c2a"), t.keys.some((t) => e.field(t)?.group === "并发控制") && y("concurrencyPreview");
 	}));
-	function b(e, n) {
+	function b(e) {
 		if (e.accepted !== !0) return null;
-		let r = {
+		let t = {
 			accepted: !0,
 			task_id: M(e.task_id)
 		};
-		e.run_id != null && (r.run_id = N(e.run_id));
-		try {
-			t.onTaskReceipt?.(r, n);
-		} catch {}
-		return r;
+		return e.run_id != null && (t.run_id = N(e.run_id)), t;
 	}
 	function S(e) {
 		v(e), !p && d && f && c[e] && !r[e].loading && !r[e].posting && (e !== "sentinel" || r.sentinel.snapshot?.running && !r.sentinel.error) && l.set(e, setTimeout(() => {
@@ -2271,7 +2267,7 @@ function Sr(e, t = {}) {
 					...m ? { signal: m.signal } : {}
 				})));
 				if (i.ok === !1) throw i;
-				let o = c.label ? b(i, c.label) : null;
+				let o = c.label ? b(i) : null;
 				if (!h()) return;
 				r[e].receipt = o, c.apply(i, o);
 			} catch (t) {
@@ -2636,10 +2632,7 @@ function Cr(e, t = {}) {
 }
 // src/config.ts
 function wr(e, t) {
-	let n = hr({ api: dr() }), i = o(), s = i.run(() => Cr(n, {
-		onTaskReceipt: t.onTaskReceipt,
-		onNavigateTasks: t.onNavigateTasks
-	})), c = h(t.visible !== !1), l = null, u = a(n.fields, (e) => t.onSavedFields(e), { immediate: !0 }), d = n.subscribeSaved(() => t.onSaved?.()), f = S({ render: () => r(sr, {
+	let n = hr({ api: dr() }), i = o(), s = i.run(() => Cr(n, { onNavigateTasks: t.onNavigateTasks })), c = h(t.visible !== !1), l = null, u = a(n.fields, (e) => t.onSavedFields(e), { immediate: !0 }), d = n.subscribeSaved(() => t.onSaved?.()), f = S({ render: () => r(sr, {
 		owner: n,
 		actions: s,
 		active: c.value,

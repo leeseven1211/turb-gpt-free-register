@@ -24,7 +24,7 @@ const copies = [
 ];
 
 async function setup({request, confirmation = true, saved = null} = {}) {
-  const calls = {requests: [], toasts: [], copies: [], confirmations: [], receipts: [], dialogs: [], focuses: [], tabs: [], taskCenters: []};
+  const calls = {requests: [], toasts: [], copies: [], confirmations: [], dialogs: [], focuses: [], tabs: [], taskCenters: []};
   const detached=new Map();
   const placeholder=id=>{if(!detached.has(id))detached.set(id,{id,value:'',classList:{contains:()=>false},addEventListener(){},querySelector:()=>null,querySelectorAll:()=>[]});return detached.get(id);};
   const context=vm.createContext({
@@ -41,7 +41,6 @@ async function setup({request, confirmation = true, saved = null} = {}) {
   vm.runInContext(source,context);
   context.window.TaskCenter={open:async options=>{calls.taskCenters.push(JSON.parse(JSON.stringify(options)));}};
   context.loadAccounts=async()=>{};context.loadAccountTasks=async()=>{};context.pollAccountPlanStatuses=async()=>{};
-  context.trackAcceptedOperationsV2=(...args)=>calls.receipts.push(args);
   let listWrapper,rows=[];
   const owner={isReady:()=>true,getActionContext:options=>listWrapper.vm.getActionContext(options),
     refresh:()=>context.loadAccounts(),pollStatuses:()=>context.pollAccountPlanStatuses(),getRowSnapshot:id=>listWrapper.vm.getRowSnapshot(id),
@@ -82,7 +81,6 @@ function c2aFixture(view, testContext) {
   const ui = mountC2aFixture({request: (url, options) => view.context.api(url, options),
     notify: text => view.calls.toasts.push(text), refreshAccounts: () => view.context.loadAccounts(),
     selectionChanged: () => view.context.updateAccountSelectionUi(),
-    trackAccepted: (...args) => view.calls.receipts.push(args),
     openTasks: options => view.context.window.TaskCenter.open(options)}, {preserve:true});
   ui.bind(view.owner); testContext.after(() => ui.close()); return ui;
 }
@@ -192,7 +190,6 @@ test('重新导入 C2A：冻结跨页账号，只短暂提示数量和未入队�
   assert.equal(view.calls.requests[0].url, '/api/accounts/c2a/sync-bulk');
   assert.deepEqual(JSON.parse(view.calls.requests[0].options.body), {account_ids: [7, 8, 9, 10]});
   assert.equal(view.calls.confirmations.length, 0);
-  assert.deepEqual(view.calls.receipts, []);
   assert.deepEqual(view.calls.tabs, []);
   assert.deepEqual(view.calls.taskCenters, []);
   assert.match(view.calls.toasts.join(''), /C2A 重新导入已入队 1 个.*未入队 2 个.*任务中心/);
@@ -220,34 +217,33 @@ test('重新导入 C2A：真实组件保留全部警告，页面引用带版本�
   for (const file of ['page','bridge']) assert.match(template, new RegExp(`filename='js/pages/accounts/${file}\\.js',\\s*v=asset_version`));
 });
 
-test('重新导入 C2A：取消后下一帧焦点回到顶部批量按钮', async t => {
-  const view = await setup({saved:JSON.stringify({btnReimportSelectedC2aV2:1})}), ui = c2aFixture(view, t);
+test('重新导入 C2A：取消后下一帧焦点回到批量菜单中的原按钮', async t => {
+  const view = await setup(), ui = c2aFixture(view, t);
   await view.selectTwoPages();
-
-  await view.clickShortcut('btnReimportSelectedC2aV2');
+  ui.get('accountsMoreActionsV2').open = true;
+  await view.click('btnReimportSelectedC2aV2');
   await ui.flush();
   assert.equal(ui.get('c2aReimportConfirmModal').open, true);
   await ui.click('btnCancelC2aReimportV2');
-  ui.get('accountsMoreActionsV2').open = false;
   await ui.frame();
 
   assert.equal(ui.get('c2aReimportConfirmModal').open, false);
   assert.equal(view.calls.requests.length, 0);
-  assert.deepEqual(view.calls.receipts, []);
-  assert.equal(ui.document.activeElement.dataset.accountShortcut, 'btnReimportSelectedC2aV2');
-  assert.equal(ui.get('accountsMoreActionsV2').open, false);
+  assert.equal(ui.document.activeElement, ui.get('btnReimportSelectedC2aV2'));
+  assert.equal(ui.get('accountsMoreActionsV2').open, true);
 });
 
-test('重新导入 C2A：原生关闭事件同样恢复可见焦点且不发起同步', async t => {
-  const view = await setup({saved:JSON.stringify({btnReimportSelectedC2aV2:1})}), ui = c2aFixture(view, t);
+test('重新导入 C2A：原生关闭后回到已收起菜单的摘要且不发起同步', async t => {
+  const view = await setup(), ui = c2aFixture(view, t);
   await view.selectTwoPages();
-  await view.clickShortcut('btnReimportSelectedC2aV2');
+  ui.get('accountsMoreActionsV2').open = true;
+  await view.click('btnReimportSelectedC2aV2');
   await ui.flush();
   ui.get('c2aReimportConfirmModal').close('');
   ui.get('accountsMoreActionsV2').open = false;
   await ui.frame();
   assert.equal(view.calls.requests.length, 0);
-  assert.equal(ui.document.activeElement.dataset.accountShortcut, 'btnReimportSelectedC2aV2');
+  assert.equal(ui.document.activeElement, ui.get('accountsMoreActionsV2').querySelector('summary'));
 });
 
 
@@ -268,7 +264,7 @@ test('上传 Sub2API：保留确认与跨页选择，入队后不显示回执或
   await view.selectTwoPages();await view.click('btnUploadSelectedCodexSub2V2');
   assert.equal(view.calls.confirmations.length,1);assert.match(view.calls.confirmations[0],/4 个账号/);
   assert.deepEqual(JSON.parse(view.calls.requests[0].options.body).account_ids,[7,8,9,10]);
-  assert.deepEqual(view.calls.receipts,[]);assert.deepEqual(view.calls.tabs,[]);assert.deepEqual(view.calls.taskCenters,[]);
+  assert.deepEqual(view.calls.tabs,[]);assert.deepEqual(view.calls.taskCenters,[]);
   assert.match(view.calls.toasts.join(''),/手动上传已入队 2 个.*未入队 2 个.*任务中心/);
   assert.match(view.calls.toasts.join(''),/尚未完成 Codex OAuth.*Codex 凭证不存在/);assert.doesNotMatch(view.calls.toasts.join(''),/任务回执|已上传/);
 });
@@ -280,7 +276,7 @@ test('C2A 与 Sub2API 全部未入队时仍说明数量和具体原因', async t
     const ui=button==='btnReimportSelectedC2aV2'?c2aFixture(view,t):null;
     await view.selectTwoPages();await view.click(button);if(ui){await ui.flush();await ui.click('btnConfirmC2aReimportV2');}
     assert.match(view.calls.toasts.join(''),/已入队 0 个.*未入队 4 个.*服务暂不可用/);
-    assert.deepEqual(view.calls.receipts,[]);assert.deepEqual(view.calls.tabs,[]);assert.deepEqual(view.calls.taskCenters,[]);ui?.close();
+    assert.deepEqual(view.calls.tabs,[]);assert.deepEqual(view.calls.taskCenters,[]);ui?.close();
   }
 });
 
@@ -292,11 +288,11 @@ test('C2A 与 Sub2API 提交请求失败时保留原因和可重试入口', asyn
     if(ui){await ui.flush();await ui.click('btnConfirmC2aReimportV2');assert.equal(ui.get('c2aReimportConfirmModal').open,true);
       assert.match(ui.get('c2aReimportConfirmStatusV2').textContent,/模拟网络请求失败/);assert.equal(ui.get('btnConfirmC2aReimportV2').disabled,false);}
     assert.match(view.calls.toasts.join(''),/失败.*模拟网络请求失败/);assert.equal(view.element(button).disabled,false);
-    assert.deepEqual(view.calls.receipts,[]);assert.deepEqual(view.calls.tabs,[]);assert.deepEqual(view.calls.taskCenters,[]);ui?.close();
+    assert.deepEqual(view.calls.tabs,[]);assert.deepEqual(view.calls.taskCenters,[]);ui?.close();
   }
 });
 
 
 test('复制行按钮只说明账号密码与 2FA，跨页值仍从实时 secret 接口获取', async () => {
-  const view=await setup(),button=view.element('btnCopySelectedLinesV2');assert.match(button.title,/账号、密码、2FA/);assert.doesNotMatch(button.title,/邮箱密码|Token/);
+  const view=await setup(),button=view.element('btnCopySelectedLinesV2');assert.match(button.title,/账号、密码和 2FA/);assert.doesNotMatch(button.title,/邮箱密码|Token/);
 });

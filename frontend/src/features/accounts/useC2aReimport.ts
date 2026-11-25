@@ -5,7 +5,6 @@ export interface C2aReimportDependencies {
   notify(message:string):void;
   refreshAccounts(context:AccountActionContext):void|Promise<unknown>;
   selectionChanged?(context:AccountActionContext):void;
-  trackAccepted(items:readonly Readonly<Record<string,unknown>>[],label:string,options:{navigate:false}):void|Promise<unknown>;
   openTasks(options:{filters:{type:'c2a_session_reimport'};taskId?:number;runId:number|null}):void|Promise<unknown>;
   beginBusy?(trigger:HTMLElement|null,label:string):(()=>void)|void;
 }
