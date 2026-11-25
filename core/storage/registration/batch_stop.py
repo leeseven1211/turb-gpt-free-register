@@ -93,8 +93,17 @@ def request_stops(job_ids: list[int], *, active_job_ids: set[int], now_iso: str)
             cur.execute(f"""SELECT DISTINCT task.batch_id FROM {common._table('operation_tasks')} task
                 JOIN {common._table('operation_runs')} run ON run.task_id=task.id
                 WHERE run.source_system='registration_jobs' AND run.source_id=ANY(%s)
-                  AND task.batch_id IS NOT NULL""", ([str(ident) for ident in job_ids],))
+                  AND task.batch_id IS NOT NULL
+                UNION SELECT batch.id FROM {common._table('operation_batches')} batch
+                JOIN {records._qualified(records.JOBS)} job ON job.batch_id=batch.source_id
+                WHERE batch.source_system='registration_batches' AND job.id=ANY(%s)""",
+                ([str(ident) for ident in job_ids], job_ids))
             batches = sorted(row["batch_id"] for row in cur.fetchall())
+            cur.execute(f"""INSERT INTO {common._table('operation_projection_queue')}
+                (batch_id,reason,source_system,status,requested_at,available_at)
+                SELECT id,'registration_job_updated','registration_jobs','queued',now(),now()
+                FROM {common._table('operation_batches')} WHERE id=ANY(%s) ORDER BY id
+                ON CONFLICT (batch_id) DO NOTHING""", (batches,))
             cur.execute(f"""SELECT batch_id FROM {common._table('operation_projection_queue')}
                 WHERE batch_id=ANY(%s) ORDER BY batch_id FOR UPDATE""", (batches,))
             cur.fetchall()
@@ -138,6 +147,9 @@ def request_stops(job_ids: list[int], *, active_job_ids: set[int], now_iso: str)
                 accounts = [records.merge_row(records.ACCOUNTS, row) for row in cur.fetchall()]
                 by_account = {row["id"]: row for row in accounts}
                 by_email = {str(row.get("email") or "").strip().lower(): row for row in accounts}
+                from core.storage.registration.batch_stop_projection import ensure_missing
+
+                batches = sorted(set(batches) | ensure_missing(cur, list(changed.values()), accounts))
                 cur.execute(f"""SELECT run.id AS run_id,run.source_id,task.id AS task_id,task.task_type,
                            attempt.target_status,attempt.remote_identity_state,attempt.remote_account_state
                     FROM {common._table('operation_runs')} run
@@ -164,15 +176,16 @@ def request_stops(job_ids: list[int], *, active_job_ids: set[int], now_iso: str)
                             remote_account_state=state["remote_account_state"],
                         ),
                     })
-                payload = _json(facts)
-                cur.execute(f"""UPDATE {common._table('operation_runs')} run
+                for offset in range(0, len(facts), 500):
+                    payload = _json(facts[offset:offset + 500])
+                    cur.execute(f"""UPDATE {common._table('operation_runs')} run
                     SET status=job.status,
                         completed_at=CASE WHEN job.status='stopped' THEN %s::timestamptz ELSE run.completed_at END,
                         error_message=f.error_message,error_category=f.error_category,error_code=f.error_code
                     FROM {records._qualified(records.JOBS)} job,
                          jsonb_to_recordset(%s::jsonb) f(run_id bigint,error_message text,error_category text,error_code text)
                     WHERE run.id=f.run_id AND run.source_id=job.id::text""", (now_iso, payload))
-                cur.execute(f"""UPDATE {common._table('operation_tasks')} task
+                    cur.execute(f"""UPDATE {common._table('operation_tasks')} task
                     SET status=run.status,completed_at=run.completed_at,error_message=f.error_message,
                         error_category=f.error_category,error_code=f.error_code,next_actions=f.next_actions,updated_at=now()
                     FROM {common._table('operation_runs')} run,
