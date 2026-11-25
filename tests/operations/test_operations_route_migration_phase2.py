@@ -809,14 +809,20 @@ class OperationRouteMigrationPhase2Tests(unittest.TestCase):
         self.assertIn("执行", response.get_json()["error"])
 
     def test_bulk_cancel_rechecks_queued_state_before_dispatch(self):
+        from core.operations import task_center_cancel
+
         client = self._client()
         queued = self._task(status="queued", runs=[{"id": 55, "status": "queued"}])
         with (
             patch.object(operation, "get_action_tasks_many", create=True, return_value={41: queued}),
             patch.object(task_gateway, "operation_action", return_value=None),
-            patch.object(action_service.codex_operation_service, "request_cancel", return_value={
-                "ok": False, "state": "running", "message": "任务状态已变化，请刷新后重试",
-            }) as request_cancel,
+            patch.object(task_center_cancel.common, "_connect"),
+            patch.object(task_center_cancel.cancellation, "cancel_runs_many", return_value={
+                55: {"id": 55, "status": "running", "cancel_skipped": True,
+                     "message": "任务状态已变化，请刷新后重试"},
+            }) as cancel_many,
+            patch.object(action_service.codex_operation_service, "request_cancel",
+                         side_effect=AssertionError("批量入口不能回退逐 Run 取消")),
         ):
             response = client.post(
                 "/api/operations/bulk",
@@ -828,7 +834,10 @@ class OperationRouteMigrationPhase2Tests(unittest.TestCase):
         self.assertEqual(0, payload["accepted_count"])
         self.assertEqual(1, payload["skipped_count"])
         self.assertIn("状态", payload["skipped"][0]["error"])
-        request_cancel.assert_called_once_with(run_id=55, expected_status="queued")
+        cancel_many.assert_called_once()
+        self.assertEqual(cancel_many.call_args.args[1], [
+            {"id": 55, "expected_status": "queued", "reason": "用户手动停止 Codex 补跑"},
+        ])
 
     def test_bulk_cancel_does_not_load_selected_tasks_event_history(self):
         client = self._client()
