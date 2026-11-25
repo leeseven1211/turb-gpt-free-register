@@ -48,10 +48,16 @@ _TERMINAL = frozenset({
 })
 _FAMILY_EXCLUSIVE = ("queued", "running", "cancelling", "settling")
 _SETUP_REUSABLE = frozenset({"queued", "running", "cancelling", "settling", "waiting"})
+_CHUNK_SIZE = 500
 
 
 def _json(value) -> str:
     return json.dumps(value, ensure_ascii=False, default=str)
+
+
+def _chunks(rows: list[dict]):
+    for offset in range(0, len(rows), _CHUNK_SIZE):
+        yield rows[offset:offset + _CHUNK_SIZE]
 
 
 def _error(message: str, *, busy: bool = False, status: int = 409) -> dict:
@@ -448,24 +454,28 @@ def _prepare(
 def _commit(cur, prepared: PreparedFollowups, rows: list[dict]) -> dict[int, dict]:
     output = dict(prepared.replies)
     references, repairs = list(prepared.references), list(prepared.repairs)
-    _claim_plans(cur, rows, output)
-    if rows:
-        _insert(cur, rows)
-        for row in rows:
+    written = []
+    for chunk in _chunks(rows):
+        _claim_plans(cur, chunk, output)
+        if not chunk:
+            continue
+        _insert(cur, chunk)
+        for row in chunk:
             output[row["source_job_id"]] = _receipt(row, reused=False)
-        references.extend(row for row in rows if row["action"] == "twofa")
-    if references:
+        references.extend(row for row in chunk if row["action"] == "twofa")
+        written.extend(chunk)
+    for chunk in _chunks(references):
         cur.execute(f"""UPDATE {records._qualified(records.JOBS)} job
             SET data=job.data || jsonb_build_object('registration_account_task_id',item.task_id),
                 updated_at=%s
             FROM jsonb_to_recordset(%s::jsonb) item(source_job_id bigint,task_id bigint)
-            WHERE job.id=item.source_job_id""", (records._now(), _json(references)))
-    if repairs:
+            WHERE job.id=item.source_job_id""", (records._now(), _json(chunk)))
+    for chunk in _chunks(repairs):
         cur.execute(f"""UPDATE {common._table('operation_tasks')} task
             SET parent_task_id=item.parent_task_id,root_task_id=item.root_task_id
             FROM jsonb_to_recordset(%s::jsonb) item(task_id bigint,parent_task_id bigint,root_task_id bigint)
-            WHERE task.id=item.task_id AND task.parent_task_id IS NULL""", (_json(repairs),))
-    changed = [row for row in rows if row.get("reconcile_parent")] + repairs
+            WHERE task.id=item.task_id AND task.parent_task_id IS NULL""", (_json(chunk),))
+    changed = [row for row in written if row.get("reconcile_parent")] + repairs
     if changed:
         from core.storage.operations.bulk_retry_reconcile import reconcile_parents_many
         from core.storage.operations.bulk_retry_registration import reconcile_registration_many

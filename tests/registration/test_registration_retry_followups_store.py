@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+import json
 from dataclasses import replace
 from unittest.mock import patch
 
@@ -628,6 +629,81 @@ class RegistrationRetryFollowupsStoreTests(PostgresTestCase):
                 api.prepare_followups(conn, [spec], locked_parent_contexts=parents)
             conn.rollback()
         self.assertFalse(any(task["task_type"] == "codex_retry" for task in self.rows("operation_tasks")))
+
+    def _many_specs(self, action, count=501):
+        api = self.api()
+        source_ids = []
+        with records.transaction() as conn:
+            for account_id in range(1, count + 1):
+                if account_id >= 64:
+                    records.insert_row(records.ACCOUNTS, {
+                        "id": account_id, "email": f"followup-{account_id}@example.test",
+                        "access_token": "private-at", "status": "success", "plan_check_status": "failed",
+                    }, conn=conn)
+                source_ids.append(records.insert_row(records.JOBS, {
+                    "email": f"followup-{account_id}@example.test", "email_source": "outlook",
+                    "account_id": account_id, "status": "partial_success", "job_type": "registration",
+                }, conn=conn))
+        sources = records.list_rows(records.JOBS, where="id=ANY(%s)", params=(source_ids,), order_by="id")
+        accounts = {row["id"]: row for row in records.list_rows(records.ACCOUNTS)}
+        return [api.RetryFollowup(source=source, account=accounts[source["account_id"]], action=action,
+            data={"steps": ["twofa"], "source_job_id": source["id"]} if action == "twofa" else {},
+            config_snapshot={}, config_allowlist=()) for source in sources]
+
+    def test_commit_501_sources_bounds_each_write_payload_and_keeps_all_references(self):
+        api = self.api()
+        specs = self._many_specs("twofa")
+        execute, sizes = Cursor.execute, []
+
+        def measured(cursor, query, *args, **kwargs):
+            if "jsonb_to_recordset" in str(query) and str(query).lstrip().startswith(("INSERT", "UPDATE")):
+                parameters = args[0] if args else ()
+                sizes.extend(len(value) for value in (
+                    json.loads(parameter) for parameter in parameters if isinstance(parameter, str)
+                    and parameter.startswith("[")
+                ) if isinstance(value, list))
+            return execute(cursor, query, *args, **kwargs)
+
+        with store._connect() as conn:
+            prepared = api.prepare_followups(conn, specs)
+            with patch.object(Cursor, "execute", measured):
+                replies = api.commit_followups(conn, prepared,
+                    winner_source_ids=[spec.source["id"] for spec in specs])
+        self.assertEqual(501, len(replies))
+        self.assertTrue(all(reply["accepted"] for reply in replies.values()), replies)
+        self.assertTrue(sizes)
+        self.assertLessEqual(max(sizes), 500, sizes)
+        self.assertEqual(501, len(self.rows("operation_tasks")))
+        self.assertEqual(501, len(self.rows("operation_runs")))
+        for source in records.list_rows(records.JOBS):
+            self.assertEqual(replies[source["id"]]["task_id"], source["registration_account_task_id"])
+
+    def test_second_write_chunk_failure_rolls_back_first_chunk_stage_and_facts(self):
+        api = self.api()
+        specs = self._many_specs("plan_check")
+        execute, event_inserts = Cursor.execute, []
+
+        def fail_second_event_chunk(cursor, query, *args, **kwargs):
+            if str(query).lstrip().startswith(f"INSERT INTO {store._table('operation_events')}"):
+                event_inserts.append(1)
+                if len(event_inserts) == 2:
+                    raise RuntimeError("second write chunk failed")
+            return execute(cursor, query, *args, **kwargs)
+
+        with store._connect() as conn:
+            prepared = api.prepare_followups(conn, specs)
+            records.patch_row(records.ACCOUNTS, 1, {"note": "caller survives"}, conn=conn)
+            with patch.object(Cursor, "execute", fail_second_event_chunk):
+                with self.assertRaisesRegex(RuntimeError, "second write chunk failed"):
+                    api.commit_followups(conn, prepared,
+                        winner_source_ids=[spec.source["id"] for spec in specs])
+        self.assertEqual(2, len(event_inserts))
+        self.assertEqual([], self.rows("operation_tasks"))
+        self.assertEqual([], self.rows("operation_runs"))
+        self.assertEqual([], self.rows("operation_events"))
+        self.assertTrue(all(account["plan_check_status"] == "failed"
+                            for account in records.list_rows(records.ACCOUNTS)))
+        self.assertEqual("caller survives", db.get_account(1)["note"])
 
     def test_followup_collection_sql_is_constant_for_one_and_twenty_targets(self):
         api = self.api()
