@@ -5,6 +5,7 @@ from importlib import import_module
 from unittest.mock import patch
 
 from psycopg import Cursor
+from psycopg.errors import SerializationFailure
 
 from core.storage import records
 from core.storage.operations import store
@@ -268,6 +269,52 @@ class TaskCenterRetryStorageTests(PostgresTestCase):
             self.assertEqual(leaf.lock_retry_parents_many(conn, [child["id"], child["id"]]),
                              {parent["id"]: parent["run"]["id"]})
             self.assertEqual(leaf.lock_retry_parents_many(conn, [unrelated["id"]]), {})
+
+    def test_external_registration_parent_contexts_join_native_contexts_in_same_wave(self):
+        first_batch = store.create_runtime_batch(batch_type="fixture", title="注册后处理", requested_count=1)
+        second_batch = store.create_runtime_batch(batch_type="fixture", title="原生重试", requested_count=1)
+        additional = store.create_runtime_task(task_type="registration_resume", account_id=None,
+            email="additional@example.test", source_system="registration_jobs",
+            batch_id=first_batch["id"], resource_family="registration_chain")
+        native = store.create_runtime_task(task_type="registration_resume", account_id=None,
+            email="native@example.test", source_system="registration_chains",
+            batch_id=second_batch["id"], resource_family="registration_chain")
+        child = store.create_runtime_task(task_type="twofa_setup", account_id=1,
+            email="center-retry-1@example.test", parent_task_id=native["id"],
+            data={"registration_completion": True})
+        unrelated = store.create_runtime_task(task_type="fixture_native", account_id=2,
+            email="center-retry-2@example.test")
+        leaf = import_module("core.storage.operations.bulk_retry_tasks")
+        with store._connect() as conn, conn.cursor() as cur:
+            parents = leaf.lock_retry_parents_many(conn, [child["id"]],
+                additional_parent_task_ids=[additional["id"], additional["id"]])
+            self.assertEqual(parents, {
+                additional["id"]: additional["run"]["id"], native["id"]: native["run"]["id"]})
+            cur.execute(f"SELECT batch_id FROM {store._table('operation_projection_queue')} ORDER BY batch_id")
+            self.assertEqual([row["batch_id"] for row in cur.fetchall()],
+                             [first_batch["id"], second_batch["id"]])
+            with store._connect() as observer, observer.cursor() as probe:
+                probe.execute("""SELECT id,pg_try_advisory_xact_lock(id) AS acquired
+                    FROM unnest(%s::bigint[]) item(id) ORDER BY id""",
+                    ([first_batch["id"], second_batch["id"]],))
+                self.assertEqual([row["acquired"] for row in probe.fetchall()], [False, False])
+                probe.execute(f"""SELECT id FROM {store._table('operation_runs')}
+                    WHERE id=ANY(%s) ORDER BY id FOR UPDATE SKIP LOCKED""",
+                    ([additional["run"]["id"], native["run"]["id"], unrelated["run"]["id"]],))
+                self.assertEqual([row["id"] for row in probe.fetchall()], [unrelated["run"]["id"]])
+                probe.execute(f"""SELECT id FROM {store._table('operation_tasks')}
+                    WHERE id=ANY(%s) ORDER BY id FOR UPDATE SKIP LOCKED""",
+                    ([additional["id"], native["id"], unrelated["id"]],))
+                self.assertEqual([row["id"] for row in probe.fetchall()], [unrelated["id"]])
+
+    def test_external_parent_contexts_are_locked_without_native_candidates(self):
+        parent = store.create_runtime_task(task_type="registration_resume", account_id=None,
+            email="additional-only@example.test", source_system="registration_jobs",
+            resource_family="registration_chain")
+        leaf = import_module("core.storage.operations.bulk_retry_tasks")
+        with store._connect() as conn:
+            self.assertEqual(leaf.lock_retry_parents_many(conn, [],
+                additional_parent_task_ids=[parent["id"]]), {parent["id"]: parent["run"]["id"]})
 
     def test_registration_password_handoff_reconciles_current_parent_only(self):
         child = self.tasks(task_type="password_setup", source_system="webui_runtime")[0]
@@ -580,3 +627,163 @@ class TaskCenterRetryStorageTests(PostgresTestCase):
         self.assertFalse(reply["accepted"])
         self.assertTrue(reply["busy"])
         self.assertEqual(len(self.rows("operation_runs", "task_id=%s", (child["id"],))), 1)
+
+    def test_prepare_only_locks_and_qualifies_without_new_run_or_queue_projection(self):
+        created = self.tasks(2, task_type="plan_check")
+        before_runs = self.rows("operation_runs")
+        before_tasks = self.rows("operation_tasks")
+        before_events = self.rows("operation_events")
+        before_accounts = [records.get_row(records.ACCOUNTS, index) for index in (1, 2)]
+        leaf = import_module("core.storage.operations.bulk_retry_tasks")
+        with store._connect() as conn:
+            prepared = leaf.prepare_retry_tasks_many(conn, [
+                {"task_id": row["task_id"], "data": {"request_only": "preserved"}} for row in created])
+        self.assertEqual(prepared["replies"], {})
+        self.assertEqual(prepared["selected_parents"], {})
+        self.assertEqual([row["task_id"] for row in prepared["rows"]], [row["task_id"] for row in created])
+        for row in prepared["rows"]:
+            self.assertEqual(row["resource_family"], "openai_interactive")
+            self.assertEqual(row["data"]["request_only"], "preserved")
+        self.assertEqual(self.rows("operation_runs"), before_runs)
+        self.assertEqual(self.rows("operation_tasks"), before_tasks)
+        self.assertEqual(self.rows("operation_events"), before_events)
+        self.assertEqual([records.get_row(records.ACCOUNTS, index) for index in (1, 2)], before_accounts)
+
+    def test_filtered_commit_writes_only_selected_winner_and_preserves_other_prepared_row(self):
+        created = self.tasks(2, task_type="plan_check")
+        leaf = import_module("core.storage.operations.bulk_retry_tasks")
+        before_loser = self.rows("operation_tasks", "id=%s", (created[1]["task_id"],))[0]
+        with store._connect() as conn:
+            prepared = leaf.prepare_retry_tasks_many(conn, [{"task_id": row["task_id"]} for row in created])
+            result = leaf.commit_retry_tasks_many(conn, prepared["rows"][:1])
+        self.assertEqual(set(result), {created[0]["task_id"]})
+        self.assertTrue(result[created[0]["task_id"]]["accepted"])
+        self.assertEqual(self.rows("operation_tasks", "id=%s", (created[1]["task_id"],))[0], before_loser)
+        self.assertEqual(len(self.rows("operation_runs", "run_no>1")), 1)
+        self.assertEqual(records.get_row(records.ACCOUNTS, 1)["plan_check_status"], "queued")
+        self.assertIsNone(records.get_row(records.ACCOUNTS, 2)["plan_check_status"])
+
+    def test_prepare_invalid_first_does_not_reserve_account_family_for_valid_later_task(self):
+        invalid = self.tasks(task_type="plan_check")[0]
+        valid_task = store.create_runtime_task(task_type="fixture_native", account_id=1,
+            email="center-retry-1@example.test")
+        with store._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"UPDATE {store._table('operation_tasks')} SET target_status='account_deactivated' WHERE id=%s",
+                (invalid["task_id"],))
+            cur.execute(f"UPDATE {store._table('operation_runs')} SET status='failed' WHERE id=%s",
+                (valid_task["run"]["id"],))
+            cur.execute(f"UPDATE {store._table('operation_tasks')} SET status='failed' WHERE id=%s",
+                (valid_task["id"],))
+            leaf = import_module("core.storage.operations.bulk_retry_tasks")
+            prepared = leaf.prepare_retry_tasks_many(conn, [
+                {"task_id": invalid["task_id"]}, {"task_id": valid_task["id"]}])
+            self.assertEqual([row["task_id"] for row in prepared["rows"]], [valid_task["id"]])
+            self.assertEqual(prepared["replies"][invalid["task_id"]]["error"], "账号已废号，禁止重跑")
+            result = leaf.commit_retry_tasks_many(conn, prepared["rows"])
+        self.assertTrue(result[valid_task["id"]]["accepted"])
+        self.assertEqual(len(self.rows("operation_runs", "task_id=%s AND run_no>1", (invalid["task_id"],))), 0)
+
+    def test_prepare_accepts_prelocked_parent_map_without_relocking_parent_run(self):
+        parent = store.create_runtime_task(task_type="account_completion", account_id=None,
+            email="parent@example.test", resource_family="completion_coordinator")
+        child = store.create_runtime_task(task_type="twofa_setup", account_id=1,
+            email="center-retry-1@example.test", source_system="webui_runtime", parent_task_id=parent["id"])
+        with store._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"UPDATE {store._table('operation_runs')} SET status='failed' WHERE id=%s", (child["run"]["id"],))
+            cur.execute(f"UPDATE {store._table('operation_tasks')} SET status='failed' WHERE id=%s", (child["id"],))
+            leaf = import_module("core.storage.operations.bulk_retry_tasks")
+            parents = leaf.lock_retry_parents_many(conn, [child["id"]])
+            with patch.object(leaf, "_prelock_selected_parents",
+                              side_effect=AssertionError("外层已按所有来源锁父上下文")):
+                prepared = leaf.prepare_retry_tasks_many(conn, [{"task_id": child["id"]}], selected_parents=parents)
+            self.assertEqual(prepared["selected_parents"], parents)
+            reply = leaf.commit_retry_tasks_many(conn, prepared["rows"])
+        self.assertTrue(reply[child["id"]]["accepted"])
+
+    def test_prepare_rejects_account_identity_changed_before_task_lock(self):
+        created = self.tasks(task_type="plan_check")[0]
+        leaf = import_module("core.storage.operations.bulk_retry_tasks")
+        execute = Cursor.execute
+        changed = False
+
+        def transfer_before_lock(cursor, query, params=None, **kwargs):
+            nonlocal changed
+            if not changed and str(query).startswith(
+                    f"SELECT * FROM {store._table('operation_tasks')} WHERE id=ANY(%s) ORDER BY id FOR UPDATE"):
+                changed = True
+                with store._connect() as other, other.cursor() as writer:
+                    execute(writer, f"UPDATE {store._table('operation_tasks')} SET account_id=2 WHERE id=%s",
+                            (created["task_id"],))
+            return execute(cursor, query, params, **kwargs)
+
+        with store._connect() as conn, patch.object(Cursor, "execute", transfer_before_lock):
+            prepared = leaf.prepare_retry_tasks_many(conn, [{"task_id": created["task_id"]}])
+        self.assertTrue(changed)
+        self.assertEqual(prepared["rows"], [])
+        self.assertTrue(prepared["replies"][created["task_id"]]["busy"])
+        self.assertEqual(len(self.rows("operation_runs")), 1)
+        self.assertIsNone(records.get_row(records.ACCOUNTS, 2)["plan_check_status"])
+
+    def test_prepare_restarts_wave_when_child_links_to_unlocked_parent(self):
+        child = self.tasks(task_type="twofa_setup", source_system="webui_runtime")[0]
+        parent = store.create_runtime_task(task_type="account_completion", account_id=None,
+            email="late-parent@example.test", resource_family="completion_coordinator")
+        leaf = import_module("core.storage.operations.bulk_retry_tasks")
+        execute = Cursor.execute
+        changed = False
+
+        def link_before_lock(cursor, query, params=None, **kwargs):
+            nonlocal changed
+            if not changed and str(query).startswith(
+                    f"SELECT * FROM {store._table('operation_tasks')} WHERE id=ANY(%s) ORDER BY id FOR UPDATE"):
+                changed = True
+                with store._connect() as other, other.cursor() as writer:
+                    execute(writer, f"UPDATE {store._table('operation_tasks')} SET parent_task_id=%s WHERE id=%s",
+                            (parent["id"], child["task_id"]))
+            return execute(cursor, query, params, **kwargs)
+
+        with self.assertRaises(SerializationFailure):
+            with store._connect() as conn, patch.object(Cursor, "execute", link_before_lock):
+                leaf.prepare_retry_tasks_many(conn, [{"task_id": child["task_id"]}])
+        self.assertTrue(changed)
+        self.assertEqual(len(self.rows("operation_runs", "task_id=%s", (child["task_id"],))), 1)
+
+    def test_public_commit_failure_rolls_back_winner_only_and_preserves_caller_prior_write(self):
+        created = self.tasks(2, task_type="plan_check")
+        leaf = import_module("core.storage.operations.bulk_retry_tasks")
+        execute = Cursor.execute
+
+        def failed(cursor, query, params=None, **kwargs):
+            if str(query).lstrip().startswith(f"INSERT INTO {store._table('operation_events')}"):
+                raise RuntimeError("提交回执故障")
+            return execute(cursor, query, params, **kwargs)
+
+        with store._connect() as conn:
+            records.patch_row(records.ACCOUNTS, 3, changes={"note": "调用方先前事实"}, conn=conn)
+            prepared = leaf.prepare_retry_tasks_many(conn, [{"task_id": row["task_id"]} for row in created])
+            try:
+                with patch.object(Cursor, "execute", failed):
+                    leaf.commit_retry_tasks_many(conn, prepared["rows"][:1])
+            except RuntimeError:
+                pass
+        self.assertEqual(records.get_row(records.ACCOUNTS, 3)["note"], "调用方先前事实")
+        self.assertEqual(len(self.rows("operation_runs")), 2)
+        self.assertEqual({row["status"] for row in self.rows("operation_tasks")}, {"failed"})
+        self.assertIsNone(records.get_row(records.ACCOUNTS, 1)["plan_check_status"])
+
+    def test_existing_retry_preserves_group_reuse_across_chunks_after_invalid_first(self):
+        created = self.tasks(5)
+        leaf = import_module("core.storage.operations.bulk_retry_tasks")
+        with store._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"UPDATE {store._table('operation_tasks')} SET target_status='account_deactivated' WHERE id=%s",
+                (created[0]["task_id"],))
+            with patch.object(leaf, "_CHUNK_SIZE", 2):
+                replies = leaf.retry_tasks_many(conn, [
+                    {"task_id": row["task_id"], "group_key": "same-original-handler-request"} for row in created])
+        self.assertFalse(replies[created[0]["task_id"]]["accepted"])
+        winner = replies[created[1]["task_id"]]
+        self.assertTrue(winner["accepted"])
+        for row in created[2:]:
+            self.assertTrue(replies[row["task_id"]]["reused"])
+            self.assertEqual(replies[row["task_id"]]["run_id"], winner["run_id"])
+        self.assertEqual(len(self.rows("operation_runs", "run_no>1")), 1)

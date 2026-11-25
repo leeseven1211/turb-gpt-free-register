@@ -27,19 +27,63 @@ def _rejected(task_id: int, message: str, **extra) -> dict:
     return {"accepted": False, "busy": False, "task_id": task_id, "error": message, **extra}
 
 
-def lock_retry_parents_many(conn, task_ids) -> dict[int, int]:
+def lock_retry_parents_many(conn, task_ids, *, additional_parent_task_ids=()) -> dict[int, int]:
     """在账号和子 Task 锁之前锁定精确父上下文，返回父 Task 的 Run 代次。
 
     调用者拥有完整受理保存点并负责竞争重试；返回后须在后续 Task 锁内核对代次。
     锁冲突或代次变化抛 PostgreSQL 序列化异常，不能忽略该异常继续写入事实。
+    注册后处理解析出的父 Task 可一并传入，批次及父 Run/Task 按全局顺序预锁。
     """
     specs = [{"task_id": int(value)} for value in dict.fromkeys(task_ids)]
-    if not specs:
+    additional = {int(value) for value in additional_parent_task_ids}
+    if not specs and not additional:
         return {}
     try:
-        return _prelock_selected_parents(conn, specs)
+        return _prelock_selected_parents(conn, specs, additional_parent_task_ids=additional)
     except _ParentChanged:
         raise SerializationFailure("父任务状态已变化，请刷新后重试") from None
+
+
+def prepare_retry_tasks_many(
+    conn, specifications: list[dict], *, selected_parents: dict[int, int] | None = None,
+) -> dict:
+    """锁定并完整验证原生重试，供跨来源规划器在写入之前挑选账号/资源赢家。
+
+    本函数不追加 Run、不重置账号排队投影，也不替候选预占资源名额。调用者必须
+    在同一事务保留返回行对应的 Task/账号锁，并把最终赢家传给 commit 接口。
+    已先锁全部来源父上下文的调用者可传 selected_parents，避免反向补拿父锁。
+    """
+    selected = {}
+    for spec in specifications:
+        selected.setdefault(int(spec["task_id"]), dict(spec))
+    specs = list(selected.values())
+    try:
+        parents = (_prelock_selected_parents(conn, specs) if specs else {}) if selected_parents is None else dict(selected_parents)
+        rows, replies = [], {}
+        for offset in range(0, len(specs), _CHUNK_SIZE):
+            prepared = _prepare_chunk(conn, specs[offset:offset + _CHUNK_SIZE], selected_parents=parents)
+            rows.extend(prepared["rows"])
+            replies.update(prepared["replies"])
+        return {"rows": rows, "replies": replies, "selected_parents": parents}
+    except _ParentChanged:
+        raise SerializationFailure("父任务状态已变化，请刷新后重试") from None
+
+
+def commit_retry_tasks_many(conn, rows: list[dict]) -> dict[int, dict]:
+    """只写入已准备行中的最终赢家；与调用方事实及整波回执保持同一事务。"""
+    selected = {}
+    for row in rows:
+        selected.setdefault(int(row["task_id"]), dict(row))
+    planned = list(selected.values())
+    if not planned:
+        return {}
+    if conn.info.transaction_status == TransactionStatus.IDLE:
+        conn.execute("BEGIN")
+    output = {}
+    with conn.transaction():
+        for offset in range(0, len(planned), _CHUNK_SIZE):
+            output.update(_commit_chunk(conn, planned[offset:offset + _CHUNK_SIZE]))
+    return output
 
 
 def retry_tasks_many(conn, specifications: list[dict]) -> dict[int, dict]:
@@ -75,9 +119,10 @@ def retry_tasks_many(conn, specifications: list[dict]) -> dict[int, dict]:
     return output
 
 
-def _prelock_selected_parents(conn, specs: list[dict]) -> dict[int, int]:
+def _prelock_selected_parents(conn, specs: list[dict], *, additional_parent_task_ids=()) -> dict[int, int]:
     """先锁需要收口的父上下文，避免持账号/子 Task 再反向等待父 Run。"""
     ids = sorted(int(spec["task_id"]) for spec in specs)
+    additional = {int(value) for value in additional_parent_task_ids}
     observed = {}
     with conn.cursor() as cur:
         for offset in range(0, len(ids), _CHUNK_SIZE):
@@ -87,7 +132,8 @@ def _prelock_selected_parents(conn, specs: list[dict]) -> dict[int, int]:
                 LEFT JOIN {common._table('operation_runs')} r ON r.id=t.last_run_id
                 WHERE t.id=ANY(%s) ORDER BY t.id""", (ids[offset:offset + _CHUNK_SIZE],))
             observed.update({int(row["id"]): dict(row) for row in cur.fetchall()})
-        parent_ids = sorted({int(row["parent_task_id"]) for row in observed.values() if row["parent_task_id"]})
+        parent_ids = sorted(additional | {
+            int(row["parent_task_id"]) for row in observed.values() if row["parent_task_id"]})
         password_ids = sorted(str(row["id"]) for row in observed.values() if row["task_type"] == "password_setup")
         if not parent_ids and not password_ids:
             return {}
@@ -105,7 +151,8 @@ def _prelock_selected_parents(conn, specs: list[dict]) -> dict[int, int]:
         if not parents:
             return {}
         registrations = [row for task_id, row in parents.items()
-            if (row["task_type"] == "registration_resume" and _mapping(row.get("run_data")).get("completion_handoff"))
+            if task_id in additional
+            or (row["task_type"] == "registration_resume" and _mapping(row.get("run_data")).get("completion_handoff"))
             or (row["source_system"] == "registration_chains" and any(
                 int(child.get("parent_task_id") or 0) == task_id
                 and _mapping(child.get("data")).get("registration_completion") is True
@@ -142,6 +189,20 @@ def _prelock_selected_parents(conn, specs: list[dict]) -> dict[int, int]:
 
 
 def _retry_chunk(conn, specs: list[dict], *, selected_parents: dict[int, int], group_results: dict) -> dict[int, dict]:
+    prepared = _prepare_chunk(conn, specs, selected_parents=selected_parents, group_results=group_results)
+    output = prepared["replies"]
+    output.update(_commit_chunk(conn, prepared["rows"]))
+    for key, winner in prepared["planned_groups"].items():
+        if output[winner].get("accepted"):
+            group_results[key] = output[winner]
+    for task_id, winner in prepared["reuse"].items():
+        output[task_id] = {**output[winner], **({"reused": True} if output[winner].get("accepted") else {})}
+    return output
+
+
+def _prepare_chunk(
+    conn, specs: list[dict], *, selected_parents: dict[int, int], group_results: dict | None = None,
+) -> dict:
     ids = sorted(int(spec["task_id"]) for spec in specs)
     output = {}
     with conn.cursor() as cur:
@@ -169,16 +230,21 @@ def _retry_chunk(conn, specs: list[dict], *, selected_parents: dict[int, int], g
         for task_id, previous_run_id in selected_parents.items():
             if task_id in tasks and int(tasks[task_id].get("last_run_id") or 0) != previous_run_id:
                 raise _ParentChanged()
+        # 旧单项路径可在预读后补挂父任务，不能持有账号/子 Task 再去补拿未知父 Run。
+        if any(task.get("parent_task_id") and int(task["parent_task_id"]) not in selected_parents
+               for task in tasks.values()):
+            raise _ParentChanged()
         # Task 串行化追加；最新 Run 在取得 Task 锁之后普通读取，避免旧 Run→Task 反锁。
         cur.execute(f"""SELECT DISTINCT ON (task_id) * FROM {common._table('operation_runs')}
             WHERE task_id=ANY(%s) ORDER BY task_id,run_no DESC,id DESC""", (ids,))
         previous = {int(row["task_id"]): dict(row) for row in cur.fetchall()}
         queued_at = common._now().isoformat(timespec="seconds")
-        rows, batches, parents, passwords, copies = [], set(), set(), set(), []
+        rows = []
         planned_groups, reuse = {}, {}
         for spec in specs:
             task_id = int(spec["task_id"])
-            group_key = spec.get("group_key")
+            # 旧一体入口保留历史归组；公开准备接口把所有资格成立候选交给外层统一规划。
+            group_key = spec.get("group_key") if group_results is not None else None
             if group_key is not None and group_key in group_results:
                 output[task_id] = {**group_results[group_key], "reused": True}
                 continue
@@ -189,6 +255,10 @@ def _retry_chunk(conn, specs: list[dict], *, selected_parents: dict[int, int], g
             if not task:
                 output[task_id] = (_rejected(task_id, "任务正在变更，请稍后重试", busy=True)
                                    if task_id in identities else _rejected(task_id, "任务不存在"))
+                continue
+            if (task_id not in identities or int(task.get("account_id") or 0)
+                    != int(identities[task_id].get("account_id") or 0)):
+                output[task_id] = _rejected(task_id, "任务账号已变化，请刷新后重试", busy=True)
                 continue
             expected = spec.get("expected_previous_run_id")
             if expected is not None and int(task.get("last_run_id") or 0) != int(expected):
@@ -237,15 +307,10 @@ def _retry_chunk(conn, specs: list[dict], *, selected_parents: dict[int, int], g
                 "email": str(task.get("email_snapshot") or ""), "account_exists": bool(account),
                 "codex_state": spec.get("codex_state") is True,
                 "previous_batch_id": prior.get("batch_id"), "task_batch_id": task.get("batch_id"),
-                "parent_task_id": task.get("parent_task_id")}
+                "parent_task_id": task.get("parent_task_id"), "queued_at": queued_at}
             rows.append(row)
             if group_key is not None:
                 planned_groups[group_key] = task_id
-            batches.update(int(value) for value in (task.get("batch_id"), prior.get("batch_id")) if value)
-            if task.get("parent_task_id"):
-                parents.add(int(task["parent_task_id"]))
-            if task["task_type"] == "password_setup":
-                passwords.add(task_id)
             if (task["task_type"] == "extract_link" and task["source_system"] == "native_operations"
                     and data.get("workbench_action") == "sync_status"):
                 try:
@@ -254,9 +319,16 @@ def _retry_chunk(conn, specs: list[dict], *, selected_parents: dict[int, int], g
                     source_run_id = 0
                 provider = str(data.get("provider_id") or "").strip()
                 if source_run_id > 0 and provider:
-                    copies.append({"task_id": task_id, "source_run_id": source_run_id, "provider_id": provider})
-        if not rows:
-            return output
+                    row["provider_copy"] = {"task_id": task_id, "source_run_id": source_run_id, "provider_id": provider}
+        return {"rows": rows, "replies": output, "planned_groups": planned_groups, "reuse": reuse}
+
+
+def _commit_chunk(conn, prepared_rows: list[dict]) -> dict[int, dict]:
+    if not prepared_rows:
+        return {}
+    rows = [dict(row) for row in prepared_rows]
+    output = {}
+    with conn.cursor() as cur:
         payload = json.dumps(rows, ensure_ascii=False)
         cur.execute(f"""INSERT INTO {common._table('operation_runs')}
             (run_uuid,task_id,run_no,source_system,source_id,status,batch_id,account_id,
@@ -273,10 +345,8 @@ def _retry_chunk(conn, specs: list[dict], *, selected_parents: dict[int, int], g
                 output[row["task_id"]] = _rejected(row["task_id"], "账号操作仍在执行，请稍后重试", busy=True)
         rows = [row for row in rows if row["task_id"] in inserted]
         if not rows:
-            output.update({task_id: dict(output[winner]) for task_id, winner in reuse.items()})
             return output
-        changed_ids = {row["task_id"] for row in rows}
-        copies = [row for row in copies if row["task_id"] in changed_ids]
+        copies = [dict(row["provider_copy"]) for row in rows if row.get("provider_copy")]
         batches = {int(value) for row in rows
                    for value in (row["task_batch_id"], row["previous_batch_id"]) if value}
         parents = {int(row["parent_task_id"]) for row in rows if row["parent_task_id"]}
@@ -297,7 +367,7 @@ def _retry_chunk(conn, specs: list[dict], *, selected_parents: dict[int, int], g
             FROM jsonb_to_recordset(%s::jsonb) s(event_uuid TEXT,task_id BIGINT,run_id BIGINT,source_system TEXT)
             RETURNING id,run_id,event_uuid,created_at""", (payload,))
         events = {int(row["run_id"]): common._row(dict(row)) for row in cur.fetchall()}
-        _update_accounts(cur, rows, queued_at)
+        _update_accounts(cur, rows)
         if copies:
             for copy in copies:
                 copy["run_id"] = int(inserted[copy["task_id"]]["id"])
@@ -329,15 +399,10 @@ def _retry_chunk(conn, specs: list[dict], *, selected_parents: dict[int, int], g
                 "task_id": row["task_id"], "run_id": row["run_id"], "account_id": row["account_id"],
                 "email": row["email"], "source_system": row["source_system"], "status": "queued",
                 "event_id": event["id"], "event_uuid": event["event_uuid"], "event_created_at": event["created_at"]}
-        for key, winner in planned_groups.items():
-            if output[winner].get("accepted"):
-                group_results[key] = output[winner]
-        for task_id, winner in reuse.items():
-            output[task_id] = {**output[winner], **({"reused": True} if output[winner].get("accepted") else {})}
         return output
 
 
-def _update_accounts(cur, rows: list[dict], queued_at: str) -> None:
+def _update_accounts(cur, rows: list[dict]) -> None:
     stage_changes = {}
     for row in rows:
         if not row["account_exists"]:
@@ -347,8 +412,10 @@ def _update_accounts(cur, rows: list[dict], queued_at: str) -> None:
                  if task_type in {"live_check", "token_refresh"} else None)
         if not stage:
             continue
+        queued_at = row["queued_at"]
         item = stage_changes.setdefault(account_id, {"account_id": account_id, "data": {},
             "plan_check": False, "live_check": False})
+        item["queued_at"] = queued_at
         item[stage] = True
         item["data"].update({f"{stage}_ok": False, f"{stage}_trigger": row["trigger"],
             f"{stage}_queued_at": queued_at, f"{stage}_started_at": None,
@@ -363,18 +430,18 @@ def _update_accounts(cur, rows: list[dict], queued_at: str) -> None:
             SET plan_check_status=CASE WHEN s.plan_check THEN 'queued' ELSE account.plan_check_status END,
                 live_check_status=CASE WHEN s.live_check THEN 'queued' ELSE account.live_check_status END,
                 plan_check_ok=CASE WHEN s.plan_check THEN false ELSE account.plan_check_ok END,
-                updated_at=%s,data=account.data || s.data
-            FROM jsonb_to_recordset(%s::jsonb) s(account_id BIGINT,plan_check BOOLEAN,live_check BOOLEAN,data JSONB)
-            WHERE account.id=s.account_id""", (queued_at, json.dumps(list(stage_changes.values()), ensure_ascii=False)))
+                updated_at=s.queued_at,data=account.data || s.data
+            FROM jsonb_to_recordset(%s::jsonb) s(account_id BIGINT,plan_check BOOLEAN,live_check BOOLEAN,data JSONB,queued_at TEXT)
+            WHERE account.id=s.account_id""", (json.dumps(list(stage_changes.values()), ensure_ascii=False),))
     codex = {row["account_id"]: row for row in rows if row["codex_state"] and row["account_exists"]}
     if codex:
         cur.execute(f"""UPDATE {records._qualified(records.ACCOUNTS)} account
-            SET codex_execution_status='queued',codex_active_run_id=s.run_id,updated_at=%s,
+            SET codex_execution_status='queued',codex_active_run_id=s.run_id,updated_at=s.queued_at,
                 codex_status=CASE
                     WHEN lower(COALESCE(account.codex_credential_state,''))='valid' THEN 'success'
                     WHEN lower(COALESCE(account.codex_credential_state,''))='pending_confirmation' THEN 'pending_confirmation'
                     WHEN lower(COALESCE(account.codex_credential_state,''))='deactivated' THEN 'deactivated'
                     WHEN lower(COALESCE(account.codex_status,''))<>'success' THEN 'retrying'
                     ELSE account.codex_status END
-            FROM jsonb_to_recordset(%s::jsonb) s(account_id BIGINT,run_id BIGINT)
-            WHERE account.id=s.account_id""", (queued_at, json.dumps(list(codex.values()), ensure_ascii=False)))
+            FROM jsonb_to_recordset(%s::jsonb) s(account_id BIGINT,run_id BIGINT,queued_at TEXT)
+            WHERE account.id=s.account_id""", (json.dumps(list(codex.values()), ensure_ascii=False),))
