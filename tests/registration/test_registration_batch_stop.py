@@ -7,6 +7,7 @@ from psycopg import Cursor
 
 from core import db
 from core.registration import service
+from core.storage import postgres, records, registration
 from core.storage.registration import bulk_submission
 from tests.support_pg import PostgresTestCase
 
@@ -133,6 +134,184 @@ class RegistrationBatchStopTests(PostgresTestCase):
                          row["next_actions"])
         self.assertEqual(("user", "user.interrupted", "user", "user.interrupted"),
                          (row["error_category"], row["error_code"], row["run_category"], row["run_code"]))
+
+    def test_orphan_stop_closes_registration_run_before_same_identity_bulk_retry(self):
+        """准入后尚未激活 Worker 的任务停止后，原邮箱和 Attempt 必须仍能批量重跑。"""
+        for run_status in ("queued", "running"):
+            with self.subTest(run_status=run_status):
+                [job] = self._batch(f"orphan-retry-{run_status}")
+                email = f"orphan-retry-{run_status}@example.test"
+                pool_id = records.insert_row(records.OUTLOOK_POOL, {
+                    "email": email, "status": "used", "note": "已分配给原注册任务",
+                })
+                db.update_job(job["id"], email=email)
+                execution_id = f"orphan-execution-{run_status}"
+                self.assertTrue(db.claim_job_for_execution(job["id"], execution_id=execution_id))
+                if run_status == "running":
+                    registration.start_run(
+                        job["attempt_id"], job_id=job["id"], execution_id=execution_id,
+                        initial_status="running",
+                    )
+                original_run = registration.list_runs(job["attempt_id"])[0]
+                self.assertEqual(run_status, original_run["status"])
+
+                with patch.object(service, "_ACTIVE_JOBS", set()), patch.object(service, "_STOP_EVENTS", {}):
+                    stopped = service.request_stop_batch(job["batch_id"])
+                self.assertEqual(1, stopped["stopped"])
+                with (
+                    patch.object(service, "start_dispatcher"),
+                    patch.object(service, "notify_dispatch"),
+                    patch.object(service, "registration_deployment_unavailable", return_value=None),
+                ):
+                    retry = service.retry_jobs([job["id"]], workers=2)[job["id"]]
+
+                self.assertTrue(retry["ok"], retry)
+                self.assertTrue(retry["created"], retry)
+                self.assertEqual((job["attempt_id"], email),
+                                 (retry["job"]["attempt_id"], retry["job"]["email"]))
+                runs = registration.list_runs(job["attempt_id"])
+                self.assertEqual(["queued", "stopped"], [run["status"] for run in runs])
+                self.assertEqual(original_run["id"], runs[1]["id"])
+                self.assertIsNotNone(runs[1]["completed_at"])
+                self.assertEqual("used", records.get_row(records.OUTLOOK_POOL, pool_id)["status"])
+
+    def test_stop_only_closes_registration_runs_owned_by_changed_orphan_jobs(self):
+        """活跃 Worker、其他任务、终态及 Attempt 归属不符的执行记录均保持原状。"""
+        jobs = self._batch("stop-run-boundaries", 4)
+        for job in jobs:
+            db.update_job(job["id"], status="running")
+        active, terminal, mismatched, orphan = jobs
+        registration.finish_run(registration.list_runs(terminal["attempt_id"])[0]["id"], status="success")
+        [other] = self._batch("other-run-owner")
+        registration.finish_run(registration.list_runs(other["attempt_id"])[0]["id"], status="failed")
+        with postgres.connect() as conn, conn.cursor() as cur:
+            cur.execute(f"""UPDATE {postgres.qualified('registration_runs')}
+                SET attempt_id=%s,run_no=2 WHERE job_id=%s""", (other["attempt_id"], mismatched["id"]))
+        before = {
+            job["id"]: registration.list_runs(job["attempt_id"])
+            for job in (active, terminal, other)
+        }
+        signal = Event()
+        with (
+            patch.object(service, "_ACTIVE_JOBS", {active["id"]}),
+            patch.object(service, "_STOP_EVENTS", {active["id"]: signal}),
+        ):
+            result = service.request_stop_batch("stop-run-boundaries")
+        self.assertEqual((1, 3), (result["stopping"], result["stopped"]))
+        self.assertTrue(signal.is_set())
+        for job in (active, terminal, other):
+            self.assertEqual(before[job["id"]], registration.list_runs(job["attempt_id"]))
+        self.assertEqual("stopped", registration.list_runs(orphan["attempt_id"])[0]["status"])
+
+    def test_split_worker_permit_keeps_running_run_until_worker_finishes(self):
+        """跨进程活跃许可保留 running Run，queued 或已释放许可仍可收口。"""
+        from core.storage.operations import permits
+
+        permits.ensure_tables()
+        cases = (
+            ("running", "same", False, "running"),
+            ("running", "different", False, "running"),
+            ("queued", "same", False, "stopped"),
+            ("running", "same", True, "stopped"),
+        )
+        for index, (run_status, generation, released, expected_status) in enumerate(cases):
+            with self.subTest(run_status=run_status, generation=generation, released=released):
+                [job] = self._batch(f"split-worker-permit-{index}")
+                execution_id = f"split-execution-{index}"
+                self.assertTrue(db.claim_job_for_execution(job["id"], execution_id=execution_id))
+                if run_status == "running":
+                    registration.start_run(
+                        job["attempt_id"], job_id=job["id"], execution_id=execution_id,
+                        initial_status="running",
+                    )
+                original_run = registration.list_runs(job["attempt_id"])[0]
+                with postgres.connect() as conn, conn.cursor() as cur:
+                    cur.execute(f"""INSERT INTO {postgres.qualified('operation_execution_permits')}
+                        (permit_id,execution_key,execution_id,run_id,task_type,owner,state,heartbeat_at,released_at)
+                        VALUES (%s,%s,%s,NULL,'registration_protocol','{{}}'::jsonb,'running',
+                                now()-interval '1 day',%s::timestamptz)""", (
+                            f"split-permit-{index}", f"registration_job:{job['id']}",
+                            execution_id if generation == "same" else f"other-generation-{index}",
+                            service._now_iso() if released else None,
+                        ))
+                with patch.object(service, "_ACTIVE_JOBS", set()), patch.object(service, "_STOP_EVENTS", {}):
+                    result = service.request_stop_batch(job["batch_id"])
+                self.assertEqual(1, result["stopped"])
+                current_run = registration.list_runs(job["attempt_id"])[0]
+                self.assertEqual(expected_status, current_run["status"])
+                if expected_status == "running":
+                    self.assertEqual(original_run, current_run)
+                else:
+                    self.assertIsNotNone(current_run["completed_at"])
+
+    def test_orphan_registration_run_close_rolls_back_with_stop_projection(self):
+        """停止投影失败时，Job 和 RegistrationRun 一起回滚，不能提前释放重跑名额。"""
+        from core.storage.registration import batch_stop_projection
+
+        [job] = self._batch("orphan-run-rollback")
+        db.update_job(job["id"], status="running")
+        original_run = registration.list_runs(job["attempt_id"])[0]
+        with (
+            patch.object(service, "_ACTIVE_JOBS", set()),
+            patch.object(service, "_STOP_EVENTS", {}),
+            patch.object(batch_stop_projection, "ensure_missing", side_effect=RuntimeError("停止投影故障")),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "停止投影故障"):
+                service.request_stop_batch(job["batch_id"])
+        self.assertEqual("running", db.get_job(job["id"])["status"])
+        self.assertEqual([original_run], registration.list_runs(job["attempt_id"]))
+
+    def test_orphan_registration_run_closes_use_bounded_statements(self):
+        """501 个 Run 按 500+1 更新，后续块失败时连同 Job 整批回滚。"""
+        jobs = self._batch("orphan-run-chunks", 501)
+        job_ids = [job["id"] for job in jobs]
+        records.patch_rows_where_returning(
+            records.JOBS, changes={"status": "running"}, where="id=ANY(%s)", params=(job_ids,),
+        )
+        sizes, execute = [], Cursor.execute
+        fail_second_chunk = True
+        owner_thread = threading.get_ident()
+
+        def bounded(cursor, query, params=None, **kwargs):
+            text = str(query)
+            if (threading.get_ident() == owner_thread
+                    and text.startswith(f"UPDATE {postgres.qualified('registration_runs')} run")):
+                sizes.append(len(params[-1]))
+                self.assertLessEqual(sizes[-1], 500)
+                if fail_second_chunk and len(sizes) == 2:
+                    raise RuntimeError("第二块 Run 收口故障")
+            return execute(cursor, query, params, **kwargs)
+
+        with (
+            patch.object(service, "_ACTIVE_JOBS", set()),
+            patch.object(service, "_STOP_EVENTS", {}),
+            patch.object(Cursor, "execute", bounded),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "第二块 Run 收口故障"):
+                service.request_stop_batch("orphan-run-chunks")
+        self.assertEqual([500, 1], sizes)
+        with postgres.connect() as conn, conn.cursor() as cur:
+            cur.execute(f"""SELECT count(*) FROM {postgres.qualified('registration_runs')}
+                WHERE job_id=ANY(%s) AND status='queued'""", (job_ids,))
+            self.assertEqual(501, cur.fetchone()[0])
+            cur.execute(f"""SELECT count(*) FROM {records._qualified(records.JOBS)}
+                WHERE id=ANY(%s) AND status='running'""", (job_ids,))
+            self.assertEqual(501, cur.fetchone()[0])
+
+        fail_second_chunk = False
+        sizes.clear()
+        with (
+            patch.object(service, "_ACTIVE_JOBS", set()),
+            patch.object(service, "_STOP_EVENTS", {}),
+            patch.object(Cursor, "execute", bounded),
+        ):
+            result = service.request_stop_batch("orphan-run-chunks")
+        self.assertEqual(501, result["stopped"])
+        self.assertEqual([500, 1], sizes)
+        with postgres.connect() as conn, conn.cursor() as cur:
+            cur.execute(f"""SELECT count(*) FROM {postgres.qualified('registration_runs')}
+                WHERE job_id=ANY(%s) AND status='stopped'""", (job_ids,))
+            self.assertEqual(501, cur.fetchone()[0])
 
     def test_missing_sources_are_resolved_once_for_the_selected_orphans(self):
         from core.email import provider

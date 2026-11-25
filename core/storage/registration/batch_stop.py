@@ -83,11 +83,14 @@ def retained_sources(addresses: list[str]) -> dict[str, str]:
 def request_stops(job_ids: list[int], *, active_job_ids: set[int], now_iso: str) -> dict[int, dict]:
     if not job_ids:
         return {}
-    from core.storage.operations import common, projection, schema
+    from core.storage import registration
+    from core.storage.operations import common, permits, projection, schema
     from core.storage.registration.bulk_submission import _json
 
     records.init()
+    registration.init()
     schema.init_operation_schema()
+    permits.ensure_tables()
     with records.transaction() as conn:
         with conn.cursor() as cur:
             cur.execute(f"""SELECT DISTINCT task.batch_id FROM {common._table('operation_tasks')} task
@@ -125,12 +128,30 @@ def request_stops(job_ids: list[int], *, active_job_ids: set[int], now_iso: str)
                 where="id=ANY(%s) AND status='running'", params=(live,), conn=conn,
             )})
         if orphaned:
-            changed.update({int(row["id"]): row for row in records.patch_rows_where_returning(
+            stopped = records.patch_rows_where_returning(
                 records.JOBS, changes={
                     "status": "stopped", "completed_at": now_iso, "error_message": "用户手动停止（任务实例不存在）",
                 },
                 where="id=ANY(%s) AND status IN ('running','stopping')", params=(orphaned,), conn=conn,
-            )})
+            )
+            changed.update({int(row["id"]): row for row in stopped})
+            # 无实例的旧执行必须与 Job 同事务收口，避免残留活动 Run 永久阻断原身份重跑。
+            # 只匹配本次停止 Job 的原 Attempt，其他执行及已完成回执保持原状。
+            # Web 与 Worker 分进程时，以未释放许可保护已开始的 Run，由原 Worker 收尾。
+            stopped_ids = sorted(int(row["id"]) for row in stopped)
+            with conn.cursor() as cur:
+                for offset in range(0, len(stopped_ids), 500):
+                    cur.execute(f"""UPDATE {postgres.qualified('registration_runs')} run
+                        SET status='stopped',completed_at=%s,heartbeat_at=%s,
+                            error_code='user.interrupted',error_message=job.data->>'error_message'
+                        FROM {records._qualified(records.JOBS)} job
+                        WHERE job.id=ANY(%s) AND job.status='stopped'
+                          AND run.job_id=job.id AND run.attempt_id=job.attempt_id
+                          AND (run.status='queued' OR run.status='running' AND NOT EXISTS (
+                              SELECT 1 FROM {postgres.qualified('operation_execution_permits')} permit
+                              WHERE permit.execution_key='registration_job:' || job.id::text
+                                AND permit.released_at IS NULL))""",
+                        (now_iso, now_iso, stopped_ids[offset:offset + 500]))
         for ident, row in by_id.items():
             if ident in changed:
                 row.update(changed[ident])
