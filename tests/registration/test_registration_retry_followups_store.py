@@ -402,10 +402,57 @@ class RegistrationRetryFollowupsStoreTests(PostgresTestCase):
         with ThreadPoolExecutor(max_workers=2) as pool:
             futures = [pool.submit(submit), pool.submit(submit)]
             replies = [future.result(timeout=20) for future in futures]
-        self.assertEqual(sum(reply["accepted"] and not reply["reused"] for reply in replies), 1)
+        self.assertEqual(sum(reply["accepted"] and not reply["reused"] for reply in replies), 1, replies)
         tasks = [row for row in self.rows("operation_tasks") if row["task_type"] == "account_setup_retry"]
         self.assertEqual(len(tasks), 1)
         self.assertEqual(len([row for row in self.rows("operation_runs") if row["task_id"] == tasks[0]["id"]]), 1)
+
+    def test_concurrent_parent_lock_steps_cannot_split_the_run_and_task_between_requesters(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Event, local
+
+        api = self.api()
+        spec = self.spec(1, "twofa")
+        first_run_locked, second_parent_checked, first_parent_checked = Event(), Event(), Event()
+        context, execute = local(), Cursor.execute
+
+        def observed(cursor, query, *args, **kwargs):
+            text = str(query)
+            parent_run = "operation_runs" in text and "WHERE id=ANY" in text and "FOR UPDATE SKIP LOCKED" in text
+            parent_task = ("operation_tasks" in text and "WHERE id=ANY" in text
+                           and "FOR UPDATE SKIP LOCKED" in text and not getattr(context, "parent_checked", False))
+            if parent_run and context.role == "second":
+                self.assertTrue(first_run_locked.wait(5), "first requester did not lock the parent Run")
+            result = execute(cursor, query, *args, **kwargs)
+            if parent_run and context.role == "first":
+                first_run_locked.set()
+                self.assertTrue(second_parent_checked.wait(5), "second requester did not check the parent Task")
+            if parent_task:
+                context.parent_checked = True
+                if context.role == "second":
+                    second_parent_checked.set()
+                    self.assertTrue(first_parent_checked.wait(5), "first requester did not check the parent Task")
+                else:
+                    first_parent_checked.set()
+            return result
+
+        def submit(role):
+            context.role, context.parent_checked = role, False
+            return api.admit([spec])[spec.source["id"]]
+
+        try:
+            with patch.object(Cursor, "execute", observed), ThreadPoolExecutor(max_workers=2) as pool:
+                futures = [pool.submit(submit, role) for role in ("first", "second")]
+                replies = [future.result(timeout=20) for future in futures]
+        finally:
+            first_run_locked.set()
+            second_parent_checked.set()
+            first_parent_checked.set()
+        self.assertEqual(1, sum(reply["accepted"] and not reply["reused"] for reply in replies), replies)
+        self.assertEqual(1, len([task for task in self.rows("operation_tasks")
+                               if task["task_type"] == "account_setup_retry"]))
+        self.assertEqual(1, len([run for run in self.rows("operation_runs")
+                               if run["resource_family"] == "openai_interactive"]))
 
     def test_existing_task_locked_by_single_retry_returns_busy_without_lock_inversion(self):
         from concurrent.futures import ThreadPoolExecutor

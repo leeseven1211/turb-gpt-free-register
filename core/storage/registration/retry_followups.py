@@ -173,9 +173,11 @@ def _read(cur, specs: list[RetryFollowup], *, locked_parent_contexts: dict[int, 
             WHERE id=ANY(%s) ORDER BY id FOR UPDATE SKIP LOCKED""",
             (sorted({parent["last_run_id"] for parent in contexts.values() if parent.get("last_run_id")}),))
         parent_runs = {row["id"] for row in cur.fetchall()}
+        # 未拿到 Run 的请求不能再抢其 Task，避免两请求拆开父锁后都判 busy。
         cur.execute(f"""SELECT * FROM {common._table('operation_tasks')}
             WHERE id=ANY(%s) ORDER BY id FOR UPDATE SKIP LOCKED""",
-            (sorted(contexts),))
+            (sorted(parent_id for parent_id, parent in contexts.items()
+                    if not parent.get("last_run_id") or parent["last_run_id"] in parent_runs),))
         parent_tasks = {row["id"]: dict(row) for row in cur.fetchall()}
         for parent_id, parent in contexts.items():
             locked = parent_tasks.get(parent["id"])
