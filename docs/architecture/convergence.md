@@ -2,6 +2,8 @@
 
 本文是全项目架构收敛的当前决定入口。运行事实见[当前架构](current-architecture.md)，开发约束见[代码规范](code-conventions.md)。历史方案不自动成为新实现的要求。
 
+2026-11-24 全站批量改造的架构边界见[批量设计](../superpowers/specs/2026-11-24-backend-bulk-operations-design.md)，逐按钮实施范围见[覆盖矩阵](../reports/2026-11-24-backend-bulk-coverage.md)，隔离测试及构建结果见[验证记录](../reports/2026-11-24-backend-bulk-validation.md)。UI 负责展示与集合提交，API 负责请求适配及受理，Worker 领取执行；领域规则由共享 Operations/领域服务拥有，集合 SQL 与事务由 Storage 拥有，PostgreSQL 保留为存储层。该增量包括注册提交和控制的集合存储，不改变注册驱动执行步骤；下方其他阶段的范围与数字保留原历史时点。
+
 2026-11-18 收口更新：Codex同步返回修复、一次完整五阶段本地联合回归与后续定向回归、defer事务内DELETE四格，以及获批代理[简化被动对账](phase6-proxy-passive-reconciliation-results.md)的列明范围均已分别通过限定独审，见[当前收口结果](phase6-current-closeout-20261118.md)。代理storage、三个真实进程窗口与受影响整组实际通过；515项输入零漂移及14原owner退出／两测试schema不存在／其他活跃PG查询0是该轮终态独审与root只读审计时的事实，不代表后续S14等改动仍与旧冻结相同。旧v1失败格缺少正式gate kill和已保存精确排空的限制保留，不能由后来环境不存在倒补permit释放。
 
 本轮共享游标页尾／批量详情筛选的真实预览与最终完整前端门、S14原生与fresh carrier、原producer四格、S08／S09停止owner组合、新orphan adapter无回执自然900恢复均已取得限定通过，见第15节。50万SQL四case共120正式配对及后续产品10文件196 tests＋252 subtests定向回归已通过；SQL-case、fake构造对照与小原生PG／Flask test_client完整JSON各自记账，不升级为50万HTTP时延或生产SLO。最终完整Python回归`final-python-all-4df60fa923b9`的实际结果为9465项通过／0项失败、9065个子测试通过／0个子测试失败，父／子退出0／0；当前开发与完整回归结论为已列开发与完整回归通过；最终候选及整项结论以包外记录为准。详细阶段门、冻结、精确owned收尾与完整回归证据独审见[full4原始结果](/Users/lihongwei/.codex/visualizations/2026/11/13/01a1d26e-ed39-7171-a004-18b3e981d0c6/phase6-settlement-b-20261117/review/development-only-closeout-20261118/final-python-all-4df60fa923b9/result.json)及[开发与测试收口表](development-test-closeout-20261118.md)。Oracle非生产强隔离继续延期；旧数据、外部actor、defer错代及旧K05未测边界仍分别保留。正式Git交付、正式release、生产切换与真实业务验收未完成，旧包不代替后续修复。

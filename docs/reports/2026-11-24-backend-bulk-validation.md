@@ -66,6 +66,63 @@ tests/operations/test_task_center_actions.py
 
 其中新增的同缓存回归先复现“首项拒绝导致后续合格项也拒绝”，修复后验证首个合格项排队、后续项复用、跨语句块复用以及存储失败时整波回滚。独立只读复核通过。后续混合来源受理的最终组合结果单独记录，不以此较早组合替代。
 
+跨模块整合的第一轮 16 文件组合为 **201 passed，35 subtests passed，5 failed**，pytest 用时 371.70 秒。失败与后续处理保留如下：
+
+- 四项测试仍替换旧单项受理入口，已经适配集合接口并继续验证来源优先级、输入顺序、归属、状态 CAS 和错误脱敏；注册入口对应 `53e21c7d`，取消路由对应 `a1b390a2`。取消路由整文件复测 **35 passed，23 subtests passed**。
+- 一项真实并发失败显示两个请求分别持有父 Run 与父 Task，最终双方均返回 busy。`054ed71b` 限制只有取得该父 Run 的请求才尝试其父 Task，确定性双线程回归先复现失败后通过，关联六项 PostgreSQL 测试与三个子测试通过，独立复核通过。
+
+架构职责约束整目录复测 **12 passed**，pytest 用时 0.53 秒。检查 HTTP 与执行代码的依赖方向、前端 HTTP 接缝、运行状态唯一拥有者及恢复服务边界。
+
+修复后的第二轮相同 16 文件组合通过：**209 passed，37 subtests passed，0 failed**，pytest 用时 311.89 秒，隔离执行器用时 318.314 秒。该轮包括新增的 501 目标写入及整波回滚、managed 后置受理异常、混合来源顺序和确定性父锁交错回归。
+
+```text
+tests/operations/test_task_center_retry_storage.py
+tests/operations/test_task_center_sentinel_collection.py
+tests/operations/test_task_center_cancel_collection.py
+tests/operations/test_task_center_native_retries.py
+tests/operations/test_task_center_actions.py
+tests/operations/test_task_center_legacy_retries.py
+tests/operations/test_task_center_retry_wave.py
+tests/operations/test_task_center_retry_wave_locks.py
+tests/operations/test_task_center_legacy_codex_refresh.py
+tests/registration/test_registration_retry_followups_store.py
+tests/registration/test_registration_retry_followups_service.py
+tests/registration/test_registration_retry_wave.py
+tests/registration/test_registration_retry_bulk.py
+tests/operations/test_registration_retry_bulk_actions.py
+tests/operations/test_operations_route_migration_phase2.py
+tests/webui/test_bulk_route_contracts.py
+```
+
+## 历史注册批次停止
+
+主 agent 执行以下最终组合通过：**17 passed**，pytest 用时 31.10 秒，隔离执行器用时 37.943 秒。
+
+```text
+tests/registration/test_registration_batch_stop.py
+tests/registration/test_batch_stop_projection_compat.py
+```
+
+覆盖 1,000 条以外的原批次定位、活跃执行的合作停止、停止快照后任务已结束的 CAS、历史缺失 Task/Run 补投影、来源集合解析、整事务回滚，以及 501 个同 root 历史 Job 跨语句块时 Run 编号与当前 Run 的一致性。缺失队列锚点时先建立锚点，再按队列、批次、Job 的顺序锁定，真实并发测试验证不会倒转旧投影器的锁序。
+
+五项额外对照直接调用原单项 `sync_registration_job`，验证集合停止后的 Task 事实保持一致：已有 Task 缺少 Run 时补齐 Attempt/账号等关联；同 root 的历史 waiting 或 stopping 不抢占较新的 stopped Run；另一批次仍运行的 Run 保留错误和动作；已有子 Task 的 parent/root 恢复原关联。独立评审通过。
+
+## 取消语句分块最终联测
+
+主 agent 执行七文件组合通过：**89 passed，26 subtests passed，0 failed**，pytest 用时 142.76 秒，隔离执行器用时 149.309 秒。
+
+```text
+tests/operations/test_cancellation_chunk_bounds.py
+tests/accounts/test_inspection_cancel_collection.py
+tests/operations/test_bulk_terminate_command.py
+tests/codex/test_codex_cancellation_collection.py
+tests/bulk/test_bulk_control_collection.py
+tests/operations/test_task_center_cancel_collection.py
+tests/operations/test_operations_route_migration_phase2.py
+```
+
+普通及 managed 的 501 目标取消均使用 500+1 条写入，全波仍先取得原 target、账号、Task 和 Run 锁。取消、AT 阶段释放和 managed outbox 三处第二块故障分别验证：Run、Task、lease、账号、目标及 outbox 全部回滚，调用方在保存点之前写入的无关事实可以继续提交。IDLE 连接不提前提交，全部 CAS 跳过时仍按原 managed 规则发布一次；同 Task 跨块只由最大的已变更 Run 投影状态和完成时间。六项新增测试及三个子测试包含在上述组合内。
+
 ## 前端、契约和构建
 
 执行 `npm run generate:api && npm run check && npm run build` 全部通过。前端 **92 个测试文件、1,099 项测试**通过；类型检查、API 生成一致性、任务类型及完成状态标签检查通过；Vite 构建 897 个模块成功。
@@ -73,6 +130,8 @@ tests/operations/test_task_center_actions.py
 合成数据的已构建页面通过真实 Chromium 点击：账号批量归档只发一次 POST，随后三次 GET 查询同一个大整数命令编号 `9007199254740993`；终态一项成功、一项跳过，成功项清除选择、跳过项保留。该检查验证前端提交及回执行为，没有连接真实业务数据。
 
 任务中心批量终止的 API 和组件测试另覆盖 HTTP 202 后轮询完整分页、精确传递大整数 Task ID、查询失败保留命令编号与选择，以及成功项清除选择。生成静态产物已随对应源码更新。
+
+最终收尾核对前端源码、契约及生成静态文件自已通过的 `e58f21d1` 构建后没有变化。全分支 172 个新增或修改的 Python 文件 Ruff 与编译检查通过，`git diff --check` 通过。
 
 ## 交付边界
 
