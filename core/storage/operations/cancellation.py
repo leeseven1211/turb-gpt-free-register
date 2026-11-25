@@ -9,6 +9,8 @@ from psycopg.pq import TransactionStatus
 from core.storage import records
 from core.storage.operations import bulk_retry_projection, bulk_runtime, common
 
+_CHUNK_SIZE = 500
+
 
 def cancel_runs_many(conn, requests: list[dict]) -> dict[int, dict | None]:
     """调用方负责目标资格；本层保持 request_run_cancel 的精确 CAS 与事实。"""
@@ -64,12 +66,18 @@ def cancel_runs_many(conn, requests: list[dict]) -> dict[int, dict | None]:
         ]
         changed = []
         if candidates:
-            cur.execute(
-                f"""WITH input AS (
+            # 同一 Task 跨块时只由全波最大的 Run 投影一次，保持原 DISTINCT ON
+            # 的 status/completed_at 语义，避免前块 queued 提前写入完成时间。
+            task_winners = {current[item["run_id"]]["task_id"]: item["run_id"] for item in candidates}
+            for item in candidates:
+                item["project_task"] = task_winners[current[item["run_id"]]["task_id"]] == item["run_id"]
+            for offset in range(0, len(candidates), _CHUNK_SIZE):
+                cur.execute(
+                    f"""WITH input AS (
                     SELECT * FROM jsonb_to_recordset(%s::jsonb)
-                    AS item(run_id bigint,expected_status text,event_uuid text,reason text,message text)
+                    AS item(run_id bigint,expected_status text,event_uuid text,reason text,message text,project_task boolean)
                 ), previous AS MATERIALIZED (
-                    SELECT r.*,input.event_uuid,input.reason,input.message FROM {runs_table} r
+                    SELECT r.*,input.event_uuid,input.reason,input.message,input.project_task FROM {runs_table} r
                     JOIN input ON input.run_id=r.id AND r.status=input.expected_status
                 ), changed AS (
                     UPDATE {runs_table} r
@@ -79,9 +87,9 @@ def cancel_runs_many(conn, requests: list[dict]) -> dict[int, dict | None]:
                         completed_at=CASE WHEN previous.status='queued' THEN now() ELSE r.completed_at END
                     FROM previous WHERE r.id=previous.id
                     RETURNING r.id,r.task_id,r.status,r.batch_id,r.source_system,r.account_id,r.started_at,r.data,
-                              previous.status AS previous_status,previous.event_uuid,previous.message
+                              previous.status AS previous_status,previous.event_uuid,previous.message,previous.project_task
                 ), task_changes AS (
-                    SELECT DISTINCT ON (task_id) task_id,status FROM changed ORDER BY task_id,id DESC
+                    SELECT task_id,status FROM changed WHERE project_task
                 ), task_updates AS (
                     UPDATE {tasks_table} task SET status=change.status,
                         current_stage=CASE WHEN change.status='cancelled' THEN 'complete' ELSE 'cancelling' END,
@@ -100,16 +108,16 @@ def cancel_runs_many(conn, requests: list[dict]) -> dict[int, dict | None]:
                         jsonb_build_object('previous_status',previous_status,'status',status)
                     FROM changed
                 ) SELECT id,task_id,status,batch_id,account_id,started_at,data FROM changed""",
-                (json.dumps(candidates),),
-            )
-            changed = list(cur.fetchall())
+                    (json.dumps(candidates[offset:offset + _CHUNK_SIZE]),),
+                )
+                changed.extend(cur.fetchall())
             release = [
                 {"account_id": row["account_id"], "queued_at": str(row["data"]["live_check_queued_at"])}
                 for row in changed if row["status"] == "cancelled" and not row["started_at"]
                 and row["data"].get("bulk_target_round_id") and row["data"].get("force_refresh") is True
                 and row["data"].get("live_check_queued_at") and not row["data"].get("remote_intent")
             ]
-            if release:
+            for offset in range(0, len(release), _CHUNK_SIZE):
                 cur.execute(
                     f"""UPDATE {records._qualified(records.ACCOUNTS)} account SET
                         live_check_status='cancelled',updated_at=%s,
@@ -120,16 +128,16 @@ def cancel_runs_many(conn, requests: list[dict]) -> dict[int, dict | None]:
                     WHERE account.id=item.account_id AND account.live_check_status='queued'
                       AND account.data->>'live_check_queued_at'=item.queued_at
                       AND account.data->>'live_check_trigger'='manual_bulk'""",
-                    (records._now(), json.dumps(release)),
+                    (records._now(), json.dumps(release[offset:offset + _CHUNK_SIZE])),
                 )
             batch_ids = {row["batch_id"] for row in changed if row["batch_id"]}
             if batch_ids:
                 bulk_retry_projection.refresh_batches_many(cur, batch_ids)
         if managed:
             # 旧 fact_update 即使 CAS 跳过也发布链事实；这里保持相同边界并集合追加。
-            bulk_runtime.record_managed_changes_many(
-                conn, {row["target_round_id"] for row in managed},
-            )
+            target_ids = sorted({row["target_round_id"] for row in managed})
+            for offset in range(0, len(target_ids), _CHUNK_SIZE):
+                bulk_runtime.record_managed_changes_many(conn, target_ids[offset:offset + _CHUNK_SIZE])
     replies = {
         row["id"]: {**{key: row[key] for key in ("id", "task_id", "status", "batch_id")},
                     "log_file": current[row["id"]].get("log_file")}
