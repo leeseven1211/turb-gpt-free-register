@@ -125,7 +125,7 @@ test('任务错误摘要保留具体原因且不重复相同内容', () => {
 
 
 function operationContext(name, response) {
-  const calls = {requests: [], toasts: [], logs: [], accounts: 0, summary: 0};
+  const calls = {requests: [], toasts: [], logs: [], tasks: [], accounts: 0, summary: 0};
   const names = ['accountBulkQueueReasons', name].filter(functionName => source.includes(`function ${functionName}(`));
   const context = loadFunctions(names, {
     ACCOUNT_SELECTED: new Set([306]),
@@ -137,6 +137,7 @@ function operationContext(name, response) {
     api: async (url, options) => { calls.requests.push({url, options}); return response; },
     showToast: message => calls.toasts.push(message),
     openLiveLog: email => calls.logs.push(email),
+    window: {TaskCenter: {open: options => calls.tasks.push(options)}},
     loadAccounts: async () => { calls.accounts += 1; },
     loadSummary: () => { calls.summary += 1; },
     updateAccountSelectionUi: () => {},
@@ -241,14 +242,15 @@ test('刷新 AT 未入队时显示跳过原因且不打开账号旧日志', asyn
   assert.equal(button.disabled, false);
 });
 
-test('刷新 AT 仅打开本次新入队账号日志，并最多展示三条跳过或失败原因', async () => {
+test('批量刷新 AT 只打开类型任务列表，并最多展示三条跳过或失败原因', async () => {
   const {context, calls} = operationContext('refreshSelectedToken', {
     ok: true, started: [{id: 307, email: 'new@example.com', status: 'queued'}], started_count: 1, busy_count: 0,
     skipped: [{id: 306, reason: '原因一'}, {id: 308, reason: '原因二'}],
     failed: [{id: 309, error: '入队失败原因三'}, {id: 310, error: '原因四'}], failed_count: 2,
   });
   await context.refreshSelectedToken([306, 307], {disabled: false, textContent: '刷新AT'});
-  assert.deepEqual(calls.logs, ['new@example.com']);
+  assert.deepEqual(calls.logs, []);
+  assert.deepEqual(calls.tasks, [{filters: {type: 'token_refresh', target: ''}}]);
   assert.match(calls.toasts[0], /原因一.*原因二.*入队失败原因三/);
   assert.doesNotMatch(calls.toasts[0], /原因四/);
 });

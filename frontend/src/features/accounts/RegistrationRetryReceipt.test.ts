@@ -33,18 +33,28 @@ describe('注册重跑回执',()=>{
     expect(panel.get('summary').text()).toBe('查看任务及跳过原因');expect(panel.get('details').attributes('open')).toBeUndefined();
   });
 
-  it('逐项和集合按钮把原task/run/job回执传owner，task_id优先于operation_task_id',async()=>{
+  it('逐项和集合按钮把原回执传 owner，优先显示统一任务和运行标识',async()=>{
     const {wrapper,body}=setup(),open=vi.fn();
-    const started=[{account_id:7,task_id:71,operation_task_id:99,run_id:72,job_id:17,email:'seven@test'}];
+    const started=[{account_id:7,task_id:71,operation_task_id:99,run_id:72,operation_run_id:100,job_id:17,email:'seven@test'}];
     const reused=[{account_id:8,operation_task_id:81,run_id:82,job_id:18},{account_id:9,job_id:19}];
     wrapper.vm.showResult(receipt({started,reused,started_count:1,reused_count:2}),context(),open);await flushPromises();
     const buttons=body.findAll('[data-registration-retry-result]');
-    expect(buttons[0]!.attributes()).toMatchObject({'data-registration-retry-result':'0','data-registration-retry-task-id':'71','data-registration-retry-run-id':'72'});
+    expect(buttons[0]!.attributes()).toMatchObject({'data-registration-retry-result':'0','data-registration-retry-task-id':'99','data-registration-retry-run-id':'100'});
     expect(buttons[1]!.attributes()).toMatchObject({'data-registration-retry-result':'1','data-registration-retry-task-id':'81','data-registration-retry-run-id':'82'});
     expect(buttons[2]!.text()).toBe('查看任务 #19');expect(buttons[2]!.attributes('data-registration-retry-task-id')).toBeUndefined();expect(buttons[2]!.attributes('data-registration-retry-run-id')).toBeUndefined();
     for(let index=0;index<buttons.length;index++){await buttons[index]!.trigger('click');expect(open).toHaveBeenLastCalledWith([[...started,...reused][index]]);}
     await body.get('[data-registration-retry-tasks]').trigger('click');expect(open).toHaveBeenLastCalledWith([...started,...reused]);
     expect(body.get('summary').text()).toBe('查看任务');
+  });
+
+  it('统一任务和运行标识超过安全整数时仍完整显示和传递',async()=>{
+    const {wrapper,body}=setup(),open=vi.fn();
+    const item={account_id:7,task_id:71,operation_task_id:'9007199254740993',operation_run_id:'9007199254740995',run_id:72};
+    wrapper.vm.showResult(receipt({started:[item],started_count:1}),context(),open);await flushPromises();
+    const button=body.get('[data-registration-retry-result="0"]');
+    expect(button.text()).toBe('查看任务 #9007199254740993');
+    expect(button.attributes('data-registration-retry-run-id')).toBe('9007199254740995');
+    await button.trigger('click');expect(open).toHaveBeenCalledWith([item]);
   });
 
   it('跳过原因优先reason再error再默认文案，所有不可信返回值只作文本',async()=>{

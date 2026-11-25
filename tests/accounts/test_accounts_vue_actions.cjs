@@ -157,7 +157,7 @@ test('AT 配置异步读取期间变更 owner 选择不会改变已冻结的刷�
   assert.deepEqual(JSON.parse(h.calls.requests[0].options.body), {account_ids: [7, 8]});
 });
 
-test('C2A 确认窗口保存原目标，提交只通知任务中心且不创建回执或跳转', async () => {
+test('C2A 确认窗口保存原目标，入队后打开类型任务列表且不创建回执', async () => {
   const {vueHarness} = require('./actions_fixture.cjs');
   const {effectScope} = require('../../frontend/node_modules/vue'); const scope = effectScope();
   try {
@@ -174,7 +174,7 @@ test('C2A 确认窗口保存原目标，提交只通知任务中心且不创建�
     await h.context.submitC2aReimport();
     assert.equal(h.calls.requests[0].url, '/api/accounts/c2a/sync-bulk');
     assert.deepEqual(JSON.parse(h.calls.requests[0].options.body), {account_ids: [7, 8]});
-    assert.deepEqual(h.calls.task,[]);
+    assert.deepEqual(h.calls.task,[{filters:{type:'c2a_session_reimport',target:''}}]);
     assert.match(h.calls.toasts.join(''),/C2A 重新导入已入队 1 个.*任务中心/);assert.doesNotMatch(h.calls.toasts.join(''),/任务回执|已显示具体原因/);
   } finally {scope.stop();}
 });
@@ -222,7 +222,7 @@ test('换邮窗口保留打开时 email/source，翻页后提交和TaskCenter仍
         ? {sources: [{value: 'icloud_hide', enabled: true}, {value: 'outlook', enabled: true}]} : {ok: true, task_id: 71}; },
       notify: value => h.calls.toasts.push(value), syncModalScrollLock() {},
       refreshAccounts: value => { h.calls.refresh++; assert.equal(value.rowHints[0].email, 'seven@example.test'); },
-      openTasks: filters => h.calls.task.push({filters}),
+      openTasks: value => h.calls.task.push(plain(value)),
     }));
     // The legacy entry point must pass the explicit context to the real Vue owner.
     h.owner.openEmailChange = (id, context) => owner.openSingle(id, context);
@@ -235,7 +235,8 @@ test('换邮窗口保留打开时 email/source，翻页后提交和TaskCenter仍
     const submitted = h.calls.requests.find(call => call.options?.method === 'POST');
     assert.equal(submitted.url, '/api/accounts/7/email-change');
     assert.deepEqual(JSON.parse(submitted.options.body), {email_source: 'outlook'});
-    assert.equal(h.calls.task[0].filters.target, 'seven@example.test'); assert.equal(h.calls.refresh, 1);
+    assert.deepEqual(h.calls.task[0], {filters: {type: 'email_change', target: 'seven@example.test'}, taskId: 71, runId: null});
+    assert.equal(h.calls.refresh, 1);
   } finally {scope.stop(); vue.close();}
 });
 

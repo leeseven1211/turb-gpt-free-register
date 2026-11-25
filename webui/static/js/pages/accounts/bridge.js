@@ -43,11 +43,13 @@ window.AccountsPage = (() => {
           notify: message => showToast(message), operationWorkers: () => getAccountOperationWorkers(),
           randomUUID: () => crypto.randomUUID(), refreshAccounts: () => window.AccountsPage.refresh(),
           refreshSummary: () => loadSummary(), openTask: id => openAccountTaskLog(id),
+          openTasks: options => window.TaskCenter.open(options),
           formatDateTime: value => formatDateTime(value), fallbackFocus: () => document.getElementById('btnAccountInspection'),
         },
         emailChangeDependencies: {
           notify: message => showToast(message), refreshAccounts: context => accountActionRefresh(context),
-          openTasks: filters => window.TaskCenter.open({filters}),
+          openTasks: options => window.TaskCenter.open(options),
+          openTask: (id, runId) => openAccountTaskLog(id, runId),
           syncModalScrollLock: () => updateModalScrollLock(), fallbackFocus: () => document.getElementById('btnEmailChangeSelectedV2'),
         },
         c2aDependencies: {
@@ -68,6 +70,7 @@ window.AccountsPage = (() => {
           setup: {
             refresh: context => accountActionRefresh(context), pollStatuses: context => accountActionPollStatuses(context),
             operationWorkers: () => getAccountOperationWorkers(), openTasks: options => window.TaskCenter.open(options), openLog: id => openLog(id),
+            openTask: (id, runId) => openAccountTaskLog(id, runId),
             showRegistrationResult: (result, context, open) => owner().showRegistrationResult(result, context, open),
           },
           local: {
@@ -80,6 +83,7 @@ window.AccountsPage = (() => {
             refreshSummary: () => loadSummary(), reloadTasks: () => loadAccountTasks(), operationWorkers: () => getAccountOperationWorkers(),
             configuredLiveCheckDriver: () => configuredLiveCheckDriver(), readConfig: () => apiCached('/api/config', {}, 30000), fallbackConfig: () => CONFIG,
             openLiveLog: email => openLiveLog(email), openAccountTaskLog: (id, runId) => openAccountTaskLog(id, runId),
+            openTasks: options => window.TaskCenter.open(options),
             openReceiptTask: (taskId, runId) => window.TaskCenter.open({taskId, runId}),
             getRowSnapshot: id => instance?.getRowSnapshot(id), isOwnerActive: () => visible && !document.hidden,
             clearScheduled: handle => clearTimeout(handle),

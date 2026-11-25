@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
-const {installLegacyActionsFixture, vueHarness} = require('./actions_fixture.cjs');
+const {installLegacyActionsFixture, legacySelectionSnapshot, vueHarness} = require('./actions_fixture.cjs');
 
 const source = require('../frontend_script_sources.cjs').readAccountScripts();
 const template = fs.readFileSync(path.join(__dirname, '../../webui/templates/index.html'), 'utf8');
@@ -64,10 +64,10 @@ test('账号页刷新说明识别 v3，会话失效后才重新认证', () => {
 });
 
 function operation({response, request, accepted = true} = {}) {
-  const calls = {requests: [], confirms: [], messages: [], results: [], navigations: [], accounts: 0};
+  const calls = {requests: [], confirms: [], messages: [], results: [], navigations: [], taskDetails: [], tasks: [], accounts: 0};
   const context = load(['retryAccountRegistration'], {
     ACCOUNT_SELECTED: new Set([7, 8]),
-    ACCOUNTS: [{id: 7, registration_retry: {label: '继续注册'}}],
+    ACCOUNTS: [{id: 7, email: 'old@example.com', registration_retry: {label: '继续注册'}}],
     $: () => null,
     confirm: text => { calls.confirms.push(text); return accepted; },
     api: async (url, options) => {
@@ -76,8 +76,9 @@ function operation({response, request, accepted = true} = {}) {
     },
     showToast: text => calls.messages.push(text),
     showAccountRegistrationRetryResult: result => calls.results.push(result),
-    window: {TaskCenter: {open: async () => {}}},
+    window: {TaskCenter: {open: async options => { calls.tasks.push(JSON.parse(JSON.stringify(options))); }}},
     openLog: jobId => calls.navigations.push([{job_id: jobId}]),
+    openAccountTaskLog: (taskId, runId) => calls.taskDetails.push([taskId, runId]),
     loadAccounts: async () => { calls.accounts += 1; },
     updateAccountSelectionUi() {},
   });
@@ -85,34 +86,48 @@ function operation({response, request, accepted = true} = {}) {
   return {context, calls};
 }
 
-test('单账号调用原注册重跑适配接口，直接打开新任务', async () => {
-  const {context, calls} = operation();
+function invokeSingleRegistration(context, button = null) {
+  return context.window.AccountsPage.invokeAction(
+    'account-registration-retry',
+    legacySelectionSnapshot(context, {ids: [7]}),
+    button,
+  );
+}
+
+test('单账号 descriptor 提交原注册重跑并优先打开统一任务详情', async () => {
+  const {context, calls} = operation({response: {
+    started: [{account_id: 7, task_id: 99, run_id: 100, job_id: 99}],
+    started_count: 1, reused: [], reused_count: 0, skipped: [], skipped_count: 0,
+  }});
   const button = {disabled: false, textContent: '继续注册'};
-  await context.retryAccountRegistration([7], button);
+  await invokeSingleRegistration(context, button);
   assert.deepEqual(calls.requests, [{url: '/api/accounts/7/registration-retry', body: {}}]);
   assert.match(calls.confirms[0], /继续注册/);
-  assert.equal(calls.navigations[0][0].job_id, 99);
+  assert.deepEqual(calls.taskDetails, [[99, 100]]);
+  assert.deepEqual(calls.tasks, []);
   assert.equal(calls.results.length, 1);
   assert.equal(calls.accounts, 1);
   assert.equal(button.disabled, false);
   assert.equal(button.textContent, '继续注册');
 });
 
-test('批量按账号去重，仅提交账号 ID，结果留在账号页供逐项查看', async () => {
+test('批量按账号去重并统一跳任务类型列表，不自动打开回执面板', async () => {
   const {context, calls} = operation({response: {
     started: [{account_id: 7, job_id: 99}], reused: [{account_id: 8, job_id: 100}],
     skipped: [{account_id: 9, reason: '没有原任务'}],
   }});
   await context.retryAccountRegistration([7, '7', 8, 9]);
   assert.deepEqual(calls.requests, [{url: '/api/accounts/registration-retry-bulk', body: {account_ids: [7, 8, 9]}}]);
+  assert.deepEqual(calls.tasks, [{filters: {type: 'registration', target: ''}}]);
   assert.equal(calls.navigations.length, 0);
-  assert.equal(calls.results[0].skipped[0].reason, '没有原任务');
+  assert.equal(calls.results.length, 0);
 });
 
-test('单号已在执行时打开进行中任务，不误报新建', async () => {
+test('单账号 descriptor 无统一任务标识时按类型和邮箱打开任务列表', async () => {
   const {context, calls} = operation({response: {started: [], reused: [{account_id: 7, job_id: 100}], reused_count: 1}});
-  await context.retryAccountRegistration([7]);
-  assert.equal(calls.navigations[0][0].job_id, 100);
+  await invokeSingleRegistration(context);
+  assert.deepEqual(calls.tasks, [{filters: {type: 'registration', target: 'old@example.com'}}]);
+  assert.deepEqual(calls.taskDetails, []);
 });
 
 test('提交中的账号在按钮重绘或另一个入口再次点击时也不重复提交', async () => {
@@ -146,7 +161,8 @@ test('提交已成功但列表刷新失败时保留提交事实，不提示再�
   await context.retryAccountRegistration([7]);
   assert.match(calls.messages.at(-1), /请求已处理.*页面更新失败/);
   assert.doesNotMatch(calls.messages.at(-1), /提交失败/);
-  assert.equal(calls.results.length, 1);
+  assert.equal(calls.results.length, 0);
+  assert.deepEqual(calls.tasks, [{filters: {type: 'registration', target: ''}}]);
 });
 
 test('批量结果保留所有跳过原因并转义内容，有原任务和新任务的明确入口', async t => {

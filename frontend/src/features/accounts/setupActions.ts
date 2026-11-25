@@ -1,10 +1,13 @@
 import {accountBulkUnqueuedReasons} from './useC2aReimport';
 import type {AccountActionContext} from './useAccounts';
 import type {AccountActionDependencies} from './actions';
+import {accountTaskReference, openAccountOperationTasks, type AccountTaskOpen} from './taskNavigation';
+import {taskId, type TaskId} from '../../api/taskIds';
 
-export interface AccountTaskOpen {filters?: Record<string, unknown>; taskId?: number; runId?: number | null}
+export type {AccountTaskOpen} from './taskNavigation';
 export interface RegistrationRetryEntry {
-  account_id?: number; email?: string; task_id?: number; operation_task_id?: number; run_id?: number; job_id?: number;
+  account_id?: number; email?: string; task_id?: TaskId; operation_task_id?: TaskId;
+  run_id?: TaskId; operation_run_id?: TaskId; job_id?: TaskId;
   reason?: string; error?: string; [key: string]: unknown;
 }
 export interface RegistrationRetryReceipt {
@@ -16,7 +19,8 @@ export interface AccountSetupDependencies {
   pollStatuses(context: AccountActionContext): Promise<unknown>;
   operationWorkers(): number;
   openTasks(options: AccountTaskOpen): void | Promise<unknown>;
-  openLog(jobId: number): void | Promise<unknown>;
+  openTask?(id: TaskId, runId: TaskId|null): void | Promise<unknown>;
+  openLog(jobId: TaskId): void | Promise<unknown>;
   /** Render entries as text/escaped values; the action owner supplies authoritative navigation. */
   showRegistrationResult(result: RegistrationRetryReceipt, context: AccountActionContext,
     open: (entries: readonly RegistrationRetryEntry[]) => Promise<void>): void;
@@ -41,7 +45,7 @@ function parsed(descriptor: string) {
 function isSupported(descriptor: string): boolean {
   const {name, value} = parsed(descriptor);
   if (name === 'account-action') return own(accountActions, value);
-  if (name === 'account-registration-task') return /^[1-9]\d*$/.test(value) && Number.isSafeInteger(Number(value));
+  if (name === 'account-registration-task') return /^[1-9]\d*$/.test(value);
   return !descriptor.includes(':') && (supported.has(name) || own(bulkActions, name));
 }
 function record(value: unknown, envelope = false): Record<string, unknown> {
@@ -82,6 +86,46 @@ function retryReceipt(result: Record<string, unknown>): RegistrationRetryReceipt
 function retrySummary(result: RegistrationRetryReceipt): string {
   return `注册重跑：已创建 ${result.started_count} 个，进行中 ${result.reused_count} 个，跳过 ${result.skipped_count} 个`;
 }
+const retryTaskTypes: Readonly<Record<string, string>> = {
+  registration: 'registration', registration_resume: 'registration_resume',
+  codex: 'codex_retry', twofa: 'account_setup_retry', plan_check: 'plan_check',
+};
+function resultRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+function unqueuedReasons(result: Record<string, unknown>): string {
+  return ['skipped', 'failed'].some(field => Array.isArray(result[field]) && result[field].length > 0
+    || Number(result[`${field}_count`] || 0) > 0) ? accountBulkUnqueuedReasons(result) : '';
+}
+function hasAcceptedResult(value: unknown, fields: readonly string[] = ['started', 'queued', 'reused'], allowAcceptedFallback = false): boolean {
+  const result = resultRecord(value);
+  if (!result) return false;
+  if (accountTaskReference(value)) return true;
+  const hasAcceptedEntries = fields.some(field => Array.isArray(result[field]) && result[field].length > 0)
+    || fields.some(field => Number(result[`${field}_count`] || 0) > 0);
+  return hasAcceptedEntries || result.accepted === true && allowAcceptedFallback;
+}
+function acceptedRetryActions(value: unknown): string[] {
+  const result = resultRecord(value);
+  if (!result) return [];
+  const values = [result.retry_action, ...['started', 'reused'].flatMap(field =>
+    Array.isArray(result[field]) ? result[field].map(item => resultRecord(item)?.retry_action) : [])];
+  return [...new Set(values.filter((item): item is string => typeof item === 'string' && item in retryTaskTypes)
+    .map(item => retryTaskTypes[item]))];
+}
+function actionTaskTypes(result: unknown, fallback: string, bulk: boolean): string {
+  const value = resultRecord(result);
+  if (!bulk) return value?.registration_resume ? 'registration_resume' : fallback;
+  const started = Array.isArray(value?.started) ? value.started : [];
+  const types = new Set<string>();
+  if (started.length) {
+    if (started.some(item => resultRecord(item)?.registration_resume)) types.add('registration_resume');
+    if (started.some(item => !resultRecord(item)?.registration_resume)) types.add(fallback);
+  } else if (Number(value?.started_count || 0) > 0) {
+    types.add(fallback);
+  }
+  return [...types].join(',');
+}
 const message = (error: unknown) => error instanceof Error ? error.message : '请求失败，请稍后重试。';
 const isRetry = (name: string) => name === 'account-registration-retry' || name === 'retryAccountRegistration';
 const isSingle = (name: string) => name.startsWith('account-') || name.startsWith('codex-');
@@ -92,16 +136,19 @@ export function createAccountSetupActions(base: AccountActionDependencies, deps:
   async function openRegistrationTasks(items: readonly RegistrationRetryEntry[], context: AccountActionContext): Promise<void> {
     const item = items.length === 1 ? items[0] : undefined;
     const row = item && context.rowHints.find(value => String(value.id) === String(item.account_id));
-    const taskId = item?.task_id || item?.operation_task_id;
-    await deps.openTasks({filters: {target: item?.email || row?.email || (item ? context.expectedEmails[String(item.account_id)] : '') || ''},
-      taskId: taskId ? Number(taskId) : undefined, runId: item?.run_id ? Number(item.run_id) : null});
-    if (!taskId && item?.job_id) await deps.openLog(Number(item.job_id));
+    const reference = accountTaskReference(item);
+    await deps.openTasks({filters: {target: item?.email || row?.email || (item ? context.expectedEmails[String(item.account_id)]
+      || String(item.account_id ?? '') : '') || ''},
+      taskId: reference?.taskId, runId: reference?.runId ?? null});
+    if (!reference && item?.job_id) await deps.openLog(taskId(item.job_id));
   }
   async function pageUpdate(update: () => Promise<unknown>): Promise<void> {
     try {await update();} catch (cause) {base.notify(`请求已处理，但页面更新失败: ${message(cause)}`);}
   }
-  function refreshAndOpen(context: AccountActionContext, options?: AccountTaskOpen): void {
-    if (options) void pageUpdate(async () => deps.openTasks(options));
+  function refreshAndOpen(context: AccountActionContext, options?: {single: boolean; type: string; target?: string; result?: unknown}): void {
+    if (options && hasAcceptedResult(options.result, options.type === 'sub2api_manual_upload' ? ['queued'] : undefined, options.single)) {
+      void pageUpdate(() => openAccountOperationTasks(deps, options));
+    }
     void pageUpdate(() => deps.refresh(context));
   }
   async function invoke(descriptor: string, supplied: AccountActionContext, trigger: HTMLElement | null = null): Promise<void> {
@@ -122,7 +169,7 @@ export function createAccountSetupActions(base: AccountActionDependencies, deps:
       const row = context.rowHints.find(item => String(item.id) === String(id));
       const email = context.expectedEmails[String(id)] || row?.email || '';
       const labelEmail = row?.email || email || `账号 #${id}`;
-      if (name === 'account-registration-task') {await openRegistrationTasks([{account_id: id, email, job_id: Number(value)}], context); return;}
+      if (name === 'account-registration-task') {await openRegistrationTasks([{account_id: id, email, job_id: taskId(value)}], context); return;}
       if (isRetry(name) && context.accountIds.some(value => retryPending.has(value))) {base.notify('所选账号的注册重跑正在提交，请稍后查看结果'); return;}
       key = keyFor(descriptor, context.accountIds);
       if (pending.has(key)) {key = undefined; return;}
@@ -152,30 +199,33 @@ export function createAccountSetupActions(base: AccountActionDependencies, deps:
       if (name === 'account-setup' || name === 'setupSelectedAccounts') {
         const single = name === 'account-setup', result = await post(single ? `/api/accounts/${id}/setup` : '/api/accounts/setup-bulk', single ? {} : {account_ids: ids});
         const skipped = entries(result.skipped).length;
-        base.notify(single ? String(result.message || '已开始补齐账号配置') : skipped ? `已开始补齐 ${count(result.started_count)} 个，跳过 ${skipped} 个` : `已开始补齐 ${count(result.started_count)} 个账号配置`);
-        refreshAndOpen(context, {filters: {target: single ? labelEmail : '', type: 'account_setup_retry'}});
+        base.notify(single ? String(result.message || '已开始补齐账号配置')
+          : (skipped ? `已开始补齐 ${count(result.started_count)} 个，跳过 ${skipped} 个` : `已开始补齐 ${count(result.started_count)} 个账号配置`) + unqueuedReasons(result));
+        refreshAndOpen(context, {single, target: single ? labelEmail : '', type: 'account_setup_retry', result});
       } else if (action && details) {
         const single = name === 'account-action', result = await post(single ? `/api/accounts/${id}/action` : '/api/accounts/action-bulk', single ? {action} : {account_ids: ids, action});
-        const skipped = entries(result.skipped).length, started = entries(result.started);
-        base.notify(single ? String(result.message || `${details.label}已入队`) : skipped ? `已开始 ${count(result.started_count)} 个，跳过 ${skipped} 个` : String(result.message || `${details.label}已入队`));
-        const resume = single ? !!result.registration_resume : started.length > 0 && started.every(item => item.registration_resume);
-        refreshAndOpen(context, {filters: single ? {target: labelEmail, type: resume ? 'registration_resume' : details.type} : {type: resume ? 'registration_resume' : details.type}});
+        const skipped = entries(result.skipped).length;
+        base.notify(single ? String(result.message || `${details.label}已入队`)
+          : (skipped ? `已开始 ${count(result.started_count)} 个，跳过 ${skipped} 个` : String(result.message || `${details.label}已入队`)) + unqueuedReasons(result));
+        const type = actionTaskTypes(result, details.type, !single);
+        refreshAndOpen(context, type ? {single, target: single ? labelEmail : '', type, result} : undefined);
       } else if (name.startsWith('codex-')) {
         const endpoint = name === 'codex-stop' ? 'stop' : name === 'codex-reset-retrying' ? 'reset-retrying' : 'retry';
         const result = await post(`/api/codex/${endpoint}`, name === 'codex-reset-retrying' ? {email, status: 'failed'} : {email});
         base.notify(String(result.message || (name === 'codex-stop' ? '已发送停止信号' : name === 'codex-reset-retrying' ? '已重置补跑状态' : '已开始补跑')));
-        refreshAndOpen(context, name === 'codex-retry' ? {filters: {target: email, type: 'codex_retry'}} : undefined);
+        refreshAndOpen(context, name === 'codex-retry' ? {single: true, target: email, type: 'codex_retry', result} : undefined);
       } else if (name === 'stopSelectedCodex' || name === 'retrySelectedCodex') {
         const stop = name === 'stopSelectedCodex', result = await post(`/api/codex/${stop ? 'stop' : 'retry'}-bulk`, {account_ids: ids});
         const skipped = entries(result.skipped).length;
         base.notify(stop ? `已停止 ${count(result.stopped_count)} 个${skipped ? `，跳过 ${skipped} 个` : ''}`
-          : skipped ? `已开始 ${count(result.started_count)} 个，跳过 ${skipped} 个` : String(result.message || '已开始批量补跑'));
-        refreshAndOpen(context, stop ? undefined : {filters: {target: '', type: 'codex_retry'}});
+          : (skipped ? `已开始 ${count(result.started_count)} 个，跳过 ${skipped} 个` : String(result.message || '已开始批量补跑')) + unqueuedReasons(result));
+        refreshAndOpen(context, stop ? undefined : {single: false, target: '', type: 'codex_retry', result});
       } else if (name === 'uploadSelectedCodexSub2') {
         const result = await post('/api/accounts/codex/upload-sub2-bulk', {account_ids: ids}), skipped = count(result.skipped_count??entries(result.skipped).length) + count(result.failed_count??entries(result.failed).length);
         const reasons=skipped?accountBulkUnqueuedReasons(result):'';
         if (result.accepted) {
           base.notify(`手动上传已入队 ${count(result.queued_count??entries(result.queued).length)} 个，未入队 ${skipped} 个，请在任务中心查看结果${reasons}`);
+          refreshAndOpen(context, {single: false, type: 'sub2api_manual_upload', result});
         } else {
           base.notify(`已上传 ${count(result.uploaded_count)} 个${skipped ? `，跳过/失败 ${skipped} 个${reasons}` : ''}`);
           await pageUpdate(() => deps.pollStatuses(context));
@@ -183,11 +233,22 @@ export function createAccountSetupActions(base: AccountActionDependencies, deps:
       } else if (isRetry(name)) {
         const result = await post(ids.length === 1 ? `/api/accounts/${id}/registration-retry` : '/api/accounts/registration-retry-bulk', ids.length === 1 ? {} : {account_ids: ids});
         const receipt = retryReceipt(result);
-        base.notify(retrySummary(receipt));
-        deps.showRegistrationResult(receipt, context, items => openRegistrationTasks(items, context));
-        if (ids.length === 1) {
+        const singleRegistration = isSingle(name);
+        base.notify(retrySummary(receipt) + (singleRegistration ? '' : unqueuedReasons(result)));
+        if (singleRegistration) deps.showRegistrationResult(receipt, context, items => openRegistrationTasks(items, context));
+        if (singleRegistration) {
           const first = receipt.started[0] || receipt.reused[0];
-          if (first) await openRegistrationTasks([first], context);
+          if (first && hasAcceptedResult(receipt)) {
+            const type = acceptedRetryActions(result)[0] || 'registration';
+            await pageUpdate(() => openAccountOperationTasks(deps, {single: true, target: email, type, result}));
+          }
+        } else {
+          const types = acceptedRetryActions(result);
+          if (types.length && hasAcceptedResult(receipt)) {
+            await pageUpdate(() => openAccountOperationTasks(deps, {single: false, type: types.join(','), result}));
+          } else if (hasAcceptedResult(receipt)) {
+            await pageUpdate(() => openAccountOperationTasks(deps, {single: false, type: 'registration', result}));
+          }
         }
         await deps.refresh(context);
       }

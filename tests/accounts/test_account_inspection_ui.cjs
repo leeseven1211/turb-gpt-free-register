@@ -13,6 +13,7 @@ const common = fs.readFileSync('webui/static/js/shared/common.js', 'utf8');
 const formatting = vm.createContext({});
 vm.runInContext(common.slice(common.indexOf('function formatDateTime('), common.indexOf('function browserTimeZoneName(')), formatting);
 const requests = [];
+const taskNavigations = [];
 let reply = {ok: true, created: true, task: {id: 1}}, nextError, workers = 4;
 const notices = [];
 const component = h.load('src/features/accounts/Inspection.vue').default;
@@ -20,6 +21,7 @@ const page = h.mount(component, {props: {deps: {
   request: async (url, options) => {requests.push({url, options}); if (nextError) {const error = nextError; nextError = null; throw error;} return typeof reply === 'function' ? reply(url) : reply;},
   notify: text => notices.push(text), operationWorkers: () => workers,
   randomUUID: () => 'fixture-request-key', refreshAccounts() {}, refreshSummary() {}, openTask() {},
+  openTasks: options => taskNavigations.push(options),
   formatDateTime: value => formatting.formatDateTime(value),
 }}});
 const scope = archived => Object.freeze({archived, accountIds: Object.freeze(['1']), expectedEmails: Object.freeze({'1': 'one@test'}), rowHints: Object.freeze([]), querySnapshot: Object.freeze({})});
@@ -52,8 +54,10 @@ const submit = async () => {await page.get('form').trigger('submit'); await flus
     const accepted = requests.filter(request => request.options.method === 'POST').at(-1);
     assert.equal(JSON.parse(accepted.options.body).idempotency_key, firstKey);
     assert.equal(JSON.parse(accepted.options.body).archived, 'only');
+    assert.deepEqual(taskNavigations, [{filters: {type: 'account_inspection_batch', target: ''}}]);
+    assert.equal(element('accountInspectionHistory').open, false);
     reply = {items: [{id: 9, task_id: 9, workers: 2, archived: '0', status: 'completed', created_at: '<script>', checked_count: 0, skipped_count: 1, total_count: 1, invalid_count: 0, live_failed_count: 0, deactivated_skipped_count: 1, live_success_count: 0, plan_success_count: 0, plan_failed_count: 0}], active: null, total: 1};
-    await page.vm.refreshHistory(); await flush();
+    page.vm.openHistory(); await flush();
     assert.match(element('accountInspectionHistoryContent').textContent, /失败详情 1/);
     assert.doesNotMatch(element('accountInspectionHistoryContent').innerHTML, /<script>/);
     reply.items[0].created_at = '2026-10-19T01:04:17+00:00';

@@ -1,5 +1,6 @@
-import {computed,onScopeDispose,ref,shallowRef,watch} from 'vue';
+import {computed,nextTick,onScopeDispose,ref,shallowRef,watch} from 'vue';
 import type {AccountActionContext} from './useAccounts';
+import type {AccountTaskOpen} from './taskNavigation';
 
 export interface AccountInspectionDependencies {
   request(path:string,options?:RequestInit):Promise<unknown>;
@@ -8,6 +9,7 @@ export interface AccountInspectionDependencies {
   randomUUID():string;
   refreshAccounts():void|Promise<unknown>;
   refreshSummary():void|Promise<unknown>;
+  openTasks(options:AccountTaskOpen):void|Promise<unknown>;
   openTask(taskId:number):void|Promise<unknown>;
   formatDateTime(value:unknown):string;
   fallbackFocus?():HTMLElement|null;
@@ -56,8 +58,11 @@ export function useAccountInspection(deps:AccountInspectionDependencies){
       requestKey=null;active.value=true;
       if(disposed)return;
       startOpen.value=false;
-      deps.notify(result.created?'巡检已加入统一任务队列':'已有本次巡检记录，已打开历史');
-      openHistory();
+      deps.notify(result.created?'巡检已加入统一任务队列':'已有本次巡检记录，已打开任务中心');
+      await nextTick();
+      if(disposed)return;
+      try{await deps.openTasks({filters:{type:'account_inspection_batch',target:''}});}
+      catch(error){if(!disposed)deps.notify(`巡检请求已处理，打开任务失败：${message(error)}`);}
     }catch(error){if(!disposed)startError.value=`巡检启动请求失败：${message(error)}。可查看巡检历史，或使用当前提交再次确认。`;}
     finally{starting.value=false;}
   }

@@ -1,7 +1,9 @@
 import type {AccountActionContext, AccountViewRow} from './useAccounts';
 import type {AccountActionDependencies} from './actions';
 import {accountRequestKeyHeader, createAccountOperationReceipts} from './operationReceipts';
-import {optionalTaskId, taskId, type TaskId} from '../../api/taskIds';
+import {openAccountOperationTasks} from './taskNavigation';
+import type {AccountTaskOpen} from './taskNavigation';
+import type {TaskId} from '../../api/taskIds';
 
 export interface AccountQueuedDependencies {
   refresh(context: AccountActionContext): Promise<unknown>;
@@ -15,6 +17,7 @@ export interface AccountQueuedDependencies {
   fallbackConfig(): unknown;
   openLiveLog(email: string): void | Promise<unknown>;
   openAccountTaskLog(taskId: TaskId, runId: TaskId | null): void | Promise<unknown>;
+  openTasks(options: AccountTaskOpen): void | Promise<unknown>;
   openReceiptTask?(taskId: TaskId, runId: TaskId | null): void | Promise<unknown>;
   getRowSnapshot(id: string): {deactivation_mail_scan_status?: unknown} | undefined;
   isOwnerActive(): boolean;
@@ -34,6 +37,9 @@ const actions: Readonly<Record<string, Action>> = {
   checkSelectedDeactivationMail: {kind: 'mail', single: false, error: '批量扫描失败: '},
   'extract-link': {kind: 'extract', single: true, error: '提链失败: '},
   extractSelectedLinks: {kind: 'extract', single: false, error: '批量提链失败: '},
+};
+const operationTypes: Readonly<Record<Kind, string>> = {
+  plan: 'plan_check', live: 'live_check', token: 'token_refresh', mail: 'deactivation_mail', extract: 'extract_link',
 };
 const receiptLabels = {plan: '查套餐', live: '查活', token: '刷新 AT', mail: '封号邮件扫描'};
 const isSupported = (name: string) => Object.prototype.hasOwnProperty.call(actions, name);
@@ -79,6 +85,20 @@ function queueReasons(result: Record<string, unknown>): string {
   if (!reasons.length) return '';
   const details = reasons.slice(0, 3).map(reason => reason.length > 80 ? `${reason.slice(0, 80)}…` : reason);
   return `；${details.join('；')}${reasons.length > 3 ? `；另有 ${reasons.length - 3} 条原因` : ''}`;
+}
+function targetFor(context: AccountActionContext, id: number): string {
+  const row = context.rowHints.find(item => String(item.id) === String(id));
+  const target = String(row?.email || context.expectedEmails[String(id)] || '').trim();
+  return target || String(id);
+}
+function listLength(value: unknown): number {
+  return Array.isArray(value) ? value.length : 0;
+}
+function hasAcceptedTask(result: Record<string, unknown>, single: boolean): boolean {
+  const queued = listLength(result.started) + listLength(result.queued) + listLength(result.reused);
+  const counted = count(result.started_count) + count(result.queued_count) + count(result.reused_count);
+  if (queued > 0 || counted > 0) return true;
+  return single && (result.accepted === true || result.started === true);
 }
 function tokenSettings(raw: unknown): {description: string; debugDescription: string} {
   const fields = Array.isArray(raw) ? raw.filter(item => item && typeof item === 'object') as Record<string, unknown>[] : [];
@@ -166,6 +186,7 @@ export function createQueuedAccountActions(base: AccountActionDependencies, deps
       const ids = idsOf(supplied);
       if (!ids.length) {base.notify('请先选择账号'); return;}
       if (action.single && ids.length !== 1) throw new Error('此操作只能选择一个账号');
+      const singleTarget = ids.length === 1 ? targetFor(supplied, ids[0]!) : '';
       key = keyFor(name, ids);
       if (pending.has(key)) {key = undefined; return;}
       pending.add(key);
@@ -202,6 +223,12 @@ export function createQueuedAccountActions(base: AccountActionDependencies, deps
         if (!result) return;
         base.notify(action.single ? String(result.message || '套餐查询已加入后台队列')
           : `已入队 ${count(result.started_count)} 个，查询中跳过 ${count(result.busy_count)} 个，入队失败 ${count(result.failed_count)} 个${rows(result.skipped).length ? `，跳过 ${rows(result.skipped).length} 个` : ''}${queueReasons(result)}`);
+        if (hasAcceptedTask(result, action.single)) {
+          void updateAfterAccepted(() => openAccountOperationTasks(
+            {openTasks: deps.openTasks, openTask: deps.openAccountTaskLog},
+            {single: action.single, type: operationTypes[action.kind], target: singleTarget || undefined, result},
+          ), current);
+        }
         void updateAfterAccepted(() => deps.pollStatuses(context), current);
       } else if (action.kind === 'live') {
         const workers = deps.operationWorkers();
@@ -211,9 +238,14 @@ export function createQueuedAccountActions(base: AccountActionDependencies, deps
         busy('查活中…');
         const result = await submit('live', '/api/accounts/check-live-bulk', {account_ids: ids, driver: deps.configuredLiveCheckDriver()});
         if (!result) return;
-        const skipped = rows(result.skipped).length, started = rows(result.started);
+        const skipped = rows(result.skipped).length;
         base.notify(`查活已入队 ${count(result.started_count)} 个，忙碌 ${count(result.busy_count)} 个，失败 ${count(result.failed_count)}${skipped ? `，跳过 ${skipped}` : ''}（配置驱动：${deps.configuredLiveCheckDriver() || '默认'}，实际驱动：${result.live_check_driver || '未知'}）${queueReasons(result)}`);
-        if (started[0]?.email) void updateAfterAccepted(() => deps.openLiveLog(String(started[0]!.email)), current);
+        if (hasAcceptedTask(result, action.single)) {
+          void updateAfterAccepted(() => openAccountOperationTasks(
+            {openTasks: deps.openTasks, openTask: deps.openAccountTaskLog},
+            {single: action.single, type: operationTypes[action.kind], target: singleTarget || undefined, result},
+          ), current);
+        }
         void updateAfterAccepted(() => deps.refresh(context), current);
         void updateAfterAccepted(() => deps.refreshSummary(), current);
       } else if (action.kind === 'token') {
@@ -230,17 +262,27 @@ export function createQueuedAccountActions(base: AccountActionDependencies, deps
         deps.updateBusyLabel?.(name, trigger, '刷新中…');
         const result = await submit('token', '/api/accounts/refresh-token-bulk', {account_ids: ids});
         if (!result) return;
-        const skipped = rows(result.skipped).length, first = rows(result.started)[0];
+        const skipped = rows(result.skipped).length;
         base.notify(`刷新AT已入队 ${count(result.started_count)} 个，忙碌 ${count(result.busy_count)} 个，失败 ${count(result.failed_count)}${skipped ? `，跳过 ${skipped}` : ''}${queueReasons(result)}`);
-        if (first?.task_id) void updateAfterAccepted(() => deps.openAccountTaskLog(taskId(first.task_id), optionalTaskId(first.run_id)), current);
-        else if (first?.email) void updateAfterAccepted(() => deps.openLiveLog(String(first.email)), current);
+        if (hasAcceptedTask(result, action.single)) {
+          void updateAfterAccepted(() => openAccountOperationTasks(
+            {openTasks: deps.openTasks, openTask: deps.openAccountTaskLog},
+            {single: action.single, type: operationTypes[action.kind], target: singleTarget || undefined, result},
+          ), current);
+        }
         void updateAfterAccepted(() => deps.refresh(context), current);
         void updateAfterAccepted(() => deps.refreshSummary(), current);
       } else if (action.kind === 'mail') {
         busy('扫描中…');
         const result = await submit('mail', action.single ? `/api/accounts/${ids[0]}/check-deactivation-mail` : '/api/accounts/check-deactivation-mail-bulk', action.single ? undefined : {account_ids: ids});
         if (!result) return;
-        base.notify(action.single ? '封号邮件扫描已入队；不会刷新 AT' : `已入队 ${count(result.started_count)} 个，跳过 ${count(result.skipped_count)} 个；不会刷新 AT`);
+        base.notify(action.single ? '封号邮件扫描已入队；不会刷新 AT' : `已入队 ${count(result.started_count)} 个，跳过 ${count(result.skipped_count)} 个；不会刷新 AT${queueReasons(result)}`);
+        if (hasAcceptedTask(result, action.single)) {
+          void updateAfterAccepted(() => openAccountOperationTasks(
+            {openTasks: deps.openTasks, openTask: deps.openAccountTaskLog},
+            {single: action.single, type: operationTypes[action.kind], target: singleTarget || undefined, result},
+          ), current);
+        }
         void updateAfterAccepted(() =>
           mailResults(action.single || count(result.started_count) > 0 ? ids : [], context, generation), current);
       } else if (action.kind === 'extract') {
@@ -259,7 +301,13 @@ export function createQueuedAccountActions(base: AccountActionDependencies, deps
         } else {
           const skipped = count(result.skipped_count) + count(result.busy_count) + count(result.failed_count);
           const fallbackCount = rows(result.started).filter(item => item.fallback_from).length;
-          base.notify(`已入队 ${count(result.started_count)} 个${skipped ? `，跳过/失败 ${skipped} 个` : ''}${fallbackCount ? `，其中 ${fallbackCount} 个已自动跳过失败类型` : ''}`);
+          base.notify(`已入队 ${count(result.started_count)} 个${skipped ? `，跳过/失败 ${skipped} 个` : ''}${fallbackCount ? `，其中 ${fallbackCount} 个已自动跳过失败类型` : ''}${queueReasons(result)}`);
+        }
+        if (hasAcceptedTask(result, action.single)) {
+          void updateAfterAccepted(() => openAccountOperationTasks(
+            {openTasks: deps.openTasks, openTask: deps.openAccountTaskLog},
+            {single: action.single, type: operationTypes[action.kind], target: singleTarget || undefined, result},
+          ), current);
         }
         await updateAfterAccepted(async () => {await deps.reloadTasks(); await deps.pollStatuses(context);});
       }

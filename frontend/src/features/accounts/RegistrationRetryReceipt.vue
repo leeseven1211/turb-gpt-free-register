@@ -21,7 +21,8 @@ const summary=computed(()=>{
   const result=state.value?.result;
   return `注册重跑：已创建 ${Number(result?.started_count??started.value.length)} 个，进行中 ${Number(result?.reused_count??reused.value.length)} 个，跳过 ${Number(result?.skipped_count??skipped.value.length)} 个`;
 });
-const taskId=(entry:RegistrationRetryEntry)=>entry.task_id||entry.operation_task_id;
+const taskId=(entry:RegistrationRetryEntry)=>entry.operation_task_id||entry.task_id;
+const runId=(entry:RegistrationRetryEntry)=>taskId(entry)?entry.operation_run_id||entry.run_id:undefined;
 const targetId=(entry:RegistrationRetryEntry)=>taskId(entry)||entry.job_id;
 function showResult(result:Partial<RegistrationRetryReceipt>,context:AccountActionContext|null,open:OpenTasks){
   if(disposed)return;
@@ -45,7 +46,7 @@ defineExpose({showResult,openTasks});
       <details v-if="tasks.length||skipped.length" :key="revision">
         <summary>查看{{ skipped.length?'任务及跳过原因':'任务' }}</summary>
         <ul>
-          <li v-for="(item,index) in tasks" :key="`task-${index}`">账号 #{{ item.account_id }} · {{ index<started.length?'已创建':'进行中' }} <button type="button" class="jobs-tb-btn" :data-registration-retry-result="index" :data-registration-retry-task-id="taskId(item)||undefined" :data-registration-retry-run-id="taskId(item)&&item.run_id?item.run_id:undefined" @click="openTasks([item])">查看任务{{ targetId(item)?` #${targetId(item)}`:'' }}</button></li>
+          <li v-for="(item,index) in tasks" :key="`task-${index}`">账号 #{{ item.account_id }} · {{ index<started.length?'已创建':'进行中' }} <button type="button" class="jobs-tb-btn" :data-registration-retry-result="index" :data-registration-retry-task-id="taskId(item)||undefined" :data-registration-retry-run-id="runId(item)||undefined" @click="openTasks([item])">查看任务{{ targetId(item)?` #${targetId(item)}`:'' }}</button></li>
           <li v-for="(item,index) in skipped" :key="`skipped-${index}`">账号 #{{ item.account_id }} · {{ item.reason||item.error||'当前不可重跑' }}</li>
         </ul>
       </details>

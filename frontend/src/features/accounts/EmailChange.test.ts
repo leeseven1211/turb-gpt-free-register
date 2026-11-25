@@ -92,7 +92,8 @@ describe('Vue 换邮弹窗保留交互并隔离打开代次', () => {
     expect(body.get('#emailChangeModal').classes()).not.toContain('hidden'); expect(body.get('#emailChangeAccountLabel').text()).toContain('old-8@test');
     expect(body.get<HTMLButtonElement>('#btnSubmitEmailChange').element.disabled).toBe(true); expect(body.get('#btnSubmitEmailChange').text()).toBe('提交中…');
     expect(document.activeElement).toBe(cancel); expect(deps.openTasks).not.toHaveBeenCalled();
-    current.resolve({ok: true, task_id: 81}); await flushPromises(); expect(deps.openTasks).toHaveBeenCalledExactlyOnceWith({target: 'old-8@test', type: 'email_change'});
+    current.resolve({ok: true, task_id: 81, run_id: 82}); await flushPromises();
+    expect(deps.openTasks).toHaveBeenCalledExactlyOnceWith({filters: {target: 'old-8@test', type: 'email_change'}, taskId: 81, runId: 82});
   });
 
   it('当前成功先关闭弹窗，异步滚动锁不抢任务中心的新焦点', async () => {
@@ -101,6 +102,14 @@ describe('Vue 换邮弹窗保留交互并隔离打开代次', () => {
     const {w, body, trigger} = setup({request, openTasks: () => {task.focus();}});
     w.vm.openSingle(7, context(), trigger); await flushPromises(); await body.get('form').trigger('submit'); await flushPromises();
     expect(body.get('#emailChangeModal').classes()).toContain('hidden'); expect(document.activeElement).toBe(task);
+  });
+
+  it('单个换绑有任务回执时优先调用原页任务详情入口', async () => {
+    const task = vi.fn();
+    const request = vi.fn<AccountEmailChangeDependencies['request']>().mockResolvedValueOnce(sources).mockResolvedValueOnce({ok: true, task_id: 71, run_id: 72});
+    const {w, body, trigger} = setup({request, openTask: task} as unknown as Partial<AccountEmailChangeDependencies>);
+    w.vm.openSingle(7, context(), trigger); await flushPromises(); await body.get('form').trigger('submit'); await flushPromises();
+    expect(task).toHaveBeenCalledExactlyOnceWith(71, 72);
   });
 
   it('卸载取消来源读且清理键盘监听，连接trigger只恢复一次', async () => {

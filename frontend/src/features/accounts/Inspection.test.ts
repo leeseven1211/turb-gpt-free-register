@@ -7,7 +7,7 @@ import {deferred,realAdapter} from './uiTestSupport';
 const wrappers:ReturnType<typeof mount>[]=[];
 function context(archived='0'):AccountActionContext{return Object.freeze({accountIds:['7'],expectedEmails:{'7':'a@test'},querySnapshot:realAdapter().normalize(),archived,rowHints:[]});}
 function setup(extra:Partial<AccountInspectionDependencies>={}){
- const deps:AccountInspectionDependencies={request:vi.fn(async()=>({items:[],total:0,active:null})),notify:vi.fn(),operationWorkers:()=>4,randomUUID:vi.fn(()=> 'request-key'),refreshAccounts:vi.fn(),refreshSummary:vi.fn(),openTask:vi.fn(),formatDateTime:value=>`local:${value}`,...extra};
+ const deps:AccountInspectionDependencies={request:vi.fn(async()=>({items:[],total:0,active:null})),notify:vi.fn(),operationWorkers:()=>4,randomUUID:vi.fn(()=> 'request-key'),refreshAccounts:vi.fn(),refreshSummary:vi.fn(),openTasks:vi.fn(),openTask:vi.fn(),formatDateTime:value=>`local:${value}`,...extra};
  const w=mount(Inspection,{attachTo:document.body,props:{deps}});wrappers.push(w);return{w,deps};
 }
 beforeEach(()=>{vi.useFakeTimers();Object.defineProperty(document,'hidden',{configurable:true,value:false});
@@ -25,10 +25,18 @@ describe('账号巡检组件保留原请求和运行快照合同',()=>{
   w.vm.openStart(context('only'));await flushPromises();await w.get('#accountInspectionWorkers').setValue('2');
   for(let index=0;index<4;index++){await w.get('form').trigger('submit');await flushPromises();expect(w.get('#accountInspectionStartError').text()).toContain('巡检启动请求失败');}
   await w.get('form').trigger('submit');await flushPromises();expect(request.mock.calls.filter(call=>call[1]?.method==='POST').map(call=>JSON.parse(String(call[1]?.body)))).toEqual(Array(5).fill({workers:2,archived:'only',idempotency_key:'request-key'}));expect(deps.randomUUID).toHaveBeenCalledTimes(1);expect(deps.notify).toHaveBeenCalledWith('巡检已加入统一任务队列');
-  w.vm.openStart(context());await flushPromises();await w.get('form').trigger('submit');await flushPromises();expect(deps.randomUUID).toHaveBeenCalledTimes(2);expect(deps.notify).toHaveBeenCalledWith('已有本次巡检记录，已打开历史');
+  w.vm.openStart(context());await flushPromises();await w.get('form').trigger('submit');await flushPromises();expect(deps.randomUUID).toHaveBeenCalledTimes(2);expect(deps.notify).toHaveBeenCalledWith('已有本次巡检记录，已打开任务中心');
  });
  it('30秒超时中止请求，期间重复提交不再POST',async()=>{
   const pending=deferred<unknown>();let signal:AbortSignal|undefined;const request=vi.fn((_path:string,options?:RequestInit)=>{signal=options?.signal as AbortSignal;signal?.addEventListener('abort',()=>pending.reject(new DOMException('timeout','AbortError')));return pending.promise;});const {w}=setup({request});w.vm.openStart(context());await flushPromises();await w.get('form').trigger('submit');await w.get('form').trigger('submit');expect(request).toHaveBeenCalledTimes(1);await vi.advanceTimersByTimeAsync(30000);expect(signal?.aborted).toBe(true);expect(w.get('#accountInspectionStartError').text()).toContain('巡检启动请求失败');expect(w.get<HTMLButtonElement>('#btnConfirmAccountInspection').element.disabled).toBe(false);
+ });
+ it('批量巡检受理后同步关闭启动表单并打开任务中心类型列表，不再自动打开巡检历史',async()=>{
+  const request=vi.fn<AccountInspectionDependencies['request']>(async(_path,_options)=>({created:true}));const openTasks=vi.fn(()=>{expect((document.getElementById('accountInspectionStart') as HTMLDialogElement).open).toBe(false);});const {w,deps}=setup({request,openTasks});w.vm.openStart(context());await flushPromises();await w.get('form').trigger('submit');await flushPromises();
+  expect(openTasks).toHaveBeenCalledExactlyOnceWith({filters:{type:'account_inspection_batch',target:''}});expect((document.getElementById('accountInspectionHistory') as HTMLDialogElement).open).toBe(false);expect(w.get('#accountInspectionStartError').text()).toBe('');
+ });
+ it('任务中心导航失败时提示请求已处理，不变成启动失败或重发POST',async()=>{
+  const request=vi.fn<AccountInspectionDependencies['request']>(async(_path,_options)=>({created:true}));const openTasks=vi.fn(async()=>{throw new Error('offline')});const {w,deps}=setup({request,openTasks});w.vm.openStart(context());await flushPromises();await w.get('form').trigger('submit');await flushPromises();
+  expect(request.mock.calls.filter(call=>call[1]?.method==='POST')).toHaveLength(1);expect(w.get('#accountInspectionStartError').text()).toBe('');expect(deps.notify).toHaveBeenCalledWith('巡检请求已处理，打开任务失败：offline');
  });
  it('失败详情换ID时拒绝旧结果，finally只补读最新ID一次',async()=>{
   const old=deferred<unknown>();const request=vi.fn().mockImplementationOnce(()=>old.promise).mockResolvedValue({items:[{account_id:8,email:'new@test',status:'deactivated_skipped',failed_at:'time',error:'<script>bad</script>'}],total:1});const {w}=setup({request});w.vm.openFailures(1);w.vm.openFailures(2);w.vm.openFailures(3);await flushPromises();expect(request).toHaveBeenCalledTimes(1);old.resolve({items:[{account_id:1,email:'old@test'}],total:1});await flushPromises();expect(request.mock.calls.map(call=>call[0])).toEqual(['/api/accounts/inspections/1/failures?page=1','/api/accounts/inspections/3/failures?page=1']);expect(w.get('#accountInspectionFailuresContent').text()).toContain('new@test');expect(w.text()).not.toContain('old@test');expect(w.find('script').exists()).toBe(false);

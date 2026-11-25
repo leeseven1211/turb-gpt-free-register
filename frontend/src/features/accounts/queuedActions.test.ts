@@ -16,12 +16,12 @@ function setup(overrides: Partial<AccountQueuedDependencies> = {}, baseOverrides
   const queued: AccountQueuedDependencies = {
     refresh: async () => {}, pollStatuses: async () => {}, refreshSummary: () => {}, reloadTasks: () => {},
     operationWorkers: () => 50, configuredLiveCheckDriver: () => 'protocol', readConfig: async () => [], fallbackConfig: () => [],
-    openLiveLog: () => {}, openAccountTaskLog: () => {}, getRowSnapshot: () => undefined, isOwnerActive: () => true,
+    openLiveLog: () => {}, openAccountTaskLog: () => {}, openTasks: () => {}, getRowSnapshot: () => undefined, isOwnerActive: () => true,
     clearScheduled: handle => clearTimeout(handle as ReturnType<typeof setTimeout>), ...overrides,
   };
   const q = {...queued, refresh: vi.fn(queued.refresh), pollStatuses: vi.fn(queued.pollStatuses), refreshSummary: vi.fn(queued.refreshSummary),
     reloadTasks: vi.fn(queued.reloadTasks), readConfig: vi.fn(queued.readConfig), fallbackConfig: vi.fn(queued.fallbackConfig),
-    openLiveLog: vi.fn(queued.openLiveLog), openAccountTaskLog: vi.fn(queued.openAccountTaskLog),
+    openLiveLog: vi.fn(queued.openLiveLog), openAccountTaskLog: vi.fn(queued.openAccountTaskLog), openTasks: vi.fn(queued.openTasks),
     getRowSnapshot: vi.fn(queued.getRowSnapshot), isOwnerActive: vi.fn(queued.isOwnerActive), clearScheduled: vi.fn(queued.clearScheduled)};
   const restore = vi.fn(), label = vi.fn();
   const defaults: AccountActionDependencies = {request, notify: () => {}, confirm: () => true, clipboard: async () => true,
@@ -53,6 +53,64 @@ describe('queued action boundary', () => {
   it('invalid IDs and empty selection cannot create tasks', async () => {
     const h = setup(); await h.actions.invoke('checkSelectedPlans', context([])); await h.actions.invoke('checkSelectedPlans', context(['9007199254740993']));
     expect(fetchMock).not.toHaveBeenCalled(); expect(messages(h)).toContain('请先选择账号'); expect(messages(h)).toContain('账号 ID 无效');
+  });
+});
+
+describe('任务中心导航契约', () => {
+  const bulkCases = [
+    ['checkSelectedPlans', 'plan_check'],
+    ['checkSelectedLive', 'live_check'],
+    ['refreshSelectedToken', 'token_refresh'],
+    ['checkSelectedDeactivationMail', 'deactivation_mail'],
+    ['extractSelectedLinks', 'extract_link'],
+  ] as const;
+  it.each(bulkCases)('批量 %s 即使只选一个账号也按类型打开任务列表', async (name, type) => {
+    const h = setup(name === 'checkSelectedDeactivationMail' ? {getRowSnapshot: () => ({deactivation_mail_scan_status: 'done'})} : {});
+    fetchMock.mockResolvedValue(json(receipt({started_count: 1, started: [{task_id: 101, run_id: 102, email: 'seven@test'}]}), 202));
+    await h.actions.invoke(name, context(['7']));
+    if (name === 'checkSelectedDeactivationMail') await vi.advanceTimersByTimeAsync(1500);
+    expect(h.q.openTasks).toHaveBeenCalledWith({filters: {type, target: ''}});
+    expect(h.q.openAccountTaskLog).not.toHaveBeenCalled();
+    expect(h.q.openLiveLog).not.toHaveBeenCalled();
+  });
+  it.each(bulkCases)('批量 %s 全部未入队时不打开任务中心', async name => {
+    const h = setup();
+    const reason = name === 'checkSelectedDeactivationMail' ? '邮箱不可用' : name === 'extractSelectedLinks' ? '资格不满足' : '';
+    fetchMock.mockResolvedValue(json(receipt({
+      started_count: 0, started: [], busy_count: 1, skipped_count: 1, skipped: reason ? [{reason}] : [],
+    }), 202));
+    await h.actions.invoke(name, context(['7']));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(h.q.openTasks).not.toHaveBeenCalled();
+    expect(h.q.openAccountTaskLog).not.toHaveBeenCalled();
+    expect(h.q.openLiveLog).not.toHaveBeenCalled();
+    if (reason) expect(messages(h)).toContain(reason);
+  });
+  const singleCases = [
+    ['plan-check', 'plan_check', {ok: true, started: true, accepted: true}],
+    ['account-live-check', 'live_check', receipt({started: [{email: 'seven@test'}]})],
+    ['account-refresh-token', 'token_refresh', receipt({started: [{email: 'seven@test'}]})],
+    ['deactivation-mail-check', 'deactivation_mail', {ok: true, accepted: true}],
+    ['extract-link', 'extract_link', {ok: true, started: true, accepted: true}],
+  ] as const;
+  it.each(singleCases)('单账号 %s 无任务号时按目标和类型打开任务列表', async (name, type, response) => {
+    const h = setup(name === 'deactivation-mail-check' ? {getRowSnapshot: () => ({deactivation_mail_scan_status: 'done'})} : {});
+    fetchMock.mockResolvedValue(json(response, 202));
+    const input = name === 'extract-link'
+      ? context(['7'], [accountRow(7, {email: 'seven@test', current_plan_type: 'free', plus_promo_kind: 'free_trial'})])
+      : context(['7']);
+    await h.actions.invoke(name, input);
+    if (name === 'deactivation-mail-check') await vi.advanceTimersByTimeAsync(1500);
+    expect(h.q.openTasks).toHaveBeenCalledWith({filters: {type, target: 'seven@test'}});
+    expect(h.q.openAccountTaskLog).not.toHaveBeenCalled();
+    expect(h.q.openLiveLog).not.toHaveBeenCalled();
+  });
+  it('单账号缺少邮箱时使用账号 ID 作为任务中心目标', async () => {
+    const h = setup();
+    fetchMock.mockResolvedValue(json({ok: true, accepted: true}, 202));
+    await h.actions.invoke('deactivation-mail-check', {...context(['7']), expectedEmails: {}, rowHints: []});
+    await vi.advanceTimersByTimeAsync(1500);
+    expect(h.q.openTasks).toHaveBeenCalledWith({filters: {type: 'deactivation_mail', target: '7'}});
   });
 });
 
@@ -155,11 +213,11 @@ describe('账号操作回执', () => {
   it('收到回执后无需等日志或列表刷新就可继续操作', async () => {
     const log = deferred<void>(), refresh = deferred<void>();
     fetchMock.mockResolvedValue(json(receipt({started: [{task_id: 71, run_id: 72}]}), 202));
-    const h = setup({openAccountTaskLog: () => log.promise, refresh: () => refresh.promise});
+    const h = setup({openTasks: () => log.promise, refresh: () => refresh.promise});
     const finished = vi.fn();
     const first = h.actions.invoke('refreshSelectedToken', context()).then(finished);
     await vi.advanceTimersByTimeAsync(0);
-    expect(h.q.openAccountTaskLog).toHaveBeenCalledOnce();
+    expect(h.q.openTasks).toHaveBeenCalledOnce();
     expect(h.q.refresh).toHaveBeenCalledOnce();
     expect(h.q.refreshSummary).toHaveBeenCalledOnce();
     expect(finished).toHaveBeenCalledOnce();
@@ -173,7 +231,7 @@ describe('plan checks', () => {
   it('single plan POST has no confirmation and polls after an accepted receipt', async () => {
     fetchMock.mockResolvedValue(json({ok:true,started:true,accepted:true,task_id:20,message:'套餐查询已加入后台队列'},202)); const h = setup();
     await h.actions.invoke('plan-check', context(['7'])); expect(fetchMock.mock.calls[0]![0]).toBe('/api/accounts/check-plan'); expect(body()).toEqual({account_id:7});
-    expect(h.deps.confirm).not.toHaveBeenCalled(); expect(h.q.pollStatuses).toHaveBeenCalledTimes(1); expect(h.q.refresh).not.toHaveBeenCalled(); expect(messages(h)).toContain('套餐查询已加入后台队列');
+    expect(h.deps.confirm).not.toHaveBeenCalled(); expect(h.q.pollStatuses).toHaveBeenCalledTimes(1); expect(h.q.refresh).not.toHaveBeenCalled(); expect(h.q.openAccountTaskLog).toHaveBeenCalledWith(20, null); expect(messages(h)).toContain('套餐查询已加入后台队列');
   });
   it('single plan failure polls once; bulk failure preserves its no-poll branch', async () => {
     fetchMock.mockImplementation(async()=>json({ok:false,error:'查询已在执行'},409)); const h = setup(); await h.actions.invoke('plan-check',context(['7']));
@@ -186,9 +244,9 @@ describe('plan checks', () => {
     expect(messages(h)).toContain('已入队 0 个，查询中跳过 2 个，入队失败 1 个，跳过 3 个；missing mailbox；already running；'+'x'.repeat(80)+'…；另有 1 条原因');expect(h.q.pollStatuses).toHaveBeenCalledTimes(1);
   });
   it('keeps a failed child receipt as a reason rather than rejecting the accepted parent',async()=>{
-    fetchMock.mockResolvedValue(json(receipt({started_count:0,failed_count:1,failed:[{id:7,ok:false,error:'child not queued'}]}),202));
+    fetchMock.mockResolvedValue(json(receipt({started_count:0,started:[],failed_count:1,failed:[{id:7,ok:false,error:'child not queued'}]}),202));
     const h=setup();await h.actions.invoke('checkSelectedPlans',context());
-    expect(messages(h)).toContain('入队失败 1 个；child not queued');expect(messages(h)).not.toContain('批量查询失败');expect(h.q.pollStatuses).toHaveBeenCalledTimes(1);
+    expect(messages(h)).toContain('入队失败 1 个；child not queued');expect(messages(h)).not.toContain('批量查询失败');expect(h.q.pollStatuses).toHaveBeenCalledTimes(1);expect(h.q.openTasks).not.toHaveBeenCalled();
   });
   it('an accepted plan survives poll failure without duplicate poll or POST', async () => {
     fetchMock.mockResolvedValue(json(receipt(),202));const h=setup({pollStatuses:async()=>{throw new Error('read offline');}});await h.actions.invoke('plan-check',context(['7']));
@@ -202,7 +260,7 @@ describe('live checks', () => {
     await h.actions.invoke('account-live-check',context(['7']));expect(body()).toEqual({account_ids:[7],driver:null});expect(fetchMock.mock.calls[0]![0]).toBe('/api/accounts/check-live-bulk');
     expect(h.deps.confirm.mock.calls[0]![0]).toBe('确定查活这个账号吗？\n\n只在线验证现有 accessToken，不会发送邮箱验证码，也不会刷新 AT。');
     await h.actions.invoke('checkSelectedLive',context());expect(body(1)).toEqual({account_ids:[7,11],driver:null});expect(h.deps.confirm.mock.calls[1]![0]).toContain('并发线程数：50');
-    expect(messages(h)).toContain('配置驱动：默认，实际驱动：effective_driver');expect(h.q.openLiveLog).toHaveBeenCalledWith('seven@test');expect(h.q.refresh).toHaveBeenCalledTimes(2);expect(h.q.refreshSummary).toHaveBeenCalledTimes(2);expect(h.q.readConfig).not.toHaveBeenCalled();
+    expect(messages(h)).toContain('配置驱动：默认，实际驱动：effective_driver');expect(h.q.openTasks.mock.calls.map(call => call[0])).toEqual([{filters:{type:'live_check',target:'seven@test'}},{filters:{type:'live_check',target:''}}]);expect(h.q.openLiveLog).not.toHaveBeenCalled();expect(h.q.refresh).toHaveBeenCalledTimes(2);expect(h.q.refreshSummary).toHaveBeenCalledTimes(2);expect(h.q.readConfig).not.toHaveBeenCalled();
   });
   it('uses the click scope after confirmation changes selection and never filters it by current rows',async()=>{
     const input=context();fetchMock.mockResolvedValue(json(receipt(),202));const h=setup({}, {confirm:()=>{input.accountIds=['99'];return true;}});await h.actions.invoke('checkSelectedLive',input);
@@ -213,7 +271,7 @@ describe('live checks', () => {
     await h.actions.invoke('checkSelectedLive',context());expect(h.q.openLiveLog).not.toHaveBeenCalled();h.q.refresh.mockClear();await h.actions.invoke('checkSelectedLive',context());expect(h.q.refresh).not.toHaveBeenCalled();expect(messages(h)).toContain('查活失败: 拒绝查活');
   });
   it('acceptance keeps its receipt even if log or refresh navigation fails, without replay',async()=>{
-    fetchMock.mockResolvedValue(json(receipt(),202));const h=setup({openLiveLog:()=>{throw new Error('log closed');}});await h.actions.invoke('checkSelectedLive',context());expect(fetchMock).toHaveBeenCalledTimes(1);expect(messages(h)).toContain('查活已入队');expect(messages(h)).toContain('请求已处理，但页面更新失败: log closed');expect(messages(h)).not.toContain('查活失败');
+    fetchMock.mockResolvedValue(json(receipt(),202));const h=setup({openTasks:()=>{throw new Error('task center closed');}});await h.actions.invoke('checkSelectedLive',context());expect(fetchMock).toHaveBeenCalledTimes(1);expect(messages(h)).toContain('查活已入队');expect(messages(h)).toContain('请求已处理，但页面更新失败: task center closed');expect(messages(h)).not.toContain('查活失败');
   });
 });
 
@@ -222,7 +280,7 @@ describe('token refresh', () => {
     const config=deferred<unknown>(),input=context();fetchMock.mockResolvedValue(json(receipt({started:[{task_id:71,run_id:72,email:'seven@test'}]}),202));const h=setup({readConfig:()=>config.promise});const first=h.actions.invoke('refreshSelectedToken',input);input.accountIds=['99'];
     await h.actions.invoke('refreshSelectedToken',context(['99']));expect(h.q.readConfig).toHaveBeenCalledTimes(1);expect(h.actions.isPending('refreshSelectedToken',context())).toBe(true);expect(h.deps.beginBusy).toHaveBeenCalledWith('refreshSelectedToken',null,'读取配置…');expect(fetchMock).not.toHaveBeenCalled();
     config.resolve([{key:'ACCOUNT_AT_REFRESH_DRIVER',value:'browser_roxy'},{key:'ACCOUNT_AT_REFRESH_ROXY_DEBUG_ENABLED',value:true}]);await first;
-    expect(body()).toEqual({account_ids:[7,11]});expect(fetchMock.mock.calls[0]![0]).toBe('/api/accounts/refresh-token-bulk');expect(h.deps.confirm.mock.calls[0]![0]).toContain('Roxy 指纹浏览器重新登录');expect(h.deps.confirm.mock.calls[0]![0]).toContain('HAR');expect(h.deps.confirm.mock.calls[0]![0]).toContain('并发线程数：50');expect(h.q.openAccountTaskLog).toHaveBeenCalledWith(71,72);expect(h.q.openLiveLog).not.toHaveBeenCalled();expect(h.restore).toHaveBeenCalledTimes(1);
+    expect(body()).toEqual({account_ids:[7,11]});expect(fetchMock.mock.calls[0]![0]).toBe('/api/accounts/refresh-token-bulk');expect(h.deps.confirm.mock.calls[0]![0]).toContain('Roxy 指纹浏览器重新登录');expect(h.deps.confirm.mock.calls[0]![0]).toContain('HAR');expect(h.deps.confirm.mock.calls[0]![0]).toContain('并发线程数：50');expect(h.q.openTasks).toHaveBeenCalledWith({filters:{type:'token_refresh',target:''}});expect(h.q.openAccountTaskLog).not.toHaveBeenCalled();expect(h.q.openLiveLog).not.toHaveBeenCalled();expect(h.restore).toHaveBeenCalledTimes(1);
   });
   it.each([
     ['v1','False','协议刷新（v1）重新登录',false],['v2',false,'协议刷新（v2）重新登录',false],['v3','true','协议刷新（v3）先复用该账号有效的登录会话',true],['unknown',true,'协议刷新（v1）重新登录',true],
@@ -241,8 +299,8 @@ describe('token refresh', () => {
   it('default/empty config names the saved driver; cancelling restores controls without POST',async()=>{
     const h=setup({}, {confirm:()=>false});await h.actions.invoke('refreshSelectedToken',context(['7']));expect(h.deps.confirm.mock.calls[0]![0]).toContain('已保存的刷新驱动');expect(fetchMock).not.toHaveBeenCalled();expect(h.restore).toHaveBeenCalledTimes(1);expect(h.actions.isPending('refreshSelectedToken',context())).toBe(false);
   });
-  it('uses task/run IDs first, email only if task ID is missing, and null for missing run',async()=>{
-    fetchMock.mockResolvedValueOnce(json(receipt({started:[{task_id:71,email:'seven@test'}]}),202)).mockResolvedValueOnce(json(receipt(),202));const h=setup();await h.actions.invoke('refreshSelectedToken',context());expect(h.q.openAccountTaskLog).toHaveBeenCalledWith(71,null);expect(h.q.openLiveLog).not.toHaveBeenCalled();await h.actions.invoke('refreshSelectedToken',context());expect(h.q.openLiveLog).toHaveBeenCalledWith('seven@test');
+  it('单账号优先打开任务详情，缺少任务号时按目标和类型筛选且不打开旧日志',async()=>{
+    fetchMock.mockResolvedValueOnce(json(receipt({started:[{task_id:71,email:'seven@test'}]}),202)).mockResolvedValueOnce(json(receipt(),202));const h=setup();await h.actions.invoke('account-refresh-token',context(['7']));expect(h.q.openAccountTaskLog).toHaveBeenCalledWith(71,null);expect(h.q.openTasks).not.toHaveBeenCalled();expect(h.q.openLiveLog).not.toHaveBeenCalled();await h.actions.invoke('account-refresh-token',context(['7']));expect(h.q.openTasks).toHaveBeenCalledWith({filters:{target:'seven@test',type:'token_refresh'}});expect(h.q.openLiveLog).not.toHaveBeenCalled();
   });
 });
 
@@ -252,7 +310,7 @@ describe('deactivation mail polling', () => {
     expect(fetchMock.mock.calls[0]).toEqual(['/api/accounts/7/check-deactivation-mail',{credentials:'same-origin',method:'POST',headers:{'X-Account-Request-Key':expect.any(String)}}]);expect(h.q.refresh).toHaveBeenCalledTimes(1);expect(h.deps.confirm).not.toHaveBeenCalled();expect(messages(h)).toContain('不会刷新 AT');await vi.advanceTimersByTimeAsync(1499);expect(h.q.refresh).toHaveBeenCalledTimes(1);await vi.advanceTimersByTimeAsync(1);await pending;expect(h.q.refresh).toHaveBeenCalledTimes(2);expect(h.q.getRowSnapshot).toHaveBeenCalledWith('7');expect(fetchMock).toHaveBeenCalledTimes(1);
   });
   it('bulk sends all IDs, refreshes once and skips polling when started_count is zero',async()=>{
-    fetchMock.mockResolvedValue(json(receipt({started_count:0,skipped_count:2}),202));const h=setup();await h.actions.invoke('checkSelectedDeactivationMail',context());await vi.advanceTimersByTimeAsync(0);expect(body()).toEqual({account_ids:[7,11]});expect(fetchMock.mock.calls[0]![0]).toBe('/api/accounts/check-deactivation-mail-bulk');expect(h.q.refresh).toHaveBeenCalledTimes(1);expect(h.q.getRowSnapshot).not.toHaveBeenCalled();expect(vi.getTimerCount()).toBe(0);expect(messages(h)).toContain('已入队 0 个，跳过 2 个；不会刷新 AT');
+    fetchMock.mockResolvedValue(json(receipt({started_count:0,started:[],skipped_count:2}),202));const h=setup();await h.actions.invoke('checkSelectedDeactivationMail',context());await vi.advanceTimersByTimeAsync(0);expect(body()).toEqual({account_ids:[7,11]});expect(fetchMock.mock.calls[0]![0]).toBe('/api/accounts/check-deactivation-mail-bulk');expect(h.q.refresh).toHaveBeenCalledTimes(1);expect(h.q.getRowSnapshot).not.toHaveBeenCalled();expect(h.q.openTasks).not.toHaveBeenCalled();expect(vi.getTimerCount()).toBe(0);expect(messages(h)).toContain('已入队 0 个，跳过 2 个；不会刷新 AT');
   });
   it('an empty visible subset cannot end polling early; it stops after exactly 30 delayed reads',async()=>{
     fetchMock.mockResolvedValue(json(receipt(),202));const h=setup();const pending=h.actions.invoke('checkSelectedDeactivationMail',context());await vi.advanceTimersByTimeAsync(0);await vi.advanceTimersByTimeAsync(45000);await pending;
@@ -316,7 +374,7 @@ describe('extract links', () => {
   });
   it('single uses the original row for eligibility and confirmation, then shows the fallback task receipt',async()=>{
     const row=accountRow(7,{email:'original@test',current_plan_type:'free',plus_promo_kind:'free_trial'});fetchMock.mockResolvedValue(json({ok:true,started:true,accepted:true,task_id:71,fallback_from:'go',link_type:'plus'},202));const h=setup({}, {confirm:()=>{row.email='changed@test';row.plus_promo_kind='discount';return true;}});await h.actions.invoke('extract-link',context(['7'],[row]));
-    expect(h.deps.confirm.mock.calls[0]![0]).toBe('确定为该账号提链吗？\n\noriginal@test\n\n提链类型按配置使用，成功会消耗 1 次 CDK。');expect(body()).toEqual({account_id:7});expect(fetchMock.mock.calls[0]![0]).toBe('/api/accounts/extract-link');expect(messages(h)).toContain('提炼任务已入队 · 任务 #71；GO 已失败，改用 PLUS');expect(h.q.reloadTasks).toHaveBeenCalledTimes(1);expect(h.q.pollStatuses).toHaveBeenCalledTimes(1);
+    expect(h.deps.confirm.mock.calls[0]![0]).toBe('确定为该账号提链吗？\n\noriginal@test\n\n提链类型按配置使用，成功会消耗 1 次 CDK。');expect(body()).toEqual({account_id:7});expect(fetchMock.mock.calls[0]![0]).toBe('/api/accounts/extract-link');expect(h.q.openAccountTaskLog).toHaveBeenCalledWith(71,null);expect(messages(h)).toContain('提炼任务已入队 · 任务 #71；GO 已失败，改用 PLUS');expect(h.q.reloadTasks).toHaveBeenCalledTimes(1);expect(h.q.pollStatuses).toHaveBeenCalledTimes(1);
   });
   it('keeps historical free trial derivation but rejects an explicit discount over 100-percent legacy data',async()=>{
     fetchMock.mockResolvedValue(json({ok:true,started:true,accepted:true},202));const h=setup();
@@ -324,7 +382,7 @@ describe('extract links', () => {
     await h.actions.invoke('extract-link',context(['7'],[accountRow(7,{current_plan_type:'free',plus_promo_kind:'discount',plus_promo_discount_percentage:100})]));expect(fetchMock).toHaveBeenCalledTimes(1);
   });
   it('bulk sends the entire cross-page scope and reports combined skip/busy/failure and fallbacks',async()=>{
-    fetchMock.mockResolvedValue(json(receipt({started_count:2,started:[{id:7,fallback_from:'go'},{id:11}],skipped_count:3,busy_count:4,failed_count:5}),202));const h=setup();await h.actions.invoke('extractSelectedLinks',context());expect(body()).toEqual({account_ids:[7,11]});expect(fetchMock.mock.calls[0]![0]).toBe('/api/accounts/extract-link-bulk');expect(h.deps.confirm.mock.calls[0]![0]).toContain('2 个账号');expect(h.deps.confirm.mock.calls[0]![0]).toContain('折扣优惠和历史待复查');expect(messages(h)).toContain('已入队 2 个，跳过/失败 12 个，其中 1 个已自动跳过失败类型');
+    fetchMock.mockResolvedValue(json(receipt({started_count:2,started:[{id:7,fallback_from:'go'},{id:11}],skipped_count:3,busy_count:4,failed_count:5}),202));const h=setup();await h.actions.invoke('extractSelectedLinks',context());expect(body()).toEqual({account_ids:[7,11]});expect(fetchMock.mock.calls[0]![0]).toBe('/api/accounts/extract-link-bulk');expect(h.deps.confirm.mock.calls[0]![0]).toContain('2 个账号');expect(h.deps.confirm.mock.calls[0]![0]).toContain('折扣优惠和历史待复查');expect(h.q.openTasks).toHaveBeenCalledWith({filters:{type:'extract_link',target:''}});expect(messages(h)).toContain('已入队 2 个，跳过/失败 12 个，其中 1 个已自动跳过失败类型');
   });
   it('does not poll or retry rejected extraction; cancellation sends no request',async()=>{
     fetchMock.mockResolvedValue(json({ok:false,error:'CDK 不可用'},400));const h=setup();await h.actions.invoke('extractSelectedLinks',context());expect(h.q.pollStatuses).not.toHaveBeenCalled();expect(h.q.reloadTasks).not.toHaveBeenCalled();expect(messages(h)).toContain('批量提链失败: CDK 不可用');const cancelled=setup({}, {confirm:()=>false});await cancelled.actions.invoke('extractSelectedLinks',context());expect(fetchMock).toHaveBeenCalledTimes(1);

@@ -1,5 +1,8 @@
 import {computed, onScopeDispose, ref, shallowRef} from 'vue';
 import type {AccountActionContext} from './useAccounts';
+import {openAccountOperationTasks, type AccountTaskOpen} from './taskNavigation';
+import {accountBulkUnqueuedReasons} from './useC2aReimport';
+import type {TaskId} from '../../api/taskIds';
 
 export interface EmailChangeSource {value: string; label: string; enabled: boolean; reason: string}
 export interface EmailChangeAccount {id: number; email: string; email_source: string}
@@ -7,7 +10,8 @@ export interface AccountEmailChangeDependencies {
   request(path: string, options?: RequestInit): Promise<unknown>;
   notify(message: string): void;
   refreshAccounts(context: AccountActionContext): void | Promise<unknown>;
-  openTasks(filters: {target: string; type: 'email_change'}): void | Promise<unknown>;
+  openTasks(options: AccountTaskOpen): void | Promise<unknown>;
+  openTask?(id: TaskId, runId: TaskId | null): void | Promise<unknown>;
   syncModalScrollLock(): void;
   fallbackFocus?(): HTMLElement | null;
 }
@@ -44,6 +48,28 @@ function message(error: unknown): string {
 function idsFrom(context: AccountActionContext): string[] {
   return [...new Set((Array.isArray(context?.accountIds) ? context.accountIds : [])
     .map(Number).filter(id => Number.isSafeInteger(id) && id > 0).map(String))];
+}
+function hasAcceptedTask(result: Record<string, unknown>, mode: 'single' | 'bulk'): boolean {
+  if (mode === 'single') return true;
+  const arrays = ['started', 'queued', 'reused']
+    .filter(field => Object.prototype.hasOwnProperty.call(result, field))
+    .map(field => result[field]);
+  if (arrays.length) return arrays.some(value => Array.isArray(value) && value.length > 0);
+  const counts = ['started_count', 'queued_count', 'reused_count']
+    .filter(field => Object.prototype.hasOwnProperty.call(result, field))
+    .map(field => Number(result[field]));
+  if (counts.length) return counts.some(value => Number.isFinite(value) && value > 0);
+  return result.accepted !== false;
+}
+function hasUnqueuedReason(result: Record<string, unknown>): boolean {
+  for (const field of ['skipped', 'failed']) {
+    for (const raw of Array.isArray(result[field]) ? result[field] : []) {
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
+      const item = raw as Record<string, unknown>;
+      if (['reason', 'error', 'error_code'].some(key => String(item[key] || '').trim())) return true;
+    }
+  }
+  return false;
 }
 
 /** Each opening has independent UI state; accepted POST receipts outlive that UI. */
@@ -139,14 +165,22 @@ export function useAccountEmailChange(deps: AccountEmailChangeDependencies, life
     }
     const wasCurrent = current(session);
     if (session.mode === 'bulk') {
-      const started = Number(result.started_count || 0), skipped = Number(result.skipped_count || 0);
-      deps.notify(`批量换绑已入队 ${started} 个${skipped ? `，跳过 ${skipped} 个` : ''}`);
+      const started = Number(result.started_count ?? (Array.isArray(result.started) ? result.started.length : 0));
+      const skipped = Number(result.skipped_count ?? (Array.isArray(result.skipped) ? result.skipped.length : 0));
+      const failed = Number(result.failed_count ?? (Array.isArray(result.failed) ? result.failed.length : 0));
+      const unqueued = skipped + failed;
+      const reasons = unqueued && hasUnqueuedReason(result) ? accountBulkUnqueuedReasons(result) : '';
+      deps.notify(`批量换绑已入队 ${started} 个${unqueued ? `，跳过 ${unqueued} 个${reasons}` : ''}`);
     } else deps.notify(String(result.message || `邮箱换绑已入队 · 任务 #${result.task_id || '-'}`));
     if (wasCurrent) close({restoreFocus: false});
     followup(() => deps.refreshAccounts(session.context), '换绑已受理，刷新账号失败：');
     // A newer opening, even for the same account, keeps its form and focus.
-    if (wasCurrent && !disposed && !opening) {
-      followup(() => deps.openTasks({target: session.mode === 'bulk' ? '' : session.account!.email || `#${session.account!.id}`, type: 'email_change'}), '换绑已受理，打开任务失败：');
+    if (wasCurrent && !disposed && !opening && hasAcceptedTask(result, session.mode)) {
+      followup(() => openAccountOperationTasks(
+        {openTasks: deps.openTasks, openTask: deps.openTask},
+        {single: session.mode === 'single', type: 'email_change',
+          target: session.mode === 'single' ? session.account!.email || String(session.account!.id) : '', result},
+      ), '换绑已受理，打开任务失败：');
     }
   }
   onScopeDispose(() => {disposed = true; close();});

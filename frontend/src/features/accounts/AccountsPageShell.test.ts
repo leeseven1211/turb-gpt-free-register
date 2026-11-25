@@ -8,7 +8,7 @@ import type {AccountInspectionDependencies} from './useAccountInspection';
 
 function c2aDependencies(){return{request:vi.fn(),notify:vi.fn(),refreshAccounts:vi.fn(),openTasks:vi.fn()};}
 function emailChangeDependencies(){return{request:vi.fn(async()=>({sources:[{value:'outlook',label:'Outlook',enabled:true}]})),notify:vi.fn(),refreshAccounts:vi.fn(),openTasks:vi.fn(),syncModalScrollLock:vi.fn()};}
-function inspectionDependencies():AccountInspectionDependencies{return{request:vi.fn(async()=>({items:[],total:0})),notify:vi.fn(),operationWorkers:()=>4,randomUUID:()=> 'inspection-key',refreshAccounts:vi.fn(),refreshSummary:vi.fn(),openTask:vi.fn(),formatDateTime:String};}
+function inspectionDependencies():AccountInspectionDependencies{return{request:vi.fn(async()=>({items:[],total:0})),notify:vi.fn(),operationWorkers:()=>4,randomUUID:()=> 'inspection-key',refreshAccounts:vi.fn(),refreshSummary:vi.fn(),openTask:vi.fn(),openTasks:vi.fn(),formatDateTime:String};}
 
 let wrapper:ReturnType<typeof mount>;
 beforeEach(()=>{
@@ -113,7 +113,7 @@ it('账号页可查询未确认的受理回执并打开原执行记录', async (
   const queued:AccountQueuedDependencies={
     refresh:vi.fn(),pollStatuses:vi.fn(),refreshSummary:vi.fn(),reloadTasks:vi.fn(),
     configuredLiveCheckDriver:()=>null,operationWorkers:()=>1,readConfig:vi.fn(),fallbackConfig:()=>[],
-    openReceiptTask,openAccountTaskLog:vi.fn(),openLiveLog:vi.fn(),getRowSnapshot:()=>undefined,
+    openReceiptTask,openAccountTaskLog:vi.fn(),openLiveLog:vi.fn(),openTasks:vi.fn(),getRowSnapshot:()=>undefined,
     isOwnerActive:()=>true,clearScheduled:vi.fn(),
   };
   const actions=createAccountActions({request,notify:vi.fn(),confirm:()=>true,clipboard:vi.fn(),

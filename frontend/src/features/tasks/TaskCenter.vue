@@ -66,7 +66,10 @@ function removeFilter(key: string) {
 }
 function openDetail(taskId: TaskId, runId?: TaskId | null, stepId?: string | null) { detail.value?.open(taskId, runId, stepId); }
 async function open(options: {filters?: Partial<TaskFilters>; taskId?: TaskId; runId?: TaskId | null; stepId?: string | null} = {}) {
-  if (options.filters) list.applyFilters(options.filters);
+  if (options.filters) {
+    if (!options.taskId) detail.value?.close?.();
+    list.applyFilters(options.filters);
+  }
   if (options.taskId) { await nextTick(); openDetail(options.taskId, options.runId, options.stepId); }
 }
 function setVisible(value: boolean) { if (!value) openFilter.value = null; list.setVisible(value); }

@@ -1,11 +1,14 @@
 import {computed,onScopeDispose,ref,shallowRef} from 'vue';
 import type {AccountActionContext} from './useAccounts';
+import {accountTaskReference, openAccountOperationTasks, type AccountTaskOpen} from './taskNavigation';
+import type {TaskId} from '../../api/taskIds';
 export interface C2aReimportDependencies {
   request(path:string,options?:RequestInit):Promise<unknown>;
   notify(message:string):void;
   refreshAccounts(context:AccountActionContext):void|Promise<unknown>;
   selectionChanged?(context:AccountActionContext):void;
-  openTasks(options:{filters:{type:'c2a_session_reimport'};taskId?:number;runId:number|null}):void|Promise<unknown>;
+  openTasks(options:AccountTaskOpen):void|Promise<unknown>;
+  openTask?(id:TaskId,runId:TaskId|null):void|Promise<unknown>;
   beginBusy?(trigger:HTMLElement|null,label:string):(()=>void)|void;
 }
 export interface C2aReceiptEntry {item:Readonly<Record<string,unknown>>;state:'已入队'|'未入队'|'入队失败'}
@@ -42,7 +45,9 @@ export function useC2aReimport(deps:C2aReimportDependencies,lifecycle:{closed?(t
   function showResult(value:unknown){result.value=copy(record(value));}
   function openTasks(items:readonly Readonly<Record<string,unknown>>[]=taskEntries.value.map(entry=>entry.item)){
     const single=items.length===1?items[0]:null;
-    return followup(()=>deps.openTasks({filters:{type:'c2a_session_reimport'},taskId:Number(single?.task_id)||undefined,runId:Number(single?.run_id)||null}),'C2A 请求已处理，打开任务失败: ');
+    const reference=single?accountTaskReference(single):null;
+    return followup(()=>deps.openTasks({filters:{type:'c2a_session_reimport',target:''},
+      taskId:reference?.taskId,runId:reference?.runId??null}),'C2A 请求已处理，打开任务失败: ');
   }
   async function submit(){
     if(disposed||!isOpen.value||!context||!accountIds.value.length||submitting.value)return;
@@ -51,17 +56,24 @@ export function useC2aReimport(deps:C2aReimportDependencies,lifecycle:{closed?(t
     const restore=deps.beginBusy?.(button,'提交导入…');let response:Record<string,unknown>;
     try{response=record(await deps.request('/api/accounts/c2a/sync-bulk',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({account_ids:ids})}));}
     catch(error){deps.notify('重新导入 C2A 失败: '+message(error));if(!disposed)status.value=`提交失败：${message(error)}。请检查后再次提交。`;submitting.value=false;restore?.();deps.selectionChanged?.(captured);return;}
+    let shouldNavigate=false;
     try{
       const skipped=Number(response.skipped_count??(Array.isArray(response.skipped)?response.skipped.length:0))+Number(response.failed_count??(Array.isArray(response.failed)?response.failed.length:0));
       const reasons=skipped?accountBulkUnqueuedReasons(response):'';
       if(response.accepted){
+        shouldNavigate=Number(response.queued_count??(Array.isArray(response.queued)?response.queued.length:0))>0;
         deps.notify(`C2A 重新导入已入队 ${response.queued_count??(Array.isArray(response.queued)?response.queued.length:0)} 个，未入队 ${skipped} 个，请在任务中心查看结果${reasons}`);
       }else{
         deps.notify(skipped?`C2A 已重新导入 ${response.updated_count||0} 个，跳过/失败 ${skipped} 个${reasons}`:`C2A 已重新导入 ${response.updated_count||0} 个`);
         await followup(()=>deps.refreshAccounts(captured),'C2A 请求已处理，页面更新失败: ');
       }
     }catch(error){deps.notify('C2A 请求已处理，回执更新失败: '+message(error));}
-    finally{submitting.value=false;try{restore?.();}finally{if(!disposed)close('submitted',true);}}
+    finally{submitting.value=false;try{restore?.();}finally{if(!disposed)close(shouldNavigate?'submitted':'cancel',true);}}
+    if(shouldNavigate&&!disposed) await followup(
+      ()=>openAccountOperationTasks({openTasks:deps.openTasks,openTask:deps.openTask},
+        {single:false,type:'c2a_session_reimport',target:'',result:response}),
+      'C2A 请求已处理，打开任务失败: ',
+    );
   }
   onScopeDispose(()=>{disposed=true;close('cancel',true);});
   return{isOpen,submitting,status,accountIds,result,receiptEntries,taskEntries,summary,open,close,submit,showResult,openTasks};

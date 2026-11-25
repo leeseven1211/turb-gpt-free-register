@@ -17,7 +17,7 @@ const owner=useC2aReimport({...props.deps,beginBusy:(trigger,label)=>{
   return()=>{if(button){button.textContent=old;button.disabled=false;}};
 }},{closed:(trigger,returnValue)=>{
   if(dialog.value?.open){++handledCloseEvents;dialog.value.close(returnValue);}
-  restoreTrigger(trigger,generation);
+  if(returnValue!=='submitted')restoreTrigger(trigger,generation);
 }});
 const {isOpen,submitting,status,accountIds}=owner;
 function open(context:AccountActionContext,trigger:HTMLElement|null=null){
