@@ -140,6 +140,7 @@ def _save(backend: str, account_id: int, state: dict, **changes) -> dict:
     fields = {key: value for key, value in state.items() if key in {
         "stage", "remote_account_ids", "source_generation", "run_id", "task_id", "next_attempt_at",
         "last_code", "attempt_count", "last_sync_generation", "last_sync_at", "manual_requested",
+        "superseded_targets",
     }}
     fields.update(changes)
     return repair_store.save_repair(backend, account_id, **fields)
@@ -231,6 +232,9 @@ def _process(backend: str, account: dict, rows: list[dict], remote: list[dict], 
     scan = _SCAN.get()
     state = (scan.states.get(account_id) if scan is not None else repair_store.get_repair(backend, account_id)) or {}
     stage = str(state.get("stage") or "")
+    superseded = state.get("superseded_targets") or {}
+    # 网络扫描早于账号锁；只读对账期间取得的旧快照不能重新触发授权。
+    remote = [row for row in remote if str(row.get("id")) not in superseded]
     scoped_scan = bool(summary.get("group_ids"))
     if stage not in _CONTINUATION_STAGES and not remote:
         return

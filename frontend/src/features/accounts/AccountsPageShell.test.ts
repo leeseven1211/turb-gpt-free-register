@@ -24,7 +24,7 @@ it('toolbar keeps in-flight downloads disabled across list refresh and applies c
   const actions=createAccountActions({request,notify:vi.fn(),confirm:()=>true,clipboard:vi.fn(),downloadBlob:vi.fn(),downloadUrl:vi.fn(),now:()=>new Date(),schedule:()=>1,reloadCodex:vi.fn()});
   wrapper=mount(AccountsPageShell,{attachTo:document.body,props:{adapter:realAdapter(),api,presentation,
     callbacks:{invoke:legacy,openDetail:vi.fn()},detailApi:{roxyProfile:vi.fn()},detailPresentation:{renderBody:()=>'',sourceLabel:()=>''},syncModalScrollLock:vi.fn(),
-    initialCapabilities:{},toolbarRuntime:{storage:{getItem:()=>null,setItem(){}},requestFrame:()=>1,cancelFrame(){},addStorageListener:()=>()=>{}},
+    initialCapabilities:{},
     c2aDependencies:c2aDependencies(),emailChangeDependencies:emailChangeDependencies(),inspectionDependencies:inspectionDependencies(),actions}});
   const vm=wrapper.vm as unknown as InstanceType<typeof AccountsPageShell>;
   vm.setVisible(true);await flushPromises();
@@ -55,7 +55,7 @@ it('list and legacy facade share one Vue drawer while page changes preserve its 
   wrapper=mount(AccountsPageShell,{attachTo:document.body,props:{adapter:realAdapter(),api,presentation,
     callbacks:{invoke:vi.fn(),openDetail:oldOpen,notify},detailApi:{roxyProfile},
     detailPresentation:{renderBody:row=>`<p>${row.email}</p>`,sourceLabel:()=>''},syncModalScrollLock:lock,
-    initialCapabilities:{},toolbarRuntime:{storage:{getItem:()=>null,setItem(){}},requestFrame:()=>1,cancelFrame(){},addStorageListener:()=>()=>{}},c2aDependencies:c2aDependencies(),emailChangeDependencies:emailChangeDependencies(),inspectionDependencies:inspectionDependencies(),actions:{isSupported:()=>false,isPending:()=>false,invoke:vi.fn(),setVisible:vi.fn(),dispose:vi.fn()}}});
+    initialCapabilities:{},c2aDependencies:c2aDependencies(),emailChangeDependencies:emailChangeDependencies(),inspectionDependencies:inspectionDependencies(),actions:{isSupported:()=>false,isPending:()=>false,invoke:vi.fn(),setVisible:vi.fn(),dispose:vi.fn()}}});
   const vm=wrapper.vm as unknown as InstanceType<typeof AccountsPageShell>;
   vm.setVisible(true);await flushPromises();
   const trigger=wrapper.get<HTMLButtonElement>('[data-account-detail-id="1"]');
@@ -86,7 +86,7 @@ it('routes supported actions once and keeps inspection dialogs on the same page 
   const {api}=readApi(),legacy=vi.fn(),invoke=vi.fn(),inspection=inspectionDependencies();
   wrapper=mount(AccountsPageShell,{attachTo:document.body,props:{adapter:realAdapter(),api,presentation,
     callbacks:{invoke:legacy,openDetail:vi.fn()},detailApi:{roxyProfile:vi.fn()},detailPresentation:{renderBody:()=>'',sourceLabel:()=>''},syncModalScrollLock:vi.fn(),
-    initialCapabilities:{},toolbarRuntime:{storage:{getItem:()=>null,setItem(){}},requestFrame:()=>1,cancelFrame(){},addStorageListener:()=>()=>{}},c2aDependencies:c2aDependencies(),emailChangeDependencies:emailChangeDependencies(),inspectionDependencies:inspection,actions:{isSupported:action=>action==='copySelectedAccountEmails',isPending:()=>true,invoke,setVisible:vi.fn(),dispose:vi.fn()}}});
+    initialCapabilities:{},c2aDependencies:c2aDependencies(),emailChangeDependencies:emailChangeDependencies(),inspectionDependencies:inspection,actions:{isSupported:action=>action==='copySelectedAccountEmails',isPending:()=>true,invoke,setVisible:vi.fn(),dispose:vi.fn()}}});
   const vm=wrapper.vm as unknown as InstanceType<typeof AccountsPageShell>;
   vm.setVisible(true);await flushPromises();
   const context=vm.getActionContext();
@@ -121,7 +121,7 @@ it('账号页可查询未确认的受理回执并打开原执行记录', async (
   wrapper=mount(AccountsPageShell,{attachTo:document.body,props:{adapter:realAdapter(),api,presentation,
     callbacks:{invoke:vi.fn(),openDetail:vi.fn()},detailApi:{roxyProfile:vi.fn()},
     detailPresentation:{renderBody:()=>'',sourceLabel:()=>''},syncModalScrollLock:vi.fn(),
-    initialCapabilities:{},toolbarRuntime:{storage:{getItem:()=>null,setItem(){}},requestFrame:()=>1,cancelFrame(){},addStorageListener:()=>()=>{}},
+    initialCapabilities:{},
     c2aDependencies:c2aDependencies(),emailChangeDependencies:emailChangeDependencies(),inspectionDependencies:inspectionDependencies(),actions}});
   const vm=wrapper.vm as unknown as InstanceType<typeof AccountsPageShell>;
   vm.setVisible(true);

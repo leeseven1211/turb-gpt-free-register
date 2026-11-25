@@ -26,11 +26,41 @@
 .ac-toolbar #accountsToolbarV2 :is(.account-quick-actions .jobs-tb-btn,.toolbar-overflow>summary){
   box-sizing:border-box;height:28px;min-height:28px;padding:0 8px;
 }
+.ac-toolbar #accountsToolbarV2 .account-quick-actions .jobs-tb-btn{width:calc(4em + 16px)}
+.ac-toolbar #accountsToolbarV2 .jobs-tb-btn{
+  border:1px solid var(--ui-color-border-strong);border-radius:6px;
+  background:var(--ui-color-surface);color:var(--ui-color-text);
+  box-shadow:none;font-size:12px;font-weight:500;line-height:1.3;
+}
+.ac-toolbar #accountsToolbarV2 .jobs-tb-btn:hover:not(:disabled):not([aria-disabled="true"]){
+  border-color:var(--ui-color-brand);background:var(--ui-color-brand-soft);color:var(--ui-color-brand-hover);
+}
+.ac-toolbar #accountsToolbarV2 .jobs-tb-btn:focus-visible{outline:2px solid var(--ui-color-brand);outline-offset:2px}
+.ac-toolbar #accountsToolbarV2 .jobs-tb-btn--danger{
+  border-color:var(--ui-color-danger-border);background:var(--ui-color-danger-soft);color:var(--r-600,var(--ui-color-danger));
+}
+.ac-toolbar #accountsToolbarV2 .jobs-tb-btn--danger:hover:not(:disabled):not([aria-disabled="true"]){
+  border-color:var(--ui-color-danger);background:var(--ui-color-danger-soft);color:var(--r-600,var(--ui-color-danger));
+}
+.ac-toolbar #accountsToolbarV2 .jobs-tb-btn:is(:disabled,[aria-disabled="true"]){opacity:.48;cursor:not-allowed}
 .ac-toolbar #accountsMoreActionsV2{position:static}
 .ac-toolbar #accountsMoreActionsV2 .toolbar-overflow-menu{
   position:absolute;inset:calc(100% + 4px) auto auto 12px;box-sizing:border-box;
   width:min(420px,calc(100% - 24px));max-height:min(60dvh,480px,var(--ac-batch-menu-height,480px));
+  display:grid;grid-template-columns:minmax(0,1fr);gap:12px;padding:10px;
   overflow:auto;overscroll-behavior:contain;
+}
+.ac-toolbar #accountsMoreActionsV2 .toolbar-overflow-section{
+  display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:6px;
+  min-width:0;padding:0;border:0;border-radius:0;background:transparent;
+}
+.ac-toolbar #accountsMoreActionsV2 .toolbar-overflow-section-title{
+  grid-column:1 / -1;color:var(--ui-color-text-secondary);
+  font-size:12px;font-weight:600;line-height:18px;letter-spacing:0;
+}
+.ac-toolbar #accountsMoreActionsV2 .toolbar-overflow-menu .jobs-tb-btn{
+  box-sizing:border-box;width:100%;min-width:0;height:36px;min-height:36px;padding:0 4px;
+  display:flex;align-items:center;justify-content:center;white-space:nowrap;
 }
 .ac-toolbar #accountsMoreActionsV2 summary:focus-visible{outline:2px solid var(--ui-color-brand);outline-offset:2px}
 .ac-button,.ac-link{min-height:28px;padding:3px 8px;border:1px solid var(--ui-color-border);border-radius:5px;background:var(--ui-color-surface);color:var(--ui-color-text);font:inherit;font-size:12px;cursor:pointer}
@@ -123,4 +153,11 @@
   .ac-toolbar #accountsToolbarV2 :is(.account-quick-actions .jobs-tb-btn,.toolbar-overflow>summary){
     width:auto;height:44px;min-height:44px;
   }
+  .ac-toolbar #accountsToolbarV2 .account-quick-actions .jobs-tb-btn{width:calc(4em + 16px)}
+  .ac-toolbar #accountsMoreActionsV2 .toolbar-overflow-menu .jobs-tb-btn{height:44px;min-height:44px}
+}
+@media(max-width:380px){
+  .ac-toolbar #accountsMoreActionsV2 .toolbar-overflow-menu{padding:4px}
+  .ac-toolbar #accountsMoreActionsV2 .toolbar-overflow-section{column-gap:3px}
+  .ac-toolbar #accountsMoreActionsV2 .toolbar-overflow-menu .jobs-tb-btn{padding-inline:1px;font-size:11px}
 }

@@ -6,7 +6,6 @@ import type {AccountQueryAdapter} from './queryAdapter';
 import type {AccountPresentation,AccountsCallbacks,AccountsLegacyState} from './presentation';
 import AccountsToolbar from './AccountsToolbar.vue';
 import {ACCOUNT_TOOLBAR_BUTTONS,type AccountToolbarCapabilities} from './accountToolbar';
-import type {AccountQuickActionRuntime} from './useAccountQuickActions';
 import type {AccountViewRow} from './useAccounts';
 import type {AccountActionContext} from './useAccounts';
 import type {AccountActionDispatcher} from './actions';
@@ -31,7 +30,6 @@ const props=defineProps<{
   inspectionDependencies:AccountInspectionDependencies;
   emailChangeDependencies:AccountEmailChangeDependencies;
   c2aDependencies:C2aReimportDependencies;
-  toolbarRuntime:AccountQuickActionRuntime;
   initialCapabilities:AccountToolbarCapabilities;
 }>();
 const list=ref<InstanceType<typeof AccountsList>>(),drawer=ref<InstanceType<typeof AccountDetail>>();
@@ -106,7 +104,7 @@ defineExpose({
 <template>
   <AccountsList ref="list" :adapter="adapter" :api="api" :presentation="presentation" :callbacks="callbacks">
     <template #actions>
-      <AccountsToolbar ref="toolbar" :state="toolbarState" :capabilities="capabilities" :runtime="toolbarRuntime" :get-context="()=>owner().getActionContext()" :invoke="invoke" :notify="callbacks.notify"/>
+      <AccountsToolbar ref="toolbar" :state="toolbarState" :capabilities="capabilities" :get-context="()=>owner().getActionContext()" :invoke="invoke" :notify="callbacks.notify"/>
     </template>
     <template #feedback>
       <AccountOperationReceipts v-if="actions.receipts" :receipts="actions.receipts"/>

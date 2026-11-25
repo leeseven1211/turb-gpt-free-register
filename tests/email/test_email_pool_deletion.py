@@ -202,6 +202,32 @@ class EmailPoolDeletionTests(PostgresTestCase):
         self.assertFalse(db.delete_generic_api_email('success@example.test'))
         self.assertIsNotNone(store.get_row(store.GENERIC_API_POOL, row_id))
 
+    def test_bulk_delete_keeps_allowed_protected_missing_and_duplicate_targets_stable(self):
+        allowed_id = store.insert_row(store.OUTLOOK_POOL, {
+            'email': 'bulk-allowed@example.test', 'status': 'available', 'used_at': None,
+        })
+        protected_id = store.insert_row(store.OUTLOOK_POOL, {
+            'email': 'bulk-protected@example.test', 'status': 'available', 'used_at': None,
+        })
+        allowed = store.get_row(store.OUTLOOK_POOL, allowed_id)
+        protected = store.get_row(store.OUTLOOK_POOL, protected_id)
+        store.insert_row(store.ACCOUNTS, {'email': protected['email'], 'access_token': 'fixture-at'})
+
+        result = db.delete_pool_emails('outlook', [
+            allowed['email'], allowed['email'].upper(), protected['email'], 'bulk-missing@example.test',
+        ])
+
+        self.assertEqual(result['deleted'], [allowed['email']])
+        self.assertEqual(
+            {(item['email'], item['reason_code']) for item in result['skipped']},
+            {
+                (protected['email'], 'registration_confirmed'),
+                ('bulk-missing@example.test', 'email_not_found'),
+            },
+        )
+        self.assertEqual(store.get_row(store.OUTLOOK_POOL, allowed['id'])['status'], 'tombstone')
+        self.assertEqual(store.get_row(store.OUTLOOK_POOL, protected['id'])['status'], 'available')
+
     def test_successful_rebound_original_is_protected_without_blocking_sibling(self):
         original = self.row('original+one@icloud.test')
         sibling = self.row('original+two@icloud.test')

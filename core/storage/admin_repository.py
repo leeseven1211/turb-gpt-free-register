@@ -1278,6 +1278,11 @@ def list_email_pool(request: PageRequest) -> dict:
     if used:
         where.append("LEFT(COALESCE(p.used_at, ''), 10) = %s")
         params.append(used[:10])
+    usage = _text(filters.get("usage")).lower()
+    if usage == "bound":
+        where.append("a.id IS NOT NULL AND COALESCE(p.status, '') = 'used'")
+    elif usage == "used_unbound":
+        where.append("a.id IS NULL AND COALESCE(p.status, '') = 'used'")
     clause = f" WHERE {' AND '.join(where)}" if where else ""
     from_sql = f" FROM ({pool}) p LEFT JOIN {accounts} a ON LOWER(a.email) = LOWER(p.email)"
     safe_pool_data = (

@@ -1,9 +1,10 @@
 """巡检集合受理在真实隔离 PostgreSQL 中保存原修复身份。"""
 import importlib
 from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier, Event
 from unittest.mock import patch
 
-from psycopg import Cursor
+from psycopg import Cursor, errors
 
 from core.operations import task_gateway
 from core.storage import records, sub2api
@@ -189,3 +190,188 @@ class Sub2ApiMonitorCollectionTests(PostgresTestCase):
         self.assertEqual(row["status"], "pending")
         self.assertIsNone(row["run_id"])
         self.assertEqual(sub2api_monitor.enqueue_due_many("frozen-backend", include_retries=True)["queued"], 1)
+
+    def test_collection_queue_never_revives_superseded_target_for_new_generation(self):
+        from core.storage import sub2api_monitor
+
+        credential = records.get_row_by(records.CODEX_CREDENTIALS, "filename", self.names[0])
+        old = sub2api.queue(self.names[0], backend="frozen-backend",
+            generation="old-generation", credential_id=credential["id"],
+            account_id=self.ids[0], email=self.remote[0]["email"],
+            remote_account_ids=[99], trigger="sub2api_monitor")[0]
+        with records.transaction() as conn, conn.cursor() as cur:
+            cur.execute(f"UPDATE {sub2api._table()} SET status='superseded',stage='superseded',"
+                        "dispatch_requested=FALSE,error_code='sub2api_target_replaced' WHERE id=%s", (old["id"],))
+        for generation in ("old-generation", "new-generation"):
+            with self.subTest(generation=generation):
+                with records.transaction() as conn:
+                    sub2api_monitor.queue_sync_many(conn, "frozen-backend", [{
+                        "account_id": self.ids[0], "email": self.remote[0]["email"],
+                        "filename": self.names[0], "credential_id": credential["id"],
+                        "generation": generation, "remote_account_ids": [99],
+                    }])
+                row = sub2api.list_jobs(backend="frozen-backend")[0]
+                self.assertEqual(
+                    ("superseded", "superseded", "old-generation", False, "sub2api_target_replaced"),
+                    (row["status"], row["stage"], row["generation"],
+                     row["dispatch_requested"], row["error_code"]),
+                )
+
+    def test_collection_save_applies_stored_replacements_to_stale_snapshot(self):
+        from core.storage import sub2api_monitor
+
+        sub2api.save_repair("frozen-backend", self.ids[0], remote_account_ids=[7, 9])
+        sub2api.save_repair("frozen-backend", self.ids[0], superseded_targets={"7": 8})
+        with records.transaction() as conn:
+            sub2api_monitor.save_repairs(conn, "frozen-backend", {
+                self.ids[0]: {"stage": "sync_wait", "remote_account_ids": [7, 9],
+                              "superseded_targets": {"9": 10}},
+                self.ids[1]: {"stage": "sync_wait", "remote_account_ids": [11, 12, 11],
+                              "superseded_targets": {"11": 12}},
+            })
+        first = sub2api.get_repair("frozen-backend", self.ids[0])
+        self.assertEqual([8, 10], first["remote_account_ids"])
+        self.assertEqual({"7": 8, "9": 10}, first["superseded_targets"])
+        second = sub2api.get_repair("frozen-backend", self.ids[1])
+        self.assertEqual([12], second["remote_account_ids"])
+        self.assertEqual({"11": 12}, second["superseded_targets"])
+
+    def test_collection_save_flattens_replacement_chain_without_losing_prior_mapping(self):
+        from core.storage import sub2api_monitor
+
+        sub2api.save_repair("frozen-backend", self.ids[0],
+                           remote_account_ids=[7, 8, 10], superseded_targets={"7": 8})
+        with records.transaction() as conn:
+            sub2api_monitor.save_repairs(conn, "frozen-backend", {
+                self.ids[0]: {"remote_account_ids": [7, 8, 10],
+                              "superseded_targets": {"8": 9}},
+            })
+        state = sub2api.get_repair("frozen-backend", self.ids[0])
+        self.assertEqual([9, 10], state["remote_account_ids"])
+        self.assertEqual({"7": 9, "8": 9}, state["superseded_targets"])
+
+    def concurrent_collection_flushes(self, *, backend="frozen-backend", status="queued", cancelled_run=False):
+        from core.storage import sub2api_monitor
+
+        intents = []
+        for index in range(2):
+            credential = records.get_row_by(records.CODEX_CREDENTIALS, "filename", self.names[index])
+            generation = sub2api.credential_generation(credential["content"])
+            original = sub2api.queue(self.names[index], backend=backend,
+                generation=generation, credential_id=credential["id"],
+                account_id=self.ids[index], email=self.remote[index]["email"],
+                remote_account_ids=[90 + index], trigger="sub2api_monitor")[0]
+            run_id = None
+            if cancelled_run:
+                task = operations.create_runtime_task(task_type="sub2api_sync",
+                    account_id=self.ids[index], email=self.remote[index]["email"])
+                run_id = task["run"]["id"]
+                with records.transaction() as conn, conn.cursor() as cur:
+                    cur.execute(f"UPDATE {operations._table('operation_runs')} SET status='cancelled' WHERE id=%s",
+                                (run_id,))
+                    cur.execute(f"UPDATE {operations._table('operation_tasks')} SET status='cancelled' WHERE id=%s",
+                                (task["id"],))
+            with records.transaction() as conn, conn.cursor() as cur:
+                # 本轮新增目标会先持有旧 Job 锁；全局扫描随后负责旧后端、取消或失联 Run。
+                cur.execute(f"UPDATE {sub2api._table()} SET status=%s,stage=%s,run_id=%s WHERE id=%s",
+                            (status, status, run_id, original["id"]))
+            intents.append({
+                "account_id": self.ids[index], "email": self.remote[index]["email"],
+                "filename": self.names[index], "credential_id": credential["id"],
+                "generation": generation, "remote_account_ids": [90 + index, 100 + index],
+            })
+        both_locked = Barrier(2)
+
+        def flush(item):
+            try:
+                with records.transaction() as conn, conn.cursor() as cur:
+                    cur.execute("SET LOCAL lock_timeout='5s'")
+                    sub2api_monitor.queue_sync_many(conn, backend, [item])
+                    both_locked.wait(timeout=5)
+                    return sub2api_monitor.enqueue_due_many("frozen-backend", include_retries=True, conn=conn)
+            except errors.DeadlockDetected:
+                return {"error": "deadlock"}
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [executor.submit(flush, item) for item in intents]
+            results = [future.result(timeout=12) for future in futures]
+        self.assertTrue(all("error" not in result for result in results), results)
+        rows = sub2api.list_jobs(backend=backend)
+        self.assertEqual(4, len(rows))
+        return rows
+
+    def test_concurrent_collection_flushes_recover_jobs_without_cross_account_deadlock(self):
+        rows = self.concurrent_collection_flushes()
+        self.assertEqual(2, sum(row["status"] == "queued" for row in rows))
+        self.assertEqual(2, sum(row["status"] == "pending" for row in rows))
+
+    def test_concurrent_collection_flushes_cancel_jobs_without_cross_account_deadlock(self):
+        rows = self.concurrent_collection_flushes(cancelled_run=True)
+        self.assertEqual(2, sum(row["status"] == "cancelled" for row in rows))
+        self.assertEqual(2, sum(row["status"] == "queued" for row in rows))
+
+    def test_concurrent_collection_flushes_block_old_backend_without_cross_account_deadlock(self):
+        rows = self.concurrent_collection_flushes(backend="previous-backend", status="pending")
+        self.assertTrue(all(row["status"] == "blocked_backend" for row in rows), rows)
+
+    def test_job_unlocked_after_cancel_sweep_never_revives_cancelled_run(self):
+        from core.storage import sub2api_monitor
+
+        for index, (status, run_status) in enumerate(
+            (job_status, terminal)
+            for job_status in ("queued", "pending", "blocked_backend")
+            for terminal in ("cancelled", "stopped", "terminated")
+        ):
+            with self.subTest(status=status, run_status=run_status):
+                credential = records.get_row_by(records.CODEX_CREDENTIALS, "filename", self.names[index])
+                old = sub2api.queue(self.names[index], backend="frozen-backend",
+                    generation=sub2api.credential_generation(credential["content"]), credential_id=credential["id"],
+                    account_id=self.ids[index], email=self.remote[index]["email"],
+                    remote_account_ids=[90 + index], trigger="sub2api_monitor")[0]
+                task = operations.create_runtime_task(task_type="sub2api_sync",
+                    account_id=self.ids[index], email=self.remote[index]["email"])
+                with records.transaction() as conn, conn.cursor() as cur:
+                    cur.execute(f"UPDATE {operations._table('operation_runs')} SET status=%s WHERE id=%s",
+                                (run_status, task["run"]["id"]))
+                    cur.execute(f"UPDATE {operations._table('operation_tasks')} SET status=%s WHERE id=%s",
+                                (run_status, task["id"]))
+                    cur.execute(f"UPDATE {sub2api._table()} SET status=%s,run_id=%s WHERE id=%s",
+                                (status, task["run"]["id"], old["id"]))
+                locked, release, unlocked = Event(), Event(), Event()
+
+                def hold_job():
+                    try:
+                        with records.transaction() as conn, conn.cursor() as cur:
+                            cur.execute(f"SELECT id FROM {sub2api._table()} WHERE id=%s FOR UPDATE", (old["id"],))
+                            locked.set()
+                            if not release.wait(timeout=5):
+                                raise AssertionError("cancel sweep did not finish")
+                    finally:
+                        unlocked.set()
+
+                execute = Cursor.execute
+
+                def release_after_cancel(cursor, query, *args, **kwargs):
+                    result = execute(cursor, query, *args, **kwargs)
+                    if "SET status='cancelled'" in str(query):
+                        release.set()
+                        if not unlocked.wait(timeout=5):
+                            raise AssertionError("job lock was not released")
+                    return result
+
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(hold_job)
+                    self.assertTrue(locked.wait(timeout=5))
+                    try:
+                        with patch.object(Cursor, "execute", release_after_cancel), records.transaction() as conn:
+                            result = sub2api_monitor.enqueue_due_many("frozen-backend", include_retries=True, conn=conn)
+                    finally:
+                        release.set()
+                    future.result(timeout=5)
+                self.assertEqual(0, result["queued"], result)
+                row = next(row for row in sub2api.list_jobs(backend="frozen-backend") if row["id"] == old["id"])
+                self.assertEqual((status, task["run"]["id"]), (row["status"], row["run_id"]))
+                # 未复活的 Job 留待下一轮取消扫描收口。
+                sub2api_monitor.enqueue_due_many("frozen-backend", include_retries=True)
+                row = next(row for row in sub2api.list_jobs(backend="frozen-backend") if row["id"] == old["id"])
+                self.assertEqual("cancelled", row["status"])

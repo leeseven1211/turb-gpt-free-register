@@ -45,7 +45,14 @@ class Scan:
 
     def save(self, account_id, state, **changes):
         fields = {key: value for key, value in state.items() if key in sub2api._REPAIR_FIELDS}
+        _, mapping = sub2api._repair_targets(fields, changes.get("superseded_targets"))
         fields.update(changes)
+        if "remote_account_ids" in fields:
+            fields["remote_account_ids"], _ = sub2api._repair_targets({
+                **fields, "superseded_targets": mapping,
+            })
+        if mapping:
+            fields["superseded_targets"] = mapping
         value = {**fields, "backend": self.backend, "account_id": account_id}
         self.states[account_id] = value
         self.changed[account_id] = value

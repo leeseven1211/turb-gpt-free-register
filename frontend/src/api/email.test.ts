@@ -24,9 +24,14 @@ describe('email existing HTTP contracts',()=>{
     await api.inventory({page:2,size:20,source:'all',q:'邮箱 +',status:'used',used_date:'2026-11-16'},signal);
     await api.history({page:3,size:50,source:'outlook',parent_id:'9',q:'child',parent_q:'mother',state:'reserved',related_q:'12',created_from:'2026-11-01',created_to:'2026-11-16'},signal);
     const first=new URL(send.mock.calls[0]![0],'http://fixture');
-    expect(Object.fromEntries(first.searchParams)).toEqual({paged:'1',page:'2',page_size:'20',source:'all',q:'邮箱 +',status:'used',used_date:'2026-11-16'});
+    expect(Object.fromEntries(first.searchParams)).toEqual({paged:'1',page:'2',page_size:'20',source:'all',q:'邮箱 +',status:'used',used_date:'2026-11-16',usage:''});
     expect(send.mock.calls[0]![1]).toEqual({signal});
     expect(Object.fromEntries(new URL(send.mock.calls[1]![0],'http://fixture').searchParams)).toEqual({page:'3',page_size:'50',source:'outlook',parent_id:'9',q:'child',parent_q:'mother',state:'reserved',related_q:'12',created_from:'2026-11-01',created_to:'2026-11-16'});
+  });
+  it.each(['bound','used_unbound'])('preserves inventory usage filter %s',async usage=>{
+    const send=vi.fn(async(_path:string,_options?:RequestInit)=>({items:[],total:0}));
+    await createEmailApi(send).inventory({page:1,size:20,source:'all',q:'',status:'',used_date:'',usage});
+    expect(new URL(send.mock.calls[0]![0],'http://fixture').searchParams.get('usage')).toBe(usage);
   });
   it('never changes source-specific imports or original request identities',async()=>{
     const send=vi.fn(async(_path:string,_options?:RequestInit)=>({ok:true})),api=createEmailApi(send);

@@ -134,6 +134,22 @@ class Sub2ApiMonitorTests(PostgresTestCase):
         self.refresh.assert_not_called()
         self.sync.assert_not_called()
 
+    def test_stale_scan_of_superseded_target_does_not_reauthorize_healthy_replacement(self):
+        generation = self.monitor.jobs.credential_generation(self.content)
+        self.store.save_repair(
+            "test-backend", 42, stage="idle", remote_account_ids=[8],
+            superseded_targets={"7": 8}, source_generation=generation,
+            last_sync_generation=generation, last_code="sync_complete",
+        )
+        self.monitor._run_once()
+        self.oauth.assert_not_called()
+        self.refresh.assert_not_called()
+        self.sync.assert_not_called()
+        repair = self.store.get_repair("test-backend", 42)
+        self.assertEqual([8], repair["remote_account_ids"])
+        self.assertEqual(generation, repair["last_sync_generation"])
+        self.assertEqual("idle", repair["stage"])
+
     def test_waiting_manual_oauth_failure_retries_only_after_real_scan_and_cooldown(self):
         self.store.save_repair("test-backend", 42, stage="waiting_manual", run_id=21, remote_account_ids=[7],
             source_generation="old-generation", next_attempt_at=1200, last_code="repair_failed")

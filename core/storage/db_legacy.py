@@ -2570,6 +2570,84 @@ def _release_pool_email(spec, email: str, *, status: str, note: str | None = Non
     return changed
 
 
+def delete_pool_emails(source: str, emails: list[str]) -> dict:
+    """批量删除同一来源的邮箱：一次事务、按邮箱排序取行锁，减少逐条提交开销。"""
+    spec = _POOL_SOURCE_SPECS.get(str(source or "").strip())
+    if spec is None:
+        return {"deleted": [], "skipped": [{"email": item, "reason": "不支持的邮箱来源"} for item in emails]}
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw in emails:
+        email = str(raw or "").strip()
+        key = email.lower()
+        if not email or key in seen:
+            continue
+        seen.add(key)
+        normalized.append(email)
+    if not normalized:
+        return {"deleted": [], "skipped": []}
+    from core.email.derivation import parent_has_allocations
+    from core.storage.email.local_imports import pool_mutation_protected
+    from core.email.email_butler import service_facts
+
+    deleted: list[str] = []
+    skipped: list[dict] = []
+    changed = False
+    with record_store.transaction() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f'SELECT * FROM {postgres_store.qualified(spec.name)} '
+                'WHERE lower(email) = ANY(%s) ORDER BY lower(email), id FOR UPDATE',
+                ([item.lower() for item in normalized],),
+            )
+            rows = [record_store.merge_row(spec, row) for row in cur.fetchall()]
+        by_email: dict[str, list[dict]] = {}
+        for row in rows:
+            by_email.setdefault(str(row.get("email") or "").lower(), []).append(row)
+        for email in normalized:
+            parents = by_email.get(email.lower(), [])
+            if not parents:
+                skipped.append({"email": email, "reason": "邮箱不存在", "reason_code": "email_not_found"})
+                continue
+            email_changed = False
+            email_blocked = False
+            for parent in parents:
+                record_store.advisory_xact_lock(conn, 'registered-account:' + str(parent['email']).lower())
+                if parent.get('status') == 'tombstone':
+                    email_changed = True
+                    continue
+                if pool_mutation_protected(parent, conn=conn):
+                    email_blocked = True
+                    continue
+                if parent_has_allocations(source, int(parent['id']), conn=conn):
+                    policy = dict(parent.get('derivation_policy') or {})
+                    policy['enabled'] = False
+                    updated = record_store.patch_row(spec, int(parent['id']), {
+                        'archived': True, 'status': 'disabled', 'derivation_policy': policy,
+                        'pool_deleted_at': _now(),
+                        'note': '母资源关联已有子地址，已停止新分配并保留历史恢复资料',
+                    }, conn=conn)
+                    email_changed = bool(updated) or email_changed
+                else:
+                    service_facts.enqueue_return(source, parent, conn=conn)
+                    updated = record_store.patch_row(spec, int(parent['id']), {
+                        'status': 'tombstone', 'deleted_at': _now(), 'pool_deleted_at': _now(),
+                    }, conn=conn)
+                    email_changed = bool(updated) or email_changed
+            if email_changed:
+                deleted.append(email)
+                changed = True
+            elif email_blocked:
+                skipped.append({"email": email, "reason": "邮箱已确认注册成功，不能删除",
+                                "reason_code": "registration_confirmed"})
+            else:
+                skipped.append({"email": email, "reason": "邮箱不存在", "reason_code": "email_not_found"})
+    kind = _POOL_EXPORT_KINDS.get(spec.name)
+    if changed and kind:
+        compat_export.schedule(kind)
+    return {"deleted": deleted, "skipped": skipped}
+
+
 def _delete_pool_email(spec, email: str) -> bool:
     source = next((name for name, candidate in _POOL_SOURCE_SPECS.items() if candidate.name == spec.name), None)
     from core.email.derivation import parent_has_allocations

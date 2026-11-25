@@ -136,3 +136,43 @@ tests/operations/test_operations_route_migration_phase2.py
 ## 交付边界
 
 本记录证明当前开发工作区的隔离测试及源码构建结果。没有将历史审计中的“未改代码”表述当成实施状态，也没有将本地测试、提交、推送、部署和真实业务验收混为一项。
+
+## 2026-11-25 main 合并候选验证
+
+合并本地 main `aacbd457` 后重新生成 API 并执行
+`npm run generate:api && npm run check && npm run build`：
+**92 个测试文件、1,092 项测试通过**，类型、契约、标签检查和 897 模块构建通过。
+此处数量对应 main 移除页面回执展示后的合并结果，前节的 1,099 项属于合并前版本。
+
+邮箱冲突保留 usage 筛选、成功项即时移除，以及异步 202 命令、轮询和冻结选择范围。
+三个隔离 PostgreSQL 测试文件通过 **35 项测试、42 个子测试**；
+七个前端定向文件通过 **83 项测试**，独立复审通过。
+
+合并后的路由、恢复、批量终止、就绪契约、资源释放与架构组合通过
+**55 项测试、6 个子测试**，pytest 用时 226.82 秒：
+
+```text
+tests/webui/test_bulk_route_contracts.py
+tests/operations/test_bulk_command_recovery.py
+tests/operations/test_bulk_terminate_command.py
+tests/runtime/test_runtime_readiness.py
+tests/runtime/test_runtime_readiness_contract.py
+tests/runtime/test_external_release_paths.py
+tests/architecture
+```
+
+上述后端组合使用统一隔离入口 `tools/test_isolated.py --profile all`，
+连接独立测试库及独立 schema，没有连接现役业务数据库。
+
+Sub2 合并同时保留 main 的目标替代映射：集合保存合并当前持久映射，
+扫描意图即时规范化，非手动扫描不复活 superseded Job。真实 PostgreSQL
+先复现三类全局恢复锁环的 `40P01`，再验证有序 `SKIP LOCKED` 修复；
+取消扫描与后续恢复之间释放锁的九种组合先失败，再验证恢复和准入双重排除。
+三处 JSON 集合写入按 500 项分块，后续块失败回滚整波及调用方已有写入。
+
+最终集合与替代映射两文件通过 **19 项测试、11 个子测试**，
+分块与回滚文件通过 **6 项测试**。关联九文件组合通过
+**193 项测试、76 个子测试**；该组合启动于最终分块调整之前，
+最终调整另由上述 25 项专项覆盖。两份独立复审通过。
+合并结果共 191 个新增或修改 Python 文件通过 Ruff 与 AST 检查，
+暂存差异格式检查通过。

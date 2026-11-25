@@ -235,6 +235,7 @@ def create_email_pool_blueprint(context: WebUIContext):
         q = str(request.args.get("q", default="") or "").strip()
         imported_date = str(request.args.get("imported_date", default="") or "").strip()
         used_date = str(request.args.get("used_date", default="") or "").strip()
+        usage = str(request.args.get("usage", default="") or "").strip().lower()
         paged = str(request.args.get("paged", default="") or "").lower() in {"1", "true", "yes"}
         page_arg = request.args.get("page", default=None, type=int)
         page_size_arg = request.args.get("page_size", default=None, type=int)
@@ -247,6 +248,7 @@ def create_email_pool_blueprint(context: WebUIContext):
                 "status": status or "",
                 "imported_date": imported_date,
                 "used_date": used_date,
+                "usage": usage,
             })
         )
         if not (paged or page_arg is not None or page_size_arg is not None):

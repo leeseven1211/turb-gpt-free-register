@@ -12,6 +12,7 @@ from core.storage import postgres as pg, records, sub2api
 from core.storage.operations import bulk_submission, common, schema
 
 _INTERACTIVE_ACTIVE = ("queued", "running", "cancelling", "settling", "stopping")
+_CHUNK_SIZE = 500
 
 
 def initialize():
@@ -108,15 +109,29 @@ def login_material(selected):
 def save_repairs(conn, backend, states):
     if not states:
         return
-    payload = [{"account_id": int(account_id),
-                "data": {key: value for key, value in state.items() if key in sub2api._REPAIR_FIELDS}}
-               for account_id, state in states.items()]
+    table = pg.qualified("sub2api_monitor_repairs")
     with conn.cursor() as cur:
-        cur.execute(f"INSERT INTO {pg.qualified('sub2api_monitor_repairs')} (backend,account_id,data) "
-                    "SELECT %s,s.account_id,s.data FROM jsonb_to_recordset(%s::jsonb) AS s(account_id bigint,data jsonb) "
-                    "ON CONFLICT(backend,account_id) DO UPDATE "
-                    f"SET data={pg.qualified('sub2api_monitor_repairs')}.data || EXCLUDED.data,updated_at=now()",
-                    (backend, json.dumps(payload, ensure_ascii=False, default=str)))
+        cur.execute(f"SELECT account_id,data FROM {table} WHERE backend=%s AND account_id=ANY(%s) "
+                    "ORDER BY account_id FOR UPDATE", (backend, sorted(int(value) for value in states)))
+        existing = {row["account_id"]: dict(row["data"] or {}) for row in cur.fetchall()}
+        payload = []
+        for account_id, state in states.items():
+            fields = {key: value for key, value in state.items() if key in sub2api._REPAIR_FIELDS}
+            data = existing.get(int(account_id), {})
+            _, mapping = sub2api._repair_targets(data, fields.get("superseded_targets"))
+            if "remote_account_ids" in fields:
+                incoming = {**data, "remote_account_ids": fields["remote_account_ids"],
+                            "superseded_targets": mapping}
+                fields["remote_account_ids"], _ = sub2api._repair_targets(incoming)
+            if mapping:
+                fields["superseded_targets"] = mapping
+            payload.append({"account_id": int(account_id), "data": fields})
+        for offset in range(0, len(payload), _CHUNK_SIZE):
+            cur.execute(f"INSERT INTO {table} (backend,account_id,data) "
+                        "SELECT %s,s.account_id,s.data FROM jsonb_to_recordset(%s::jsonb) AS s(account_id bigint,data jsonb) "
+                        "ON CONFLICT(backend,account_id) DO UPDATE "
+                        f"SET data={table}.data || EXCLUDED.data,updated_at=now()",
+                        (backend, json.dumps(payload[offset:offset + _CHUNK_SIZE], ensure_ascii=False, default=str)))
 
 
 def _update_jobs(conn, patches):
@@ -130,9 +145,10 @@ def _update_jobs(conn, patches):
                     "status text,stage text,error_code text,error text,trigger text,dispatch_requested boolean,"
                     "attempt_count integer,dispatch_no integer,task_id bigint,run_id bigint,next_attempt_at timestamptz")
     with conn.cursor() as cur:
-        cur.execute(f"UPDATE {sub2api._table()} j SET {assignments},updated_at=now() "
-                    f"FROM jsonb_to_recordset(%s::jsonb) AS s({declarations}) WHERE j.id=s.id",
-                    (json.dumps(patches, ensure_ascii=False, default=str),))
+        for offset in range(0, len(patches), _CHUNK_SIZE):
+            cur.execute(f"UPDATE {sub2api._table()} j SET {assignments},updated_at=now() "
+                        f"FROM jsonb_to_recordset(%s::jsonb) AS s({declarations}) WHERE j.id=s.id",
+                        (json.dumps(patches[offset:offset + _CHUNK_SIZE], ensure_ascii=False, default=str),))
 
 
 def queue_sync_many(conn, backend, intents):
@@ -161,6 +177,9 @@ def queue_sync_many(conn, backend, intents):
                     continue
                 row = dict(prior)
                 row.update(filename=item["filename"], credential_id=item["credential_id"])
+                if row["status"] == "superseded":
+                    patches.append(row)
+                    continue
                 if row["generation"] != item["generation"]:
                     row.update(generation=item["generation"], account_id=item["account_id"], email=item["email"],
                                status="pending", stage="pending", error_code=None, error=None,
@@ -173,13 +192,13 @@ def queue_sync_many(conn, backend, intents):
                     row["dispatch_requested"] = True
                 patches.append(row)
         _update_jobs(conn, patches)
-        if fresh:
+        for offset in range(0, len(fresh), _CHUNK_SIZE):
             cur.execute(f"INSERT INTO {sub2api._table()} "
                         "(filename,backend,target_key,remote_account_id,account_id,credential_id,email,generation,trigger) "
                         "SELECT s.filename,%s,s.target,s.target,s.account_id,s.credential_id,s.email,s.generation,'sub2api_monitor' "
                         "FROM jsonb_to_recordset(%s::jsonb) AS s(filename text,target bigint,account_id bigint,"
                         "credential_id bigint,email text,generation text)",
-                        (backend, json.dumps(fresh, ensure_ascii=False)))
+                        (backend, json.dumps(fresh[offset:offset + _CHUNK_SIZE], ensure_ascii=False)))
 
 
 def active_runs(conn, account_ids):
@@ -213,21 +232,33 @@ def enqueue_due_many(backend, *, include_retries, conn=None, held_accounts=()):
         with pg.connect(row_factory=dict_row) as current:
             return enqueue_due_many(backend, include_retries=include_retries, conn=current)
     with conn.cursor() as cur:
-        cur.execute(f"UPDATE {sub2api._table()} SET status='blocked_backend',stage='configuration',"
+        # 调用者可能已持有本轮补传 Job；全局收口不能等待其他扫描持有的 Job。
+        cur.execute(f"WITH selected AS (SELECT id FROM {sub2api._table()} "
+                    "WHERE backend<>%s AND status='pending' ORDER BY id FOR UPDATE SKIP LOCKED) "
+                    f"UPDATE {sub2api._table()} j SET status='blocked_backend',stage='configuration',"
                     "error_code='sub2api_backend_changed',error='Sub2API 后端已变化，旧目标保留等待原后端',updated_at=now() "
-                    "WHERE backend<>%s AND status='pending'", (backend,))
-        cur.execute(f"UPDATE {sub2api._table()} j SET status='cancelled',stage='cancelled',dispatch_requested=FALSE,"
+                    "FROM selected s WHERE j.id=s.id", (backend,))
+        cur.execute(f"WITH selected AS (SELECT j.id FROM {sub2api._table()} j "
+                    f"JOIN {common._table('operation_runs')} r ON r.id=j.run_id "
+                    "WHERE j.status=ANY(%s) AND r.status IN ('cancelled','stopped','terminated') "
+                    "ORDER BY j.id FOR UPDATE OF j SKIP LOCKED) "
+                    f"UPDATE {sub2api._table()} j SET status='cancelled',stage='cancelled',dispatch_requested=FALSE,"
                     "error_code='sub2api_sync_cancelled',error='用户已停止补传，可手动再次排队',updated_at=now() "
-                    f"FROM {common._table('operation_runs')} r WHERE r.id=j.run_id AND j.status=ANY(%s) "
-                    "AND r.status IN ('cancelled','stopped','terminated')",
+                    "FROM selected s WHERE j.id=s.id",
                     (list((*sub2api.ACTIVE, "pending", "blocked_backend")),))
-        cur.execute(f"UPDATE {sub2api._table()} j SET status='pending',stage='recovered',task_id=NULL,run_id=NULL,"
-                    "dispatch_requested=TRUE,next_attempt_at=now(),updated_at=now() WHERE j.status=ANY(%s) AND NOT EXISTS "
-                    f"(SELECT 1 FROM {common._table('operation_runs')} r WHERE r.id=j.run_id AND r.status=ANY(%s))",
-                    (list(sub2api.ACTIVE), list(sub2api.ACTIVE)))
-        cur.execute(f"SELECT * FROM {sub2api._table()} WHERE backend=%s AND status IN ('pending','blocked_backend') "
-                    "AND (dispatch_requested OR %s) AND next_attempt_at<=now() "
-                    "ORDER BY next_attempt_at,id FOR UPDATE SKIP LOCKED LIMIT 100", (backend, bool(include_retries)))
+        cur.execute(f"WITH selected AS (SELECT j.id FROM {sub2api._table()} j WHERE j.status=ANY(%s) AND NOT EXISTS "
+                    f"(SELECT 1 FROM {common._table('operation_runs')} r WHERE r.id=j.run_id AND r.status=ANY(%s)) "
+                    "ORDER BY j.id FOR UPDATE OF j SKIP LOCKED) "
+                    f"UPDATE {sub2api._table()} j SET status='pending',stage='recovered',task_id=NULL,run_id=NULL,"
+                    "dispatch_requested=TRUE,next_attempt_at=now(),updated_at=now() FROM selected s WHERE j.id=s.id",
+                    (list(sub2api.ACTIVE), list((*sub2api.ACTIVE, "cancelled", "stopped", "terminated"))))
+        cur.execute(f"SELECT j.* FROM {sub2api._table()} j "
+                    "WHERE j.backend=%s AND j.status IN ('pending','blocked_backend') "
+                    "AND (j.dispatch_requested OR %s) AND j.next_attempt_at<=now() "
+                    f"AND NOT EXISTS (SELECT 1 FROM {common._table('operation_runs')} r "
+                    "WHERE r.id=j.run_id AND r.status IN ('cancelled','stopped','terminated')) "
+                    "ORDER BY j.next_attempt_at,j.id FOR UPDATE OF j SKIP LOCKED LIMIT 100",
+                    (backend, bool(include_retries)))
         rows = [dict(row) for row in cur.fetchall()]
         if not rows:
             return {"queued": 0, "pending": 0}

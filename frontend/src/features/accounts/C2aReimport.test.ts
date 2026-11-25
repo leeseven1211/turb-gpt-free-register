@@ -25,7 +25,7 @@ describe('C2A确认与持久任务回执',()=>{
    const notify=vi.fn();
    const shell=mount(AccountsPageShell,{attachTo:document.body,props:{adapter:realAdapter(),api,presentation,
      callbacks:{invoke:vi.fn(),openDetail:vi.fn(),notify},detailApi:{roxyProfile:vi.fn()},detailPresentation:{renderBody:()=>'',sourceLabel:()=>''},syncModalScrollLock:vi.fn(),
-     initialCapabilities:{},toolbarRuntime:{storage:{getItem:()=>null,setItem(){}},requestFrame:()=>1,cancelFrame(){},addStorageListener:()=>()=>{}},
+     initialCapabilities:{},
      c2aDependencies:{request,notify,refreshAccounts:vi.fn(),trackAccepted:vi.fn(),openTasks:vi.fn()},
      emailChangeDependencies:{request:vi.fn(),notify,refreshAccounts:vi.fn(),openTasks:vi.fn(),recordReceipt:vi.fn(),syncModalScrollLock:vi.fn()},
      inspectionDependencies:{request:vi.fn(),notify,operationWorkers:()=>3,randomUUID:()=> 'key',refreshAccounts:vi.fn(),refreshSummary:vi.fn(),openTask:vi.fn(),formatDateTime:String},
