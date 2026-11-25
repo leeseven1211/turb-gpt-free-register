@@ -10,6 +10,12 @@
 
 **Spec:** `docs/superpowers/specs/2026-11-24-backend-bulk-operations-design.md`
 
+## 实施与验证记录
+
+原七项工作及后续全按钮覆盖补充的实际实现，分别记录在 [覆盖矩阵](../../reports/2026-11-24-backend-bulk-coverage.md) 和 [验证记录](../../reports/2026-11-24-backend-bulk-validation.md)。[原始按钮索引](../../reports/backend-bulk-button-inventory/README.md) 保留全部业务与纯交互入口。
+
+以下复选框保留最初的执行步骤，不补填无法追溯的历史失败输出。领域扩展包括注册后处理与历史来源、任务中心特殊 handler、普通父链、managed 控制、提链同步、配置发布及两个同步巡检器；不能仅用原七项计划判断“所有按钮”是否完成。最终整合状态以覆盖矩阵及对应测试证据为准。
+
 ## Global Constraints
 
 - PostgreSQL 是唯一事实来源，不新增 SQLite 或文件主存储。
