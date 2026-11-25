@@ -15,7 +15,9 @@ const relations = computed(() => phaseRelations(props.step, props.siblings));
 </template>
 
 <style scoped>
-.tc-step-relations {display:flex;gap:4px 18px;flex-wrap:wrap;margin:6px 0;font-size:12px;color:var(--ui-color-text-secondary)}
-.tc-step-relations>div {display:flex;gap:5px;min-width:0}
-dt {flex:none}dd {margin:0;overflow-wrap:anywhere;color:var(--ui-color-text)}
+.tc-step-relations {display:flex;gap:6px 8px;flex-wrap:wrap;margin:6px 0 0;font-size:12px;color:var(--ui-color-text-secondary)}
+.tc-step-relations>div {display:inline-flex;align-items:baseline;gap:6px;min-width:0;max-width:100%;padding:3px 9px;border:1px solid #e2e8f0;border-radius:6px;background:#ffffff;line-height:1.4}
+dt {flex:none;font-size:11px;font-weight:600;color:var(--ui-color-text-muted,#64748b)}
+dt::after {content:'：'}
+dd {margin:0;overflow-wrap:anywhere;color:var(--ui-color-text);font-weight:500}
 </style>

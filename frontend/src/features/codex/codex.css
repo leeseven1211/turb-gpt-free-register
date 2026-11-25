@@ -4,11 +4,28 @@
 .cx-root :is(button,input,select):focus-visible,.cx-row-menu :is(button,input,summary):focus-visible,.cx-filter-fields :is(button,input,select):focus-visible {outline:2px solid var(--ui-color-brand);outline-offset:2px}
 .cx-root button:disabled,.cx-row-menu button:disabled {opacity:.45;cursor:default}
 .cx-workspace {container:cx-workspace / inline-size}
-.cx-selected {flex:none;color:var(--ui-color-brand);font-weight:650;white-space:nowrap}
+.cx-count {font-size:12px;font-weight:600;color:var(--ui-color-text-secondary);white-space:nowrap}
+.cx-selected {flex:none;display:inline-flex;align-items:center;height:24px;padding:0 9px;border-radius:999px;background:var(--ui-color-brand-soft,#eef2ff);color:var(--ui-color-brand,#4f46e5);font-size:12px;font-weight:600;white-space:nowrap}
 /* 保留旧 toolbar ID 供宿主定位，但不继承旧页的 nowrap/整行按钮布局。 */
-#codexToolbarV2.cx-toolbar #btnRefreshCodexV2 {width:auto;min-height:32px}
+#codexToolbarV2.cx-toolbar {gap:8px 12px;padding:8px 14px}
+#codexToolbarV2.cx-toolbar :is(.ui-button,.ui-link,.tc-column-filter-trigger,input,select) {box-sizing:border-box;height:32px;min-height:32px;border-radius:6px;font-size:12px}
+#codexToolbarV2.cx-toolbar .ui-button {display:inline-flex;align-items:center;justify-content:center;padding:0 10px;font-weight:500;transition:border-color .15s ease,background-color .15s ease,color .15s ease}
+#codexToolbarV2.cx-toolbar .ui-link {display:inline-flex;align-items:center;justify-content:center;padding:0 9px;white-space:nowrap}
+#codexToolbarV2.cx-toolbar .ui-link:hover:not(:disabled) {background:var(--ui-color-surface-subtle,#f1f5f9)}
+#codexToolbarV2.cx-toolbar #btnRefreshCodexV2 {width:auto;min-height:32px;height:32px}
 .cx-danger {color:var(--ui-color-danger)}
-.cx-row-actions {flex-wrap:nowrap}
+.cx-row-actions {flex-wrap:nowrap;gap:6px}
+.cx-row-actions .ui-link {white-space:nowrap}
+.cx-account-id {font-family:var(--ui-font-mono,ui-monospace,SFMono-Regular,Menlo,monospace);font-size:12px}
+.cx-account-id .list-cell-primary {overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cx-table thead th {position:sticky;top:0;z-index:6;background:#f8fafc}
+.cx-table thead th:last-child {position:sticky;right:0;z-index:12;background:#f8fafc;border-left:1px solid var(--ui-color-border);box-shadow:-6px 0 12px -6px rgba(15,23,42,.08);text-align:center}
+.cx-table tbody td {background:#fff}
+.cx-table tbody tr:hover td {background:#f8fafc}
+.cx-table tbody tr.is-selected td {background:#eef2ff}
+.cx-table tbody td.cx-actions {position:sticky;right:0;z-index:4;background:#fff;border-left:1px solid var(--ui-color-border);box-shadow:-6px 0 12px -6px rgba(15,23,42,.08)}
+.cx-table tbody tr:hover td.cx-actions {background:#f8fafc}
+.cx-table tbody tr.is-selected td.cx-actions {background:#eef2ff}
 .cx-mobile-summary {display:none}
 .cx-all-filters {display:none}
 /* Portal 浮层拥有独立样式，不能依赖 cx-root 祖先。 */
@@ -34,7 +51,7 @@
   .cx-table tbody tr:not(.ui-table__state-row) {display:grid;grid-template-columns:28px minmax(0,1fr) auto;align-items:center;gap:8px;padding:10px;border-bottom:1px solid var(--ui-color-border)}
   .cx-table tbody tr:last-child {border-bottom:0}
   .cx-table td {display:block;height:auto;padding:0;border:0;min-width:0;background:transparent}
-  .cx-table :is(th,td):last-child {position:static;box-shadow:none}
+  .cx-table :is(th,td):last-child {position:static;border-left:0;background:transparent;box-shadow:none}
   .cx-table .cx-extra,.cx-direct-download,.cx-identity .list-cell-secondary {display:none}
   .cx-identity .list-cell-primary {display:block;white-space:nowrap;text-overflow:ellipsis;overflow:hidden;max-height:18px}
   .cx-mobile-summary {display:block;max-width:100%;margin-top:4px;color:var(--ui-color-text-secondary);font-size:12px;line-height:18px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -48,9 +65,9 @@
 }
 
 /* 选中凭证的批量操作并入顶部工具栏，与邮箱池保持一致。 */
-.cx-toolbar-main {flex-wrap:wrap}
+.cx-toolbar-main {flex-wrap:wrap;gap:6px 8px}
 .cx-bulk-actions {display:flex;align-items:center;flex-wrap:wrap;gap:6px;min-width:0;margin-left:2px;padding-left:10px;border-left:1px solid var(--ui-color-border)}
-.cx-bulk-actions .ui-button {min-height:28px;padding:3px 9px;font-size:12px}
+.cx-bulk-actions .ui-button {height:32px;min-height:32px;padding:0 10px;font-size:12px}
 @media (max-width:860px) {
   .cx-bulk-actions {flex-basis:100%;margin-left:0;padding-left:0;border-left:0}
 }

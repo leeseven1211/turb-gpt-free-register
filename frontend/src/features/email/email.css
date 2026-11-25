@@ -8,24 +8,28 @@
 .em-actions,.em-source-visibility,.em-dialog-foot {flex-wrap:wrap}
 .em-heading {margin-bottom:18px;align-items:flex-start}
 .em-heading p,.em-help,.em-source-visibility,.em-source-card p,.em-source-card small,.em-import-prompt p,.em-dialog-head p {color:var(--ui-color-text-secondary)}
-.em-button {display:inline-flex;align-items:center;justify-content:center;gap:5px;min-height:32px;max-width:100%;padding:5px 10px;border:1px solid var(--ui-color-border-strong);border-radius:5px;background:var(--ui-color-surface);color:var(--ui-color-text);font:inherit;white-space:nowrap;cursor:pointer}
+.em-button {display:inline-flex;align-items:center;justify-content:center;gap:5px;min-height:32px;height:32px;max-width:100%;padding:0 12px;border:1px solid var(--ui-color-border-strong);border-radius:var(--ui-radius-md,8px);background:var(--ui-color-surface);color:var(--ui-color-text);font:inherit;font-size:12.5px;font-weight:600;white-space:nowrap;cursor:pointer;transition:border-color .15s ease,background .15s ease,color .15s ease}
 .em-button:hover:not(:disabled) {border-color:var(--ui-color-brand);background:var(--ui-color-brand-soft);color:var(--ui-color-brand)}
 .em-button:disabled {opacity:.45;cursor:default}
 .em-primary {border-color:var(--ui-color-brand);background:var(--ui-color-brand);color:var(--ui-color-on-brand,#fff)}
+.em-primary:hover:not(:disabled) {border-color:var(--ui-color-brand-hover);background:var(--ui-color-brand-hover);color:#fff}
 .em-danger {color:var(--ui-color-danger)}
+.em-page .ui-link:disabled {background:transparent;border-color:transparent;box-shadow:none;color:var(--ui-color-text-subtle)}
+.em-toolbar .ui-button,.em-toolbar input,.em-toolbar select {min-height:32px;height:32px}
+.em-list {box-shadow:var(--ui-shadow-sm)}
 .em-page :is(button,input,select,textarea,summary):focus-visible,.em-dialog :is(button,input,select,textarea,summary):focus-visible {outline:2px solid var(--ui-color-brand);outline-offset:2px}
 .em-source-visibility {justify-content:space-between;margin-bottom:12px;font-size:12px}
-.em-source-cards {display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}
-.em-source-card {display:block;width:100%;min-width:0;padding:16px;border:1px solid var(--ui-color-border);border-radius:8px;background:var(--ui-color-surface);color:var(--ui-color-text);font:inherit;text-align:left}
+.em-source-cards {display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px}
+.em-source-card {display:block;width:100%;min-width:0;padding:16px 18px;border:1px solid var(--ui-color-border);border-radius:var(--ui-radius-lg,12px);background:var(--ui-color-surface);color:var(--ui-color-text);font:inherit;text-align:left;box-shadow:var(--ui-shadow-sm);transition:border-color .16s ease,box-shadow .16s ease,transform .16s ease}
 .em-source-card.is-clickable {cursor:pointer}
-.em-source-card.is-clickable:hover {border-color:var(--ui-color-brand)}
-.em-source-title {font-size:12px;align-items:flex-start}
-.em-source-title strong {overflow-wrap:anywhere}
-.em-source-title span {flex:none;color:var(--ui-color-text-secondary)}
-.em-source-number {display:block;margin:12px 0 5px;font-size:28px;line-height:1.2;font-variant-numeric:tabular-nums}
-.em-source-card p,.em-source-card small {display:block;overflow-wrap:anywhere;font-size:12px}
-.em-import-prompt {margin-top:18px;padding:18px;border:1px solid var(--ui-color-border);border-radius:8px;background:var(--ui-color-surface)}
-.em-import-prompt span {color:var(--ui-color-brand);font-size:12px}
+.em-source-card.is-clickable:hover {border-color:var(--ui-color-brand);box-shadow:0 6px 18px rgba(16,24,40,.06);transform:translateY(-1px)}
+.em-source-title {font-size:12.5px;align-items:center}
+.em-source-title strong {overflow-wrap:anywhere;font-weight:700}
+.em-source-title span {flex:none;padding:2px 8px;border-radius:999px;background:var(--ui-color-surface-subtle);border:1px solid var(--ui-color-border);color:var(--ui-color-text-secondary);font-size:11px;font-weight:600}
+.em-source-number {display:block;margin:12px 0 6px;font-size:28px;line-height:1.15;font-weight:720;font-variant-numeric:tabular-nums;color:var(--ui-color-text)}
+.em-source-card p,.em-source-card small {display:block;overflow-wrap:anywhere;font-size:12px;line-height:1.5}
+.em-import-prompt {margin-top:18px;padding:18px 20px;border:1px solid var(--ui-color-border);border-radius:var(--ui-radius-lg,12px);background:linear-gradient(135deg,var(--ui-color-surface) 0%,var(--ui-color-brand-soft) 100%);box-shadow:var(--ui-shadow-sm)}
+.em-import-prompt span {color:var(--ui-color-brand);font-size:12px;font-weight:700}
 .em-inventory {display:flex;flex-direction:column;height:calc(100dvh - var(--topbar-height,56px) - 42px);min-height:min-content}
 .em-inventory > :not(.em-table-wrap) {flex-shrink:0}
 .em-inventory .em-table-wrap {flex:1 1 0px;min-height:96px;isolation:isolate;overscroll-behavior:contain}
@@ -63,8 +67,8 @@ body.em-native-dialog-lock {position:fixed;left:0;right:0;width:100%;overflow:hi
 .em-stats>div {display:flex;flex-direction:column;color:var(--ui-color-text-secondary);font-size:12px}
 .em-stats strong {color:var(--ui-color-text);font-size:22px;font-variant-numeric:tabular-nums}
 .em-preserve-lines {white-space:pre-wrap}
-.em-recovery {position:fixed;right:20px;bottom:20px;z-index:1000;max-width:calc(100vw - 40px);white-space:normal;text-align:left;border-color:var(--ui-color-brand);box-shadow:0 6px 24px #0002}
-@media(max-width:680px){.em-heading,.em-import-prompt{flex-direction:column;align-items:stretch}.em-dialog{max-width:calc(100vw - 20px);max-height:calc(100dvh - 24px)}.em-dialog-head,.em-dialog-body{padding:14px}.em-dialog-foot{padding:12px 14px}.em-dialog-fields{grid-template-columns:1fr}.em-button{min-height:38px}.em-field input,.em-field select,.em-field textarea{font-size:16px}.em-source-cards{grid-template-columns:1fr}.em-recovery{right:12px;bottom:12px;max-width:calc(100vw - 24px)}}
+.em-recovery {position:fixed;right:20px;bottom:72px;z-index:990;height:auto;min-height:36px;padding:8px 14px;border-radius:10px;max-width:calc(100vw - 40px);white-space:normal;text-align:left;border-color:var(--ui-color-brand);box-shadow:0 8px 24px rgba(16,24,40,.14)}
+@media(max-width:680px){.em-heading,.em-import-prompt{flex-direction:column;align-items:stretch}.em-dialog{max-width:calc(100vw - 20px);max-height:calc(100dvh - 24px)}.em-dialog-head,.em-dialog-body{padding:14px}.em-dialog-foot{padding:12px 14px}.em-dialog-fields{grid-template-columns:1fr}.em-button{min-height:38px;height:auto}.em-field input,.em-field select,.em-field textarea{font-size:16px}.em-source-cards{grid-template-columns:1fr}.em-recovery{right:12px;bottom:68px;max-width:calc(100vw - 24px)}}
 
 /* 选中邮箱后的批量操作并入顶部工具栏，避免再占一行。 */
 .em-toolbar .ui-list-toolbar__main { flex-wrap: wrap; }

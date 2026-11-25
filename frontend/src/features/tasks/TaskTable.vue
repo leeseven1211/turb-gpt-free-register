@@ -16,10 +16,16 @@ const allChecked = computed(() => props.items.length > 0 && props.items.every(it
 const partial = computed(() => !allChecked.value && props.items.some(item => props.selected.has(item.id)));
 const rows = computed(() => props.items.map(task => ({task, ...taskListStatus(task)})));
 const columns = ['选择', 'ID', '类型', '目标', '执行状态', '目标状态', '批次 / 触发', '运行次数', '当前步骤', '创建 / 完成', '结果 / 错误', '操作'];
-const defaults = [40, 72, 118, 198, 108, 112, 145, 88, 128, 168, 170, 145];
+const defaults = [40, 72, 148, 198, 108, 112, 145, 88, 204, 176, 170, 145];
 const {widths, resize, resizeWithKeyboard, resetColumns} = useColumnWidths({defaults,
   storageKey: 'turb_task_center_columns', min: 65, max: 800, savedMin: 40});
 
+function targetPrimary(task: OperationTask) {
+  return task.account_id ? `账号 #${task.account_id}` : task.attempt_id ? `注册尝试 #${task.attempt_id}` : '';
+}
+function targetSecondary(task: OperationTask) {
+  return String(task.email_snapshot || task.email || '').trim();
+}
 function stepText(task: OperationTask) { return failureStageText(task) || task.current_stage_label || label('stage', task.current_stage); }
 function stepTitle(task: OperationTask) { return [task.current_stage_label || label('stage', task.current_stage), failureStageText(task), formatDuration(task.duration_ms)].filter(Boolean).join(' · '); }
 function batchId(task: OperationTask) { return String(task.bulk_batch_id || record(task.bulk_context).batch_id || ''); }
@@ -43,9 +49,9 @@ defineExpose({resetColumns});
         <td data-label="选择" class="ui-col-check"><input type="checkbox" :checked="selected.has(task.id)" :aria-label="`选择任务 #${task.id}`" @change="emit('select', task.id, ($event.target as HTMLInputElement).checked)"></td>
         <td data-label="ID"><button type="button" class="ui-link tc-task-id" @click="emit('detail', task.id)">#{{ task.id }}</button></td>
         <td data-label="类型"><ListCell :text="label('task_type', task.task_type)"/></td>
-        <td data-label="目标"><ListCell :text="task.account_id ? `账号 #${task.account_id}` : task.attempt_id ? `注册尝试 #${task.attempt_id}` : '—'" :secondary="task.email_snapshot || task.email || '—'"><strong>{{ task.account_id ? `账号 #${task.account_id}` : task.attempt_id ? `注册尝试 #${task.attempt_id}` : '—' }}</strong></ListCell></td>
+        <td data-label="目标"><ListCell v-if="targetPrimary(task) || targetSecondary(task)" :text="targetPrimary(task) || '—'" :secondary="targetSecondary(task) || undefined"><strong v-if="targetPrimary(task)">{{ targetPrimary(task) }}</strong><span v-else class="tc-muted-placeholder">—</span></ListCell><span v-else class="tc-muted-placeholder" aria-label="无目标">—</span></td>
         <td data-label="执行状态"><span class="ui-badge tc-badge" :class="`ui-badge--${execution.tone}`" :title="execution.title">{{ execution.label }}</span><span v-if="execution.secondary" class="tc-subline tc-cell-line" :title="execution.secondary">{{ execution.secondary }}</span></td>
-        <td data-label="目标状态"><span v-if="target" class="ui-badge tc-badge" :class="`ui-badge--${target.tone}`" :title="target.title">{{ target.label }}</span><span v-else class="tc-cell-line" aria-label="无额外目标状态">—</span></td>
+        <td data-label="目标状态"><span v-if="target" class="ui-badge tc-badge" :class="`ui-badge--${target.tone}`" :title="target.title">{{ target.label }}</span><span v-else class="tc-cell-line tc-muted-placeholder" aria-label="无额外目标状态">—</span></td>
         <td data-label="批次 / 触发"><ListCell :text="task.batch_title || task.batch_uuid || (batchId(task) ? '查看批次' : '单任务')" :secondary="label('trigger', task.trigger)"><button v-if="batchId(task)" type="button" class="ui-link" @click="emit('batch', batchId(task), batchRound(task))">{{ task.batch_title || task.batch_uuid || '查看批次' }}</button><template v-else>{{ task.batch_title || task.batch_uuid || '单任务' }}</template></ListCell></td>
         <td data-label="运行次数"><ListCell :text="`${task.run_count || 0} 次`" :secondary="`最近 #${task.last_run_no || '—'}`"/></td>
         <td data-label="当前步骤"><ListCell :text="stepText(task)" :secondary="formatDuration(task.duration_ms)" :title="stepTitle(task)" :tone="failureStageText(task) ? 'danger' : 'neutral'"/></td>

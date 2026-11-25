@@ -1139,7 +1139,7 @@ function debounce(fn, wait=250) {
 const TAB_META = {
   overview: { title: '平台总览', description: '账号、邮箱、任务和网络资源运行状态' },
   register: { title: '注册中心', description: '发起批次并追踪自动化注册流程' },
-  bulk: { title: '批量任务', description: '' },
+  bulk: { title: '批量任务', description: '按筛选范围创建、暂停和追踪批量账号操作' },
   tasks: { title: '任务中心', description: '统一查看注册、恢复、Codex 补跑和账号操作的任务链路' },
   'extract-workbench': { title: '提链工作台', description: '管理提链、支付状态和 Plus 权益核验' },
   'extract-stats': { title: '提链统计', description: '查看提链产出、支付转化、平台表现和失败分布' },
@@ -1322,6 +1322,13 @@ function closePageDialogsForNavigation() {
 function activateTab(tab, persist=true, historyMode=persist ? 'push' : 'none') {
   if (!NAV_ALLOWED_TABS.includes(tab)) tab = 'overview';
   if (tab !== ACTIVE_TAB) closePageDialogsForNavigation();
+  // 切换菜单时清理非键盘聚焦的残留焦点，避免旧菜单项留下背景高亮。
+  const focusedSidebarBtn = document?.activeElement?.closest?.('.sidebar-nav button');
+  if (focusedSidebarBtn) {
+    let keepKeyboardFocus = false;
+    try { keepKeyboardFocus = focusedSidebarBtn.matches?.(':focus-visible'); } catch (_) {}
+    if (!keepKeyboardFocus) focusedSidebarBtn.blur?.();
+  }
   ACTIVE_TAB = tab;
   const sidebarTab = tab === 'extract-stats' ? 'extract-workbench' : tab;
   $$('.sidebar-nav button[data-tab]').forEach(x => {
@@ -1387,12 +1394,15 @@ function activateTab(tab, persist=true, historyMode=persist ? 'push' : 'none') {
   if (historyMode === 'push') recordNavigationHistory();
   else updateNavigationBackButton();
 }
-$$('.sidebar-nav button[data-tab]').forEach(b => b.addEventListener('click', () => activateTab(b.dataset.tab)));
+$$('.sidebar-nav button[data-tab]').forEach(b => b.addEventListener('click', (event) => {
+  if (event.detail > 0) b.blur();
+  activateTab(b.dataset.tab);
+}));
 
 const MODULE_VIEW_META = {
   register: {
     launch: '配置邮箱来源、批次数量与并发线程',
-    tasks: '查询、筛选和维护注册任务',
+    tasks: '查看自动化注册任务队列与验证码状态',
   },
   accounts: {
     active: '查询、筛选和批量维护活跃账号',
@@ -1405,7 +1415,7 @@ const MODULE_VIEW_META = {
   outlook: {
     overview: '查看邮箱供给、使用情况与 Email Butler 租约',
     list: '查询、导入和批量维护邮箱资源',
-    derivations: '',
+    derivations: '查看母邮箱派生的历史子邮箱与绑定记录',
   },
   'proxy-traffic': {
     pool: '查看独立代理池库存、容量和线路状态',
@@ -1449,6 +1459,7 @@ function setModuleView(module, view, persist=true, historyMode='push') {
 $$('[data-module-subnav]').forEach(nav => nav.addEventListener('click', event => {
   const btn = event.target.closest('[data-view]');
   if (!btn) return;
+  if (event.detail > 0) btn.blur();
   const module = nav.dataset.moduleSubnav;
   const tab = document.getElementById(`tab-${module}`);
   if (tab?.classList.contains('hidden')) {

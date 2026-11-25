@@ -10,12 +10,43 @@
 #accountTaskStageProgress .account-task-stage-step {
   height: auto;
   min-height: 54px;
+  border-radius: 8px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+}
+#accountTaskStageProgress .account-task-stage-step.is-success {
+  background: linear-gradient(180deg, #f0fdf6 0%, #dcfce7 100%);
+  border-color: #86efac;
+}
+#accountTaskStageProgress .account-task-stage-step.is-failed {
+  background: linear-gradient(180deg, #fff5f5 0%, #fee2e2 100%);
+  border-color: #fca5a5;
+}
+#accountTaskStageProgress .account-task-stage-step.is-running {
+  background: linear-gradient(180deg, #eef2ff 0%, #e0e7ff 100%);
+  border-color: #a5b4fc;
+}
+#accountTaskStageProgress .account-task-stage-step.is-unconfirmed,
+#accountTaskStageProgress .account-task-stage-step.is-request_unknown,
+#accountTaskStageProgress .account-task-stage-step.is-attention_required {
+  background: linear-gradient(180deg, #fffbeb 0%, #fef3c7 100%);
+  border-color: #fcd34d;
+}
+#accountTaskStageProgress .account-task-stage-step.is-not_executed,
+#accountTaskStageProgress .account-task-stage-step.is-record_incomplete,
+#accountTaskStageProgress .account-task-stage-step.is-skipped,
+#accountTaskStageProgress .account-task-stage-step.is-stopped,
+#accountTaskStageProgress .account-task-stage-step.is-deferred,
+#accountTaskStageProgress .account-task-stage-step.is-pending {
+  background: #f1f5f9;
+  border-color: #cbd5e1;
 }
 #accountTaskStageProgress .account-task-stage-duration {
   margin-top: 2px;
 }
 #accountTaskStageProgress .account-task-failure-brief {
   min-height: 26px;
+  border-radius: 6px;
+  padding: 5px 8px;
 }
 #accountTaskStageProgress .account-task-failure-brief :is(strong, span) {
   text-overflow: ellipsis;

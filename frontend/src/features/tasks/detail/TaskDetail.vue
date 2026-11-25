@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { admissionText, formatDateTime, formatDuration, label } from '../presentation';
+import { admissionText, formatDateTime, formatDuration, label, statusTone } from '../presentation';
 import { artifactUrl, eventState, matchesStep, meaningfulDetail, object, orderedEvents, progressLabel, stepId, stepLabel, text, type DetailTab, type TaskEvent } from './model';
 import {sameTaskId,type TaskId} from '../../../api/taskIds';
 import { useTaskDetail } from './useTaskDetail';
@@ -130,7 +130,7 @@ defineExpose({ open, close, setVisible });
       <header class="tc-detail-header">
         <h2 id="tc-detail-title">任务 #{{ taskId }} <span v-if="task">{{ label('task_type', task.task_type) }}</span></h2>
         <span class="tc-detail-target" :title="String(target)" tabindex="0">{{ target }}</span>
-        <div v-if="runSummary" class="tc-detail-status"><strong>{{ label('status', runSummary.status) }}</strong><span>耗时 {{ formatDuration(runSummary.duration_ms) }}</span></div>
+        <div v-if="runSummary" class="tc-detail-status" :class="`tc-detail-status--${statusTone(runSummary.status)}`"><strong>{{ label('status', runSummary.status) }}</strong><span>耗时 {{ formatDuration(runSummary.duration_ms) }}</span></div>
         <label v-if="task" class="tc-detail-run"><span>运行</span><select :value="runId || ''" aria-label="选择执行实例" :disabled="runs.length < 2 && (!runId || !!selectedRun)" @change="selectRun"><option v-if="runId && !selectedRun" :value="runId" disabled>运行 #{{ runId }} 不可用</option><option v-else-if="!runs.length" value="">暂无运行</option><option v-for="run in runs" :key="run.id" :value="run.id">第 {{ run.run_no || '—' }} 次 · {{ label('status', run.status) }}</option></select></label>
         <div class="tc-detail-header-actions"><button type="button" :disabled="loading" @click="detail.refresh">{{ loading ? '刷新中…' : '刷新' }}</button><button type="button" autofocus aria-label="关闭任务详情" @click="close">关闭</button></div>
       </header>
@@ -144,7 +144,7 @@ defineExpose({ open, close, setVisible });
         <p v-if="progressError" class="tc-detail-error" role="status">进度读取失败：{{ progressError }}<template v-if="progress">；保留上次快照</template></p>
         <div class="tc-detail-view-toolbar">
           <div class="tc-detail-tabs" role="tablist" aria-label="任务详情视图" @keydown="tabKeys"><button v-for="item in tabs" :id="`tc-detail-tab-${item.id}`" :key="item.id" type="button" role="tab" :data-detail-tab="item.id" :aria-selected="tab === item.id" :aria-controls="`tc-detail-panel-${item.id}`" :tabindex="tab === item.id ? 0 : -1" @click="selectTab(item.id)">{{ item.label }}</button></div>
-          <div class="tc-detail-filter"><span>当前查看：<strong>{{ selectedStep ? stepLabel(selectedStep) : stepFilter || '全流程' }}</strong></span><button v-if="stepFilter" type="button" @click="stepFilter = null">清除步骤筛选</button></div>
+          <div class="tc-detail-filter" :class="{ 'is-active': !!stepFilter }"><span>当前查看：<strong>{{ selectedStep ? stepLabel(selectedStep) : stepFilter || '全流程' }}</strong></span><button v-if="stepFilter" type="button" @click="stepFilter = null">清除步骤筛选</button></div>
           <div v-if="tab !== 'artifacts'" class="tc-detail-read-toolbar"><button type="button" :aria-pressed="(tab === 'events' ? eventsMode : logsMode) === 'start'" :disabled="eventsLoading || logsLoading || !runId" @click="loadWindow('start')">从头加载</button><button type="button" :aria-pressed="(tab === 'events' ? eventsMode : logsMode) === 'tail'" :disabled="eventsLoading || logsLoading || !runId" @click="loadWindow('tail')">最近记录</button></div>
         </div>
         <div ref="scroller" class="tc-detail-content">
@@ -152,8 +152,8 @@ defineExpose({ open, close, setVisible });
             <p v-if="eventsError" class="tc-detail-error" role="alert">事件读取失败：{{ eventsError }}<button type="button" :disabled="eventsLoading" @click="detail.loadEvents()">重试</button></p>
             <p v-if="eventsEarlier" class="tc-detail-notice">当前展示最近记录；更早历史可通过“从头加载”读取。</p>
             <div v-if="!filteredEvents.length" class="tc-detail-empty" role="status">{{ eventsLoading ? '正在读取事件…' : stepFilter ? '当前步骤暂无关联事件' : '此运行暂无事件' }}</div>
-            <article v-for="row in eventRows" :key="row.event.id" :class="['tc-event', { 'tc-event--error': row.state === 'failed' }]">
-              <div class="tc-event-meta"><time>{{ row.timestamp }}</time><span>{{ row.event.level || 'INFO' }}</span><strong>{{ row.stageLabel }}</strong><span v-if="row.association">{{ row.association }}</span><span>{{ row.stateLabel }}</span><small>事件 {{ row.event.event_id || row.event.id }}</small></div>
+            <article v-for="row in eventRows" :key="row.event.id" :class="['tc-event', { 'tc-event--error': row.state === 'failed', 'tc-event--success': row.state === 'success' || row.state === 'recovered', 'tc-event--running': row.state === 'running', 'tc-event--warning': ['stopped', 'interrupted', 'debug_paused', 'attention_required', 'queued'].includes(row.state) }]">
+              <div class="tc-event-meta"><time>{{ row.timestamp }}</time><span class="tc-event-level" :data-level="(row.event.level || 'INFO').toUpperCase()">{{ row.event.level || 'INFO' }}</span><strong class="tc-event-stage">{{ row.stageLabel }}</strong><span v-if="row.association" class="tc-event-step">{{ row.association }}</span><span class="tc-event-state" :data-state="row.state || 'info'">{{ row.stateLabel }}</span><small class="tc-event-id">事件 {{ row.event.event_id || row.event.id }}</small></div>
               <p>{{ row.event.message || '—' }}</p><details v-if="row.detailJson" class="tc-technical"><summary>技术详情</summary><pre>{{ row.detailJson }}</pre></details>
             </article>
             <button v-if="eventsMore" class="tc-load-more" type="button" :disabled="eventsLoading" @click="loadWindow('next')">{{ eventsLoading ? '正在读取…' : '继续加载后续事件' }}</button>
@@ -162,8 +162,8 @@ defineExpose({ open, close, setVisible });
             <p v-if="logsError" class="tc-detail-error" role="alert">日志读取失败：{{ logsError }}<button type="button" :disabled="logsLoading" @click="detail.loadLogs()">重试</button></p>
             <p v-if="logsEarlier" class="tc-detail-notice">正在查看文件尾部；“从头加载”将按顺序分页读取。</p>
             <div v-if="!filteredLogs.length" class="tc-detail-empty" role="status">{{ logsLoading ? '正在读取运行日志…' : !logsAvailable ? '当前 Run 暂无技术日志，历史任务可能只有事件时间线' : stepFilter ? '当前步骤暂无关联运行日志' : '此运行暂无日志' }}</div>
-            <article v-for="(row, index) in logRows" :key="`${row.item.event_uuid || row.item.event_id || ''}:${row.item.ts}:${index}`" class="tc-log-line">
-              <div class="tc-event-meta"><time>{{ row.timestamp }}</time><strong>{{ row.item.level || 'INFO' }}</strong><span>{{ row.item.stage_label || row.item.stage || '未关联步骤' }}</span></div><p>{{ row.item.message }}</p><details v-if="row.detailJson" class="tc-technical"><summary>技术详情</summary><pre>{{ row.detailJson }}</pre></details>
+            <article v-for="(row, index) in logRows" :key="`${row.item.event_uuid || row.item.event_id || ''}:${row.item.ts}:${index}`" class="tc-log-line" :data-level="(row.item.level || 'INFO').toUpperCase()">
+              <div class="tc-event-meta"><time>{{ row.timestamp }}</time><strong class="tc-log-level" :data-level="(row.item.level || 'INFO').toUpperCase()">{{ row.item.level || 'INFO' }}</strong><span class="tc-log-stage">{{ row.item.stage_label || row.item.stage || '未关联步骤' }}</span></div><p>{{ row.item.message }}</p><details v-if="row.detailJson" class="tc-technical"><summary>技术详情</summary><pre>{{ row.detailJson }}</pre></details>
             </article>
             <button v-if="logsMore" class="tc-load-more" type="button" :disabled="logsLoading" @click="loadWindow('next')">{{ logsLoading ? '正在读取…' : '继续加载后续日志' }}</button>
           </section>

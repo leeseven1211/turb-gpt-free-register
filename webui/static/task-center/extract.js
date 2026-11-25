@@ -1,11 +1,11 @@
-import { C as e, F as t, G as n, H as r, K as i, L as a, M as o, Q as s, R as c, S as l, _ as u, a as d, b as f, c as p, d as m, dt as h, et as g, ft as _, g as v, h as y, j as b, l as x, lt as S, m as C, n as w, o as T, s as E, st as D, t as O, v as k, x as A } from "./_plugin-vue_export-helper-BSZsFlS8.js";
+import { C as e, F as t, G as n, H as r, K as i, L as a, M as o, Q as s, R as c, S as l, _ as u, a as d, b as f, c as p, d as m, dt as h, et as g, ft as _, g as v, h as y, j as b, l as x, lt as S, m as C, n as w, o as T, s as E, st as D, t as O, v as k, x as A } from "./_plugin-vue_export-helper-Btipf5Px.js";
 import { r as j, t as M } from "./client-B5R_MNgP.js";
 import { a as N, i as P, r as F } from "./taskIds-BlchWwUp.js";
 import { a as I, n as L, t as ee } from "./bulkMutations-3wwPI3-H.js";
-import { t as te } from "./useNativeDialog-DWisXYg9.js";
-import { t as ne } from "./ListPagination-DURVj-Kj.js";
-import { i as R, n as re, r as z, t as ie } from "./ListFilterSummary-C8h8bMwn.js";
-import { t as ae } from "./ListResult-CPVXnLlZ.js";
+import { t as te } from "./useNativeDialog-g-m38H2d.js";
+import { t as ne } from "./ListPagination-CmqtjjEX.js";
+import { i as R, n as re, r as z, t as ie } from "./ListFilterSummary-M6f9Z7EF.js";
+import { t as ae } from "./ListResult-RnSAyLEO.js";
 // src/api/extract.ts
 var B = "/api/extract-workbench";
 function V(e) {
@@ -196,17 +196,17 @@ var oe = {
 	let t = Number(e);
 	return Number.isFinite(t) && t >= 0 ? Math.floor(t) : 0;
 }, K = (e) => G(e).toLocaleString("zh-CN");
-function pe(e) {
+function q(e) {
 	if (e == null || e === "") return "—";
 	let t = Number(e);
 	return Number.isFinite(t) && t >= 0 && t <= 1 ? `${(t * 100).toFixed(1)}%` : "—";
 }
-function me(e) {
+function pe(e) {
 	if (e == null || e === "" || !Number.isFinite(Number(e)) || Number(e) < 0) return "—";
 	let t = Math.round(Number(e));
 	return t < 60 ? `${t} 秒` : t < 3600 ? `${Math.floor(t / 60)} 分 ${t % 60} 秒` : `${Math.floor(t / 3600)} 小时 ${Math.floor(t % 3600 / 60)} 分`;
 }
-function he(e) {
+function me(e) {
 	if (!e) return "—";
 	let t = new Date(e);
 	return Number.isFinite(t.getTime()) ? new Intl.DateTimeFormat("zh-CN", {
@@ -220,14 +220,14 @@ function he(e) {
 		hour12: !1
 	}).format(t).replaceAll("/", "-") : "—";
 }
-var ge = (e) => Array.isArray(e?.modes) ? e.modes : [], _e = (e) => e?.link_types?.length ? [...new Set(e.link_types)] : e?.default_type ? [e.default_type] : [];
-function ve(e) {
+var he = (e) => Array.isArray(e?.modes) ? e.modes : [], ge = (e) => e?.link_types?.length ? [...new Set(e.link_types)] : e?.default_type ? [e.default_type] : [];
+function _e(e) {
 	return e.payment_source ? e.payment_source_label || {
 		native: "平台自带",
 		xxsyun: "XXSYUN"
 	}[e.payment_source] || "未知来源" : "";
 }
-var ye = (e) => e.mode === "auto_payment" && ve(e) ? ` · 自动支付来源：${ve(e)}` : "", be = (e) => [
+var ve = (e) => e.mode === "auto_payment" && _e(e) ? ` · 自动支付来源：${_e(e)}` : "", ye = (e) => [
 	"queued",
 	"running",
 	"waiting",
@@ -235,7 +235,7 @@ var ye = (e) => e.mode === "auto_payment" && ve(e) ? ` · 自动支付来源：$
 	"cancelling",
 	"stopping"
 ].includes(e.task_status || "");
-function xe(e) {
+function be(e) {
 	return [
 		"request_unknown",
 		"attention_required",
@@ -251,8 +251,8 @@ function xe(e) {
 		"paid"
 	].includes(e.internal_payment_status || e.payment_status || "") || e.payment_order?.submission_state === "unknown" || e.local_reconcile_halted === !0 || e.reconcile_halt?.halted === !0;
 }
-var Se = (e) => !be(e) && !xe(e);
-function q(e) {
+var xe = (e) => !ye(e) && !be(e);
+function J(e) {
 	return e.local_reconcile_halted || e.reconcile_halt?.halted || ["request_unknown", "attention_required"].includes(e.task_status || "") && ["queued", "running"].includes(e.extraction_status || "") ? "query_stopped" : ["queued", "waiting"].includes(e.task_status || "") && [
 		"passed",
 		"success",
@@ -264,7 +264,7 @@ function q(e) {
 		"unknown"
 	].includes(e.extraction_status || "") ? "waiting_sync" : "";
 }
-function Ce(e) {
+function Se(e) {
 	let t = ["success", "succeeded"].includes(e.extraction_status || ""), n = e.payment_status === "paid", r = ["confirmed", "plus"].includes(e.plus_status || "");
 	return n && r ? {
 		label: "支付成功 · Plus 已到账",
@@ -279,20 +279,20 @@ function Ce(e) {
 		tone: "success",
 		detail: "本地套餐已核实，平台支付响应记录缺失"
 	} : t ? {
-		label: e.payment_status === "failed" ? "已出链 · 支付失败" : q(e) === "query_stopped" ? "已出链 · 已停止查询" : [
+		label: e.payment_status === "failed" ? "已出链 · 支付失败" : J(e) === "query_stopped" ? "已出链 · 已停止查询" : [
 			"failed",
 			"cancelled",
 			"stopped",
 			"request_unknown",
 			"attention_required"
 		].includes(e.task_status || "") ? "已出链 · 后续未完成" : "已出链",
-		tone: e.payment_status === "failed" || xe(e) ? "warning" : "success",
+		tone: e.payment_status === "failed" || be(e) ? "warning" : "success",
 		detail: e.error_info?.summary || e.error || e.message || (e.mode === "extract_only" ? "仅提链已完成，未发起支付" : "支付链接已生成，支付与套餐结果分别记录")
-	} : q(e) ? {
-		label: U(q(e)),
+	} : J(e) ? {
+		label: U(J(e)),
 		tone: "warning",
 		detail: e.reconcile_halt?.label || e.error_info?.summary || e.error || e.message || "原远端任务记录已保留"
-	} : xe(e) ? {
+	} : be(e) ? {
 		label: "结果记录缺失",
 		tone: "warning",
 		detail: e.error_info?.summary || e.error || e.message || "未取得平台有效响应"
@@ -310,7 +310,7 @@ function Ce(e) {
 		detail: e.progress?.label || e.message || "等待开始提链"
 	};
 }
-function J(e, t = !1) {
+function Y(e, t = !1) {
 	let n = String(e || "").trim();
 	if (t && /^data:image\/(?:png|svg\+xml);base64,[a-z0-9+/=\s]+$/i.test(n)) return n;
 	try {
@@ -320,8 +320,8 @@ function J(e, t = !1) {
 		return "";
 	}
 }
-var we = (e) => [...new Set([e.qr_image_url_png, e.qr_image_url_svg].map((e) => J(e, !0)).filter(Boolean))];
-function Te(e, t = !1) {
+var Ce = (e) => [...new Set([e.qr_image_url_png, e.qr_image_url_svg].map((e) => Y(e, !0)).filter(Boolean))];
+function we(e, t = !1) {
 	let n = String(e ?? "").toLowerCase();
 	return (t ? {
 		true: "平台显示已开通",
@@ -359,11 +359,11 @@ function Te(e, t = !1) {
 		unknown: "支付响应缺失"
 	})[n] || String(e || "平台未返回");
 }
-var Y = (e) => e instanceof Error ? e.message : "请求失败，请重试";
-function Ee(e) {
+var X = (e) => e instanceof Error ? e.message : "请求失败，请重试";
+function Te(e) {
 	return e === "all" ? "匹配套餐优惠已查明（有或无）的活跃、未归档 free 账号；套餐待查及状态未知的账号不包含，提交前仍会在线查活。" : e === "none" ? "仅匹配活跃、未归档且上次查询无优惠的 free 账号；当前优惠由提链平台判断，提交前仍会在线查活。" : `仅匹配活跃、未归档且具备${e === "eligible" ? "任一可提链" : `「${le[e] || e}」`}优惠的 free 账号；提交前仍会在线查活。`;
 }
-function X(e) {
+function Z(e) {
 	let t = [
 		"任务号",
 		"邮箱",
@@ -391,37 +391,37 @@ function X(e) {
 		e.updated_at
 	])].map((e) => e.map(n).join(",")).join("\r\n");
 }
-function De(e, t) {
+function Ee(e, t) {
 	let n = URL.createObjectURL(e), r = document.createElement("a");
 	r.href = n, r.download = t, document.body.append(r), r.click(), r.remove(), setTimeout(() => URL.revokeObjectURL(n), 2e3);
 }
-function Oe(e) {
-	let t = Ce(e), n = e.payment_status === "paid", r = ["confirmed", "plus"].includes(e.plus_status || ""), i = n && r ? "支付与Plus确认" : n ? "已支付待核验" : r ? "Plus已到账" : q(e) ? U(q(e)) : xe(e) ? "结果记录缺失" : ["success", "succeeded"].includes(e.extraction_status || "") ? e.payment_status === "failed" ? "已出链支付失败" : "已出链" : [
+function De(e) {
+	let t = Se(e), n = e.payment_status === "paid", r = ["confirmed", "plus"].includes(e.plus_status || ""), i = n && r ? "支付与Plus确认" : n ? "已支付待核验" : r ? "Plus已到账" : J(e) ? U(J(e)) : be(e) ? "结果记录缺失" : ["success", "succeeded"].includes(e.extraction_status || "") ? e.payment_status === "failed" ? "已出链支付失败" : "已出链" : [
 		"failed",
 		"cancelled",
 		"stopped"
-	].includes(e.task_status || "") ? e.task_status === "cancelled" ? "已取消" : "提链未完成" : be(e) ? "执行中" : "排队中";
+	].includes(e.task_status || "") ? e.task_status === "cancelled" ? "已取消" : "提链未完成" : ye(e) ? "执行中" : "排队中";
 	return {
 		...t,
 		label: i,
 		detail: t.detail
 	};
 }
-function ke(e) {
+function Oe(e) {
 	if (e == null || e === "") return null;
 	let t = Number(e);
 	if (Number.isFinite(t) && t > 1e11) return t;
 	let n = Date.parse(String(e));
 	return Number.isFinite(n) ? n : null;
 }
-function Ae(e, t = Date.now()) {
-	let n = ke(e);
+function ke(e, t = Date.now()) {
+	let n = Oe(e);
 	if (n == null) return "—";
 	let r = Math.floor((n - t) / 1e3);
 	return r <= 0 ? "已过期" : `${String(Math.floor(r / 60)).padStart(2, "0")}:${String(r % 60).padStart(2, "0")}`;
 }
 // src/features/extract/useExtractWorkbench.ts
-var je = () => ({
+var Ae = () => ({
 	page: 1,
 	size: 20,
 	provider: "",
@@ -429,10 +429,10 @@ var je = () => ({
 	status: "",
 	query: "",
 	batch: ""
-}), Me = 3e4;
-function Ne(e = {}) {
+}), je = 3e4;
+function Me(e = {}) {
 	let t = e.api || H(e), n = s({
-		query: je(),
+		query: Ae(),
 		items: [],
 		total: 0,
 		counts: {},
@@ -478,10 +478,10 @@ function Ne(e = {}) {
 		s && (p = setTimeout(() => void P({ quiet: !0 }), s));
 	}
 	function D(e, r) {
-		if (!e && n.config && Date.now() - l < Me) return Promise.resolve(n.config);
+		if (!e && n.config && Date.now() - l < je) return Promise.resolve(n.config);
 		if (m) return m.promise;
 		let i = ++o, a = C(), s = t.config(a.signal).then((e) => (x(r) && m?.version === i && (n.config = e, n.auxErrors.config = "", l = Date.now(), E(f > 0)), e)).catch((e) => {
-			throw x(r) && (n.auxErrors.config = Y(e)), e;
+			throw x(r) && (n.auxErrors.config = X(e)), e;
 		}).finally(() => {
 			y.delete(a), m?.version === i && (m = void 0);
 		});
@@ -493,7 +493,7 @@ function Ne(e = {}) {
 	function O(e) {
 		if (h) return h.promise;
 		let r = ++o, i = C(), a = t.summary(i.signal).then((t) => (x(e) && (n.summary = t, n.auxErrors.summary = ""), t)).catch((t) => {
-			throw x(e) && (n.auxErrors.summary = Y(t)), t;
+			throw x(e) && (n.auxErrors.summary = X(t)), t;
 		}).finally(() => {
 			y.delete(i), h?.version === r && (h = void 0);
 		});
@@ -508,7 +508,7 @@ function Ne(e = {}) {
 		let a = ++o, s = C();
 		n.batchLoading = !0, n.auxErrors.batches = "";
 		let c = () => x(r) && e === n.batchPage && _.get(e)?.version === a, l = t.batches(e, s.signal).then((t) => (c() && (n.batches = t.items, n.batchTotal = t.total, d = e, u = Date.now()), t)).catch((e) => {
-			throw c() && (n.auxErrors.batches = Y(e)), e;
+			throw c() && (n.auxErrors.batches = X(e)), e;
 		}).finally(() => {
 			y.delete(s), c() && (n.batchLoading = !1), _.get(e)?.version === a && _.delete(e);
 		});
@@ -540,7 +540,7 @@ function Ne(e = {}) {
 	}
 	async function M(e, t) {
 		D(!!e.force, t).catch(() => {}), O(t).catch(() => {});
-		let r = n.batchPage, i = n.query.batch, a = ++c, o = !!e.force || d !== r || Date.now() - u >= Me;
+		let r = n.batchPage, i = n.query.batch, a = ++c, o = !!e.force || d !== r || Date.now() - u >= je;
 		try {
 			let s = o ? (await k(r, t)).items : n.batches;
 			if (!x(t) || r !== n.batchPage || i !== n.query.batch || a !== c) return;
@@ -551,7 +551,7 @@ function Ne(e = {}) {
 			let l = (!e.quiet || o ? s.find((e) => String(e.batch_id) === i) : null) || (await j(i, t)).item;
 			x(t) && i === n.query.batch && a === c && (n.batchDetail = l, n.auxErrors.detail = "", E(f > 0));
 		} catch (e) {
-			x(t) && i === n.query.batch && r === n.batchPage && (n.auxErrors.detail = Y(e));
+			x(t) && i === n.query.batch && r === n.batchPage && (n.auxErrors.detail = X(e));
 		}
 	}
 	async function P(r = {}) {
@@ -568,13 +568,13 @@ function Ne(e = {}) {
 			for (let e of [...n.selected]) r.items.some((t) => String(t.task_id) === e) || n.selected.delete(e);
 			f = 0, e.onReady?.(), E();
 		} catch (e) {
-			x(s) && o === a && (n.error = Y(e), f++, E(!0));
+			x(s) && o === a && (n.error = X(e), f++, E(!0));
 		} finally {
 			y.delete(l), x(s) && o === a && (n.loading = !1);
 		}
 	}
 	async function F(e) {
-		Object.assign(n.query, je(), { batch: e ? String(N(e)) : "" }), n.batchDetail = null, n.selected.clear(), c++, await P();
+		Object.assign(n.query, Ae(), { batch: e ? String(N(e)) : "" }), n.batchDetail = null, n.selected.clear(), c++, await P();
 	}
 	async function I(r) {
 		if (r === "clear") {
@@ -595,7 +595,7 @@ function Ne(e = {}) {
 					if (n.length) {
 						let e = await t.paymentEntries(n.map((e) => e.task_id)), i = new Map(e.items.map((e) => [String(e.task_id), e]));
 						for (let e of n) {
-							let t = i.get(String(e.task_id)), n = t?.status === "updated" ? t.entry : void 0, o = n && (J(n.payment_page_url) || J(n.payment_url) || n.qr_data);
+							let t = i.get(String(e.task_id)), n = t?.status === "updated" ? t.entry : void 0, o = n && (Y(n.payment_page_url) || Y(n.payment_url) || n.qr_data);
 							o ? a.push(`${e.email || ""}\t${o}`) : r++;
 						}
 					}
@@ -612,7 +612,7 @@ function Ne(e = {}) {
 				e instanceof ee ? (n.receipt = {
 					command_id: e.commandId,
 					accepted: !0
-				}, S(e.message)) : n.error = Y(e);
+				}, S(e.message)) : n.error = X(e);
 			} finally {
 				n.bulkBusy = !1;
 			}
@@ -628,7 +628,7 @@ function Ne(e = {}) {
 				if (a.ok === !1) throw Error(a.error || "取消批次失败");
 				n.receipt = a, S(`批次 #${i}：已取消 ${a.cancelled || 0} 个排队任务，跳过 ${a.skipped || 0} 个${a.failed ? `，失败 ${a.failed} 个，可再次处理剩余任务` : ""}。`), await P({ force: !0 });
 			} catch (e) {
-				n.error = Y(e);
+				n.error = X(e);
 			} finally {
 				n.cancellingBatch = "";
 			}
@@ -637,13 +637,13 @@ function Ne(e = {}) {
 	async function te(e = !0) {
 		try {
 			if (e) {
-				De(await t.export({ ...n.query }), "extract-workbench.csv"), S("已导出当前筛选结果（最多 5000 条）");
+				Ee(await t.export({ ...n.query }), "extract-workbench.csv"), S("已导出当前筛选结果（最多 5000 条）");
 				return;
 			}
 			let r = n.items.filter((e) => n.selected.has(String(e.task_id)));
-			De(new Blob([X(r)], { type: "text/csv;charset=utf-8" }), "extract-workbench-selected.csv");
+			Ee(new Blob([Z(r)], { type: "text/csv;charset=utf-8" }), "extract-workbench-selected.csv");
 		} catch (e) {
-			n.error = Y(e);
+			n.error = X(e);
 		}
 	}
 	function ne() {
@@ -672,7 +672,7 @@ function Ne(e = {}) {
 	};
 }
 // src/features/extract/useExtractBatch.ts
-function Pe(e = {}, t = async () => {}) {
+function Ne(e = {}, t = async () => {}) {
 	let n = e.api || H(e), i = s({
 		config: null,
 		filters: {
@@ -708,7 +708,7 @@ function Pe(e = {}, t = async () => {}) {
 	let m = r(() => f(), p, { flush: "sync" });
 	function h(e) {
 		i.provider = e;
-		let t = i.config?.providers.find((t) => t.id === e), n = ge(t), r = _e(t);
+		let t = i.config?.providers.find((t) => t.id === e), n = he(t), r = ge(t);
 		i.mode = n.includes(i.mode) ? i.mode : n.includes("extract_only") ? "extract_only" : n.includes("manual_payment") ? "manual_payment" : "", i.type = r.includes(i.type) ? i.type : r.includes(t?.default_type || "") ? t.default_type : r[0] || "";
 	}
 	async function g(e) {
@@ -738,7 +738,7 @@ function Pe(e = {}, t = async () => {}) {
 			if (!Number.isSafeInteger(c.total) || !Number.isSafeInteger(c.selected_count) || c.selected_count < 0 || c.selected_count > s) throw Error("候选统计响应无效");
 			i.preview = c, i.previewSignature = t, i.feedback = `匹配 ${c.total.toLocaleString("zh-CN")} 个可用账号，本批计划运行 ${c.selected_count.toLocaleString("zh-CN")} 个。`;
 		} catch (t) {
-			!a && e === o && i.opened && (i.error = `匹配数量统计失败：${Y(t)}`, i.feedback = "请检查筛选条件后重试。");
+			!a && e === o && i.opened && (i.error = `匹配数量统计失败：${X(t)}`, i.feedback = "请检查筛选条件后重试。");
 		} finally {
 			e === o && (i.loading = !1);
 		}
@@ -747,7 +747,7 @@ function Pe(e = {}, t = async () => {}) {
 		if (!a && !i.creating && i.opened && i.preview?.selected_count && i.previewSignature === f()) {
 			i.creating = !0, i.error = "";
 			try {
-				let r = i.config?.providers.find((e) => e.id === i.provider), o = ge(r), s = _e(r), c = Number(i.workers), l = Number(i.limit);
+				let r = i.config?.providers.find((e) => e.id === i.provider), o = he(r), s = ge(r), c = Number(i.workers), l = Number(i.limit);
 				if (!r || !o.includes(i.mode) || !s.includes(i.type)) throw Error("请选择平台公布的运行模式和提链类型");
 				if (!Number.isInteger(c) || c < 1 || c > _()) throw Error(`批次并发请输入 1 到 ${_()} 的整数`);
 				let u = {
@@ -759,7 +759,7 @@ function Pe(e = {}, t = async () => {}) {
 					filters: { ...i.filters },
 					limit: l
 				}, f = JSON.stringify(u);
-				if (u.mode === "auto_payment" && !await (e.confirm ? e.confirm(`将为本批约 ${i.preview.selected_count} 个账号启用自动支付任务${ye({
+				if (u.mode === "auto_payment" && !await (e.confirm ? e.confirm(`将为本批约 ${i.preview.selected_count} 个账号启用自动支付任务${ve({
 					...r,
 					mode: u.mode
 				})}，确认继续？`) : window.confirm("确认继续此批自动支付任务？")) || a || !i.opened || f !== JSON.stringify({
@@ -788,7 +788,7 @@ function Pe(e = {}, t = async () => {}) {
 				} catch {}
 				return h;
 			} catch (e) {
-				i.error = `${Y(e)}；可重试获取同一批次的提交结果。`;
+				i.error = `${X(e)}；可重试获取同一批次的提交结果。`;
 			} finally {
 				i.creating = !1;
 			}
@@ -813,7 +813,7 @@ function Pe(e = {}, t = async () => {}) {
 	};
 }
 // src/features/extract/useExtractArtifacts.ts
-function Fe(e = {}, t = async () => {}) {
+function Pe(e = {}, t = async () => {}) {
 	let n = e.api || H(e), r = s({
 		detail: null,
 		detailLoading: !1,
@@ -848,7 +848,7 @@ function Fe(e = {}, t = async () => {}) {
 			let o = await n.detail(e, l.signal);
 			!i && t === a && r.drawer && (r.detail = o, (o.item.has_payment_entry || o.item.has_payment_link || o.item.has_qr) && h(e));
 		} catch (e) {
-			!i && t === a && (r.detailError = Y(e));
+			!i && t === a && (r.detailError = X(e));
 		} finally {
 			t === a && (r.detailLoading = !1);
 		}
@@ -867,7 +867,7 @@ function Fe(e = {}, t = async () => {}) {
 			if (!a.entry) throw Error("当前任务没有已保存的支付入口");
 			!i && r.drawer && t === c && P(r.detail?.item.task_id, e) && (r.nodeA.entry = a.entry);
 		} catch (e) {
-			!i && r.drawer && t === c && (r.nodeA.error = Y(e));
+			!i && r.drawer && t === c && (r.nodeA.error = X(e));
 		} finally {
 			t === c && (r.nodeA.loading = !1);
 		}
@@ -887,7 +887,7 @@ function Fe(e = {}, t = async () => {}) {
 			if (!a.entry) throw Error("当前任务没有已保存的支付入口");
 			!i && t === o && r.payment.open && (r.payment.entry = a.entry);
 		} catch (e) {
-			!i && t === o && (r.payment.error = Y(e));
+			!i && t === o && (r.payment.error = X(e));
 		} finally {
 			t === o && (r.payment.loading = !1);
 		}
@@ -905,8 +905,8 @@ function Fe(e = {}, t = async () => {}) {
 					"auto_payment"
 				].includes(o)) throw Error("不支持的任务操作");
 				let i = P(r.detail?.item.task_id, a) ? r.detail.item : (await n.detail(a)).item;
-				if (be(i)) throw Error("任务正在执行，请等待当前运行结束");
-				if (o !== "sync_status" && !Se(i)) throw Error("远端结果尚未确认，请同步原任务状态，不能重新提交");
+				if (ye(i)) throw Error("任务正在执行，请等待当前运行结束");
+				if (o !== "sync_status" && !xe(i)) throw Error("远端结果尚未确认，请同步原任务状态，不能重新提交");
 				if (o === "auto_payment" && !await (e.confirm ? e.confirm("确认查询并继续此任务已保存的自动支付原单？") : window.confirm("确认继续此任务的自动支付？"))) return;
 				let s = await n.action(a, o);
 				if (s.accepted !== !0) throw Error(s.error || "操作未接受");
@@ -915,7 +915,7 @@ function Fe(e = {}, t = async () => {}) {
 					await t();
 				} catch {}
 			} catch (e) {
-				r.error = Y(e), f(r.error);
+				r.error = X(e), f(r.error);
 			} finally {
 				r.busy.delete(s);
 			}
@@ -927,11 +927,11 @@ function Fe(e = {}, t = async () => {}) {
 			r.busy.add(i), r.error = "";
 			try {
 				if (!["extract", "payment"].includes(t)) throw Error("不支持的链接类型");
-				let r = await n.links(N(e), t), i = J(r.url || r.link);
+				let r = await n.links(N(e), t), i = Y(r.url || r.link);
 				if (!i) throw Error("服务端未返回有效链接");
 				t === "extract" ? await p(i) : window.open(i, "_blank", "noopener,noreferrer");
 			} catch (e) {
-				r.error = Y(e), f(r.error);
+				r.error = X(e), f(r.error);
 			} finally {
 				r.busy.delete(i);
 			}
@@ -949,7 +949,7 @@ function Fe(e = {}, t = async () => {}) {
 				} else if (t === "email") await p((P(r.detail?.item.task_id, e) ? r.detail : await n.detail(e)).item.email || "");
 				else throw Error("不支持的复制类型");
 			} catch (e) {
-				r.error = Y(e), f(r.error);
+				r.error = X(e), f(r.error);
 			} finally {
 				r.busy.delete(i);
 			}
@@ -957,16 +957,16 @@ function Fe(e = {}, t = async () => {}) {
 	}
 	async function b(e) {
 		try {
-			await p(e === "qr_data" ? String(r.payment.entry?.qr_data || "") : J(r.payment.entry?.[e]));
+			await p(e === "qr_data" ? String(r.payment.entry?.qr_data || "") : Y(r.payment.entry?.[e]));
 		} catch (e) {
-			r.payment.error = Y(e);
+			r.payment.error = X(e);
 		}
 	}
 	async function x(e) {
 		try {
-			await p(e === "qr_data" ? String(r.nodeA.entry?.qr_data || "") : J(r.nodeA.entry?.[e]));
+			await p(e === "qr_data" ? String(r.nodeA.entry?.qr_data || "") : Y(r.nodeA.entry?.[e]));
 		} catch (e) {
-			r.nodeA.error = Y(e);
+			r.nodeA.error = X(e);
 		}
 	}
 	function S() {
@@ -1012,25 +1012,25 @@ function Fe(e = {}, t = async () => {}) {
 	};
 }
 // src/features/extract/ExtractFilters.vue?vue&type=script&setup=true&lang.ts
-var Ie = { class: "extract-filter-fields" }, Le = {
+var Fe = { class: "extract-filter-fields" }, Ie = {
 	key: 0,
 	class: "extract-filter-field"
-}, Re = {
+}, Le = {
 	class: "list-filter-options",
 	role: "radiogroup",
 	"aria-label": "选择提链任务筛选列"
-}, ze = [
+}, Re = [
 	"name",
 	"value",
 	"checked",
 	"onChange"
-], Be = { class: "extract-filter-field" }, Z = ["value"], Ve = ["aria-label"], He = ["data-extract-option"], Ue = [
+], ze = { class: "extract-filter-field" }, Q = ["value"], Be = ["aria-label"], Ve = ["data-extract-option"], He = [
 	"name",
 	"value",
 	"checked",
 	"disabled",
 	"onChange"
-], We = { key: 0 }, Ge = { class: "list-filter-actions" }, Ke = /*#__PURE__*/ O(/* @__PURE__ */ e({
+], Ue = { key: 0 }, We = { class: "list-filter-actions" }, Ge = /*#__PURE__*/ O(/* @__PURE__ */ e({
 	__name: "ExtractFilters",
 	props: {
 		column: {},
@@ -1102,8 +1102,8 @@ var Ie = { class: "extract-filter-fields" }, Le = {
 			open: e.open,
 			"onUpdate:open": s[4] ||= (e) => l("update:open", e)
 		}, {
-			default: n(() => [y("div", Ie, [
-				e.column ? u("", !0) : (t(), k("div", Le, [s[5] ||= A("筛选列", -1), y("div", Re, [(t(), k(m, null, a(o, (t, n) => i(y("label", {
+			default: n(() => [y("div", Fe, [
+				e.column ? u("", !0) : (t(), k("div", Ie, [s[5] ||= A("筛选列", -1), y("div", Le, [(t(), k(m, null, a(o, (t, n) => i(y("label", {
 					key: n,
 					class: "list-filter-option"
 				}, [y("input", {
@@ -1112,8 +1112,8 @@ var Ie = { class: "extract-filter-fields" }, Le = {
 					value: n,
 					checked: d.value === n,
 					onChange: (e) => x(n)
-				}, null, 40, ze), y("span", null, _(t), 1)], 512), [[E, n !== "batch" || !e.omitBatch]])), 64))])])),
-				y("div", Be, [A(_(o[f.value]) + " ", 1), f.value === "query" ? (t(), k("input", {
+				}, null, 40, Re), y("span", null, _(t), 1)], 512), [[E, n !== "batch" || !e.omitBatch]])), 64))])])),
+				y("div", ze, [A(_(o[f.value]) + " ", 1), f.value === "query" ? (t(), k("input", {
 					key: 0,
 					type: "search",
 					value: h.value,
@@ -1121,7 +1121,7 @@ var Ie = { class: "extract-filter-fields" }, Le = {
 					placeholder: "邮箱或任务号",
 					onChange: s[0] ||= (e) => b(e.target.value),
 					onKeydown: s[1] ||= p((e) => l("update:open", !1), ["enter"])
-				}, null, 40, Z)) : (t(), k("div", {
+				}, null, 40, Q)) : (t(), k("div", {
 					key: 1,
 					class: "list-filter-options",
 					role: "radiogroup",
@@ -1138,12 +1138,12 @@ var Ie = { class: "extract-filter-fields" }, Le = {
 						checked: h.value === n.value,
 						disabled: e.batchBusy && f.value === "batch",
 						onChange: (e) => b(n.value)
-					}, null, 40, Ue),
+					}, null, 40, He),
 					y("span", null, _(n.label), 1),
-					n.count === void 0 ? u("", !0) : (t(), k("small", We, _(n.count), 1))
-				], 10, He))), 128))], 8, Ve))]),
+					n.count === void 0 ? u("", !0) : (t(), k("small", Ue, _(n.count), 1))
+				], 10, Ve))), 128))], 8, Be))]),
 				f.value === "batch" ? c(r.$slots, "default", {}, void 0, !0, 1) : u("", !0),
-				y("div", Ge, [y("button", {
+				y("div", We, [y("button", {
 					type: "button",
 					onClick: s[2] ||= (e) => b("")
 				}, "清除此列"), y("button", {
@@ -1161,89 +1161,89 @@ var Ie = { class: "extract-filter-fields" }, Le = {
 			"open"
 		]));
 	}
-}), [["__scopeId", "data-v-afa1ea5e"]]), qe = ["aria-busy"], Je = { class: "extract-toolbar" }, Ye = { class: "extract-title" }, Xe = {
+}), [["__scopeId", "data-v-afa1ea5e"]]), Ke = ["aria-busy"], qe = { class: "extract-toolbar" }, Je = { class: "extract-title" }, Ye = {
 	key: 0,
 	class: "extract-metrics",
 	"aria-label": "提链概况"
-}, Ze = { class: "extract-toolbar-actions" }, Qe = { class: "ui-list extract-list-panel" }, $e = {
+}, Xe = { class: "extract-toolbar-actions" }, Ze = { class: "ui-list extract-list-panel" }, Qe = {
 	class: "ui-list-toolbar extract-count-row",
 	"data-extract-count-row": ""
-}, et = { class: "ui-list-toolbar__main extract-count-main" }, tt = { class: "ui-list-count extract-count" }, nt = {
+}, $e = { class: "ui-list-toolbar__main extract-count-main" }, et = { class: "ui-list-count extract-count" }, tt = {
 	key: 0,
 	class: "extract-bulk-actions",
 	role: "group",
 	"aria-label": "选中提链任务批量操作"
-}, rt = { class: "ui-list-bulkbar__count" }, it = ["disabled"], at = { class: "ui-list-toolbar__actions extract-count-actions" }, ot = {
+}, nt = { class: "ui-list-bulkbar__count" }, rt = ["disabled"], it = { class: "ui-list-toolbar__actions extract-count-actions" }, at = {
 	key: 0,
 	class: "extract-batch-message",
 	role: "status"
-}, st = {
+}, ot = {
 	key: 1,
 	class: "extract-batch-message",
 	role: "alert"
-}, ct = { class: "extract-mobile-filter" }, lt = ["title", "disabled"], ut = {
+}, st = { class: "extract-mobile-filter" }, ct = ["title", "disabled"], lt = {
 	key: 0,
+	class: "ui-list-feedback is-error",
+	role: "alert"
+}, ut = {
+	key: 1,
 	class: "ui-list-feedback is-error",
 	role: "alert"
 }, dt = {
-	key: 1,
-	class: "ui-list-feedback is-error",
-	role: "alert"
-}, ft = {
 	class: "ui-table ui-table--sticky-end extract-table",
 	"aria-label": "提链任务"
-}, pt = { class: "ui-col-check" }, mt = ["checked"], ht = { class: "ui-col-check" }, gt = [
+}, ft = { class: "ui-col-check" }, pt = ["checked"], mt = { class: "ui-col-check" }, ht = [
 	"aria-label",
 	"checked",
 	"onChange"
-], _t = { class: "extract-tone" }, vt = { key: 0 }, yt = { key: 1 }, bt = { key: 2 }, xt = { class: "ui-row-actions extract-row-actions" }, St = ["onClick"], Ct = ["disabled", "onClick"], wt = { class: "extract-form-grid" }, Tt = ["value"], Et = ["value"], Dt = ["value"], Ot = ["value"], kt = ["value"], At = ["value"], jt = ["max"], Mt = { class: "extract-hint" }, Nt = { role: "status" }, Pt = {
+], gt = { class: "extract-tone" }, _t = { class: "extract-tone-label" }, vt = { key: 0 }, yt = { key: 1 }, bt = { key: 2 }, xt = { class: "ui-row-actions extract-row-actions" }, St = ["onClick"], Ct = ["disabled", "onClick"], wt = { class: "extract-dialog-body" }, Tt = { class: "extract-form-grid" }, Et = ["value"], Dt = ["value"], Ot = ["value"], kt = ["value"], At = ["value"], jt = ["value"], Mt = ["max"], Nt = { class: "extract-hint" }, Pt = { role: "status" }, Ft = {
 	key: 0,
 	class: "error",
 	role: "alert"
-}, Ft = ["disabled"], It = ["disabled"], Lt = {
+}, It = ["disabled"], Lt = ["disabled"], Rt = { class: "extract-dialog-body" }, zt = {
 	key: 0,
 	role: "status"
-}, Rt = {
+}, Bt = {
 	key: 1,
 	class: "error",
 	role: "alert"
-}, zt = {
+}, Vt = {
 	class: "extract-detail-actions",
 	role: "group",
 	"aria-label": "任务操作"
-}, Bt = ["disabled"], Vt = ["disabled"], Ht = ["disabled"], Ut = { class: "extract-facts" }, Wt = {
+}, Ht = ["disabled"], Ut = ["disabled"], Wt = ["disabled"], Gt = { class: "extract-facts" }, Kt = {
 	key: 0,
 	"aria-label": "阶段证据"
-}, Gt = {
+}, qt = {
 	key: 1,
 	class: "extract-facts"
-}, Kt = {
+}, Jt = {
 	key: 2,
 	class: "notice"
-}, qt = {
+}, Yt = {
 	class: "extract-node-a",
 	"data-extract-node-a": ""
-}, Jt = {
+}, Xt = {
 	key: 0,
 	role: "status"
-}, Yt = {
+}, Zt = {
 	key: 1,
 	role: "alert"
-}, Xt = { class: "extract-detail-actions" }, Zt = ["href"], Qt = ["onClick"], $t = ["src"], en = { key: 1 }, tn = { key: 2 }, nn = { key: 3 }, rn = { key: 3 }, an = { class: "extract-timeline" }, on = { key: 0 }, sn = { key: 0 }, cn = {
+}, Qt = { class: "extract-detail-actions" }, $t = ["href"], en = ["onClick"], tn = ["src"], nn = { key: 1 }, rn = { key: 2 }, an = { key: 3 }, on = { key: 3 }, sn = { class: "extract-timeline" }, cn = { key: 0 }, ln = { key: 0 }, un = {
 	key: 4,
 	"data-extract-history": ""
-}, ln = { "data-extract-run-outcome": "" }, un = {
+}, dn = { "data-extract-run-outcome": "" }, fn = { class: "extract-dialog-body" }, pn = {
 	key: 0,
 	role: "status"
-}, dn = {
+}, mn = {
 	key: 0,
 	class: "error",
 	role: "alert"
-}, fn = { class: "extract-facts" }, pn = ["href"], mn = ["onClick"], hn = { key: 1 }, gn = ["src"], _n = { key: 1 }, vn = { key: 1 }, yn = /*#__PURE__*/ O(/* @__PURE__ */ e({
+}, hn = { class: "extract-facts" }, gn = { class: "extract-detail-actions" }, _n = ["href"], vn = ["onClick"], yn = { key: 1 }, bn = ["src"], xn = { key: 1 }, Sn = { key: 1 }, Cn = /*#__PURE__*/ O(/* @__PURE__ */ e({
 	__name: "ExtractWorkbench",
 	props: { deps: {} },
 	setup(e, { expose: s }) {
-		let c = e.deps || {}, p = Ne(c), w = Pe(c, () => p.load({ force: !0 })), E = Fe(c, () => p.load({ force: !0 })), O = g(c.visible !== !1), j = g(!1), M = g(), N = g(), P = g(), F = p.state.query, I = C(() => p.state.selected);
+		let c = e.deps || {}, p = Me(c), w = Ne(c, () => p.load({ force: !0 })), E = Pe(c, () => p.load({ force: !0 })), O = g(c.visible !== !1), j = g(!1), M = g(), N = g(), P = g(), F = p.state.query, I = C(() => p.state.selected);
 		C(() => Math.max(1, Math.ceil(p.state.total / F.size)));
 		let L = C(() => p.state.config?.providers || w.state.config?.providers || []), ee = g(), R = 0, B = C(() => p.state.items.length > 0 && p.state.items.every((e) => I.value.has(String(e.task_id))));
 		te(M, () => j.value, () => O.value), te(N, () => !!E.state.drawer, () => O.value), te(P, () => !!E.state.payment.open, () => O.value);
@@ -1265,7 +1265,7 @@ var Ie = { class: "extract-filter-fields" }, Le = {
 			removeLabel: `清除${oe[e]}筛选`
 		})));
 		function de(e, t) {
-			V.value = null, e === "batch" ? Tn(t) : (F[e] = t, F.page = 1, Q());
+			V.value = null, e === "batch" ? jn(t) : (F[e] = t, F.page = 1, An());
 		}
 		function G() {
 			Object.assign(F, {
@@ -1274,45 +1274,45 @@ var Ie = { class: "extract-filter-fields" }, Le = {
 				mode: "",
 				status: "",
 				page: 1
-			}), Tn("");
+			}), jn("");
+		}
+		function q(e) {
+			F.page = e, An();
 		}
 		function pe(e) {
-			F.page = e, Q();
+			F.page = 1, F.size = e, An();
 		}
-		function me(e) {
-			F.page = 1, F.size = e, Q();
-		}
-		let ve = C(() => p.state.batchDetail?.title || `批次 #${F.batch}`);
-		function xe(e) {
+		let _e = C(() => p.state.batchDetail?.title || `批次 #${F.batch}`);
+		function be(e) {
 			p.loadBatchPage(e);
 		}
-		let q = C(() => [...L.value, ...(p.state.config?.unavailable_providers || []).filter((e) => !L.value.some((t) => t.id === e.id)).map((e) => ({
+		let J = C(() => [...L.value, ...(p.state.config?.unavailable_providers || []).filter((e) => !L.value.some((t) => t.id === e.id)).map((e) => ({
 			...e,
 			label: `${e.label || W(e.id)}（已停用）`
-		}))]), Y = C(() => L.value.find((e) => e.id === w.state.provider)), X = C(() => E.state.detail?.item), De = C(() => J(E.state.payment.entry?.payment_page_url)), ke = C(() => J(E.state.payment.entry?.payment_url)), je = g(0), Me = g(!1), Ie = C(() => we(E.state.nodeA.entry || {}));
+		}))]), X = C(() => L.value.find((e) => e.id === w.state.provider)), Z = C(() => E.state.detail?.item), Ee = C(() => Y(E.state.payment.entry?.payment_page_url)), Oe = C(() => Y(E.state.payment.entry?.payment_url)), Ae = g(0), je = g(!1), Fe = C(() => Ce(E.state.nodeA.entry || {}));
 		r(() => E.state.nodeA.entry, () => {
-			je.value = 0, Me.value = !1;
+			Ae.value = 0, je.value = !1;
 		});
-		function Le() {
-			je.value + 1 < Ie.value.length ? je.value++ : Me.value = !0;
+		function Ie() {
+			Ae.value + 1 < Fe.value.length ? Ae.value++ : je.value = !0;
 		}
-		let Re = g(0), ze = g(!1), Be = g(Date.now()), Z;
+		let Le = g(0), Re = g(!1), ze = g(Date.now()), Q;
 		r(() => E.state.payment.open, (e) => {
-			Z && clearInterval(Z), Z = void 0, e && (Be.value = Date.now(), Z = setInterval(() => {
-				Be.value = Date.now();
+			Q && clearInterval(Q), Q = void 0, e && (ze.value = Date.now(), Q = setInterval(() => {
+				ze.value = Date.now();
 			}, 1e3));
 		}), b(() => {
-			Z && clearInterval(Z);
+			Q && clearInterval(Q);
 		});
-		let Ve = C(() => we(E.state.payment.entry || {}));
-		function He() {
-			Re.value + 1 < Ve.value.length ? Re.value++ : ze.value = !0;
+		let Be = C(() => Ce(E.state.payment.entry || {}));
+		function Ve() {
+			Le.value + 1 < Be.value.length ? Le.value++ : Re.value = !0;
 		}
-		async function Ue(e) {
-			Re.value = 0, ze.value = !1, await E.showPaymentEntry(e);
+		async function He(e) {
+			Le.value = 0, Re.value = !1, await E.showPaymentEntry(e);
 		}
-		let We = Oe;
-		function Ge(e) {
+		let Ue = De;
+		function We(e) {
 			return {
 				legacy: "#64748b",
 				huanguang: "#7c5cf0",
@@ -1321,7 +1321,7 @@ var Ie = { class: "extract-filter-fields" }, Le = {
 				lumen_flow: "#377dff"
 			}[e || ""] || "#98a2b3";
 		}
-		function yn(e) {
+		function Cn(e) {
 			return {
 				passed: "success",
 				success: "success",
@@ -1331,7 +1331,7 @@ var Ie = { class: "extract-filter-fields" }, Le = {
 				waiting: "active"
 			}[e || ""] || "neutral";
 		}
-		function bn(e) {
+		function wn(e) {
 			return {
 				paid: "success",
 				succeeded: "success",
@@ -1348,7 +1348,7 @@ var Ie = { class: "extract-filter-fields" }, Le = {
 				canceled: "danger"
 			}[e || ""] || "neutral";
 		}
-		function xn(e) {
+		function Tn(e) {
 			return {
 				confirmed: "success",
 				plus: "success",
@@ -1357,25 +1357,36 @@ var Ie = { class: "extract-filter-fields" }, Le = {
 				unavailable: "warning"
 			}[e || ""] || "neutral";
 		}
-		function Sn(e) {
+		function En(e) {
 			let t = U(e.status || e.task_status, "状态未记录"), n = e.error_info?.summary || e.error_message || e.error || e.message || "";
 			return n ? `${t} · ${n}` : t;
 		}
-		function Cn() {
+		function Dn(e) {
+			let t = me(e), n = /^(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})$/.exec(t);
+			return n ? {
+				text: n[1],
+				secondary: n[2],
+				full: t
+			} : {
+				text: t,
+				full: t
+			};
+		}
+		function On() {
 			w.setProvider(w.state.provider);
 		}
-		function wn() {
+		function kn() {
 			ee.value && (ee.value.scrollTop = 0, ee.value.scrollLeft = 0);
 		}
-		async function Q(e = {}) {
+		async function An(e = {}) {
 			let t = e.quiet ? R : ++R;
-			await p.load(e), !e.quiet && t === R && O.value && !p.state.error && wn();
+			await p.load(e), !e.quiet && t === R && O.value && !p.state.error && kn();
 		}
-		async function Tn(e) {
+		async function jn(e) {
 			let t = ++R;
-			await p.switchBatch(e), t === R && O.value && !p.state.error && wn();
+			await p.switchBatch(e), t === R && O.value && !p.state.error && kn();
 		}
-		function En(e, t, n) {
+		function Mn(e, t, n) {
 			if (e.target !== t || !t) return;
 			let r = t.getBoundingClientRect();
 			(e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) && n();
@@ -1383,37 +1394,37 @@ var Ie = { class: "extract-filter-fields" }, Le = {
 		function $() {
 			j.value = !1, w.close();
 		}
-		function Dn() {
+		function Nn() {
 			$(), E.closeDialogs();
 		}
-		function On(e) {
+		function Pn(e) {
 			O.value = e, p.setVisible(e), e || (V.value = null, $(), E.closeDialogs());
 		}
-		function kn(e) {
+		function Fn(e) {
 			I.value.has(e) ? I.value.delete(e) : I.value.add(e);
 		}
-		function An(e) {
+		function In(e) {
 			p.state.items.forEach((t) => e ? I.value.add(String(t.task_id)) : I.value.delete(String(t.task_id)));
 		}
-		async function jn() {
+		async function Ln() {
 			j.value = !0, await w.open(p.state.config || void 0), await w.preview();
 		}
-		async function Mn() {
+		async function Rn() {
 			let e = await w.submit();
-			e?.batch_id && ($(), await Tn(e.batch_id));
+			e?.batch_id && ($(), await jn(e.batch_id));
 		}
-		async function Nn() {
-			await Q({ force: !0 });
+		async function zn() {
+			await An({ force: !0 });
 		}
 		return o(() => p.load()), b(() => {
 			p.destroy(), w.destroy(), E.destroy();
 		}), s({
-			load: Q,
-			setVisible: On,
-			openCreate: jn,
-			switchBatch: Tn,
+			load: An,
+			setVisible: Pn,
+			openCreate: Ln,
+			switchBatch: jn,
 			openDetail: E.openDetail,
-			showPaymentEntry: Ue,
+			showPaymentEntry: He,
 			taskAction: E.taskAction,
 			showLink: E.showLink,
 			copy: E.copy,
@@ -1421,16 +1432,16 @@ var Ie = { class: "extract-filter-fields" }, Le = {
 			bulkAction: p.bulkAction,
 			cancelBatch: p.cancelBatch,
 			exportRows: p.exportRows,
-			closeDialogs: Dn
+			closeDialogs: Nn
 		}), (e, r) => (t(), k("section", {
 			class: "extract-page",
 			"aria-busy": D(p).state.loading
 		}, [
-			y("header", Je, [y("div", Ye, [r[52] ||= y("h1", { class: "ui-sr-only" }, "提链工作台", -1), D(p).state.summary ? (t(), k("div", Xe, [y("span", null, [r[50] ||= A("今日出链 ", -1), y("strong", null, _(D(K)(D(p).state.summary.today_extracted)), 1)]), y("span", null, [r[51] ||= A("待支付 ", -1), y("strong", null, _(D(K)(D(p).state.summary.awaiting_payment)), 1)])])) : u("", !0)]), y("div", Ze, [
+			y("header", qe, [y("div", Je, [r[54] ||= y("h1", { class: "ui-sr-only" }, "提链工作台", -1), D(p).state.summary ? (t(), k("div", Ye, [y("span", null, [r[52] ||= A("今日出链 ", -1), y("strong", null, _(D(K)(D(p).state.summary.today_extracted)), 1)]), y("span", null, [r[53] ||= A("待支付 ", -1), y("strong", null, _(D(K)(D(p).state.summary.awaiting_payment)), 1)])])) : u("", !0)]), y("div", Xe, [
 				y("button", {
 					type: "button",
 					class: "ui-button",
-					onClick: Nn
+					onClick: zn
 				}, "刷新"),
 				y("button", {
 					type: "button",
@@ -1440,20 +1451,20 @@ var Ie = { class: "extract-filter-fields" }, Le = {
 				y("button", {
 					type: "button",
 					class: "ui-button ui-button--primary",
-					onClick: jn
+					onClick: Ln
 				}, "新建批次")
 			])]),
-			y("div", Qe, [
-				y("div", $e, [y("div", et, [
-					y("span", tt, "共 " + _(D(K)(D(p).state.total)) + " 条任务", 1),
-					I.value.size ? (t(), k("div", nt, [
-						y("strong", rt, "已选 " + _(I.value.size) + " 项", 1),
+			y("div", Ze, [
+				y("div", Qe, [y("div", $e, [
+					y("span", et, "共 " + _(D(K)(D(p).state.total)) + " 条任务", 1),
+					I.value.size ? (t(), k("div", tt, [
+						y("strong", nt, "已选 " + _(I.value.size) + " 项", 1),
 						y("button", {
 							type: "button",
 							class: "ui-button",
 							disabled: D(p).state.bulkBusy,
 							onClick: r[1] ||= (e) => D(p).bulkAction("sync_status")
-						}, "同步原单", 8, it),
+						}, "同步原单", 8, rt),
 						y("button", {
 							type: "button",
 							class: "ui-button",
@@ -1474,17 +1485,17 @@ var Ie = { class: "extract-filter-fields" }, Le = {
 						items: se.value,
 						onRemove: r[5] ||= (e) => de(e, "")
 					}, null, 8, ["items"])
-				]), y("div", at, [
+				]), y("div", it, [
 					se.value.length ? (t(), k("button", {
 						key: 0,
 						type: "button",
 						class: "ui-link",
 						onClick: G
 					}, "清除筛选")) : u("", !0),
-					l(Ke, {
+					l(Ge, {
 						column: "batch",
 						values: H.value,
-						providers: q.value,
+						providers: J.value,
 						batches: D(p).state.batches,
 						"batch-busy": D(p).state.batchLoading,
 						open: V.value === "batch",
@@ -1492,11 +1503,11 @@ var Ie = { class: "extract-filter-fields" }, Le = {
 						onChange: de
 					}, {
 						default: n(() => [
-							D(p).state.batchLoading ? (t(), k("p", ot, "正在读取批次…")) : u("", !0),
-							D(p).state.auxErrors.batches ? (t(), k("div", st, [r[53] ||= A(" 批次读取失败 ", -1), y("button", {
+							D(p).state.batchLoading ? (t(), k("p", at, "正在读取批次…")) : u("", !0),
+							D(p).state.auxErrors.batches ? (t(), k("div", ot, [r[55] ||= A(" 批次读取失败 ", -1), y("button", {
 								type: "button",
 								class: "ui-link",
-								onClick: r[6] ||= (e) => xe(D(p).state.batchPage)
+								onClick: r[6] ||= (e) => be(D(p).state.batchPage)
 							}, "重试")])) : u("", !0),
 							D(p).state.batchTotal > 20 ? (t(), v(ne, {
 								key: 2,
@@ -1507,7 +1518,7 @@ var Ie = { class: "extract-filter-fields" }, Le = {
 								"page-sizes": [20],
 								total: D(p).state.batchTotal,
 								busy: D(p).state.batchLoading,
-								"onUpdate:page": xe
+								"onUpdate:page": be
 							}, null, 8, [
 								"page",
 								"total",
@@ -1522,10 +1533,10 @@ var Ie = { class: "extract-filter-fields" }, Le = {
 						"batch-busy",
 						"open"
 					]),
-					y("span", ct, [l(Ke, {
+					y("span", st, [l(Ge, {
 						"omit-batch": "",
 						values: H.value,
-						providers: q.value,
+						providers: J.value,
 						batches: D(p).state.batches,
 						counts: D(p).state.counts,
 						open: V.value === "all",
@@ -1542,17 +1553,17 @@ var Ie = { class: "extract-filter-fields" }, Le = {
 						key: 1,
 						type: "button",
 						class: "ui-link ui-link--danger extract-cancel",
-						title: ve.value,
+						title: _e.value,
 						disabled: !!D(p).state.cancellingBatch,
 						onClick: r[9] ||= (e) => D(p).cancelBatch()
-					}, "取消当前批次", 8, lt)) : u("", !0)
+					}, "取消当前批次", 8, ct)) : u("", !0)
 				])]),
-				D(p).state.error ? (t(), k("p", ut, [A(_(D(p).state.error) + " ", 1), y("button", {
+				D(p).state.error ? (t(), k("p", lt, [A(_(D(p).state.error) + " ", 1), y("button", {
 					type: "button",
 					class: "ui-link",
-					onClick: Nn
+					onClick: zn
 				}, "重试")])) : u("", !0),
-				D(E).state.error ? (t(), k("p", dt, _(D(E).state.error), 1)) : u("", !0),
+				D(E).state.error ? (t(), k("p", ut, _(D(E).state.error), 1)) : u("", !0),
 				y("div", {
 					ref_key: "tableScroll",
 					ref: ee,
@@ -1560,139 +1571,168 @@ var Ie = { class: "extract-filter-fields" }, Le = {
 					role: "region",
 					"aria-label": "提链任务表格",
 					tabindex: "0"
-				}, [y("table", ft, [y("thead", null, [y("tr", null, [
-					y("th", pt, [y("input", {
-						type: "checkbox",
-						"aria-label": "选择本页提链任务",
-						checked: B.value,
-						onChange: r[10] ||= (e) => An(e.target.checked)
-					}, null, 40, mt)]),
-					(t(), k(m, null, a([
-						"query",
-						"provider",
-						"mode"
-					], (e) => y("th", { key: e }, [l(Ke, {
-						column: e,
-						values: H.value,
-						providers: q.value,
-						batches: D(p).state.batches,
-						counts: D(p).state.counts,
-						open: V.value === e,
-						"onUpdate:open": (t) => V.value = t ? e : null,
-						onChange: de
-					}, null, 8, [
-						"column",
-						"values",
-						"providers",
-						"batches",
-						"counts",
-						"open",
-						"onUpdate:open"
-					])])), 64)),
-					r[54] ||= y("th", null, "准备", -1),
-					y("th", null, [l(Ke, {
-						column: "status",
-						values: H.value,
-						providers: q.value,
-						batches: D(p).state.batches,
-						counts: D(p).state.counts,
-						open: V.value === "status",
-						"onUpdate:open": r[11] ||= (e) => V.value = e ? "status" : null,
-						onChange: de
-					}, null, 8, [
-						"values",
-						"providers",
-						"batches",
-						"counts",
-						"open"
+				}, [y("table", dt, [
+					r[61] ||= y("colgroup", null, [
+						y("col", { class: "extract-col-check" }),
+						y("col", { class: "extract-col-email" }),
+						y("col", { class: "extract-col-provider" }),
+						y("col", { class: "extract-col-mode" }),
+						y("col", { class: "extract-col-preflight" }),
+						y("col", { class: "extract-col-status" }),
+						y("col", { class: "extract-col-payment" }),
+						y("col", { class: "extract-col-plus" }),
+						y("col", { class: "extract-col-time" }),
+						y("col", { class: "extract-col-actions" })
+					], -1),
+					y("thead", null, [y("tr", null, [
+						y("th", ft, [y("input", {
+							type: "checkbox",
+							"aria-label": "选择本页提链任务",
+							checked: B.value,
+							onChange: r[10] ||= (e) => In(e.target.checked)
+						}, null, 40, pt)]),
+						(t(), k(m, null, a([
+							"query",
+							"provider",
+							"mode"
+						], (e) => y("th", { key: e }, [l(Ge, {
+							column: e,
+							values: H.value,
+							providers: J.value,
+							batches: D(p).state.batches,
+							counts: D(p).state.counts,
+							open: V.value === e,
+							"onUpdate:open": (t) => V.value = t ? e : null,
+							onChange: de
+						}, null, 8, [
+							"column",
+							"values",
+							"providers",
+							"batches",
+							"counts",
+							"open",
+							"onUpdate:open"
+						])])), 64)),
+						r[56] ||= y("th", null, "准备", -1),
+						y("th", null, [l(Ge, {
+							column: "status",
+							values: H.value,
+							providers: J.value,
+							batches: D(p).state.batches,
+							counts: D(p).state.counts,
+							open: V.value === "status",
+							"onUpdate:open": r[11] ||= (e) => V.value = e ? "status" : null,
+							onChange: de
+						}, null, 8, [
+							"values",
+							"providers",
+							"batches",
+							"counts",
+							"open"
+						])]),
+						r[57] ||= y("th", null, "支付", -1),
+						r[58] ||= y("th", null, "Plus", -1),
+						r[59] ||= y("th", null, "更新时间", -1),
+						r[60] ||= y("th", null, "操作", -1)
 					])]),
-					r[55] ||= y("th", null, "支付", -1),
-					r[56] ||= y("th", null, "Plus", -1),
-					r[57] ||= y("th", null, "更新时间", -1),
-					r[58] ||= y("th", null, "操作", -1)
-				])]), y("tbody", null, [(t(!0), k(m, null, a(D(p).state.items, (e) => (t(), k("tr", {
-					key: String(e.task_id),
-					class: S({ "is-selected": I.value.has(String(e.task_id)) })
-				}, [
-					y("td", ht, [y("input", {
-						type: "checkbox",
-						"aria-label": `选择提链任务 ${e.task_id}`,
-						checked: I.value.has(String(e.task_id)),
-						onChange: (t) => kn(String(e.task_id))
-					}, null, 40, gt)]),
-					y("td", null, [l(z, {
-						text: e.email || "账号未记录",
-						secondary: `#${e.task_id}`
-					}, null, 8, ["text", "secondary"])]),
-					y("td", null, [l(z, {
-						text: D(W)(e.provider_id),
-						secondary: e.link_type || void 0
-					}, {
-						default: n(() => [y("span", _t, [y("i", {
-							style: h({ background: Ge(e.provider_id) }),
-							"aria-hidden": "true"
-						}, null, 4), A(_(D(W)(e.provider_id)), 1)])]),
-						_: 2
-					}, 1032, ["text", "secondary"])]),
-					y("td", null, [l(z, {
-						text: D(fe)(e.mode),
-						secondary: D(ye)(e) || void 0
-					}, null, 8, ["text", "secondary"])]),
-					y("td", null, [l(z, {
-						text: D(U)(e.preflight_status, "未开始"),
-						tone: yn(e.preflight_status)
-					}, null, 8, ["text", "tone"])]),
-					y("td", null, [l(ae, {
-						"data-extract-result": "",
-						label: D(We)(e).label,
-						tone: D(We)(e).tone,
-						title: D(Ce)(e).detail
-					}, {
-						details: n(() => [
-							y("p", null, _(D(Ce)(e).label), 1),
-							y("p", null, _(D(Ce)(e).detail), 1),
-							e.message ? (t(), k("p", vt, _(e.message), 1)) : u("", !0),
-							e.error ? (t(), k("p", yt, _(e.error), 1)) : u("", !0),
-							e.progress?.label ? (t(), k("p", bt, _(e.progress.label), 1)) : u("", !0)
-						]),
-						_: 2
-					}, 1032, [
-						"label",
-						"tone",
+					y("tbody", null, [(t(!0), k(m, null, a(D(p).state.items, (e) => (t(), k("tr", {
+						key: String(e.task_id),
+						class: S({ "is-selected": I.value.has(String(e.task_id)) })
+					}, [
+						y("td", mt, [y("input", {
+							type: "checkbox",
+							"aria-label": `选择提链任务 ${e.task_id}`,
+							checked: I.value.has(String(e.task_id)),
+							onChange: (t) => Fn(String(e.task_id))
+						}, null, 40, ht)]),
+						y("td", null, [l(z, {
+							text: e.email || "账号未记录",
+							secondary: `#${e.task_id}`
+						}, null, 8, ["text", "secondary"])]),
+						y("td", null, [l(z, {
+							text: D(W)(e.provider_id),
+							secondary: e.link_type || void 0,
+							title: `${D(W)(e.provider_id)}${e.link_type ? " · " + e.link_type : ""}`
+						}, {
+							default: n(() => [y("span", gt, [y("i", {
+								style: h({ background: We(e.provider_id) }),
+								"aria-hidden": "true"
+							}, null, 4), y("span", _t, _(D(W)(e.provider_id)), 1)])]),
+							_: 2
+						}, 1032, [
+							"text",
+							"secondary",
+							"title"
+						])]),
+						y("td", null, [l(z, {
+							text: D(fe)(e.mode),
+							secondary: D(ve)(e) || void 0
+						}, null, 8, ["text", "secondary"])]),
+						y("td", null, [l(z, {
+							text: D(U)(e.preflight_status, "未开始"),
+							tone: Cn(e.preflight_status)
+						}, null, 8, ["text", "tone"])]),
+						y("td", null, [l(ae, {
+							"data-extract-result": "",
+							label: D(Ue)(e).label,
+							tone: D(Ue)(e).tone,
+							title: D(Se)(e).detail
+						}, {
+							details: n(() => [
+								y("p", null, _(D(Se)(e).label), 1),
+								y("p", null, _(D(Se)(e).detail), 1),
+								e.message ? (t(), k("p", vt, _(e.message), 1)) : u("", !0),
+								e.error ? (t(), k("p", yt, _(e.error), 1)) : u("", !0),
+								e.progress?.label ? (t(), k("p", bt, _(e.progress.label), 1)) : u("", !0)
+							]),
+							_: 2
+						}, 1032, [
+							"label",
+							"tone",
+							"title"
+						])]),
+						y("td", null, [l(z, {
+							text: D(U)(e.payment_phase || e.payment_status, "—"),
+							tone: wn(e.payment_phase || e.payment_status)
+						}, null, 8, ["text", "tone"])]),
+						y("td", null, [l(z, {
+							text: D(U)(e.plus_state || e.plus_status, "未核验"),
+							tone: Tn(e.plus_state || e.plus_status)
+						}, null, 8, ["text", "tone"])]),
+						y("td", null, [l(z, {
+							class: "ui-time extract-time-cell",
+							text: Dn(e.updated_at || e.created_at).text,
+							secondary: Dn(e.updated_at || e.created_at).secondary,
+							title: Dn(e.updated_at || e.created_at).full
+						}, null, 8, [
+							"text",
+							"secondary",
+							"title"
+						])]),
+						y("td", null, [y("div", xt, [y("button", {
+							type: "button",
+							class: "ui-link",
+							onClick: (t) => D(E).openDetail(e.task_id)
+						}, "详情", 8, St), y("button", {
+							type: "button",
+							class: "ui-link",
+							disabled: !(e.has_payment_entry || e.has_payment_link || e.has_qr),
+							onClick: (t) => He(e.task_id)
+						}, "支付入口", 8, Ct)])])
+					], 2))), 128)), D(p).state.items.length ? u("", !0) : (t(), v(re, {
+						key: 0,
+						colspan: 10,
+						loading: D(p).state.loading,
+						error: D(p).state.error ? " " : "",
+						"loading-title": "正在读取任务…",
+						"error-title": "任务读取失败",
+						title: se.value.length ? "没有符合筛选条件的任务" : "暂无提链任务"
+					}, null, 8, [
+						"loading",
+						"error",
 						"title"
-					])]),
-					y("td", null, [l(z, {
-						text: D(U)(e.payment_phase || e.payment_status, "—"),
-						tone: bn(e.payment_phase || e.payment_status)
-					}, null, 8, ["text", "tone"])]),
-					y("td", null, [l(z, {
-						text: D(U)(e.plus_state || e.plus_status, "未核验"),
-						tone: xn(e.plus_state || e.plus_status)
-					}, null, 8, ["text", "tone"])]),
-					y("td", null, [l(z, { text: D(he)(e.updated_at || e.created_at) }, null, 8, ["text"])]),
-					y("td", null, [y("div", xt, [y("button", {
-						type: "button",
-						class: "ui-link",
-						onClick: (t) => D(E).openDetail(e.task_id)
-					}, "详情", 8, St), y("button", {
-						type: "button",
-						class: "ui-link",
-						disabled: !(e.has_payment_entry || e.has_payment_link || e.has_qr),
-						onClick: (t) => Ue(e.task_id)
-					}, "支付入口", 8, Ct)])])
-				], 2))), 128)), D(p).state.items.length ? u("", !0) : (t(), v(re, {
-					key: 0,
-					colspan: 10,
-					loading: D(p).state.loading,
-					error: D(p).state.error ? " " : "",
-					"loading-title": "正在读取任务…",
-					"error-title": "任务读取失败",
-					title: se.value.length ? "没有符合筛选条件的任务" : "暂无提链任务"
-				}, null, 8, [
-					"loading",
-					"error",
-					"title"
-				]))])])], 512),
+					]))])
+				])], 512),
 				l(ne, {
 					class: "extract-task-pager",
 					label: "提链任务分页",
@@ -1700,8 +1740,8 @@ var Ie = { class: "extract-filter-fields" }, Le = {
 					size: D(F).size,
 					total: D(p).state.total,
 					busy: D(p).state.loading,
-					"onUpdate:page": pe,
-					"onUpdate:size": me
+					"onUpdate:page": q,
+					"onUpdate:size": pe
 				}, null, 8, [
 					"page",
 					"size",
@@ -1716,108 +1756,113 @@ var Ie = { class: "extract-filter-fields" }, Le = {
 				"aria-labelledby": "extract-create-title",
 				onCancel: x($, ["prevent"]),
 				onClose: $,
-				onClick: r[32] ||= (e) => En(e, M.value, $)
+				onClick: r[32] ||= (e) => Mn(e, M.value, $)
 			}, [
-				y("header", null, [r[59] ||= y("h2", { id: "extract-create-title" }, "新建提链批次", -1), y("button", {
+				y("header", null, [r[62] ||= y("h2", { id: "extract-create-title" }, "新建提链批次", -1), y("button", {
 					type: "button",
+					class: "ui-button",
 					onClick: $
 				}, "关闭")]),
 				y("div", wt, [
-					y("label", null, [r[60] ||= A("批次名称", -1), i(y("input", { "onUpdate:modelValue": r[12] ||= (e) => D(w).state.title = e }, null, 512), [[T, D(w).state.title]])]),
-					y("label", null, [r[61] ||= A("账号搜索", -1), i(y("input", {
-						"onUpdate:modelValue": r[13] ||= (e) => D(w).state.filters.query = e,
-						onInput: r[14] ||= (...e) => D(w).invalidate && D(w).invalidate(...e)
-					}, null, 544), [[T, D(w).state.filters.query]])]),
-					y("label", null, [r[63] ||= A("来源", -1), i(y("select", {
-						"onUpdate:modelValue": r[15] ||= (e) => D(w).state.filters.source = e,
-						onChange: r[16] ||= (...e) => D(w).invalidate && D(w).invalidate(...e)
-					}, [r[62] ||= y("option", { value: "" }, "全部来源", -1), (t(!0), k(m, null, a(D(c).accountSources || {}, (e, n) => (t(), k("option", {
-						key: n,
-						value: n
-					}, _(e), 9, Tt))), 128))], 544), [[d, D(w).state.filters.source]])]),
-					y("label", null, [r[64] ||= A("注册日期从", -1), i(y("input", {
-						"onUpdate:modelValue": r[17] ||= (e) => D(w).state.filters.date_from = e,
-						type: "date",
-						onChange: r[18] ||= (...e) => D(w).invalidate && D(w).invalidate(...e)
-					}, null, 544), [[T, D(w).state.filters.date_from]])]),
-					y("label", null, [r[65] ||= A("注册日期至", -1), i(y("input", {
-						"onUpdate:modelValue": r[19] ||= (e) => D(w).state.filters.date_to = e,
-						type: "date",
-						onChange: r[20] ||= (...e) => D(w).invalidate && D(w).invalidate(...e)
-					}, null, 544), [[T, D(w).state.filters.date_to]])]),
-					y("label", null, [r[67] ||= A("提链状态", -1), i(y("select", {
-						"onUpdate:modelValue": r[21] ||= (e) => D(w).state.filters.extract_status = e,
-						onChange: r[22] ||= (...e) => D(w).invalidate && D(w).invalidate(...e)
-					}, [...r[66] ||= [f("<option value=\"not_succeeded\" data-v-012af3c7>未成功提链</option><option value=\"all\" data-v-012af3c7>全部可用账号</option><option value=\"failed\" data-v-012af3c7>失败</option><option value=\"never\" data-v-012af3c7>从未提链</option><option value=\"success\" data-v-012af3c7>已成功提链</option>", 5)]], 544), [[d, D(w).state.filters.extract_status]])]),
-					y("label", null, [r[68] ||= A("套餐优惠", -1), i(y("select", {
-						"onUpdate:modelValue": r[23] ||= (e) => D(w).state.filters.promotion = e,
-						onChange: r[24] ||= (...e) => D(w).invalidate && D(w).invalidate(...e)
-					}, [(t(!0), k(m, null, a(D(le), (e, n) => (t(), k("option", {
-						key: n,
-						value: n
-					}, _(e), 9, Et))), 128))], 544), [[d, D(w).state.filters.promotion]])]),
-					y("label", null, [r[69] ||= A("本批运行数量", -1), i(y("input", {
-						"onUpdate:modelValue": r[25] ||= (e) => D(w).state.limit = e,
-						type: "number",
-						min: "1",
-						max: "5000",
-						step: "1",
-						onInput: r[26] ||= (...e) => D(w).invalidate && D(w).invalidate(...e)
-					}, null, 544), [[
-						T,
-						D(w).state.limit,
-						void 0,
-						{ number: !0 }
-					]])]),
-					y("label", null, [r[70] ||= A("平台", -1), i(y("select", {
-						"onUpdate:modelValue": r[27] ||= (e) => D(w).state.provider = e,
-						onChange: Cn
-					}, [(t(!0), k(m, null, a(L.value, (e) => (t(), k("option", {
-						key: e.id,
-						value: e.id
-					}, _(e.label || D(W)(e.id)), 9, Dt))), 128)), (t(!0), k(m, null, a(D(w).state.config?.unavailable_providers || [], (e) => (t(), k("option", {
-						key: e.id,
-						value: e.id,
-						disabled: ""
-					}, _(e.label || D(W)(e.id)) + "（" + _(e.unavailable_reason || "已停用") + "）", 9, Ot))), 128))], 544), [[d, D(w).state.provider]])]),
-					y("label", null, [r[71] ||= A("模式", -1), i(y("select", { "onUpdate:modelValue": r[28] ||= (e) => D(w).state.mode = e }, [(t(!0), k(m, null, a(D(ge)(Y.value), (e) => (t(), k("option", {
-						key: e,
-						value: e
-					}, _(D(fe)(e)), 9, kt))), 128))], 512), [[d, D(w).state.mode]])]),
-					y("label", null, [r[72] ||= A("链接类型", -1), i(y("select", { "onUpdate:modelValue": r[29] ||= (e) => D(w).state.type = e }, [(t(!0), k(m, null, a(D(_e)(Y.value), (e) => (t(), k("option", {
-						key: e,
-						value: e
-					}, _(D(ce)[e] || e), 9, At))), 128))], 512), [[d, D(w).state.type]])]),
-					y("label", null, [r[73] ||= A("并发", -1), i(y("input", {
-						"onUpdate:modelValue": r[30] ||= (e) => D(w).state.workers = e,
-						type: "number",
-						min: "1",
-						max: D(w).workersMax(),
-						step: "1"
-					}, null, 8, jt), [[
-						T,
-						D(w).state.workers,
-						void 0,
-						{ number: !0 }
-					]])])
+					y("div", Tt, [
+						y("label", null, [r[63] ||= A("批次名称", -1), i(y("input", { "onUpdate:modelValue": r[12] ||= (e) => D(w).state.title = e }, null, 512), [[T, D(w).state.title]])]),
+						y("label", null, [r[64] ||= A("账号搜索", -1), i(y("input", {
+							"onUpdate:modelValue": r[13] ||= (e) => D(w).state.filters.query = e,
+							onInput: r[14] ||= (...e) => D(w).invalidate && D(w).invalidate(...e)
+						}, null, 544), [[T, D(w).state.filters.query]])]),
+						y("label", null, [r[66] ||= A("来源", -1), i(y("select", {
+							"onUpdate:modelValue": r[15] ||= (e) => D(w).state.filters.source = e,
+							onChange: r[16] ||= (...e) => D(w).invalidate && D(w).invalidate(...e)
+						}, [r[65] ||= y("option", { value: "" }, "全部来源", -1), (t(!0), k(m, null, a(D(c).accountSources || {}, (e, n) => (t(), k("option", {
+							key: n,
+							value: n
+						}, _(e), 9, Et))), 128))], 544), [[d, D(w).state.filters.source]])]),
+						y("label", null, [r[67] ||= A("注册日期从", -1), i(y("input", {
+							"onUpdate:modelValue": r[17] ||= (e) => D(w).state.filters.date_from = e,
+							type: "date",
+							onChange: r[18] ||= (...e) => D(w).invalidate && D(w).invalidate(...e)
+						}, null, 544), [[T, D(w).state.filters.date_from]])]),
+						y("label", null, [r[68] ||= A("注册日期至", -1), i(y("input", {
+							"onUpdate:modelValue": r[19] ||= (e) => D(w).state.filters.date_to = e,
+							type: "date",
+							onChange: r[20] ||= (...e) => D(w).invalidate && D(w).invalidate(...e)
+						}, null, 544), [[T, D(w).state.filters.date_to]])]),
+						y("label", null, [r[70] ||= A("提链状态", -1), i(y("select", {
+							"onUpdate:modelValue": r[21] ||= (e) => D(w).state.filters.extract_status = e,
+							onChange: r[22] ||= (...e) => D(w).invalidate && D(w).invalidate(...e)
+						}, [...r[69] ||= [f("<option value=\"not_succeeded\" data-v-ce92aa5e>未成功提链</option><option value=\"all\" data-v-ce92aa5e>全部可用账号</option><option value=\"failed\" data-v-ce92aa5e>失败</option><option value=\"never\" data-v-ce92aa5e>从未提链</option><option value=\"success\" data-v-ce92aa5e>已成功提链</option>", 5)]], 544), [[d, D(w).state.filters.extract_status]])]),
+						y("label", null, [r[71] ||= A("套餐优惠", -1), i(y("select", {
+							"onUpdate:modelValue": r[23] ||= (e) => D(w).state.filters.promotion = e,
+							onChange: r[24] ||= (...e) => D(w).invalidate && D(w).invalidate(...e)
+						}, [(t(!0), k(m, null, a(D(le), (e, n) => (t(), k("option", {
+							key: n,
+							value: n
+						}, _(e), 9, Dt))), 128))], 544), [[d, D(w).state.filters.promotion]])]),
+						y("label", null, [r[72] ||= A("本批运行数量", -1), i(y("input", {
+							"onUpdate:modelValue": r[25] ||= (e) => D(w).state.limit = e,
+							type: "number",
+							min: "1",
+							max: "5000",
+							step: "1",
+							onInput: r[26] ||= (...e) => D(w).invalidate && D(w).invalidate(...e)
+						}, null, 544), [[
+							T,
+							D(w).state.limit,
+							void 0,
+							{ number: !0 }
+						]])]),
+						y("label", null, [r[73] ||= A("平台", -1), i(y("select", {
+							"onUpdate:modelValue": r[27] ||= (e) => D(w).state.provider = e,
+							onChange: On
+						}, [(t(!0), k(m, null, a(L.value, (e) => (t(), k("option", {
+							key: e.id,
+							value: e.id
+						}, _(e.label || D(W)(e.id)), 9, Ot))), 128)), (t(!0), k(m, null, a(D(w).state.config?.unavailable_providers || [], (e) => (t(), k("option", {
+							key: e.id,
+							value: e.id,
+							disabled: ""
+						}, _(e.label || D(W)(e.id)) + "（" + _(e.unavailable_reason || "已停用") + "）", 9, kt))), 128))], 544), [[d, D(w).state.provider]])]),
+						y("label", null, [r[74] ||= A("模式", -1), i(y("select", { "onUpdate:modelValue": r[28] ||= (e) => D(w).state.mode = e }, [(t(!0), k(m, null, a(D(he)(X.value), (e) => (t(), k("option", {
+							key: e,
+							value: e
+						}, _(D(fe)(e)), 9, At))), 128))], 512), [[d, D(w).state.mode]])]),
+						y("label", null, [r[75] ||= A("链接类型", -1), i(y("select", { "onUpdate:modelValue": r[29] ||= (e) => D(w).state.type = e }, [(t(!0), k(m, null, a(D(ge)(X.value), (e) => (t(), k("option", {
+							key: e,
+							value: e
+						}, _(D(ce)[e] || e), 9, jt))), 128))], 512), [[d, D(w).state.type]])]),
+						y("label", null, [r[76] ||= A("并发", -1), i(y("input", {
+							"onUpdate:modelValue": r[30] ||= (e) => D(w).state.workers = e,
+							type: "number",
+							min: "1",
+							max: D(w).workersMax(),
+							step: "1"
+						}, null, 8, Mt), [[
+							T,
+							D(w).state.workers,
+							void 0,
+							{ number: !0 }
+						]])])
+					]),
+					y("p", Nt, _(D(Te)(D(w).state.filters.promotion)), 1),
+					y("p", Pt, _(D(w).state.feedback), 1),
+					D(w).state.error ? (t(), k("p", Ft, _(D(w).state.error), 1)) : u("", !0)
 				]),
-				y("p", Mt, _(D(Ee)(D(w).state.filters.promotion)), 1),
-				y("p", Nt, _(D(w).state.feedback), 1),
-				D(w).state.error ? (t(), k("p", Pt, _(D(w).state.error), 1)) : u("", !0),
 				y("footer", null, [
 					y("button", {
 						type: "button",
+						class: "ui-button",
 						disabled: D(w).state.loading || D(w).state.creating,
 						onClick: r[31] ||= (...e) => D(w).preview && D(w).preview(...e)
-					}, "刷新匹配数量", 8, Ft),
+					}, "刷新匹配数量", 8, It),
 					y("button", {
 						type: "button",
-						class: "primary",
+						class: "ui-button ui-button--primary primary",
 						disabled: D(w).state.creating || !D(w).state.preview?.selected_count,
-						onClick: Mn
-					}, "创建并运行（" + _(D(w).state.preview?.selected_count || 0) + "）", 9, It),
+						onClick: Rn
+					}, "创建并运行（" + _(D(w).state.preview?.selected_count || 0) + "）", 9, Lt),
 					y("button", {
 						type: "button",
+						class: "ui-button",
 						onClick: $
 					}, "取消")
 				])
@@ -1827,178 +1872,209 @@ var Ie = { class: "extract-filter-fields" }, Le = {
 				ref: N,
 				class: "extract-dialog",
 				"aria-labelledby": "extract-detail-title",
-				onCancel: r[43] ||= x((...e) => D(E).closeDetail && D(E).closeDetail(...e), ["prevent"]),
-				onClick: r[44] ||= (e) => En(e, N.value, D(E).closeDetail)
+				onCancel: r[44] ||= x((...e) => D(E).closeDetail && D(E).closeDetail(...e), ["prevent"]),
+				onClick: r[45] ||= (e) => Mn(e, N.value, D(E).closeDetail)
 			}, [
-				y("header", null, [r[74] ||= y("h2", { id: "extract-detail-title" }, "任务详情", -1), y("button", {
+				y("header", null, [r[77] ||= y("h2", { id: "extract-detail-title" }, "任务详情", -1), y("button", {
 					type: "button",
+					class: "ui-button",
 					onClick: r[33] ||= (...e) => D(E).closeDetail && D(E).closeDetail(...e)
 				}, "关闭")]),
-				D(E).state.detailLoading ? (t(), k("p", Lt, "正在读取任务详情…")) : u("", !0),
-				D(E).state.detailError ? (t(), k("p", Rt, _(D(E).state.detailError), 1)) : u("", !0),
-				X.value ? (t(), k(m, { key: 2 }, [
-					y("h3", null, _(X.value.email || "账号未记录") + " · #" + _(X.value.task_id), 1),
-					y("div", zt, [
-						y("button", {
+				y("div", Rt, [
+					D(E).state.detailLoading ? (t(), k("p", zt, "正在读取任务详情…")) : u("", !0),
+					D(E).state.detailError ? (t(), k("p", Bt, _(D(E).state.detailError), 1)) : u("", !0),
+					Z.value ? (t(), k(m, { key: 2 }, [
+						y("h3", null, _(Z.value.email || "账号未记录") + " · #" + _(Z.value.task_id), 1),
+						y("div", Vt, [
+							y("button", {
+								type: "button",
+								class: "ui-button",
+								disabled: D(ye)(Z.value),
+								onClick: r[34] ||= (e) => D(E).taskAction(Z.value.task_id, "sync_status")
+							}, "同步状态", 8, Ht),
+							y("button", {
+								type: "button",
+								class: "ui-button",
+								disabled: !D(xe)(Z.value),
+								onClick: r[35] ||= (e) => D(E).taskAction(Z.value.task_id, "retry")
+							}, "重跑", 8, Ut),
+							Z.value.mode === "auto_payment" && Z.value.payment_status !== "paid" ? (t(), k("button", {
+								key: 0,
+								type: "button",
+								class: "ui-button",
+								disabled: D(ye)(Z.value),
+								onClick: r[36] ||= (e) => D(E).taskAction(Z.value.task_id, "auto_payment")
+							}, "查询自动支付", 8, Wt)) : u("", !0),
+							y("button", {
+								type: "button",
+								class: "ui-button",
+								onClick: r[37] ||= (e) => D(E).copy(Z.value.task_id, "email")
+							}, "复制邮箱"),
+							Z.value.account_id ? (t(), k("button", {
+								key: 1,
+								type: "button",
+								class: "ui-button",
+								onClick: r[38] ||= (e) => D(E).copy(Z.value.task_id, "at")
+							}, "复制 AT")) : u("", !0),
+							Z.value.has_extract_link ? (t(), k("button", {
+								key: 2,
+								type: "button",
+								class: "ui-button",
+								onClick: r[39] ||= (e) => D(E).showLink(Z.value.task_id, "extract")
+							}, "复制提链链接")) : u("", !0),
+							Z.value.has_payment_entry || Z.value.has_payment_link || Z.value.has_qr ? (t(), k("button", {
+								key: 3,
+								type: "button",
+								class: "ui-button ui-button--primary",
+								onClick: r[40] ||= (e) => He(Z.value.task_id)
+							}, "读取支付入口")) : u("", !0)
+						]),
+						y("p", null, _(D(W)(Z.value.provider_id)) + " · " + _(D(fe)(Z.value.mode)) + _(D(ve)(Z.value)), 1),
+						y("p", null, _(D(Se)(Z.value).label) + " · " + _(D(Se)(Z.value).detail), 1),
+						y("dl", Gt, [
+							y("div", null, [r[78] ||= y("dt", null, "准备", -1), y("dd", null, _(D(U)(Z.value.preflight_status, "未开始")), 1)]),
+							y("div", null, [r[79] ||= y("dt", null, "提链", -1), y("dd", null, _(D(U)(Z.value.extraction_status)), 1)]),
+							y("div", null, [r[80] ||= y("dt", null, "支付", -1), y("dd", null, _(D(U)(Z.value.payment_status)), 1)]),
+							y("div", null, [r[81] ||= y("dt", null, "本地 Plus 到账核验", -1), y("dd", null, _(D(U)(Z.value.plus_status, "未核验")), 1)])
+						]),
+						Z.value.stages ? (t(), k("section", Kt, [r[82] ||= y("h3", null, "执行阶段", -1), (t(!0), k(m, null, a(Z.value.stages, (e, n) => (t(), k("div", {
+							key: n,
+							class: "extract-stage"
+						}, [
+							y("strong", null, _({
+								prepare: "准备",
+								run: "运行",
+								verify: "核验"
+							}[n] || n), 1),
+							A(" · " + _(D(U)(e?.state || e?.status)) + " ", 1),
+							y("span", null, _(e?.step), 1)
+						]))), 128))])) : u("", !0),
+						Z.value.payment_order ? (t(), k("dl", qt, [
+							y("div", null, [r[83] ||= y("dt", null, "支付订单", -1), y("dd", null, _(Z.value.payment_order.remote_order_id || "等待平台回执"), 1)]),
+							y("div", null, [r[84] ||= y("dt", null, "支付提交", -1), y("dd", null, _(Z.value.payment_order.submission_state || "响应缺失"), 1)]),
+							y("div", null, [r[85] ||= y("dt", null, "支付状态", -1), y("dd", null, _(D(U)(Z.value.payment_order.payment_state, "支付响应缺失")), 1)])
+						])) : u("", !0),
+						Z.value.reconcile_halt?.halted ? (t(), k("p", Jt, _(Z.value.reconcile_halt.label || "已停止自动续查") + " · " + _(Z.value.reconcile_halt.reason), 1)) : u("", !0),
+						y("section", Yt, [r[86] ||= y("h3", null, [A("节点 A · 出手的东西 "), y("small", { style: {
+							"font-weight": "500",
+							"font-size": "12px",
+							color: "var(--ui-color-text-secondary)",
+							"margin-left": "6px"
+						} }, "支付入口与二维码凭据")], -1), D(E).state.nodeA.loading ? (t(), k("p", Xt, "读取支付入口中…")) : D(E).state.nodeA.error ? (t(), k("div", Zt, [y("p", null, _(D(E).state.nodeA.error), 1), y("button", {
 							type: "button",
-							disabled: D(be)(X.value),
-							onClick: r[34] ||= (e) => D(E).taskAction(X.value.task_id, "sync_status")
-						}, "同步状态", 8, Bt),
-						y("button", {
-							type: "button",
-							disabled: !D(Se)(X.value),
-							onClick: r[35] ||= (e) => D(E).taskAction(X.value.task_id, "retry")
-						}, "重跑", 8, Vt),
-						X.value.mode === "auto_payment" && X.value.payment_status !== "paid" ? (t(), k("button", {
-							key: 0,
-							type: "button",
-							disabled: D(be)(X.value),
-							onClick: r[36] ||= (e) => D(E).taskAction(X.value.task_id, "auto_payment")
-						}, "查询自动支付", 8, Ht)) : u("", !0),
-						y("button", {
-							type: "button",
-							onClick: r[37] ||= (e) => D(E).copy(X.value.task_id, "email")
-						}, "复制邮箱"),
-						X.value.account_id ? (t(), k("button", {
-							key: 1,
-							type: "button",
-							onClick: r[38] ||= (e) => D(E).copy(X.value.task_id, "at")
-						}, "复制 AT")) : u("", !0),
-						X.value.has_extract_link ? (t(), k("button", {
-							key: 2,
-							type: "button",
-							onClick: r[39] ||= (e) => D(E).showLink(X.value.task_id, "extract")
-						}, "复制提链链接")) : u("", !0),
-						X.value.has_payment_entry || X.value.has_payment_link || X.value.has_qr ? (t(), k("button", {
-							key: 3,
-							type: "button",
-							onClick: r[40] ||= (e) => Ue(X.value.task_id)
-						}, "读取支付入口")) : u("", !0)
-					]),
-					y("p", null, _(D(W)(X.value.provider_id)) + " · " + _(D(fe)(X.value.mode)) + _(D(ye)(X.value)), 1),
-					y("p", null, _(D(Ce)(X.value).label) + " · " + _(D(Ce)(X.value).detail), 1),
-					y("dl", Ut, [
-						y("div", null, [r[75] ||= y("dt", null, "准备", -1), y("dd", null, _(D(U)(X.value.preflight_status, "未开始")), 1)]),
-						y("div", null, [r[76] ||= y("dt", null, "提链", -1), y("dd", null, _(D(U)(X.value.extraction_status)), 1)]),
-						y("div", null, [r[77] ||= y("dt", null, "支付", -1), y("dd", null, _(D(U)(X.value.payment_status)), 1)]),
-						y("div", null, [r[78] ||= y("dt", null, "本地 Plus 到账核验", -1), y("dd", null, _(D(U)(X.value.plus_status, "未核验")), 1)])
-					]),
-					X.value.stages ? (t(), k("section", Wt, [r[79] ||= y("h3", null, "执行阶段", -1), (t(!0), k(m, null, a(X.value.stages, (e, n) => (t(), k("div", {
-						key: n,
-						class: "extract-stage"
-					}, [
-						y("strong", null, _({
-							prepare: "准备",
-							run: "运行",
-							verify: "核验"
-						}[n] || n), 1),
-						A(" · " + _(D(U)(e?.state || e?.status)) + " ", 1),
-						y("span", null, _(e?.step), 1)
-					]))), 128))])) : u("", !0),
-					X.value.payment_order ? (t(), k("dl", Gt, [
-						y("div", null, [r[80] ||= y("dt", null, "支付订单", -1), y("dd", null, _(X.value.payment_order.remote_order_id || "等待平台回执"), 1)]),
-						y("div", null, [r[81] ||= y("dt", null, "支付提交", -1), y("dd", null, _(X.value.payment_order.submission_state || "响应缺失"), 1)]),
-						y("div", null, [r[82] ||= y("dt", null, "支付状态", -1), y("dd", null, _(D(U)(X.value.payment_order.payment_state, "支付响应缺失")), 1)])
-					])) : u("", !0),
-					X.value.reconcile_halt?.halted ? (t(), k("p", Kt, _(X.value.reconcile_halt.label || "已停止自动续查") + " · " + _(X.value.reconcile_halt.reason), 1)) : u("", !0),
-					y("section", qt, [r[83] ||= y("h3", null, "节点 A · 出手的东西", -1), D(E).state.nodeA.loading ? (t(), k("p", Jt, "读取支付入口中…")) : D(E).state.nodeA.error ? (t(), k("div", Yt, [y("p", null, _(D(E).state.nodeA.error), 1), y("button", {
-						type: "button",
-						onClick: r[41] ||= (e) => D(E).loadNodeA(X.value.task_id)
-					}, "重新读取节点 A")])) : D(E).state.nodeA.entry ? (t(), k(m, { key: 2 }, [
-						y("p", null, "金额 " + _(D(E).state.nodeA.entry.amount ?? "平台未返回") + " " + _(D(E).state.nodeA.entry.currency || "") + " · 有效期 " + _(D(E).state.nodeA.entry.expires_at ? D(he)(D(E).state.nodeA.entry.expires_at) : "平台未返回"), 1),
-						y("div", Xt, [(t(), k(m, null, a(["payment_page_url", "payment_url"], (e) => (t(), k(m, { key: e }, [D(J)(D(E).state.nodeA.entry[e]) ? (t(), k(m, { key: 0 }, [y("a", {
-							href: D(J)(D(E).state.nodeA.entry[e]),
-							target: "_blank",
-							rel: "noopener noreferrer"
-						}, "打开" + _(e === "payment_page_url" ? "支付页面" : "支付入口"), 9, Zt), y("button", {
-							type: "button",
-							onClick: (t) => D(E).copyNodeA(e)
-						}, "复制" + _(e === "payment_page_url" ? "支付页面" : "支付入口"), 9, Qt)], 64)) : u("", !0)], 64))), 64)), D(E).state.nodeA.entry.qr_data ? (t(), k("button", {
-							key: 0,
-							type: "button",
-							onClick: r[42] ||= (e) => D(E).copyNodeA("qr_data")
-						}, "复制节点 A 二维码")) : u("", !0)]),
-						Ie.value.length && !Me.value ? (t(), k("img", {
-							key: 0,
-							src: Ie.value[je.value],
-							width: "208",
-							height: "208",
-							alt: "节点 A 支付二维码",
-							referrerpolicy: "no-referrer",
-							onError: Le
-						}, null, 40, $t)) : Me.value ? (t(), k("p", en, "二维码图片加载失败，可使用支付链接或二维码原文。")) : u("", !0),
-						D(E).state.nodeA.entry.qr_data ? (t(), k("pre", tn, _(D(E).state.nodeA.entry.qr_data), 1)) : u("", !0)
-					], 64)) : (t(), k("p", nn, "这一步还没有支付入口"))]),
-					X.value.remote_raw ? (t(), k("details", rn, [r[84] ||= y("summary", null, "平台原文", -1), y("pre", null, _(X.value.remote_raw), 1)])) : u("", !0),
-					y("section", null, [
-						r[85] ||= y("h3", null, "执行时间线", -1),
-						y("ol", an, [(t(!0), k(m, null, a(D(E).state.detail?.events || [], (e, n) => (t(), k("li", { key: n }, [
-							y("strong", null, _(e.label || e.stage || "事件"), 1),
-							A(" · " + _(D(U)(e.status, "")) + " · " + _(D(he)(e.at || e.created_at || e.time)), 1),
-							e.message ? (t(), k("p", on, _(e.message), 1)) : u("", !0)
-						]))), 128))]),
-						D(E).state.detail?.events?.length ? u("", !0) : (t(), k("p", sn, "暂无阶段事件"))
-					]),
-					D(E).state.detail?.history?.length ? (t(), k("details", cn, [y("summary", null, "历史运行 " + _(D(E).state.detail.history.length) + " 次", 1), (t(!0), k(m, null, a(D(E).state.detail.history, (e, n) => (t(), k("article", { key: String(e.run_id || n) }, [
-						y("h4", null, "运行 #" + _(e.run_id || n + 1), 1),
-						y("p", ln, _(Sn(e)), 1),
-						y("pre", null, _(e), 1)
-					]))), 128))])) : u("", !0),
-					y("details", null, [r[86] ||= y("summary", null, "完整任务记录", -1), y("pre", null, _(X.value), 1)])
-				], 64)) : u("", !0)
+							class: "ui-button",
+							onClick: r[41] ||= (e) => D(E).loadNodeA(Z.value.task_id)
+						}, "重新读取节点 A")])) : D(E).state.nodeA.entry ? (t(), k(m, { key: 2 }, [
+							y("p", null, "金额 " + _(D(E).state.nodeA.entry.amount ?? "平台未返回") + " " + _(D(E).state.nodeA.entry.currency || "") + " · 有效期 " + _(D(E).state.nodeA.entry.expires_at ? D(me)(D(E).state.nodeA.entry.expires_at) : "平台未返回"), 1),
+							y("div", Qt, [(t(), k(m, null, a(["payment_page_url", "payment_url"], (e) => (t(), k(m, { key: e }, [D(Y)(D(E).state.nodeA.entry[e]) ? (t(), k(m, { key: 0 }, [y("a", {
+								href: D(Y)(D(E).state.nodeA.entry[e]),
+								target: "_blank",
+								rel: "noopener noreferrer"
+							}, "打开" + _(e === "payment_page_url" ? "支付页面" : "支付入口"), 9, $t), y("button", {
+								type: "button",
+								class: "ui-button",
+								onClick: (t) => D(E).copyNodeA(e)
+							}, "复制" + _(e === "payment_page_url" ? "支付页面" : "支付入口"), 9, en)], 64)) : u("", !0)], 64))), 64)), D(E).state.nodeA.entry.qr_data ? (t(), k("button", {
+								key: 0,
+								type: "button",
+								class: "ui-button",
+								onClick: r[42] ||= (e) => D(E).copyNodeA("qr_data")
+							}, "复制节点 A 二维码")) : u("", !0)]),
+							Fe.value.length && !je.value ? (t(), k("img", {
+								key: 0,
+								src: Fe.value[Ae.value],
+								width: "208",
+								height: "208",
+								alt: "节点 A 支付二维码",
+								referrerpolicy: "no-referrer",
+								onError: Ie
+							}, null, 40, tn)) : je.value ? (t(), k("p", nn, "二维码图片加载失败，可使用支付链接或二维码原文。")) : u("", !0),
+							D(E).state.nodeA.entry.qr_data ? (t(), k("pre", rn, _(D(E).state.nodeA.entry.qr_data), 1)) : u("", !0)
+						], 64)) : (t(), k("p", an, "这一步还没有支付入口"))]),
+						Z.value.remote_raw ? (t(), k("details", on, [r[87] ||= y("summary", null, "平台原文", -1), y("pre", null, _(Z.value.remote_raw), 1)])) : u("", !0),
+						y("section", null, [
+							r[88] ||= y("h3", null, "执行时间线", -1),
+							y("ol", sn, [(t(!0), k(m, null, a(D(E).state.detail?.events || [], (e, n) => (t(), k("li", { key: n }, [
+								y("strong", null, _(e.label || e.stage || "事件"), 1),
+								A(" · " + _(D(U)(e.status, "")) + " · " + _(D(me)(e.at || e.created_at || e.time)), 1),
+								e.message ? (t(), k("p", cn, _(e.message), 1)) : u("", !0)
+							]))), 128))]),
+							D(E).state.detail?.events?.length ? u("", !0) : (t(), k("p", ln, "暂无阶段事件"))
+						]),
+						D(E).state.detail?.history?.length ? (t(), k("details", un, [y("summary", null, "历史运行 " + _(D(E).state.detail.history.length) + " 次", 1), (t(!0), k(m, null, a(D(E).state.detail.history, (e, n) => (t(), k("article", { key: String(e.run_id || n) }, [
+							y("h4", null, "运行 #" + _(e.run_id || n + 1), 1),
+							y("p", dn, _(En(e)), 1),
+							y("pre", null, _(e), 1)
+						]))), 128))])) : u("", !0),
+						y("details", null, [r[89] ||= y("summary", null, "完整任务记录", -1), y("pre", null, _(Z.value), 1)])
+					], 64)) : u("", !0)
+				]),
+				y("footer", null, [y("button", {
+					type: "button",
+					class: "ui-button",
+					onClick: r[43] ||= (...e) => D(E).closeDetail && D(E).closeDetail(...e)
+				}, "关闭")])
 			], 544),
 			y("dialog", {
 				ref_key: "paymentDialog",
 				ref: P,
 				class: "extract-dialog",
 				"aria-labelledby": "extract-payment-title",
-				onCancel: r[48] ||= x((...e) => D(E).closePayment && D(E).closePayment(...e), ["prevent"]),
-				onClick: r[49] ||= (e) => En(e, P.value, D(E).closePayment)
-			}, [y("header", null, [r[87] ||= y("h2", { id: "extract-payment-title" }, "支付入口", -1), y("button", {
-				type: "button",
-				onClick: r[45] ||= (...e) => D(E).closePayment && D(E).closePayment(...e)
-			}, "关闭")]), D(E).state.payment.loading ? (t(), k("p", un, "读取中…")) : (t(), k(m, { key: 1 }, [D(E).state.payment.error ? (t(), k("div", dn, [y("p", null, _(D(E).state.payment.error), 1), y("button", {
-				type: "button",
-				onClick: r[46] ||= (e) => Ue(D(E).state.payment.taskId)
-			}, "重新读取")])) : u("", !0), D(E).state.payment.entry ? (t(), k(m, { key: 1 }, [
-				y("dl", fn, [
-					y("div", null, [r[88] ||= y("dt", null, "金额", -1), y("dd", null, _(D(E).state.payment.entry.amount ?? "平台未返回") + " " + _(D(E).state.payment.entry.currency || ""), 1)]),
-					y("div", null, [r[89] ||= y("dt", null, "平台支付状态", -1), y("dd", null, _(D(Te)(D(E).state.payment.entry.payment_status)), 1)]),
-					y("div", null, [r[90] ||= y("dt", null, "平台 Plus 核验", -1), y("dd", null, _(D(Te)(D(E).state.payment.entry.platform_plus_status, !0)), 1)]),
-					y("div", null, [r[91] ||= y("dt", null, "有效期至", -1), y("dd", null, _(D(E).state.payment.entry.expires_at ? `${D(he)(D(E).state.payment.entry.expires_at)} · ${D(Ae)(D(E).state.payment.entry.expires_at, Be.value)}` : "平台未返回"), 1)])
-				]),
-				r[94] ||= y("p", { class: "extract-hint" }, "平台 Plus 状态供参考，本地到账以任务中的“Plus 到账核验”为准。", -1),
-				(t(), k(m, null, a(["payment_page_url", "payment_url"], (e) => y("section", { key: e }, [y("h3", null, _(e === "payment_page_url" ? "支付页面" : "支付入口"), 1), (e === "payment_page_url" ? De.value : ke.value) ? (t(), k(m, { key: 0 }, [
-					y("a", {
-						href: e === "payment_page_url" ? De.value : ke.value,
+				onCancel: r[50] ||= x((...e) => D(E).closePayment && D(E).closePayment(...e), ["prevent"]),
+				onClick: r[51] ||= (e) => Mn(e, P.value, D(E).closePayment)
+			}, [
+				y("header", null, [r[90] ||= y("h2", { id: "extract-payment-title" }, "支付入口", -1), y("button", {
+					type: "button",
+					class: "ui-button",
+					onClick: r[46] ||= (...e) => D(E).closePayment && D(E).closePayment(...e)
+				}, "关闭")]),
+				y("div", fn, [D(E).state.payment.loading ? (t(), k("p", pn, "读取中…")) : (t(), k(m, { key: 1 }, [D(E).state.payment.error ? (t(), k("div", mn, [y("p", null, _(D(E).state.payment.error), 1), y("button", {
+					type: "button",
+					class: "ui-button",
+					onClick: r[47] ||= (e) => He(D(E).state.payment.taskId)
+				}, "重新读取")])) : u("", !0), D(E).state.payment.entry ? (t(), k(m, { key: 1 }, [
+					y("dl", hn, [
+						y("div", null, [r[91] ||= y("dt", null, "金额", -1), y("dd", null, _(D(E).state.payment.entry.amount ?? "平台未返回") + " " + _(D(E).state.payment.entry.currency || ""), 1)]),
+						y("div", null, [r[92] ||= y("dt", null, "平台支付状态", -1), y("dd", null, _(D(we)(D(E).state.payment.entry.payment_status)), 1)]),
+						y("div", null, [r[93] ||= y("dt", null, "平台 Plus 核验", -1), y("dd", null, _(D(we)(D(E).state.payment.entry.platform_plus_status, !0)), 1)]),
+						y("div", null, [r[94] ||= y("dt", null, "有效期至", -1), y("dd", null, _(D(E).state.payment.entry.expires_at ? `${D(me)(D(E).state.payment.entry.expires_at)} · ${D(ke)(D(E).state.payment.entry.expires_at, ze.value)}` : "平台未返回"), 1)])
+					]),
+					r[97] ||= y("p", { class: "extract-hint" }, "平台 Plus 状态供参考，本地到账以任务中的“Plus 到账核验”为准。", -1),
+					(t(), k(m, null, a(["payment_page_url", "payment_url"], (e) => y("section", { key: e }, [y("h3", null, _(e === "payment_page_url" ? "支付页面" : "支付入口"), 1), (e === "payment_page_url" ? Ee.value : Oe.value) ? (t(), k(m, { key: 0 }, [y("div", gn, [y("a", {
+						href: e === "payment_page_url" ? Ee.value : Oe.value,
 						target: "_blank",
 						rel: "noopener noreferrer"
-					}, "打开", 8, pn),
-					y("button", {
+					}, "打开", 8, _n), y("button", {
 						type: "button",
+						class: "ui-button",
 						onClick: (t) => D(E).copyPayment(e)
-					}, "复制", 8, mn),
-					y("pre", null, _(e === "payment_page_url" ? De.value : ke.value), 1)
-				], 64)) : (t(), k("p", hn, "平台未返回"))])), 64)),
-				y("section", null, [r[92] ||= y("h3", null, "支付二维码", -1), Ve.value.length && !ze.value ? (t(), k("img", {
-					key: 0,
-					src: Ve.value[Re.value],
-					width: "208",
-					height: "208",
-					alt: "平台返回的支付二维码",
-					referrerpolicy: "no-referrer",
-					onError: He
-				}, null, 40, gn)) : (t(), k("p", _n, _(ze.value ? "二维码图片加载失败。" : "平台未返回二维码图片。") + "可使用支付链接或复制下方二维码原文。", 1))]),
-				y("section", null, [r[93] ||= y("h3", null, "二维码原文", -1), D(E).state.payment.entry.qr_data ? (t(), k(m, { key: 0 }, [y("button", {
+					}, "复制", 8, vn)]), y("pre", null, _(e === "payment_page_url" ? Ee.value : Oe.value), 1)], 64)) : (t(), k("p", yn, "平台未返回"))])), 64)),
+					y("section", null, [r[95] ||= y("h3", null, "支付二维码", -1), Be.value.length && !Re.value ? (t(), k("img", {
+						key: 0,
+						src: Be.value[Le.value],
+						width: "208",
+						height: "208",
+						alt: "平台返回的支付二维码",
+						referrerpolicy: "no-referrer",
+						onError: Ve
+					}, null, 40, bn)) : (t(), k("p", xn, _(Re.value ? "二维码图片加载失败。" : "平台未返回二维码图片。") + "可使用支付链接或复制下方二维码原文。", 1))]),
+					y("section", null, [r[96] ||= y("h3", null, "二维码原文", -1), D(E).state.payment.entry.qr_data ? (t(), k(m, { key: 0 }, [y("button", {
+						type: "button",
+						class: "ui-button",
+						onClick: r[48] ||= (e) => D(E).copyPayment("qr_data")
+					}, "复制二维码内容"), y("pre", null, _(D(E).state.payment.entry.qr_data), 1)], 64)) : (t(), k("p", Sn, "平台未返回"))])
+				], 64)) : u("", !0)], 64))]),
+				y("footer", null, [y("button", {
 					type: "button",
-					onClick: r[47] ||= (e) => D(E).copyPayment("qr_data")
-				}, "复制二维码内容"), y("pre", null, _(D(E).state.payment.entry.qr_data), 1)], 64)) : (t(), k("p", vn, "平台未返回"))])
-			], 64)) : u("", !0)], 64))], 544)
-		], 8, qe));
+					class: "ui-button",
+					onClick: r[49] ||= (...e) => D(E).closePayment && D(E).closePayment(...e)
+				}, "关闭")])
+			], 544)
+		], 8, Ke));
 	}
-}), [["__scopeId", "data-v-012af3c7"]]);
+}), [["__scopeId", "data-v-ce92aa5e"]]);
 // src/features/extract/useExtractStats.ts
-function bn(e = {}) {
+function wn(e = {}) {
 	let t = e.api || H(e), n = s({
 		days: 30,
 		provider: "",
@@ -2023,7 +2099,7 @@ function bn(e = {}) {
 			for (let e of l.providers || []) e.provider_id && (n.providers[e.provider_id] = oe[e.provider_id] || e.provider_id);
 			e.onReady?.();
 		} catch (e) {
-			r === i && c() && (n.error = Y(e), n.data = l);
+			r === i && c() && (n.error = X(e), n.data = l);
 		} finally {
 			r === i && (n.loading = !1);
 		}
@@ -2049,69 +2125,69 @@ function bn(e = {}) {
 	};
 }
 // src/features/extract/ExtractStats.vue?vue&type=script&setup=true&lang.ts
-var xn = ["aria-busy"], Sn = { class: "es-controls" }, Cn = {
+var Tn = ["aria-busy"], En = { class: "es-controls" }, Dn = {
 	class: "es-periods",
 	role: "group",
 	"aria-label": "统计时间范围"
-}, wn = [
+}, On = [
 	"data-extract-stats-days",
 	"aria-pressed",
 	"onClick"
-], Q = ["value"], Tn = ["disabled"], En = {
+], kn = ["value"], An = ["disabled"], jn = {
 	class: "es-updated",
 	role: "status"
-}, $ = {
+}, Mn = {
 	key: 0,
 	class: "es-notice",
 	role: "alert"
-}, Dn = {
+}, $ = {
 	key: 1,
 	class: "es-empty",
 	role: "status"
-}, On = {
+}, Nn = {
 	class: "es-today",
 	"aria-label": "今日与当前"
-}, kn = { class: "es-scope" }, An = { class: "es-metrics" }, jn = { class: "es-summary-grid" }, Mn = { class: "es-panel" }, Nn = { class: "es-conversion" }, Pn = { class: "es-panel" }, Fn = { class: "es-state-grid" }, In = { class: "es-current" }, Ln = { class: "es-chart-grid" }, Rn = { class: "es-panel es-trend" }, zn = { class: "es-legend" }, Bn = {
+}, Pn = { class: "es-scope" }, Fn = { class: "es-metrics" }, In = { class: "es-summary-grid" }, Ln = { class: "es-panel" }, Rn = { class: "es-conversion" }, zn = { class: "es-panel" }, Bn = { class: "es-state-grid" }, Vn = { class: "es-current" }, Hn = { class: "es-chart-grid" }, Un = { class: "es-panel es-trend" }, Wn = { class: "es-legend" }, Gn = {
 	viewBox: "0 0 880 242",
 	role: "img",
 	"aria-label": "每日提链任务、出链和支付趋势"
-}, Vn = ["y1", "y2"], Hn = ["y"], Un = ["x"], Wn = ["d"], Gn = {
+}, Kn = ["y1", "y2"], qn = ["y"], Jn = ["x"], Yn = ["d"], Xn = {
 	key: 1,
 	class: "es-empty"
-}, Kn = {
+}, Zn = {
 	key: 2,
 	class: "es-daily-data"
-}, qn = { class: "es-table-scroll" }, Jn = { "aria-label": "每日趋势数据" }, Yn = { class: "es-panel" }, Xn = { class: "es-panel-header" }, Zn = {
+}, Qn = { class: "es-table-scroll" }, $n = { "aria-label": "每日趋势数据" }, er = { class: "es-panel" }, tr = { class: "es-panel-header" }, nr = {
 	key: 0,
 	class: "es-failures"
-}, Qn = {
+}, rr = {
 	class: "es-failure-track",
 	"aria-hidden": "true"
-}, $n = {
+}, ir = {
 	key: 1,
 	class: "es-empty"
-}, er = { class: "es-panel" }, tr = {
+}, ar = { class: "es-panel" }, or = {
 	key: 0,
 	class: "es-table-scroll",
 	tabindex: "0",
 	"aria-label": "平台统计，可左右滚动"
-}, nr = { class: "es-provider-table" }, rr = ["title"], ir = ["title"], ar = {
+}, sr = { class: "es-provider-table" }, cr = ["title"], lr = ["title"], ur = {
 	key: 1,
 	class: "es-empty"
-}, or = { class: "es-panel" }, sr = {
+}, dr = { class: "es-panel" }, fr = {
 	key: 0,
 	class: "es-modes"
-}, cr = {
+}, pr = {
 	class: "es-mode-track",
 	"aria-hidden": "true"
-}, lr = {
+}, mr = {
 	key: 1,
 	class: "es-empty"
-}, ur = /*#__PURE__*/ O(/* @__PURE__ */ e({
+}, hr = /*#__PURE__*/ O(/* @__PURE__ */ e({
 	__name: "ExtractStats",
 	props: { deps: {} },
 	setup(e, { expose: n }) {
-		let r = bn(e.deps || {}), { state: s } = r, c = C(() => s.data), l = C(() => c.value?.totals || {}), f = C(() => c.value?.current || {}), p = C(() => c.value?.daily || []), g = C(() => p.value.at(-1) || {}), v = C(() => Object.entries(s.providers).filter(([e]) => e !== "lumen")), x = C(() => (c.value?.failures || []).filter((e) => G(e.count) > 0).sort((e, t) => G(t.count) - G(e.count)).slice(0, 5)), w = C(() => Math.max(1, ...x.value.map((e) => G(e.count)))), T = [
+		let r = wn(e.deps || {}), { state: s } = r, c = C(() => s.data), l = C(() => c.value?.totals || {}), f = C(() => c.value?.current || {}), p = C(() => c.value?.daily || []), g = C(() => p.value.at(-1) || {}), v = C(() => Object.entries(s.providers).filter(([e]) => e !== "lumen")), x = C(() => (c.value?.failures || []).filter((e) => G(e.count) > 0).sort((e, t) => G(t.count) - G(e.count)).slice(0, 5)), w = C(() => Math.max(1, ...x.value.map((e) => G(e.count)))), T = [
 			{
 				key: "total",
 				label: "任务总数",
@@ -2145,8 +2221,8 @@ var xn = ["aria-busy"], Sn = { class: "es-controls" }, Cn = {
 			class: "extract-stats-page",
 			"aria-busy": D(s).loading
 		}, [
-			y("div", Sn, [
-				y("div", Cn, [(t(), k(m, null, a([
+			y("div", En, [
+				y("div", Dn, [(t(), k(m, null, a([
 					7,
 					30,
 					90
@@ -2158,7 +2234,7 @@ var xn = ["aria-busy"], Sn = { class: "es-controls" }, Cn = {
 					onClick: (t) => {
 						D(s).days = e, D(r).load();
 					}
-				}, "近 " + _(e) + " 天", 9, wn)), 64))]),
+				}, "近 " + _(e) + " 天", 9, On)), 64))]),
 				y("label", null, [n[5] ||= A("平台", -1), i(y("select", {
 					"onUpdate:modelValue": n[0] ||= (e) => D(s).provider = e,
 					"data-extract-stats-provider": "",
@@ -2166,29 +2242,29 @@ var xn = ["aria-busy"], Sn = { class: "es-controls" }, Cn = {
 				}, [n[4] ||= y("option", { value: "" }, "全部平台", -1), (t(!0), k(m, null, a(v.value, ([e, n]) => (t(), k("option", {
 					key: e,
 					value: e
-				}, _(n), 9, Q))), 128))], 544), [[d, D(s).provider]])]),
+				}, _(n), 9, kn))), 128))], 544), [[d, D(s).provider]])]),
 				y("button", {
 					type: "button",
 					"data-extract-stats-refresh": "",
 					disabled: D(s).loading,
 					onClick: n[2] ||= (...e) => D(r).load && D(r).load(...e)
-				}, "刷新", 8, Tn),
-				y("span", En, _(D(s).loading ? "正在汇总提链任务…" : c.value?.generated_at ? `更新于 ${D(he)(c.value.generated_at)}` : ""), 1)
+				}, "刷新", 8, An),
+				y("span", jn, _(D(s).loading ? "正在汇总提链任务…" : c.value?.generated_at ? `更新于 ${D(me)(c.value.generated_at)}` : ""), 1)
 			]),
-			D(s).error ? (t(), k("div", $, [y("span", null, _(D(s).data ? "刷新失败，以下保留上次统计。" : "未取得所选范围的统计。") + _(D(s).error), 1), y("button", {
+			D(s).error ? (t(), k("div", Mn, [y("span", null, _(D(s).data ? "刷新失败，以下保留上次统计。" : "未取得所选范围的统计。") + _(D(s).error), 1), y("button", {
 				type: "button",
 				"data-extract-stats-retry": "",
 				onClick: n[3] ||= (...e) => D(r).load && D(r).load(...e)
 			}, "重试")])) : u("", !0),
-			!c.value && D(s).loading ? (t(), k("div", Dn, "正在汇总提链任务…")) : u("", !0),
+			!c.value && D(s).loading ? (t(), k("div", $, "正在汇总提链任务…")) : u("", !0),
 			c.value ? (t(), k(m, { key: 2 }, [
-				y("section", On, [n[9] ||= y("div", { class: "es-panel-header" }, [y("h2", null, "今日与当前"), y("span", null, "今日任务按北京时间创建日归属")], -1), y("dl", null, [
+				y("section", Nn, [n[9] ||= y("div", { class: "es-panel-header" }, [y("h2", null, "今日与当前"), y("span", null, "今日任务按北京时间创建日归属")], -1), y("dl", null, [
 					y("div", null, [n[6] ||= y("dt", null, "今日任务出链", -1), y("dd", null, _(D(K)(g.value.extracted)), 1)]),
 					y("div", null, [n[7] ||= y("dt", null, "今日任务 Plus", -1), y("dd", null, _(D(K)(g.value.plus_confirmed)), 1)]),
 					y("div", null, [n[8] ||= y("dt", null, [A("当前待支付"), y("small", null, "全部日期")], -1), y("dd", null, _(D(K)(f.value.awaiting_payment)), 1)])
 				])]),
-				y("div", kn, [y("span", null, _(c.value.date_from || "—") + " — " + _(c.value.date_to || "—"), 1), n[10] ||= y("span", null, "按北京时间任务创建日归属", -1)]),
-				y("div", An, [(t(), k(m, null, a([
+				y("div", Pn, [y("span", null, _(c.value.date_from || "—") + " — " + _(c.value.date_to || "—"), 1), n[10] ||= y("span", null, "按北京时间任务创建日归属", -1)]),
+				y("div", Fn, [(t(), k(m, null, a([
 					{
 						key: "total",
 						label: "任务总数",
@@ -2217,27 +2293,27 @@ var xn = ["aria-busy"], Sn = { class: "es-controls" }, Cn = {
 					y("strong", null, _(D(K)(l.value[e.key])), 1),
 					y("small", null, _(e.hint), 1)
 				], 2)), 64))]),
-				y("div", jn, [y("section", Mn, [n[17] ||= y("div", { class: "es-panel-header" }, [y("h2", null, "转化与耗时"), y("span", null, "未结束任务不进入成功率分母")], -1), y("dl", Nn, [
+				y("div", In, [y("section", Ln, [n[17] ||= y("div", { class: "es-panel-header" }, [y("h2", null, "转化与耗时"), y("span", null, "未结束任务不进入成功率分母")], -1), y("dl", Rn, [
 					y("div", null, [
 						n[11] ||= y("dt", null, "提链成功率", -1),
-						y("dd", null, _(D(pe)(l.value.extraction_rate)), 1),
+						y("dd", null, _(D(q)(l.value.extraction_rate)), 1),
 						n[12] ||= y("span", null, "已出链 /（已出链 + 提链失败）", -1),
 						y("small", null, "出链 " + _(D(K)(l.value.extracted)) + " · 失败 " + _(D(K)(l.value.extraction_failed)), 1)
 					]),
 					y("div", null, [
 						n[13] ||= y("dt", null, "支付成功率", -1),
-						y("dd", null, _(D(pe)(l.value.payment_rate)), 1),
+						y("dd", null, _(D(q)(l.value.payment_rate)), 1),
 						n[14] ||= y("span", null, "已支付 /（已支付 + 支付失败）", -1),
 						y("small", null, "支付 " + _(D(K)(l.value.paid)) + " · 失败 " + _(D(K)(l.value.payment_failed)), 1)
 					]),
 					y("div", null, [
 						n[15] ||= y("dt", null, "平均耗时", -1),
-						y("dd", null, _(D(me)(l.value.avg_seconds)), 1),
+						y("dd", null, _(D(pe)(l.value.avg_seconds)), 1),
 						n[16] ||= y("span", null, "最新成功运行的总耗时", -1)
 					])
-				])]), y("section", Pn, [
+				])]), y("section", zn, [
 					n[18] ||= y("div", { class: "es-panel-header" }, [y("h2", null, "区间任务状态"), y("span", null, "所选范围的最新结果")], -1),
-					y("dl", Fn, [(t(), k(m, null, a([
+					y("dl", Bn, [(t(), k(m, null, a([
 						{
 							key: "failed",
 							label: "失败"
@@ -2251,14 +2327,14 @@ var xn = ["aria-busy"], Sn = { class: "es-controls" }, Cn = {
 							label: "待支付"
 						}
 					], (e) => y("div", { key: e.key }, [y("dt", null, _(e.label), 1), y("dd", null, _(D(K)(l.value[e.key])), 1)])), 64))]),
-					y("p", In, _(D(s).provider ? "当前所选平台" : "当前全部平台") + "，全部日期：处理中 " + _(D(K)(f.value.processing)) + " · 待支付 " + _(D(K)(f.value.awaiting_payment)), 1)
+					y("p", Vn, _(D(s).provider ? "当前所选平台" : "当前全部平台") + "，全部日期：处理中 " + _(D(K)(f.value.processing)) + " · 待支付 " + _(D(K)(f.value.awaiting_payment)), 1)
 				])]),
-				y("div", Ln, [y("section", Rn, [
+				y("div", Hn, [y("section", Un, [
 					n[23] ||= y("div", { class: "es-panel-header" }, [y("h2", null, "每日趋势"), y("span", null, "按北京时间任务创建日归属")], -1),
-					E.value ? (t(), k(m, { key: 0 }, [y("div", zn, [(t(), k(m, null, a(T, (e) => y("span", {
+					E.value ? (t(), k(m, { key: 0 }, [y("div", Wn, [(t(), k(m, null, a(T, (e) => y("span", {
 						key: e.key,
 						class: S(`es-series--${e.tone}`)
-					}, _(e.label), 3)), 64))]), (t(), k("svg", Bn, [
+					}, _(e.label), 3)), 64))]), (t(), k("svg", Gn, [
 						n[19] ||= y("title", null, "每日提链趋势，完整数据见下方表格", -1),
 						(t(), k(m, null, a([
 							0,
@@ -2272,26 +2348,26 @@ var xn = ["aria-busy"], Sn = { class: "es-controls" }, Cn = {
 							y1: M(O.value * e / 4),
 							y2: M(O.value * e / 4),
 							class: "es-chart-gridline"
-						}, null, 8, Vn), y("text", {
+						}, null, 8, Kn), y("text", {
 							x: "38",
 							y: M(O.value * e / 4) + 4,
 							"text-anchor": "end",
 							class: "es-chart-label"
-						}, _(D(K)(O.value * e / 4)), 9, Hn)])), 64)),
+						}, _(D(K)(O.value * e / 4)), 9, qn)])), 64)),
 						(t(!0), k(m, null, a(N.value, (e) => (t(), k("text", {
 							key: e,
 							x: j(e),
 							y: "232",
 							"text-anchor": "middle",
 							class: "es-chart-label"
-						}, _(String(p.value[e]?.date || "").slice(5)), 9, Un))), 128)),
+						}, _(String(p.value[e]?.date || "").slice(5)), 9, Jn))), 128)),
 						(t(), k(m, null, a(T, (e) => y("path", {
 							key: e.key,
 							d: P(e.key),
 							class: S(["es-chart-line", `es-series--${e.tone}`])
-						}, null, 10, Wn)), 64))
-					]))], 64)) : (t(), k("div", Gn, [...n[20] ||= [y("strong", null, "这个时间段还没有提链任务", -1), y("p", null, "选择其他时间范围，或在提链工作台新建批次。", -1)]])),
-					p.value.length ? (t(), k("details", Kn, [n[22] ||= y("summary", null, "查看每日明细数据", -1), y("div", qn, [y("table", Jn, [n[21] ||= y("thead", null, [y("tr", null, [
+						}, null, 10, Yn)), 64))
+					]))], 64)) : (t(), k("div", Xn, [...n[20] ||= [y("strong", null, "这个时间段还没有提链任务", -1), y("p", null, "选择其他时间范围，或在提链工作台新建批次。", -1)]])),
+					p.value.length ? (t(), k("details", Zn, [n[22] ||= y("summary", null, "查看每日明细数据", -1), y("div", Qn, [y("table", $n, [n[21] ||= y("thead", null, [y("tr", null, [
 						y("th", null, "日期（北京时间）"),
 						y("th", null, "任务总数"),
 						y("th", null, "已出链"),
@@ -2304,12 +2380,12 @@ var xn = ["aria-busy"], Sn = { class: "es-controls" }, Cn = {
 						y("td", null, _(D(K)(e.paid)), 1),
 						y("td", null, _(D(K)(e.plus_confirmed)), 1)
 					]))), 128))])])])])) : u("", !0)
-				]), y("section", Yn, [y("div", Xn, [n[24] ||= y("h2", null, "失败分类", -1), y("span", null, _(D(K)(l.value.failed)) + " 个失败任务", 1)]), x.value.length ? (t(), k("ol", Zn, [(t(!0), k(m, null, a(x.value, (e) => (t(), k("li", { key: e.code || e.label }, [
+				]), y("section", er, [y("div", tr, [n[24] ||= y("h2", null, "失败分类", -1), y("span", null, _(D(K)(l.value.failed)) + " 个失败任务", 1)]), x.value.length ? (t(), k("ol", nr, [(t(!0), k(m, null, a(x.value, (e) => (t(), k("li", { key: e.code || e.label }, [
 					y("div", null, [y("span", null, _(e.label || e.code || "原因未记录"), 1), y("strong", null, _(D(K)(e.count)), 1)]),
-					y("div", Qn, [y("span", { style: h({ width: `${D(G)(e.count) / w.value * 100}%` }) }, null, 4)]),
+					y("div", rr, [y("span", { style: h({ width: `${D(G)(e.count) / w.value * 100}%` }) }, null, 4)]),
 					y("code", null, _(e.code || "未记录错误码"), 1)
-				]))), 128))])) : (t(), k("div", $n, [...n[25] ||= [y("strong", null, "暂无失败记录", -1), y("p", null, "所选范围没有失败任务。", -1)]]))])]),
-				y("section", er, [n[28] ||= y("div", { class: "es-panel-header" }, [y("h2", null, "平台对比"), y("span", null, "支付成功与 Plus 到账分别统计")], -1), c.value.providers?.length ? (t(), k("div", tr, [y("table", nr, [n[26] ||= y("thead", null, [y("tr", null, [
+				]))), 128))])) : (t(), k("div", ir, [...n[25] ||= [y("strong", null, "暂无失败记录", -1), y("p", null, "所选范围没有失败任务。", -1)]]))])]),
+				y("section", ar, [n[28] ||= y("div", { class: "es-panel-header" }, [y("h2", null, "平台对比"), y("span", null, "支付成功与 Plus 到账分别统计")], -1), c.value.providers?.length ? (t(), k("div", or, [y("table", sr, [n[26] ||= y("thead", null, [y("tr", null, [
 					y("th", null, "平台"),
 					y("th", null, "任务数"),
 					y("th", null, "已出链"),
@@ -2324,21 +2400,21 @@ var xn = ["aria-busy"], Sn = { class: "es-controls" }, Cn = {
 					y("th", null, _(D(W)(e.provider_id)), 1),
 					y("td", null, _(D(K)(e.total)), 1),
 					y("td", null, _(D(K)(e.extracted)), 1),
-					y("td", { title: `已出链 ${D(K)(e.extracted)}，提链失败 ${D(K)(e.extraction_failed)}` }, _(D(pe)(e.extraction_rate)), 9, rr),
+					y("td", { title: `已出链 ${D(K)(e.extracted)}，提链失败 ${D(K)(e.extraction_failed)}` }, _(D(q)(e.extraction_rate)), 9, cr),
 					y("td", null, _(D(K)(e.paid)), 1),
-					y("td", { title: `已支付 ${D(K)(e.paid)}，支付失败 ${D(K)(e.payment_failed)}` }, _(D(pe)(e.payment_rate)), 9, ir),
+					y("td", { title: `已支付 ${D(K)(e.paid)}，支付失败 ${D(K)(e.payment_failed)}` }, _(D(q)(e.payment_rate)), 9, lr),
 					y("td", null, _(D(K)(e.plus_confirmed)), 1),
 					y("td", null, _(D(K)(e.failed)), 1),
 					y("td", null, _(D(K)(e.processing)), 1),
-					y("td", null, _(D(me)(e.avg_seconds)), 1)
-				]))), 128))])])])) : (t(), k("div", ar, [...n[27] ||= [y("strong", null, "暂无平台数据", -1), y("p", null, "所选范围没有提链任务。", -1)]]))]),
-				y("section", or, [n[30] ||= y("div", { class: "es-panel-header" }, [y("h2", null, "模式分布"), y("span", null, "所选范围内的任务组成")], -1), c.value.modes?.length ? (t(), k("div", sr, [(t(!0), k(m, null, a(c.value.modes, (e) => (t(), k("article", {
+					y("td", null, _(D(pe)(e.avg_seconds)), 1)
+				]))), 128))])])])) : (t(), k("div", ur, [...n[27] ||= [y("strong", null, "暂无平台数据", -1), y("p", null, "所选范围没有提链任务。", -1)]]))]),
+				y("section", dr, [n[30] ||= y("div", { class: "es-panel-header" }, [y("h2", null, "模式分布"), y("span", null, "所选范围内的任务组成")], -1), c.value.modes?.length ? (t(), k("div", fr, [(t(!0), k(m, null, a(c.value.modes, (e) => (t(), k("article", {
 					key: e.mode,
 					class: "es-mode"
 				}, [
-					y("div", null, [y("h3", null, _(D(fe)(e.mode)), 1), y("span", null, _(D(G)(l.value.total) ? D(pe)(F(e) / 100) : "—"), 1)]),
+					y("div", null, [y("h3", null, _(D(fe)(e.mode)), 1), y("span", null, _(D(G)(l.value.total) ? D(q)(F(e) / 100) : "—"), 1)]),
 					y("strong", null, [A(_(D(K)(e.total)), 1), n[29] ||= y("small", null, " 个任务", -1)]),
-					y("div", cr, [y("span", { style: h({ width: `${F(e)}%` }) }, null, 4)]),
+					y("div", pr, [y("span", { style: h({ width: `${F(e)}%` }) }, null, 4)]),
 					y("dl", null, [(t(), k(m, null, a([
 						{
 							key: "extracted",
@@ -2357,14 +2433,14 @@ var xn = ["aria-busy"], Sn = { class: "es-controls" }, Cn = {
 							label: "失败"
 						}
 					], (t) => y("div", { key: t.key }, [y("dt", null, _(t.label), 1), y("dd", null, _(D(K)(e[t.key])), 1)])), 64))])
-				]))), 128))])) : (t(), k("div", lr, "暂无模式数据"))])
+				]))), 128))])) : (t(), k("div", mr, "暂无模式数据"))])
 			], 64)) : u("", !0)
-		], 8, xn));
+		], 8, Tn));
 	}
-}), [["__scopeId", "data-v-b7c02bd0"]]);
+}), [["__scopeId", "data-v-222817eb"]]);
 // src/extract.ts
-function dr(e, t = {}) {
-	let n = w(yn, { deps: t }), r = n.mount(e);
+function gr(e, t = {}) {
+	let n = w(Cn, { deps: t }), r = n.mount(e);
 	return {
 		load: r.load,
 		setVisible: r.setVisible,
@@ -2383,12 +2459,12 @@ function dr(e, t = {}) {
 		destroy: () => n.unmount()
 	};
 }
-function fr(e, t = {}) {
-	let n = w(ur, { deps: t }), r = n.mount(e);
+function _r(e, t = {}) {
+	let n = w(hr, { deps: t }), r = n.mount(e);
 	return {
 		load: r.load,
 		setVisible: r.setVisible,
 		destroy: () => n.unmount()
 	};
 }
-export { fr as mountExtractStats, dr as mountExtractWorkbench };
+export { _r as mountExtractStats, gr as mountExtractWorkbench };

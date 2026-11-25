@@ -8,7 +8,7 @@ defineProps<{ step: Step; siblings?: Step[] }>();
 
 <template>
   <section class="tc-step-evidence">
-    <p v-if="step.reason || step.message">{{ step.reason || step.message }}</p>
+    <p v-if="step.reason || step.message" class="tc-step-evidence__summary">{{ step.reason || step.message }}</p>
     <dl class="tc-detail-facts">
       <div><dt>状态</dt><dd>{{ phaseState(step) }}</dd></div>
       <div><dt>开始</dt><dd>{{ formatDateTime(step.started_at) }}</dd></div>

@@ -67,13 +67,13 @@ const extractTone=computed(()=>num(extractData.value.processing)>0?'active':'idl
 const extractEmpty=computed(()=>num(extractData.value.all)===0&&num(extractData.value.today_extracted)===0&&num(extractData.value.processing)===0&&num(extractData.value.awaiting_payment)===0);
 
 const pulse=computed(()=>[
-  {id:'email',label:'邮箱',value:emailNumber.value,hint:num(email.value?.available)===0?'库存耗尽':`邮箱总量 ${fmt(emailTotal.value)}`,tone:emailTone.value,tab:'outlook'},
-  {id:'accounts',label:'账号',value:fmt(accounts.value.active),hint:`归档 ${fmt(accounts.value.archived)}`,tone:'ok',tab:'accounts'},
-  {id:'codex',label:'Codex',value:fmt(codex.value.total),hint:`待导出 ${fmt(codex.value.pending)}`,tone:codexTone.value,tab:'codex'},
-  {id:'plans',label:'套餐',value:fmt(plans.value.length),hint:`${fmt(planTotal.value)} 个已归类`,tone:'ok',tab:'accounts'},
-  {id:'extract',label:'提炼',value:fmt(extractData.value.today_extracted),hint:'今日已提炼',tone:extractTone.value,tab:'extract-workbench'},
-  {id:'proxy',label:'代理',value:fmt(proxy.value.active_leases),hint:proxyLabel(proxy.value.platform),tone:proxyTone.value,tab:'proxy-traffic'},
-  {id:'jobs',label:'任务',value:fmt(activeJobs.value),hint:`累计 ${fmt(jobs.value.total)}`,tone:jobTone.value,tab:'tasks'},
+  {id:'email',label:'邮箱',value:emailNumber.value,badge:email.value?.status==='error'?'读取失败':num(email.value?.available)===0?'库存耗尽':`${emailNumber.value} 可用`,hint:num(email.value?.available)===0?'库存耗尽':`邮箱总量 ${fmt(emailTotal.value)}`,tone:emailTone.value,tab:'outlook'},
+  {id:'accounts',label:'账号',value:fmt(accounts.value.active),badge:`${fmt(accounts.value.active)} 活跃`,hint:`归档 ${fmt(accounts.value.archived)}`,tone:'ok',tab:'accounts'},
+  {id:'codex',label:'Codex',value:fmt(codex.value.total),badge:num(codex.value.pending)>0?`待导 ${fmt(codex.value.pending)}`:`${fmt(codex.value.total)} 凭证`,hint:`待导出 ${fmt(codex.value.pending)}`,tone:codexTone.value,tab:'codex'},
+  {id:'plans',label:'套餐',value:fmt(plans.value.length),badge:`${fmt(plans.value.length)} 类`,hint:`${fmt(planTotal.value)} 个已归类`,tone:'ok',tab:'accounts'},
+  {id:'extract',label:'提炼',value:fmt(extractData.value.today_extracted),badge:num(extractData.value.processing)>0?`进行 ${fmt(extractData.value.processing)}`:`今日 ${fmt(extractData.value.today_extracted)}`,hint:'今日已提炼',tone:extractTone.value,tab:'extract-workbench'},
+  {id:'proxy',label:'代理',value:fmt(proxy.value.active_leases),badge:num(proxy.value.active_leases)>0?`${fmt(proxy.value.active_leases)} 出口`:proxyLabel(proxy.value.platform),hint:proxyLabel(proxy.value.platform),tone:proxyTone.value,tab:'proxy-traffic'},
+  {id:'jobs',label:'任务',value:fmt(activeJobs.value),badge:activeJobs.value>0?`运行 ${fmt(activeJobs.value)}`:num(todayCounts.value.failed)>0?`异常 ${fmt(todayCounts.value.failed)}`:'空闲',hint:`累计 ${fmt(jobs.value.total)}`,tone:jobTone.value,tab:'tasks'},
 ]);
 
 const alerts=computed(()=>{
@@ -137,7 +137,7 @@ defineExpose({
    <nav class="ov-pulse" aria-label="服务脉搏">
     <button v-for="item in pulse" :key="item.id" type="button" class="ov-pulse-item" :class="[`is-${item.tone}`,{'is-zero':item.value==='0'}]" :title="`${item.label} · ${item.hint}`" @click="go(item.tab)">
      <span class="ov-pulse-top"><i aria-hidden="true"></i>{{item.label}}</span>
-     <strong>{{item.value}}</strong>
+     <span class="ov-pulse-badge"><strong>{{item.badge}}</strong></span>
     </button>
    </nav>
 
@@ -302,9 +302,10 @@ defineExpose({
        <div v-if="cumulative.length" class="ov-stack" aria-hidden="true">
         <i v-for="item in cumulative" :key="item.key" :style="{width:(item.value/Math.max(1,jobs.total)*100)+'%',background:item.color}"></i>
        </div>
+       <div v-else class="ov-stack ov-stack--empty" aria-hidden="true"></div>
        <div class="ov-stack-legend">
         <span v-for="item in cumulative" :key="item.key"><i :style="{background:item.color}"></i>{{item.label}} {{fmt(item.value)}}</span>
-        <span v-if="!cumulative.length">暂无累计结果</span>
+        <span v-if="!cumulative.length" class="ov-stack-empty-text">暂无累计结果</span>
        </div>
       </section>
      </div>
@@ -350,36 +351,44 @@ defineExpose({
 
 .ov-skeleton{display:flex;flex-direction:column;gap:16px}
 .ov-skeleton-pulse,.ov-skeleton-grid i{display:block;border-radius:14px;background:linear-gradient(90deg,#f1f4f9 25%,#e8ecf3 37%,#f1f4f9 63%);background-size:400% 100%;animation:ov-shimmer 1.4s ease infinite}
-.ov-skeleton-pulse{height:78px}
+.ov-skeleton-pulse{height:42px;border-radius:999px}
 .ov-skeleton-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}
 .ov-skeleton-grid i{height:220px}
 
-.ov-pulse{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:0;border:1px solid var(--ov-line);border-radius:12px;background:#fff;box-shadow:0 1px 2px rgba(16,24,40,.04);overflow:hidden}
-.ov-pulse-item{display:flex;flex-direction:column;align-items:flex-start;gap:3px;min-width:0;padding:11px 14px;border:0;border-left:1px solid #eef1f6;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer;transition:background .16s ease}
-.ov-pulse-item:first-child{border-left:0}
-.ov-pulse-item:hover{background:#f8f9fc}
-.ov-pulse-top{display:flex;align-items:center;gap:7px;color:#566175;font-size:12px;font-weight:650}
-.ov-pulse-top i{width:6px;height:6px;border-radius:50%;background:#98a2b3;box-shadow:0 0 0 3px rgba(152,162,179,.12)}
-.ov-pulse-item.is-ok .ov-pulse-top i{background:#1f9d75;box-shadow:0 0 0 3px rgba(31,157,117,.12)}
-.ov-pulse-item.is-warn .ov-pulse-top i{background:#d9822b;box-shadow:0 0 0 3px rgba(217,130,43,.13)}
-.ov-pulse-item.is-danger .ov-pulse-top i{background:#d94a55;box-shadow:0 0 0 3px rgba(217,74,85,.13)}
-.ov-pulse-item.is-active .ov-pulse-top i{background:#5b5ce2;box-shadow:0 0 0 3px rgba(91,92,226,.13)}
-.ov-pulse-item strong{font-size:18px;line-height:1.15;letter-spacing:-.02em;font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap}
-.ov-pulse-item.is-zero strong{color:#a7aebc;font-weight:620}
-.ov-pulse-item.is-warn strong{color:#b46a12}
-.ov-pulse-item.is-danger strong{color:#c0392b}
+.ov-pulse{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:8px}
+.ov-pulse-item{display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:0;height:40px;padding:0 11px;border:1px solid var(--ov-line);border-radius:999px;background:#fff;color:inherit;font:inherit;text-align:left;cursor:pointer;box-shadow:0 1px 2px rgba(16,24,40,.03);transition:transform .16s ease,box-shadow .16s ease,border-color .16s ease,background .16s ease}
+.ov-pulse-item:hover{transform:translateY(-1px);border-color:#cfd5e3;background:#fbfcfe;box-shadow:0 4px 12px rgba(16,24,40,.06)}
+.ov-pulse-item.is-ok:hover{border-color:#b8e3d4;background:#f8fdfb}
+.ov-pulse-item.is-warn:hover{border-color:#f0cfa0;background:#fffcf6}
+.ov-pulse-item.is-danger:hover{border-color:#f2bec3;background:#fff9fa}
+.ov-pulse-item.is-active:hover{border-color:#c9cffa;background:#f9f9ff}
+.ov-pulse-top{display:inline-flex;align-items:center;gap:6px;flex:none;color:#3d4659;font-size:12.5px;font-weight:650;white-space:nowrap}
+.ov-pulse-top i{width:7px;height:7px;flex:none;border-radius:50%;background:#98a2b3;box-shadow:0 0 0 3px rgba(152,162,179,.14)}
+.ov-pulse-item.is-ok .ov-pulse-top i{background:#1f9d75;box-shadow:0 0 0 3px rgba(31,157,117,.14)}
+.ov-pulse-item.is-warn .ov-pulse-top i{background:#d9822b;box-shadow:0 0 0 3px rgba(217,130,43,.16);animation:ov-breathe 2.4s ease-in-out infinite}
+.ov-pulse-item.is-danger .ov-pulse-top i{background:#d94a55;box-shadow:0 0 0 3px rgba(217,74,85,.18);animation:ov-breathe 1.8s ease-in-out infinite}
+.ov-pulse-item.is-active .ov-pulse-top i{background:#5b5ce2;box-shadow:0 0 0 3px rgba(91,92,226,.18);animation:ov-breathe 2s ease-in-out infinite}
+.ov-pulse-badge{display:inline-flex;align-items:center;min-width:0;height:22px;padding:0 8px;border-radius:999px;background:#f2f4f8;color:#566175;font-size:11.5px;line-height:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ov-pulse-badge strong{font-size:11.5px;font-weight:680;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ov-pulse-item.is-ok .ov-pulse-badge{background:#eefaf5;color:#17805f}
+.ov-pulse-item.is-warn .ov-pulse-badge{background:#fff6e5;color:#b46a12}
+.ov-pulse-item.is-danger .ov-pulse-badge{background:#fff0f1;color:#c0392b}
+.ov-pulse-item.is-active .ov-pulse-badge{background:#eef0ff;color:#4f51be}
+.ov-pulse-item.is-zero:not(.is-warn):not(.is-danger) .ov-pulse-badge{background:#f4f6f9;color:#7d8596}
+.ov-pulse-item.is-zero:not(.is-warn):not(.is-danger) .ov-pulse-badge strong{font-weight:600}
 
 .ov-grid{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:16px;align-items:stretch}
-.ov-card{position:relative;display:flex;flex-direction:column;gap:13px;min-width:0;padding:17px 18px;border:1px solid var(--ov-line);border-radius:14px;background:#fff;box-shadow:0 1px 2px rgba(16,24,40,.04);overflow:hidden}
+.ov-card{position:relative;display:flex;flex-direction:column;gap:13px;min-width:0;padding:18px;border:1px solid var(--ov-line);border-radius:14px;background:#fff;box-shadow:0 1px 2px rgba(16,24,40,.03),0 6px 18px rgba(16,24,40,.035);overflow:hidden;transition:border-color .18s ease,box-shadow .18s ease}
+.ov-card:hover{border-color:#d7dce7;box-shadow:0 2px 6px rgba(16,24,40,.04),0 10px 24px rgba(16,24,40,.055)}
 .ov-card--email,.ov-card--accounts,.ov-card--codex,.ov-card--extract,.ov-card--plans,.ov-card--proxy{grid-column:span 4}
 .ov-card--jobs{grid-column:span 12}
-.ov-card-head{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:36px}
+.ov-card-head{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:38px;padding-bottom:10px;border-bottom:1px solid #f1f3f8}
 .ov-card-title{display:flex;align-items:center;gap:11px;min-width:0}
-.ov-icon{display:grid;place-items:center;width:34px;height:34px;flex:none;border-radius:10px;background:var(--accent-soft);color:var(--accent)}
+.ov-icon{display:grid;place-items:center;width:36px;height:36px;flex:none;border-radius:10px;background:var(--accent-soft);color:var(--accent)}
 .ov-icon svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
 .ov-card-title h3{margin:0;font-size:15px;line-height:1.3;font-weight:700;letter-spacing:-.01em}
 .ov-card-title p{margin:2px 0 0;color:#647086;font-size:12px;line-height:1.4}
-.ov-link{display:inline-flex;align-items:center;gap:2px;flex:none;min-height:28px;padding:0 2px 0 8px;border:0;border-radius:7px;background:transparent;color:#8a93a6;font:inherit;font-size:11.5px;font-weight:650;cursor:pointer}
+.ov-link{display:inline-flex;align-items:center;gap:2px;flex:none;min-height:28px;padding:0 4px 0 9px;border:0;border-radius:7px;background:transparent;color:#768196;font:inherit;font-size:12px;font-weight:650;cursor:pointer;transition:background .15s ease,color .15s ease}
 .ov-link svg{width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
 .ov-link:hover{color:var(--accent);background:var(--accent-soft)}
 
@@ -434,30 +443,32 @@ defineExpose({
 .ov-lease-list li span{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums}
 .ov-lease-list li small{flex:none;color:#647086;font-size:11px}
 
-.ov-empty{margin:0;padding:12px 13px;border-radius:10px;background:var(--ov-soft);color:#647086;font-size:12px;line-height:1.5}
-.ov-foot{margin:auto 0 0;padding-top:2px;color:#6b778e;font-size:11.5px;line-height:1.5}
-.ov-task-columns{display:grid;grid-template-columns:minmax(0,.9fr) minmax(0,.9fr) minmax(0,1.4fr);gap:22px}
-.ov-task-block{display:flex;flex-direction:column;gap:10px;min-width:0}
-.ov-task-block+.ov-task-block{border-left:1px solid #eef1f6;padding-left:22px}
-.ov-task-block h4{margin:0;color:#566175;font-size:11.5px;font-weight:700;letter-spacing:.02em}
+.ov-empty{flex:1;display:flex;align-items:center;justify-content:center;min-height:76px;margin:0;padding:14px 16px;border:1px dashed #dde2ec;border-radius:10px;background:#fafbfd;color:#647086;font-size:12px;line-height:1.55;text-align:center}
+.ov-foot{margin:auto 0 0;padding-top:4px;color:#6b778e;font-size:11.5px;line-height:1.5}
+.ov-task-columns{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,1.25fr);gap:14px;align-items:stretch}
+.ov-task-block{display:flex;flex-direction:column;justify-content:space-between;gap:10px;min-width:0;padding:13px 15px;border:1px solid #eef1f6;border-radius:11px;background:#fafbfd}
+.ov-task-block h4{margin:0;color:#566175;font-size:12px;font-weight:700;letter-spacing:.01em}
 .ov-task-block h4 small{margin-left:6px;color:#7c86a2;font-size:11px;font-weight:600}
 .ov-task-block .ov-mini-grid{background:transparent;padding:0}
 .ov-stack{display:flex;height:10px;border-radius:5px;background:#eef1f6;overflow:hidden}
+.ov-stack--empty{background:repeating-linear-gradient(-45deg,#eef1f6,#eef1f6 6px,#f6f8fb 6px,#f6f8fb 12px)}
 .ov-stack i{display:block;height:100%}
 .ov-stack i+i{box-shadow:inset 1px 0 rgba(255,255,255,.65)}
 .ov-stack-legend{display:flex;flex-wrap:wrap;gap:6px 16px;color:#566175;font-size:11.5px}
 .ov-stack-legend span{display:inline-flex;align-items:center;gap:6px;font-variant-numeric:tabular-nums}
 .ov-stack-legend i{width:7px;height:7px;border-radius:2px}
+.ov-stack-empty-text{color:#7c86a2}
 
 @keyframes ov-shimmer{0%{background-position:100% 0}100%{background-position:0 0}}
-@media (prefers-reduced-motion:reduce){.ov-page{opacity:1;transform:none;transition:none}.ov-bar i{transition:none}.ov-skeleton-pulse,.ov-skeleton-grid i{animation:none}}
+@keyframes ov-breathe{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.72;transform:scale(.9)}}
+@media (prefers-reduced-motion:reduce){.ov-page{opacity:1;transform:none;transition:none}.ov-pulse-item,.ov-card{transition:none}.ov-pulse-top i{animation:none!important}.ov-bar i{transition:none}.ov-skeleton-pulse,.ov-skeleton-grid i{animation:none}}
 @media (max-width:1180px){
- .ov-pulse{display:flex;overflow-x:auto;scrollbar-width:none}
+ .ov-pulse{display:flex;overflow-x:auto;scrollbar-width:none;gap:8px;padding-bottom:2px}
  .ov-pulse::-webkit-scrollbar{display:none}
- .ov-pulse-item{flex:1 0 146px}
+ .ov-pulse-item{flex:0 0 auto;min-width:136px}
  .ov-card--email,.ov-card--accounts,.ov-card--codex,.ov-card--extract,.ov-card--plans,.ov-card--proxy{grid-column:span 6}
  .ov-task-columns{grid-template-columns:repeat(2,minmax(0,1fr))}
- .ov-task-block--wide{grid-column:1/-1;border-left:0!important;padding-left:0!important;border-top:1px solid #eef1f6;padding-top:14px}
+ .ov-task-block--wide{grid-column:1/-1}
 }
 @media (max-width:900px){
  .ov-grid{grid-template-columns:repeat(6,minmax(0,1fr))}
@@ -469,7 +480,6 @@ defineExpose({
  .ov-card{padding:16px}
  .ov-figure strong{font-size:30px}
  .ov-task-columns{grid-template-columns:minmax(0,1fr)}
- .ov-task-block+.ov-task-block{border-left:0;padding-left:0;border-top:1px solid #eef1f6;padding-top:14px}
  .ov-mini-grid--4{grid-template-columns:repeat(2,minmax(0,1fr))}
 }
 </style>

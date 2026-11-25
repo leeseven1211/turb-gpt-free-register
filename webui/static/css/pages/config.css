@@ -1,11 +1,11 @@
-/* 配置工作区的独立样式。与 ui-foundation.css 分离，便于配置页迭代。 */
+/* 配置工作区的共享补充样式，配合 frontend/src/features/config/config.css 保持一致的视觉体系。 */
 
 #tab-config .config-concurrency-details-v2 {
-  margin: 12px 20px;
-  padding: 12px 16px;
-  border: 1px solid var(--ui-color-border, #d9e2ec);
+  margin: 4px 0 0;
+  padding: 11px 14px;
+  border: 1px solid var(--ui-color-border, #e5e8ef);
   border-radius: 10px;
-  background: var(--ui-color-surface-subtle, #f8fafc);
+  background: var(--ui-color-surface, #ffffff);
   line-height: 1.65;
   overflow-wrap: anywhere;
 }
@@ -13,6 +13,8 @@
 #tab-config .config-concurrency-details-v2 > summary {
   cursor: pointer;
   min-height: 28px;
+  font-weight: 600;
+  color: var(--ui-color-text, #172033);
 }
 
 #tab-config .config-concurrency-details-v2 .btn {
@@ -24,7 +26,6 @@
 }
 
 @media (max-width: 480px) {
-
   #tab-config .config-concurrency-details-v2 .btn {
     min-height: 44px;
   }
@@ -34,19 +35,24 @@
   display: block;
   min-width: 0;
   margin: 0;
-  color: var(--ui-color-text-muted, #667085);
-  font-size: 11px;
-  line-height: 1.35;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  color: var(--ui-color-text-secondary, #596274);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 
 #tab-config .config-multi-option-v2:focus-visible {
-  outline: 2px solid var(--ui-color-primary, #315efb);
+  outline: 2px solid var(--ui-color-brand, #5b5ce2);
   outline-offset: 2px;
 }
-#tab-config .config-field-error-v2 { width: 100%; margin: 6px 0 0; color: var(--red, #b42318); font-size: 12px; overflow-wrap: anywhere; }
+
+#tab-config .config-field-error-v2 {
+  width: 100%;
+  margin: 6px 0 0;
+  color: #b42318;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
 
 #tab-config [data-huanguang-xxsyun-key],
 #tab-config [data-huanguang-cdk-key] {
@@ -72,15 +78,7 @@
   margin-left: 8px;
 }
 
-/* 可搜索多选：视觉上是一行摘要，展开后再搜索和勾选。 */
-
-#tab-config .config-multi-options-v2 {
-  display: grid;
-  max-height: 240px;
-  gap: 2px;
-  overflow: auto;
-}
-
+/* Sub2API 异常巡检分组选择器 */
 #tab-config .config-sub2api-groups-v2 {
   display: grid;
   gap: 8px;
@@ -88,22 +86,57 @@
   width: 100%;
 }
 
-#tab-config .config-sub2api-groups-v2 > .btn { justify-self: start; }
-
-#tab-config .config-sub2api-groups-v2 > input {
-  box-sizing: border-box;
-  width: 100%;
-  min-height: 40px;
-  padding: 8px 11px;
-  border: 1px solid var(--ui-color-border, #d9e2ec);
-  border-radius: 7px;
-  background: var(--ui-color-surface, #fff);
+#tab-config .config-sub2api-input-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
 }
 
-#tab-config .config-sub2api-groups-v2 .config-multi-option-v2 input { width: auto; margin: 0; }
-#tab-config .config-sub2api-groups-v2 .config-multi-option-v2 span { overflow-wrap: anywhere; }
+#tab-config .config-sub2api-input-row > input {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 36px;
+  padding: 6px 10px;
+  border: 1px solid var(--ui-color-border-strong, #d5dae5);
+  border-radius: 8px;
+  background: var(--ui-color-surface, #ffffff);
+}
+
+#tab-config .config-sub2api-input-row > .btn {
+  flex: none;
+  white-space: nowrap;
+}
+
+#tab-config .config-multi-options-v2 {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  max-height: 220px;
+  gap: 6px;
+  overflow: auto;
+  padding: 8px;
+  border: 1px solid var(--ui-color-border, #e5e8ef);
+  border-radius: 8px;
+  background: var(--ui-color-surface-subtle, #f8f9fc);
+}
+
+#tab-config .config-multi-options-v2:empty {
+  display: none;
+}
+
+#tab-config .config-sub2api-groups-v2 .config-multi-option-v2 input {
+  width: auto;
+  margin: 0;
+  flex: none;
+}
+
+#tab-config .config-sub2api-groups-v2 .config-multi-option-v2 span {
+  overflow-wrap: anywhere;
+  font-size: 12.5px;
+}
+
 #tab-config .config-sub2api-groups-v2 .config-multi-option-v2:focus-within {
-  outline: 2px solid var(--ui-color-primary, #315efb);
+  outline: 2px solid var(--ui-color-brand, #5b5ce2);
   outline-offset: -2px;
 }
 
@@ -111,37 +144,39 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  min-height: 38px;
-  padding: 6px 8px;
-  border: 0;
-  border-radius: 5px;
-  background: transparent;
+  min-height: 34px;
+  padding: 6px 9px;
+  border: 1px solid var(--ui-color-border, #e5e8ef);
+  border-radius: 7px;
+  background: var(--ui-color-surface, #ffffff);
   color: var(--ui-color-text, #172033);
   cursor: pointer;
   text-align: left;
   font: inherit;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
 }
 
-#tab-config .config-multi-option-v2:hover,
+#tab-config .config-multi-option-v2:hover {
+  border-color: rgba(91, 92, 226, 0.35);
+  background: var(--ui-color-brand-soft, #eef0ff);
+}
+
 #tab-config .config-multi-option-v2.is-selected {
-  background: var(--ui-color-info-soft, #eef2ff);
+  border-color: rgba(91, 92, 226, 0.45);
+  background: var(--ui-color-brand-soft, #eef0ff);
+  color: var(--ui-color-brand-hover, #4f51be);
+  font-weight: 600;
 }
 
 #tab-config .config-multi-option-v2[hidden] {
   display: none;
 }
 
-/* 代理池任务说明和来源/邮箱摘要卡。 */
-
-@media (max-width: 760px) {
-
-  #tab-config .config-setting-short-help-v2 {
-    white-space: normal;
-    display: -webkit-box;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 2;
-    line-clamp: 2;
-  }
+#tab-config .config-sub2api-status {
+  padding: 6px 9px;
+  border-radius: 7px;
+  background: var(--ui-color-surface-subtle, #f8f9fc);
+  border: 1px solid var(--ui-color-border, #e5e8ef);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -149,6 +184,6 @@
   #tab-config *::before,
   #tab-config *::after {
     scroll-behavior: auto !important;
-    transition-duration: .01ms !important;
+    transition-duration: 0.01ms !important;
   }
 }

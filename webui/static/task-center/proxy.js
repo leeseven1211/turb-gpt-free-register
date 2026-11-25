@@ -1,9 +1,9 @@
-import { A as e, C as t, F as n, G as r, H as i, K as a, L as o, Q as s, S as c, Z as l, _ as u, a as d, c as f, d as p, dt as m, et as h, ft as g, g as _, h as v, j as y, k as b, l as x, lt as S, m as C, n as w, nt as T, s as E, st as D, t as O, v as k, x as A, y as j } from "./_plugin-vue_export-helper-BSZsFlS8.js";
-import { i as M, n as N, r as P, t as ee } from "./ListFilterSummary-C8h8bMwn.js";
-import { t as te } from "./ListPagination-DURVj-Kj.js";
-import { t as F } from "./ListResult-CPVXnLlZ.js";
+import { A as e, C as t, F as n, G as r, H as i, K as a, L as o, Q as s, S as c, Z as l, _ as u, a as d, c as f, d as p, dt as m, et as h, ft as g, g as _, h as v, j as y, k as b, l as x, lt as S, m as C, n as w, nt as T, s as E, st as D, t as O, v as k, x as A, y as j } from "./_plugin-vue_export-helper-Btipf5Px.js";
+import { i as M, n as N, r as P, t as ee } from "./ListFilterSummary-M6f9Z7EF.js";
+import { t as te } from "./ListPagination-CmqtjjEX.js";
+import { t as F } from "./ListResult-RnSAyLEO.js";
 import { n as I, t as L } from "./time-DOD6oyhP.js";
-import { n as R, t as ne } from "./ColumnResizer-CPJ9UuoZ.js";
+import { n as R, t as ne } from "./ColumnResizer-D3GCD-87.js";
 import { n as z, r as B } from "./client-B5R_MNgP.js";
 import { r as V } from "./taskIds-BlchWwUp.js";
 // src/features/proxy/presentation.ts
@@ -1122,12 +1122,12 @@ var Qe = {
 ], ct = { class: "ui-list-toolbar__main pt-toolbar-main" }, lt = {
 	class: "ui-list-count pt-count",
 	role: "status"
-}, ut = { class: "ui-list-toolbar__actions pt-toolbar-actions" }, dt = { class: "pt-mobile-filter" }, ft = [
+}, ut = { class: "ui-list-toolbar__actions pt-toolbar-actions" }, dt = { class: "pt-mobile-filter" }, ft = ["disabled"], pt = [
 	"id",
 	"aria-label",
 	"aria-hidden",
 	"data-proxy-panel"
-], pt = /* @__PURE__ */ t({
+], mt = /* @__PURE__ */ t({
 	__name: "ProxyTrafficPage",
 	props: { deps: {} },
 	setup(e, { expose: t }) {
@@ -1172,10 +1172,10 @@ var Qe = {
 				loading: D(b)
 			}, null, 8, ["pool", "loading"]), [[E, D(s) === "pool"]]),
 			a(v("div", $e, [v("div", et, [
-				v("div", null, [r[6] ||= v("span", null, "累计可观测流量", -1), v("strong", tt, g(D(m) ? D(K)(D(m).total_bytes) : "—"), 1)]),
-				v("div", null, [r[7] ||= v("span", null, "今日可观测流量", -1), v("strong", nt, g(D(m) ? D(K)(D(m).today_bytes) : "—"), 1)]),
-				v("div", null, [r[8] ||= v("span", null, "今日请求记录", -1), v("strong", rt, g(D(m) ? D(m).today_request_count ?? D(m).today_browser_count ?? "—" : "—"), 1)]),
-				v("div", null, [r[9] ||= v("span", null, "今日新建线路", -1), v("strong", it, g(D(m)?.today_route_count ?? "—"), 1)])
+				v("div", null, [r[7] ||= v("span", null, "累计可观测流量", -1), v("strong", tt, g(D(m) ? D(K)(D(m).total_bytes) : "—"), 1)]),
+				v("div", null, [r[8] ||= v("span", null, "今日可观测流量", -1), v("strong", nt, g(D(m) ? D(K)(D(m).today_bytes) : "—"), 1)]),
+				v("div", null, [r[9] ||= v("span", null, "今日请求记录", -1), v("strong", rt, g(D(m) ? D(m).today_request_count ?? D(m).today_browser_count ?? "—" : "—"), 1)]),
+				v("div", null, [r[10] ||= v("span", null, "今日新建线路", -1), v("strong", it, g(D(m)?.today_route_count ?? "—"), 1)])
 			]), v("div", at, [v("div", ot, [
 				v("div", {
 					class: "pt-view-tabs",
@@ -1224,7 +1224,13 @@ var Qe = {
 						class: "ui-link",
 						"aria-label": "恢复当前列表列宽",
 						onClick: I
-					}, "恢复列宽")
+					}, "恢复列宽"),
+					v("button", {
+						type: "button",
+						class: "ui-button pt-refresh-btn",
+						disabled: D(b),
+						onClick: r[3] ||= (e) => D(i).load()
+					}, g(D(b) ? "刷新中…" : "刷新"), 9, ft)
 				])
 			]), (n(), k(p, null, o(j, (t) => a(v("section", {
 				id: `proxy-panel-${t}`,
@@ -1251,9 +1257,9 @@ var Qe = {
 				"scroll-revision": D(i).scrollRevision[t],
 				"facet-label": e.deps.facetLabel,
 				onFilter: (e, n) => F(t, e, n),
-				"onUpdate:openFilter": r[3] ||= (e) => T.value = e,
+				"onUpdate:openFilter": r[4] ||= (e) => T.value = e,
 				onDetail: D(i).openDetail,
-				onRetry: r[4] ||= (e) => D(i).load()
+				onRetry: r[5] ||= (e) => D(i).load()
 			}, null, 8, [
 				"view",
 				"items",
@@ -1289,18 +1295,18 @@ var Qe = {
 				"label",
 				"onUpdate:page",
 				"onUpdate:size"
-			])], 8, ft), [[E, D(l) === t]])), 64))])], 512), [[E, D(s) === "records"]]),
+			])], 8, pt), [[E, D(l) === t]])), 64))])], 512), [[E, D(s) === "records"]]),
 			c(Ke, {
 				snapshot: D(y),
 				"facet-label": e.deps.facetLabel,
-				onClose: r[5] ||= (e) => D(i).closeDetail()
+				onClose: r[6] ||= (e) => D(i).closeDetail()
 			}, null, 8, ["snapshot", "facet-label"])
 		]));
 	}
 });
 // src/proxy.ts
-function mt(e, t = {}) {
-	let n = w(pt, { deps: t }), r = n.mount(e);
+function ht(e, t = {}) {
+	let n = w(mt, { deps: t }), r = n.mount(e);
 	return {
 		load: r.load,
 		setVisible: r.setVisible,
@@ -1309,4 +1315,4 @@ function mt(e, t = {}) {
 		destroy: () => n.unmount()
 	};
 }
-export { mt as mountProxyTraffic };
+export { ht as mountProxyTraffic };

@@ -37,6 +37,18 @@ main:has(> #tab-extract-workbench:not(.hidden)) { margin-bottom: 0; }
 /* 工具栏允许换行，状态筛选与搜索同排，标签过多时独立横向滚动。 */
 
 /* 顶部操作行：只放刷新/导出/新建，右对齐（对齐设计稿 page-h .acts） */
+#tab-extract-workbench .extract-count-actions {
+  flex-shrink: 0;
+}
+#tab-extract-workbench button[aria-label="筛选批次"] {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 32px;
+  padding: 0 12px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
 
 /* 概览与操作栏按内容占高，剩余空间用于可双向滚动的任务列表。 */
 

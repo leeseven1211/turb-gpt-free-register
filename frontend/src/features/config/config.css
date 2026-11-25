@@ -1,211 +1,1275 @@
+/* 配置中心工作区主样式：涵盖分栏导航、开关与参数分块、胶囊开关及底部悬浮保存栏。 */
+
 .config-vue-page {
+  --config-brand: var(--ui-color-brand, #5b5ce2);
+  --config-accent: var(--ui-color-brand-hover, #4f51be);
+  --config-accent-soft: var(--ui-color-brand-soft, #eef0ff);
   --config-border: var(--ui-color-border, #e5e8ef);
-  --config-control-border: var(--ui-color-border-strong, #d7dbe5);
-  --config-surface: var(--ui-color-surface, #fff);
-  --config-subtle: var(--ui-color-surface-subtle, #f8f9fb);
+  --config-control-border: var(--ui-color-border-strong, #d5dae5);
+  --config-surface: var(--ui-color-surface, #ffffff);
+  --config-subtle: var(--ui-color-surface-subtle, #f8f9fc);
   --config-text: var(--ui-color-text, #172033);
   --config-muted: var(--ui-color-text-secondary, #596274);
-  --config-accent: var(--ui-color-brand-hover, #4f51be);
-  --config-accent-soft: var(--ui-color-brand-soft, #f1f1ff);
-  --config-danger: #ac303d;
-  --config-warning: #81510e;
+  --config-success: #067647;
+  --config-success-soft: #ecfdf3;
+  --config-success-border: #abefc6;
+  --config-warning: #92400e;
+  --config-warning-soft: #fffbeb;
+  --config-warning-border: #fde68a;
+  --config-danger: #b42318;
+  --config-danger-soft: #fef3f2;
+  --config-danger-border: #fecdca;
   color: var(--config-text);
-  font: 13px/1.5 var(--ui-font-sans, system-ui);
+  font: 13px/1.55 var(--ui-font-sans, system-ui, -apple-system, sans-serif);
 }
-.config-vue-page *, .config-vue-page *::before, .config-vue-page *::after { box-sizing: border-box; }
-.config-vue-page :is(button, input, select, textarea) { font: inherit; }
+
+.config-vue-page *,
+.config-vue-page *::before,
+.config-vue-page *::after {
+  box-sizing: border-box;
+}
+
+.config-vue-page :is(button, input, select, textarea) {
+  font: inherit;
+}
+
+/* 基础按钮与表单控件 */
 .config-vue-page button {
-  min-height: 34px;
+  min-height: 36px;
   border: 1px solid var(--config-control-border);
-  border-radius: 7px;
+  border-radius: 8px;
   background: var(--config-surface);
   color: inherit;
-  padding: 5px 11px;
+  padding: 6px 12px;
+  font-weight: 500;
   cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
 }
-.config-vue-page button:hover:not(:disabled) { background: var(--config-accent-soft); color: var(--config-accent); }
-.config-vue-page button:disabled { opacity: .58; cursor: default; }
+
+.config-vue-page button:hover:not(:disabled) {
+  background: var(--config-accent-soft);
+  border-color: rgba(91, 92, 226, 0.35);
+  color: var(--config-accent);
+}
+
+.config-vue-page button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .config-vue-page :is(input:not([type=checkbox]), select, textarea) {
   min-width: 0;
   max-width: 100%;
   min-height: 36px;
   border: 1px solid var(--config-control-border);
-  border-radius: 7px;
+  border-radius: 8px;
   background: var(--config-surface);
   color: inherit;
-  padding: 6px 9px;
+  padding: 6px 10px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, background-color 0.15s ease;
 }
-.config-vue-page :is(button, input, select, textarea, summary):focus-visible { outline: 2px solid var(--config-accent); outline-offset: 2px; }
-.config-vue-page .hint { color: var(--config-muted); font-size: 12px; margin: 4px 0 0; overflow-wrap: anywhere; }
-.config-vue-layout { display: grid; grid-template-columns: clamp(172px, 19%, 230px) minmax(0, 1fr); gap: 12px; }
-.config-vue-navigation, .config-vue-content {
-  min-width: 0;
-  border: 1px solid var(--config-border);
-  border-radius: 12px;
-  background: var(--config-surface);
+
+.config-vue-page :is(input:not([type=checkbox]), select, textarea):hover:not(:disabled) {
+  border-color: #bcc3d4;
 }
-.config-vue-navigation { padding: 10px; }
-.config-vue-navigation-head { display: grid; gap: 6px; }
-.config-vue-navigation-head label { color: var(--config-muted); font-size: 12px; font-weight: 600; }
-.config-vue-navigation-head input { width: 100%; }
-.config-vue-page .config-vue-nav-toggle { display: none; }
-.config-vue-menu { margin-top: 10px; }
-.config-vue-nav-group + .config-vue-nav-group { border-top: 1px solid var(--config-border); margin-top: 10px; padding-top: 9px; }
-.config-vue-nav-group > p { font-size: 11px; font-weight: 600; color: var(--config-muted); margin: 2px 7px 4px; }
-.config-vue-page .config-vue-nav-group button {
-  width: 100%;
-  min-height: 34px;
+
+.config-vue-page :is(input:not([type=checkbox]), select, textarea):focus {
+  outline: none;
+  border-color: var(--config-brand);
+  box-shadow: 0 0 0 3px rgba(91, 92, 226, 0.14);
+}
+
+.config-vue-page :is(button, input, select, textarea, summary):focus-visible {
+  outline: 2px solid var(--config-brand);
+  outline-offset: 2px;
+}
+
+.config-vue-page .hint {
+  color: var(--config-muted);
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.config-vue-page .hint.is-structured-hint {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.config-hint-segment {
+  position: relative;
+  display: inline-flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 5px;
+  max-width: 100%;
+  line-height: 1.45;
+}
+
+.config-hint-segment.is-plain {
+  color: var(--config-muted);
+}
+
+.config-hint-key {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border: 1px solid rgba(91, 92, 226, 0.22);
+  border-radius: 5px;
+  background: var(--config-accent-soft);
+  color: var(--config-accent);
+  font: 600 11px/1.35 var(--ui-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  white-space: nowrap;
+}
+
+.config-hint-eq,
+.config-hint-sep {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  user-select: none;
+}
+
+.config-hint-val {
+  color: var(--config-muted);
+}
+
+/* 顶部提示与错误汇总 */
+.config-vue-banner {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 6px;
-  border-color: transparent;
-  text-align: start;
-  padding-inline: 7px;
-}
-.config-vue-page .config-vue-nav-group [aria-current=page] { background: var(--config-accent-soft); color: var(--config-accent); font-weight: 650; }
-.config-vue-pending { flex: none; border-radius: 4px; padding: 1px 5px; background: var(--ui-color-warning-soft, #fff8eb); color: var(--config-warning); font-size: 11px; }
-.config-vue-page .config-vue-no-match { margin: 6px 7px; }
-.config-vue-page .config-vue-content { display: block; width: 100%; margin: 0; }
-.config-vue-content-header { padding: 14px 17px 0; }
-.config-vue-content-header h2 { margin: 0 0 10px; font-size: 19px; font-weight: 700; line-height: 1.35; }
-.config-vue-tabs { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
-.config-vue-page .config-vue-tabs button { min-height: 34px; border-color: transparent; color: var(--config-muted); text-align: start; }
-.config-vue-page .config-vue-tabs [aria-pressed=true] { color: var(--config-accent); font-weight: 650; }
-.config-vue-domains { border-bottom: 1px solid var(--config-border); }
-.config-vue-page .config-vue-domains button { border-radius: 0; border-bottom-width: 2px; }
-.config-vue-page .config-vue-domains [aria-pressed=true] { border-bottom-color: var(--config-accent); }
-.config-vue-subsections { margin-top: 8px; }
-.config-vue-page .config-vue-subsections button { background: var(--config-subtle); }
-.config-vue-page .config-vue-subsections [aria-pressed=true] { background: var(--config-accent-soft); }
-.config-vue-editor { padding: 3px 17px 18px; }
-.config-vue-setting-group + .config-vue-setting-group { margin-top: 12px; }
-.config-vue-setting-group > h3 {
-  margin: 10px 0 0;
-  padding: 7px 9px;
-  border-radius: 6px;
-  background: var(--config-subtle);
-  color: var(--config-text);
-  font-size: 13px;
-  font-weight: 650;
-}
-.config-vue-field {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(180px, .9fr);
-  align-items: start;
-  gap: 18px;
-  border-bottom: 1px solid var(--config-border);
-  padding: 11px 2px;
-  scroll-margin-block: 12px 140px;
-}
-.config-vue-field-name { display: flex; align-items: baseline; flex-wrap: wrap; gap: 3px 7px; }
-.config-vue-field-copy { min-width: 0; overflow-wrap: anywhere; }
-.config-vue-field-copy label { font-weight: 650; }
-.config-vue-field-copy code { display: block; margin-top: 3px; font: 11px/1.4 var(--ui-font-mono, monospace); color: var(--config-muted); }
-.config-vue-field-status { font-size: 11px; color: var(--config-muted); background: var(--config-subtle); border-radius: 4px; padding: 1px 5px; }
-.is-dirty .config-vue-field-status { background: var(--ui-color-warning-soft, #fff8eb); color: var(--config-warning); }
-.config-vue-field-control { min-width: 0; overflow-wrap: anywhere; }
-.config-vue-field-control > p { margin: 4px 0 0; }
-.config-vue-field-control > button { margin-top: 5px; }
-.config-vue-control-group { display: flex; align-items: flex-start; gap: 6px; flex-wrap: wrap; min-width: 0; margin: 0; padding: 0; border: 0; }
-.config-vue-control-group :is(input:not([type=checkbox]), select, textarea) { width: 100%; min-width: 0; }
-.config-vue-control-group input[type=password] { flex: 1 1 100px; width: auto; }
-.config-vue-control-group textarea { min-height: 96px; resize: vertical; }
-.config-vue-composite { display: flex; width: 100%; gap: 6px; }
-.config-vue-switch { display: inline-flex; align-items: center; gap: 8px; min-height: 36px; color: var(--config-muted); cursor: pointer; }
-.config-vue-switch input {
-  appearance: none;
-  display: inline-grid;
-  align-items: center;
-  flex: none;
-  margin: 0;
-  width: 36px;
-  height: 21px;
-  min-height: 0;
-  padding: 0;
-  border: 1px solid var(--config-muted);
-  border-radius: 20px;
-  background: var(--config-subtle);
-  box-shadow: none !important;
-  cursor: inherit;
-}
-.config-vue-switch input::before { content: ''; width: 13px; height: 13px; margin-left: 3px; border-radius: 50%; background: var(--config-muted); }
-.config-vue-switch input:checked { background: var(--config-accent); border-color: var(--config-accent); }
-.config-vue-switch input:checked::before { transform: translateX(15px); background: #fff; }
-.config-vue-switch:has(input:checked) span { color: var(--config-accent); }
-.config-vue-switch:has(input:disabled) { opacity: .66; cursor: default; }
-.config-vue-picker { flex: 1; position: relative; min-width: 0; padding: 5px 9px; border: 1px solid var(--config-control-border); border-radius: 7px; background: var(--config-surface); }
-.config-vue-picker summary { min-height: 24px; cursor: pointer; overflow-wrap: anywhere; }
-.config-vue-picker-menu { min-width: 0; padding-top: 7px; }
-.config-vue-picker-menu > input { width: 100%; }
-.config-vue-picker-options { max-height: 240px; overflow: auto; display: grid; gap: 3px; margin-top: 7px; }
-.config-vue-picker-options button { text-align: start; }
-.config-vue-picker-options [aria-pressed=true] { background: var(--config-accent-soft); }
-.config-vue-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 7px; }
-.config-vue-source-advanced { margin-top: 10px; }
-.config-vue-source-advanced > summary { padding: 7px 9px; border-radius: 6px; background: var(--config-subtle); cursor: pointer; }
-.config-vue-page .config-action-tools {
-  margin-top: 12px;
-  padding: 11px 12px;
-  border: 1px solid var(--config-border);
-  border-radius: 8px;
-  background: var(--config-subtle);
-}
-.config-vue-page .config-action-tools .config-action-status { color: var(--config-muted); }
-.config-vue-page .config-action-tools .config-action-error, .config-vue-error, .config-vue-error-summary { color: var(--config-danger); }
-.config-vue-error-summary { padding: 9px 12px; margin-bottom: 10px; border: 1px solid var(--config-border); border-radius: 8px; background: var(--ui-color-danger-soft, #fff5f6); }
-.config-vue-error-summary ul { margin: 4px 0 0; padding-inline-start: 18px; }
-.config-vue-error-summary button { color: inherit; text-align: start; overflow-wrap: anywhere; }
-.config-vue-field.is-invalid { box-shadow: inset 3px 0 var(--config-danger); padding-inline-start: 9px; }
-.config-vue-field [aria-invalid=true] { border-color: var(--config-danger); }
-.config-vue-savebar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 10px;
+  gap: 10px;
+  margin: 0 0 10px;
   padding: 9px 12px;
   border: 1px solid var(--config-border);
   border-radius: 10px;
   background: var(--config-surface);
-  box-shadow: var(--ui-shadow-sm);
 }
-.config-vue-save-state { flex: 1; min-width: 0; padding-inline-start: 8px; border-inline-start: 3px solid var(--config-accent); }
-.config-vue-save-state span { display: block; color: var(--config-muted); font-size: 12px; overflow-wrap: anywhere; }
-.config-vue-page .config-vue-savebar .primary, .config-vue-page .config-action-tools .primary { background: var(--config-accent); border-color: transparent; color: #fff; font-weight: 600; }
-.config-vue-page .primary:hover:not(:disabled) { background: var(--ui-color-brand, #5b5ce2); color: #fff; }
-.config-vue-pool-rules { width: 100%; border-collapse: collapse; table-layout: fixed; margin-block: 7px 10px; }
-.config-vue-pool-rules :is(th, td) { text-align: start; padding: 6px 8px; border-bottom: 1px solid var(--config-border); overflow-wrap: anywhere; }
-.config-vue-pool-rules th { background: var(--config-subtle); }
-.config-vue-pool-rules caption { text-align: start; font-weight: 650; margin-bottom: 5px; }
+
+.config-vue-error-summary {
+  padding: 11px 14px;
+  margin-bottom: 12px;
+  border: 1px solid var(--config-danger-border);
+  border-radius: 10px;
+  background: var(--config-danger-soft);
+  color: var(--config-danger);
+}
+
+.config-vue-error-summary ul {
+  margin: 6px 0 0;
+  padding-inline-start: 18px;
+  display: grid;
+  gap: 4px;
+}
+
+.config-vue-error-summary button {
+  min-height: 28px;
+  padding: 2px 8px;
+  border-color: transparent;
+  background: transparent;
+  color: inherit;
+  text-align: start;
+  overflow-wrap: anywhere;
+}
+
+.config-vue-error-summary button:hover:not(:disabled) {
+  background: rgba(180, 35, 24, 0.08);
+  border-color: transparent;
+  color: var(--config-danger);
+}
+
+/* 双栏主布局 */
+.config-vue-layout {
+  display: grid;
+  grid-template-columns: clamp(192px, 21%, 244px) minmax(0, 1fr);
+  gap: 14px;
+}
+
+.config-vue-navigation,
+.config-vue-content {
+  min-width: 0;
+  border: 1px solid var(--config-border);
+  border-radius: 12px;
+  background: var(--config-surface);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
+}
+
+/* 左侧导航栏 */
+.config-vue-navigation {
+  padding: 12px 10px;
+}
+
+.config-vue-navigation-head {
+  display: grid;
+  gap: 7px;
+}
+
+.config-vue-navigation-head label {
+  color: var(--config-muted);
+  font-size: 11.5px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  padding-inline: 2px;
+}
+
+.config-vue-search-box {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.config-vue-search-icon {
+  position: absolute;
+  left: 10px;
+  width: 14px;
+  height: 14px;
+  color: var(--config-muted);
+  pointer-events: none;
+}
+
+.config-vue-page .config-vue-search-box input#config-vue-search {
+  width: 100%;
+  min-height: 36px;
+  padding-left: 32px;
+  border-radius: 8px;
+  background: var(--config-subtle);
+}
+
+.config-vue-page .config-vue-search-box input#config-vue-search:focus {
+  background: var(--config-surface);
+}
+
+.config-vue-page .config-vue-nav-toggle {
+  display: none;
+}
+
+.config-vue-menu {
+  margin-top: 12px;
+}
+
+.config-vue-nav-group + .config-vue-nav-group {
+  border-top: 1px solid var(--config-border);
+  margin-top: 10px;
+  padding-top: 10px;
+}
+
+.config-vue-nav-group > p {
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  color: #6b7280;
+  margin: 2px 8px 6px;
+}
+
+.config-vue-page .config-vue-nav-group button {
+  width: 100%;
+  min-height: 35px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 2px;
+  border-color: transparent;
+  background: transparent;
+  text-align: start;
+  padding: 6px 10px;
+  border-radius: 8px;
+  color: var(--config-text);
+  font-weight: 500;
+}
+
+.config-vue-page .config-vue-nav-group button:hover:not(:disabled) {
+  background: var(--config-subtle);
+  border-color: transparent;
+  color: var(--config-text);
+}
+
+.config-vue-page .config-vue-nav-group [aria-current=page] {
+  background: var(--config-accent-soft);
+  color: var(--config-accent);
+  font-weight: 650;
+  box-shadow: inset 3px 0 0 var(--config-brand);
+}
+
+.config-vue-page .config-vue-nav-group [aria-current=page]:hover:not(:disabled) {
+  background: var(--config-accent-soft);
+  color: var(--config-accent);
+}
+
+.config-vue-nav-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.config-vue-pending {
+  flex: none;
+  border-radius: 999px;
+  padding: 1px 7px;
+  background: var(--config-warning-soft);
+  border: 1px solid var(--config-warning-border);
+  color: var(--config-warning);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.config-vue-page .config-vue-no-match {
+  margin: 8px 8px 2px;
+}
+
+/* 右侧内容头部：主标题、现代下划线页签、轻巧浅灰槽分段胶囊 */
+.config-vue-page .config-vue-content {
+  display: block;
+  width: 100%;
+  margin: 0;
+  background: #f8f9fc;
+}
+
+.config-vue-content-header {
+  padding: 18px 17px 0;
+  border-bottom: 1px solid var(--config-border);
+  background: var(--config-surface);
+  border-radius: 12px 12px 0 0;
+}
+
+.config-vue-content-header h2 {
+  margin: 0;
+  padding-bottom: 14px;
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1.35;
+  letter-spacing: -0.01em;
+}
+
+.config-vue-tabs {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.config-vue-domains {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  margin-top: -4px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  max-width: 100%;
+}
+
+.config-vue-content-header:has(.config-vue-subsections) .config-vue-domains {
+  border-bottom: 1px solid var(--config-border);
+}
+
+.config-vue-page .config-vue-domains button {
+  min-height: 36px;
+  padding: 6px 2px 9px;
+  margin-bottom: -1px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--config-muted);
+  font-size: 13px;
+  font-weight: 500;
+  box-shadow: none;
+}
+
+.config-vue-page .config-vue-domains button:hover:not(:disabled) {
+  background: transparent;
+  border-color: transparent;
+  border-bottom-color: rgba(91, 92, 226, 0.35);
+  color: var(--config-text);
+}
+
+.config-vue-page .config-vue-domains [aria-pressed=true] {
+  background: transparent;
+  border-color: transparent;
+  border-bottom: 2px solid var(--config-brand);
+  color: var(--config-brand);
+  font-weight: 650;
+  box-shadow: none;
+}
+
+.config-vue-subsections {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 10px 0 12px;
+  padding: 3px;
+  border: 1px solid var(--config-border);
+  border-radius: 9px;
+  background: #f3f5f9;
+  max-width: 100%;
+}
+
+.config-vue-content-header:not(:has(.config-vue-domains:not([style*="display: none"]))) .config-vue-subsections {
+  margin-top: -4px;
+}
+
+.config-vue-page .config-vue-subsections button {
+  min-height: 28px;
+  padding: 3px 11px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--config-muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.config-vue-page .config-vue-subsections button:hover:not(:disabled) {
+  border-color: transparent;
+  background: rgba(255, 255, 255, 0.7);
+  color: var(--config-text);
+}
+
+.config-vue-page .config-vue-subsections [aria-pressed=true] {
+  background: var(--config-surface);
+  border-color: rgba(15, 23, 42, 0.06);
+  color: var(--config-brand);
+  font-weight: 650;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
+}
+
+/* 编辑区主容器与分组 */
+.config-vue-editor {
+  padding: 16px 17px 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.config-vue-setting-group {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.config-vue-setting-group + .config-vue-setting-group {
+  padding-top: 6px;
+}
+
+.config-vue-setting-group > h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 2px 0;
+  color: var(--config-text);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.config-vue-setting-group > h3::before {
+  content: '';
+  width: 3px;
+  height: 14px;
+  border-radius: 999px;
+  background: var(--config-brand);
+  flex: none;
+}
+
+.config-vue-subblock {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* 开关项：宽屏固定双列紧凑网格，窄屏自适应 */
+.config-vue-switch-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr));
+  gap: 10px;
+}
+
+@media (min-width: 960px) {
+  .config-vue-switch-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+}
+
+.config-vue-field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(180px, 380px);
+  align-items: start;
+  gap: 18px;
+}
+
+.config-vue-switch-grid > .config-vue-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--config-border);
+  border-radius: 10px;
+  background: var(--config-surface);
+  scroll-margin-block: 12px 140px;
+  transition: border-color 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.config-vue-switch-grid > .config-vue-field:hover {
+  border-color: var(--config-control-border);
+  background: #fcfcfe;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.04);
+}
+
+.config-vue-switch-grid > .config-vue-field.is-dirty {
+  border-color: rgba(91, 92, 226, 0.42);
+  background: #fafaff;
+  box-shadow: inset 3px 0 0 var(--config-brand);
+}
+
+.config-vue-switch-grid > .config-vue-field.is-invalid {
+  border-color: var(--config-danger-border);
+  background: #fffafa;
+  box-shadow: inset 3px 0 0 var(--config-danger);
+}
+
+.config-vue-switch-grid > .config-vue-field .config-vue-field-copy {
+  flex: 1 1 auto;
+}
+
+.config-vue-switch-grid > .config-vue-field .config-vue-field-control {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+
+/* 参数输入项：结构化表单卡片 */
+.config-vue-input-card {
+  border: 1px solid var(--config-border);
+  border-radius: 10px;
+  background: var(--config-surface);
+}
+
+.config-vue-input-card > .config-vue-field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(180px, 400px);
+  align-items: start;
+  gap: 18px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--config-border);
+  scroll-margin-block: 12px 140px;
+  transition: background-color 0.15s ease;
+}
+
+.config-vue-input-card > .config-vue-field:first-child {
+  border-top-left-radius: 10px;
+  border-top-right-radius: 10px;
+}
+
+.config-vue-input-card > .config-vue-field:last-child {
+  border-bottom: none;
+  border-bottom-left-radius: 10px;
+  border-bottom-right-radius: 10px;
+}
+
+.config-vue-input-card > .config-vue-field:hover {
+  background: #fafbfe;
+}
+
+.config-vue-input-card > .config-vue-field.is-dirty {
+  background: #fafaff;
+  box-shadow: inset 3px 0 0 var(--config-brand);
+}
+
+.config-vue-input-card > .config-vue-field.is-invalid {
+  background: #fffafa;
+  box-shadow: inset 3px 0 0 var(--config-danger);
+}
+
+/* 字段文案、配置键名与状态徽章 */
+.config-vue-field-copy {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.config-vue-field-name {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+}
+
+.config-vue-field-copy label {
+  font-weight: 650;
+  color: var(--config-text);
+  line-height: 1.4;
+}
+
+.config-vue-field-copy code {
+  display: inline-block;
+  margin-top: 5px;
+  padding: 1px 6px;
+  border-radius: 5px;
+  border: 1px solid var(--config-border);
+  background: var(--config-subtle);
+  font: 11px/1.45 var(--ui-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  color: var(--config-muted);
+  word-break: break-all;
+}
+
+.config-vue-field-status {
+  display: inline-flex;
+  align-items: center;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--config-muted);
+  background: var(--config-subtle);
+  border: 1px solid var(--config-border);
+  border-radius: 999px;
+  padding: 1px 8px;
+}
+
+.config-vue-field-status.is-pending {
+  background: var(--config-warning-soft);
+  border-color: var(--config-warning-border);
+  color: var(--config-warning);
+}
+
+.config-vue-field-status.is-clear,
+.config-vue-field-status.is-error {
+  background: var(--config-danger-soft);
+  border-color: var(--config-danger-border);
+  color: var(--config-danger);
+}
+
+.config-vue-field-status.is-configured {
+  background: var(--config-success-soft);
+  border-color: var(--config-success-border);
+  color: var(--config-success);
+}
+
+.config-vue-field-status.is-unconfigured {
+  background: var(--config-subtle);
+  border-color: var(--config-border);
+  color: var(--config-muted);
+}
+
+.config-vue-field-status.is-restart {
+  background: var(--config-accent-soft);
+  border-color: rgba(91, 92, 226, 0.25);
+  color: var(--config-accent);
+}
+
+/* 控件区与内联组合 */
+.config-vue-field-control {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.config-vue-field-control > p {
+  margin: 5px 0 0;
+}
+
+.config-vue-readonly-note {
+  margin: 0 !important;
+  padding: 7px 10px;
+  border-radius: 8px;
+  border: 1px dashed var(--config-control-border);
+  background: var(--config-subtle);
+  font-size: 12.5px;
+  color: var(--config-muted);
+}
+
+.config-vue-locate-btn {
+  margin-top: 7px;
+  min-height: 30px;
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+.config-vue-control-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: nowrap;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.config-vue-control-group.has-multiline {
+  flex-wrap: wrap;
+  align-items: flex-start;
+}
+
+.config-vue-control-group :is(input:not([type=checkbox]), select, textarea) {
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
+}
+
+.config-vue-control-group.has-secret :is(input[type=password], input[type=text]) {
+  flex: 1 1 120px;
+  width: auto;
+}
+
+.config-vue-control-group textarea {
+  min-height: 96px;
+  resize: vertical;
+  line-height: 1.5;
+}
+
+.config-vue-secret-clear {
+  flex: none;
+  white-space: nowrap;
+  color: var(--config-muted);
+}
+
+.config-vue-secret-clear:hover:not(:disabled) {
+  color: var(--config-danger);
+  background: var(--config-danger-soft);
+  border-color: var(--config-danger-border);
+}
+
+.config-vue-composite {
+  display: flex;
+  width: 100%;
+  gap: 8px;
+}
+
+.config-vue-composite select {
+  flex: 1 1 140px;
+}
+
+.config-vue-composite input {
+  flex: 1 1 110px;
+}
+
+/* 现代胶囊拨动开关 */
+.config-vue-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 36px;
+  color: var(--config-muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.config-vue-switch input {
+  appearance: none;
+  -webkit-appearance: none;
+  position: relative;
+  display: inline-block;
+  flex: none;
+  margin: 0;
+  width: 42px;
+  height: 24px;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: #cbd5e1;
+  box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.14) !important;
+  cursor: inherit;
+  transition: background-color 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.config-vue-switch input::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.22);
+  transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.config-vue-switch input:checked {
+  background: var(--config-brand);
+}
+
+.config-vue-switch input:checked::after {
+  transform: translateX(18px);
+}
+
+.config-vue-switch input:disabled {
+  opacity: 0.52;
+  cursor: not-allowed;
+}
+
+.config-vue-switch-text {
+  min-width: 3.1em;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--config-muted);
+  transition: color 0.15s ease;
+}
+
+.config-vue-switch.is-checked .config-vue-switch-text,
+.config-vue-switch:has(input:checked) .config-vue-switch-text {
+  color: var(--config-accent);
+  font-weight: 600;
+}
+
+.config-vue-switch:has(input:disabled) {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+/* 多选与国家选择器 */
+.config-vue-picker {
+  flex: 1;
+  position: relative;
+  min-width: 0;
+  border: 1px solid var(--config-control-border);
+  border-radius: 8px;
+  background: var(--config-surface);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.config-vue-picker:hover {
+  border-color: #bcc3d4;
+}
+
+.config-vue-picker[open] {
+  border-color: var(--config-brand);
+  box-shadow: 0 0 0 3px rgba(91, 92, 226, 0.12);
+}
+
+.config-vue-picker summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 36px;
+  padding: 6px 10px;
+  cursor: pointer;
+  list-style: none;
+  overflow-wrap: anywhere;
+}
+
+.config-vue-picker summary::-webkit-details-marker {
+  display: none;
+}
+
+.config-vue-picker summary::after {
+  content: '';
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border: solid var(--config-muted);
+  border-width: 0 1.5px 1.5px 0;
+  transform: translateY(-2px) rotate(45deg);
+  transition: transform 0.15s ease;
+}
+
+.config-vue-picker[open] summary::after {
+  transform: translateY(2px) rotate(225deg);
+}
+
+.config-vue-picker-menu {
+  min-width: 0;
+  padding: 8px 10px 10px;
+  border-top: 1px solid var(--config-border);
+  background: var(--config-subtle);
+  border-bottom-left-radius: 8px;
+  border-bottom-right-radius: 8px;
+}
+
+.config-vue-picker-menu > input {
+  width: 100%;
+  background: var(--config-surface);
+}
+
+.config-vue-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 8px;
+}
+
+.config-vue-page .config-vue-chip {
+  min-height: 26px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  border: 1px solid rgba(91, 92, 226, 0.25);
+  background: var(--config-accent-soft);
+  color: var(--config-accent);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.config-vue-page .config-vue-chip:hover:not(:disabled) {
+  background: var(--config-danger-soft);
+  border-color: var(--config-danger-border);
+  color: var(--config-danger);
+}
+
+.config-vue-picker-options {
+  max-height: 230px;
+  overflow: auto;
+  display: grid;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.config-vue-page .config-vue-picker-options button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 5px 9px;
+  border-color: transparent;
+  border-radius: 7px;
+  background: var(--config-surface);
+  text-align: start;
+}
+
+.config-vue-page .config-vue-picker-options button:hover:not(:disabled) {
+  background: var(--config-accent-soft);
+  border-color: rgba(91, 92, 226, 0.25);
+}
+
+.config-vue-page .config-vue-picker-options [aria-pressed=true] {
+  background: var(--config-accent-soft);
+  border-color: rgba(91, 92, 226, 0.35);
+  color: var(--config-accent);
+  font-weight: 600;
+}
+
+.config-vue-choice-mark {
+  flex: none;
+  font-size: 12px;
+  width: 14px;
+  text-align: center;
+}
+
+.config-vue-choice-label {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.config-vue-picker-empty {
+  margin-top: 8px;
+  padding-inline: 4px;
+}
+
+/* 代理来源高级参数折叠块 */
+.config-vue-source-advanced {
+  border: 1px solid var(--config-border);
+  border-radius: 10px;
+  background: var(--config-surface);
+  padding: 4px;
+}
+
+.config-vue-source-advanced > summary {
+  padding: 9px 12px;
+  border-radius: 7px;
+  font-weight: 600;
+  color: var(--config-text);
+  cursor: pointer;
+}
+
+.config-vue-source-advanced > summary:hover {
+  color: var(--config-accent);
+}
+
+.config-vue-advanced-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 10px 8px 8px;
+}
+
+/* 工具面板与说明表格 */
+.config-vue-page .config-action-tools {
+  padding: 14px 16px;
+  border: 1px solid var(--config-border);
+  border-radius: 10px;
+  background: var(--config-surface);
+}
+
+.config-vue-page .config-action-tools .config-action-status {
+  color: var(--config-muted);
+}
+
+.config-vue-page .config-action-tools .config-action-error,
+.config-vue-error {
+  color: var(--config-danger);
+}
+
+.config-vue-field [aria-invalid=true] {
+  border-color: var(--config-danger);
+}
+
+.config-vue-table-card {
+  border: 1px solid var(--config-border);
+  border-radius: 10px;
+  background: var(--config-surface);
+  overflow: hidden;
+}
+
+.config-vue-pool-rules {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.config-vue-pool-rules caption {
+  text-align: start;
+  font-weight: 700;
+  padding: 10px 14px 6px;
+  color: var(--config-text);
+}
+
+.config-vue-pool-rules :is(th, td) {
+  text-align: start;
+  padding: 9px 14px;
+  border-top: 1px solid var(--config-border);
+  overflow-wrap: anywhere;
+}
+
+.config-vue-pool-rules th {
+  background: var(--config-subtle);
+  font-size: 12px;
+  color: var(--config-muted);
+  font-weight: 650;
+}
+
+.config-vue-section-note {
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--config-border);
+  background: var(--config-surface);
+  margin: 0 !important;
+}
+
+/* 底部毛玻璃悬浮保存栏 */
+.config-vue-savebar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+  padding: 11px 16px;
+  border: 1px solid rgba(213, 218, 229, 0.92);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.88);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  box-shadow: 0 10px 28px -6px rgba(15, 23, 42, 0.12), 0 2px 8px -2px rgba(15, 23, 42, 0.06);
+}
+
+.config-vue-save-state {
+  flex: 1;
+  min-width: 0;
+  padding-inline-start: 10px;
+  border-inline-start: 3px solid var(--config-brand);
+}
+
+.config-vue-save-state strong {
+  display: block;
+  font-size: 13px;
+  color: var(--config-text);
+}
+
+.config-vue-save-state span {
+  display: block;
+  color: var(--config-muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.config-vue-save-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.config-vue-page .config-vue-savebar .primary,
+.config-vue-page .config-action-tools .primary {
+  background: var(--config-brand);
+  border-color: transparent;
+  color: #ffffff;
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgba(91, 92, 226, 0.25);
+}
+
+.config-vue-page .primary:hover:not(:disabled) {
+  background: var(--config-accent);
+  border-color: transparent;
+  color: #ffffff;
+}
+
+/* 桌面端固定双滚动区 */
 @media (min-width: 861px) {
-  /* The desktop shell gives configuration its own bounded scroll regions. */
-  .config-vue-page { display: flex; flex-direction: column; height: calc(100dvh - var(--topbar-height, 56px) - 28px); min-height: 0; overflow: hidden; }
-  .config-vue-layout { flex: 1; min-height: 0; overflow: hidden; }
-  .config-vue-navigation { height: 100%; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
-  .config-vue-page .config-vue-content { height: 100%; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
-  .config-vue-savebar { position: static; flex-shrink: 0; max-height: 40%; overflow-y: auto; }
-  .config-vue-page > :is([role=alert], [role=status]) { flex-shrink: 0; max-height: 20%; overflow-y: auto; }
+  .config-vue-page {
+    display: flex;
+    flex-direction: column;
+    height: calc(100dvh - var(--topbar-height, 56px) - 28px);
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .config-vue-layout {
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .config-vue-navigation {
+    height: 100%;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
+  }
+
+  .config-vue-page .config-vue-content {
+    height: 100%;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
+  }
+
+  .config-vue-savebar {
+    position: static;
+    flex-shrink: 0;
+    max-height: 40%;
+    overflow-y: auto;
+  }
+
+  .config-vue-page > :is([role=alert], [role=status]) {
+    flex-shrink: 0;
+    max-height: 20%;
+    overflow-y: auto;
+  }
 }
+
+/* 平板与移动端适配 */
 @media (max-width: 860px) {
-  .config-vue-layout { grid-template-columns: minmax(0, 1fr); }
-  .config-vue-navigation-head { grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); align-items: center; }
-  .config-vue-navigation-head label { grid-column: 1 / -1; }
-  .config-vue-page .config-vue-nav-toggle { display: flex; align-items: center; justify-content: space-between; gap: 6px; min-height: 36px; color: var(--config-accent); text-align: start; }
-  .config-vue-chevron { flex: none; width: 7px; height: 7px; border: solid currentColor; border-width: 0 1px 1px 0; transform: translateY(-2px) rotate(45deg); }
-  [aria-expanded=true] > .config-vue-chevron { transform: translateY(2px) rotate(225deg); }
-  .config-vue-menu:not(.is-expanded) { display: none; }
-  .config-vue-savebar { position: fixed; z-index: 10; inset-inline: var(--page-gutter, 12px); bottom: max(10px, env(safe-area-inset-bottom)); max-height: 36dvh; overflow: auto; }
-  .config-vue-page:has(.config-vue-savebar) { padding-bottom: 160px; }
+  .config-vue-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .config-vue-navigation-head {
+    grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+    align-items: center;
+  }
+
+  .config-vue-navigation-head label {
+    grid-column: 1 / -1;
+  }
+
+  .config-vue-page .config-vue-nav-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    min-height: 36px;
+    color: var(--config-accent);
+    text-align: start;
+  }
+
+  .config-vue-chevron {
+    flex: none;
+    width: 7px;
+    height: 7px;
+    border: solid currentColor;
+    border-width: 0 1.5px 1.5px 0;
+    transform: translateY(-2px) rotate(45deg);
+  }
+
+  [aria-expanded=true] > .config-vue-chevron {
+    transform: translateY(2px) rotate(225deg);
+  }
+
+  .config-vue-menu:not(.is-expanded) {
+    display: none;
+  }
+
+  .config-vue-savebar {
+    position: fixed;
+    z-index: 10;
+    inset-inline: var(--page-gutter, 12px);
+    bottom: max(10px, env(safe-area-inset-bottom));
+    max-height: 36dvh;
+    overflow: auto;
+  }
+
+  .config-vue-page:has(.config-vue-savebar) {
+    padding-bottom: 160px;
+  }
 }
-@media (max-width: 560px) {
-  .config-vue-content-header, .config-vue-editor { padding-inline: 11px; }
-  .config-vue-field { grid-template-columns: minmax(0, 1fr); gap: 7px; }
-  .config-vue-savebar { flex-wrap: wrap; }
-  .config-vue-save-state { flex-basis: 100%; }
-  .config-vue-savebar button { flex: 1; }
+
+@media (max-width: 640px) {
+  .config-vue-content-header,
+  .config-vue-editor {
+    padding-inline: 11px;
+  }
+
+  .config-vue-switch-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .config-vue-input-card > .config-vue-field {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+    padding: 12px;
+  }
+
+  .config-vue-savebar {
+    flex-wrap: wrap;
+  }
+
+  .config-vue-save-state {
+    flex-basis: 100%;
+  }
+
+  .config-vue-save-actions {
+    width: 100%;
+  }
+
+  .config-vue-save-actions button {
+    flex: 1;
+  }
 }
+
 @media (pointer: coarse) {
-  .config-vue-page :is(button, input:not([type=checkbox]), select, textarea, .config-vue-switch, .config-vue-picker summary) { min-height: 44px; }
-  .config-vue-page :is(.config-vue-nav-group, .config-vue-tabs, .config-vue-navigation-head) button { min-height: 44px; }
-  .config-vue-page :is(input:not([type=checkbox]), select, textarea) { font-size: 16px; }
+  .config-vue-page :is(button, input:not([type=checkbox]), select, textarea, .config-vue-switch, .config-vue-picker summary) {
+    min-height: 44px;
+  }
+
+  .config-vue-page :is(.config-vue-nav-group, .config-vue-tabs, .config-vue-navigation-head) button {
+    min-height: 44px;
+  }
+
+  .config-vue-page :is(input:not([type=checkbox]), select, textarea) {
+    font-size: 16px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .config-vue-page *,
+  .config-vue-page *::before,
+  .config-vue-page *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
 }

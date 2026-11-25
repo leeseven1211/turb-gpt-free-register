@@ -33,14 +33,15 @@ const emit = defineEmits<{'update:open': [boolean]}>();
 
 <style scoped>
 /* 浮层由 Portal 挂到 body，基础样式随组件提供，不依赖使用方页面。 */
-.tc-column-filter-trigger {display:inline-flex;align-items:center;gap:6px;max-width:100%;min-height:32px;padding:3px 0;border:0;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer}
-.tc-column-filter-trigger svg {width:14px;height:14px;flex:none;fill:none;stroke:currentColor;stroke-width:1.5}
-.tc-column-filter-trigger:hover,.tc-column-filter-trigger[data-state=open],.tc-column-filter-trigger.is-active {color:var(--ui-color-brand)}
+.tc-column-filter-trigger {display:inline-flex;align-items:center;gap:5px;max-width:100%;min-height:28px;margin-left:-4px;padding:2px 5px;border:0;border-radius:5px;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer;transition:color .15s ease,background .15s ease}
+.tc-column-filter-trigger svg {width:13px;height:13px;flex:none;fill:none;stroke:currentColor;stroke-width:1.6;opacity:.75;transition:opacity .15s ease,stroke-width .15s ease}
+.tc-column-filter-trigger:hover,.tc-column-filter-trigger[data-state=open],.tc-column-filter-trigger.is-active {color:var(--ui-color-brand);background:rgba(91,92,226,.06)}
+.tc-column-filter-trigger:hover svg,.tc-column-filter-trigger[data-state=open] svg,.tc-column-filter-trigger.is-active svg {opacity:1}
 .tc-column-filter-trigger.is-active {font-weight:650}
 .tc-column-filter-trigger.is-active svg {fill:var(--ui-color-brand-soft);stroke-width:2}
-.tc-column-filter-trigger:focus-visible {outline:2px solid var(--ui-color-brand);outline-offset:3px}
+.tc-column-filter-trigger:focus-visible {outline:2px solid var(--ui-color-brand);outline-offset:2px}
 /* Reka 的 Portal 根节点不透传 SFC scope 属性，使用组件专属全局类定位真实 DOM。 */
-:global(.list-filter-popover) {display:flex;flex-direction:column;box-sizing:border-box;z-index:1200;width:280px;max-width:calc(100vw - 20px);max-height:min(520px,var(--reka-popover-content-available-height, 85dvh));overflow:auto;overscroll-behavior:contain;padding:14px;border:1px solid var(--ui-color-border-strong);border-radius:10px;background:var(--ui-color-surface);color:var(--ui-color-text);box-shadow:0 8px 28px rgb(23 32 51 / 16%);font:13px/1.5 var(--ui-font-sans)}
+:global(.list-filter-popover) {display:flex;flex-direction:column;box-sizing:border-box;z-index:1200;width:280px;max-width:calc(100vw - 20px);max-height:min(520px,var(--reka-popover-content-available-height, 85dvh));overflow:auto;overscroll-behavior:contain;padding:14px;border:1px solid var(--ui-color-border);border-radius:12px;background:var(--ui-color-surface);color:var(--ui-color-text);box-shadow:0 12px 32px rgb(17 19 33 / 12%),0 2px 8px rgb(17 19 33 / 5%);font:13px/1.5 var(--ui-font-sans)}
 :global(.list-filter-popover *) {box-sizing:border-box}
 :global(.list-filter-popover > :not(button)),:global(.list-filter-popover fieldset) {min-width:0}
 :global(.list-filter-popover :is(button,input,select)) {font:inherit}
@@ -62,9 +63,13 @@ const emit = defineEmits<{'update:open': [boolean]}>();
   box-shadow:inset 0 0 0 3px var(--ui-color-surface);
 }
 :global(.list-filter-popover :is(select,input:not([type=radio],[type=checkbox]))) {
-  display:block;width:100%;min-width:0;min-height:36px;margin:0;padding:6px 9px;
-  border:1px solid var(--ui-color-border-strong);border-radius:5px;
+  display:block;width:100%;min-width:0;min-height:36px;margin:0;padding:6px 10px;
+  border:1px solid var(--ui-color-border-strong);border-radius:6px;
   background:var(--ui-color-surface);color:var(--ui-color-text);
+  transition:border-color .15s ease,box-shadow .15s ease;
+}
+:global(.list-filter-popover :is(select,input:not([type=radio],[type=checkbox])):focus) {
+  border-color:var(--ui-color-brand);box-shadow:0 0 0 3px rgba(91,92,226,.1);outline:none;
 }
 :global(.list-filter-popover .list-filter-options) {
   display:flex;flex-direction:column;gap:2px;min-width:0;max-height:340px;
@@ -72,7 +77,7 @@ const emit = defineEmits<{'update:open': [boolean]}>();
 }
 :global(.list-filter-popover .list-filter-option) {
   display:flex;align-items:center;gap:8px;min-height:34px;padding:6px 8px;
-  border-radius:5px;cursor:pointer;overflow-wrap:anywhere;
+  border-radius:6px;cursor:pointer;overflow-wrap:anywhere;transition:background .12s ease,color .12s ease;
 }
 :global(.list-filter-popover .list-filter-option > span) {flex:1;min-width:0}
 :global(.list-filter-popover .list-filter-option > :is(small,strong)) {
@@ -80,22 +85,29 @@ const emit = defineEmits<{'update:open': [boolean]}>();
 }
 :global(.list-filter-popover .list-filter-option:hover) {background:var(--ui-color-surface-subtle)}
 :global(.list-filter-popover .list-filter-option:has(input:checked)) {
-  background:var(--ui-color-brand-soft);color:var(--ui-color-brand);
+  background:var(--ui-color-brand-soft);color:var(--ui-color-brand);font-weight:600;
 }
 :global(.list-filter-popover .list-filter-actions) {
   display:flex;align-items:center;gap:8px;justify-content:flex-end;
   padding-top:10px;border-top:1px solid var(--ui-color-border);
 }
 :global(.list-filter-popover .list-filter-actions > button) {
-  min-height:32px;padding:4px 10px;border:1px solid var(--ui-color-border-strong);
-  border-radius:5px;background:var(--ui-color-surface);color:var(--ui-color-text);
+  min-height:32px;padding:4px 12px;border:1px solid var(--ui-color-border-strong);
+  border-radius:6px;background:var(--ui-color-surface);color:var(--ui-color-text);
+  transition:border-color .15s ease,background .15s ease,color .15s ease;
+}
+:global(.list-filter-popover .list-filter-actions > button:hover:not(:disabled)) {
+  border-color:#b9bfce;background:var(--ui-color-surface-subtle);
 }
 :global(.list-filter-popover .list-filter-actions > .list-filter-primary) {
   border-color:var(--ui-color-brand);background:var(--ui-color-brand);color:var(--ui-color-on-brand,#fff);
 }
-:global(.list-filter-popover__heading) {flex:0 0 auto;font-size:13px;font-weight:650;margin:0 32px 12px 0}
-:global(.list-filter-popover__close) {position:absolute;top:10px;right:10px;display:grid;place-items:center;width:28px;height:28px;padding:0;border:0;border-radius:4px;background:transparent;color:var(--ui-color-text-secondary)}
-:global(.list-filter-popover__close:hover) {background:var(--ui-color-surface-subtle)}
+:global(.list-filter-popover .list-filter-actions > .list-filter-primary:hover:not(:disabled)) {
+  border-color:var(--ui-color-brand-hover);background:var(--ui-color-brand-hover);
+}
+:global(.list-filter-popover__heading) {flex:0 0 auto;font-size:13px;font-weight:650;margin:0 32px 12px 0;color:var(--ui-color-text)}
+:global(.list-filter-popover__close) {position:absolute;top:10px;right:10px;display:grid;place-items:center;width:28px;height:28px;padding:0;border:0;border-radius:6px;background:transparent;color:var(--ui-color-text-secondary);transition:background .12s ease,color .12s ease}
+:global(.list-filter-popover__close:hover) {background:var(--ui-color-surface-subtle);color:var(--ui-color-text)}
 @media(max-width:680px) {
   :global(.list-filter-popover) {width:300px}
   :global(.list-filter-popover__close) {width:36px;height:36px}

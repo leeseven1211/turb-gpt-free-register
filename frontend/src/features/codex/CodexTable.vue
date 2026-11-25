@@ -13,7 +13,7 @@ import {codexColumns} from './filterDefinitions';
 import {credentialStatus, oauthStatus, planTone} from './presentation';
 const props = defineProps<{items: CodexRow[]; selected:Set<string>; filters:FilterValues; facets:CodexFacets; loading:boolean;error:string;busy:boolean;visible:boolean;openFilter:string|null}>();
 const emit = defineEmits<{select:[string,boolean];selectPage:[boolean];action:[CodexAction,CodexRow];retry:[];'update:filters':[FilterValues];'update:openFilter':[string|null]}>();
-const {widths,total,resize,resizeWithKeyboard,resetColumns} = useColumnWidths({defaults:[48,228,84,108,108,132,132,132,132,228],storageKey:'gpt_console_table_widths_codex',totalStorageKey:'gpt_console_table_total_codex',min:28,max:2000});
+const {widths,total,resize,resizeWithKeyboard,resetColumns} = useColumnWidths({defaults:[42,228,78,98,98,168,96,134,134,138],storageKey:'gpt_console_table_widths_codex',totalStorageKey:'gpt_console_table_total_codex',min:28,max:2000});
 const allChecked = computed(() => props.items.length > 0 && props.items.every(row => props.selected.has(row.filename)));
 const partial = computed(() => !allChecked.value && props.items.some(row => props.selected.has(row.filename)));
 const rows = computed(() => {
@@ -59,7 +59,7 @@ defineExpose({resetColumns});
           <td class="cx-extra" data-label="Plan"><ListCell :text="display(row.plan)"><span v-if="row.plan" class="ui-badge cx-badge" :class="`ui-badge--${planTone(row.plan)}`">{{ row.plan }}</span><template v-else>—</template></ListCell></td>
           <td class="cx-extra" data-label="凭证状态"><ListCell :text="credential.label" :title="credential.title" :tone="credential.tone"><span class="ui-badge cx-badge" :class="`ui-badge--${credential.tone}`">{{ credential.label }}</span></ListCell></td>
           <td class="cx-extra" data-label="OAuth 状态"><ListCell :text="oauth.label" :title="oauth.title" :tone="oauth.tone"><span class="ui-badge cx-badge" :class="`ui-badge--${oauth.tone}`">{{ oauth.label }}</span></ListCell></td>
-          <td class="cx-extra" data-label="Account ID"><ListCell :text="display(row.account_id)"/></td>
+          <td class="cx-extra cx-account-id" data-label="Account ID"><ListCell :text="display(row.account_id)" :title="row.account_id ? String(row.account_id) : undefined"/></td>
           <td class="cx-extra" data-label="Sub2API ID"><ListCell :text="display(row.sub2api_account_id)"/></td>
           <td class="cx-extra ui-time" data-label="更新时间"><ListCell v-bind="dateTimeLines(row.mtime)" :title="display(row.mtime)"/></td>
           <td class="cx-extra ui-time" data-label="过期时间"><ListCell v-bind="dateTimeLines(row.expired)" :title="display(row.expired)"/></td>

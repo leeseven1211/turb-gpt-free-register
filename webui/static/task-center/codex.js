@@ -1,7 +1,7 @@
-import { A as e, C as t, F as n, G as r, H as i, K as a, L as o, Q as s, S as c, V as l, Z as u, _ as d, c as f, d as p, dt as m, et as h, ft as g, g as _, h as v, j as y, k as b, l as x, lt as S, m as C, n as w, s as T, st as E, v as D, x as O } from "./_plugin-vue_export-helper-BSZsFlS8.js";
-import { a as k, c as A, i as j, n as M, o as N, r as P, s as F, t as I } from "./ListFilterSummary-C8h8bMwn.js";
-import { t as L } from "./ListPagination-DURVj-Kj.js";
-import { n as R, t as z } from "./ColumnResizer-CPJ9UuoZ.js";
+import { A as e, C as t, F as n, G as r, H as i, K as a, L as o, Q as s, S as c, V as l, Z as u, _ as d, c as f, d as p, dt as m, et as h, ft as g, g as _, h as v, j as y, k as b, l as x, lt as S, m as C, n as w, s as T, st as E, v as D, x as O } from "./_plugin-vue_export-helper-Btipf5Px.js";
+import { a as k, c as A, i as j, n as M, o as N, r as P, s as F, t as I } from "./ListFilterSummary-M6f9Z7EF.js";
+import { t as L } from "./ListPagination-CmqtjjEX.js";
+import { n as R, t as z } from "./ColumnResizer-D3GCD-87.js";
 import { t as B } from "./time-DOD6oyhP.js";
 import { n as V, r as H, t as U } from "./client-B5R_MNgP.js";
 import { a as W, i as G, n as K, t as q } from "./bulkMutations-3wwPI3-H.js";
@@ -314,7 +314,7 @@ var ye = ["aria-busy"], be = {
 	class: "cx-extra",
 	"data-label": "OAuth 状态"
 }, ke = {
-	class: "cx-extra",
+	class: "cx-extra cx-account-id",
 	"data-label": "Account ID"
 }, Ae = {
 	class: "cx-extra",
@@ -393,16 +393,16 @@ var ye = ["aria-busy"], be = {
 	setup(e, { expose: t, emit: a }) {
 		let s = e, l = a, { widths: u, total: f, resize: y, resizeWithKeyboard: x, resetColumns: w } = R({
 			defaults: [
-				48,
+				42,
 				228,
-				84,
-				108,
-				108,
-				132,
-				132,
-				132,
-				132,
-				228
+				78,
+				98,
+				98,
+				168,
+				96,
+				134,
+				134,
+				138
 			],
 			storageKey: "gpt_console_table_widths_codex",
 			totalStorageKey: "gpt_console_table_total_codex",
@@ -546,7 +546,10 @@ var ye = ["aria-busy"], be = {
 					"title",
 					"tone"
 				])]),
-				v("td", ke, [c(P, { text: U(t.account_id) }, null, 8, ["text"])]),
+				v("td", ke, [c(P, {
+					text: U(t.account_id),
+					title: t.account_id ? String(t.account_id) : void 0
+				}, null, 8, ["text", "title"])]),
 				v("td", Ae, [c(P, { text: U(t.sub2api_account_id) }, null, 8, ["text"])]),
 				v("td", je, [c(P, b({ ref_for: !0 }, E(B)(t.mtime), { title: U(t.mtime) }), null, 16, ["title"])]),
 				v("td", Me, [c(P, b({ ref_for: !0 }, E(B)(t.expired), { title: U(t.expired) }), null, 16, ["title"])]),

@@ -62,3 +62,128 @@ defineExpose({open, close});
     </aside>
   </Teleport>
 </template>
+<style>
+#accountDetailDrawer .account-detail-head {
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--ui-color-border, #e2e8f0);
+  background: var(--ui-color-surface, #ffffff);
+  gap: 12px;
+}
+#accountDetailDrawer .account-detail-head .data-panel-kicker {
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  color: var(--ui-color-brand, #4f46e5);
+  margin-bottom: 3px;
+}
+#accountDetailDrawer #accountDetailTitle {
+  font-size: 17px;
+  line-height: 1.35;
+  margin: 0;
+  word-break: break-all;
+}
+#accountDetailDrawer #accountDetailSubtitle {
+  font-size: 12px;
+  color: var(--ui-color-text-secondary, #64748b);
+  margin: 3px 0 0;
+}
+#accountDetailDrawer .account-detail-close {
+  width: 32px;
+  height: 32px;
+  min-width: 32px;
+  min-height: 32px;
+  border-radius: 8px;
+  border: 1px solid var(--ui-color-border, #e2e8f0);
+  background: var(--ui-color-surface, #ffffff);
+  color: var(--ui-color-text-secondary, #475569);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: border-color .15s ease, background-color .15s ease, color .15s ease;
+}
+#accountDetailDrawer .account-detail-close:hover {
+  border-color: var(--ui-color-brand, #4f46e5);
+  background: var(--ui-color-brand-soft, #eef2ff);
+  color: var(--ui-color-brand, #4f46e5);
+}
+#accountDetailDrawer .account-detail-body {
+  padding: 16px 20px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+#accountDetailDrawer .account-detail-section {
+  padding: 14px 16px;
+  border: 1px solid var(--ui-color-border, #e2e8f0);
+  border-radius: 10px;
+  background: var(--ui-color-surface-subtle, #f8fafc);
+}
+#accountDetailDrawer .account-detail-section-title {
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--ui-color-text, #0f172a);
+  margin-bottom: 6px;
+}
+#accountDetailDrawer .account-detail-section-copy {
+  margin: 0 0 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--ui-color-text-secondary, #64748b);
+}
+#accountDetailDrawer .account-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(175px, 1fr));
+  gap: 8px;
+}
+#accountDetailDrawer .account-detail-state {
+  padding: 9px 11px;
+  border: 1px solid var(--ui-color-border, #e2e8f0);
+  border-radius: 8px;
+  background: #ffffff;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+#accountDetailDrawer .account-detail-label {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--ui-color-text-secondary, #64748b);
+}
+#accountDetailDrawer .account-detail-state-value {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--ui-color-text, #0f172a);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+#accountDetailDrawer .account-detail-state > small {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--ui-color-text-secondary, #64748b);
+  overflow-wrap: anywhere;
+}
+#accountDetailDrawer .account-detail-note {
+  margin-top: 10px;
+  padding: 9px 11px;
+  border: 1px solid var(--ui-color-border, #e2e8f0);
+  border-radius: 8px;
+  background: #ffffff;
+}
+#accountDetailDrawer .account-detail-note > span {
+  display: block;
+  font-size: 11px;
+  color: var(--ui-color-text-secondary, #64748b);
+  margin-bottom: 4px;
+}
+#accountDetailDrawer .account-detail-note > p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+</style>

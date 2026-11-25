@@ -79,7 +79,7 @@ function changeSize(event: Event) {
   </nav>
 </template>
 <style scoped>
-.list-pagination {container:list-pagination / inline-size;min-width:0;padding:12px 16px;flex:0 0 auto;color:var(--ui-color-text-secondary);font-size:12px;font-variant-numeric:tabular-nums}
+.list-pagination {container:list-pagination / inline-size;min-width:0;padding:10px 16px;flex:0 0 auto;border-top:1px solid var(--ui-color-border);background:var(--ui-color-surface-subtle);color:var(--ui-color-text-secondary);font-size:12px;font-variant-numeric:tabular-nums}
 /* 等宽侧翼保持中间导航相对整个页尾居中，右侧统计不会改变中心位置。 */
 .list-pagination__layout {display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);align-items:center;gap:10px 16px;min-width:0}
 .list-pagination__meta,.list-pagination__controls,.list-pagination__pages,.list-pagination__jump,.list-pagination__size {display:flex;align-items:center;gap:8px}
@@ -87,25 +87,26 @@ function changeSize(event: Event) {
 .list-pagination__range {max-width:100%;overflow-wrap:anywhere}
 .list-pagination__controls {grid-column:2;justify-content:center;gap:10px 16px;min-width:0;flex-wrap:wrap}
 .list-pagination__pages {gap:4px;max-width:100%;flex-wrap:wrap;justify-content:center}
-.list-pagination__button {display:inline-flex;align-items:center;justify-content:center;min-width:32px;min-height:32px;padding:5px 9px;border:1px solid var(--ui-color-border-strong);border-radius:5px;background:var(--ui-color-surface);color:var(--ui-color-text);font:inherit;white-space:nowrap;cursor:pointer}
+.list-pagination__button {display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;min-width:32px;min-height:0;height:32px;margin:0;padding:0 10px;border:1px solid var(--ui-color-border-strong);border-radius:var(--ui-radius-sm, 6px);background:var(--ui-color-surface);color:var(--ui-color-text);font:inherit;line-height:1;white-space:nowrap;cursor:pointer;transition:border-color .15s ease,background .15s ease,color .15s ease,box-shadow .15s ease}
 .list-pagination__button:hover:not(:disabled) {border-color:var(--ui-color-brand);color:var(--ui-color-brand);background:var(--ui-color-brand-soft)}
-.list-pagination__button:disabled {cursor:default;opacity:.45}
-.list-pagination__button.is-current {background:var(--ui-color-brand-soft);border-color:var(--ui-color-brand);color:var(--ui-color-brand);font-weight:600;opacity:1}
-.list-pagination__ellipsis {min-width:20px;text-align:center}
+.list-pagination__button:disabled {cursor:not-allowed;opacity:.45}
+.list-pagination__button.is-current {background:var(--ui-color-brand);border-color:var(--ui-color-brand);color:#fff;font-weight:600;opacity:1;cursor:default;box-shadow:0 1px 3px rgba(91,92,226,.25)}
+.list-pagination__ellipsis {min-width:20px;text-align:center;color:var(--ui-color-text-muted)}
 .list-pagination__jump {margin:0;gap:6px;flex:none}
 .list-pagination__jump label,.list-pagination__size {display:flex;align-items:center;gap:6px;white-space:nowrap}
-.list-pagination__jump input,.list-pagination__size select {height:32px;min-width:0;margin:0;padding:4px 7px;border:1px solid var(--ui-color-border-strong);border-radius:5px;background:var(--ui-color-surface);color:var(--ui-color-text);font:inherit}
-.list-pagination__jump input {width:52px;text-align:center}
-.list-pagination__size select {width:74px}
-.list-pagination input:disabled,.list-pagination select:disabled {opacity:.45}
+.list-pagination__jump input,.list-pagination__size select {box-sizing:border-box;min-height:0;height:32px;min-width:0;margin:0;padding:0 8px;border:1px solid var(--ui-color-border-strong);border-radius:var(--ui-radius-sm, 6px);background:var(--ui-color-surface);color:var(--ui-color-text);font:inherit;line-height:normal;transition:border-color .15s ease,box-shadow .15s ease}
+.list-pagination__jump input {width:48px;text-align:center}
+.list-pagination__size select {width:auto;min-width:74px;padding:0 10px}
+.list-pagination :is(input,select):hover:not(:disabled) {border-color:#b9bfce}
+.list-pagination input:disabled,.list-pagination select:disabled {opacity:.45;cursor:not-allowed}
 .list-pagination input[aria-invalid=true] {border-color:var(--ui-color-danger)}
 .list-pagination button:focus-visible,.list-pagination input:focus-visible,.list-pagination select:focus-visible {outline:2px solid var(--ui-color-brand);outline-offset:2px}
 .list-pagination__mobile-page {display:none}
 .list-pagination__error {grid-column:1/-1;text-align:center;color:var(--ui-color-danger)}
 @media (min-width:681px) and (pointer:fine) {
-  .list-pagination--compact {padding:6px 12px}
+  .list-pagination--compact {padding:8px 14px}
   .list-pagination--compact .list-pagination__layout {row-gap:6px}
-  .list-pagination--compact :is(button,input,select) {box-sizing:border-box;height:30px;min-height:30px;margin-block:0}
+  .list-pagination--compact :is(button,input,select) {box-sizing:border-box;height:30px;min-height:0;margin-block:0}
 }
 @container list-pagination (max-width:1120px) {
   .list-pagination__layout {grid-template-columns:minmax(0,1fr)}
@@ -118,10 +119,10 @@ function changeSize(event: Event) {
   .list-pagination__pages {gap:6px}
   .list-pagination__number,.list-pagination__ellipsis {display:none}
   .list-pagination__mobile-page {display:block;min-width:36px;text-align:center;white-space:nowrap}
-  .list-pagination__button {min-height:40px;padding:5px}
+  .list-pagination__button {min-height:40px;height:40px;padding:0 10px}
   .list-pagination__jump label {gap:4px}
-  .list-pagination__jump input {width:42px}
-  .list-pagination__jump input,.list-pagination__size select {height:40px;font-size:16px}
+  .list-pagination__jump input {width:48px}
+  .list-pagination__jump input,.list-pagination__size select {height:40px;min-height:40px;font-size:16px}
 }
 @media(max-width:680px) {
   .list-pagination {padding:10px 12px}

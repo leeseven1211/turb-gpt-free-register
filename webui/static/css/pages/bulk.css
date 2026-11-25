@@ -18,17 +18,20 @@
 .bulk-heading p:empty { display: none; }
 .bulk-back { flex: 0 0 34px; width: 34px; height: 34px; border: 1px solid var(--ui-color-border); border-radius: var(--ui-radius-sm); background: var(--ui-color-surface); color: var(--ui-color-text-secondary); font-size: 18px; }
 .bulk-actions { flex-wrap: wrap; }
-.bulk-card { background: var(--ui-color-surface); border: 1px solid var(--ui-color-border); border-radius: var(--ui-radius-lg); min-width: 0; padding: 20px; }
+.bulk-card { background: var(--ui-color-surface); border: 1px solid var(--ui-color-border); border-radius: var(--ui-radius-lg); min-width: 0; padding: 20px; box-shadow: var(--ui-shadow-sm); }
 .bulk-card + .bulk-card { margin-top: 16px; }
 .bulk-card h3 { margin: 0; color: var(--ui-color-text); font-size: 14px; font-weight: 650; }
 .bulk-section-heading { margin-bottom: 16px; }
 .bulk-page button, .bulk-page summary { cursor: pointer; touch-action: manipulation; }
 .bulk-page input[type="checkbox"] { width: 16px; min-width: 16px; height: 16px; min-height: 16px; padding: 0; margin: 0; flex: 0 0 auto; accent-color: var(--ui-color-brand); }
 .bulk-page button:disabled { cursor: default; opacity: .45; }
+.bulk-page button.bulk-link:disabled,
+.bulk-page button.ui-link:disabled { background: transparent; border-color: transparent; box-shadow: none; color: var(--ui-color-text-subtle); }
 .bulk-page button:focus-visible, .bulk-page summary:focus-visible, .bulk-page input:focus-visible, .bulk-page select:focus-visible { outline: 2px solid var(--ui-color-brand); outline-offset: 3px; }
-.bulk-page .jobs-tb-btn { min-height: 36px; height: auto; white-space: nowrap; font-size: 12px; }
+.bulk-page .jobs-tb-btn { min-height: 32px; height: auto; white-space: nowrap; font-size: 12px; }
 .bulk-field { display: flex; flex-direction: column; gap: 7px; min-width: 0; color: var(--ui-color-text-secondary); font-size: 12px; font-weight: 500; }
-.bulk-field input:not([type="checkbox"]), .bulk-field select, .bulk-round-picker select, .bulk-retry-toolbar select { width: 100%; min-width: 0; min-height: 36px; padding: 8px 11px; border: 1px solid var(--ui-color-border-strong); border-radius: var(--ui-radius-sm); background: var(--ui-color-surface); color: var(--ui-color-text); font: inherit; font-weight: 400; }
+.bulk-field input:not([type="checkbox"]), .bulk-field select, .bulk-retry-toolbar select { width: 100%; min-width: 0; min-height: 34px; padding: 6px 10px; border: 1px solid var(--ui-color-border-strong); border-radius: var(--ui-radius-sm); background: var(--ui-color-surface); color: var(--ui-color-text); font: inherit; font-weight: 400; }
+.bulk-round-picker select { width: auto; min-width: 128px; min-height: 32px; height: 32px; margin: 0; padding: 0 28px 0 10px; white-space: nowrap; border: 1px solid var(--ui-color-border-strong); border-radius: var(--ui-radius-sm); background: var(--ui-color-surface); color: var(--ui-color-text); font: inherit; font-weight: 400; text-overflow: ellipsis; }
 .bulk-link, .bulk-count-link, .bulk-batch-name { border: 0; background: transparent; padding: 0; font: inherit; text-align: left; color: var(--ui-color-brand); }
 .bulk-link { display: inline-flex; align-items: center; min-height: 32px; font-size: 12px; }
 .bulk-link:hover, .bulk-batch-name:hover { text-decoration: underline; text-underline-offset: 3px; }
@@ -44,9 +47,9 @@
 .bulk-create-form { max-width: 1120px; margin: 0 auto; }
 .bulk-create-card { padding: 24px; }
 .bulk-operation-grid { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 10px; }
-.bulk-operation { display: flex; align-items: center; gap: 12px; position: relative; min-width: 0; border: 1px solid var(--ui-color-border); border-radius: var(--ui-radius-md); padding: 15px 16px; min-height: 76px; color: var(--ui-color-text-secondary); cursor: pointer; background: var(--ui-color-surface); }
+.bulk-operation { display: flex; align-items: center; gap: 12px; position: relative; min-width: 0; border: 1px solid var(--ui-color-border); border-radius: var(--ui-radius-md); padding: 15px 16px; min-height: 76px; color: var(--ui-color-text-secondary); cursor: pointer; background: var(--ui-color-surface); transition: border-color .15s ease, background .15s ease, box-shadow .15s ease; }
 .bulk-operation:hover { border-color: var(--ui-color-border-strong); background: var(--ui-color-surface-subtle); }
-.bulk-operation:has(input:checked) { background: var(--ui-color-brand-soft); border-color: var(--ui-color-brand); color: var(--ui-color-brand); }
+.bulk-operation:has(input:checked) { background: var(--ui-color-brand-soft); border-color: var(--ui-color-brand); color: var(--ui-color-brand); box-shadow: 0 0 0 1px color-mix(in srgb, var(--ui-color-brand) 25%, transparent); }
 .bulk-operation:has(input:focus-visible) { outline: 2px solid var(--ui-color-brand); outline-offset: 3px; }
 .bulk-operation input { position: absolute; width: 1px; height: 1px; opacity: 0; }
 .bulk-operation svg { width: 22px; height: 22px; flex: 0 0 22px; }
@@ -175,7 +178,7 @@
 .bulk-detail-settings { margin: 0; position: relative; }
 .bulk-detail-settings[open] dl { position: absolute; z-index: 10; top: 100%; left: 0; width: 300px; padding: 16px; margin: 4px 0 0; border: 1px solid var(--ui-color-border); border-radius: var(--ui-radius-md); background: var(--ui-color-surface); box-shadow: var(--ui-shadow-md); }
 .bulk-projection-note { font-size: 11px; color: var(--ui-color-text-secondary); }
-.bulk-round-picker { min-width: 190px; font-size: 12px; }
+.bulk-round-picker { min-width: 0; font-size: 12px; }
 .bulk-round-picker select { display: block; }
 .bulk-menu, .bulk-more-states { position: relative; }
 .bulk-menu > summary { font-size: 12px; }
@@ -425,7 +428,7 @@
 .bulk-chip { display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 9px; border-radius: 999px; border: 1px solid var(--ui-color-border); background: var(--ui-color-surface-subtle); color: var(--ui-color-text-secondary); font-size: 11px; }
 .bulk-chip b { color: var(--ui-color-text); font-weight: 600; }
 .bulk-chip.is-add { border-style: dashed; background: transparent; color: var(--ui-color-brand); }
-.bulk-side-big { font-size: 32px; font-weight: 700; line-height: 1.15; color: var(--ui-color-text); font-variant-numeric: tabular-nums; }
+.bulk-side-big { padding: 10px 14px; border: 1px solid var(--ui-color-border); border-radius: var(--ui-radius-md); background: var(--ui-color-surface-subtle); font-size: 30px; font-weight: 720; line-height: 1.15; color: var(--ui-color-text); font-variant-numeric: tabular-nums; }
 .bulk-side-warning { margin: 0; padding: 9px 10px; border-radius: 8px; background: var(--ui-color-warning-soft); color: var(--ui-color-warning, #8b570b); font-size: 11.5px; line-height: 1.55; }
 .bulk-side-foot { margin: 0; text-align: center; font-size: 11px; color: var(--ui-color-text-muted); }
 .bulk-create-settings { padding: 0 20px; }

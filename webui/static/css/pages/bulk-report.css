@@ -4,7 +4,7 @@
 .bulk-report-target:focus-visible { outline: 2px solid var(--ui-color-brand); outline-offset: 3px; border-radius: var(--ui-radius-lg); }
 .bulk-report-load-error { margin-top: 12px; }
 .bulk-report-load-error .jobs-tb-btn { margin-top: 8px; }
-.bulk-plan-report { min-width: 0; padding: 20px; border: 1px solid var(--ui-color-border); border-radius: var(--ui-radius-lg); background: var(--ui-color-surface); color: var(--ui-color-text); font-size: 12px; }
+.bulk-plan-report { min-width: 0; padding: 20px; border: 1px solid var(--ui-color-border); border-radius: var(--ui-radius-lg); background: var(--ui-color-surface); color: var(--ui-color-text); font-size: 12px; box-shadow: var(--ui-shadow-sm); }
 .bulk-report-header, .bulk-report-heading-line, .bulk-report-section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .bulk-report-header { align-items: flex-start; margin-bottom: 18px; }
 .bulk-report-heading-line { justify-content: flex-start; flex-wrap: wrap; gap: 10px; }

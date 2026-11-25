@@ -126,6 +126,28 @@ function rowStatus(job: RegistrationJob) {
   if (job.debug_state === 'paused') return '调试暂停';
   return props.statusLabel(job.display_status || status(job));
 }
+// 诊断文本若为 JSON 或对象则格式化缩进，避免长单行撑乱详情面板。
+function isStructuredDiagnostic(value: unknown): boolean {
+  if (value && typeof value === 'object') return true;
+  if (typeof value !== 'string') return false;
+  const trimmed = value.trim();
+  return (trimmed.startsWith('{') && trimmed.endsWith('}'))
+    || (trimmed.startsWith('[') && trimmed.endsWith(']'))
+    || trimmed.length > 140
+    || trimmed.includes('\n');
+}
+function formatDiagnostic(value: unknown): string {
+  if (value == null) return '';
+  if (typeof value === 'object') {
+    try { return JSON.stringify(value, null, 2); } catch { return String(value); }
+  }
+  const raw = String(value);
+  const trimmed = raw.trim();
+  if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
+    try { return JSON.stringify(JSON.parse(trimmed), null, 2); } catch { return raw; }
+  }
+  return raw;
+}
 function optionLabel(batch: RegistrationBatch) {
   const counts = batch.status_counts || {};
   const running = Number(counts.running || 0) + Number(counts.stopping || 0);
@@ -279,16 +301,20 @@ onBeforeUnmount(resetProgress);
               <RegistrationProgress :job="progressJob" :active="active" inline :focus-failure="focusFailure" @log="emit('log',job.id,$event)"/>
               <details v-if="progressJob.error_message">
                 <summary>原始错误摘要</summary>
-                <p>{{ progressJob.error_message }}</p>
+                <pre class="registration-diagnostic-code">{{ formatDiagnostic(progressJob.error_message) }}</pre>
               </details>
               <details v-if="records(progressJob.attempts).length || records(progressJob.route_attempts).length">
                 <summary>尝试与线路记录</summary>
-                <p v-for="attempt in records(progressJob.attempts)" :key="text(attempt.id || attempt.attempt_id)">
-                  {{ statusLabel(attempt.status) }} · {{ attempt.error_message || '已记录' }}
-                </p>
-                <p v-for="route in records(progressJob.route_attempts)" :key="text(route.route_attempt_no)">
-                  线路尝试 {{ route.route_attempt_no || 1 }} · {{ route.retry_reason || statusLabel(route.status) }}
-                </p>
+                <div v-for="attempt in records(progressJob.attempts)" :key="text(attempt.id || attempt.attempt_id)" class="registration-attempt-item">
+                  <span class="registration-attempt-head">{{ statusLabel(attempt.status) }}</span>
+                  <pre v-if="isStructuredDiagnostic(attempt.error_message)" class="registration-diagnostic-code">{{ formatDiagnostic(attempt.error_message) }}</pre>
+                  <p v-else>{{ attempt.error_message || '已记录' }}</p>
+                </div>
+                <div v-for="route in records(progressJob.route_attempts)" :key="text(route.route_attempt_no)" class="registration-attempt-item">
+                  <span class="registration-attempt-head">线路尝试 {{ route.route_attempt_no || 1 }}</span>
+                  <pre v-if="isStructuredDiagnostic(route.retry_reason)" class="registration-diagnostic-code">{{ formatDiagnostic(route.retry_reason) }}</pre>
+                  <p v-else>{{ route.retry_reason || statusLabel(route.status) }}</p>
+                </div>
               </details>
             </template>
           </template>

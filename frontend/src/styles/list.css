@@ -11,6 +11,7 @@
   border: 1px solid var(--ui-color-border);
   border-radius: var(--ui-radius-lg);
   background: var(--ui-color-surface);
+  box-shadow: var(--ui-shadow-sm);
   overflow: hidden;
 }
 
@@ -21,8 +22,9 @@
   flex-wrap: wrap;
   gap: 8px 12px;
   min-height: 52px;
-  padding: 9px 14px;
+  padding: 10px 16px;
   border-bottom: 1px solid var(--ui-color-border);
+  background: var(--ui-color-surface);
   flex: 0 0 auto;
 }
 
@@ -136,11 +138,11 @@
 .ui-table th {
   position: sticky;
   top: 0;
-  z-index: 2;
+  z-index: 6;
   height: 38px;
   padding: 0 12px;
   border-bottom: 1px solid var(--ui-color-border);
-  background: var(--ui-color-surface-subtle);
+  background: var(--ui-color-surface-subtle, #f8fafc);
   color: var(--ui-color-text-secondary);
   font-size: 12px;
   font-weight: 620;
@@ -155,14 +157,16 @@
   height: 52px;
   padding: 8px 12px;
   border-bottom: 1px solid var(--ui-color-border);
-  background: var(--ui-color-surface);
+  background: var(--ui-color-surface, #ffffff);
   vertical-align: middle;
   overflow-wrap: anywhere;
+  transition: background .12s ease;
 }
 
 .ui-table tbody tr:last-child td { border-bottom: 0; }
-.ui-table tbody tr:hover > td { background: var(--ui-color-surface-subtle); }
-.ui-table tbody tr.is-selected > td { background: var(--ui-color-brand-soft); }
+.ui-table tbody tr:hover > td { background: var(--ui-color-surface-subtle, #f8f9fb); }
+.ui-table tbody tr.is-selected > td { background: var(--ui-color-brand-soft, #f1f1ff); }
+.ui-table tbody tr.is-selected:hover > td { background: #e8e9fe; }
 
 .ui-table :is(th, td).ui-col-check { width: 44px; padding-inline: 14px 0; }
 
@@ -170,24 +174,53 @@
   display: block;
   width: 16px;
   height: 16px;
+  min-height: 0;
   margin: 0;
+  padding: 0;
   accent-color: var(--ui-color-brand);
   cursor: pointer;
 }
 .ui-table .ui-time { color: var(--ui-color-text-secondary); font-size: 12px; }
 
-/* Keep row actions reachable while the table scrolls sideways (desktop widths only;
-   on phones a pinned column would squeeze the content columns). */
+/* 右侧固定操作列在桌面和平板横向滚动时保持吸边可达（手机端切换卡片后释放）。 */
 @media (min-width: 681px) {
   .ui-table--sticky-end :is(th, td):last-child {
     position: sticky;
     right: 0;
-    z-index: 1;
-    box-shadow: -1px 0 0 var(--ui-color-border);
+    border-left: 1px solid var(--ui-color-border);
+    box-shadow: -6px 0 12px -6px rgba(15, 23, 42, 0.08);
   }
 
-  .ui-table--sticky-end th:last-child { z-index: 3; }
-  .ui-table--sticky-end .ui-table__state-row td:last-child { position: static; box-shadow: none; }
+  .ui-table--sticky-end td:last-child {
+    z-index: 4;
+    background: var(--ui-color-surface, #ffffff);
+  }
+
+  .ui-table--sticky-end tbody tr:hover > td:last-child {
+    background: var(--ui-color-surface-subtle, #f8f9fb);
+  }
+
+  .ui-table--sticky-end tbody tr.is-selected > td:last-child {
+    background: var(--ui-color-brand-soft, #f1f1ff);
+  }
+
+  .ui-table--sticky-end tbody tr.is-selected:hover > td:last-child {
+    background: #e8e9fe;
+  }
+
+  .ui-table--sticky-end th:last-child,
+  .ui-table--sticky-end thead th:last-child {
+    top: 0;
+    z-index: 12;
+    background: var(--ui-color-surface-subtle, #f8fafc);
+  }
+
+  .ui-table--sticky-end .ui-table__state-row td:last-child {
+    position: static;
+    border-left: 0;
+    box-shadow: none;
+    background: var(--ui-color-surface, #ffffff);
+  }
 }
 
 /* Column resize handle, shared by every resizable table. */
@@ -260,12 +293,12 @@
   max-width: 100%;
   min-height: 22px;
   padding: 1px 8px;
-  border: 0;
+  border: 1px solid var(--ui-color-border);
   border-radius: var(--ui-radius-pill);
   background: var(--ui-color-neutral-soft);
-  color: var(--ui-color-text-muted);
+  color: var(--ui-color-text-secondary);
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 650;
   line-height: 1.3;
   white-space: nowrap;
   overflow: hidden;
@@ -273,10 +306,10 @@
   vertical-align: middle;
 }
 
-.ui-badge--success { background: var(--ui-color-success-soft); color: var(--ui-color-success); }
-.ui-badge--danger { background: var(--ui-color-danger-soft); color: var(--ui-color-danger); }
-.ui-badge--warning { background: var(--ui-color-warning-soft); color: var(--ui-color-warning); }
-.ui-badge--active { background: var(--ui-color-brand-soft); color: var(--ui-color-brand); }
+.ui-badge--success { background: var(--ui-color-success-soft); border-color: var(--ui-color-success-border); color: var(--ui-color-success); }
+.ui-badge--danger { background: var(--ui-color-danger-soft); border-color: var(--ui-color-danger-border); color: var(--ui-color-danger); }
+.ui-badge--warning { background: var(--ui-color-warning-soft); border-color: var(--ui-color-warning-border); color: var(--ui-color-warning); }
+.ui-badge--active { background: var(--ui-color-brand-soft); border-color: var(--a-200, #cfd0fa); color: var(--ui-color-brand); }
 
 /* Buttons: colours come from the global control rules; this sets the shape. */
 .ui-button {

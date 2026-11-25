@@ -117,6 +117,7 @@ defineExpose({
           </span>
           <button v-if="applied.length" type="button" class="ui-link" @click="owner.resetFilters">清筛</button>
           <button type="button" class="ui-link" aria-label="恢复当前列表列宽" @click="resetColumns">恢复列宽</button>
+          <button type="button" class="ui-button pt-refresh-btn" :disabled="loading" @click="owner.load()">{{ loading ? '刷新中…' : '刷新' }}</button>
         </div>
       </div>
       <section

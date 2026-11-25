@@ -48,3 +48,23 @@ export function phaseRelations(step: Step, siblings: Step[] = []): {label: strin
   if (step.observed_order != null) entries.push({label: '首次记录', value: `第 ${step.observed_order} 个被记录的阶段`});
   return entries;
 }
+
+/** 在上方步骤卡片内直接展示简洁的前置依赖、子任务等待、触发条件与并行分组标签。 */
+export function phaseDependencyTags(step: Step, siblings: Step[] = []): string[] {
+  const tags: string[] = [];
+  if (step.depends_on?.length) {
+    tags.push('前置：' + step.depends_on.map(id => siblings.find(s => s.id === id)?.label || id).join('、'));
+  }
+  const waitsFor = step.execution?.waits_for;
+  if (waitsFor?.length) {
+    const taskIds = waitsFor.filter(w => w.task_id).map(w => '#' + w.task_id);
+    tags.push(taskIds.length ? '等待子任务 ' + taskIds.join('、') : '等待关联子任务');
+  }
+  if (step.execution?.condition?.label) {
+    tags.push('条件：' + step.execution.condition.label);
+  }
+  if (step.execution?.parallel_group) {
+    tags.push('并行：' + step.execution.parallel_group);
+  }
+  return tags;
+}

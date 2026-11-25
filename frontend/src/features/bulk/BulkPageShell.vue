@@ -98,7 +98,7 @@ defineExpose({activate,setVisible,refresh,showReport,navigationState,restoreNavi
  <div class="bulk-page bulk-page-shell" data-bulk-vue :data-bulk-view="navigation.view">
   <header class="bulk-page-heading">
    <h2 data-bulk-title>{{title}} <span v-if="navigation.view==='detail'" class="bulk-heading-id">#{{navigation.batch_id}}</span></h2>
-   <div class="bulk-actions"><button v-if="navigation.view!=='list'" type="button" class="jobs-tb-btn" @click="navigate('list')">批次列表</button><button type="button" class="jobs-tb-btn" data-bulk-action="refresh" @click="refresh(true)">刷新</button><button type="button" class="jobs-tb-btn jobs-tb-btn--primary" data-bulk-action="new" @click="newBatch">新建批次</button></div>
+   <div class="bulk-actions"><button v-if="navigation.view!=='list'" type="button" class="jobs-tb-btn" @click="navigate('list')">批次列表</button><button type="button" class="jobs-tb-btn" data-bulk-action="refresh" @click="refresh(true)">刷新</button><button type="button" class="jobs-tb-btn" :class="navigation.view==='create'?'is-current':'jobs-tb-btn--primary'" :aria-current="navigation.view==='create'?'page':undefined" data-bulk-action="new" @click="newBatch">新建批次</button></div>
   </header>
   <p v-if="error" class="bulk-error" data-bulk-error role="alert">{{error}}</p>
   <p v-if="notice" class="bulk-notice" data-bulk-notice role="status">{{notice}}</p>
@@ -111,7 +111,13 @@ defineExpose({activate,setVisible,refresh,showReport,navigationState,restoreNavi
  </div>
 </template>
 <style scoped>
-.bulk-page-shell{min-width:0}.bulk-page-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}.bulk-page-heading h2{font-size:19px;margin:0}.bulk-global-recovery{display:flex;align-items:center;gap:12px;flex-wrap:wrap}@media(max-width:680px){.bulk-page-heading{align-items:flex-start;flex-wrap:wrap}.bulk-page-heading .bulk-actions{flex-wrap:wrap}}
+.bulk-page-shell{min-width:0}
+.bulk-page-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px;padding:10px 14px;border:1px solid var(--ui-color-border);border-radius:var(--ui-radius-lg);background:var(--ui-color-surface);box-shadow:var(--ui-shadow-sm)}
+.bulk-page-heading h2{font-size:17px;font-weight:700;margin:0}
+.bulk-page-heading .jobs-tb-btn{min-height:32px;height:32px;padding:0 12px}
+.bulk-page-heading .jobs-tb-btn.is-current{border-color:var(--ui-color-brand);background:var(--ui-color-brand-soft);color:var(--ui-color-brand);box-shadow:none}
+.bulk-global-recovery{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+@media(max-width:680px){.bulk-page-heading{align-items:flex-start;flex-wrap:wrap;padding:10px 12px}.bulk-page-heading .bulk-actions{flex-wrap:wrap}}
 .bulk-page-shell[data-bulk-view="detail"] {
   row-gap: 10px;
 }

@@ -9,6 +9,7 @@ import RegistrationFilters from './RegistrationFilters.vue';
 import RegistrationBatchPanel from './RegistrationBatchPanel.vue';
 import {useNativeDialog} from '../../shared/useNativeDialog';
 import {shortErrorLabel} from '../../shared/errorLabels';
+import {dateTimeLines, formatDateTime} from '../../shared/time';
 import ListFilterSummary from '../../components/ListFilterSummary.vue';
 import ListPagination from '../../components/ListPagination.vue';
 import type {RegistrationId} from '../../api/registration';
@@ -19,7 +20,7 @@ import './registration.css';
 const props=defineProps<{deps:RegistrationDeps}>();
 const owner=useRegistration(props.deps);
 const {state}=owner;
-const columnWidths=useColumnWidths({defaults:[40,120,190,120,150,180,100,150,150,150,170],storageKey:'gpt_console_table_widths_jobs',totalStorageKey:'gpt_console_table_total_jobs',min:28,max:2000});
+const columnWidths=useColumnWidths({defaults:[38,100,220,156,136,170,104,116,116,148,132],storageKey:'gpt_console_table_widths_jobs',totalStorageKey:'gpt_console_table_total_jobs',min:28,max:2000});
 function resetColumns(){columnWidths.resetColumns();props.deps.notify?.('已恢复默认列宽');}
 const headers:{label:string;filter?:FilterKey}[]=[{label:'选择'},{label:'ID',filter:'id'},{label:'邮箱',filter:'email'},{label:'邮箱来源',filter:'email_source'},{label:'注册协议'},{label:'代理',filter:'proxy'},{label:'状态',filter:'status'},{label:'开始日期',filter:'date_from'},{label:'截止日期',filter:'date_to'},{label:'错误',filter:'error'},{label:'操作'}];
 const logDialog=ref<HTMLDialogElement>();
@@ -59,7 +60,15 @@ const inventoryMetrics=computed(()=>[
 ]);
 const driverLabel=(value:any)=>state.meta?.registration_drivers?.find(item=>String(item.value)===String(value))?.label||({protocol:'本地优化 Protocol（历史）',protocol_oss:'开源 Protocol（历史）',protocol_oss_2:'开源protocol-2',sentinel_rs:'Rust sentinel-rs',roxy:'本地 Roxy',roxy_oss:'开源 Roxy（历史）'} as Record<string,string>)[String(value||'')]||String(value||'未知');
 const sourceLabel=(value:any)=>filterSourceOptions.value.find(item=>String(item.value)===String(value))?.label||String(value||'-');
-const statusLabel=(value:any)=>({pending:'排队中',running:'运行中',stopping:'停止中',success:'成功',failed:'失败',partial_success:'部分成功',cancelled:'已取消',stopped:'已停止',interrupted:'执行中断',request_unknown:'失败',manual_reconcile:'失败',attention_required:'失败',unsupported:'不支持',deactivated:'已停用',password_confirmation_pending:'失败·密码响应缺失'} as Record<string,string>)[String(value)]||String(value||'等待中');
+const statusLabel=(value:any)=>({pending:'排队中',running:'运行中',stopping:'停止中',success:'成功',failed:'失败',partial_success:'部分成功',cancelled:'已取消',stopped:'已停止',interrupted:'执行中断',request_unknown:'失败',manual_reconcile:'失败',attention_required:'失败',unsupported:'不支持',deactivated:'已停用',debug_paused:'调试暂停',password_confirmation_pending:'失败·密码响应缺失'} as Record<string,string>)[String(value)]||String(value||'等待中');
+function statusTone(job:any):'success'|'danger'|'warning'|'active'|'neutral'{
+  const raw=String(job?.debug_state==='paused'?'debug_paused':job?.display_status||job?.status||'');
+  if(raw==='success')return 'success';
+  if(['partial_success','debug_paused','stopping'].includes(raw))return 'warning';
+  if(['running','pending','queued','waiting'].includes(raw))return 'active';
+  if(['failed','interrupted','request_unknown','manual_reconcile','attention_required','unsupported','deactivated','password_confirmation_pending'].includes(raw))return 'danger';
+  return 'neutral';
+}
 const ask=async(message:string)=>props.deps.confirm?await props.deps.confirm(message):window.confirm(message);
 function setVisible(value:boolean){if(!value)openFilter.value=null;owner.setVisible(value);}
 function setView(value:'launch'|'tasks'){openFilter.value=null;owner.setView(value);}
@@ -126,10 +135,10 @@ onMounted(()=>{void owner.ensureMeta();});
             <button type="submit" class="registration-start" :disabled="state.creating||confirmingStart||!source||Boolean(launchBlock)"
               :title="launchBlock||undefined">{{ state.creating ? '提交中…' : '开始注册' }}</button>
           </div>
-          <p class="registration-hint">
-            <span v-if="launchHint" id="registration-launch-hint" :class="{'registration-warning':launchBlock}" role="status">{{ launchHint }} </span>
+          <p class="registration-hint registration-hint-bar">
+            <span v-if="launchHint" id="registration-launch-hint" class="registration-hint-badge" :class="{'registration-warning':launchBlock}" role="status">{{ launchHint }}</span>
             <button v-if="state.metaError" type="button" class="ui-link" data-registration-source-retry @click="owner.ensureMeta(true)">重试</button>
-            <span id="registrationEmailSupplyHint">{{ supplyHint }}</span>
+            <span id="registrationEmailSupplyHint" class="registration-supply-note">{{ supplyHint }}</span>
           </p>
         </form>
       </section>
@@ -142,27 +151,62 @@ onMounted(()=>{void owner.ensureMeta();});
         @retry="action('retry',$event)" @log="owner.openLog"/>
     </section>
     <section v-show="tasks" class="ui-list registration-tasks">
-      <div class="ui-list-bulkbar registration-toolbar"><button type="button" class="ui-button" @click="action('retryBulk')" :disabled="!selected.size">重试</button><button type="button" class="ui-button ui-button--danger" @click="action('deleteBulk')" :disabled="!selected.size">删除</button><button type="button" class="ui-button" @click="action('cancelAll')">取消排队</button><button type="button" class="ui-button" @click="queryLoad">刷新</button></div>
       <div class="ui-list-toolbar registration-count-row" data-registration-count-row>
-        <div class="ui-list-toolbar__main registration-count-main"><span class="ui-list-count registration-count">共 {{state.total.toLocaleString()}} 条任务</span><ListFilterSummary :items="filterChips" @remove="changeFilter($event as FilterKey,'')"/></div>
-        <div class="ui-list-toolbar__actions registration-count-actions"><button type="button" class="ui-link" aria-label="恢复注册任务列宽" @click="resetColumns">恢复列宽</button><span class="registration-mobile-filter"><RegistrationFilters :values="filterValues" :sources="filterSourceOptions" :open="openFilter==='all'" @update:open="openFilter=$event?'all':null" @change="changeFilter"/></span><button v-if="filterChips.length" type="button" @click="resetFilters">清筛</button></div>
+        <div class="ui-list-toolbar__main registration-count-main">
+          <span class="ui-list-count registration-count">共 {{state.total.toLocaleString()}} 条任务</span>
+          <span v-if="selected.size" class="registration-selection" role="status">已选 {{selected.size}} 项</span>
+          <ListFilterSummary :items="filterChips" @remove="changeFilter($event as FilterKey,'')"/>
+        </div>
+        <div class="ui-list-toolbar__actions registration-count-actions">
+          <div class="registration-toolbar" role="group" aria-label="注册任务操作"><button type="button" class="ui-button registration-toolbar-bulk" :class="{'is-idle':!selected.size}" @click="action('retryBulk')" :disabled="!selected.size">重试</button><button type="button" class="ui-button ui-button--danger registration-toolbar-bulk" :class="{'is-idle':!selected.size}" @click="action('deleteBulk')" :disabled="!selected.size">删除</button><button type="button" class="ui-button" @click="action('cancelAll')">取消排队</button><button type="button" class="ui-button" @click="queryLoad">刷新</button></div>
+          <button type="button" class="ui-link" aria-label="恢复注册任务列宽" @click="resetColumns">恢复列宽</button>
+          <span class="registration-mobile-filter"><RegistrationFilters :values="filterValues" :sources="filterSourceOptions" :open="openFilter==='all'" @update:open="openFilter=$event?'all':null" @change="changeFilter"/></span>
+          <button v-if="filterChips.length" type="button" class="ui-link" @click="resetFilters">清筛</button>
+        </div>
       </div>
       <div v-if="state.error" class="ui-list-feedback is-error registration-list-error" role="alert">{{state.error}} <button type="button" class="ui-link" @click="queryLoad">重试</button></div>
       <div class="ui-table-scroll registration-table-wrap" tabindex="0" aria-label="注册任务列表，可横向滚动"><table class="ui-table ui-table--sticky-end registration-table" :style="{'--ui-table-width':`${columnWidths.total.value}px`}"><colgroup><col v-for="(width,index) in columnWidths.widths.value" :key="index" :style="{width:`${width}px`}"></colgroup><thead><tr><th v-for="(header,index) in headers" :key="header.label" :class="{'ui-col-check':index===0}"><input v-if="index===0" type="checkbox" aria-label="选择本页可操作任务" @change="toggleAll"><RegistrationFilters v-else-if="header.filter" :column="header.filter" :values="filterValues" :sources="filterSourceOptions" :open="openFilter===header.filter" @update:open="openFilter=$event?header.filter:null" @change="changeFilter"/><span v-else>{{header.label}}</span><ColumnResizer v-if="index<headers.length-1" :label="header.label" @start="columnWidths.resize(index,$event)" @nudge="columnWidths.resizeWithKeyboard(index,$event)"/></th></tr></thead>
         <tbody><TableState v-if="state.loading || !rows.length" :colspan="11" :loading="state.loading" loading-title="正在加载任务…" title="暂无匹配任务"/>
         <tr v-for="job in rows" :key="String(job.id)" :class="{'is-selected':selected.has(String(job.id))}"><td class="ui-col-check"><input type="checkbox" :aria-label="`选择任务 ${job.id}`" :checked="selected.has(String(job.id))" :disabled="['running','stopping'].includes(String(job.status))" @change="toggle(job.id,$event)"></td>
-         <td><ListCell :text="`#${job.id}`" :secondary="job.parent_job_id?`↳ #${job.parent_job_id}`:undefined"/></td><td><ListCell :text="String(job.email||'-')"/></td><td><ListCell :text="sourceLabel(job.email_source)"/></td><td><ListCell :text="driverLabel(job.registration_driver)"/></td>
-         <td><ListCell :text="displayProxy(job)" :secondary="String(job.proxy_status||'')"/></td><td><ListCell :text="statusLabel(job.debug_state==='paused'?'debug_paused':job.display_status||job.status)"/></td><td><ListCell :text="String(job.started_at||'-')"/></td><td><ListCell :text="String(job.completed_at||'-')"/></td>
+         <td><ListCell :text="`#${job.id}`" :secondary="job.parent_job_id?`↳ #${job.parent_job_id}`:undefined"/></td><td class="registration-col-email"><ListCell :text="String(job.email||'—')" :title="job.email?String(job.email):undefined"/></td><td><ListCell :text="sourceLabel(job.email_source)"/></td><td><ListCell :text="driverLabel(job.registration_driver)"/></td>
+         <td><ListCell :text="displayProxy(job)" :secondary="String(job.proxy_status||'')"/></td><td><span class="ui-badge registration-status-badge" :class="`ui-badge--${statusTone(job)}`" :title="statusLabel(job.debug_state==='paused'?'debug_paused':job.display_status||job.status)">{{statusLabel(job.debug_state==='paused'?'debug_paused':job.display_status||job.status)}}</span></td><td><ListCell class="ui-time" :text="dateTimeLines(job.started_at).text" :secondary="dateTimeLines(job.started_at).secondary" :title="formatDateTime(job.started_at)"/></td><td><ListCell class="ui-time" :text="dateTimeLines(job.completed_at).text" :secondary="dateTimeLines(job.completed_at).secondary" :title="formatDateTime(job.completed_at)"/></td>
          <td><ListResult v-if="job.error_message||job.error_info" data-registration-result :label="errorSummary(job)" :title="String(job.error_message||errorSummary(job))" tone="danger"><template #details><p>{{job.error_message||errorSummary(job)}}</p><p v-if="job.error_info">{{job.error_info}}</p></template></ListResult><ListCell v-else text="—"/></td>
-         <td class="registration-row-actions"><button type="button" class="ui-link" @click="owner.openLog(job.id)">日志</button><template v-if="job.manual_otp_required&&job.status==='running'"><input v-model="otpValues[String(job.id)]" placeholder="邮箱验证码"><button type="button" @click="submitOtp(job)">提交验证码</button></template><button v-if="['pending','running','stopping'].includes(String(job.status))" type="button" @click="action('stop',job)">停止</button><button v-if="job.retryable" type="button" @click="action('retry',job)">重试</button><button type="button" :disabled="['running','stopping'].includes(String(job.status))" @click="action('delete',job)">删除</button></td>
+         <td class="registration-row-actions"><div class="ui-row-actions registration-row-actions-inner"><button type="button" class="ui-link" @click="owner.openLog(job.id)">日志</button><template v-if="job.manual_otp_required&&job.status==='running'"><input v-model="otpValues[String(job.id)]" class="registration-otp-input" placeholder="邮箱验证码"><button type="button" class="ui-button registration-otp-btn" @click="submitOtp(job)">提交验证码</button></template><button v-if="['pending','running','stopping'].includes(String(job.status))" type="button" class="ui-link ui-link--danger" @click="action('stop',job)">停止</button><button v-if="job.retryable" type="button" class="ui-link" @click="action('retry',job)">重试</button><button type="button" class="ui-link ui-link--danger" :disabled="['running','stopping'].includes(String(job.status))" @click="action('delete',job)">删除</button></div></td>
         </tr></tbody></table></div>
       <ListPagination label="注册任务分页" :page="page" :size="size" :total="state.total" :busy="state.loading" @update:page="page=$event;owner.load(applyFilterParams())" @update:size="size=$event;page=1;owner.load(applyFilterParams())"/>
     </section>
     <div v-if="state.receipt" class="registration-receipt" :class="`is-${state.receipt.tone}`" role="status">{{ state.receipt.message }}</div>
-    <dialog ref="logDialog" class="registration-dialog" aria-labelledby="registration-log-title" @cancel.prevent="owner.closeDetail" @close="owner.closeDetail" @click="logBackdrop">
-     <header><h2 id="registration-log-title">任务 #{{state.detail.id}} 日志</h2><button type="button" @click="owner.closeDetail">关闭</button></header><p v-if="state.detail.loading">加载中…</p><p v-if="state.detail.error" role="alert">{{state.detail.error}}</p><pre>{{state.detail.log||'（暂无日志）'}}</pre>
-     <div v-if="state.detail.debug?.enabled"><strong>网络调试</strong><button type="button" :disabled="state.detail.comparing" @click="compareDebug">与同批成功任务对比</button><a :href="`/api/jobs/${state.detail.id}/debug/har`" download>下载脱敏 HAR</a><button type="button" @click="owner.action(`/api/jobs/${state.detail.id}/debug/release`,{action:'finish'})">结束调试并收口</button><pre v-if="state.detail.comparison">{{state.detail.comparison}}</pre><p v-if="state.detail.compareError" role="alert">{{state.detail.compareError}}</p></div>
-     <div v-if="state.detail.diagnostics?.captured"><strong>失败诊断</strong><a v-if="state.detail.diagnostics.screenshot_url" :href="String(state.detail.diagnostics.screenshot_url)" target="_blank" rel="noopener">打开失败截图</a><details><summary>完整诊断证据</summary><pre>{{state.detail.diagnostics}}</pre></details></div>
+    <dialog ref="logDialog" class="registration-dialog registration-log-dialog" aria-labelledby="registration-log-title" @cancel.prevent="owner.closeDetail" @close="owner.closeDetail" @click="logBackdrop">
+     <header>
+       <div class="registration-dialog-title">
+         <h2 id="registration-log-title">任务 #{{state.detail.id}} 日志</h2>
+         <template v-if="state.detail.job">
+           <span v-if="state.detail.job.email" class="registration-dialog-email" :title="String(state.detail.job.email)">{{state.detail.job.email}}</span>
+           <span class="ui-badge registration-status-badge" :class="`ui-badge--${statusTone(state.detail.job)}`">{{statusLabel(state.detail.job.debug_state==='paused'?'debug_paused':state.detail.job.display_status||state.detail.job.status)}}</span>
+         </template>
+       </div>
+       <button type="button" class="ui-button registration-dialog-close" @click="owner.closeDetail">关闭</button>
+     </header>
+     <div class="registration-dialog-body">
+       <p v-if="state.detail.loading" class="registration-dialog-status">加载中…</p>
+       <p v-if="state.detail.error" class="registration-dialog-error" role="alert">{{state.detail.error}}</p>
+       <pre class="registration-dialog-log">{{state.detail.log||'（暂无日志）'}}</pre>
+       <div v-if="state.detail.debug?.enabled" class="registration-dialog-section">
+         <strong>网络调试</strong>
+         <div class="registration-dialog-actions">
+           <button type="button" class="ui-button" :disabled="state.detail.comparing" @click="compareDebug">与同批成功任务对比</button>
+           <a class="ui-link" :href="`/api/jobs/${state.detail.id}/debug/har`" download>下载脱敏 HAR</a>
+           <button type="button" class="ui-button ui-button--primary" @click="owner.action(`/api/jobs/${state.detail.id}/debug/release`,{action:'finish'})">结束调试并收口</button>
+         </div>
+         <pre v-if="state.detail.comparison">{{typeof state.detail.comparison === 'object' ? JSON.stringify(state.detail.comparison, null, 2) : state.detail.comparison}}</pre>
+         <p v-if="state.detail.compareError" class="registration-dialog-error" role="alert">{{state.detail.compareError}}</p>
+       </div>
+       <div v-if="state.detail.diagnostics?.captured" class="registration-dialog-section">
+         <strong>失败诊断</strong>
+         <a v-if="state.detail.diagnostics.screenshot_url" class="ui-link" :href="String(state.detail.diagnostics.screenshot_url)" target="_blank" rel="noopener">打开失败截图</a>
+         <details class="registration-dialog-details"><summary>完整诊断证据</summary><pre>{{ typeof state.detail.diagnostics === 'object' ? JSON.stringify(state.detail.diagnostics, null, 2) : state.detail.diagnostics }}</pre></details>
+       </div>
+     </div>
     </dialog>
   </div>
 </template>

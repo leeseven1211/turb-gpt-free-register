@@ -311,7 +311,7 @@ defineExpose({ refresh, setVisible });
                 </div></FilterPopover
               >
             </th>
-            <th><span class="ui-sr-only">操作</span></th>
+            <th>操作</th>
           </tr>
         </thead>
         <tbody>

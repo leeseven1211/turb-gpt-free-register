@@ -1134,39 +1134,63 @@ function _deactivationMailCell(r) {
   return `<div class="account-cell-lines status-action-cell" title="${esc(title)}"><div class="account-cell-line">${button}</div></div>`;
 }
 function _accountsV2MoreMenu(r) {
+  const deactivated = accountIsDeactivated(r);
   const retry = r.registration_retry;
   const registrationRetry = retry?.active && Number(retry.source_job_id) > 0
     ? `<button type="button" data-account-registration-task="${esc(retry.source_job_id)}" data-account-id="${esc(r.id)}" title="${esc(retry.reason || '原注册任务正在执行')}">查看进行中的注册任务</button>`
-    : retry?.available && !accountIsDeactivated(r)
+    : retry?.available && !deactivated
       ? `<button type="button" data-account-registration-retry="${esc(r.id)}" title="${esc(retry.reason || '复用原注册记录，继续未完成步骤')}">${esc(retry.label || '重跑注册')}</button>`
       : retry ? `<button type="button" title="${esc(retry.reason || '当前没有可重跑的原注册任务')}" disabled>重跑注册</button>` : '';
-  const parts = [
-    `<button type="button" data-account-copy-secret="copy_line" data-account-id="${esc(r.id)}">复制整行</button>`,
-    `<button type="button" data-account-copy-secret="chatgpt_session" data-account-id="${esc(r.id)}" title="复制完整 ChatGPT session JSON">复制 ChatGPT session</button>`,
-    r.has_account_password ? `<button type="button" data-account-copy-secret="account_password" data-account-id="${esc(r.id)}">复制账号密码</button>` : '',
-    accountIsDeactivated(r) ? '' : `<button type="button" data-account-action="password" data-account-id="${esc(r.id)}">补密码</button>`,
-    accountIsDeactivated(r) ? '' : `<button type="button" data-account-action="twofa" data-account-id="${esc(r.id)}">补 2FA</button>`,
-    accountIsDeactivated(r) ? '' : `<button type="button" data-account-action="password_change" data-account-id="${esc(r.id)}">修改密码</button>`,
-    accountIsDeactivated(r) ? '' : `<button type="button" data-account-action="twofa_change" data-account-id="${esc(r.id)}">修改 2FA</button>`,
-    accountIsDeactivated(r) ? '' : `<button type="button" data-account-action="complete" data-account-id="${esc(r.id)}">补全账号</button>`,
-    registrationRetry,
-    accountIsDeactivated(r) ? '' : `<button type="button" data-account-email-change="${esc(r.id)}" title="协议自动领取新邮箱并换绑；不会启动浏览器">换绑邮箱</button>`,
-    accountIsDeactivated(r) ? '' : `<button type="button" onclick="checkSelectedLive([Number('${esc(r.id)}')], this); return false;" title="只在线验证现有 Token；不会发送邮箱验证码或刷新 AT">查活</button>`,
-    accountIsDeactivated(r) ? '' : `<button type="button" onclick="refreshSelectedToken([Number('${esc(r.id)}')], this); return false;" title="${esc(accountAtRefreshUiSettings().title)}">刷新AT</button>`,
-    accountIsDeactivated(r) ? `<button type="button" data-account-restore="${esc(r.id)}" title="已确认 OpenAI 恢复访问权限后，解除本地停用标记">已解封，恢复账号</button>` : '',
-    `<button type="button" data-account-email-invalid="${esc(r.id)}" data-invalid="${r.email_invalid === true ? '0' : '1'}" title="仅更新独立邮箱失效标记，不修改 OpenAI 账号状态">${r.email_invalid === true ? '解除邮箱失效' : '标记邮箱失效'}</button>`,
-    `<button type="button" data-account-task-history="${esc(r.email)}" title="在任务实例中查看该账号的 Codex 补跑、查活、AT 刷新、套餐和封号邮件历史">任务记录</button>`,
-    _planAction(r),
-    _extractLinkAction(r),
-    (String(r.extract_link_status || '').toLowerCase() === 'success' || r.extract_link_ok === true)
-      && (r.extract_link_long_url || r.extract_link_copy_paste)
-      ? cbtn('复制提炼地址', r.extract_link_long_url || r.extract_link_copy_paste, 'account-menu-copy')
-      : '',
-    _codexAction(r),
-    `<button type="button" data-account-archive="${esc(r.id)}" data-archived="${r.archived ? '0' : '1'}" title="${r.archived ? '恢复到默认账号列表' : '归档后默认账号列表不再显示'}">${r.archived ? '恢复' : '归档'}</button>`,
+  const extractCopy = (String(r.extract_link_status || '').toLowerCase() === 'success' || r.extract_link_ok === true)
+    && (r.extract_link_long_url || r.extract_link_copy_paste)
+    ? cbtn('复制提炼地址', r.extract_link_long_url || r.extract_link_copy_paste, 'account-menu-copy')
+    : '';
+  const groups = [
+    {
+      title: '凭据与查看',
+      items: [
+        `<button type="button" data-account-copy-secret="copy_line" data-account-id="${esc(r.id)}">复制整行</button>`,
+        r.has_account_password ? `<button type="button" data-account-copy-secret="account_password" data-account-id="${esc(r.id)}">复制账号密码</button>` : '',
+        `<button type="button" data-account-copy-secret="chatgpt_session" data-account-id="${esc(r.id)}" title="复制已保存的浏览器 session JSON">复制 Session</button>`,
+        extractCopy,
+        `<button type="button" data-account-task-history="${esc(r.email)}" title="在任务实例中查看该账号的 Codex 补跑、查活、AT 刷新、套餐和封号邮件历史">任务记录</button>`,
+      ],
+    },
+    {
+      title: '认证与补全',
+      items: [
+        deactivated ? '' : `<button type="button" data-account-action="password" data-account-id="${esc(r.id)}">补密码</button>`,
+        deactivated ? '' : `<button type="button" data-account-action="twofa" data-account-id="${esc(r.id)}">补 2FA</button>`,
+        deactivated ? '' : `<button type="button" data-account-action="password_change" data-account-id="${esc(r.id)}">修改密码</button>`,
+        deactivated ? '' : `<button type="button" data-account-action="twofa_change" data-account-id="${esc(r.id)}">修改 2FA</button>`,
+        deactivated ? '' : `<button type="button" data-account-action="complete" data-account-id="${esc(r.id)}">补全账号</button>`,
+        deactivated ? '' : `<button type="button" data-account-email-change="${esc(r.id)}" title="协议自动领取新邮箱并换绑；不会启动浏览器">换绑邮箱</button>`,
+        registrationRetry,
+      ],
+    },
+    {
+      title: '检测与同步',
+      items: [
+        deactivated ? '' : `<button type="button" onclick="checkSelectedLive([Number('${esc(r.id)}')], this); return false;" title="只在线验证现有 Token；不会发送邮箱验证码或刷新 AT">查活</button>`,
+        deactivated ? '' : `<button type="button" onclick="refreshSelectedToken([Number('${esc(r.id)}')], this); return false;" title="${esc(accountAtRefreshUiSettings().title)}">刷新AT</button>`,
+        _planAction(r),
+        _extractLinkAction(r),
+        _codexAction(r),
+        `<button type="button" data-account-email-invalid="${esc(r.id)}" data-invalid="${r.email_invalid === true ? '0' : '1'}" title="仅更新独立邮箱失效标记，不修改 OpenAI 账号状态">${r.email_invalid === true ? '解除邮箱失效' : '标记邮箱失效'}</button>`,
+        `<button type="button" data-account-archive="${esc(r.id)}" data-archived="${r.archived ? '0' : '1'}" title="${r.archived ? '恢复到默认账号列表' : '归档后默认账号列表不再显示'}">${r.archived ? '恢复' : '归档'}</button>`,
+      ],
+    },
+  ].map(group => ({
+    title: group.title,
+    items: group.items.filter(html => String(html || '').trim()),
+  })).filter(group => group.items.length > 0);
+  const footer = [
+    deactivated ? `<button type="button" data-account-restore="${esc(r.id)}" title="已确认 OpenAI 恢复访问权限后，解除本地停用标记">已解封，恢复账号</button>` : '',
     `<button type="button" class="danger" data-account-delete="${esc(r.id)}" data-email="${esc(r.email)}" title="删除该账号本地记录；不可撤销">删除账号</button>`,
   ].filter(html => String(html || '').trim());
-  return parts.join('');
+  const sections = groups.map(group => `<div class="ac-menu-group-label">${group.title}</div>${group.items.join('')}`);
+  if (footer.length) sections.push(`<div class="ac-menu-divider" role="separator"></div>${footer.join('')}`);
+  return sections.join('');
 }
 function _accountDetailState(label, value, tone = 'neutral', detail = '') {
   return `<div class="account-detail-state">
