@@ -105,3 +105,27 @@ class BatchStopProjectionCompatibilityTests(PostgresTestCase):
             self.assertEqual(prior[field], actual[field], field)
         projection.sync_registration_job(selected["id"])
         self.assertEqual(self._snapshot(task["id"]), actual)
+
+    def test_existing_child_without_run_rejoins_original_parent_and_root(self):
+        root = self._source(email="stop-child-parent@example.test", batch_id="existing-root")
+        projection.sync_registration_job(root["id"])
+        parent = store.find_task_by_source("registration_jobs", str(root["id"]), include_runs=True)
+        selected = self._source(
+            email=root["email"], batch_id="existing-child", root_job_id=root["id"],
+            parent_job_id=root["id"], job_type="codex_retry", retry_attempt=1,
+        )
+        identity = f"{root['id']}:codex_retry"
+        with store._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"""INSERT INTO {store._table('operation_tasks')}
+                    (task_uuid,source_system,source_id,task_type,target_type,requested_action,status)
+                VALUES (%s,'registration_chains',%s,'codex_retry','registration_attempt',
+                        'codex_retry','running') RETURNING id""",
+                (common._uuid("task", f"registration_chains:{identity}"), identity))
+            task_id = cur.fetchone()["id"]
+            cur.execute(f"UPDATE {store._table('operation_tasks')} SET root_task_id=id WHERE id=%s", (task_id,))
+        batch_stop.request_stops([selected["id"]], active_job_ids=set(), now_iso=service._now_iso())
+        actual = self._snapshot(task_id)
+        self.assertEqual(parent["id"], actual["parent_task_id"])
+        self.assertEqual(parent["id"], actual["root_task_id"])
+        projection.sync_registration_job(selected["id"])
+        self.assertEqual(self._snapshot(task_id), actual)
