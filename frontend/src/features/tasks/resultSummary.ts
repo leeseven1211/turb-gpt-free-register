@@ -106,8 +106,8 @@ function planSummary(task: OperationTask, errorLabel: string): TaskResultSummary
   const offer = [...offers].sort((a, b) => (priority[text(a.kind)] ?? 3) - (priority[text(b.kind)] ?? 3)
     || Number(b.plan === 'plus') - Number(a.plan === 'plus'))[0];
   if (offer) {
-    const offerPlan = offer.plan === 'plus' ? 'Plus' : offer.plan === 'go' ? 'Go' : '';
-    const label = ({free_trial: `${offerPlan}免费`, discount: `${offerPlan}折扣`, other_promo: '其他优惠',
+    const offerPlan = offer.plan === 'plus' ? 'Plus' : offer.plan === 'go' ? 'Go' : offer.plan === 'team' ? 'Team' : '';
+    const label = ({free_trial: `${offerPlan}${offer.plan === 'team' ? '试用' : '免费'}`, discount: `${offerPlan}折扣`, other_promo: '其他优惠',
       none: '无优惠', not_applicable: '优惠不适用', unknown: '优惠待复查', pending: '优惠待查询', failed: '优惠查询失败', cancelled: '优惠已取消'} as Record<string, string>)[text(offer.kind)] || '优惠待复查';
     return summary(plan, ['unknown', 'pending', 'failed', 'cancelled'].includes(text(offer.kind)) ? 'warning' : 'success', label);
   }

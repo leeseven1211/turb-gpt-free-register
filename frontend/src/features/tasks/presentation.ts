@@ -149,10 +149,14 @@ function promotionKind(r: Record<string, unknown>): string {
   if (r.plus_discount_eligible === true) return 'discount';
   return r.plus_promo_eligible === true || r.plus_trial_eligible === true ? 'unknown' : 'none';
 }
+function promotionPlanLabel(plan: unknown): string {
+  return ({go: 'Go', plus: 'Plus', team: 'Team（Business）'} as Record<string, string>)[String(plan)] || 'Plus';
+}
 function promotions(r: Record<string, unknown>): Record<string, unknown>[] {
-  if (Array.isArray(r.account_promotions)) return ['go', 'plus'].flatMap(plan => {
+  if (Array.isArray(r.account_promotions)) return ['go', 'plus', 'team'].flatMap(plan => {
     const matches = rows(r.account_promotions).filter(item => String(item.plan).toLowerCase() === plan);
-    return matches.length ? matches.map(item => ({...item, plan})) : [{plan, kind: 'unknown'}];
+    // 历史快照未记录 Team 时保留原有摘要语义，不额外插入待查询项。
+    return matches.length ? matches.map(item => ({...item, plan})) : plan === 'team' ? [] : [{plan, kind: 'unknown'}];
   });
   const plan = String(r.current_plan_type || r.plan_type || '').toLowerCase();
   return [{plan: 'go', kind: 'pending'}, {plan: 'plus', kind: plan && plan !== 'free' ? 'not_applicable' : promotionKind(r),
@@ -164,7 +168,7 @@ function promotionLabel(item: Record<string, unknown>): string {
   const units: Record<string, string> = {month: '个月', year: '年', week: '周', day: '天'};
   const count = Number(item.duration_num_periods), unit = units[String(item.duration_period)];
   const duration = count > 0 && unit ? ` ${count}${unit}` : '';
-  if (item.kind === 'free_trial') return `免费${duration}`;
+  if (item.kind === 'free_trial') return `${item.plan === 'team' ? '免费试用' : '免费'}${duration}`;
   if (item.kind === 'discount') {
     const n = Number(item.discount_percentage);
     return `${n === 50 ? '五折' : n > 0 && n < 100 ? `减 ${n}%` : '折扣'}${duration}`;
@@ -180,8 +184,8 @@ function bestPromotion(items: Record<string, unknown>[]): Record<string, unknown
     || Number(b.plan === 'plus') - Number(a.plan === 'plus') || Number(!!a.stale) - Number(!!b.stale))[0] || {kind: 'pending'};
 }
 function offerText(items: Record<string, unknown>[], compact: boolean): string {
-  const format = (item: Record<string, unknown>) => `${['free_trial', 'discount', 'other_promo'].includes(String(item.kind)) ? `${item.plan === 'go' ? 'Go' : 'Plus'} ` : ''}${promotionLabel(item)}${item.stale ? ' · 历史' : ''}`;
-  return compact ? format(bestPromotion(items)) : items.map(item => `${item.plan === 'go' ? 'Go' : 'Plus'}: ${promotionLabel(item)}${item.stale ? '（历史）' : ''}`).join('；');
+  const format = (item: Record<string, unknown>) => `${['free_trial', 'discount', 'other_promo'].includes(String(item.kind)) ? `${promotionPlanLabel(item.plan)} ` : ''}${promotionLabel(item)}${item.stale ? ' · 历史' : ''}`;
+  return compact ? format(bestPromotion(items)) : items.map(item => `${promotionPlanLabel(item.plan)}: ${promotionLabel(item)}${item.stale ? '（历史）' : ''}`).join('；');
 }
 function countryPromotionGroups(r: Record<string, unknown>): {country: string; items: Record<string, unknown>[]}[] {
   if (Array.isArray(r.plan_check_countries) && !r.plan_check_countries.length) return [];
@@ -350,7 +354,7 @@ export function failureStageText(task: OperationTask): string {
 }
 
 function promotionDetail(item: Record<string, unknown>): string {
-  const parts = [`${item.plan === 'go' ? 'Go' : 'Plus'}: ${promotionLabel(item)}`];
+  const parts = [`${promotionPlanLabel(item.plan)}: ${promotionLabel(item)}`];
   if (!['free_trial', 'discount', 'other_promo'].includes(String(item.kind))) return parts.join('；');
   const status = String(item.checkout_status || '');
   const country = String(item.country || '').toUpperCase(), checkoutCountry = String(item.checkout_country || '').toUpperCase();

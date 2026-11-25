@@ -100,8 +100,8 @@ class ChatGPTPlanTests(unittest.TestCase):
 
         result = chatgpt_plan.parse_accounts_check(payload)
 
-        self.assertEqual([item["plan"] for item in result["account_promotions"]], ["go", "plus"])
-        self.assertEqual([item["kind"] for item in result["account_promotions"]], ["free_trial", "discount"])
+        self.assertEqual([item["plan"] for item in result["account_promotions"]], ["go", "plus", "team"])
+        self.assertEqual([item["kind"] for item in result["account_promotions"]], ["free_trial", "discount", "none"])
         self.assertEqual(result["plus_promo_kind"], "discount")
         self.assertEqual(result["plus_promo_campaign_id"], "plus-half-price")
         self.assertFalse(result["plus_trial_eligible"])
@@ -123,6 +123,55 @@ class ChatGPTPlanTests(unittest.TestCase):
         self.assertFalse(result["plus_promo_eligible"])
         self.assertIsNone(result["plus_trial_campaign_id"])
 
+    def test_team_free_trial_is_recognized_without_enabling_plus_promotion(self):
+        for plan_type in ("free", "plus"):
+            for metadata in (None, {
+                "title": "Try Business free for 1 month",
+                "discount": {"percentage": 100},
+                "duration": {"num_periods": 1, "period": "month"},
+            }):
+                with self.subTest(plan_type=plan_type, metadata=metadata):
+                    campaign = {"id": "team-1-month-free"}
+                    if metadata is not None:
+                        campaign["metadata"] = metadata
+                    payload = {"accounts": {"account-team-test": {
+                        "account": {"account_id": "account-team-test", "plan_type": plan_type},
+                        "eligible_promo_campaigns": {"team": campaign},
+                    }}}
+
+                    result = chatgpt_plan.parse_accounts_check(payload)
+
+                    team = [item for item in result["account_promotions"] if item["plan"] == "team"]
+                    self.assertEqual(len(team), 1)
+                    self.assertEqual(team[0]["kind"], "free_trial")
+                    self.assertTrue(team[0]["eligible"])
+                    self.assertEqual(team[0]["campaign_id"], "team-1-month-free")
+                    if metadata is not None:
+                        self.assertEqual(team[0]["duration_num_periods"], 1)
+                        self.assertEqual(team[0]["duration_period"], "month")
+                    self.assertFalse(result["plus_promo_eligible"])
+                    self.assertFalse(result["plus_trial_eligible"])
+
+    def test_country_projection_keeps_team_when_go_and_plus_campaigns_are_full(self):
+        from core.accounts.plans.countries import aggregate_country_results
+
+        payload = self._accounts_check_payload()
+        payload["accounts"]["default"]["eligible_promo_campaigns"] = {
+            plan: [{"id": f"{plan}-{index}-free"} for index in range(16)]
+            for plan in ("go", "plus", "team")
+        }
+        parsed = chatgpt_plan.parse_accounts_check(payload)
+
+        result = aggregate_country_results([{
+            "country": "JP", "status": "success", "result": parsed,
+        }])
+
+        teams = [item for item in result["account_promotions"] if item["plan"] == "team"]
+        self.assertEqual(len(teams), 16)
+        self.assertTrue(all(item["country"] == "JP" and item["eligible"] for item in teams))
+        stored = result["plan_check_country_results"][0]["result"]["account_promotions"]
+        self.assertEqual(len(stored), 48)
+
     def test_go_offer_is_not_a_free_promotion(self):
         payload = self._accounts_check_payload()
         payload["accounts"]["default"]["eligible_offers"] = {
@@ -132,7 +181,7 @@ class ChatGPTPlanTests(unittest.TestCase):
         result = chatgpt_plan.parse_accounts_check(payload)
 
         self.assertEqual(result["eligible_offer_ids"], ["chatgptgoplan"])
-        self.assertEqual([item["kind"] for item in result["account_promotions"]], ["none", "none"])
+        self.assertEqual([item["kind"] for item in result["account_promotions"]], ["none", "none", "none"])
         self.assertFalse(any(item["eligible"] for item in result["account_promotions"]))
 
     def test_nonfree_account_keeps_previous_plus_eligibility_boundary(self):
@@ -144,7 +193,7 @@ class ChatGPTPlanTests(unittest.TestCase):
 
         result = chatgpt_plan.parse_accounts_check(payload)
 
-        self.assertEqual([entry["kind"] for entry in result["account_promotions"]], ["none", "none"])
+        self.assertEqual([entry["kind"] for entry in result["account_promotions"]], ["none", "none", "none"])
         self.assertFalse(result["plus_trial_eligible"])
         self.assertEqual(len(result["promotion_query_snapshot"]["campaigns"]), 2)
 
@@ -155,13 +204,17 @@ class ChatGPTPlanTests(unittest.TestCase):
         result = chatgpt_plan.parse_accounts_check(payload)
 
         self.assertTrue(result["ok"])
-        self.assertEqual([entry["kind"] for entry in result["account_promotions"]], ["unknown", "unknown"])
+        self.assertEqual([entry["kind"] for entry in result["account_promotions"]], ["unknown", "unknown", "none"])
         self.assertFalse(result["plus_trial_eligible"])
 
-    def test_registration_capture_returns_the_same_go_plus_evidence(self):
+    def test_registration_capture_returns_the_same_go_plus_team_evidence(self):
         payload = self._accounts_check_payload()
         payload["accounts"]["default"]["eligible_promo_campaigns"] = {
             "go": {"id": "go-free", "metadata": {"discount": {"percentage": 100}}},
+            "team": {"id": "team-1-month-free", "metadata": {
+                "title": "Try Business free for 1 month",
+                "duration": {"num_periods": 1, "period": "month"},
+            }},
         }
         result = chatgpt_plan.parse_accounts_check(payload)
 
@@ -280,7 +333,7 @@ class ChatGPTPlanTests(unittest.TestCase):
         self.assertEqual(result["http_status"], 200)
         self.assertEqual(result["quota_type"], "5小时限额")
         self.assertEqual(result["quota_windows"][0]["remaining_percent"], 88.0)
-        self.assertEqual([item["plan"] for item in result["account_promotions"]], ["go", "plus"])
+        self.assertEqual([item["plan"] for item in result["account_promotions"]], ["go", "plus", "team"])
         self.assertEqual(result["promotion_query_snapshot"]["source"], "accounts_check")
         browser_session.assert_not_called()
         self.assertEqual(session.get.call_count, 2)

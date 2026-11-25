@@ -68,6 +68,23 @@ describe('提链结果和错误诊断的既有语义', () => {
 });
 
 describe('套餐结果保留单次、多国和历史快照事实', () => {
+  it('Team 免费试用显示完整套餐标签，历史 Go/Plus 快照不新增待查询摘要', () => {
+    const teamTrial = {...goTrial, plan: 'team', campaign_id: 'team-1-month-free'};
+    const value = planTask({current_plan_type: 'free', account_promotions: [
+      {plan: 'go', kind: 'none'}, {plan: 'plus', kind: 'none'}, teamTrial,
+    ]});
+    expect(resultText(value, true)).toBe('free · Team（Business） 免费试用 1个月');
+    expect(resultDetails(value)).toContain('Team（Business）: 免费试用 1个月');
+    const historical = planTask({current_plan_type: 'free', plan_check_country_results: [
+      {country: 'JP', status: 'failed', error: 'HTTP 429', last_success_at: '2026-11-01', result: value.result_summary},
+    ]});
+    for (const expected of ['JP（历史）', 'Team（Business）: 免费试用 1个月', 'HTTP 429']) expect(resultDetails(historical)).toContain(expected);
+    for (const [kind, expected] of [['none', '无优惠'], ['unknown', '待复查']]) {
+      const old = planTask({current_plan_type: 'free', account_promotions: ['go', 'plus'].map(plan => ({plan, kind}))});
+      expect(resultText(old, true)).toBe(`free · ${expected}`);
+      expect(resultDetails(old)).not.toContain('Team');
+    }
+  });
   it('单次查询显示 Go 与 Plus，空国家列表和空计数不会制造国家统计', () => {
     const value = planTask({...checked, plan_check_countries: [], country_total_count: null, country_success_count: null});
     for (const expected of ['套餐 free', 'Go: 免费 1个月', 'Plus: 五折 2个月']) expect(resultDetails(value)).toContain(expected);

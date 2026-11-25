@@ -126,6 +126,54 @@ test('列表与浮窗只显示所选 Plus 优惠，不展示 Go 或活动编号'
   assert.doesNotMatch(tooltip, /go-free-one|plus-half-two/);
 });
 
+test('Team 免费试用保留在浮窗和详情，账号列继续显示 Plus 优惠', () => {
+  const teamTrial = {...goTrial, plan: 'team', campaign_id: 'team-1-month-free'};
+  const row = {...checked, account_promotions: [goTrial, plusDiscount, teamTrial]};
+  const html = view._promotionCell(row);
+  assertSinglePromotion(html, 'Plus: 五折 2个月');
+  assert.match(promotionTooltip(html), /Team（Business）: 免费试用 1个月/);
+  assert.doesNotMatch(promotionTooltip(html), /team-1-month-free|Go:/);
+  const drawer = view._accountDetailMarkup(row);
+  assert.match(drawer, /Team（Business） 优惠/);
+  assert.match(drawer, /Team（Business）: 免费试用 1个月/);
+  assert.match(drawer, /活动 team-1-month-free/);
+});
+
+test('仅有 Team 优惠时不改变账号列的 Plus 无优惠摘要', () => {
+  const row = {...checked, account_promotions: [
+    {plan: 'go', kind: 'none'}, {plan: 'plus', kind: 'none'},
+    {...goTrial, plan: 'team', campaign_id: 'team-1-month-free'},
+  ]};
+  const html = view._promotionCell(row);
+  assertSinglePromotion(html, '无优惠');
+  assert.match(promotionTooltip(html), /Plus: 无优惠/);
+  assert.match(promotionTooltip(html), /Team（Business）: 免费试用 1个月/);
+});
+
+test('历史缺少 Team 的详情提示待查询，不改变 Plus 列摘要', () => {
+  const row = {...checked, account_promotions: [{plan: 'go', kind: 'none'}, {plan: 'plus', kind: 'none'}]};
+  assertSinglePromotion(view._promotionCell(row), '无优惠');
+  assert.match(view._accountDetailMarkup(row), /Team（Business）: 待查询/);
+  const countries = {...row, plan_check_country_results: [
+    {country: 'JP', status: 'success', result: {account_promotions: row.account_promotions}},
+  ]};
+  assertSinglePromotion(view._promotionCell(countries), '无优惠');
+  assert.match(view._accountDetailMarkup(countries), /Team（Business）: 待查询/);
+});
+
+test('多国 Team 历史活动在浮窗和详情保留所属国家及失败原因', () => {
+  const row = {...checked, plan_check_status: 'failed', plan_check_country_results: [
+    {country: 'JP', status: 'failed', error: 'HTTP 429', last_success_at: '2026-11-01', result: {account_promotions: [
+      {plan: 'go', kind: 'none'}, {plan: 'plus', kind: 'none'}, {...goTrial, plan: 'team'},
+    ]}},
+  ]};
+  const html = view._promotionCell(row);
+  assert.deepEqual(visiblePromotionLabels(html), ['无优惠']);
+  assert.match(promotionTooltip(html), /JP（历史） Team（Business）: 免费试用 1个月/);
+  assert.match(promotionTooltip(html), /HTTP 429/);
+  assert.match(view._accountDetailMarkup(row), /Team（Business）: 免费试用 1个月/);
+});
+
 test('旧 Plus 快照展示其优惠，提示不添加 Go 状态', () => {
   const html = view._promotionCell({current_plan_type: 'free', plan_check_status: 'success', plus_promo_kind: 'discount', plus_promo_discount_percentage: 50, plus_promo_duration_num_periods: 3, plus_promo_duration_period: 'month'});
   assertSinglePromotion(html, 'Plus: 五折 3个月');

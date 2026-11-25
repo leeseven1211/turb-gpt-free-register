@@ -577,13 +577,14 @@ function _isFreeTrialPromotion(r) {
   return _plusPromotionKind(r) === 'free_trial';
 }
 function _promotionPlanLabel(plan) {
-  return plan === 'go' ? 'Go' : 'Plus';
+  return {go: 'Go', plus: 'Plus', team: 'Team（Business）'}[plan] || 'Plus';
 }
 function _accountPromotions(r) {
   if (Array.isArray(r.account_promotions)) {
-    return ['go', 'plus'].flatMap(plan => {
+    return ['go', 'plus', 'team'].flatMap(plan => {
       const items = r.account_promotions.filter(item => item && String(item.plan || '').toLowerCase() === plan);
-      if (!items.length) return [{plan, kind: 'unknown'}];
+      // 旧快照缺少 Team 时只在详情提示，不能影响既有优惠摘要的排序。
+      if (!items.length) return plan === 'team' ? [] : [{plan, kind: 'unknown'}];
       return items.map(item => {
         const kind = String(item.kind || '').toLowerCase();
         return {...item, plan, kind: ['free_trial', 'discount', 'other_promo', 'none', 'unknown'].includes(kind) ? kind : 'unknown'};
@@ -672,9 +673,9 @@ function _accountCountryPromotionDisplays(r) {
   });
   return [...grouped.entries()].map(([country, countryItems]) => ({
     country,
-    items: ['go', 'plus'].flatMap(plan => {
+    items: ['go', 'plus', 'team'].flatMap(plan => {
       const matches = countryItems.filter(item => item.plan === plan);
-      return matches.length ? matches : [{plan, kind: 'unknown', country}];
+      return matches.length ? matches : plan === 'team' ? [] : [{plan, kind: 'unknown', country}];
     }),
     stale: countryItems.some(item => item.stale === true),
     context: `${country}：${countryItems.some(item => item.stale === true) ? '显示上次成功快照' : '查询结果'}`,
@@ -684,7 +685,7 @@ function _accountCountryPromotionBest(display) {
   return [...(display?.items || [])].sort(_compareAccountPromotions)[0] || {plan: 'go', kind: 'unknown'};
 }
 function _accountCountryPromotionDetail(display) {
-  const details = (display?.items || []).map(item => _accountPromotionDetail(item));
+  const details = _accountPromotionGroups(display?.items || []).flatMap(group => group.items).map(item => _accountPromotionDetail(item));
   return [details.join('；'), display?.context || ''].filter(Boolean).join('；');
 }
 function _accountCountryTaskSummaryData(r) {
@@ -749,7 +750,7 @@ function _accountPromotionLabel(item) {
   const units = {month: '个月', year: '年', week: '周', day: '天'};
   const unit = units[String(item.duration_period || '').toLowerCase()];
   const duration = Number.isFinite(periods) && periods > 0 && unit ? ` ${periods}${unit}` : '';
-  if (item.kind === 'free_trial') return `免费${duration}`;
+  if (item.kind === 'free_trial') return `${item.plan === 'team' ? '免费试用' : '免费'}${duration}`;
   if (item.kind === 'discount') {
     const raw = item.discount_percentage;
     const percentage = raw === null || raw === undefined || raw === '' ? NaN : Number(raw);
@@ -814,8 +815,9 @@ function _compareAccountPromotions(a, b) {
   return Number(b.plan === 'plus') - Number(a.plan === 'plus');
 }
 function _accountPromotionGroups(items) {
-  return ['go', 'plus'].map(plan => {
+  return ['go', 'plus', 'team'].map(plan => {
     const matches = items.filter(item => item.plan === plan).sort(_compareAccountPromotions);
+    if (plan === 'team' && !matches.length) matches.push({plan, kind: 'pending', summary: '旧查询未记录 Team（Business）优惠，请重新查询套餐'});
     return {plan, items: matches, lead: matches[0]};
   });
 }
@@ -927,6 +929,7 @@ function _promotionCell(r) {
     const detail = [
       ...rows.map(({display, best}) => [
         `${display.country}${display.stale ? '（历史）' : ''} ${_accountPromotionTooltip(best)}`,
+        ...display.items.filter(item => item.plan === 'team').map(item => `${display.country}${display.stale ? '（历史）' : ''} ${_accountPromotionTooltip(item)}`),
         display.queryContext,
       ].filter(Boolean).join('\n')),
       _accountPromotionQueryTooltip(r.plan_check_status, r.plan_check_error),
@@ -956,6 +959,7 @@ function _promotionCell(r) {
   const historical = r.plan_check_status === 'failed' && !!r.plan_last_success_at;
   const tooltip = [
     `${hasOffer ? `${country} ` : ''}${_accountPromotionTooltip(best)}`,
+    ...display.items.filter(item => item.plan === 'team').map(item => _accountPromotionTooltip(item)),
     historical ? '显示上次成功快照' : '',
     _accountPromotionQueryTooltip(r.plan_check_status, r.plan_check_error),
   ].filter(Boolean).join('\n');

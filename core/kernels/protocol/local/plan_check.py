@@ -310,7 +310,7 @@ def _query_account_quota(
 
 
 def parse_accounts_check(data: dict, *, token: str = "", now_iso=now_iso, token_claims=token_claims) -> dict:
-    """从 accounts/check 响应提取套餐、Go / Plus 优惠与有效期。"""
+    """从 accounts/check 响应提取套餐、Go / Plus / Team 优惠与有效期。"""
     claims = token_claims(token) if token else {}
     claim_account_id = claims.get("account_id")
     accounts = data.get("accounts") if isinstance(data, dict) else None

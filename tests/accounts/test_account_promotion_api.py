@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""验证实际账号 API 的二次投影保留 Go / Plus 优惠与查询证据。"""
+"""验证实际账号 API 的二次投影保留 Go / Plus / Team 优惠与查询证据。"""
 from core import db
 from core.storage import records as rs
 from core.accounts.plans.client import parse_accounts_check
@@ -29,6 +29,11 @@ class AccountPromotionApiTests(PostgresTestCase):
                     "discount": {"percentage": 50},
                     "duration": {"num_periods": 2, "period": "month"},
                 }},
+                "team": {"id": "team-1-month-free", "metadata": {
+                    "title": "Try Business free for 1 month",
+                    "discount": {"percentage": 100},
+                    "duration": {"num_periods": 1, "period": "month"},
+                }},
             },
         }}})
         self.result.update({"proxy_region": "JP", "proxy_provider": "1024proxy"})
@@ -40,8 +45,12 @@ class AccountPromotionApiTests(PostgresTestCase):
         self.assertEqual(item["promotion_query_snapshot"], self.result["promotion_query_snapshot"])
         self.assertEqual(
             [campaign["discount_percentage"] for campaign in item["promotion_query_snapshot"]["campaigns"]],
-            [100, 50],
+            [100, 50, 100],
         )
+        team = next(campaign for campaign in item["account_promotions"] if campaign["plan"] == "team")
+        self.assertEqual(team["campaign_id"], "team-1-month-free")
+        self.assertEqual(team["kind"], "free_trial")
+        self.assertTrue(team["eligible"])
         self.assertTrue(item["has_access_token"])
         self.assertEqual("JP", item["plan_promotion_country"])
         self.assertTrue(item.get("updated_at"))
@@ -68,6 +77,18 @@ class AccountPromotionApiTests(PostgresTestCase):
         items = response.get_json()["items"]
         self.assertEqual(len(items), 1)
         self._assert_promotions(items[0])
+
+    def test_on_demand_plan_details_keeps_team_trial(self):
+        response = self.client.get(
+            f"/api/accounts/{self.account_id}/plan-details", headers=self.headers,
+        )
+        self.assertEqual(response.status_code, 200)
+        item = response.get_json()["item"]
+        team = next(campaign for campaign in item["account_promotions"] if campaign["plan"] == "team")
+        self.assertEqual(team["campaign_id"], "team-1-month-free")
+        self.assertEqual(team["kind"], "free_trial")
+        self.assertEqual(team["duration_num_periods"], 1)
+        self.assertEqual(item["promotion_query_snapshot"], self.result["promotion_query_snapshot"])
 
     def test_plan_status_poll_clears_stale_single_country_after_multi_country_result(self):
         rs.patch_row(rs.ACCOUNTS, self.account_id, {

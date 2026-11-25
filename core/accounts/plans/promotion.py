@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Go / Plus 促销活动的统一分类、有限证据与 Plus 兼容读取。"""
+"""Go / Plus / Team 促销活动的统一分类、有限证据与 Plus 兼容读取。"""
 from __future__ import annotations
 
 import math
@@ -15,7 +15,7 @@ UNKNOWN = "unknown"
 
 PROMO_KINDS = frozenset({FREE_TRIAL, DISCOUNT, OTHER_PROMO, NO_PROMO, UNKNOWN})
 ELIGIBLE_PROMO_KINDS = frozenset({FREE_TRIAL, DISCOUNT, OTHER_PROMO})
-PROMOTION_PLANS = ("go", "plus")
+PROMOTION_PLANS = ("go", "plus", "team")
 MAX_CAMPAIGNS_PER_PLAN = 16
 _MAX_TEXT_LENGTH = 512
 _MAX_DIAGNOSTIC_FIELDS = 32
@@ -201,7 +201,8 @@ def classify_plus_campaign(campaign: Any) -> str:
 
 def _normalize_campaign(plan: str, campaign: Any, *, is_free: bool) -> dict:
     safe = _flat_campaign_evidence(plan, campaign) if isinstance(campaign, Mapping) else {}
-    kind = classify_campaign(campaign, legacy_plus_trial=plan == "plus") if is_free else NO_PROMO
+    # Team 升级资格直接使用上游活动；已有个人套餐不代表没有 Business 优惠。
+    kind = classify_campaign(campaign, legacy_plus_trial=plan == "plus") if is_free or plan == "team" else NO_PROMO
     return {
         "plan": plan,
         "kind": kind,
@@ -218,7 +219,7 @@ def _normalize_campaign(plan: str, campaign: Any, *, is_free: bool) -> dict:
 
 
 def parse_account_promotions(campaigns: Any, *, is_free: bool) -> tuple[list[dict], dict]:
-    """统一解析有限 Go / Plus 活动，并留下不含账号凭据的查询证据。"""
+    """统一解析有限 Go / Plus / Team 活动，并留下不含账号凭据的查询证据。"""
     mapping = campaigns if isinstance(campaigns, Mapping) else {}
     promotions = []
     for plan in PROMOTION_PLANS:

@@ -1,15 +1,15 @@
-import { A as e, C as t, F as n, G as r, H as i, K as a, L as o, M as s, Q as c, S as l, V as u, X as d, Z as f, _ as p, a as m, c as h, d as g, dt as _, et as v, f as y, ft as b, g as x, h as S, j as C, k as w, l as ee, lt as T, m as E, n as D, nt as O, s as k, st as A, v as j, x as M } from "./_plugin-vue_export-helper-CBsH_ZoE.js";
+import { A as e, C as t, F as n, G as r, H as i, K as a, L as o, M as s, Q as c, S as l, V as u, X as d, Z as f, _ as p, a as m, c as h, d as g, dt as _, et as v, f as y, ft as b, g as x, h as S, j as C, k as w, l as ee, lt as T, m as E, n as D, nt as O, s as k, st as A, v as j, x as M } from "./_plugin-vue_export-helper-BSZsFlS8.js";
 import { n as N, r as P, t as F } from "./client-B5R_MNgP.js";
 import { a as I, i as te, n as ne, r as L } from "./taskIds-BlchWwUp.js";
 import { a as R, n as z, t as B } from "./bulkMutations-3wwPI3-H.js";
-import { A as re, C as ie, D as V, E as ae, F as H, M as U, N as W, O as oe, P as se, S as G, T as ce, _ as le, a as K, b as ue, c as de, d as fe, f as pe, g as me, h as he, i as q, j as J, k as ge, l as _e, m as ve, n as ye, o as be, p as xe, r as Se, s as Ce, t as we, u as Te, v as Ee, w as De, x as Y, y as Oe } from "./StepEvidence-lbLgrLzP.js";
+import { A as re, C as ie, D as V, E as ae, F as H, M as U, N as W, O as oe, P as se, S as G, T as ce, _ as le, a as K, b as ue, c as de, d as fe, f as pe, g as me, h as he, i as q, j as J, k as ge, l as _e, m as ve, n as ye, o as be, p as xe, r as Se, s as Ce, t as we, u as Te, v as Ee, w as De, x as Y, y as Oe } from "./StepEvidence-D-ClBhG0.js";
 import { n as ke } from "./time-DOD6oyhP.js";
-import { i as Ae, n as je, r as X, t as Me } from "./ListFilterSummary-DsJDWIjH.js";
-import { n as Ne, t as Pe } from "./ColumnResizer-C2889-lj.js";
-import { t as Fe } from "./ListResult-BADeMxD2.js";
+import { i as Ae, n as je, r as X, t as Me } from "./ListFilterSummary-Cy87eW0W.js";
+import { n as Ne, t as Pe } from "./ColumnResizer-gRJCbdxj.js";
+import { t as Fe } from "./ListResult-CIQVLuqy.js";
 import { t as Ie } from "./errorLabels-fdGNkTBr.js";
-import { t as Le } from "./ListPagination-CSFkV2Gz.js";
-import { t as Re } from "./ListToolbar-Dl7q1T_K.js";
+import { t as Le } from "./ListPagination-DkDYBtdx.js";
+import { t as Re } from "./ListToolbar-MSPvDOqd.js";
 // src/api/tasks.ts
 var ze = (e, t = {}) => P(e, t, L);
 function Be() {
@@ -1459,8 +1459,8 @@ function xr(e, t) {
 		not_applicable: 7
 	}, p = [...l].sort((e, t) => (f[Q(e.kind)] ?? 3) - (f[Q(t.kind)] ?? 3) || Number(t.plan === "plus") - Number(e.plan === "plus"))[0];
 	if (p) {
-		let e = p.plan === "plus" ? "Plus" : p.plan === "go" ? "Go" : "", t = {
-			free_trial: `${e}免费`,
+		let e = p.plan === "plus" ? "Plus" : p.plan === "go" ? "Go" : p.plan === "team" ? "Team" : "", t = {
+			free_trial: `${e}${p.plan === "team" ? "试用" : "免费"}`,
 			discount: `${e}折扣`,
 			other_promo: "其他优惠",
 			none: "无优惠",

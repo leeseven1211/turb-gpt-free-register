@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""验证 Go / Plus 活动证据随每次查询保存，且历史任务不会被覆盖。"""
+"""验证 Go / Plus / Team 活动证据随每次查询保存，且历史任务不会被覆盖。"""
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -105,10 +105,16 @@ class PlanPromotionRecordsTests(PostgresTestCase):
                 "discount": {"percentage": 50},
                 "duration": {"num_periods": 2, "period": "month"},
             }},
+            "team": {"id": "team-1-month-free", "metadata": {
+                "title": "Try Business free for 1 month",
+                "discount": {"percentage": 100},
+                "duration": {"num_periods": 1, "period": "month"},
+            }},
         }
         first = self._execute(campaigns)
         saved = first["result_summary"]
-        self.assertEqual([p["kind"] for p in saved["account_promotions"]], ["free_trial", "discount"])
+        self.assertEqual([p["kind"] for p in saved["account_promotions"]], ["free_trial", "discount", "free_trial"])
+        self.assertEqual(saved["account_promotions"][2]["campaign_id"], "team-1-month-free")
         self.assertNotIn("[truncated]", str(saved["promotion_query_snapshot"]))
         self.assertIn("100", str(saved["promotion_query_snapshot"]))
         self.assertIn("50", str(saved["promotion_query_snapshot"]))

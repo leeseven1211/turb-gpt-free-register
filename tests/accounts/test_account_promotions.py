@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Go / Plus 活动分类与脱敏证据的纯解析回归。"""
+"""Go / Plus / Team 活动分类与脱敏证据的纯解析回归。"""
 import json
 import unittest
 
@@ -21,7 +21,7 @@ class AccountPromotionsTests(unittest.TestCase):
             },
         }
 
-    def test_missing_campaigns_have_complete_none_entries_for_both_plans(self):
+    def test_missing_campaigns_have_complete_none_entries_for_all_plans(self):
         expected_fields = {
             "plan", "kind", "eligible", "campaign_id", "title", "summary",
             "discount_percentage", "duration_num_periods", "duration_period",
@@ -30,8 +30,8 @@ class AccountPromotionsTests(unittest.TestCase):
         for campaigns in (None, {}, {"go": []}, {"go": None, "plus": {}}):
             with self.subTest(campaigns=campaigns):
                 promotions, snapshot = parse_account_promotions(campaigns, is_free=True)
-                self.assertEqual([entry["plan"] for entry in promotions], ["go", "plus"])
-                self.assertEqual([entry["kind"] for entry in promotions], ["none", "none"])
+                self.assertEqual([entry["plan"] for entry in promotions], ["go", "plus", "team"])
+                self.assertEqual([entry["kind"] for entry in promotions], ["none", "none", "none"])
                 self.assertTrue(all(set(entry) == expected_fields for entry in promotions))
                 self.assertFalse(any(entry["eligible"] for entry in promotions))
                 self.assertEqual(snapshot["version"], 1)
@@ -88,6 +88,19 @@ class AccountPromotionsTests(unittest.TestCase):
         self.assertNotEqual(classify_campaign(campaign), "free_trial")
         self.assertEqual(classify_plus_campaign({"id": "plus-trial"}), "free_trial")
 
+    def test_team_discount_and_invalid_metadata_do_not_become_free_trial(self):
+        for campaign, expected in (
+            (self._campaign(50, campaign_id="team-1-month-free"), "discount"),
+            (self._campaign(0, campaign_id="team-1-month-free"), "none"),
+            ({"id": "team-1-month-free", "metadata": []}, "unknown"),
+        ):
+            with self.subTest(expected=expected):
+                promotions, _ = parse_account_promotions({"team": campaign}, is_free=True)
+                team = [item for item in promotions if item["plan"] == "team"]
+                self.assertEqual(len(team), 1)
+                self.assertEqual(team[0]["kind"], expected)
+                self.assertEqual(team[0]["eligible"], expected == "discount")
+
     def test_unsupported_shapes_are_unknown_without_free_guess(self):
         campaigns = (
             "go-free", [self._campaign()],
@@ -108,7 +121,7 @@ class AccountPromotionsTests(unittest.TestCase):
     def test_finite_activity_arrays_preserve_each_supported_campaign(self):
         campaigns = {"go": [self._campaign(), self._campaign(50), "unsupported"]}
         promotions, snapshot = parse_account_promotions(campaigns, is_free=True)
-        self.assertEqual([entry["kind"] for entry in promotions], ["free_trial", "discount", "unknown", "none"])
+        self.assertEqual([entry["kind"] for entry in promotions], ["free_trial", "discount", "unknown", "none", "none"])
         self.assertEqual([entry["index"] for entry in snapshot["campaigns"]], [0, 1])
         self.assertEqual(snapshot["campaign_shapes"][0], {"plan": "go", "type": "array", "length": 3})
 
@@ -116,7 +129,7 @@ class AccountPromotionsTests(unittest.TestCase):
         campaign = self._campaign()
         campaign["metadata"]["summary"] = "文" * 1000
         promotions, snapshot = parse_account_promotions({"go": [campaign] * 100}, is_free=True)
-        self.assertEqual(len(promotions), MAX_CAMPAIGNS_PER_PLAN + 1)
+        self.assertEqual(len(promotions), MAX_CAMPAIGNS_PER_PLAN + 2)
         self.assertEqual(len(snapshot["campaigns"]), MAX_CAMPAIGNS_PER_PLAN)
         self.assertLessEqual(len(snapshot["campaigns"][0]["summary"]), 512)
         self.assertTrue(snapshot["truncated"])
@@ -194,7 +207,7 @@ class AccountPromotionsTests(unittest.TestCase):
     def test_unknown_campaign_keys_keep_only_safe_field_evidence(self):
         campaigns = {"unrecognized": {"custom": {"token": "secret-value"}}, "private@example.com": {"id": "private"}}
         promotions, snapshot = parse_account_promotions(campaigns, is_free=True)
-        self.assertEqual([item["kind"] for item in promotions], ["none", "none"])
+        self.assertEqual([item["kind"] for item in promotions], ["none", "none", "none"])
         self.assertEqual(snapshot["campaign_keys"], ["unrecognized"])
         self.assertEqual(snapshot["campaigns"], [{"plan": "unrecognized"}])
         self.assertNotIn("secret-value", json.dumps(snapshot))
@@ -202,7 +215,7 @@ class AccountPromotionsTests(unittest.TestCase):
 
     def test_nonfree_campaigns_leave_evidence_but_do_not_enable_eligibility(self):
         promotions, snapshot = parse_account_promotions({"go": self._campaign(), "plus": self._campaign()}, is_free=False)
-        self.assertEqual([item["kind"] for item in promotions], ["none", "none"])
+        self.assertEqual([item["kind"] for item in promotions], ["none", "none", "none"])
         self.assertEqual(len(snapshot["campaigns"]), 2)
         self.assertFalse(any(item["eligible"] for item in promotions))
 

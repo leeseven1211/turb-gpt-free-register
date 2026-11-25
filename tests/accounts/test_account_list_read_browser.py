@@ -9,8 +9,7 @@ from jinja2 import Environment, FileSystemLoader
 WEBUI = Path(__file__).resolve().parents[2] / 'webui'
 
 
-@pytest.mark.parametrize('width', [1440, 375])
-def test_current_page_shows_compact_status_and_complete_detail(width):
+def _exercise_current_page(width, *, team_promotions=False):
     playwright = pytest.importorskip('playwright.sync_api')
     template = Environment(loader=FileSystemLoader(WEBUI / 'templates')).get_template('index.html')
     html = template.render(url_for=lambda _, filename, **kwargs: f'/static/{filename}')
@@ -34,6 +33,15 @@ def test_current_page_shows_compact_status_and_complete_detail(width):
          'live_check_status': 'live', 'live_checked_at': '2026-11-15T10:20:00'},
         {'id': 9, 'email': 'third@example.test', 'codex_credential_state': 'pending_confirmation'},
     ]]
+    promotions = [
+        {'plan': 'go', 'kind': 'none'},
+        {'plan': 'plus', 'kind': 'none'},
+        {'plan': 'team', 'kind': 'free_trial', 'eligible': True,
+         'campaign_id': 'team-1-month-free', 'title': 'Try Business free for 1 month',
+         'duration_num_periods': 1, 'duration_period': 'month'},
+    ]
+    if team_promotions:
+        rows[0].update(account_promotions=promotions, plan_check_status='success')
     reads, unexpected, assets = [], [], []
 
     def respond(route):
@@ -74,7 +82,8 @@ def test_current_page_shows_compact_status_and_complete_detail(width):
             return route.fulfill(json={'ok': True, 'profile_id': None, 'window_name': None})
         if target.path == '/api/accounts/7/plan-details':
             return route.fulfill(json={'ok': True, 'item': {
-                'account_promotions': None, 'promotion_query_snapshot': None, 'plan_check_country_results': [],
+                'account_promotions': promotions if team_promotions else None,
+                'promotion_query_snapshot': None, 'plan_check_country_results': [],
             }})
         if target.path == '/api/accounts/7/secret' and query == {'field': ['account_password']}:
             return route.fulfill(json={'ok': True, 'value': 'password-from-secret-api'})
@@ -143,6 +152,12 @@ def test_current_page_shows_compact_status_and_complete_detail(width):
             assert reason in drawer.inner_text()
             assert rows[0]['extract_link_message'] in drawer.inner_text()
             assert 'A&B' in drawer.inner_text()
+            if team_promotions:
+                playwright.expect(drawer).to_contain_text('Team（Business）: 免费试用 1个月')
+                playwright.expect(drawer).to_contain_text('活动 team-1-month-free')
+                assert not unexpected, unexpected
+                assert not errors, errors
+                return
             assert drawer.locator('script,img').count() == 0
             drawer.get_by_role('button', name='关闭账号详情').click()
             playwright.expect(drawer).not_to_be_visible()
@@ -171,3 +186,13 @@ def test_current_page_shows_compact_status_and_complete_detail(width):
             assert not errors, errors
         finally:
             browser.close()
+
+
+@pytest.mark.parametrize('width', [1440, 375])
+def test_current_page_shows_compact_status_and_complete_detail(width):
+    _exercise_current_page(width)
+
+
+@pytest.mark.parametrize('width', [1440, 375])
+def test_current_page_shows_team_promotion(width):
+    _exercise_current_page(width, team_promotions=True)

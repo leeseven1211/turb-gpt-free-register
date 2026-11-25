@@ -4,7 +4,10 @@ from __future__ import annotations
 from datetime import datetime
 import json
 
-from core.accounts.plans.promotion import ELIGIBLE_PROMO_KINDS, _safe_scalar, sanitize_promotion_text
+from core.accounts.plans.promotion import (
+    ELIGIBLE_PROMO_KINDS, MAX_CAMPAIGNS_PER_PLAN, PROMOTION_PLANS,
+    _safe_scalar, sanitize_promotion_text,
+)
 
 _PROMOTION_FIELDS = (
     "plan", "kind", "eligible", "campaign_id", "title", "summary", "discount_percentage",
@@ -136,7 +139,7 @@ def safe_country_result(result: dict) -> dict:
     if isinstance(promotions, list):
         safe["account_promotions"] = [
             {**_scalars(item, _PROMOTION_FIELDS), **public_checkout_details(item)}
-            for item in promotions[:32] if isinstance(item, dict)
+            for item in promotions[:len(PROMOTION_PLANS) * MAX_CAMPAIGNS_PER_PLAN] if isinstance(item, dict)
         ]
     snapshot = result.get("promotion_query_snapshot")
     if isinstance(snapshot, dict):

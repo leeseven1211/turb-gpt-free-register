@@ -84,6 +84,17 @@ describe('任务列表语义短摘要', () => {
     expect(visible(taskResultSummary(disabled))).toBe('免费套餐无优惠');
   });
 
+  it('Team 免费试用在十字套餐摘要中保留套餐名，旧 Go/Plus 无优惠含义不变', () => {
+    const value = task('plan_check', {current_plan_type: 'free', account_promotions: [
+      {plan: 'go', kind: 'none'}, {plan: 'plus', kind: 'none'},
+      {plan: 'team', kind: 'free_trial', campaign_id: 'team-1-month-free'},
+    ]});
+    expect(taskResultSummary(value)).toEqual({label: '免费套餐', secondary: 'Team试用', tone: 'success'});
+    expect([...visible(taskResultSummary(value))].length).toBeLessThanOrEqual(10);
+    const old = task('plan_check', {current_plan_type: 'free', account_promotions: [{plan: 'go', kind: 'none'}, {plan: 'plus', kind: 'none'}]});
+    expect(visible(taskResultSummary(old))).toBe('免费套餐无优惠');
+  });
+
   it('套餐优惠摘要不截断外部套餐名称，未知优惠不说成无优惠', () => {
     for (const plan of ['free', 'plus', 'enterprise', 'future-super-long-plan-name']) {
       for (const kind of ['free_trial', 'discount', 'other_promo', 'none', 'not_applicable', 'pending', 'unknown', 'failed']) {
