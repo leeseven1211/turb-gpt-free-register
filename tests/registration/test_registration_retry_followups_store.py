@@ -524,6 +524,111 @@ class RegistrationRetryFollowupsStoreTests(PostgresTestCase):
         self.assertFalse(replies[second.source["id"]]["accepted"])
         self.assertTrue(replies[second.source["id"]]["busy"])
 
+    def test_prepare_qualifies_all_sources_without_reserving_or_writing_a_followup(self):
+        api = self.api()
+        specs = [self.spec(1, "plan_check"), self.spec(1, "codex"), self.spec(2, "twofa")]
+        before = {name: self.rows(name) for name in ("operation_tasks", "operation_runs", "operation_events")}
+        account = db.get_account(1)
+        with store._connect() as conn:
+            contexts = api.resolve_followup_context_task_ids(conn, specs)
+            from core.storage.operations.bulk_retry_tasks import lock_retry_parents_many
+
+            parents = lock_retry_parents_many(conn, [], additional_parent_task_ids=contexts)
+            prepared = api.prepare_followups(conn, specs, locked_parent_contexts=parents)
+            self.assertEqual([spec.source["id"] for spec in specs],
+                             [row["source_job_id"] for row in prepared.rows])
+            self.assertTrue(all(row["resource_family"] == "openai_interactive" for row in prepared.rows))
+            self.assertEqual({}, prepared.replies)
+        self.assertEqual(account, db.get_account(1))
+        self.assertEqual(before, {name: self.rows(name) for name in before})
+        self.assertIsNone(db.get_job(specs[2].source["id"]).get("registration_account_task_id"))
+
+    def test_commit_only_selected_prepared_sources_and_keeps_stage_claims_for_winners(self):
+        api = self.api()
+        first, second = self.spec(1, "plan_check"), self.spec(1, "codex")
+        with store._connect() as conn:
+            prepared = api.prepare_followups(conn, [first, second])
+            replies = api.commit_followups(conn, prepared, winner_source_ids=[second.source["id"]])
+        self.assertNotIn(first.source["id"], replies)
+        self.assertTrue(replies[second.source["id"]]["accepted"])
+        self.assertEqual("failed", db.get_account(1)["plan_check_status"])
+        self.assertFalse(any(task["task_type"] == "plan_check" for task in self.rows("operation_tasks")))
+        self.assertEqual(1, len([task for task in self.rows("operation_tasks") if task["task_type"] == "codex_retry"]))
+
+    def test_prepare_reuse_defers_missing_parent_and_registration_reference_repairs_to_commit(self):
+        api = self.api()
+        original = self.spec(1, "twofa")
+        first = api.admit([original])[original.source["id"]]
+        with store._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"UPDATE {store._table('operation_tasks')} SET parent_task_id=NULL,root_task_id=id WHERE id=%s",
+                        (first["task_id"],))
+        records.patch_row(records.JOBS, original.source["id"], {"registration_account_task_id": None})
+        fresh = self.spec(1, "twofa", source=db.get_job(original.source["id"]))
+        with store._connect() as conn:
+            prepared = api.prepare_followups(conn, [fresh])
+            self.assertTrue(prepared.replies[fresh.source["id"]]["reused"])
+            with conn.cursor() as cur:
+                cur.execute(f"SELECT parent_task_id FROM {store._table('operation_tasks')} WHERE id=%s",
+                            (first["task_id"],))
+                self.assertIsNone(cur.fetchone()["parent_task_id"])
+                cur.execute(f"SELECT data FROM {records._qualified(records.JOBS)} WHERE id=%s",
+                            (fresh.source["id"],))
+                self.assertIsNone(cur.fetchone()["data"].get("registration_account_task_id"))
+            replies = api.commit_followups(conn, prepared, winner_source_ids=[])
+        self.assertTrue(replies[fresh.source["id"]]["reused"])
+        self.assertEqual(first["task_id"], db.get_job(fresh.source["id"])["registration_account_task_id"])
+        repaired = {task["id"]: task for task in self.rows("operation_tasks")}[first["task_id"]]
+        self.assertIsNotNone(repaired["parent_task_id"])
+
+    def test_prepare_with_frozen_parent_context_rejects_a_new_unlocked_parent(self):
+        from psycopg.errors import SerializationFailure
+
+        api = self.api()
+        spec = self.spec(1, "twofa")
+        with store._connect() as conn:
+            with self.assertRaises(SerializationFailure):
+                api.prepare_followups(conn, [spec], locked_parent_contexts={})
+        self.assertFalse(any(task["task_type"] == "account_setup_retry" for task in self.rows("operation_tasks")))
+
+    def test_resolver_preserves_both_source_and_existing_setup_parent_contexts(self):
+        from core.storage.operations.bulk_retry_tasks import lock_retry_parents_many
+
+        api = self.api()
+        spec = self.spec(1, "twofa")
+        first = api.admit([spec])[spec.source["id"]]
+        source_parent = store.find_task_by_source("registration_jobs", str(spec.source["id"]))
+        actual_parent = store.create_runtime_task(task_type="account_completion", account_id=None,
+            email="followup-1@example.test", resource_family="completion_coordinator")
+        with store._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"UPDATE {store._table('operation_tasks')} SET parent_task_id=%s,root_task_id=%s WHERE id=%s",
+                        (actual_parent["id"], actual_parent["id"], first["task_id"]))
+        fresh = self.spec(1, "twofa", source=db.get_job(spec.source["id"]))
+        with store._connect() as conn:
+            contexts = api.resolve_followup_context_task_ids(conn, [fresh])
+            self.assertEqual(sorted([source_parent["id"], actual_parent["id"]]), contexts)
+            parents = lock_retry_parents_many(conn, [], additional_parent_task_ids=contexts)
+            api.prelock_followup_sources(conn, [fresh])
+            prepared = api.prepare_followups(conn, [fresh], locked_parent_contexts=parents)
+        self.assertTrue(prepared.replies[spec.source["id"]]["reused"])
+        self.assertEqual([], prepared.rows)
+
+    def test_prepare_rejects_parent_generation_changed_since_global_prelock(self):
+        from psycopg.errors import SerializationFailure
+        from core.storage.operations.bulk_retry_tasks import lock_retry_parents_many
+
+        api = self.api()
+        spec = self.spec(1, "codex")
+        with store._connect() as conn:
+            contexts = api.resolve_followup_context_task_ids(conn, [spec])
+            parents = lock_retry_parents_many(conn, [], additional_parent_task_ids=contexts)
+            with conn.cursor() as cur:
+                cur.execute(f"UPDATE {store._table('operation_tasks')} SET last_run_id=NULL WHERE id=ANY(%s)",
+                            (contexts,))
+            with self.assertRaises(SerializationFailure):
+                api.prepare_followups(conn, [spec], locked_parent_contexts=parents)
+            conn.rollback()
+        self.assertFalse(any(task["task_type"] == "codex_retry" for task in self.rows("operation_tasks")))
+
     def test_followup_collection_sql_is_constant_for_one_and_twenty_targets(self):
         api = self.api()
         execute = Cursor.execute

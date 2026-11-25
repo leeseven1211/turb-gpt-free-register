@@ -9,6 +9,7 @@ import uuid
 
 from psycopg.rows import dict_row
 from psycopg.pq import TransactionStatus
+from psycopg.errors import SerializationFailure
 
 from core.operations import run_log, task_gateway
 from core.storage import db_legacy, records, registration
@@ -26,6 +27,14 @@ class RetryFollowup:
     trigger: str | None = None
     root: dict | None = None
     attempt: dict | None = None
+
+
+@dataclass(frozen=True)
+class PreparedFollowups:
+    rows: list[dict]
+    replies: dict[int, dict]
+    references: list[dict]
+    repairs: list[dict]
 
 
 _ACTIONS = {
@@ -74,7 +83,28 @@ def _parents(cur, source_ids: list[int]) -> dict[int, dict]:
     return {int(row["source_job_id"]): dict(row) for row in cur.fetchall()}
 
 
-def _read(cur, specs: list[RetryFollowup]):
+def resolve_followup_context_task_ids(conn, specs: list[RetryFollowup]) -> list[int]:
+    """只读解析注册来源父 Task 和既有配置任务的实际父 Task。"""
+    if not specs:
+        return []
+    with conn.cursor(row_factory=dict_row) as cur:
+        parents = _parents(cur, [int(spec.source["id"]) for spec in specs if spec.action != "plan_check"])
+        setup_sources = [f"registration-account-setup:{spec.source['id']}" for spec in specs if spec.action == "twofa"]
+        cur.execute(f"""SELECT parent_task_id FROM {common._table('operation_tasks')}
+            WHERE source_system='webui_runtime' AND source_id=ANY(%s)
+              AND parent_task_id IS NOT NULL""", (setup_sources,))
+        return sorted({int(parent["id"]) for parent in parents.values()}
+                      | {int(row["parent_task_id"]) for row in cur.fetchall()})
+
+
+def _caller_transaction(conn) -> None:
+    if conn.autocommit:
+        raise ValueError("注册后处理集合需要调用方事务连接")
+    if conn.info.transaction_status == TransactionStatus.IDLE:
+        conn.execute("BEGIN")
+
+
+def _source_facts(cur, specs: list[RetryFollowup]):
     source_ids = sorted({int(spec.source["id"]) for spec in specs})
     job_ids = sorted(set(source_ids) | {
         int(spec.source.get("root_job_id") or spec.source["id"]) for spec in specs
@@ -83,6 +113,26 @@ def _read(cur, specs: list[RetryFollowup]):
         int(item["attempt_id"]) for spec in specs for item in (spec.source, spec.root or {})
         if item.get("attempt_id")
     } | {int(spec.attempt["id"]) for spec in specs if spec.attempt is not None})
+    attempts = {}
+    if attempt_ids:
+        cur.execute(f"""SELECT * FROM {registration._table('registration_attempts')}
+            WHERE id=ANY(%s) ORDER BY id FOR UPDATE""", (attempt_ids,))
+        attempts = {int(row["id"]): registration._row(row) for row in cur.fetchall()}
+    cur.execute(f"""SELECT * FROM {records._qualified(records.JOBS)}
+        WHERE id=ANY(%s) ORDER BY id FOR NO KEY UPDATE""", (job_ids,))
+    sources = {int(row["id"]): records.merge_row(records.JOBS, row) for row in cur.fetchall()}
+    return sources, attempts
+
+
+def prelock_followup_sources(conn, specs: list[RetryFollowup]) -> None:
+    """跨来源波次在全局账号锁之前，按原顺序集合锁定 Attempt 和 Job。"""
+    if specs:
+        _caller_transaction(conn)
+        with conn.cursor(row_factory=dict_row) as cur:
+            _source_facts(cur, specs)
+
+
+def _read(cur, specs: list[RetryFollowup], *, locked_parent_contexts: dict[int, int] | None = None):
     setup_sources = [f"registration-account-setup:{spec.source['id']}" for spec in specs if spec.action == "twofa"]
     cur.execute(f"""SELECT * FROM {common._table('operation_tasks')}
         WHERE source_system='webui_runtime' AND source_id=ANY(%s) ORDER BY id""", (setup_sources,))
@@ -94,40 +144,40 @@ def _read(cur, specs: list[RetryFollowup]):
     cur.execute(f"SELECT * FROM {common._table('operation_tasks')} WHERE id=ANY(%s)",
                 (existing_parent_ids,))
     contexts.update({row["id"]: dict(row) for row in cur.fetchall()})
-    batch_ids = sorted({int(row["batch_id"]) for row in contexts.values() if row.get("batch_id")})
-    # 与注册投影一致，既有 queue/batch 锁先于 Job/账号和新子 Task。
-    if batch_ids:
-        cur.execute(f"""SELECT batch_id FROM {common._table('operation_projection_queue')}
-            WHERE batch_id=ANY(%s) ORDER BY batch_id FOR UPDATE""", (batch_ids,))
-        cur.fetchall()
-        cur.execute("SELECT pg_advisory_xact_lock(id) FROM unnest(%s::bigint[]) item(id) ORDER BY id",
-                    (batch_ids,))
-        cur.fetchall()
-        cur.execute(f"""SELECT id FROM {common._table('operation_batches')}
-            WHERE id=ANY(%s) ORDER BY id FOR NO KEY UPDATE""", (batch_ids,))
-        cur.fetchall()
-    cur.execute(f"""SELECT id FROM {common._table('operation_runs')}
-        WHERE id=ANY(%s) ORDER BY id FOR UPDATE SKIP LOCKED""",
-        (sorted({parent["last_run_id"] for parent in contexts.values() if parent.get("last_run_id")}),))
-    parent_runs = {row["id"] for row in cur.fetchall()}
-    cur.execute(f"""SELECT * FROM {common._table('operation_tasks')}
-        WHERE id=ANY(%s) ORDER BY id FOR UPDATE SKIP LOCKED""",
-        (sorted(contexts),))
-    parent_tasks = {row["id"]: dict(row) for row in cur.fetchall()}
-    for parent_id, parent in contexts.items():
-        locked = parent_tasks.get(parent["id"])
-        contexts[parent_id] = {**parent, **(locked or {}), "__lock_acquired": bool(locked
-            and locked.get("last_run_id") == parent.get("last_run_id")
-            and (not parent.get("last_run_id") or parent["last_run_id"] in parent_runs))}
+    if locked_parent_contexts is not None:
+        for parent_id, parent in contexts.items():
+            if (parent_id not in locked_parent_contexts
+                    or int(parent.get("last_run_id") or 0) != int(locked_parent_contexts[parent_id] or 0)):
+                raise SerializationFailure("注册父任务上下文已变化，请刷新后重试")
+            contexts[parent_id] = {**parent, "__lock_acquired": True}
+    else:
+        batch_ids = sorted({int(row["batch_id"]) for row in contexts.values() if row.get("batch_id")})
+        # 与注册投影一致，既有 queue/batch 锁先于 Job/账号和新子 Task。
+        if batch_ids:
+            cur.execute(f"""SELECT batch_id FROM {common._table('operation_projection_queue')}
+                WHERE batch_id=ANY(%s) ORDER BY batch_id FOR UPDATE""", (batch_ids,))
+            cur.fetchall()
+            cur.execute("SELECT pg_advisory_xact_lock(id) FROM unnest(%s::bigint[]) item(id) ORDER BY id",
+                        (batch_ids,))
+            cur.fetchall()
+            cur.execute(f"""SELECT id FROM {common._table('operation_batches')}
+                WHERE id=ANY(%s) ORDER BY id FOR NO KEY UPDATE""", (batch_ids,))
+            cur.fetchall()
+        cur.execute(f"""SELECT id FROM {common._table('operation_runs')}
+            WHERE id=ANY(%s) ORDER BY id FOR UPDATE SKIP LOCKED""",
+            (sorted({parent["last_run_id"] for parent in contexts.values() if parent.get("last_run_id")}),))
+        parent_runs = {row["id"] for row in cur.fetchall()}
+        cur.execute(f"""SELECT * FROM {common._table('operation_tasks')}
+            WHERE id=ANY(%s) ORDER BY id FOR UPDATE SKIP LOCKED""",
+            (sorted(contexts),))
+        parent_tasks = {row["id"]: dict(row) for row in cur.fetchall()}
+        for parent_id, parent in contexts.items():
+            locked = parent_tasks.get(parent["id"])
+            contexts[parent_id] = {**parent, **(locked or {}), "__lock_acquired": bool(locked
+                and locked.get("last_run_id") == parent.get("last_run_id")
+                and (not parent.get("last_run_id") or parent["last_run_id"] in parent_runs))}
     parents = {source_id: contexts[parent["id"]] for source_id, parent in parents.items()}
-    attempts = {}
-    if attempt_ids:
-        cur.execute(f"""SELECT * FROM {registration._table('registration_attempts')}
-            WHERE id=ANY(%s) ORDER BY id FOR UPDATE""", (attempt_ids,))
-        attempts = {int(row["id"]): registration._row(row) for row in cur.fetchall()}
-    cur.execute(f"""SELECT * FROM {records._qualified(records.JOBS)}
-        WHERE id=ANY(%s) ORDER BY id FOR NO KEY UPDATE""", (job_ids,))
-    sources = {int(row["id"]): records.merge_row(records.JOBS, row) for row in cur.fetchall()}
+    sources, attempts = _source_facts(cur, specs)
     stage_guard, stage_params = db_legacy._stage_claim_guard("plan_check")
     account_ids = sorted({int(spec.account["id"]) for spec in specs})
     cur.execute(f"""WITH locked AS MATERIALIZED (
@@ -155,6 +205,8 @@ def _read(cur, specs: list[RetryFollowup]):
     locked_tasks = {row["id"]: dict(row) for row in cur.fetchall()}
     for source_name, task in list(existing.items()):
         locked = locked_tasks.get(task["id"])
+        if locked_parent_contexts is not None and locked and locked.get("parent_task_id") != task.get("parent_task_id"):
+            raise SerializationFailure("原配置父任务上下文已变化，请刷新后重试")
         actual_parent = contexts.get(task.get("parent_task_id"))
         existing[source_name] = {**(locked or task),
             "__lock_acquired": bool(locked and locked.get("parent_task_id") == task.get("parent_task_id")),
@@ -203,20 +255,60 @@ def admit(specifications: list[RetryFollowup], *, conn=None) -> dict[int, dict]:
             registration.init()
     with (common._connect() if conn is None else nullcontext(conn)) as selected:
         if conn is not None:
-            if selected.autocommit:
-                raise ValueError("注册后处理集合需要调用方事务连接")
-            if selected.info.transaction_status == TransactionStatus.IDLE:
-                # 在借用的空闲连接上先开启调用方事务，防止 transaction() 自行提交。
-                with selected.cursor() as cur:
-                    cur.execute("SELECT 1")
+            _caller_transaction(selected)
         with selected.transaction(), selected.cursor(row_factory=dict_row) as cur:
-            return _admit(cur, specs)
+            prepared = _prepare(cur, specs)
+            output, winners, reserved = dict(prepared.replies), [], {}
+            for row in prepared.rows:
+                key = row["account_id"]
+                if key in reserved:
+                    output[row["source_job_id"]] = {
+                        **_error("账号已有其它操作正在执行，本次缺项尚未入队，可稍后重跑", busy=True),
+                        "_reserved_source_job_id": reserved[key],
+                    }
+                else:
+                    winners.append(row)
+                    reserved[key] = row["source_job_id"]
+            output.update(_commit(cur, prepared, winners))
+            for reply in output.values():
+                winner = output.get(reply.pop("_reserved_source_job_id", None))
+                if winner and winner.get("accepted"):
+                    reply.update(task_id=winner["task_id"], run_id=winner["run_id"])
+            return output
 
 
-def _admit(cur, specs: list[RetryFollowup]) -> dict[int, dict]:
-    sources, accounts, parents, existing, latest, active, attempts, busy_accounts = _read(cur, specs)
+def prepare_followups(
+    conn, specifications: list[RetryFollowup], *, locked_parent_contexts: dict[int, int] | None = None,
+) -> PreparedFollowups:
+    """完整验证所有候选，保留调用方事务中的锁，不预占账号、不写业务状态。"""
+    specs = list(specifications)
+    if any(spec.action not in _ACTIONS for spec in specs):
+        raise ValueError("不支持的注册后处理动作")
+    if not specs:
+        return PreparedFollowups([], {}, [], [])
+    _caller_transaction(conn)
+    with conn.cursor(row_factory=dict_row) as cur:
+        return _prepare(cur, specs, locked_parent_contexts=locked_parent_contexts)
+
+
+def commit_followups(
+    conn, prepared: PreparedFollowups, *, winner_source_ids: list[int],
+) -> dict[int, dict]:
+    """集合写入全来源资格审查后选出的赢家，复用修复与回执同事务落库。"""
+    _caller_transaction(conn)
+    selected = set(winner_source_ids)
+    rows = [dict(row) for row in prepared.rows if row["source_job_id"] in selected]
+    with conn.transaction(), conn.cursor(row_factory=dict_row) as cur:
+        return _commit(cur, prepared, rows)
+
+
+def _prepare(
+    cur, specs: list[RetryFollowup], *, locked_parent_contexts: dict[int, int] | None = None,
+) -> PreparedFollowups:
+    sources, accounts, parents, existing, latest, active, attempts, busy_accounts = _read(
+        cur, specs, locked_parent_contexts=locked_parent_contexts,
+    )
     output, rows, references, repairs = {}, [], [], []
-    reserved = {}
     for spec in specs:
         source_id, account_id = int(spec.source["id"]), int(spec.account["id"])
         source, account = sources.get(source_id), accounts.get(account_id)
@@ -314,11 +406,10 @@ def _admit(cur, specs: list[RetryFollowup]) -> dict[int, dict]:
                     or "deactivated" in summary_statuses):
                 output[source_id] = {**_error("账号已废号，禁止重跑"), "deactivated": True}
                 continue
-        if account_id in active or account_id in reserved:
+        if account_id in active:
             blocker = active.get(account_id)
             output[source_id] = {**_error("账号已有其它操作正在执行，本次缺项尚未入队，可稍后重跑", busy=True),
-                **({"task_id": blocker["task_id"], "run_id": blocker["id"]} if blocker else
-                   {"_reserved_source_job_id": reserved[account_id]})}
+                "task_id": blocker["task_id"], "run_id": blocker["id"]}
             continue
         task_type, source_system, default_trigger = _ACTIONS[spec.action]
         data = dict(previous.get("data") or {}) if previous else {}
@@ -351,18 +442,18 @@ def _admit(cur, specs: list[RetryFollowup]) -> dict[int, dict]:
             "log_file": str(run_log.build_path(task_uuid=task_uuid, run_no=int(previous.get("run_no") or 0) + 1 if previous else 1, run_uuid=run_uuid)),
             "new_task": task is None,
         })
-        reserved[account_id] = source_id
+    return PreparedFollowups(rows, output, references, repairs)
+
+
+def _commit(cur, prepared: PreparedFollowups, rows: list[dict]) -> dict[int, dict]:
+    output = dict(prepared.replies)
+    references, repairs = list(prepared.references), list(prepared.repairs)
     _claim_plans(cur, rows, output)
     if rows:
         _insert(cur, rows)
         for row in rows:
             output[row["source_job_id"]] = _receipt(row, reused=False)
         references.extend(row for row in rows if row["action"] == "twofa")
-    inserted = {row["source_job_id"]: row for row in rows}
-    for reply in output.values():
-        winner = inserted.get(reply.pop("_reserved_source_job_id", None))
-        if winner:
-            reply.update(task_id=winner["task_id"], run_id=winner["run_id"])
     if references:
         cur.execute(f"""UPDATE {records._qualified(records.JOBS)} job
             SET data=job.data || jsonb_build_object('registration_account_task_id',item.task_id),
