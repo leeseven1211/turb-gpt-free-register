@@ -52,6 +52,7 @@ _FIXED_BINDINGS: Mapping[tuple[str, str], OperationBinding] = MappingProxyType({
     ("registration", "protocol_oss_2"): OperationBinding("registration", "protocol", "protocol_oss_2"),
     ("registration", "sentinel_rs"): OperationBinding("registration", "rust", "sentinel_rs"),
     ("refresh_at", "browser_roxy"): OperationBinding("refresh_at", "browser", "roxy"),
+    ("refresh_at", "rust"): OperationBinding("refresh_at", "rust", "sentinel_rs"),
     ("password_setup", "roxy"): OperationBinding("password_setup", "browser", "roxy"),
     ("password_setup", "protocol"): OperationBinding("password_setup", "protocol", "local"),
     ("twofa", "browser"): OperationBinding("twofa", "browser", "roxy"),

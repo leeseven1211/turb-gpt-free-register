@@ -158,6 +158,44 @@ pub fn request_otp(email: &str, after_ts: u64) -> Result<String> {
     }
 }
 
+/// 刷新 AT 的握手：报告 `refresh` 能力并等待带完整参数的 `start`。
+///
+/// 与注册的 [`handshake`] 分开：注册只校验邮箱一致，刷新需要把 Cookie、
+/// 设备指纹和账号身份一次交付给内核。
+pub fn handshake_refresh() -> Result<Value> {
+    if !enabled() {
+        bail!("协议模式未启用");
+    }
+    emit(
+        "ready",
+        json!({
+            "v": VERSION,
+            "build": env!("CARGO_PKG_VERSION"),
+            "capabilities": ["refresh", "otp", "session_reuse", "cookie_restore"],
+        }),
+    );
+    let start = wait_for("start", Duration::from_secs(60)).context("等待 start")?;
+    Ok(start.get("data").cloned().unwrap_or_default())
+}
+
+/// 有界阶段事件（不含凭据/正文）。
+pub fn progress(stage: &str, state: &str, detail: Option<&str>) {
+    emit(
+        "progress",
+        json!({"stage": stage, "state": state, "detail": detail}),
+    );
+}
+
+/// 成功终态。
+pub fn result_ok(data: Value) {
+    emit("result", data);
+}
+
+/// 失败终态；字段与 Python 侧 v3 的错误分类保持同名。
+pub fn result_partial(data: Value) {
+    emit("result_partial", data);
+}
+
 /// 在发送 `user/register` 之前调用：Python 落库后回 ack，否则禁止继续。
 pub fn checkpoint_password(email: &str, password: &str) -> Result<()> {
     if !enabled() {

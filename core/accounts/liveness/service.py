@@ -45,6 +45,8 @@ def _refresh_execution_runner(driver: str):
 
     if driver == "browser_roxy":
         binding = operation_binding("refresh_at", "browser_roxy")
+    elif driver == "rust":
+        binding = operation_binding("refresh_at", "rust")
     else:
         binding = operation_binding(
             "refresh_at", "protocol", protocol_version=_REFRESH_AT_VERSIONS_BY_INTERNAL_DRIVER[driver],
@@ -214,7 +216,8 @@ _SAFE_REFRESH_CAUSE_CODES = frozenset({
     "password_verify_failed", "password_verify_invalid_response",
     "password_login_unavailable", "email_verification_required",
     "passwordless_fallback_unavailable", "protocol_network_error",
-    "protocol_v2_unknown_error", "protocol_v3_unknown_error", "refresh_driver_exception", "refresh_result_invalid",
+    "protocol_v2_unknown_error", "protocol_v3_unknown_error", "protocol_rust_unknown_error",
+    "refresh_driver_exception", "refresh_result_invalid",
     "refresh_cancelled", "refresh_local_commit_failed", "remote_response_missing",
     "roxy_not_configured", "roxy_profile_open_failed", "roxy_driver_attach_failed",
     "roxy_navigation_failed", "roxy_login_failed", "roxy_session_fetch_failed",
@@ -351,7 +354,7 @@ def _refresh_result_is_unknown(result: dict | None) -> bool:
     ]
     markers = (
         "request_unknown", "password_result_unknown", "protocol_v2_unknown_error", "protocol_v3_unknown_error",
-        "oauth_callback_failed",
+        "protocol_rust_unknown_error", "oauth_callback_failed",
     )
     return bool(
         value.get("request_unknown") or value.get("manual_reconcile") or value.get("reconcile_required") or
@@ -381,7 +384,7 @@ def _refresh_exception_is_unknown(exc: BaseException) -> bool:
     text = str(exc or "").strip().lower()
     return any(marker in text for marker in (
         "request_unknown", "password_result_unknown", "oauth_callback_failed",
-        "protocol_v2_unknown_error", "protocol_v3_unknown_error",
+        "protocol_v2_unknown_error", "protocol_v3_unknown_error", "protocol_rust_unknown_error",
     ))
 
 
@@ -729,10 +732,15 @@ def _resolve_refresh_driver(requested: str | None = None, *, config_snapshot: di
     value = None if requested is None else str(requested or "").strip().lower()
     if value in {"browser_roxy", "roxy"}:
         return "browser_roxy"
-    if value is None and str(_snapshot_value(
+    if value in {"rust", "sentinel_rs", "sentinel-rs"}:
+        return "rust"
+    configured_driver = str(_snapshot_value(
         config_snapshot, "refresh_driver", getattr(account_config, "ACCOUNT_AT_REFRESH_DRIVER", "protocol"),
-    ) or "protocol").strip().lower() == "browser_roxy":
+    ) or "protocol").strip().lower()
+    if value is None and configured_driver == "browser_roxy":
         return "browser_roxy"
+    if value is None and configured_driver in {"rust", "sentinel_rs", "sentinel-rs"}:
+        return "rust"
     legacy_v2_alias = value == "protocol_v2"
     if value is None:
         try:
@@ -760,14 +768,18 @@ def _resolve_refresh_driver(requested: str | None = None, *, config_snapshot: di
 
 def _refresh_protocol_version(refresh_driver: str | None) -> str | None:
     """Expose the stable public version for a legacy internal driver value."""
-    if refresh_driver is None or str(refresh_driver).strip().lower() == "browser_roxy":
-        return None
-    return _REFRESH_AT_VERSIONS_BY_INTERNAL_DRIVER.get(str(refresh_driver).strip().lower(), "v1")
+    selected = str(refresh_driver or "").strip().lower()
+    if refresh_driver is None or selected in {"browser_roxy", "rust", "sentinel_rs", "sentinel-rs"}:
+        return None if selected == "browser_roxy" else ("rust" if selected else None)
+    return _REFRESH_AT_VERSIONS_BY_INTERNAL_DRIVER.get(selected, "v1")
 
 
 def _refresh_driver_request(refresh_driver: str | None) -> str | None:
     """保留浏览器驱动，同时兼容旧任务使用的协议版本字段。"""
-    return "browser_roxy" if refresh_driver == "browser_roxy" else _refresh_protocol_version(refresh_driver)
+    selected = str(refresh_driver or "").strip().lower()
+    if selected in {"browser_roxy", "rust", "sentinel_rs", "sentinel-rs"}:
+        return "browser_roxy" if selected == "browser_roxy" else "rust"
+    return _refresh_protocol_version(refresh_driver)
 
 
 def deployment_unavailable(
@@ -1055,7 +1067,7 @@ def _run_live_check(
             route_actor_scope = "owner_process"
         elif (
             force_refresh
-            and selected_refresh_driver in {"protocol_v2", "protocol_v3"}
+            and selected_refresh_driver in {"protocol_v2", "protocol_v3", "rust"}
             and _snapshot_value(config_snapshot, "roxy_fallback_enabled") is False
         ):
             route_actor_scope = "owner_process"
@@ -1085,6 +1097,7 @@ def _run_live_check(
             reporter.note(
                 stage="preflight",
                 message=("刷新 AT 使用 Roxy 浏览器登录" if selected_refresh_driver == "browser_roxy"
+                         else "刷新 AT 使用 Rust sentinel-rs 内核" if selected_refresh_driver == "rust"
                          else f"刷新 AT 协议版本：{_refresh_protocol_version(selected_refresh_driver)}"),
                 detail={
                     "protocol_version": _refresh_protocol_version(selected_refresh_driver),
@@ -1211,7 +1224,7 @@ def _run_live_check(
         # - 查活只验证数据库里的现有 AT，不发送邮箱 OTP，也不偷偷刷新 AT。
         # - 刷新 AT（force_refresh=True）才跳过旧 AT，按账号可用凭据重新登录。
         account = db.get_account(account_id) or {}
-        if force_refresh and account.get("email_invalid") is True and selected_refresh_driver not in {"browser_roxy", "protocol_v3"}:
+        if force_refresh and account.get("email_invalid") is True and selected_refresh_driver not in {"browser_roxy", "protocol_v3", "rust"}:
             selected_refresh_driver = "protocol_v2"
             reporter.note(
                 stage="preflight",
@@ -1715,7 +1728,7 @@ def _run_live_check(
         elif result is None and proxy is None:
             # WebUI 默认调用由账号代理配置选路，重试时允许真正轮换线路。
             _append_log(email, f"[查活] 开始后台执行 trigger={trigger}，网络预检失败时将轮换代理")
-            if selected_refresh_driver in {"protocol_v2", "protocol_v3"}:
+            if selected_refresh_driver in {"protocol_v2", "protocol_v3", "rust"}:
                 refresh_access_token = _refresh_execution_runner(selected_refresh_driver)
 
                 _checkpoint(operation_context, "刷新 AT 前检查取消状态")
@@ -1727,7 +1740,8 @@ def _run_live_check(
                         identity=protocol_identity,
                         context_recorder=auth_context_recorder,
                         on_remote_request_started=on_remote_request_started,
-                        **({"account_id": account_id} if selected_refresh_driver == "protocol_v3" else {}),
+                        **({"account_id": account_id} if selected_refresh_driver in {"protocol_v3", "rust"} else {}),
+                        **({"country": refresh_country} if selected_refresh_driver == "rust" else {}),
                         **({"callback_recovery": True, "callback_checkpoint": lambda: _checkpoint(operation_context, "AT 回调恢复前检查任务状态")}
                            if selected_refresh_driver == "protocol_v2" and force_refresh and not completion_auth else {}),
                         **({"on_authenticated": refresh_authenticated_hook} if callable(refresh_authenticated_hook) else {}),
@@ -1756,7 +1770,7 @@ def _run_live_check(
                 f"proxy_mode={route.get('proxy_mode')} proxy_used={route.get('proxy_used') or '-'} "
                 f"fallback_reason={route.get('proxy_fallback_reason') or '-'}",
             )
-            if selected_refresh_driver in {"protocol_v2", "protocol_v3"}:
+            if selected_refresh_driver in {"protocol_v2", "protocol_v3", "rust"}:
                 refresh_access_token = _refresh_execution_runner(selected_refresh_driver)
 
                 _checkpoint(operation_context, "刷新 AT 前检查取消状态")
@@ -1766,7 +1780,8 @@ def _run_live_check(
                         email, proxy=selected_proxy, identity=protocol_identity,
                         context_recorder=auth_context_recorder,
                         on_remote_request_started=on_remote_request_started,
-                        **({"account_id": account_id} if selected_refresh_driver == "protocol_v3" else {}),
+                        **({"account_id": account_id} if selected_refresh_driver in {"protocol_v3", "rust"} else {}),
+                        **({"country": refresh_country} if selected_refresh_driver == "rust" else {}),
                         **({"callback_recovery": True, "callback_checkpoint": lambda: _checkpoint(operation_context, "AT 回调恢复前检查任务状态")}
                            if selected_refresh_driver == "protocol_v2" and force_refresh and not completion_auth else {}),
                         **({"on_authenticated": refresh_authenticated_hook} if callable(refresh_authenticated_hook) else {}),

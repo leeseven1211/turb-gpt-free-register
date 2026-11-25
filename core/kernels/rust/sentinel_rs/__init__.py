@@ -248,6 +248,160 @@ def _run_sentinel_rs_flow(
     }
 
 
+def _rust_refresh_result(*, email, checked_at, payload, remote_started):
+    """把原生结果投影成与 protocol v3 同形的刷新结果。"""
+    from core.auth.challenge import auth_result_for_operation
+
+    ok = bool(payload.get("ok"))
+    session = payload.get("session") if isinstance(payload.get("session"), dict) else {}
+    methods = [str(item) for item in (payload.get("methods") or []) if str(item).strip()]
+    if ok:
+        result = {
+            "ok": True,
+            "status": "live",
+            "checked_at": checked_at,
+            "access_token": str(payload.get("access_token") or ""),
+            "session": session,
+            "proxy_used": payload.get("proxy_used"),
+            "validation_method": "authenticated_session",
+            "auth_method": "_".join(methods) or "rust",
+            "live_check_driver": "rust",
+            "session_reused": bool(payload.get("session_reused")),
+            "password_auth_status": "verified" if "password" in methods else "skipped",
+            "email_otp_status": "success" if "email_otp" in methods else "skipped",
+            "mfa_status": "success" if "mfa" in methods else "skipped",
+            "fallback_used": False,
+            "remote_request_started": bool(remote_started or not payload.get("session_reused")),
+            "session_cache_status": "not_applicable",
+        }
+    else:
+        code = str(payload.get("error_code") or payload.get("error") or "protocol_rust_unknown_error")
+        result = {
+            "ok": False,
+            "status": "deactivated" if str(payload.get("status") or "") == "deactivated" else "failed",
+            "checked_at": checked_at,
+            "error": code,
+            "error_code": code,
+            "error_category": str(payload.get("error_category") or "runtime"),
+            "retryable": bool(payload.get("retryable")),
+            "roxy_fallback_allowed": bool(payload.get("roxy_fallback_allowed")),
+            "http_status": payload.get("http_status"),
+            "auth_method": "rust",
+            "live_check_driver": "rust",
+            "remote_request_started": bool(remote_started or payload.get("remote_request_started")),
+            "session_reused": False,
+            "password_auth_status": "skipped",
+            "email_otp_status": "skipped",
+            "mfa_status": "skipped",
+            "fallback_used": False,
+        }
+        diagnostics = payload.get("auth_diagnostics")
+        diagnostics = dict(diagnostics) if isinstance(diagnostics, dict) else {}
+        diagnostics.setdefault("operation", "rust_refresh")
+        detail = str(payload.get("detail") or "").strip()
+        if detail:
+            diagnostics["detail"] = detail[:500]
+        if diagnostics:
+            result["auth_diagnostics"] = diagnostics
+    result["auth"] = auth_result_for_operation(result, auth_method=result["auth_method"]).as_dict()
+    return result
+
+
+def run_refresh_at(
+    email: str, *, proxy=None, proxy_supplier=None, identity=None,
+    context_recorder=None, on_remote_request_started=None,
+    on_authenticated=None, account_id: int | None = None, country: str | None = None,
+) -> dict:
+    """Rust 内核刷新 AT；行为对标 protocol v3（快路径 + 密码/OTP/MFA 重登）。"""
+    from datetime import datetime, timezone
+
+    from core.accounts.credentials import get_account_login_credentials
+    from core.kernels.rust.sentinel_rs.bridge import (
+        RefreshBridgeRequest, log_level, resolve_binary, run_refresh_protocol, timeout_seconds,
+    )
+    from core.storage import accounts as db
+    from core.storage.accounts import protocol_sessions
+
+    email = str(email or "").strip()
+    checked_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    target = (db.get_account(int(account_id)) if account_id else db.get_account_by_email(email)) or {}
+    actual_id = int(account_id or target.get("id") or 0) or None
+    cached = {}
+    if actual_id:
+        try:
+            cached = protocol_sessions.load_session(actual_id, email) or {}
+        except Exception:
+            logger.warning("Rust 刷新：私有会话读取不可用，改用凭据重登")
+    password, secret = get_account_login_credentials(email)
+    identity_payload = identity if isinstance(identity, dict) else {}
+    device_id = str(cached.get("device_id") or identity_payload.get("device_id") or "").strip()
+    cookies = tuple(
+        item for item in (cached.get("cookies") or []) if isinstance(item, dict)
+    )
+    selected_proxy = None
+    if proxy_supplier is not None:
+        try:
+            selected_proxy = proxy_supplier(1)
+        except Exception:
+            selected_proxy = proxy
+    else:
+        selected_proxy = proxy
+
+    remote = {"started": False}
+
+    def note_remote():
+        remote["started"] = True
+        if callable(on_remote_request_started):
+            on_remote_request_started()
+
+    def on_progress(stage: str, state: str, detail: str | None) -> None:
+        # 快路径只读 /api/auth/session，不算远端认证提交；重登阶段才算。
+        if stage in {"authenticate", "password", "email_otp", "mfa_challenge", "workspace"}:
+            remote["started"] = True
+
+    request = RefreshBridgeRequest(
+        email=email,
+        binary=resolve_binary(),
+        password=str(password or ""),
+        totp_secret=str(secret or ""),
+        device_id=device_id,
+        user_id=str(target.get("user_id") or ""),
+        account_id=str(target.get("chatgpt_account_id") or ""),
+        proxy=str(selected_proxy or ""),
+        country=str(country or ""),
+        cookies=cookies,
+        timeout_seconds=timeout_seconds(),
+        log_level=log_level(),
+    )
+    payload = run_refresh_protocol(request, on_progress=on_progress)
+
+    remote_started = bool(payload.get("remote_request_started") or remote["started"])
+    if remote_started and payload.get("ok") and callable(on_remote_request_started):
+        # 与 v3 对齐：真实发出远端请求后，让外层记录请求边界。
+        note_remote()
+    result = _rust_refresh_result(
+        email=email, checked_at=checked_at, payload=payload, remote_started=remote_started,
+    )
+
+    if result["ok"] and actual_id:
+        try:
+            saved = protocol_sessions.save_session(actual_id, email, {
+                "cookies": list(payload.get("cookies") or []),
+                "device_id": str(payload.get("device_id") or device_id),
+                "browser_profile": cached.get("browser_profile") or {},
+                "user_id": str((result.get("session") or {}).get("user", {}).get("id") or ""),
+                "chatgpt_account_id": str((result.get("session") or {}).get("account", {}).get("id") or ""),
+            })
+            result["session_cache_status"] = "saved" if saved is not False else "unavailable"
+        except Exception:
+            result["session_cache_status"] = "unavailable"
+            logger.warning("Rust 刷新：AT 已取得，私有会话缓存未保存")
+
+    if callable(on_authenticated):
+        return on_authenticated(result, None)
+    return result
+
+
 def run_sentinel_rs_registration(
     email: str, name: str, birthday: str | None = None, proxy: str | None = None,
     otp_code: str | None = None, existing_password: str | None = None,
@@ -269,4 +423,4 @@ def run_sentinel_rs_registration(
     )
 
 
-__all__ = ["run_sentinel_rs_registration"]
+__all__ = ["run_sentinel_rs_registration", "run_refresh_at"]

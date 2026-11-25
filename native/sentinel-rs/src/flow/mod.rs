@@ -35,6 +35,7 @@ pub mod authorize;
 pub mod email;
 pub mod http;
 pub mod otp;
+pub mod refresh;
 pub mod sentinel;
 pub mod store;
 pub mod twofa;

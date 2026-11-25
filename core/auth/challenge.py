@@ -276,6 +276,7 @@ _PROTOCOL_FAILURE_CODES = {
     "mfa_verify_failed", "mfa_verify_invalid_response", "network_preflight_failed",
     "oauth_callback_failed", "password_missing", "password_sentinel_failed",
     "password_verify_failed", "password_verify_invalid_response", "protocol_v2_unknown_error",
+    "protocol_v3_unknown_error", "protocol_rust_unknown_error",
     "refresh_driver_exception", "refresh_result_invalid", "refresh_local_commit_failed",
     "remote_response_missing", "auth_failed", "auth_result_missing",
     "password_login_unavailable", "email_verification_required",

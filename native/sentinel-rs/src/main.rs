@@ -39,9 +39,10 @@ fn run() -> Result<()> {
         "mint" => cmd_mint(rest),
         "register" => cmd_register(rest),
         "email-pool" | "mail-pool" | "pool" => cmd_email_pool(rest),
+        "refresh" => cmd_refresh(rest),
         other => {
             print_help();
-            bail!("未知子命令: {other:?}（可选：mint / register / email-pool / help）")
+            bail!("未知子命令: {other:?}（可选：mint / register / refresh / email-pool / help）")
         }
     }
 }
@@ -268,6 +269,112 @@ fn load_program(encoded: &str, key: &str) -> Result<Vec<Vec<Value>>, String> {
         out.push(items.iter().map(from_json).collect::<Vec<Value>>());
     }
     Ok(out)
+}
+
+// ─────────────────────────── refresh ───────────────────────────
+
+/// `refresh`：用已保存的会话 Cookie 或账号密码刷新 ChatGPT access token。
+///
+/// 协议模式（Python 桥接）：从 `start` 消息读取全部事实，OTP 由 Python 提供；
+/// CLI 模式：`refresh --config <json> [--live]`，`--live` 之前只打印计划。
+fn cmd_refresh(argv: &[String]) -> Result<()> {
+    let _ = dotenvy::dotenv();
+    init_tracing();
+
+    let mut config_path: Option<String> = None;
+    let mut live = false;
+    let mut proxy_override: Option<String> = None;
+    let mut iter = argv.iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--config" | "-c" => {
+                config_path = Some(iter.next().context("--config 需要一个路径")?.to_string());
+            }
+            "--live" => live = true,
+            "--dry-run" => live = false,
+            "--proxy" => {
+                let raw = iter.next().context("--proxy 需要一个地址")?.to_string();
+                flow::http::normalize_proxy_url(&raw)?;
+                proxy_override = Some(raw);
+            }
+            "-h" | "--help" => {
+                print_help();
+                return Ok(());
+            }
+            other => bail!("refresh 未识别的参数: {other:?}"),
+        }
+    }
+
+    let mut cfg: flow::refresh::RefreshConfig = if sentinel_rs::protocol::enabled() {
+        let data = sentinel_rs::protocol::handshake_refresh()?;
+        serde_json::from_value(data).context("解析 start 消息失败")?
+    } else {
+        let path = config_path.context("CLI 模式必须提供 --config <json>")?;
+        let raw = std::fs::read_to_string(&path)
+            .with_context(|| format!("读取刷新配置失败: {path}"))?;
+        serde_json::from_str(&raw).context("解析刷新配置失败")?
+    };
+    if let Some(proxy) = proxy_override {
+        cfg.proxy = Some(proxy);
+    }
+
+    if !live && !sentinel_rs::protocol::enabled() {
+        println!("== 刷新计划（dry-run，不联网）==");
+        for line in flow::refresh::plan_lines(&cfg) {
+            println!("  {line}");
+        }
+        return Ok(());
+    }
+
+    let ua = cfg
+        .user_agent
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| flow::DEFAULT_USER_AGENT.to_string());
+    let lang = cfg
+        .accept_language
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| flow::DEFAULT_ACCEPT_LANGUAGE.to_string());
+    let sentinel = flow::sentinel::live_source(&ua, &lang, cfg.proxy.as_deref(), None)?;
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("构建 tokio runtime 失败")?;
+    let result = runtime.block_on(flow::refresh::refresh_once(&cfg, &sentinel));
+
+    match result {
+        Ok(outcome) => {
+            let payload = flow::refresh::success_json(&outcome);
+            if sentinel_rs::protocol::enabled() {
+                sentinel_rs::protocol::result_ok(payload);
+            } else {
+                println!("{payload}");
+            }
+            Ok(())
+        }
+        Err(error) => {
+            let payload = flow::refresh::error_payload(&error).unwrap_or_else(|| {
+                serde_json::json!({
+                    "ok": false,
+                    "status": "failed",
+                    "error": "protocol_rust_unknown_error",
+                    "error_code": "protocol_rust_unknown_error",
+                    "error_category": "runtime",
+                    "retryable": false,
+                    "roxy_fallback_allowed": false,
+                    "detail": format!("{error:#}"),
+                })
+            });
+            if sentinel_rs::protocol::enabled() {
+                sentinel_rs::protocol::result_partial(payload);
+                return Ok(());
+            }
+            eprintln!("{payload}");
+            bail!("刷新失败")
+        }
+    }
 }
 
 // ─────────────────────────── email-pool ───────────────────────────
@@ -628,6 +735,7 @@ fn print_help() {
 命令:
   mint        解码 challenge，生成 sentinel token（可选同时生成 SO token）
   register    跑注册流程；默认 dry-run，只打印计划（含真实 sentinel 步骤），不联网
+  refresh     刷新 ChatGPT access token（快路径复用会话 Cookie；失败重登）
   email-pool  只解析静态邮箱池（不注册）：打印前 N 条 + 总行数 + 跳过行数
   help        显示本帮助（等价 --help / -h）
 
@@ -646,6 +754,11 @@ mint 选项:
 email-pool 选项:
   --file, -f <PATH>  邮箱池文件（默认取 REG_MAIL_EMAIL_FILE），每行 email----code_url
   --limit <N>        打印前 N 条解析结果（默认 3）
+
+refresh 选项:
+  --config, -c <PATH>  刷新配置 JSON（email/password/totp_secret/cookies/proxy/…）
+  --live               真实联网刷新（默认只打印计划）
+  --proxy <URL>        覆盖配置里的代理
 
 register 选项:
   -n, --count <N> 注册数量（默认取 SENTINEL_COUNT，缺省 1）

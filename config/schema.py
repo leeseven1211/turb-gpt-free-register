@@ -646,7 +646,7 @@ _FIELD_DEFINITIONS = [
     },
     {
         "key": "ACCOUNT_AT_REFRESH_DRIVER", "file": "account.py", "type": "str", "group": "账号补全",
-        "label": "刷新 AT 驱动", "help": "protocol 使用所选协议版本刷新；browser_roxy 直接使用 Roxy 指纹浏览器重新登录并保存最新 AT。普通查活保持独立。",
+        "label": "刷新 AT 驱动", "help": "protocol 使用所选协议版本刷新；browser_roxy 直接使用 Roxy 指纹浏览器重新登录；rust 使用 sentinel-rs 原生内核（先复用会话，再按挑战重登）。普通查活保持独立。",
     },
     {
         "key": "ACCOUNT_AT_REFRESH_COUNTRY", "file": "account.py", "type": "str", "group": "账号补全",
