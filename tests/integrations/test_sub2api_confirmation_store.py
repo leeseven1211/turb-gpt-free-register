@@ -195,6 +195,326 @@ class Sub2ApiConfirmationStoreTests(PostgresTestCase):
         self.assertIsNone(credential.get("sub2_sync_error"))
         self.assertEqual(0, int(credential.get("sub2_uploaded_count") or 0))
 
+    def test_unconfirmed_replacement_dispatches_pending_job_without_counting_or_clearing_error(self):
+        old = self._queue(1534)
+        self._set_job(old["id"], status="pending", stage="resolve_account", run_id=self.run_id)
+        self._save_repair([1534])
+        records.patch_row(
+            records.CODEX_CREDENTIALS, self.credential_id,
+            {
+                "sub2_sync_error": "sub2api_account_missing: 目标账号已不存在",
+                "sub2_uploaded_count": 2,
+            },
+        )
+
+        self.assertTrue(
+            store.confirm_sync(
+                credential_id=self.credential_id,
+                backend=self.backend,
+                generation=self.generation,
+                remote_account_id=1544,
+                replaced_job_id=old["id"],
+                replaced_run_id=self.run_id,
+                credentials_confirmed=False,
+            )
+        )
+
+        jobs = {row["remote_account_id"]: row for row in store.list_jobs(backend=self.backend)}
+        self.assertEqual("superseded", jobs[1534]["status"])
+        self.assertEqual(
+            ("pending", "replacement", True),
+            (jobs[1544]["status"], jobs[1544]["trigger"], jobs[1544]["dispatch_requested"]),
+        )
+        credential = records.get_row(records.CODEX_CREDENTIALS, self.credential_id)
+        self.assertEqual(2, credential["sub2_uploaded_count"])
+        self.assertEqual(
+            "sub2api_account_missing: 目标账号已不存在",
+            credential["sub2_sync_error"],
+        )
+        repair = store.get_repair(self.backend, self.local_account_id)
+        self.assertEqual(("sync_wait", [1544]), (repair["stage"], repair["remote_account_ids"]))
+
+    def test_unconfirmed_replacement_reuses_success_ledger_without_creating_duplicate(self):
+        self.assertTrue(
+            store.confirm_sync(
+                credential_id=self.credential_id,
+                backend=self.backend,
+                generation=self.generation,
+                remote_account_id=1544,
+            )
+        )
+        old = self._queue(1534)
+        self._set_job(old["id"], status="pending", stage="resolve_account", run_id=self.run_id)
+        self._save_repair([1534, 1550])
+        records.patch_row(
+            records.CODEX_CREDENTIALS, self.credential_id,
+            {"sub2_sync_error": "sub2api_account_missing: 目标账号已不存在"},
+        )
+
+        self.assertTrue(
+            store.confirm_sync(
+                credential_id=self.credential_id,
+                backend=self.backend,
+                generation=self.generation,
+                remote_account_id=1544,
+                replaced_job_id=old["id"],
+                replaced_run_id=self.run_id,
+                credentials_confirmed=False,
+            )
+        )
+
+        jobs = store.list_jobs(backend=self.backend)
+        self.assertEqual(2, len(jobs))
+        self.assertEqual(
+            [(1534, "superseded"), (1544, "success")],
+            sorted((row["remote_account_id"], row["status"]) for row in jobs),
+        )
+        credential = records.get_row(records.CODEX_CREDENTIALS, self.credential_id)
+        self.assertEqual(0, int(credential.get("sub2_uploaded_count") or 0))
+        self.assertEqual(
+            "sub2api_account_missing: 目标账号已不存在",
+            credential["sub2_sync_error"],
+        )
+        repair = store.get_repair(self.backend, self.local_account_id)
+        self.assertEqual(("sync_wait", [1544, 1550]), (repair["stage"], repair["remote_account_ids"]))
+
+    def test_unconfirmed_replacement_clears_error_when_existing_success_completes_repair(self):
+        self.assertTrue(
+            store.confirm_sync(
+                credential_id=self.credential_id,
+                backend=self.backend,
+                generation=self.generation,
+                remote_account_id=1544,
+            )
+        )
+        old = self._queue(1534)
+        self._set_job(old["id"], status="pending", stage="resolve_account", run_id=self.run_id)
+        self._save_repair([1534])
+        records.patch_row(
+            records.CODEX_CREDENTIALS, self.credential_id,
+            {"sub2_sync_error": "sub2api_account_missing: 目标账号已不存在"},
+        )
+
+        self.assertTrue(
+            store.confirm_sync(
+                credential_id=self.credential_id,
+                backend=self.backend,
+                generation=self.generation,
+                remote_account_id=1544,
+                replaced_job_id=old["id"],
+                replaced_run_id=self.run_id,
+                credentials_confirmed=False,
+            )
+        )
+
+        credential = records.get_row(records.CODEX_CREDENTIALS, self.credential_id)
+        self.assertIsNone(credential.get("sub2_sync_error"))
+        self.assertEqual(0, int(credential.get("sub2_uploaded_count") or 0))
+        self.assertEqual("idle", store.get_repair(self.backend, self.local_account_id)["stage"])
+
+    def test_unconfirmed_replacement_closes_duplicate_zero_target_row_around_success_ledger(self):
+        zero_target = store.queue(
+            self.filename,
+            backend=self.backend,
+            generation=self.generation,
+            account_id=self.local_account_id,
+            email=self.email,
+            credential_id=self.credential_id,
+        )[0]
+        keyed_target = self._queue(1544)
+        self._set_job(zero_target["id"], remote_account_id=1544, status="pending", dispatch_requested=False)
+        self._set_job(
+            keyed_target["id"],
+            status="success",
+            stage="complete",
+            dispatch_requested=False,
+            run_id=None,
+        )
+        old = self._queue(1534)
+        self._set_job(old["id"], status="pending", stage="resolve_account", run_id=self.run_id)
+        self._save_repair([1534])
+        records.patch_row(
+            records.CODEX_CREDENTIALS, self.credential_id,
+            {"sub2_sync_error": "sub2api_account_missing: 目标账号已不存在"},
+        )
+
+        self.assertTrue(
+            store.confirm_sync(
+                credential_id=self.credential_id,
+                backend=self.backend,
+                generation=self.generation,
+                remote_account_id=1544,
+                replaced_job_id=old["id"],
+                replaced_run_id=self.run_id,
+                credentials_confirmed=False,
+            )
+        )
+
+        target_rows = [
+            row for row in store.list_jobs(backend=self.backend)
+            if row["remote_account_id"] == 1544
+        ]
+        self.assertEqual(2, len(target_rows))
+        self.assertTrue(all(row["status"] == "success" for row in target_rows))
+        self.assertEqual("idle", store.get_repair(self.backend, self.local_account_id)["stage"])
+        self.assertIsNone(
+            records.get_row(records.CODEX_CREDENTIALS, self.credential_id).get("sub2_sync_error")
+        )
+
+    def test_unconfirmed_replacement_preserves_same_generation_active_target_job(self):
+        existing = self._queue(1544)
+        self._set_job(
+            existing["id"],
+            status="running",
+            stage="upload",
+            trigger="monitor",
+            run_id=self.run_id,
+            attempt_count=3,
+            dispatch_requested=False,
+        )
+        old = self._queue(1534)
+        self._set_job(old["id"], status="pending", stage="resolve_account", run_id=self.run_id)
+        self._save_repair([1534, 1544])
+
+        self.assertTrue(
+            store.confirm_sync(
+                credential_id=self.credential_id,
+                backend=self.backend,
+                generation=self.generation,
+                remote_account_id=1544,
+                replaced_job_id=old["id"],
+                replaced_run_id=self.run_id,
+                credentials_confirmed=False,
+            )
+        )
+
+        jobs = {row["remote_account_id"]: row for row in store.list_jobs(backend=self.backend)}
+        self.assertEqual(
+            ("running", "upload", "monitor", self.run_id, 3, False),
+            (
+                jobs[1544]["status"],
+                jobs[1544]["stage"],
+                jobs[1544]["trigger"],
+                jobs[1544]["run_id"],
+                jobs[1544]["attempt_count"],
+                jobs[1544]["dispatch_requested"],
+            ),
+        )
+        self.assertEqual("superseded", jobs[1534]["status"])
+        self.assertEqual("sync_wait", store.get_repair(self.backend, self.local_account_id)["stage"])
+
+    def test_unconfirmed_replacement_wakes_same_generation_pending_target_job(self):
+        existing = self._queue(1544)
+        self._set_job(
+            existing["id"],
+            status="pending",
+            stage="retry",
+            trigger="monitor",
+            dispatch_requested=False,
+            error_code="sub2api_timeout",
+            error="上次上传超时",
+        )
+        old = self._queue(1534)
+        self._set_job(old["id"], status="pending", stage="resolve_account", run_id=self.run_id)
+        self._save_repair([1534, 1544])
+
+        self.assertTrue(
+            store.confirm_sync(
+                credential_id=self.credential_id,
+                backend=self.backend,
+                generation=self.generation,
+                remote_account_id=1544,
+                replaced_job_id=old["id"],
+                replaced_run_id=self.run_id,
+                credentials_confirmed=False,
+            )
+        )
+
+        jobs = {row["remote_account_id"]: row for row in store.list_jobs(backend=self.backend)}
+        self.assertEqual(
+            ("pending", "pending", "replacement", True, None, None),
+            (
+                jobs[1544]["status"],
+                jobs[1544]["stage"],
+                jobs[1544]["trigger"],
+                jobs[1544]["dispatch_requested"],
+                jobs[1544]["error_code"],
+                jobs[1544]["error"],
+            ),
+        )
+
+    def test_unconfirmed_replacement_rejects_cancelled_run_without_modifying_jobs_or_repair(self):
+        old = self._queue(1534)
+        self._set_job(old["id"], status="pending", stage="resolve_account", run_id=self.run_id)
+        self._save_repair([1534])
+        operation.request_run_cancel(self.run_id, reason="用户取消补传")
+
+        self.assertFalse(
+            store.confirm_sync(
+                credential_id=self.credential_id,
+                backend=self.backend,
+                generation=self.generation,
+                remote_account_id=1544,
+                replaced_job_id=old["id"],
+                replaced_run_id=self.run_id,
+                credentials_confirmed=False,
+            )
+        )
+
+        jobs = store.list_jobs(backend=self.backend)
+        self.assertEqual([(1534, "pending")], [
+            (row["remote_account_id"], row["status"]) for row in jobs
+        ])
+        self.assertEqual([1534], store.get_repair(self.backend, self.local_account_id)["remote_account_ids"])
+
+    def test_unconfirmed_replacement_keeps_other_targets_and_waits_for_real_upload(self):
+        old = self._queue(1534)
+        other = self._queue(1550)
+        self._set_job(old["id"], status="pending", stage="resolve_account", run_id=self.run_id)
+        self._set_job(other["id"], status="pending", stage="resolve_account", run_id=self.run_id)
+        self._save_repair([1534, 1550])
+
+        self.assertTrue(
+            store.confirm_sync(
+                credential_id=self.credential_id,
+                backend=self.backend,
+                generation=self.generation,
+                remote_account_id=1544,
+                replaced_job_id=old["id"],
+                replaced_run_id=self.run_id,
+                credentials_confirmed=False,
+            )
+        )
+
+        jobs = {row["remote_account_id"]: row for row in store.list_jobs(backend=self.backend)}
+        self.assertEqual("superseded", jobs[1534]["status"])
+        self.assertEqual("pending", jobs[1550]["status"])
+        self.assertEqual("pending", jobs[1544]["status"])
+        repair = store.get_repair(self.backend, self.local_account_id)
+        self.assertEqual(("sync_wait", [1544, 1550]), (repair["stage"], repair["remote_account_ids"]))
+
+    def test_unconfirmed_replacement_rejects_stale_generation_without_creating_target(self):
+        old = self._queue(1534)
+        self._set_job(old["id"], status="pending", stage="resolve_account", run_id=self.run_id)
+        self._save_repair([1534])
+
+        self.assertFalse(
+            store.confirm_sync(
+                credential_id=self.credential_id,
+                backend=self.backend,
+                generation="stale-generation",
+                remote_account_id=1544,
+                replaced_job_id=old["id"],
+                replaced_run_id=self.run_id,
+                credentials_confirmed=False,
+            )
+        )
+
+        self.assertEqual([(1534, "pending")], [
+            (row["remote_account_id"], row["status"]) for row in store.list_jobs(backend=self.backend)
+        ])
+        self.assertEqual([1534], store.get_repair(self.backend, self.local_account_id)["remote_account_ids"])
+
     def test_busy_job_lock_rolls_back_confirmation_without_blocking(self):
         from core.storage import postgres
 

@@ -49,9 +49,50 @@ class Sub2ApiClientTests(unittest.TestCase):
             self.response(replacement),
         ]), patch.object(client.requests, "put") as put, patch.object(client.requests, "post") as post:
             result = client.find_confirmed_replacement(auth, 41)
-        self.assertEqual(42, result)
+        self.assertEqual(client.ReplacementCandidate(42, credentials_confirmed=True), result)
         put.assert_not_called()
         post.assert_not_called()
+
+    def test_redacted_account_detail_requires_followup_sync_instead_of_token_equality(self):
+        auth = {**self.auth, "account_id": "same-provider-account"}
+        replacement = {
+            **self.remote, "id": 42, "status": "active", "schedulable": True,
+            "credentials": {"email": self.auth["email"], "chatgpt_account_id": "same-provider-account"},
+            "credentials_status": {"has_access_token": True, "has_refresh_token": True},
+        }
+        with patch.object(client.requests, "get", side_effect=[
+            self.response({"items": [replacement], "pages": 1}),
+            self.response(replacement),
+        ]), patch.object(client.requests, "put") as put, patch.object(client.requests, "post") as post:
+            result = client.find_confirmed_replacement(auth, 41)
+        self.assertEqual(client.ReplacementCandidate(42, credentials_confirmed=False), result)
+        put.assert_not_called()
+        post.assert_not_called()
+
+    def test_redacted_candidate_requires_present_credentials_and_unique_provider_identity(self):
+        auth = {**self.auth, "account_id": "same-provider-account"}
+        replacement = {
+            **self.remote, "id": 42, "status": "active", "schedulable": True,
+            "credentials": {"email": self.auth["email"], "chatgpt_account_id": "same-provider-account"},
+            "credentials_status": {"has_access_token": True, "has_refresh_token": True},
+        }
+        for change in [
+            {"credentials_status": {}},
+            {"credentials_status": {"has_access_token": True, "has_refresh_token": False}},
+            {"credentials": {**replacement["credentials"], "access_token": "different-access"}},
+            {"credentials": {**replacement["credentials"], "chatgpt_account_id": "different-account"}},
+        ]:
+            with self.subTest(change=change), patch.object(client.requests, "get", side_effect=[
+                self.response({"items": [replacement], "pages": 1}),
+                self.response({**replacement, **change}),
+            ]):
+                self.assertIsNone(client.find_confirmed_replacement(auth, 41))
+        other = {**replacement, "id": 43}
+        with patch.object(client.requests, "get", side_effect=[
+            self.response({"items": [replacement, other], "pages": 1}),
+            self.response(replacement), self.response(other),
+        ]):
+            self.assertIsNone(client.find_confirmed_replacement(auth, 41))
 
     def test_missing_target_keeps_retry_without_unique_same_credential_evidence(self):
         auth = {**self.auth, "account_id": "same-provider-account"}

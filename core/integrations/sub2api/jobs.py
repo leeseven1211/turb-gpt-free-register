@@ -176,8 +176,8 @@ def record_sync_success(credential_id: int | None, auth: dict, result: dict) -> 
     )
 
 
-def _reconcile_missing_target(context, row: dict, auth: dict) -> bool:
-    """只收口有同身份、同凭据健康替代证据的旧目标；其余 404 沿用重试。"""
+def _reconcile_missing_target(context, row: dict, auth: dict) -> client.ReplacementCandidate | None:
+    """核验唯一替代目标；Token 被隐藏时原子排队同步，不能直接记为成功。"""
     def checkpoint():
         context.checkpoint()
         if context.is_cancel_requested(force=True):
@@ -194,15 +194,19 @@ def _reconcile_missing_target(context, row: dict, auth: dict) -> bool:
         checkpoint=checkpoint, expected_backend=row["backend"],
     )
     if replacement is None:
-        return False
+        return None
     checkpoint()
-    return store.confirm_sync(
+    saved = store.confirm_sync(
         credential_id=int(row["credential_id"]),
         backend=row["backend"], generation=row["generation"],
-        remote_account_id=replacement,
+        remote_account_id=replacement.account_id,
         replaced_job_id=int(row["id"]), replaced_run_id=int(context.run_id),
         fence=context.execution_fence,
+        credentials_confirmed=replacement.credentials_confirmed,
     )
+    if not saved:
+        logger.info("Sub2API 替代目标身份已核验，本地代际、取消或并发状态尚不允许提交")
+    return replacement if saved else None
 
 
 def _submit(row, conn):
@@ -338,11 +342,17 @@ def _handle(context):
             error = str(exc) if known else f"Sub2API 补传在 {stage} 阶段发生 {type(exc).__name__}"
             if code == "sub2api_account_missing" and row.get("remote_account_id"):
                 try:
-                    if _reconcile_missing_target(context, row, auth):
+                    replacement = _reconcile_missing_target(context, row, auth)
+                    if replacement:
                         return task_gateway.OperationResult.success(
                             {"superseded": True, "previous_sub2api_account_id": row["remote_account_id"],
-                             "reconciled": True},
-                            message="旧 Sub2API 目标已失效，已与同身份的健康账号对账",
+                             "reconciled": True, "replacement_sub2api_account_id": replacement.account_id,
+                             "replacement_credentials_redacted": not replacement.credentials_confirmed},
+                            message=(
+                                "旧 Sub2API 目标已失效，已与同身份的健康账号对账"
+                                if replacement.credentials_confirmed
+                                else "旧 Sub2API 目标已替代，新目标同步状态由持久队列继续核对"
+                            ),
                         )
                 except OperationCancelled:
                     store.cancel(row["id"], generation=generation, run_id=context.run_id,
@@ -352,9 +362,10 @@ def _handle(context):
                     raise
                 except _Blocked as blocked:
                     return _blocked_result(context, row, blocked)
-                except client.Sub2ApiSyncError:
+                except client.Sub2ApiSyncError as reconcile_error:
                     # 候选核验失败不改变原目标事实，保留本次 404 分类及原重试入口。
-                    logger.info("Sub2API 旧目标尚未取得可收口的替代证据")
+                    logger.info("Sub2API 旧目标替代核验未完成：阶段=%s 原因=%s",
+                                reconcile_error.stage, reconcile_error.code)
             backend_changed = code == "sub2api_backend_changed"
             delay = min(300, 15 * 2 ** min(max(0, row["attempt_count"] - 1), 5))
             context.checkpoint()

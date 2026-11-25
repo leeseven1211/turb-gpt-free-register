@@ -495,6 +495,73 @@ def _confirm_success_job(cur, *, credential, account, backend, generation, remot
     return cur.fetchone(), bool(count_upload)
 
 
+def _prepare_unconfirmed_replacement_job(
+    cur, *, credential, account, backend, generation, remote_account_id
+):
+    cur.execute(
+        f"""SELECT * FROM {_table()}
+        WHERE credential_id=%s AND backend=%s AND (target_key=%s OR remote_account_id=%s)
+        ORDER BY id FOR UPDATE NOWAIT""",
+        (int(credential["id"]), backend, remote_account_id, remote_account_id),
+    )
+    rows = list(cur.fetchall())
+    if any(row["status"] in {"cancelled", "superseded"} for row in rows):
+        return None
+    current_rows = [row for row in rows if row["generation"] == generation]
+    current = next((row for row in current_rows if row["status"] == "success"), None)
+    if current:
+        confirmed, _ = _confirm_success_job(
+            cur, credential=credential, account=account, backend=backend,
+            generation=generation, remote_account_id=remote_account_id, count_upload=False,
+        )
+        return confirmed
+    current = next((row for row in current_rows if row["status"] in ACTIVE), None)
+    if current:
+        return current
+    current = next((row for row in current_rows if row["status"] == "pending"), None)
+
+    account_id = int(account["id"]) if account else None
+    email = account["email"] if account else credential["content"]["email"]
+    if rows:
+        row = current or rows[0]
+        cur.execute(
+            f"""UPDATE {_table()} SET filename=%s,remote_account_id=%s,account_id=%s,email=%s,
+            generation=%s,status='pending',stage='pending',error_code=NULL,error=NULL,
+            trigger='replacement',task_id=NULL,run_id=NULL,dispatch_requested=TRUE,
+            attempt_count=CASE WHEN generation<>%s THEN 0 ELSE attempt_count END,
+            next_attempt_at=now(),updated_at=now()
+            WHERE id=%s RETURNING *""",
+            (
+                credential["filename"],
+                int(remote_account_id),
+                account_id,
+                email,
+                generation,
+                generation,
+                row["id"],
+            ),
+        )
+        return cur.fetchone()
+    cur.execute(
+        f"""INSERT INTO {_table()}
+        (filename,backend,target_key,remote_account_id,account_id,credential_id,email,generation,
+         status,stage,trigger,dispatch_requested,next_attempt_at)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'pending','pending','replacement',TRUE,now())
+        RETURNING *""",
+        (
+            credential["filename"],
+            backend,
+            int(remote_account_id),
+            int(remote_account_id),
+            account_id,
+            int(credential["id"]),
+            email,
+            generation,
+        ),
+    )
+    return cur.fetchone()
+
+
 def confirm_sync(
     *,
     credential_id: int,
@@ -505,8 +572,9 @@ def confirm_sync(
     replaced_run_id: int | None = None,
     fence: dict | None = None,
     count_upload: bool = False,
+    credentials_confirmed: bool = True,
 ) -> bool:
-    """在凭证身份和代际确认后记录远端成功，并可原子替代失效目标。"""
+    """在凭证身份和代际确认后记录远端状态，并可原子替代失效目标。"""
     try:
         credential_id = int(credential_id)
         remote_account_id = int(remote_account_id)
@@ -522,6 +590,8 @@ def confirm_sync(
             return False
         if replaced_job_id <= 0 or replaced_run_id <= 0:
             return False
+    if not credentials_confirmed and replaced_job_id is None:
+        return False
     if fence is not None and replaced_run_id is None:
         return False
 
@@ -532,6 +602,7 @@ def confirm_sync(
                 conn, cur, credential_id=credential_id, backend=backend, generation=generation,
                 remote_account_id=remote_account_id, replaced_job_id=replaced_job_id,
                 replaced_run_id=replaced_run_id, fence=fence, count_upload=count_upload,
+                credentials_confirmed=credentials_confirmed,
             )
     except LockNotAvailable:
         # 补传生产者先锁目标再创建账号任务；对账不反向等待它，回滚后沿原入口重试。
@@ -541,6 +612,7 @@ def confirm_sync(
 def _confirm_sync(
     conn, cur, *, credential_id, backend, generation, remote_account_id,
     replaced_job_id, replaced_run_id, fence, count_upload,
+    credentials_confirmed,
 ):
     from core.storage import records
     from core.storage.operations import store as operation
@@ -629,10 +701,17 @@ def _confirm_sync(
             if int(old_job["remote_account_id"]) not in targets:
                 return False
 
-    confirmed, count_now = _confirm_success_job(
-        cur, credential=credential, account=account, backend=backend, generation=generation,
-        remote_account_id=remote_account_id, count_upload=count_upload,
-    )
+    if credentials_confirmed:
+        confirmed, count_now = _confirm_success_job(
+            cur, credential=credential, account=account, backend=backend, generation=generation,
+            remote_account_id=remote_account_id, count_upload=count_upload,
+        )
+    else:
+        confirmed = _prepare_unconfirmed_replacement_job(
+            cur, credential=credential, account=account, backend=backend, generation=generation,
+            remote_account_id=remote_account_id,
+        )
+        count_now = False
     if confirmed is None:
         return False
     if count_now:
@@ -652,16 +731,18 @@ def _confirm_sync(
         dispatch_requested=FALSE,updated_at=now() WHERE id=%s""",
         (replaced_job_id,),
     )
-    if str(credential.get("sub2_sync_error") or "").startswith("sub2api_account_missing:"):
-        cur.execute(
-            f"""SELECT 1 FROM {_table()} WHERE credential_id=%s AND generation=%s
-            AND status NOT IN ('success','superseded') LIMIT 1""",
-            (credential_id, generation),
-        )
-        if not cur.fetchone():
-            # 只读对账可清除已经消失的旧 404，不增加上传次数，也不掩盖其他目标失败。
-            records.patch_row(records.CODEX_CREDENTIALS, credential_id, {"sub2_sync_error": None}, conn=conn)
     if not repair:
+        if (
+            (credentials_confirmed or confirmed["status"] == "success")
+            and str(credential.get("sub2_sync_error") or "").startswith("sub2api_account_missing:")
+        ):
+            cur.execute(
+                f"""SELECT 1 FROM {_table()} WHERE credential_id=%s AND generation=%s
+                AND status NOT IN ('success','superseded') LIMIT 1""",
+                (credential_id, generation),
+            )
+            if not cur.fetchone():
+                records.patch_row(records.CODEX_CREDENTIALS, credential_id, {"sub2_sync_error": None}, conn=conn)
         return True
     targets, mapping = _repair_targets(repair_data)
     targets = list(dict.fromkeys(
@@ -694,7 +775,19 @@ def _confirm_sync(
         WHERE backend=%s AND account_id=%s""",
         (json.dumps(repair_data, ensure_ascii=False), backend, int(account["id"])),
     )
-    return cur.rowcount == 1
+    if (
+        complete
+        and (credentials_confirmed or confirmed["status"] == "success")
+        and str(credential.get("sub2_sync_error") or "").startswith("sub2api_account_missing:")
+    ):
+        cur.execute(
+            f"""SELECT 1 FROM {_table()} WHERE credential_id=%s AND generation=%s
+            AND status NOT IN ('success','superseded') LIMIT 1""",
+            (credential_id, generation),
+        )
+        if not cur.fetchone():
+            records.patch_row(records.CODEX_CREDENTIALS, credential_id, {"sub2_sync_error": None}, conn=conn)
+    return True
 
 
 def save_repair(backend_key, account_id, **fields):

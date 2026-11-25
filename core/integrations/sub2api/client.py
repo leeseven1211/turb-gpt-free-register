@@ -449,11 +449,19 @@ def update_and_enable_configured_account(auth_json: dict[str, Any], account_id: 
     return _update_account(_capture_config(expected_backend), auth_json, account_id, checkpoint=checkpoint, enable=True)
 
 
+@dataclass(frozen=True)
+class ReplacementCandidate:
+    """身份匹配与凭据同步证据分开记录，隐藏 Token 不代表凭据已相同。"""
+
+    account_id: int
+    credentials_confirmed: bool
+
+
 def find_confirmed_replacement(
     auth_json: dict[str, Any], missing_account_id: int, *,
     checkpoint: Callable[[], None] | None = None, expected_backend: str | None = None,
-) -> int | None:
-    """只读确认失效目标的唯一替代；邮箱、稳定账号身份与实际凭据必须同时一致。"""
+) -> ReplacementCandidate | None:
+    """只读确认唯一健康的同身份目标；隐藏凭据时要求继续实际同步。"""
     config = _capture_config(expected_backend)
     email = _validate_credential(auth_json, config)
     identity = str(auth_json.get("account_id") or auth_json.get("chatgpt_account_id") or "").strip()
@@ -462,6 +470,7 @@ def find_confirmed_replacement(
     ):
         return None
     matches = []
+    identity_candidates = 0
     for candidate in _list_accounts(config, email=email, checkpoint=checkpoint):
         remote_id = _positive_id(candidate["id"])
         if remote_id == missing_account_id:
@@ -485,13 +494,22 @@ def find_confirmed_replacement(
             or remote_identity != identity
         ):
             continue
-        if all(
-            not auth_json.get(field) or credentials.get(field) == auth_json[field]
-            for field in ("access_token", "refresh_token")
+        identity_candidates += 1
+        fields = ("access_token", "refresh_token")
+        status = remote.get("credentials_status")
+        status = status if isinstance(status, dict) else {}
+        # 已返回的凭据必须一致；未返回的字段只有明确声明存在，才视为脱敏而非缺失。
+        if any(
+            credentials[field] != auth_json[field] if field in credentials
+            else status.get(f"has_{field}") is not True
+            for field in fields
         ):
-            matches.append(remote_id)
+            continue
+        matches.append(ReplacementCandidate(
+            remote_id, credentials_confirmed=all(field in credentials for field in fields),
+        ))
     _checkpoint(checkpoint, config=config, stage="resolve_account")
-    return matches[0] if len(matches) == 1 else None
+    return matches[0] if len(matches) == 1 and identity_candidates == 1 else None
 
 
 def _configured_upload(auth_json: dict[str, Any], *, checkpoint: Callable[[], None] | None, enable: bool, expected_backend: str | None = None) -> dict[str, Any]:
