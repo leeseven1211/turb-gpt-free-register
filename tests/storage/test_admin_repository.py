@@ -360,18 +360,29 @@ class AdminRepositoryTests(PostgresTestCase):
         promotion = {"plan": "plus", "kind": "discount", "discount_percentage": 50,
                      "campaign_id": "campaign", "stale": True, "summary": "详情" * 1500,
                      "checkout_status": "success", "payment_method_types": ["card"]}
+        promotions = [{**promotion, "plan": plan} for plan in ("go", "plus", "team")]
         countries = [{"country": country, "status": "success", "result": {
-            "account_promotions": [promotion], "promotion_query_snapshot": {"raw": "x" * 20000}}}
+            "account_promotions": promotions, "promotion_query_snapshot": {"raw": "x" * 20000}}}
             for country in ("US", "IN", "JP", "GB", "CA", "AU", "DE", "FR", "BR", "MX")]
         for index in range(10):
             rs.insert_row(rs.ACCOUNTS, {"email": f"compact{index}@example.test",
-                "plan_check_status": "success", "account_promotions": [promotion],
+                "plan_check_status": "success", "account_promotions": promotions,
                 "plan_check_countries": ["US", "IN", "JP"], "plan_check_country_results": countries})
         result = repo.list_account_statuses(repo.PageRequest(1, 10, {}), compact=True)
-        self.assertLess(len(json.dumps(result).encode()), 20000)
+        # 十账号、十国家、三套餐的轮询仅保留轻量摘要，不能夹带完整证据与支付字段。
+        self.assertLess(len(json.dumps(result).encode()), 40000)
+        for row in result["items"]:
+            summary = row["plan_summary"]
+            for values in [summary["promotions"], *(country["promotions"] for country in summary["countries"])]:
+                for value in values:
+                    for field in ("campaign_id", "summary", "checkout_status", "payment_method_types"):
+                        self.assertNotIn(field, value)
+            self.assertNotIn("promotion_query_snapshot", row)
         item = result["items"][0]
         self.assertNotIn("account_promotions", item)
         self.assertNotIn("plan_check_country_results", item)
+        self.assertEqual([row["plan"] for row in item["plan_summary"]["promotions"]], ["go", "plus", "team"])
+        self.assertEqual([row["plan"] for row in item["plan_summary"]["countries"][1]["promotions"]], ["go", "plus", "team"])
         self.assertEqual(item["plan_summary"]["countries"][1]["country"], "IN")
         self.assertEqual(item["plan_summary"]["countries"][1]["promotions"][0]["discount_percentage"], 50)
         self.assertTrue(item["plan_details_revision"])

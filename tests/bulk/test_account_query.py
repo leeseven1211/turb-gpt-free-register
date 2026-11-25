@@ -44,6 +44,42 @@ class AccountQueryTests(PostgresTestCase):
         b = {"filters": {"promotion": ["free_trial", "none"]}}
         self.assertEqual(query.query_hash(a), query.query_hash(b))
 
+    def test_team_filter_shares_list_count_and_facets_without_numeric_discount(self):
+        fixtures = [
+            ("trial", "outlook", {"plan": "team", "kind": "free_trial", "eligible": True}),
+            ("discount", "icloud_hide", {"plan": "team", "kind": "discount", "eligible": True}),
+            ("other", "generic_api", {"plan": "team", "kind": "other_promo", "eligible": True}),
+            ("half", "outlook", {"plan": "team", "kind": "discount", "eligible": True, "discount_percentage": 50}),
+            ("unknown", "outlook", {"plan": "team", "kind": "unknown", "eligible": True}),
+            ("none", "outlook", {"plan": "team", "kind": "none", "eligible": True}),
+            ("ineligible", "outlook", {"plan": "team", "kind": "free_trial", "eligible": False}),
+            ("string-flag", "outlook", {"plan": "team", "kind": "free_trial", "eligible": "true"}),
+            ("plus", "outlook", {"plan": "plus", "kind": "discount", "eligible": True, "discount_percentage": 50}),
+            ("go", "outlook", {"plan": "go", "kind": "free_trial", "eligible": True, "discount_percentage": 100}),
+        ]
+        ids = {}
+        for name, source, promotion in fixtures:
+            ids[name] = records.insert_row(records.ACCOUNTS, {
+                "email": f"team-filter-{name}@example.test", "email_source": source,
+                "current_plan_type": "plus", "plus_promo_kind": "none",
+                "plan_check_status": "success", "account_promotions": [promotion],
+            })
+        scope = "邮箱:team-filter-"
+        for values, expected, sources in (
+            (["team_eligible"], {"trial", "discount", "other", "half"},
+             {"outlook": 2, "icloud_hide": 1, "generic_api": 1}),
+            (["team_eligible", "plus_50"], {"trial", "discount", "other", "half", "plus"},
+             {"outlook": 3, "icloud_hide": 1, "generic_api": 1}),
+            (["plus_50"], {"plus"}, {"outlook": 1}),
+        ):
+            with self.subTest(values=values):
+                spec = query.normalize_query({"q": scope, "filters": {"promotion": values}})
+                selected = self._compare(q=scope, filters={"promotion": ",".join(values)})
+                self.assertEqual(set(selected), {ids[name] for name in expected})
+                self.assertEqual(admin.account_query_count(spec), len(expected))
+                facets = admin.account_query_facets(spec)
+                self.assertEqual({item["value"]: item["count"] for item in facets["source"]}, sources)
+
     def test_bad_query_is_rejected_before_sql(self):
         for raw in ({"order": [{"field": "email;drop table", "direction": "asc"}]},
                     {"date_from": "2026-10-32"}, {"date_from": "2026-11-01", "date_to": "2026-10-01"},

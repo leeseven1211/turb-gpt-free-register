@@ -189,7 +189,10 @@ export function useAccounts(adapter: AccountQueryAdapter, api: AccountsReadApi) 
       // Old consumers join the latest version even when fetch ignores cancellation.
       old?.request?.controller.abort();
       details.set(id, {revision: incoming.plan_details_revision, version: (old?.version ?? 0) + 1});
-      const promotions = (value: typeof incoming.plan_summary.promotions) => value?.map(item => ({...item, plan: 'plus'})) ?? null;
+      const promotions = (value: typeof incoming.plan_summary.promotions) => value?.map(item => {
+        const plan = item.plan;
+        return {...item, plan: typeof plan === 'string' && plan.trim() ? plan : 'plus'};
+      }) ?? null;
       merged.account_promotions = promotions(incoming.plan_summary.promotions);
       merged.plan_check_country_results = incoming.plan_summary.countries.map(country => {
         const {promotions: values, ...state} = country;

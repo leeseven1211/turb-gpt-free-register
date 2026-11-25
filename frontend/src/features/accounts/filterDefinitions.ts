@@ -37,7 +37,7 @@ export function columnActive(query:DeepReadonly<AccountQuerySpec>,column:Account
   if(column.kind==='text')return !!textValue(query,column.key as AccountFilterField);
   return selectedValues(query,column.key).length>0;
 }
-export const promotionOffers = ['none','free_trial','half_price','go_50','plus_50','plus_50_1m','plus_50_2m','plus_50_3m'];
+export const promotionOffers = ['none','free_trial','half_price','go_50','plus_50','plus_50_1m','plus_50_2m','plus_50_3m','team_eligible'];
 
 export function facetOptions(query:DeepReadonly<AccountQuerySpec>,facets:DeepReadonly<AccountFacets>,column:AccountColumn,label:AccountFacetLabel) {
   const selected=selectedValues(query,column.key);

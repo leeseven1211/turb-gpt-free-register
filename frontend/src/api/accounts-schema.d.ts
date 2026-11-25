@@ -578,6 +578,7 @@ export interface components {
         };
         LegacyAccountsResponse: components["schemas"]["AccountRow"][];
         PlanSummaryPromotion: {
+            plan?: string;
             kind?: components["schemas"]["PublicScalar"];
             country?: string;
             stale?: boolean;

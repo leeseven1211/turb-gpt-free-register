@@ -18,7 +18,7 @@ FIELD_LABELS = {
 }
 PROMOTION_OFFER_VALUES = tuple(
     f"{plan}_{discount}" for plan in ("plus", "go") for discount in ("100", "50", "other")
-) + ("plus_50_1m", "plus_50_2m", "plus_50_3m")
+) + ("plus_50_1m", "plus_50_2m", "plus_50_3m", "team_eligible")
 STATIC_VALUES = {
     "registration_driver": ["roxy", "roxy_oss", "protocol", "protocol_oss", "protocol_oss_2", "sentinel_rs", "cloakbrowser", "unknown"],
     "token": ["has", "none", "expired", "invalid_401", "invalid_403", "invalid_other"],

@@ -189,7 +189,8 @@
   border-color:var(--ui-color-brand,#4f46e5);background:var(--ui-color-brand-soft,#eef2ff);color:var(--ui-color-brand,#4f46e5);
 }
 .ac-table.accounts-table-v2 .acc-v2-actions>.acc-v2-more-btn::after{content:"▾";font-size:10px;line-height:1;opacity:.75}
-.ac-table.accounts-table-v2 .account-promotion-country-row{height:22px;min-height:22px}
+.ac-table.accounts-table-v2 .account-promotion-cell--plans{min-height:26px;overflow:visible}
+.ac-table.accounts-table-v2 .account-promotion-tag{height:24px;min-height:24px}
 .ac-table .acc-mobile-meta,.ac-table .acc-mobile-dot{display:none}
 .ac-row-selected td{background:#eef2ff}
 .ac-filter-fields{display:grid;gap:10px;min-width:0;font-size:12px}

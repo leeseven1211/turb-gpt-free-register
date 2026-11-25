@@ -236,6 +236,7 @@ let _accountsTooltipDescription = null;
 let _accountsTooltipHideTimer = null;
 let _accountsTooltipSession = null;
 let _accountsTooltipOpenGeneration = 0;
+let _accountsTooltipBound = false;
 
 function rememberTaskTooltipView() {
   return {
@@ -376,6 +377,8 @@ function _showAccountsTooltip(target) {
 }
 
 function bindAccountsHoverTooltips() {
+  if (_accountsTooltipBound) return;
+  _accountsTooltipBound = true;
   const targetFor = (node) => node?.closest?.(_accountsTooltipSelector()) || null;
   const showFocusedTooltip = (event) => {
     const target = targetFor(event.target);
@@ -830,8 +833,10 @@ function _accountPromotionGroupDetail(group, context = '') {
   if (context) details.push(context);
   return details.join('；');
 }
-function _accountPlusPromotion(items) {
-  return items.filter(item => item.plan === 'plus').sort(_compareAccountPromotions)[0] || {plan: 'plus', kind: 'unknown'};
+function _accountPlanPromotion(items, plan) {
+  return items.filter(item => item.plan === plan)
+    .sort((left, right) => _compareAccountPromotions(left, right) || Number(Boolean(left.stale)) - Number(Boolean(right.stale)))[0]
+    || {plan, kind: 'pending'};
 }
 function _accountPromotionPaymentMethods(item) {
   // 支付方式必须属于该套餐活动，不能按国家推断或借用 Go 的结账结果。
@@ -885,19 +890,6 @@ function _accountPromotionCheckoutDetail(item) {
   const session = status === 'success' ? _accountPromotionCheckoutSession(item) : '';
   return [amount ? `实际应付: ${amount}` : '', session ? `结账会话: ${session}` : '', `支付方式: ${methods.join(' ') || (status === 'success' ? '未返回' : '待查询')}`].filter(Boolean);
 }
-function _accountPlusCellLabel(item) {
-  if (item.kind === 'unknown') return '待查询';
-  if (item.kind === 'not_applicable') return '无优惠';
-  if (item.kind === 'free_trial') return '免费';
-  return _accountPromotionLabel(item);
-}
-function _accountPromotionTooltip(item) {
-  const details = [`${_promotionPlanLabel(item.plan)}: ${_accountPromotionLabel(item)}`];
-  if (['free_trial', 'discount', 'other_promo'].includes(item.kind)) {
-    details.push(..._accountPromotionCheckoutDetail(item));
-  }
-  return details.join('；');
-}
 function _accountPromotionQueryTooltip(queryStatus, error = '') {
   const status = String(queryStatus || '').toLowerCase();
   if (status === 'queued') return '新任务排队中';
@@ -906,64 +898,43 @@ function _accountPromotionQueryTooltip(queryStatus, error = '') {
   if (status === 'cancelled') return `本次查询已取消${error ? `: ${error}` : ''}`;
   return '';
 }
-function _accountPromotionCountryTone(country) {
-  const code = String(country || '').trim().toUpperCase();
-  if (!/^[A-Z]{2}$/.test(code)) return '';
-  const hash = (code.charCodeAt(0) * 31 + code.charCodeAt(1)) % 16;
-  return `is-country-${hash}`;
-}
-function _accountPromotionRowMarkup({best, country = '', stale = false, label, tooltip}) {
-  const countryTone = _accountPromotionCountryTone(country);
-  const unknownCountry = country === '国家未记录';
-  const heading = country
-    ? `<span class="account-promotion-country"${unknownCountry ? ' aria-label="国家未记录"' : ''}>${esc(unknownCountry ? '—' : country)}${stale ? '<span class="account-promotion-stale">历史</span>' : ''}：</span>`
-    : '';
-  return `<span class="account-promotion-country-row is-${_accountPromotionTone(best)}${countryTone ? ` ${countryTone}` : ''}${stale ? ' is-stale' : ''}" data-accounts-tooltip="${esc(tooltip)}" tabindex="0">${heading}<span class="account-promotion-label">${esc(label)}</span></span>`;
+function _accountPromotionTagTone(item) {
+  if (item.kind === 'free_trial') return 'is-free';
+  if (item.kind === 'discount' && Number(item.discount_percentage) === 50) return 'is-discount';
+  return 'is-muted';
 }
 function _promotionCell(r) {
-  // 列表只显示优惠摘要，悬浮详情保留当前活动的结账信息。
-  const cell = lines => `<div class="account-promotion-cell account-promotion-cell--countries${lines.length === 1 ? ' account-promotion-cell--single' : ''}">${lines.join('')}</div>`;
-  const countryDisplays = _accountCountryPromotionDisplays(r);
-  if (countryDisplays.length) {
-    const rows = countryDisplays.map(display => ({display, best: _accountPlusPromotion(display.items)}));
-    const detail = [
-      ...rows.map(({display, best}) => [
-        `${display.country}${display.stale ? '（历史）' : ''} ${_accountPromotionTooltip(best)}`,
-        ...display.items.filter(item => item.plan === 'team').map(item => `${display.country}${display.stale ? '（历史）' : ''} ${_accountPromotionTooltip(item)}`),
-        display.queryContext,
-      ].filter(Boolean).join('\n')),
-      _accountPromotionQueryTooltip(r.plan_check_status, r.plan_check_error),
-    ].filter(Boolean).join('\n');
-    const allNone = rows.every(({best}) => ['none', 'not_applicable'].includes(best.kind));
-    const allPending = rows.every(({best}) => ['unknown', 'pending'].includes(best.kind));
-    if ((allNone || allPending) && rows.every(({display}) => !display.stale)) {
-      return cell([_accountPromotionRowMarkup({best: {kind: allNone ? 'none' : 'pending'}, label: allNone ? '无优惠' : '待查询', tooltip: detail})]);
-    }
-    // 显示最新两个国家，同一查询时间或未记录时间时保留配置国家顺序。
-    const visibleRows = rows
-      .filter(({display, best}) => display.stale || !['none', 'not_applicable'].includes(best.kind))
-      .sort((left, right) => (right.display.checkedAt || 0) - (left.display.checkedAt || 0))
-      .slice(0, 2);
-    const countryMarkup = ({display, best}) => {
-      const label = _accountPlusCellLabel(best);
-      return _accountPromotionRowMarkup({best, country: display.country, stale: display.stale, label, tooltip: detail});
-    };
-    return cell(visibleRows.map(countryMarkup));
-  }
-  const display = _accountPromotionDisplay(r);
-  const best = _accountPlusPromotion(display.items);
-  const hasOffer = ['free_trial', 'discount', 'other_promo'].includes(best.kind);
-  const countryValue = String(r.plan_promotion_country || best.country || '').trim().toUpperCase();
-  const country = /^[A-Z]{2}$/.test(countryValue) ? countryValue : '国家未记录';
-  const label = _accountPlusCellLabel(best);
-  const historical = r.plan_check_status === 'failed' && !!r.plan_last_success_at;
-  const tooltip = [
-    `${hasOffer ? `${country} ` : ''}${_accountPromotionTooltip(best)}`,
-    ...display.items.filter(item => item.plan === 'team').map(item => _accountPromotionTooltip(item)),
-    historical ? '显示上次成功快照' : '',
-    _accountPromotionQueryTooltip(r.plan_check_status, r.plan_check_error),
-  ].filter(Boolean).join('\n');
-  return cell([_accountPromotionRowMarkup({best, country: hasOffer ? country : '', stale: historical, label, tooltip})]);
+  // 列表固定按套餐聚合最优优惠，国家、期限与查询证据保留在各标签浮窗。
+  const countries = _accountCountryPromotionDisplays(r);
+  const display = countries.length ? null : _accountPromotionDisplay(r);
+  const historical = r.plan_check_status === 'failed' && Boolean(r.plan_last_success_at);
+  const items = countries.length ? countries.flatMap(country => country.items)
+    : display.items.map(item => ({...item, stale: item.stale || historical}));
+  const query = _accountPromotionQueryTooltip(r.plan_check_status, r.plan_check_error);
+  const tags = ['team', 'plus', 'go'].map(plan => {
+    const best = _accountPlanPromotion(items, plan);
+    const label = {team: 'Team', plus: 'Plus', go: 'Go'}[plan];
+    const missing = {plan, kind: 'pending', summary: `旧查询未记录 ${_promotionPlanLabel(plan)} 优惠，请重新查询套餐`};
+    const details = countries.length ? countries.map(country => {
+      const matches = country.items.filter(item => item.plan === plan);
+      const offers = matches.length ? matches : [missing];
+      return [
+        ...offers.map(item => `${country.country}${country.stale ? '（历史）' : ''} ${_accountPromotionDetail(item)}`),
+        country.context,
+        country.queryContext,
+      ].filter(Boolean).join('\n');
+    }) : [
+      ...((items.filter(item => item.plan === plan).length ? items.filter(item => item.plan === plan) : [missing]).map(item => {
+        const country = String(item.country || r.plan_promotion_country || '国家未记录').trim().toUpperCase();
+        return `${country}${item.stale ? '（历史）' : ''} ${_accountPromotionDetail(item)}`;
+      })),
+      display.context,
+    ];
+    const tooltip = [...details, query].filter(Boolean).join('\n');
+    const accessible = `${label}：${_accountPromotionLabel(best)}${best.stale ? '（历史）' : ''}`;
+    return `<span class="account-promotion-tag ${_accountPromotionTagTone(best)}" data-promotion-plan="${plan}" data-accounts-tooltip="${esc(tooltip)}" tabindex="0" aria-label="${esc(accessible)}"><span class="account-promotion-label">${label}</span></span>`;
+  });
+  return `<div class="account-promotion-cell account-promotion-cell--plans">${tags.join('')}</div>`;
 }
 function _planAction(r) {
   if (accountIsDeactivated(r)) return '';

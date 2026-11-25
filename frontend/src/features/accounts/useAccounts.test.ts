@@ -379,6 +379,40 @@ describe('Accounts owner 查询与列表竞态', () => {
 });
 
 describe('Accounts owner status 唯一轮询与生命周期', () => {
+  it('compact plan_summary 保留每项真实 plan，缺失 plan 时回退 Plus', async () => {
+    const h = setup();
+    const summary = {
+      promotions: [
+        {kind: 'free_trial', plan: 'team'},
+        {kind: 'discount'},
+        {kind: 'other_promo', plan: 'go'},
+      ],
+      countries: [{
+        country: 'US',
+        status: 'success',
+        promotions: [
+          {kind: 'free_trial', plan: 'team'},
+          {kind: 'discount'},
+        ],
+      }],
+    } as unknown as AccountStatusRow['plan_summary'];
+    h.handlers.statuses = async () => statusResult([statusRow(1, {plan_summary: summary}), statusRow(2)]);
+    h.owner.setVisible(true); await settle(); await h.owner.pollStatuses();
+    expect(h.owner.items.value[0]?.account_promotions).toEqual([
+      {kind: 'free_trial', plan: 'team'},
+      {kind: 'discount', plan: 'plus'},
+      {kind: 'other_promo', plan: 'go'},
+    ]);
+    expect(h.owner.items.value[0]?.plan_check_country_results).toEqual([{
+      country: 'US',
+      status: 'success',
+      result: {account_promotions: [
+        {kind: 'free_trial', plan: 'team'},
+        {kind: 'discount', plan: 'plus'},
+      ]},
+    }]);
+  });
+
   it('只有一个 5 秒 timer，重复 visible 不增加轮询，隐藏后完全停止', async () => {
     const h = setup(); h.owner.setVisible(true); h.owner.setVisible(true); await settle();
     await vi.advanceTimersByTimeAsync(4999); expect(h.statusCalls).toHaveLength(0);

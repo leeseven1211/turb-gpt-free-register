@@ -90,6 +90,29 @@ class AccountPromotionApiTests(PostgresTestCase):
         self.assertEqual(team["duration_num_periods"], 1)
         self.assertEqual(item["promotion_query_snapshot"], self.result["promotion_query_snapshot"])
 
+    def test_compact_status_keeps_plan_identity_for_all_promotion_summaries(self):
+        rs.patch_row(rs.ACCOUNTS, self.account_id, {
+            "plan_check_countries": ["JP"],
+            "plan_check_country_results": [{
+                "country": "JP", "status": "success", "result": self.result,
+            }],
+        })
+
+        response = self.client.get("/api/accounts/plan-check-status?compact=1", headers=self.headers)
+
+        self.assertEqual(response.status_code, 200)
+        item = response.get_json()["items"][0]
+        summary = item["plan_summary"]
+        for promotions in (summary["promotions"], summary["countries"][0]["promotions"]):
+            self.assertEqual([promotion.get("plan") for promotion in promotions], ["go", "plus", "team"])
+            self.assertEqual([promotion["kind"] for promotion in promotions], ["free_trial", "discount", "free_trial"])
+            for promotion in promotions:
+                self.assertNotIn("campaign_id", promotion)
+                self.assertNotIn("title", promotion)
+                self.assertNotIn("payment_method_types", promotion)
+        self.assertNotIn("account_promotions", item)
+        self.assertNotIn("promotion_query_snapshot", item)
+
     def test_plan_status_poll_clears_stale_single_country_after_multi_country_result(self):
         rs.patch_row(rs.ACCOUNTS, self.account_id, {
             "plan_promotion_country": "JP",

@@ -35,7 +35,8 @@ def _exercise_current_page(width, *, team_promotions=False):
     ]]
     promotions = [
         {'plan': 'go', 'kind': 'none'},
-        {'plan': 'plus', 'kind': 'none'},
+        {'plan': 'plus', 'kind': 'discount', 'discount_percentage': 50,
+         'duration_num_periods': 2, 'duration_period': 'month'},
         {'plan': 'team', 'kind': 'free_trial', 'eligible': True,
          'campaign_id': 'team-1-month-free', 'title': 'Try Business free for 1 month',
          'duration_num_periods': 1, 'duration_period': 'month'},
@@ -71,8 +72,14 @@ def _exercise_current_page(width, *, team_promotions=False):
                 'offset': (number - 1) * size, 'limit': size, 'revision': 'synthetic-current',
             }
             if target.path.endswith('/plan-check-status'):
+                compact_fields = {'plan', 'kind', 'country', 'stale', 'discount_percentage',
+                                  'duration_num_periods', 'duration_period'}
                 payload.update(items=[dict(row, plan_details_revision='synthetic-details',
-                                           plan_summary={'promotions': [], 'countries': []}) for row in page_rows],
+                                           plan_summary={'promotions': [
+                                               {key: value for key, value in offer.items() if key in compact_fields}
+                                               for offer in row['account_promotions']
+                                           ] if isinstance(row['account_promotions'], list) else None,
+                                                         'countries': []}) for row in page_rows],
                                status_fields=[], queue={'workers': 1, 'registration_workers': 1,
                                                         'queue_limit': 100, 'min_interval': 0, 'jitter': 0})
             else:
@@ -134,6 +141,22 @@ def _exercise_current_page(width, *, team_promotions=False):
             assert next(query['page_size'] for path, query in reads if path == '/api/accounts') == ['20']
             first = items.first
             if width >= 600:
+                if team_promotions:
+                    playwright.expect(first.locator('.account-promotion-label')).to_have_text(['Team', 'Plus', 'Go'])
+                    for plan, tone, color in [('team', 'is-free', 'rgb(24, 119, 107)'),
+                                              ('plus', 'is-discount', 'rgb(37, 99, 235)'),
+                                              ('go', 'is-muted', 'rgb(100, 116, 139)')]:
+                        tag = first.locator(f'[data-promotion-plan="{plan}"]')
+                        playwright.expect(tag).to_have_class(f'account-promotion-tag {tone}')
+                        assert tag.evaluate('node => getComputedStyle(node).color') == color
+                    team = first.locator('[data-promotion-plan="team"]')
+                    team.scroll_into_view_if_needed()
+                    page.evaluate('() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
+                    team.hover()
+                    tooltip = page.locator('#accountsHoverTooltip')
+                    playwright.expect(tooltip).to_be_visible()
+                    playwright.expect(tooltip).to_contain_text('Team（Business）: 免费试用 1个月')
+                    page.keyboard.press('Escape')
                 assert first.locator('.col-account-status').inner_text().splitlines() == ['Token 异常', 'HTTP 401']
                 assert first.locator('.col-status').inner_text().splitlines() == ['失败', '执行异常']
                 assert first.locator('.col-status .account-cell-line--sub').get_attribute('title') == reason

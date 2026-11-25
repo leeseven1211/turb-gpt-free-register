@@ -231,7 +231,7 @@ def _account_facet_expressions() -> dict[str, str]:
 
 
 def _promotion_offers_sql() -> str:
-    """按同一条优惠明细的目标套餐及比例生成筛选值，兼容历史 Plus 投影。"""
+    """按同一条优惠生成套餐筛选值；Team 资格不要求数值折扣，保留历史 Plus 投影。"""
     offers = "a.data->'account_promotions'"
     percentage = "offer->'discount_percentage'"
     period = "lower(COALESCE(offer->>'duration_period', ''))"
@@ -240,16 +240,18 @@ def _promotion_offers_sql() -> str:
     return f"""CASE WHEN jsonb_typeof({offers}) = 'array' THEN ARRAY(
         SELECT code FROM jsonb_array_elements({offers}) AS offer
         CROSS JOIN LATERAL (VALUES
-            ((offer->>'plan') || '_' || CASE {percentage}
-                WHEN '100'::jsonb THEN '100' WHEN '50'::jsonb THEN '50' ELSE 'other' END),
+            (CASE WHEN offer->>'plan' = 'team' THEN 'team_eligible'
+                  ELSE (offer->>'plan') || '_' || CASE {percentage}
+                    WHEN '100'::jsonb THEN '100' WHEN '50'::jsonb THEN '50' ELSE 'other' END END),
             (CASE WHEN offer->>'plan' = 'plus' AND {percentage} = '50'::jsonb
                    AND {period} IN ('month', 'months', '月')
                    AND {periods} ~ '^[123]$'
                   THEN 'plus_50_' || {periods} || 'm' END)
         ) AS v(code)
-        WHERE offer->>'plan' IN ('plus', 'go') AND offer->'eligible' = 'true'::jsonb
-          AND jsonb_typeof({percentage}) = 'number'
-          AND {percentage} > '0'::jsonb AND {percentage} <= '100'::jsonb
+        WHERE offer->'eligible' = 'true'::jsonb
+          AND ((offer->>'plan' IN ('plus', 'go') AND jsonb_typeof({percentage}) = 'number'
+                AND {percentage} > '0'::jsonb AND {percentage} <= '100'::jsonb)
+               OR (offer->>'plan' = 'team' AND offer->>'kind' IN ('free_trial', 'discount', 'other_promo')))
           AND v.code IS NOT NULL
     ) WHEN {_ACCOUNT_PROMO_KIND} IN ('free_trial', 'discount', 'other_promo')
          AND a.plus_promo_discount_percentage > 0 AND a.plus_promo_discount_percentage <= 100
@@ -761,11 +763,11 @@ def list_account_statuses(
             item["plan_details_revision"] = hashlib.sha256(
                 json.dumps(details, sort_keys=True, default=str).encode()
             ).hexdigest()[:16]
-            # 账号列表仅显示 Plus，Go 与结账信息在按需详情中保留。
+            # 列表摘要保留三套餐身份，活动证据与结账信息继续按需读取。
             def promotions(rows):
-                fields = {"kind", "country", "stale", "discount_percentage", "duration_num_periods", "duration_period"}
+                fields = {"plan", "kind", "country", "stale", "discount_percentage", "duration_num_periods", "duration_period"}
                 return [{key: value for key, value in row.items() if key in fields}
-                        for row in rows if isinstance(row, dict) and row.get("plan") == "plus"] if isinstance(rows, list) else None
+                        for row in rows if isinstance(row, dict) and row.get("plan") in ("go", "plus", "team")] if isinstance(rows, list) else None
             countries = []
             for country in details["plan_check_country_results"] or []:
                 summary = {key: value for key, value in country.items() if key in {

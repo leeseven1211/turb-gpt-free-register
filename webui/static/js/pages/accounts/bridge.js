@@ -114,6 +114,7 @@ window.AccountsPage = (() => {
           closeConsumers: () => closeAccountsVueTooltip(),
         },
       });
+      bindAccountsHoverTooltips();
       instance.setArchived(archived);
       instance.setVisible(visible);
       return instance;

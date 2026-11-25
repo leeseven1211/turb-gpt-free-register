@@ -9,7 +9,7 @@ const executable = source.replace('import(root.dataset.moduleUrl)', 'loadAccount
 const plain = value => JSON.parse(JSON.stringify(value));
 function setup(load) {
   const calls = {imports: [], mounts: 0, archived: [], visible: [], refresh: 0, polls: 0,
-    removed: [], cleared: 0, states: [], actions: [], details: [], detailClosed: [], toast: [], gated: [], migrations: 0};
+    removed: [], cleared: 0, states: [], actions: [], details: [], detailClosed: [], toast: [], gated: [], migrations: 0, tooltipBindings: 0};
   let callbacks, mountedOptions;
   const snapshot = Object.freeze({ids: Object.freeze(['1', '11']), expectedEmails: Object.freeze({'1': 'first@example.test', '11': 'second@example.test'})});
   const actionContext = Object.freeze({accountIds: snapshot.ids, expectedEmails: snapshot.expectedEmails,
@@ -42,6 +42,7 @@ function setup(load) {
     _accountDetailMarkup: () => 'detail', facetLabel: (_field,value) => value,
     updateModalScrollLock() {}, syncAccountsVueTooltip() {},
     migrateAccountTableWidths: () => { calls.migrations++; },
+    bindAccountsHoverTooltips: () => { calls.tooltipBindings++; },
     updateAccountSelectionUi: (_rows, state) => calls.states.push(state),
     invokeAccountAction: (...args) => calls.actions.push(args),
     openAccountDetail: (...args) => calls.details.push(args),
@@ -75,6 +76,7 @@ test('隐藏账号页不加载；动作快照在挂载前明确不可用', async
   assert.equal(bridge.isReady(), true); assert.deepEqual(calls.archived, [true]);
   assert.deepEqual(calls.visible, [true]); assert.equal(calls.refresh, 0);
   assert.equal(calls.migrations, 1);
+  assert.equal(calls.tooltipBindings, 1);
 });
 
 test('连续显示只挂载一次，模块加载途中导航采用最后范围和可见性', async () => {
@@ -88,6 +90,7 @@ test('连续显示只挂载一次，模块加载途中导航采用最后范围�
   assert.deepEqual(calls.archived, [true]); assert.deepEqual(calls.visible, [false]);
   assert.equal(calls.refresh, 0); await bridge.setVisible(true);
   assert.deepEqual(calls.visible, [false, true]);
+  assert.equal(calls.tooltipBindings, 1);
 });
 
 test('快照、详情租约与回流只转交真实owner，不另建选择状态', async () => {

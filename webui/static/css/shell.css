@@ -876,6 +876,21 @@
     .accounts-table-v2 .account-promotion-cell {
       display: flex; align-items: center; min-width: 0;
     }
+    .accounts-table-v2 .account-promotion-cell--plans {
+      flex-direction: row; justify-content: flex-start; flex-wrap: nowrap; gap: 5px;
+    }
+    .accounts-table-v2 .account-promotion-tag {
+      display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto;
+      height: 24px; min-width: 29px; padding: 0 6px; border: 1px solid #e2e8f0;
+      border-radius: 5px; box-sizing: border-box; font-size: 12px; font-weight: 600;
+      line-height: 1; white-space: nowrap; cursor: help;
+    }
+    .accounts-table-v2 .account-promotion-tag.is-free { color: #18776b; background: #ecfdf5; border-color: #a7e3cf; }
+    .accounts-table-v2 .account-promotion-tag.is-discount { color: #2563eb; background: #eff6ff; border-color: #bfdbfe; }
+    .accounts-table-v2 .account-promotion-tag.is-muted { color: #64748b; background: #f1f5f9; border-color: #e2e8f0; }
+    .accounts-table-v2 .account-promotion-tag:focus-visible {
+      outline: 2px solid var(--ui-color-brand, #5b5ce2); outline-offset: 2px;
+    }
     .accounts-table-v2 .account-promotion-cell--countries {
       flex-direction: column; align-items: stretch; gap: 2px;
     }

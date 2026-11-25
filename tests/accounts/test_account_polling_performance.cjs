@@ -55,9 +55,9 @@ test('任务页兼容显式刷新入口传递metadata意图，独立批次导航
   wrapper.vm.setVisible(true);await h.settle();await wrapper.vm.refresh();assert.equal(h.calls.at(-1).query.include_facets,0);
   await wrapper.vm.refresh({metadata:true});assert.equal(h.calls.at(-1).query.include_facets,1);assert.equal(h.calls.at(-1).query.include_batches,0);
 });
-test('按国家聚合历史优惠在轻量轮询后保持完整列表的国家徽标与摘要', async t => {
+test('按国家聚合历史优惠在轻量轮询后保持套餐短标签与历史详情', async t => {
   const account=row(1,{plan_check_status:'failed',plan_check_countries:['US'],account_promotions:[{plan:'plus',kind:'free_trial',country:'US',stale:true}]});
   const h=createReadFixture(t,{handlers:{list:async()=>list([account]),statuses:async()=>status([statusRow(1,{plan_details_revision:'v2',plan_summary:{promotions:[{kind:'free_trial',country:'US',stale:true}],countries:[]}})])}});await h.ready;
   const context={esc:value=>String(value??'')};vm.createContext(context);const start=source.indexOf('function _plusPromotionKind(');vm.runInContext(source.slice(start,source.indexOf('function _planAction(',start)),context);
-  const before=context._promotionCell(h.owner.getRowSnapshot('1'));await h.owner.pollStatuses();assert.equal(context._promotionCell(h.owner.getRowSnapshot('1')),before);assert.match(before,/account-promotion-stale/);
+  const before=context._promotionCell(h.owner.getRowSnapshot('1'));await h.owner.pollStatuses();assert.equal(context._promotionCell(h.owner.getRowSnapshot('1')),before);assert.match(before,/US（历史）/);assert.match(before,/data-promotion-plan="plus"/);
 });

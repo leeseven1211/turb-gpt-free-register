@@ -2789,6 +2789,9 @@
       "PlanSummaryPromotion": {
         "type": "object",
         "properties": {
+          "plan": {
+            "type": "string"
+          },
           "kind": {
             "$ref": "#/components/schemas/PublicScalar"
           },

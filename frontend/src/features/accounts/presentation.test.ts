@@ -22,14 +22,19 @@ describe('账号旧presenter边界',()=>{
   const old=legacy();old.cells.risk=row=>`<button data-deactivation-mail-check="${row.id}">复查</button>`;const p=createAccountPresentation(old);const menu=html(p.menu(accountRow()));const cell=html(p.cell('risk',accountRow()));
   const token=menu.querySelector<HTMLElement>('[data-account-token-refresh]');const mail=cell.querySelector<HTMLElement>('[data-account-deactivation-mail]');expect(token).not.toBeNull();expect(mail).not.toBeNull();token!.setAttribute('aria-disabled','true');token!.classList.add('feature-unavailable');mail!.setAttribute('disabled','');expect(actionFromTarget(token)).toBeUndefined();expect(actionFromTarget(mail)).toBeUndefined();
  });
- it('真实多国优惠保持最近两国和历史tooltip内容',()=>{
+ it('真实多国优惠聚合为固定三标签并保留全部国家和历史tooltip内容',()=>{
   const source=readFileSync(resolve(process.cwd(),'../webui/static/js/pages/accounts/page.js'),'utf8');const section=source.slice(source.indexOf('function _plusPromotionKind('),source.indexOf('function _planAction('));const context:Record<string,unknown>={esc:(value:unknown)=>String(value??'').replaceAll('&','&amp;').replaceAll('"','&quot;'),_fmtPlanTime:(value:unknown)=>String(value||'')};runInNewContext(section,context);
   const old=legacy();old.cells.promotion=context._promotionCell as LegacyAccountPresenters['cells']['promotion'];const row=accountRow(1,{plan_check_status:'failed',plan_check_country_results:[
     {country:'US',status:'success',checked_at:'2026-11-01T10:00:00Z',result:{account_promotions:[{plan:'plus',kind:'free_trial',eligible:true,duration_num_periods:1,duration_period:'month'}]}},
     {country:'JP',status:'success',checked_at:'2026-11-14T10:00:00Z',result:{account_promotions:[{plan:'plus',kind:'discount',eligible:true,discount_percentage:50,duration_num_periods:2,duration_period:'month'}]}},
     {country:'DE',status:'failed',checked_at:'2026-11-15T10:00:00Z',error:'本次网络故障',last_success_at:'2026-11-12T10:00:00Z',result:{account_promotions:[{plan:'plus',kind:'discount',eligible:true,discount_percentage:25,duration_num_periods:1,duration_period:'month'}]}},
   ]});
-  const value=createAccountPresentation(old).cell('promotion',row);expect(value).toBe(old.cells.promotion(row));const result=html(value);expect(result.querySelectorAll('.account-promotion-country-row')).toHaveLength(2);expect(result.textContent).toContain('JP');expect(result.textContent).toContain('DE');expect(result.textContent).not.toContain('US');expect(result.querySelector('[data-accounts-tooltip]')?.getAttribute('data-accounts-tooltip')).toContain('本次网络故障');
+  const value=createAccountPresentation(old).cell('promotion',row);expect(value).toBe(old.cells.promotion(row));const result=html(value);
+  expect([...result.querySelectorAll('.account-promotion-label')].map(node=>node.textContent)).toEqual(['Team','Plus','Go']);
+  expect(result.textContent).not.toMatch(/JP|DE|US/);
+  const plus=result.querySelector('[data-promotion-plan="plus"]');
+  expect(plus?.classList.contains('is-free')).toBe(true);
+  expect(plus?.getAttribute('data-accounts-tooltip')).toMatch(/US[\s\S]*JP[\s\S]*DE（历史）[\s\S]*本次网络故障/);
  });
  it('动态action保留URL冒号和邮箱无关值，disabled不派发',()=>{const el=html('<button data-qr-url="https://example.test/a:b">二维码</button><button data-account-email-invalid="1" data-invalid="0">解除</button><button data-account-action="password" disabled>禁用</button>');const buttons=el.querySelectorAll('button');expect(actionFromTarget(buttons[0]!)?.action).toBe('qr-url:https://example.test/a:b');expect(actionFromTarget(buttons[1]!)?.action).toBe('account-email-invalid:0');expect(actionFromTarget(buttons[2]!)).toBeUndefined();});
  it('uses mainline compact health and Codex presenters for HTTP, confirmed deactivation and legacy execution state',()=>{
