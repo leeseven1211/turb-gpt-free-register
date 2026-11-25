@@ -11,7 +11,7 @@ from core import db
 from core.operations import task_gateway
 from core.operations.account_receipts import source_prefix
 from core.storage import records
-from core.storage.operations import bulk_submission, common, schema
+from core.storage.operations import bulk_retry_projection, bulk_submission, common, schema
 
 _SETUP = {
     "setup": ("account_setup_retry", {"password", "plan_check", "twofa"}),
@@ -302,8 +302,11 @@ def submit_accounts(account_ids, *, operation, trigger="manual_bulk", parameters
                 spec.update(batch_id=int(batch["id"]), batch_ordinal=ordinal)
             created = bulk_submission.create_specs(specs, conn=conn)
             started.extend({**item, "id": item["account_id"], "task_type": task_type, **details[item["account_id"]]} for item in created)
-            cur.execute(f"UPDATE {common._table('operation_batches')} SET data=data || %s::jsonb WHERE id=%s",
-                        (json.dumps({"skipped": skipped, "skipped_count": len(skipped)}, ensure_ascii=False), int(batch["id"])))
+            cur.execute(f"UPDATE {common._table('operation_batches')} "
+                        "SET skipped_count=%s,data=data || %s::jsonb WHERE id=%s",
+                        (len(skipped), json.dumps({"skipped": skipped, "skipped_count": len(skipped)}, ensure_ascii=False),
+                         int(batch["id"])))
+            bulk_retry_projection.refresh_batches_many(cur, [int(batch["id"])])
     if any(not item.get("reused") for item in started):
         task_gateway.notify_dispatch()
     order = {account_id: index for index, account_id in enumerate(ids)}

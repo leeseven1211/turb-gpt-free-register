@@ -6,7 +6,7 @@ import uuid
 
 from core.operations import run_log
 from core.storage import records
-from core.storage.operations import common
+from core.storage.operations import bulk_retry_projection, common
 
 
 def credentials(conn, *, filenames=(), emails=()):
@@ -148,5 +148,9 @@ def project_queued(conn, rows):
 def finish_batch(conn, batch_id, skipped, accepted):
     with conn.cursor() as cur:
         cur.execute(f"""UPDATE {common._table('operation_batches')} SET
-            data=data || %s::jsonb, status=CASE WHEN %s THEN status ELSE 'failed' END WHERE id=%s""",
-            (json.dumps({"skipped": skipped, "skipped_count": len(skipped)}, ensure_ascii=False), accepted, batch_id))
+            skipped_count=%s,data=data || %s::jsonb,
+            status=CASE WHEN %s THEN status ELSE 'failed' END WHERE id=%s""",
+            (len(skipped), json.dumps({"skipped": skipped, "skipped_count": len(skipped)}, ensure_ascii=False),
+             accepted, batch_id))
+        if accepted or skipped:
+            bulk_retry_projection.refresh_batches_many(cur, [batch_id])

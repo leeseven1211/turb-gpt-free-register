@@ -64,6 +64,43 @@ class CodexBulkSubmissionTests(PostgresTestCase):
             self.assertEqual(run["data"]["config_snapshot"]["request_timeout"], 30)
             self.assertEqual(run["batch_id"], result["batch_id"])
 
+    def test_mixed_submission_keeps_skipped_facts_and_partial_batch_status(self):
+        result = self.service.submit_reauthorization(account_ids=[self.ids[0], 999999])
+        with operations._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"SELECT skipped_count,queued_count,status "
+                f"FROM {operations._table('operation_batches')} WHERE id=%s",
+                (result["batch_id"],),
+            )
+            batch = cur.fetchone()
+        self.assertEqual(dict(batch), {"skipped_count": 1, "queued_count": 1, "status": "queued"})
+        operations.finish_run(result["started"][0]["run_id"], status="success", result_summary={"ok": True})
+        with operations._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"SELECT status,skipped_count,success_count,queued_count "
+                f"FROM {operations._table('operation_batches')} WHERE id=%s",
+                (result["batch_id"],),
+            )
+            batch = cur.fetchone()
+        self.assertEqual(dict(batch), {
+            "status": "partial_success", "skipped_count": 1, "success_count": 1, "queued_count": 0,
+        })
+
+    def test_requested_count_counts_each_unique_input_once_before_classification(self):
+        cases = (
+            {"account_ids": [self.ids[0], 999999, "bad", self.ids[0]]},
+            {"filenames": [self.names[0], "codex-missing.json", "../bad.json", self.names[0]]},
+        )
+        for targets in cases:
+            with self.subTest(targets=targets):
+                result = self.service.submit_reauthorization(**targets)
+                with operations._connect() as conn, conn.cursor() as cur:
+                    cur.execute(
+                        f"SELECT requested_count FROM {operations._table('operation_batches')} WHERE id=%s",
+                        (result["batch_id"],),
+                    )
+                    self.assertEqual(cur.fetchone()["requested_count"], 3)
+
     def test_reauthorization_by_filename_deduplicates_registered_accounts(self):
         with patch.object(operation_service, "submit", side_effect=AssertionError("single submit")):
             result, queries = self.measured(lambda: self.service.submit_reauthorization(

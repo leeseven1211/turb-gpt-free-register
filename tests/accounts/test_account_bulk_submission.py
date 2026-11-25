@@ -52,6 +52,34 @@ class AccountBulkSubmissionTests(PostgresTestCase):
         notify.assert_called_once()
         self.assertTrue(self.tasks()[0]["source_id"].startswith("webui-account-request:" + "a" * 32))
 
+    def test_mixed_submission_keeps_skipped_facts_and_partial_batch_status(self):
+        from core.storage.operations import runtime
+
+        self.account(7)
+        with patch("core.operations.task_gateway.notify_dispatch"):
+            result = bulk_submission.submit_accounts([7, 99], operation="live")
+        with common._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"SELECT requested_count,skipped_count,queued_count,status "
+                f"FROM {common._table('operation_batches')} WHERE id=%s",
+                (result["batch_id"],),
+            )
+            batch = cur.fetchone()
+        self.assertEqual(dict(batch), {
+            "requested_count": 2, "skipped_count": 1, "queued_count": 1, "status": "queued",
+        })
+        runtime.finish_run(result["started"][0]["run_id"], status="success", result_summary={"ok": True})
+        with common._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                f"SELECT status,skipped_count,success_count,queued_count "
+                f"FROM {common._table('operation_batches')} WHERE id=%s",
+                (result["batch_id"],),
+            )
+            batch = cur.fetchone()
+        self.assertEqual(dict(batch), {
+            "status": "partial_success", "skipped_count": 1, "success_count": 1, "queued_count": 0,
+        })
+
     def test_setup_keeps_source_steps_flags_and_snapshot_projection(self):
         self.account(7)
         settings = {"password_driver": "protocol", "twofa_driver": "protocol", "twofa_browser_fallback_enabled": False}

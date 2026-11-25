@@ -56,6 +56,7 @@ def _submit(kind, *, account_ids=(), filenames=(), trigger="manual_bulk", title=
     ids, skipped = _ids(account_ids)
     failed, backend_error = [], None
     names = _names(filenames)
+    requested_count = len(ids) + len(names) + len(skipped)
     for name in names:
         if not _filename_valid(name):
             skipped.append({"filename": name, "reason": "文件名非法", "reason_code": "invalid_filename"})
@@ -226,7 +227,7 @@ def _submit(kind, *, account_ids=(), filenames=(), trigger="manual_bulk", title=
             created = [{**previous[spec["source_id"]], "accepted": True, "reused": True}
                        for spec in specs]
         else:
-            batch = storage.create_batch(conn, kind, len(targets) + len(skipped), trigger, title)
+            batch = storage.create_batch(conn, kind, requested_count, trigger, title)
             created = storage.create_tasks(conn, specs, batch["id"])
         if kind != "sub2api_manual_upload":
             storage.project_queued(conn, created)
