@@ -87,3 +87,21 @@ class BatchStopProjectionCompatibilityTests(PostgresTestCase):
 
     def test_old_stopping_run_does_not_replace_new_stopped_run(self):
         self._same_root_last_run("stopping")
+
+    def test_other_batch_active_run_keeps_its_actions_and_errors(self):
+        root = self._source(email="stop-active-root@example.test", batch_id="original-active-batch")
+        projection.sync_registration_job(root["id"])
+        task = store.find_task_by_source("registration_jobs", str(root["id"]), include_runs=True)
+        prior = self._snapshot(task["id"])
+        selected = self._source(
+            email=root["email"], batch_id="selected-retry-batch", root_job_id=root["id"],
+            parent_job_id=root["id"], retry_attempt=1,
+        )
+        batch_stop.request_stops([selected["id"]], active_job_ids=set(), now_iso=service._now_iso())
+        actual = self._snapshot(task["id"])
+        self.assertEqual(prior["last_run_id"], actual["last_run_id"])
+        self.assertEqual("running", actual["status"])
+        for field in ("next_actions", "error_category", "error_code", "error_message"):
+            self.assertEqual(prior[field], actual[field], field)
+        projection.sync_registration_job(selected["id"])
+        self.assertEqual(self._snapshot(task["id"]), actual)
