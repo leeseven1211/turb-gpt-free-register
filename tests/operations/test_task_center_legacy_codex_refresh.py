@@ -280,3 +280,140 @@ class LegacyCodexRefreshCollectionTests(PostgresTestCase):
             result = _submit(tasks, accounts)
         self.assertEqual(result[1001][0]["error_code"], "account_deactivated")
         self.assertEqual(result[1003][1], 202, result)
+
+    def test_prepare_exposes_every_eligible_candidate_without_creating_runs(self):
+        from core.operations import task_center_legacy_codex_refresh as legacy
+
+        tasks = self.tasks([1, 2])
+        tasks[1001]["result_summary"]["filename"] = "codex-legacy-refresh-2-free.json"
+        accounts = self.accounts()
+        with records.transaction() as conn:
+            prepared = legacy.prepare_legacy(
+                conn, tasks, accounts, snapshot={"CODEX_REQUEST_TIMEOUT": 19, "config_snapshot_revision": 37})
+            self.assertEqual(list(prepared["specs"]), [1001, 1002])
+            self.assertEqual(prepared["replies"], {})
+            self.assertEqual(
+                [spec["account_id"] for spec in prepared["specs"].values()], [2, 2])
+            self.assertEqual(
+                [spec["resource_family"] for spec in prepared["specs"].values()],
+                ["openai_interactive", "openai_interactive"])
+            self.assertNotEqual(prepared["specs"][1001]["source_id"], prepared["specs"][1002]["source_id"])
+            self.assertEqual(prepared["resolved"][1001]["email"], "legacy-refresh-2@example.test")
+            self.assertEqual(prepared["resolved"][1001]["filename"], "codex-legacy-refresh-2-free.json")
+            self.assertEqual(prepared["resolved"][1001]["config_snapshot_revision"], 37)
+            with conn.cursor() as cur:
+                cur.execute(f"SELECT count(*) AS n FROM {store._table('operation_runs')}")
+                self.assertEqual(cur.fetchone()["n"], 0)
+                cur.execute(f"SELECT codex_active_run_id FROM {records._qualified(records.ACCOUNTS)} WHERE id=2")
+                self.assertIsNone(cur.fetchone()["codex_active_run_id"])
+
+    def test_caller_can_choose_winner_format_busy_and_rollback_entire_composition(self):
+        from core.operations import task_center_legacy_codex_refresh as legacy
+        from core.storage.operations.bulk_submission import create_specs
+
+        tasks = self.tasks([1, 2])
+        tasks[1002]["result_summary"]["filename"] = "codex-legacy-refresh-1-free.json"
+        accounts = self.accounts()
+        with self.assertRaisesRegex(RuntimeError, "isolated rollback"):
+            with records.transaction() as conn:
+                prepared = legacy.prepare_legacy(conn, tasks, accounts)
+                chosen = [prepared["specs"][1002]]
+                created = create_specs(chosen, conn=conn)
+                legacy.project_prepared(conn, chosen, created)
+                receipt = created[0]
+                replies = legacy.format_prepared(prepared, {
+                    1001: {**receipt, "accepted": False, "busy": True},
+                    1002: receipt,
+                })
+                self.assertEqual([replies[index][1] for index in tasks], [409, 202])
+                self.assertEqual(replies[1001][0]["run_id"], receipt["run_id"])
+                self.assertEqual(replies[1001][0]["task_id"], receipt["task_id"])
+                self.assertEqual(replies[1001][0]["filename"], "codex-legacy-refresh-1-free.json")
+                self.assertEqual(replies[1002][0]["config_snapshot_revision"], 31)
+                self.assertEqual(replies[1002][0]["email"], "legacy-refresh-1@example.test")
+                with conn.cursor() as cur:
+                    cur.execute(
+                        f"SELECT codex_active_run_id FROM {records._qualified(records.ACCOUNTS)} WHERE id=1")
+                    self.assertEqual(cur.fetchone()["codex_active_run_id"], receipt["run_id"])
+                raise RuntimeError("isolated rollback")
+        with store._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"SELECT count(*) AS n FROM {store._table('operation_tasks')}")
+            self.assertEqual(cur.fetchone()["n"], 0)
+            cur.execute(f"SELECT count(*) AS n FROM {store._table('operation_runs')}")
+            self.assertEqual(cur.fetchone()["n"], 0)
+        self.assertIsNone(records.get_row(records.ACCOUNTS, 1).get("codex_active_run_id"))
+
+    def test_preparation_sees_caller_uncommitted_deactivation_and_rolls_back_marker(self):
+        from core.operations import task_center_legacy_codex_refresh as legacy
+
+        tasks = self.tasks([1])
+        tasks[1001]["result_summary"]["filename"] = "codex-legacy-refresh-2-free.json"
+        accounts = self.accounts()
+        with self.assertRaisesRegex(RuntimeError, "isolated rollback"):
+            with records.transaction() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(f"""UPDATE {records._qualified(records.ACCOUNTS)}
+                        SET data=data || '{{"account_status":"deactivated",
+                            "account_status_reason":"same-connection"}}'::jsonb WHERE id=2""")
+                prepared = legacy.prepare_legacy(conn, tasks, accounts)
+                self.assertEqual(prepared["specs"], {})
+                self.assertEqual(prepared["replies"][1001][1], 400)
+                self.assertEqual(prepared["replies"][1001][0]["error_code"], "account_deactivated")
+                with conn.cursor() as cur:
+                    cur.execute(f"""SELECT oauth_account_status FROM {records._qualified(records.CODEX_CREDENTIALS)}
+                        WHERE filename='codex-legacy-refresh-2-free.json'""")
+                    self.assertEqual(cur.fetchone()["oauth_account_status"], "deactivated")
+                raise RuntimeError("isolated rollback")
+        credential = records.list_rows(records.CODEX_CREDENTIALS,
+            where="filename=%s", params=("codex-legacy-refresh-2-free.json",))[0]
+        self.assertNotEqual(credential.get("oauth_account_status"), "deactivated")
+
+    def test_resolver_uses_actual_credential_email_without_creating_or_locking_runs(self):
+        from core.operations import task_center_legacy_codex_refresh as legacy
+
+        tasks = self.tasks([1, 3, 4])
+        tasks[1001]["result_summary"]["filename"] = "codex-legacy-refresh-2-free.json"
+        tasks[1003]["result_summary"]["filename"] = "../invalid"
+        tasks[1004]["result_summary"]["filename"] = "codex-nonexistent-free.json"
+        with records.transaction() as conn:
+            self.assertEqual(legacy.resolve_account_ids(conn, tasks), {2})
+            with store._connect() as other, other.cursor() as cur:
+                cur.execute(f"SELECT id FROM {records._qualified(records.ACCOUNTS)} WHERE id=2 FOR UPDATE NOWAIT")
+                self.assertEqual(cur.fetchone()["id"], 2)
+
+    def test_preparation_detects_changed_resolution_before_locking_new_account(self):
+        from core.operations import task_center_legacy_codex_refresh as legacy
+
+        tasks = self.tasks([1])
+        accounts = self.accounts()
+        with records.transaction() as conn:
+            resolved = legacy.resolve_account_ids(conn, tasks)
+            self.assertEqual(resolved, {1})
+            with conn.cursor() as cur:
+                cur.execute(f"""UPDATE {records._qualified(records.CODEX_CREDENTIALS)}
+                    SET email='legacy-refresh-2@example.test',
+                        data=data || '{{"content":{{"email":"legacy-refresh-2@example.test",
+                            "access_token":"isolated","refresh_token":"isolated-refresh"}}}}'::jsonb
+                    WHERE filename='codex-legacy-refresh-1-free.json'""")
+            with self.assertRaises(legacy.ResolvedAccountsChanged) as changed:
+                legacy.prepare_legacy(conn, tasks, accounts, locked_account_ids=resolved)
+            self.assertEqual(changed.exception.unlocked_account_ids, {2})
+            with store._connect() as other, other.cursor() as cur:
+                cur.execute(f"SELECT id FROM {records._qualified(records.ACCOUNTS)} WHERE id=2 FOR UPDATE NOWAIT")
+                self.assertEqual(cur.fetchone()["id"], 2)
+            with self.assertRaises(legacy.ResolvedAccountsChanged):
+                legacy.prepare_legacy(conn, tasks, accounts, locked_account_ids=set())
+
+    def test_missing_credential_email_cannot_bind_historical_empty_email_account(self):
+        from core.operations import task_center_legacy_codex_refresh as legacy
+
+        records.insert_row(records.ACCOUNTS, {"id": 99, "email": ""})
+        records.patch_rows_where_returning(records.CODEX_CREDENTIALS,
+            changes={"email": "", "content": {"access_token": "isolated", "refresh_token": "isolated-refresh"}},
+            where="filename=%s", params=("codex-legacy-refresh-1-free.json",))
+        accounts = self.accounts()
+        with records.transaction() as conn:
+            self.assertEqual(legacy.resolve_account_ids(conn, self.tasks([1])), set())
+            prepared = legacy.prepare_legacy(conn, self.tasks([1]), accounts)
+            self.assertEqual(prepared["specs"], {})
+            self.assertEqual(prepared["replies"][1001][0]["error_code"], "account_reference_missing")
