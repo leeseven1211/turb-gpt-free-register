@@ -141,6 +141,8 @@ class TaskCenterNativeRetryTests(PostgresTestCase):
             return execute(cursor, query, params, **kwargs)
 
         with patch.object(codex, "_config_snapshot", return_value={"codex_driver": "roxy"}) as snapshot, \
+                patch.object(codex, "start_dispatcher", side_effect=AssertionError("批量受理不能启动执行器")), \
+                patch.object(codex, "register_handler", side_effect=AssertionError("批量受理不能安装执行handler")), \
                 patch.object(Cursor, "execute", measured):
             reply = action_service.accept_bulk_operation_action("retry", [row["task_id"] for row in original])
         self.assertEqual(reply["accepted_count"], 100)

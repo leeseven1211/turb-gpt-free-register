@@ -37,10 +37,8 @@ def _reply(payload: Mapping) -> tuple[dict, int]:
     return result, status
 
 
-def accept_retries(tasks: dict[int, dict], *, excluded=(), request_key=None, operation_logger=None) -> dict:
-    """只接管已知原生 retry handler；领域扩展仍由原分发入口负责。"""
-    if request_key and len(request_key) > 128:
-        return {}
+def select_retries(tasks: dict[int, dict], *, excluded=()) -> dict:
+    """纯分类保留输入顺序，不受理或预占账号资源。"""
     from core.operations import action_service
 
     handlers = {
@@ -51,7 +49,7 @@ def accept_retries(tasks: dict[int, dict], *, excluded=(), request_key=None, ope
         liveness._retry_token_refresh_operation: "refresh",
         codex._retry_operation_action: "codex",
     }
-    selected, output = {}, {}
+    selected = {}
     for task_id, task in tasks.items():
         if task_id in excluded or task.get("_managed_target_round_id"):
             continue
@@ -70,57 +68,80 @@ def accept_retries(tasks: dict[int, dict], *, excluded=(), request_key=None, ope
             else:
                 continue
         selected[task_id] = (task, kind)
+    return selected
+
+
+def prepare_retries(conn, selected: dict, *, operation_logger=None, accounts=None) -> dict:
+    """捕获领域配置并集合预检；不追加 Run、不写账号排队投影。"""
+    from core.operations import action_service
+
+    output, specs, kinds = {}, [], {}
+    logger = operation_logger or action_service.action_logger
+    if accounts is None:
+        account_ids = sorted({int(task.get("account_id") or 0) for task, _ in selected.values()})
+        account_ids = [value for value in account_ids if value > 0]
+        accounts = {}
+        if account_ids:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"SELECT * FROM {records._qualified(records.ACCOUNTS)} WHERE id=ANY(%s) ORDER BY id",
+                    (account_ids,),
+                )
+                accounts = {row["id"]: records.merge_row(records.ACCOUNTS, row) for row in cur.fetchall()}
+    codex_accounts = [int(task.get("account_id") or 0) for task, kind in selected.values() if kind == "codex"]
+    active = {}
+    if codex_accounts:
+        with conn.cursor() as cur:
+            cur.execute(f"""SELECT id,task_id,account_id,status FROM {store._table('operation_runs')}
+                WHERE account_id=ANY(%s) AND resource_family='openai_interactive'
+                  AND status IN ('queued','running','cancelling','settling','stopping')
+                ORDER BY id DESC""", (codex_accounts,))
+            for row in cur.fetchall():
+                active.setdefault(row["account_id"], dict(row))
+    shared = {}
+    job_ids = sorted({int(_data(task).get("source_job_id") or 0)
+        for task, kind in selected.values()
+        if kind == "runtime" and task.get("task_type") == "registration_resume"})
+    job_ids = [value for value in job_ids if value > 0]
+    if job_ids:
+        shared["registration_sources"] = {int(job["id"]): job for job in records.list_rows(
+            records.JOBS, where="id=ANY(%s)", params=(job_ids,), conn=conn)}
+    for task_id, (task, kind) in selected.items():
+        account = accounts.get(int(task.get("account_id") or 0))
+        if kind == "runtime" and store._account_is_deactivated(account):
+            output[task_id] = _reply({"accepted": False, "deactivated": True, "error": "账号已废号，不能重跑"})
+            continue
+        try:
+            data, unavailable = _prepare(task, kind, account, active, shared)
+        except Exception as exc:
+            logger.exception("任务中心重试预检失败：task_id=%s type=%s", task_id, task.get("task_type"))
+            output[task_id] = ({"ok": False, "error": f"重试入口异常：{type(exc).__name__}: {exc}"}, 503)
+            continue
+        if unavailable:
+            output[task_id] = _reply(unavailable)
+            continue
+        specs.append({"task_id": task_id, "data": data, "trigger": "manual_retry",
+            "codex_state": kind == "codex"})
+        kinds[task_id] = kind
+    return {"specs": specs, "replies": output, "kinds": kinds}
+
+
+def accept_retries(tasks: dict[int, dict], *, excluded=(), request_key=None, operation_logger=None) -> dict:
+    """只接管已知原生 retry handler；领域扩展仍由原分发入口负责。"""
+    if request_key and len(request_key) > 128:
+        return {}
+    from core.operations import action_service
+
+    selected = select_retries(tasks, excluded=excluded)
+    output = {}
     if not selected:
         return output
-    specs, kinds = [], {}
     logger = operation_logger or action_service.action_logger
     try:
         with store._connect() as conn:
-            account_ids = sorted({int(task.get("account_id") or 0) for task, _ in selected.values()})
-            account_ids = [value for value in account_ids if value > 0]
-            accounts = {}
-            if account_ids:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        f"SELECT * FROM {records._qualified(records.ACCOUNTS)} WHERE id=ANY(%s) ORDER BY id",
-                        (account_ids,),
-                    )
-                    accounts = {row["id"]: records.merge_row(records.ACCOUNTS, row) for row in cur.fetchall()}
-            codex_accounts = [int(task.get("account_id") or 0) for task, kind in selected.values() if kind == "codex"]
-            active = {}
-            if codex_accounts:
-                with conn.cursor() as cur:
-                    cur.execute(f"""SELECT id,task_id,account_id,status FROM {store._table('operation_runs')}
-                        WHERE account_id=ANY(%s) AND resource_family='openai_interactive'
-                          AND status IN ('queued','running','cancelling','settling','stopping')
-                        ORDER BY id DESC""", (codex_accounts,))
-                    for row in cur.fetchall():
-                        active.setdefault(row["account_id"], dict(row))
-            shared = {}
-            job_ids = sorted({int(_data(task).get("source_job_id") or 0)
-                for task, kind in selected.values()
-                if kind == "runtime" and task.get("task_type") == "registration_resume"})
-            job_ids = [value for value in job_ids if value > 0]
-            if job_ids:
-                shared["registration_sources"] = {int(job["id"]): job for job in records.list_rows(
-                    records.JOBS, where="id=ANY(%s)", params=(job_ids,), conn=conn)}
-            for task_id, (task, kind) in selected.items():
-                account = accounts.get(int(task.get("account_id") or 0))
-                if kind == "runtime" and store._account_is_deactivated(account):
-                    output[task_id] = _reply({"accepted": False, "deactivated": True, "error": "账号已废号，不能重跑"})
-                    continue
-                try:
-                    data, unavailable = _prepare(task, kind, account, active, shared)
-                except Exception as exc:
-                    logger.exception("任务中心重试预检失败：task_id=%s type=%s", task_id, task.get("task_type"))
-                    output[task_id] = ({"ok": False, "error": f"重试入口异常：{type(exc).__name__}: {exc}"}, 503)
-                    continue
-                if unavailable:
-                    output[task_id] = _reply(unavailable)
-                    continue
-                specs.append({"task_id": task_id, "data": data, "trigger": "manual_retry",
-                    "codex_state": kind == "codex"})
-                kinds[task_id] = kind
+            prepared = prepare_retries(conn, selected, operation_logger=logger)
+            output.update(prepared["replies"])
+            specs, kinds = prepared["specs"], prepared["kinds"]
             if specs:
                 from core.storage.operations.bulk_retry_tasks import retry_tasks_many
                 replies = retry_tasks_many(conn, specs)
@@ -131,7 +152,13 @@ def accept_retries(tasks: dict[int, dict], *, excluded=(), request_key=None, ope
         output.update({task_id: ({"ok": False, "error": "重试入口异常，请刷新任务状态后重试"}, 503)
             for task_id in selected if task_id not in output})
         return output
-    accepted = []
+    output.update(finish_retries(replies, kinds))
+    return output
+
+
+def finish_retries(replies, kinds, *, notify=True):
+    """事实提交后记录文件日志，并按需要发出一次调度通知。"""
+    output, accepted = {}, []
     for task_id, raw in replies.items():
         payload = dict(raw)
         output[task_id] = _reply(payload)
@@ -146,9 +173,7 @@ def accept_retries(tasks: dict[int, dict], *, excluded=(), request_key=None, ope
         if kinds[payload["task_id"]] == "codex":
             run_log.append(payload.get("log_file"), level="INFO", message="Codex operation 作为新 Run 进入队列",
                 task_id=payload["task_id"], run_id=payload["run_id"], stage="queued", event_type="retry.scheduled")
-    if accepted:
-        if any(kinds[payload["task_id"]] == "codex" for payload in accepted):
-            codex.start_dispatcher()
+    if accepted and notify:
         task_gateway.notify_dispatch()
     return output
 

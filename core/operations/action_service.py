@@ -219,19 +219,27 @@ def accept_bulk_operation_action(
             **result,
         }
 
-    tasks = operation_task_store.get_action_tasks_many(task_ids)
-    managed_retries = _accept_managed_retries(tasks, request_key=request_key) if action == "retry" else {}
-    registration_retries = _accept_registration_retries(
-        {task_id: tasks[task_id] for task_id in task_ids if task_id in tasks},
-        managed_task_ids=set(managed_retries), request_key=request_key,
-        operation_logger=operation_logger,
-    ) if action == "retry" else {}
+    observed = operation_task_store.get_action_tasks_many(task_ids)
+    tasks = {task_id: observed[task_id] for task_id in task_ids if task_id in observed}
+    managed_task_ids = {task_id for task_id, task in tasks.items() if task.get("_managed_target_round_id")}
     if action == "retry":
-        from core.operations.task_center_retry import accept_retries
-        native_retries = accept_retries(tasks, excluded=set(managed_retries) | set(registration_retries),
+        from core.operations.task_center_retry_wave import accept_retries
+        native_retries = accept_retries(tasks, excluded=managed_task_ids,
             request_key=request_key, operation_logger=operation_logger)
+        from core.operations.task_center_sentinel import accept_retries as accept_sentinel_retries
+        sentinel_retries = (
+            accept_sentinel_retries(tasks) if not request_key or len(request_key) <= 128 else {}
+        )
+        from core.operations.task_center_inspection import accept_retries as accept_inspection_retries
+        inspection_retries = (
+            accept_inspection_retries(tasks) if not request_key or len(request_key) <= 128 else {}
+        )
+        managed_retries = _accept_managed_retries(tasks, request_key=request_key)
     else:
+        managed_retries = {}
         native_retries = {}
+        sentinel_retries = {}
+        inspection_retries = {}
     cancelled = _accept_pending_cancellations(tasks) if action == "cancel" else {}
     if action == "cancel":
         from core.operations.task_center_cancel import accept_cancellations
@@ -258,10 +266,12 @@ def accept_bulk_operation_action(
             continue
         if task_id in managed_retries:
             payload, status = managed_retries[task_id]
-        elif task_id in registration_retries:
-            payload, status = registration_retries[task_id]
         elif task_id in native_retries:
             payload, status = native_retries[task_id]
+        elif task_id in sentinel_retries:
+            payload, status = sentinel_retries[task_id]
+        elif task_id in inspection_retries:
+            payload, status = inspection_retries[task_id]
         elif task_id in cancelled:
             error = cancelled[task_id]
             payload, status = (
@@ -398,7 +408,13 @@ def _accept_managed_retries(
     managed = {task_id: identity for task_id, identity in identities.items() if identity}
     if not managed or (request_key and len(request_key) > 128):
         return {}
-    targets = operation_task_store.get_managed_retry_targets(sorted({int(value) for value in managed.values()}))
+    try:
+        targets = operation_task_store.get_managed_retry_targets(sorted({int(value) for value in managed.values()}))
+    except Exception:
+        action_logger.exception("任务中心受管批量重试归属读取失败")
+        return {task_id: ({"ok": False, "unavailable": True,
+            "error_code": "managed_retry_unavailable", "error": "批量任务重跑暂不可用，请刷新后重试"}, 503)
+            for task_id in managed}
     replies = {}
     groups: dict[int, dict[int, int]] = defaultdict(dict)
     for task_id, target_round_id in managed.items():
@@ -418,6 +434,10 @@ def _accept_managed_retries(
             reply = {"ok": True, "accepted": True, "state": result["state"]}, 202
         except ValueError as exc:
             reply = {"ok": False, "error": str(exc)}, getattr(exc, "status", 409)
+        except Exception:
+            action_logger.exception("任务中心受管批量重试轮次创建失败：batch_id=%s", batch_id)
+            reply = {"ok": False, "unavailable": True, "error_code": "managed_retry_unavailable",
+                "error": "批量任务重跑暂不可用，请刷新后重试"}, 503
         replies.update(dict.fromkeys(members, reply))
     return replies
 
