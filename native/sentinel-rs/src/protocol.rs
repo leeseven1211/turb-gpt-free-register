@@ -76,6 +76,16 @@ fn recv(deadline: Duration) -> Result<Value> {
     }
 }
 
+/// Python 落库可能要等数据库锁；默认 180s，可用环境变量收紧/放宽。
+fn checkpoint_ack_timeout() -> Duration {
+    let seconds = std::env::var("SENTINEL_CHECKPOINT_ACK_TIMEOUT_SECONDS")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(180);
+    Duration::from_secs(seconds)
+}
+
 fn wait_for(kind: &str, timeout: Duration) -> Result<Value> {
     loop {
         let value = recv(timeout)?;
@@ -206,7 +216,7 @@ pub fn checkpoint_password(email: &str, password: &str) -> Result<()> {
         "checkpoint_prepare",
         json!({"kind": "password", "email": email, "password": password, "challenge_id": challenge}),
     );
-    let ack = wait_for("checkpoint_ack", Duration::from_secs(15)).context("等待 checkpoint_ack")?;
+    let ack = wait_for("checkpoint_ack", checkpoint_ack_timeout()).context("等待 checkpoint_ack")?;
     let data = ack.get("data").cloned().unwrap_or_default();
     if data.get("challenge_id").and_then(Value::as_str) != Some(challenge.as_str()) {
         bail!("checkpoint_ack 的 challenge 不匹配");
