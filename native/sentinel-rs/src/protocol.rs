@@ -76,6 +76,23 @@ fn recv(deadline: Duration) -> Result<Value> {
     }
 }
 
+/// 单轮验证码等待秒数（与 Python `OTP_MAX_WAIT` 同源，由桥接写入环境变量）。
+pub fn otp_max_wait_seconds() -> u64 {
+    std::env::var("OTP_MAX_WAIT")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(300)
+}
+
+/// 超时后的重发次数（与 Python `OTP_RESEND_COUNT` 同源）。
+pub fn otp_resend_count() -> u32 {
+    std::env::var("OTP_RESEND_COUNT")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u32>().ok())
+        .unwrap_or(1)
+}
+
 /// Python 落库可能要等数据库锁；默认 180s，可用环境变量收紧/放宽。
 fn checkpoint_ack_timeout() -> Duration {
     let seconds = std::env::var("SENTINEL_CHECKPOINT_ACK_TIMEOUT_SECONDS")
@@ -134,40 +151,6 @@ pub fn landing(verdict: &str, host: &str) {
     emit("landing", json!({"verdict": verdict, "host": host}));
 }
 
-/// 协议模式下向 Python 请求验证码；Python 用自己的邮箱服务等待并回传。
-pub fn request_otp(email: &str, after_ts: u64) -> Result<String> {
-    if !enabled() {
-        bail!("协议模式未启用");
-    }
-    let challenge = uuid::Uuid::new_v4().to_string();
-    emit(
-        "otp_request",
-        json!({"challenge_id": challenge, "email": email, "after_ts": after_ts}),
-    );
-    loop {
-        let value = recv(Duration::from_secs(1200)).context("等待 otp_response")?;
-        if value.get("type").and_then(Value::as_str) != Some("otp_response") {
-            continue;
-        }
-        let data = value.get("data").cloned().unwrap_or_default();
-        if data.get("challenge_id").and_then(Value::as_str) != Some(challenge.as_str()) {
-            continue;
-        }
-        let status = data.get("status").and_then(Value::as_str).unwrap_or("malformed");
-        if status == "timeout" {
-            bail!("等待邮箱验证码超时（Python 侧）");
-        }
-        if status != "ok" {
-            bail!("取码失败（Python 侧）：{status}");
-        }
-        let code = data.get("code").and_then(Value::as_str).unwrap_or_default().to_string();
-        if code.len() != 6 || !code.chars().all(|ch| ch.is_ascii_digit()) {
-            bail!("取码结果不是 6 位数字");
-        }
-        return Ok(code);
-    }
-}
-
 /// 刷新 AT 的握手：报告 `refresh` 能力并等待带完整参数的 `start`。
 ///
 /// 与注册的 [`handshake`] 分开：注册只校验邮箱一致，刷新需要把 Cookie、
@@ -204,6 +187,62 @@ pub fn result_ok(data: Value) {
 /// 失败终态；字段与 Python 侧 v3 的错误分类保持同名。
 pub fn result_partial(data: Value) {
     emit("result_partial", data);
+}
+
+/// 协议模式下向 Python 请求验证码；Python 用自己的邮箱服务等待并回传。
+///
+/// 这里是单轮等待：`timeout` 到了返回 `Ok(None)`，由调用方决定是否重发。
+pub fn request_otp_window(
+    email: &str,
+    after_ts: u64,
+    timeout: Duration,
+) -> Result<Option<String>> {
+    if !enabled() {
+        bail!("协议模式未启用");
+    }
+    let challenge = uuid::Uuid::new_v4().to_string();
+    emit(
+        "otp_request",
+        json!({"challenge_id": challenge, "email": email, "after_ts": after_ts}),
+    );
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return Ok(None);
+        }
+        let value = match recv(remaining) {
+            Ok(value) => value,
+            Err(_) => return Ok(None),
+        };
+        if value.get("type").and_then(Value::as_str) != Some("otp_response") {
+            continue;
+        }
+        let data = value.get("data").cloned().unwrap_or_default();
+        if data.get("challenge_id").and_then(Value::as_str) != Some(challenge.as_str()) {
+            continue;
+        }
+        let status = data.get("status").and_then(Value::as_str).unwrap_or("malformed");
+        if status == "timeout" {
+            return Ok(None);
+        }
+        if status != "ok" {
+            bail!("取码失败（Python 侧）：{status}");
+        }
+        let code = data.get("code").and_then(Value::as_str).unwrap_or_default().to_string();
+        if code.len() != 6 || !code.chars().all(|ch| ch.is_ascii_digit()) {
+            bail!("取码结果不是 6 位数字");
+        }
+        return Ok(Some(code));
+    }
+}
+
+/// 兼容旧调用：单轮等待固定 1200 秒，超时报错。
+pub fn request_otp(email: &str, after_ts: u64) -> Result<String> {
+    match request_otp_window(email, after_ts, Duration::from_secs(1200))? {
+        Some(code) => Ok(code),
+        None => bail!("等待邮箱验证码超时（Python 侧）"),
+    }
 }
 
 /// 在发送 `user/register` 之前调用：Python 落库后回 ack，否则禁止继续。

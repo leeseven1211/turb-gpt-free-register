@@ -206,11 +206,11 @@ def _run_sentinel_rs_flow(
                 proxy=proxy, email_source=source,
             )
 
-        # 内核原窗口是 300s；配置更宽时跟随配置，至少不回退到这个下限。
+        # 与统一 OTP 配置对齐：窗口和重发次数都由 OTP_MAX_WAIT / OTP_RESEND_COUNT 决定。
         try:
             from config import email as _email_cfg
 
-            otp_wait = max(int(getattr(_email_cfg, "OTP_MAX_WAIT", 300) or 300), 300)
+            otp_wait = max(1, int(getattr(_email_cfg, "OTP_MAX_WAIT", 300) or 300))
         except Exception:
             otp_wait = 300
         protocol_hooks = {

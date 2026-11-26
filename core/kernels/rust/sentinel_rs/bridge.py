@@ -254,6 +254,18 @@ def _protocol_line_for_diagnostics(line: str) -> str:
     return label
 
 
+def _otp_settings() -> tuple[int, int]:
+    """与 Python 配置同源的验证码窗口/重发次数；缺省 300 秒、1 次。"""
+    try:
+        from config import email as email_cfg
+
+        wait = int(getattr(email_cfg, "OTP_MAX_WAIT", 300) or 300)
+        resend = int(getattr(email_cfg, "OTP_RESEND_COUNT", 1) or 0)
+    except Exception:
+        wait, resend = 300, 1
+    return max(1, wait), max(0, resend)
+
+
 def _protocol_send(stream, message: dict) -> None:
     stream.write(json.dumps(message, ensure_ascii=False, separators=(",", ":")) + "\n")
     stream.flush()
@@ -284,7 +296,8 @@ def run_registration_protocol(
         "SENTINEL_ENABLE_2FA": "1" if enable_2fa else "0",
         "SENTINEL_FP_GEO_PROBE": "1",
         "SENTINEL_PROTOCOL": "1",
-        "OTP_MAX_WAIT": str(min(request.timeout_seconds, 300)),
+        "OTP_MAX_WAIT": str(min(request.timeout_seconds, _otp_settings()[0])),
+        "OTP_RESEND_COUNT": str(_otp_settings()[1]),
     }
     logger.info("sentinel-rs 协议模式启动：binary=%s timeout=%ss", request.binary.name, request.timeout_seconds)
     try:
@@ -522,10 +535,13 @@ def run_refresh_protocol(
     v3 的错误分类继续处理。
     """
     command = [str(request.binary), "refresh", "--live"]
+    otp_wait, otp_resend = _otp_settings()
     env = {
         **os.environ,
         "SENTINEL_PROTOCOL": "1",
         "SENTINEL_LOG": request.log_level,
+        "OTP_MAX_WAIT": str(otp_wait),
+        "OTP_RESEND_COUNT": str(otp_resend),
     }
     logger.info("sentinel-rs 刷新启动：timeout=%ss cookies=%s", request.timeout_seconds, len(request.cookies))
     try:
@@ -557,7 +573,7 @@ def run_refresh_protocol(
 
             code = wait_for_otp(
                 address or request.email, after_ts=after_ts,
-                max_wait=int(otp_wait_seconds) if otp_wait_seconds else None,
+                max_wait=int(otp_wait_seconds) if otp_wait_seconds else otp_wait,
                 email_source=email_source,
             )
             status = "ok" if str(code or "").strip() else "malformed"

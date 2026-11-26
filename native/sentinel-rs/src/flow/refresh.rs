@@ -420,9 +420,40 @@ async fn authenticate(
             "email_otp" => {
                 crate::protocol::progress("email_otp", "running", None);
                 let _ = client.execute(&builder.otp_send()).await;
-                let after_ts = now_ts_u64();
-                let code = crate::protocol::request_otp(email, after_ts).map_err(|error| {
-                    err("email_otp_failed", "email").detail(error.to_string())
+                let attempts = 1 + crate::protocol::otp_resend_count();
+                let wait_secs = crate::protocol::otp_max_wait_seconds();
+                let mut received = None;
+                for attempt in 1..=attempts {
+                    let after_ts = now_ts_u64();
+                    match crate::protocol::request_otp_window(
+                        email,
+                        after_ts,
+                        std::time::Duration::from_secs(wait_secs),
+                    )
+                    .map_err(|error| {
+                        err("email_otp_failed", "email").detail(error.to_string())
+                    })? {
+                        Some(code) => {
+                            received = Some(code);
+                            break;
+                        }
+                        None => {
+                            if attempt < attempts {
+                                crate::protocol::progress(
+                                    "email_otp",
+                                    "running",
+                                    Some("等待超时，正在重发验证码"),
+                                );
+                                let _ = client.execute(&builder.otp_send()).await;
+                            }
+                        }
+                    }
+                }
+                let code = received.ok_or_else(|| {
+                    err("email_otp_failed", "email").detail(format!(
+                        "等待邮箱验证码超时（已重发 {} 次）",
+                        attempts - 1
+                    ))
                 })?;
                 let spec = builder.otp_validate(&code);
                 payload = post_json(client, &spec, "email_otp_validate").await?;

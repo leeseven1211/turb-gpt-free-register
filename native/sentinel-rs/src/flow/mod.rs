@@ -893,12 +893,45 @@ async fn live_register(
     info!("[6/10] OTP 已发送");
 
     // 6) 取码：协议模式交给 Python 的邮箱服务；否则沿用内核自带的 URL 轮询。
-    let issued_after = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|value| value.as_secs())
-        .unwrap_or(0);
     let code = if crate::protocol::enabled() {
-        crate::protocol::request_otp(&identity.email, issued_after)?
+        // 单轮等待超时就点一次“重发”，次数由 Python 的 OTP_RESEND_COUNT 决定。
+        let attempts = 1 + crate::protocol::otp_resend_count();
+        let wait_secs = crate::protocol::otp_max_wait_seconds();
+        let mut received = None;
+        for attempt in 1..=attempts {
+            let issued_after = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|value| value.as_secs())
+                .unwrap_or(0);
+            match crate::protocol::request_otp_window(
+                &identity.email,
+                issued_after,
+                std::time::Duration::from_secs(wait_secs),
+            )? {
+                Some(code) => {
+                    received = Some(code);
+                    break;
+                }
+                None => {
+                    if attempt < attempts {
+                        info!(
+                            "[6/10] 等待验证码超时，重发验证码（{attempt}/{attempts}）"
+                        );
+                        match sentinel.token(sentinel::FLOW_EMAIL_OTP, &identity.device_id) {
+                            Ok(st) => {
+                                if let Err(error) = http.execute(&builder.resend_otp(&st)).await {
+                                    warn!("重发验证码失败：{error:#}");
+                                }
+                            }
+                            Err(error) => warn!("重发验证码缺少 sentinel：{error:#}"),
+                        }
+                    }
+                }
+            }
+        }
+        received.ok_or_else(|| {
+            anyhow::anyhow!("等待邮箱验证码超时（Python 侧，已重发 {} 次）", attempts - 1)
+        })?
     } else {
         email::poll_otp_url(
             &email_http,
