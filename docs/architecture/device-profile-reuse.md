@@ -154,12 +154,29 @@ webgl_renderer      = ANGLE (Apple, ... Apple M2)  ← 矛盾
 > 说明：A 修的是"记录准确"，B 修的是"请求本身"。当前 5,241 个历史号带着该组合
 > 注册成功，说明服务端暂未因此拦截；B 不应与第一部分混做。
 
-## 5. 第二部分：回放（待讨论，占位）
+## 5. 第二部分：回放（范围已定，细节待讨论）
 
-- rust 需支持"按画像回放"（`--device-profile` 文件），当前只能生成 Windows Chrome
-- 传输档位差异：protocol wreq 152 / rust wreq-util 149 / curl_cffi 146
-- family 差异：chrome-windows 与 safari-macos / safari-ios 的必填与必空规则不同
-- canonical 与推导规则等"有具体调用方"时再定
+### 5.1 已定范围
+
+- 目标等级：**L2**（UA/client hints/OS/屏幕/语言/TLS 档位都要与上次一致）
+- **只用于改密**，不用于刷新、不用于注册
+- **每个内核只回放自己的画像**，不做跨内核回放（后续再议）
+- 每个账号的 `replay_kernel` 固定，不动态切换
+
+### 5.2 硬约束（实测）
+
+- 协议注册画像：UA/TLS 均为 Chrome152，只有 Python wreq 能跑（支持到 154）
+- rust 注册画像：TLS ≤149，但**注册未回传**，目前没有真实画像可回放
+- 改密现跑在 Python v3 + curl_cffi，**TLS 上限 146**
+
+结论：即使"只用自己内核"，协议号改密要 L2 一致，也必须让改密走 wreq 传输；
+否则只能 L1 近似（UA 152 + TLS 146）。
+
+### 5.3 待定
+
+- 改密是否改用 wreq 传输（达成 L2），或先接受 146 近似（L1）
+- rust 号暂无真实画像，是否等注册回传后再纳入
+- family 差异（chrome-windows / safari-macos / safari-ios）在回放时的必填必空规则
 
 ## 6. 第三步：回填 + 观测 + 对照实验（待讨论）
 
