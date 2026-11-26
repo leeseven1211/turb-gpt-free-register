@@ -1083,6 +1083,8 @@ WebUI 提交真实任务时先设为“数量 1、线程 1”。确认批次进�
 - 部署步骤、浏览器能力限制和验收范围见[Oracle 独立实例](docs/deployment/oracle-independent.md)。服务器服务与反代模板位于 `deploy/`。
 - 更新或重启前必须保留 `.env`、PostgreSQL 数据、`accounts/`、`codex_accounts/`、日志、`logs/run/` 和 `.venv/`。提交代码、推送仓库、重启服务和验证实际运行版本是四个独立步骤，不能相互代替。
 
+日常重新部署使用[统一部署入口](docs/deployment/operations.md#统一部署入口)，先预览再执行，优先复用热加载能力与现役依赖环境。
+
 ### 后续投产清单
 
 - 使用 systemd、launchd 或其他进程管理器托管 WebUI；iCloud sidecar 属于独立邮箱服务，按其部署方式维护。反向代理只暴露 WebUI，不要把 sidecar 的 `8081` 直接暴露公网。

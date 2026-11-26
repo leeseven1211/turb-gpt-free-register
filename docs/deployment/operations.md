@@ -11,6 +11,25 @@
 3. 暂停原进程管理器的自动拉起，停止旧服务，确认监听端口关闭后再切换文件或执行迁移。保留用户未提交修改，不让两个实例同时加载不同版本。
 4. 恢复原托管配置，核对新进程 PID、工作目录、监听端口和本次启动后的新增日志，再检查健康、就绪和登录。若切换失败，应先恢复完整的代码与配置，再恢复服务。
 
+### 统一部署入口
+
+[`tools/deploy.py`](../../tools/deploy.py) 复用本机 launchd 固定 release 和 Oracle systemd checkout 的现役布局，两端分别执行。默认只读预览；加 `--apply` 才执行计划中的切换或重启：
+
+```bash
+python3 tools/deploy.py local
+python3 tools/deploy.py oracle
+python3 tools/deploy.py local --apply
+python3 tools/deploy.py oracle --apply
+```
+
+本地只部署源码 `HEAD`。Oracle 默认使用远端 checkout 的 `HEAD`，`--revision` 可指定目标端已有提交且只允许快进；脚本不会自动拉取、推送或合并分叉，本地代码需先按既有发布流程提交、推送并核对远端版本。`--host` 可指定 Oracle SSH 别名，`--source` 指向对应目标端的源码目录。
+
+可热编辑运行配置由现有 observer 应用，无需重启；`python3 tools/deploy.py local --check` 或 `oracle --check` 只检查 `/healthz`、`/readyz`、`/login`。启动环境或需重启字段变化时，使用 `--restart --apply`。Python 代码和模板变化需要重启；Oracle 可变 checkout 仅有 `webui/static/` 产物变化时免重启，本地固定 release 的静态资源变化仍须切换 release 并重启。文档、测试、这三个部署入口脚本及尚未构建的 `frontend/` 源码变化不触发重启；前端产物应在开发阶段构建并提交，部署时不重复运行 npm。
+
+依赖未变时复用现役环境；本地依赖变化时，通过 `--interpreter` 指定已准备好的包外 Python 环境。Oracle 依赖变化时，先按原服务准备匹配环境，脚本核对现役 `.venv` 的已安装版本是否符合目标提交的 `requirements.txt`，不匹配则返回 `deployment_dependency_environment_mismatch`；脚本不原地安装依赖，准备新环境时保留现役环境用于回退。脚本不运行测试；非重大架构变动在开发阶段只做少量、直接相关的回归测试。
+
+执行后，在目标端 `logs/run/deploy/<target>/<时间戳>/deployment.json` 保存结果，成功时更新 `logs/run/deploy/<target>/last-success.json`。Oracle 优先通过持久运行记录或部署回执核对当前进程版本；两者均无法核对时，才重启建立版本基线。预览和健康检查不代表已部署；页面交互仍按本次改动范围验收。数据库迁移及相应备份继续按下文维护流程执行。
+
 ### 启动方式
 
 已有 `launchd` / `systemd` 托管时，以该服务实际的工作目录、启动参数和环境为准。先查看对应服务的配置与状态；维护期间暂停自动拉起，完成后恢复同一个服务。仅停止子进程可能被托管器立即拉起，不能保证已停机。不要在托管服务旁另行执行手动 `start` 或 `restart`。
