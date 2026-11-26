@@ -151,14 +151,43 @@ def run_protocol_password_reset(
             return failure
         account = db.get_account_by_email(email) or account
 
+    # 复用上次登录的指纹与 Cookie，避免“新设备 + 改密”触发 sensitive_action_cooldown。
+    from core.storage.accounts import protocol_sessions
+
+    cached = {}
+    try:
+        cached = protocol_sessions.load_session(int(account.get("id") or 0), email) or {}
+    except Exception:
+        cached = {}
+    identity = None
+    if cached.get("device_id") and isinstance(cached.get("browser_profile"), dict) and cached.get("browser_profile"):
+        identity = {
+            "device_id": str(cached.get("device_id")),
+            "browser_profile": dict(cached.get("browser_profile") or {}),
+        }
+
     session: BrowserSession | None = None
     cancelled = False
     try:
         if callable(checkpoint):
             checkpoint()
-        session, authorize = _network_preflight_with_retry(
-            email, proxy, proxy_supplier=proxy_supplier,
-        )
+        try:
+            session, authorize = _network_preflight_with_retry(
+                email, proxy, proxy_supplier=proxy_supplier, identity=identity,
+            )
+        except ValueError:
+            # 画像不完整时退回无 identity，至少保证流程可跑。
+            session, authorize = _network_preflight_with_retry(
+                email, proxy, proxy_supplier=proxy_supplier,
+            )
+        for item in cached.get("cookies") or []:
+            try:
+                session.session.cookies.set(
+                    str(item["name"]), str(item["value"]),
+                    domain=str(item["domain"]), path=str(item.get("path") or "/"),
+                )
+            except Exception:
+                continue
         if callable(checkpoint):
             checkpoint()
         session.get(authorize, headers=session.get_auth_navigate_headers(referer="https://chatgpt.com/"),
