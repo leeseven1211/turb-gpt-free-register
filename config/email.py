@@ -60,6 +60,7 @@ OTP_POLL_INTERVAL = schema_default("OTP_POLL_INTERVAL")
 # Gmail/PG 的上游链路在高并发时 P90 可超过 3 分钟。默认等待 240 秒，避免
 # 90 秒过早超时后立即重发，制造多封验证码和错误码竞争。
 OTP_MAX_WAIT = schema_default("OTP_MAX_WAIT")
+OTP_RESEND_COUNT = schema_default("OTP_RESEND_COUNT")
 
 # Outlook 双协议取件：抓到一封 OTP 后再多等多少秒看是否有更晚到达的邮件。
 OTP_SETTLE_SECONDS = 5

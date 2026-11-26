@@ -254,6 +254,18 @@ def _protocol_line_for_diagnostics(line: str) -> str:
     return label
 
 
+def _otp_settings() -> tuple[int, int]:
+    """与 Python 配置同源的验证码窗口/重发次数；缺省 300 秒、1 次。"""
+    try:
+        from config import email as email_cfg
+
+        wait = int(getattr(email_cfg, "OTP_MAX_WAIT", 300) or 300)
+        resend = int(getattr(email_cfg, "OTP_RESEND_COUNT", 1) or 0)
+    except Exception:
+        wait, resend = 300, 1
+    return max(1, wait), max(0, resend)
+
+
 def _protocol_send(stream, message: dict) -> None:
     stream.write(json.dumps(message, ensure_ascii=False, separators=(",", ":")) + "\n")
     stream.flush()
@@ -284,7 +296,8 @@ def run_registration_protocol(
         "SENTINEL_ENABLE_2FA": "1" if enable_2fa else "0",
         "SENTINEL_FP_GEO_PROBE": "1",
         "SENTINEL_PROTOCOL": "1",
-        "OTP_MAX_WAIT": str(min(request.timeout_seconds, 300)),
+        "OTP_MAX_WAIT": str(min(request.timeout_seconds, _otp_settings()[0])),
+        "OTP_RESEND_COUNT": str(_otp_settings()[1]),
     }
     logger.info("sentinel-rs 协议模式启动：binary=%s timeout=%ss", request.binary.name, request.timeout_seconds)
     try:
@@ -488,6 +501,238 @@ def run_registration_protocol(
     if not account.access_token:
         raise SentinelRsResultInvalid("sentinel-rs 账号缺少 Access Token")
     return account
+
+
+@dataclass(frozen=True)
+class RefreshBridgeRequest:
+    """一次 AT 刷新交付给原生进程的全部事实（不含任何落库路径）。"""
+
+    email: str
+    binary: Path
+    password: str = ""
+    totp_secret: str = ""
+    device_id: str = ""
+    user_id: str = ""
+    account_id: str = ""
+    proxy: str = ""
+    country: str = ""
+    cookies: tuple[dict, ...] = ()
+    timeout_seconds: int = 1200
+    log_level: str = "info"
+
+
+def run_refresh_protocol(
+    request: RefreshBridgeRequest,
+    *,
+    on_progress: Callable[[str, str, str | None], None] | None = None,
+    check_cancel: Callable[[], None] | None = None,
+    otp_wait_seconds: int | None = None,
+    email_source: str | None = None,
+) -> dict:
+    """协议模式刷新 AT：Cookie/凭据一次交付，OTP 仍由 Python 取码。
+
+    返回原生进程的结构化结果（成功或失败）；失败不会抛异常，由调用方按
+    v3 的错误分类继续处理。
+    """
+    command = [str(request.binary), "refresh", "--live"]
+    otp_wait, otp_resend = _otp_settings()
+    env = {
+        **os.environ,
+        "SENTINEL_PROTOCOL": "1",
+        "SENTINEL_LOG": request.log_level,
+        "OTP_MAX_WAIT": str(otp_wait),
+        "OTP_RESEND_COUNT": str(otp_resend),
+    }
+    logger.info("sentinel-rs 刷新启动：timeout=%ss cookies=%s", request.timeout_seconds, len(request.cookies))
+    try:
+        process = subprocess.Popen(
+            command, env=env,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1, start_new_session=True,
+        )
+    except OSError as exc:
+        raise SentinelRsUnavailable(f"sentinel-rs 无法启动: {type(exc).__name__}") from exc
+    assert process.stdin is not None and process.stdout is not None
+
+    incoming: "queue.Queue[dict]" = queue.Queue()
+    raw_lines: list[str] = []
+    send_lock = threading.Lock()
+    otp_threads: list[threading.Thread] = []
+    payload_result: dict | None = None
+    remote_started = False
+    otp_failure: dict = {}
+
+    def send_protocol(message: dict) -> None:
+        with send_lock:
+            _protocol_send(process.stdin, message)
+
+    def fetch_otp(challenge: str, address: str, after_ts: float) -> None:
+        status, code, note = "malformed", "", ""
+        try:
+            from core.email.provider import wait_for_otp
+
+            code = wait_for_otp(
+                address or request.email, after_ts=after_ts,
+                max_wait=int(otp_wait_seconds) if otp_wait_seconds else otp_wait,
+                email_source=email_source,
+            )
+            status = "ok" if str(code or "").strip() else "malformed"
+        except Exception as exc:  # noqa: BLE001 - 取码异常必须回给内核
+            text = str(exc)
+            status = "timeout" if ("超时" in text or "timeout" in text.lower() or "no_mail" in text) else "malformed"
+            note = text[:200]
+            try:
+                from core.accounts.liveness.protocol.otp_diagnostics import otp_failure_diagnostics
+
+                otp_failure.update(otp_failure_diagnostics(exc) or {})
+            except Exception:
+                pass
+            logger.warning("sentinel-rs 刷新取码失败：status=%s detail=%s", status, note)
+        try:
+            send_protocol({
+                "v": 1, "seq": 4, "type": "otp_response",
+                "data": {"challenge_id": challenge, "status": status, "code": code, "note": note},
+            })
+        except Exception:
+            logger.exception("sentinel-rs 刷新取码回执写入失败")
+
+    def reader() -> None:
+        assert process.stdout is not None
+        for raw in process.stdout:
+            line = raw.rstrip("\n")
+            raw_lines.append(_protocol_line_for_diagnostics(line))
+            if len(raw_lines) > 400:
+                del raw_lines[:100]
+            text = line.strip()
+            if text.startswith("{"):
+                try:
+                    incoming.put(json.loads(text))
+                    continue
+                except ValueError:
+                    pass
+
+    reader_thread = threading.Thread(target=reader, name="sentinel-rs-refresh", daemon=True)
+    reader_thread.start()
+
+    deadline = time.monotonic() + request.timeout_seconds
+    started = False
+    cancelled = False
+    timed_out = False
+    try:
+        while True:
+            if check_cancel is not None:
+                try:
+                    check_cancel()
+                except BaseException:
+                    cancelled = True
+                    raise
+            if time.monotonic() >= deadline:
+                timed_out = True
+                break
+            try:
+                message = incoming.get(timeout=0.25)
+            except queue.Empty:
+                if process.poll() is not None and payload_result is not None:
+                    break
+                if process.poll() is not None:
+                    break
+                continue
+            kind = str(message.get("type") or "")
+            data = message.get("data") if isinstance(message.get("data"), dict) else {}
+            if kind == "ready":
+                send_protocol({
+                    "v": 1, "seq": 1, "type": "start",
+                    "data": {
+                        "email": request.email,
+                        "password": request.password,
+                        "totp_secret": request.totp_secret,
+                        "device_id": request.device_id,
+                        "user_id": request.user_id,
+                        "account_id": request.account_id,
+                        "proxy": request.proxy or None,
+                        "country": request.country or None,
+                        "cookies": list(request.cookies),
+                    },
+                })
+                started = True
+            elif kind == "progress":
+                stage = str(data.get("stage") or "")
+                if stage == "authenticate":
+                    remote_started = True
+                if stage and on_progress is not None:
+                    try:
+                        on_progress(stage, str(data.get("state") or "running"), data.get("detail"))
+                    except Exception:
+                        logger.exception("sentinel-rs 刷新进度上报失败")
+            elif kind == "otp_request":
+                challenge = str(data.get("challenge_id") or "")
+                address = str(data.get("email") or "") or request.email
+                try:
+                    after_ts = float(data.get("after_ts") or 0)
+                except (TypeError, ValueError):
+                    after_ts = 0.0
+                thread = threading.Thread(
+                    target=fetch_otp, args=(challenge, address, after_ts),
+                    name="sentinel-rs-refresh-otp", daemon=True,
+                )
+                otp_threads.append(thread)
+                thread.start()
+            elif kind in {"result", "result_partial"}:
+                payload_result = dict(data)
+                payload_result.setdefault("ok", kind == "result")
+            else:
+                logger.debug("sentinel-rs 刷新协议消息未处理：%s", kind)
+    finally:
+        if process.poll() is None:
+            try:
+                os.killpg(os.getpgid(process.pid), 15)
+            except (ProcessLookupError, PermissionError):
+                pass
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(os.getpgid(process.pid), 9)
+                except (ProcessLookupError, PermissionError):
+                    pass
+                process.wait(timeout=5)
+        for thread in otp_threads:
+            thread.join(timeout=3)
+        reader_thread.join(timeout=3)
+        try:
+            process.stdin.close()
+        except Exception:
+            pass
+
+    diagnostics = _tail_diagnostics(raw_lines)
+    if cancelled:
+        raise SentinelRsFailed("sentinel-rs 刷新已取消", exit_code=process.returncode, diagnostics=diagnostics)
+    if not started:
+        raise SentinelRsResultInvalid("sentinel-rs 刷新未完成协议握手")
+    if payload_result is None:
+        if timed_out:
+            raise SentinelRsFailed("sentinel-rs 刷新超时", exit_code=process.returncode, diagnostics=diagnostics)
+        raise SentinelRsResultInvalid("sentinel-rs 刷新未返回结果")
+    payload_result["remote_request_started"] = bool(
+        payload_result.get("remote_request_started") or remote_started
+    )
+    if payload_result.get("ok"):
+        token = str(payload_result.get("access_token") or "").strip()
+        if not token:
+            raise SentinelRsResultInvalid("sentinel-rs 刷新未返回 Access Token")
+        session = payload_result.get("session")
+        if not isinstance(session, dict) or not str(session.get("accessToken") or "").strip():
+            raise SentinelRsResultInvalid("sentinel-rs 刷新返回的会话缺少 accessToken")
+    else:
+        payload_result.setdefault("diagnostics", diagnostics)
+        if otp_failure:
+            merged = payload_result.get("auth_diagnostics")
+            merged = dict(merged) if isinstance(merged, dict) else {}
+            merged.update({key: value for key, value in otp_failure.items() if value not in (None, "")})
+            merged.setdefault("operation", "email_otp")
+            merged.setdefault("cause_operation", "email_otp")
+            payload_result["auth_diagnostics"] = merged
+    return payload_result
 
 
 def run_registration(

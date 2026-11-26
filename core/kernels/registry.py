@@ -25,6 +25,8 @@ _RUNNER_TARGETS: Mapping[OperationBinding, str] = MappingProxyType({
         "core.accounts.liveness.protocol.v3:refresh_access_token",
     OperationBinding("refresh_at", "browser", "roxy"):
         "core.accounts.liveness.roxy.flow:refresh_access_token",
+    OperationBinding("refresh_at", "rust", "sentinel_rs"):
+        "core.kernels.rust.sentinel_rs:run_refresh_at",
     OperationBinding("password_setup", "protocol", "local"):
         "core.accounts.password_setup.protocol:add_password",
     OperationBinding("password_setup", "browser", "roxy"):

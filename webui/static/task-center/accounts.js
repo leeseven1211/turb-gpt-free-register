@@ -3,7 +3,7 @@ import { a as z, c as B, i as V, n as H, o as U, r as W, s as G, t as K } from "
 import { t as q } from "./ListPagination-CSFkV2Gz.js";
 import { a as ee, i as J, n as Y, o as te, r as ne, s as re, t as ie } from "./queryAdapter-DOc4xJ_Q.js";
 import { n as ae, t as oe } from "./ColumnResizer-Djku_Vg5.js";
-import { t as X } from "./errorLabels-fdGNkTBr.js";
+import { t as X } from "./errorLabels-hu1qLY5T.js";
 import { n as se, r as ce, t as le } from "./client-B5R_MNgP.js";
 import { a as ue, n as de } from "./taskIds-BlchWwUp.js";
 import { a as fe, i as pe, t as me } from "./bulkMutations-3wwPI3-H.js";
@@ -3534,10 +3534,14 @@ function ri(e, t) {
 	return n > 0 || r > 0 || t && (e.accepted === !0 || e.started === !0);
 }
 function ii(e) {
-	let t = Array.isArray(e) ? e.filter((e) => e && typeof e == "object") : [], n = (e) => t.find((t) => t.key === e), r = n("ACCOUNT_AT_REFRESH_DRIVER"), i = String(r?.value || "protocol").trim().toLowerCase() === "browser_roxy" ? "browser_roxy" : "protocol", a = n("ACCOUNT_AT_REFRESH_ROXY_DEBUG_ENABLED")?.value, o = a === !0 || String(a).trim().toLowerCase() === "true", s = String(n("OPENAI_PROTOCOL_VERSION")?.value || "v1").trim().toLowerCase(), c = ["v2", "v3"].includes(s) ? s : "v1", l = r ? i === "browser_roxy" ? "Roxy 指纹浏览器" : `协议刷新（${c}）` : "已保存的刷新驱动";
+	let t = Array.isArray(e) ? e.filter((e) => e && typeof e == "object") : [], n = (e) => t.find((t) => t.key === e), r = n("ACCOUNT_AT_REFRESH_DRIVER"), i = String(r?.value || "protocol").trim().toLowerCase(), a = i === "browser_roxy" ? "browser_roxy" : [
+		"rust",
+		"sentinel_rs",
+		"sentinel-rs"
+	].includes(i) ? "rust" : "protocol", o = n("ACCOUNT_AT_REFRESH_ROXY_DEBUG_ENABLED")?.value, s = o === !0 || String(o).trim().toLowerCase() === "true", c = String(n("OPENAI_PROTOCOL_VERSION")?.value || "v1").trim().toLowerCase(), l = ["v2", "v3"].includes(c) ? c : "v1", u = r ? a === "browser_roxy" ? "Roxy 指纹浏览器" : a === "rust" ? "Rust sentinel-rs" : `协议刷新（${l}）` : "已保存的刷新驱动";
 	return {
-		description: i === "protocol" && c === "v3" ? `使用${l}先复用该账号有效的登录会话；会话失效或尚未保存时，按实际挑战完成密码、2FA 或邮箱验证，核对账号身份并保存最新 accessToken。` : `使用${l}重新登录，按实际挑战完成密码、2FA 或邮箱验证，并保存最新 accessToken。`,
-		debugDescription: o ? "Roxy 刷新调试已开启：实际使用 Roxy 时将显示浏览器并全程抓包；失败保留窗口，可从任务日志查看现场并下载 HAR。" : ""
+		description: a === "protocol" && l === "v3" || a === "rust" ? `使用${u}先复用该账号有效的登录会话；会话失效或尚未保存时，按实际挑战完成密码、2FA 或邮箱验证，核对账号身份并保存最新 accessToken。` : `使用${u}重新登录，按实际挑战完成密码、2FA 或邮箱验证，并保存最新 accessToken。`,
+		debugDescription: s ? "Roxy 刷新调试已开启：实际使用 Roxy 时将显示浏览器并全程抓包；失败保留窗口，可从任务日志查看现场并下载 HAR。" : ""
 	};
 }
 function ai(e) {

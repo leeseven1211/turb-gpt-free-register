@@ -208,6 +208,9 @@ _DEFAULTS: dict[str, Any] = {
     "REGISTRATION_COUNTRY": "JP",
     "REGISTRATION_PASSWORD_TRANSITION_TIMEOUT_SECONDS": 60,
     "REGISTRATION_PLAN_CHECK_ENABLED": True,
+    "REGISTRATION_AUTO_RETRY_ENABLED": False,
+    "REGISTRATION_AUTO_RETRY_MAX_ATTEMPTS": 2,
+    "REGISTRATION_AUTO_RETRY_DELAY_SECONDS": 180,
     "ACCOUNT_COMPLETION_PASSWORD_ENABLED": True,
     "ACCOUNT_COMPLETION_PLAN_CHECK_ENABLED": True,
     "ACCOUNT_COMPLETION_2FA_ENABLED": True,
@@ -296,6 +299,7 @@ _DEFAULTS: dict[str, Any] = {
     "REGISTER_EMAIL": "",
     "REGISTER_NAME": "",
     "OTP_MAX_WAIT": 240,
+    "OTP_RESEND_COUNT": 1,
     "OTP_POLL_INTERVAL": 3,
     "EMAIL_SOURCE": "outlook,generic_api,mailnest",
     "EMAIL_DERIVATION_ENABLED": False,
@@ -646,7 +650,7 @@ _FIELD_DEFINITIONS = [
     },
     {
         "key": "ACCOUNT_AT_REFRESH_DRIVER", "file": "account.py", "type": "str", "group": "账号补全",
-        "label": "刷新 AT 驱动", "help": "protocol 使用所选协议版本刷新；browser_roxy 直接使用 Roxy 指纹浏览器重新登录并保存最新 AT。普通查活保持独立。",
+        "label": "刷新 AT 驱动", "help": "protocol 使用所选协议版本刷新；browser_roxy 直接使用 Roxy 指纹浏览器重新登录；rust 使用 sentinel-rs 原生内核（先复用会话，再按挑战重登）。普通查活保持独立。",
     },
     {
         "key": "ACCOUNT_AT_REFRESH_COUNTRY", "file": "account.py", "type": "str", "group": "账号补全",
@@ -667,6 +671,19 @@ _FIELD_DEFINITIONS = [
     {
         "key": "ACCOUNT_AT_REFRESH_ROXY_DEBUG_ENABLED", "file": "account.py", "type": "bool", "group": "账号补全",
         "label": "Roxy 刷新调试", "help": "实际使用 Roxy 刷新 AT 时，以有头浏览器全程抓包；失败保留窗口，可从任务日志查看现场并下载 HAR。网络恢复或总时限耗尽时会关闭本次窗口。仅影响 Roxy 刷新，默认关闭。",
+    },
+    {
+        "key": "REGISTRATION_AUTO_RETRY_ENABLED", "file": "register.py", "type": "bool", "group": "注册主链路",
+        "label": "失败自动重试",
+        "help": "注册任务失败后按原身份自动重试；身份验证等不可自动重试的失败会直接跳过。",
+    },
+    {
+        "key": "REGISTRATION_AUTO_RETRY_MAX_ATTEMPTS", "file": "register.py", "type": "int", "group": "注册主链路",
+        "label": "自动重试上限", "help": "每个失败任务最多自动重试几次；达到上限后停止。",
+    },
+    {
+        "key": "REGISTRATION_AUTO_RETRY_DELAY_SECONDS", "file": "register.py", "type": "int", "group": "注册主链路",
+        "label": "自动重试延迟(秒)", "help": "任务失败后等待多少秒再自动触发重试，避免与收尾清理冲突。",
     },
     {
         "key": "REGISTRATION_DRIVER", "file": "roxybrowser.py", "type": "str", "group": "注册主链路",
@@ -1063,7 +1080,11 @@ _FIELD_DEFINITIONS = [
     },
     {
         "key": "OTP_MAX_WAIT", "file": "email.py", "type": "int", "group": "邮箱 / OTP",
-        "label": "OTP 最长等待(秒)", "help": "单轮等待验证码邮件的最长秒数；Email Butler/iCloud 转发建议 240，避免过早重发制造多枚验证码",
+        "label": "OTP 最长等待(秒)", "help": "单轮等待验证码邮件的最长秒数；所有注册/登录/刷新共用。超时后按“重发次数”重发再等。",
+    },
+    {
+        "key": "OTP_RESEND_COUNT", "file": "email.py", "type": "int", "group": "邮箱 / OTP",
+        "label": "OTP 重发次数", "help": "一轮等待超时后重发验证码的次数；0 表示只等一次不重发。总等待时长≈(1+重发次数)×最长等待，需小于任务卡死阈值。",
     },
     {
         "key": "OTP_POLL_INTERVAL", "file": "email.py", "type": "int", "group": "邮箱 / OTP",
@@ -2015,6 +2036,9 @@ _RANGES: dict[str, tuple[int | float | None, int | float | None]] = {
     "ROXY_CREATE_INTERVAL": (0, 3600),
     "ROXY_CODEX_CALLBACK_TIMEOUT": (1, 86400),
     "OTP_MAX_WAIT": (1, 86400),
+    "OTP_RESEND_COUNT": (0, 10),
+    "REGISTRATION_AUTO_RETRY_MAX_ATTEMPTS": (0, 10),
+    "REGISTRATION_AUTO_RETRY_DELAY_SECONDS": (30, 3600),
     "OTP_POLL_INTERVAL": (1, 3600),
     "EMAIL_DERIVATION_MAX_CHILDREN": (1, 10000),
     "EMAIL_DERIVATION_TAG_LENGTH": (4, 24),

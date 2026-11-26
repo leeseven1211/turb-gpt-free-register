@@ -105,6 +105,15 @@ def execute_upstream_protocol(
 
         def __init__(self):
             self.code = otp_code
+            self.waits = 0
+
+        def _wait_limit(self):
+            try:
+                from config import email as email_cfg
+
+                return 1 + max(0, int(getattr(email_cfg, "OTP_RESEND_COUNT", 1) or 0))
+            except Exception:
+                return 1
 
         def create_mailbox(self):
             return email
@@ -115,6 +124,9 @@ def execute_upstream_protocol(
         def wait_for_otp(self, email_addr, timeout=120, issued_after=None):
             if str(email_addr).strip().lower() != str(email).strip().lower():
                 raise ValueError("开源protocol-2 取码邮箱与原任务不一致")
+            self.waits += 1
+            if self.waits > self._wait_limit():
+                raise TimeoutError("验证码重发次数已达上限（OTP_RESEND_COUNT）")
             progress("email_otp", "running", "正在通过原邮箱来源等待验证码")
             if self.code is not None:
                 code, self.code = self.code, None

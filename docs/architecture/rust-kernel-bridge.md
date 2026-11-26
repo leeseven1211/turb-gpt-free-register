@@ -18,7 +18,9 @@ README 声明研究用途并对使用范围作出限制；不能据此假定已�
 
 Python 侧位于 `core/kernels/rust/sentinel_rs/`（`bridge.py` 负责进程边界）。原生工程建议
 构建到 `native/sentinel-rs/`，也可用 `SENTINEL_RS_BIN` 指向任意可执行文件。实现名
-`sentinel_rs` 已进入 `IMPLEMENTATIONS`，但只有 `registration` 操作可用。
+`sentinel_rs` 已进入 `IMPLEMENTATIONS`，当前开放 `registration`（注册）与
+`refresh_at`（刷新 AT，驱动值 `rust`）两个操作。刷新设计见
+[at-refresh-rust-driver.md](at-refresh-rust-driver.md)。
 
 当前上游 `srs_register` C ABI 是单次调用，结果含邮箱、密码、AT、TOTP 和上游
 SQLite 账号编号。它不足以表达本项目的密码提交前持久确认、交互式 OTP、取消、

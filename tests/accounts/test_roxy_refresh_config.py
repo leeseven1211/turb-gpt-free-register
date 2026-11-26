@@ -21,7 +21,10 @@ class RoxyRefreshConfigTests(unittest.TestCase):
         self.assertIs(False, schema.schema_default(DEBUG))
         self.assertEqual("protocol", getattr(config, DRIVER))
         self.assertIs(False, getattr(config, DEBUG))
-        self.assertEqual({"protocol", "browser_roxy"}, {item.value for item in schema.CONFIG_SCHEMA[DRIVER].options})
+        self.assertEqual(
+            {"protocol", "browser_roxy", "rust"},
+            {item.value for item in schema.CONFIG_SCHEMA[DRIVER].options},
+        )
         for key in (DRIVER, DEBUG):
             field = schema.CONFIG_SCHEMA[key]
             self.assertTrue(field.editable)
@@ -31,7 +34,7 @@ class RoxyRefreshConfigTests(unittest.TestCase):
         self.assertNotIn("ACCOUNT_TOKEN_REFRESH_DRIVER", schema.CONFIG_SCHEMA)
 
     def test_driver_validation_and_debug_boolean_are_independent(self):
-        for driver in ("protocol", "browser_roxy"):
+        for driver in ("protocol", "browser_roxy", "rust"):
             self.assertEqual(driver, schema.validate_value(DRIVER, driver))
         for driver in ("legacy", "protocol_v2", "v2", "browser", "unknown"):
             with self.subTest(driver=driver), self.assertRaises(schema.ConfigValidationError):

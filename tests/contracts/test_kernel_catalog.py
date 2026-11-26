@@ -46,7 +46,7 @@ def test_resolved_canonical_choices_keep_their_operation_and_implementation(
     assert catalog.operation_selection_policy(operation, driver) == "fixed"
 
 
-def test_rust_kernel_owns_only_its_registration_operation():
+def test_rust_kernel_owns_registration_and_explicit_refresh():
     catalog = _catalog()
     assert set(catalog.KERNELS) == {"browser", "protocol", "rust"}
     assert set(catalog.IMPLEMENTATIONS) == {
@@ -54,7 +54,14 @@ def test_rust_kernel_owns_only_its_registration_operation():
         ("protocol", "protocol_oss_2"), ("rust", "sentinel_rs"),
     }
     rust_bindings = {binding for binding in catalog.OPERATION_BINDINGS if binding.kernel == "rust"}
-    assert rust_bindings == {catalog.OperationBinding("registration", "rust", "sentinel_rs")}
+    assert rust_bindings == {
+        catalog.OperationBinding("registration", "rust", "sentinel_rs"),
+        catalog.OperationBinding("refresh_at", "rust", "sentinel_rs"),
+    }
+    # Rust 刷新是固定身份，版本字段只影响协议内核。
+    assert catalog.operation_binding("refresh_at", "rust", protocol_version="v3") == (
+        catalog.OperationBinding("refresh_at", "rust", "sentinel_rs")
+    )
 
 
 @pytest.mark.parametrize("operation,driver,policy", [

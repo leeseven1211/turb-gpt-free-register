@@ -76,6 +76,33 @@ fn recv(deadline: Duration) -> Result<Value> {
     }
 }
 
+/// 单轮验证码等待秒数（与 Python `OTP_MAX_WAIT` 同源，由桥接写入环境变量）。
+pub fn otp_max_wait_seconds() -> u64 {
+    std::env::var("OTP_MAX_WAIT")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(300)
+}
+
+/// 超时后的重发次数（与 Python `OTP_RESEND_COUNT` 同源）。
+pub fn otp_resend_count() -> u32 {
+    std::env::var("OTP_RESEND_COUNT")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u32>().ok())
+        .unwrap_or(1)
+}
+
+/// Python 落库可能要等数据库锁；默认 180s，可用环境变量收紧/放宽。
+fn checkpoint_ack_timeout() -> Duration {
+    let seconds = std::env::var("SENTINEL_CHECKPOINT_ACK_TIMEOUT_SECONDS")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(180);
+    Duration::from_secs(seconds)
+}
+
 fn wait_for(kind: &str, timeout: Duration) -> Result<Value> {
     loop {
         let value = recv(timeout)?;
@@ -124,8 +151,52 @@ pub fn landing(verdict: &str, host: &str) {
     emit("landing", json!({"verdict": verdict, "host": host}));
 }
 
+/// 刷新 AT 的握手：报告 `refresh` 能力并等待带完整参数的 `start`。
+///
+/// 与注册的 [`handshake`] 分开：注册只校验邮箱一致，刷新需要把 Cookie、
+/// 设备指纹和账号身份一次交付给内核。
+pub fn handshake_refresh() -> Result<Value> {
+    if !enabled() {
+        bail!("协议模式未启用");
+    }
+    emit(
+        "ready",
+        json!({
+            "v": VERSION,
+            "build": env!("CARGO_PKG_VERSION"),
+            "capabilities": ["refresh", "otp", "session_reuse", "cookie_restore"],
+        }),
+    );
+    let start = wait_for("start", Duration::from_secs(60)).context("等待 start")?;
+    Ok(start.get("data").cloned().unwrap_or_default())
+}
+
+/// 有界阶段事件（不含凭据/正文）。
+pub fn progress(stage: &str, state: &str, detail: Option<&str>) {
+    emit(
+        "progress",
+        json!({"stage": stage, "state": state, "detail": detail}),
+    );
+}
+
+/// 成功终态。
+pub fn result_ok(data: Value) {
+    emit("result", data);
+}
+
+/// 失败终态；字段与 Python 侧 v3 的错误分类保持同名。
+pub fn result_partial(data: Value) {
+    emit("result_partial", data);
+}
+
 /// 协议模式下向 Python 请求验证码；Python 用自己的邮箱服务等待并回传。
-pub fn request_otp(email: &str, after_ts: u64) -> Result<String> {
+///
+/// 这里是单轮等待：`timeout` 到了返回 `Ok(None)`，由调用方决定是否重发。
+pub fn request_otp_window(
+    email: &str,
+    after_ts: u64,
+    timeout: Duration,
+) -> Result<Option<String>> {
     if !enabled() {
         bail!("协议模式未启用");
     }
@@ -134,8 +205,16 @@ pub fn request_otp(email: &str, after_ts: u64) -> Result<String> {
         "otp_request",
         json!({"challenge_id": challenge, "email": email, "after_ts": after_ts}),
     );
+    let deadline = std::time::Instant::now() + timeout;
     loop {
-        let value = recv(Duration::from_secs(1200)).context("等待 otp_response")?;
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return Ok(None);
+        }
+        let value = match recv(remaining) {
+            Ok(value) => value,
+            Err(_) => return Ok(None),
+        };
         if value.get("type").and_then(Value::as_str) != Some("otp_response") {
             continue;
         }
@@ -145,7 +224,7 @@ pub fn request_otp(email: &str, after_ts: u64) -> Result<String> {
         }
         let status = data.get("status").and_then(Value::as_str).unwrap_or("malformed");
         if status == "timeout" {
-            bail!("等待邮箱验证码超时（Python 侧）");
+            return Ok(None);
         }
         if status != "ok" {
             bail!("取码失败（Python 侧）：{status}");
@@ -154,7 +233,15 @@ pub fn request_otp(email: &str, after_ts: u64) -> Result<String> {
         if code.len() != 6 || !code.chars().all(|ch| ch.is_ascii_digit()) {
             bail!("取码结果不是 6 位数字");
         }
-        return Ok(code);
+        return Ok(Some(code));
+    }
+}
+
+/// 兼容旧调用：单轮等待固定 1200 秒，超时报错。
+pub fn request_otp(email: &str, after_ts: u64) -> Result<String> {
+    match request_otp_window(email, after_ts, Duration::from_secs(1200))? {
+        Some(code) => Ok(code),
+        None => bail!("等待邮箱验证码超时（Python 侧）"),
     }
 }
 
@@ -168,7 +255,7 @@ pub fn checkpoint_password(email: &str, password: &str) -> Result<()> {
         "checkpoint_prepare",
         json!({"kind": "password", "email": email, "password": password, "challenge_id": challenge}),
     );
-    let ack = wait_for("checkpoint_ack", Duration::from_secs(15)).context("等待 checkpoint_ack")?;
+    let ack = wait_for("checkpoint_ack", checkpoint_ack_timeout()).context("等待 checkpoint_ack")?;
     let data = ack.get("data").cloned().unwrap_or_default();
     if data.get("challenge_id").and_then(Value::as_str) != Some(challenge.as_str()) {
         bail!("checkpoint_ack 的 challenge 不匹配");

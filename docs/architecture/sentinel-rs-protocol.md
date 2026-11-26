@@ -27,7 +27,8 @@
 
 | 方向 | type | data 关键字段 | 说明 |
 | --- | --- | --- | --- |
-| P→R | `start` | `action=register\|resume`、`email`、`proxy`、`code_url`、`otp_started_at`、`existing_password?`、`options` | 交付已分配资源；内核不得自行领取邮箱或选择任务 |
+| P→R | `start` | `action=register\|resume\|refresh`、`email`、`proxy`、`code_url`、`otp_started_at`、`existing_password?`、`options` | 交付已分配资源；内核不得自行领取邮箱或选择任务 |
+| P→R | `start`（`action=refresh`） | `email`、`password?`、`totp_secret?`、`cookies[]`、`device_id`、`user_id`、`account_id`、`country?` | 刷新 AT：Cookie 来自 Python 解密后的私有会话；内核不直连数据库 |
 | R→P | `ready` | `v`、`build`、`capabilities[]` | 尚未执行任何远端动作 |
 | R→P | `landing` | `verdict=new\|existing\|unknown`、`host` | authorize 落地判定，供重试与库存标记 |
 | R→P | `checkpoint_prepare` | `kind=password`、`email`、`password`、`challenge_id` | 在发送 `user/register` 之前发出 |

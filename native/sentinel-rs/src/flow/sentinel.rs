@@ -516,6 +516,28 @@ impl SentinelSource {
 
 impl SentinelTokenSource for SentinelSource {
     fn token(&self, flow: &str, device_id: &str) -> Result<SentinelToken> {
+        // sentinel 走独立 HTTP 客户端，代理隧道偶发失败不应直接判整任务失败。
+        let mut last_error = None;
+        for attempt in 1..=3u32 {
+            match self.token_once(flow, device_id) {
+                Ok(token) => return Ok(token),
+                Err(error) => {
+                    last_error = Some(error);
+                    if attempt < 3 {
+                        warn!(
+                            "[sentinel] token 失败（第 {attempt}/3 次，flow={flow}），500ms 后重试"
+                        );
+                        std::thread::sleep(std::time::Duration::from_millis(500));
+                    }
+                }
+            }
+        }
+        Err(last_error.expect("sentinel retry 至少执行一次"))
+    }
+}
+
+impl SentinelSource {
+    fn token_once(&self, flow: &str, device_id: &str) -> Result<SentinelToken> {
         if flow.trim().is_empty() {
             bail!("sentinel flow 不能为空");
         }
