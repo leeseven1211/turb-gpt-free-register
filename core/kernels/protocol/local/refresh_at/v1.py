@@ -225,7 +225,7 @@ class ValidateWithRetryDependencies:
     wait_for_otp: Any
 
 
-def _validate_with_retry(session: BrowserSession, email: str, otp_after_ts: float, max_otp_attempts: int=3, email_source: str | None=None, *, at_validator: Callable[[str], dict] | None=None, _deps: ValidateWithRetryDependencies) -> dict:
+def _validate_with_retry(session: BrowserSession, email: str, otp_after_ts: float, max_otp_attempts: int | None=None, email_source: str | None=None, *, at_validator: Callable[[str], dict] | None=None, _deps: ValidateWithRetryDependencies) -> dict:
     time = _deps.time
     EmailButlerClientError = _deps.EmailButlerClientError
     EmailOtpInvalidError = _deps.EmailOtpInvalidError
@@ -239,9 +239,17 @@ def _validate_with_retry(session: BrowserSession, email: str, otp_after_ts: floa
     wait_for_otp = _deps.wait_for_otp
     from core.network.at_transport_recovery import current_scope
 
+    if max_otp_attempts is None:
+        # 与注册/续跑统一：1 次等待 + OTP_RESEND_COUNT 次重发。
+        try:
+            from config import email as email_cfg
+
+            max_otp_attempts = 1 + max(0, int(getattr(email_cfg, "OTP_RESEND_COUNT", 1) or 0))
+        except Exception:
+            max_otp_attempts = 2
     at_scope = current_scope()
     if at_scope is not None:
-        # 独立 AT 刷新只等两轮；其他共享认证入口保留原有次数。
+        # AT 刷新的传输恢复预算更紧：最多两轮。
         max_otp_attempts = min(max_otp_attempts, 2)
         try:
             otp_after_ts = _ensure_at_otp_sent(session, email, otp_after_ts, checkpoint=at_scope.check)

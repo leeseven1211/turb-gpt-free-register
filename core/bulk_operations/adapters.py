@@ -43,7 +43,7 @@ def _refresh_driver(account: Mapping, snapshot: Mapping) -> str:
     from core.accounts.liveness import service as live_service
     selected = live_service._resolve_refresh_driver(config_snapshot=dict(snapshot))
     # 与账号页的显式刷新保持一致：已标记收件失效时不走旧邮箱OTP驱动。
-    if account.get("email_invalid") is True and selected not in {"browser_roxy", "protocol_v3"}:
+    if account.get("email_invalid") is True and selected not in {"browser_roxy", "protocol_v3", "rust"}:
         selected = "protocol_v2"
     return selected
 

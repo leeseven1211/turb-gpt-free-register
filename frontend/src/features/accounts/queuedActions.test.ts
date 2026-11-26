@@ -288,6 +288,10 @@ describe('token refresh', () => {
     fetchMock.mockResolvedValue(json(receipt({started:[]}),202));const h=setup({readConfig:async()=>[{key:'ACCOUNT_AT_REFRESH_DRIVER',value:'protocol'},{key:'OPENAI_PROTOCOL_VERSION',value:version},{key:'ACCOUNT_AT_REFRESH_ROXY_DEBUG_ENABLED',value:debug}]});
     await h.actions.invoke('account-refresh-token',context(['7']));const confirmation=h.deps.confirm.mock.calls[0]![0];expect(confirmation).toContain(expected);expect(confirmation).toContain('密码、2FA 或邮箱验证');expect(confirmation.includes('HAR')).toBe(hasDebug);expect(confirmation).not.toContain('并发线程数');expect(body()).toEqual({account_ids:[7]});
   });
+  it('names the rust driver and describes session reuse',async()=>{
+    fetchMock.mockResolvedValue(json(receipt({started:[]}),202));const h=setup({readConfig:async()=>[{key:'ACCOUNT_AT_REFRESH_DRIVER',value:'rust'}]});
+    await h.actions.invoke('account-refresh-token',context(['7']));const confirmation=h.deps.confirm.mock.calls[0]![0];expect(confirmation).toContain('Rust sentinel-rs');expect(confirmation).toContain('先复用该账号有效的登录会话');expect(confirmation).toContain('密码、2FA 或邮箱验证');expect(body()).toEqual({account_ids:[7]});
+  });
   it('opens confirmation from already loaded refresh settings without waiting for GET',async()=>{
     fetchMock.mockResolvedValue(json(receipt(),202));const h=setup({fallbackConfig:()=>[{key:'ACCOUNT_AT_REFRESH_DRIVER',value:'browser_roxy'}]});await h.actions.invoke('refreshSelectedToken',context());
     expect(h.q.readConfig).not.toHaveBeenCalled();expect(h.deps.confirm.mock.calls[0]![0]).toContain('Roxy 指纹浏览器');expect(fetchMock).toHaveBeenCalledTimes(1);

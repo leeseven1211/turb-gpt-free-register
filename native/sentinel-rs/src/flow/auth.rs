@@ -43,6 +43,8 @@ pub const EP_CREATE_ACCOUNT: &str = "https://auth.openai.com/api/accounts/create
 pub const EP_PASSWORD_VERIFY: &str = "https://auth.openai.com/api/accounts/password/verify";
 /// 已有账号登录：TOTP 2FA 校验（对齐 Python `submit_mfa_totp`）。
 pub const EP_MFA_VERIFY: &str = "https://auth.openai.com/api/accounts/mfa/verify";
+/// 已有账号登录：TOTP 2FA 申请 challenge（`mfa/verify` 之前）。
+pub const EP_MFA_ISSUE: &str = "https://auth.openai.com/api/accounts/mfa/issue_challenge";
 /// OAuth 授权码换 token（表单 POST）。
 pub const EP_OAUTH_TOKEN: &str = "https://auth.openai.com/oauth/token";
 /// workspace 选择（create_account 返回 `/workspace` 页面时调用）。
@@ -546,6 +548,87 @@ impl AuthRequestBuilder {
         )
     }
 
+    /// auth.openai.com 的 JSON API 头（对齐 Python `get_auth_headers`）。
+    ///
+    /// 与 [`Self::auth_json_headers`] 的区别：**不带**两个 `x-*` 一次性头；
+    /// 与 [`Self::common_json_headers`] 的区别：补齐 origin / content-type /
+    /// `sec-fetch-*` / priority。`password/verify`、`email-otp/validate`、
+    /// `mfa/*` 这些已有账号登录接口都用这一套。
+    pub fn auth_api_headers(&self, referer: &str) -> Vec<(String, String)> {
+        let mut headers = self.base_headers();
+        headers.push(("accept".into(), "application/json".into()));
+        headers.push(("content-type".into(), "application/json".into()));
+        headers.push(("sec-fetch-site".into(), "same-origin".into()));
+        headers.push(("sec-fetch-mode".into(), "cors".into()));
+        headers.push(("sec-fetch-dest".into(), "empty".into()));
+        headers.push(("referer".into(), referer.into()));
+        headers.push(("priority".into(), "u=1, i".into()));
+        headers.push(("origin".into(), AUTH_BASE.into()));
+        headers
+    }
+
+    /// `POST /api/accounts/password/verify` —— 已有账号登录（v3 等价头）。
+    ///
+    /// 替代 [`Self::login_password_verify`]：后者沿用旧 `run_protocol_login` 的头，
+    /// 缺少 `sec-fetch-*` / priority，和 v3 的观测不一致。
+    pub fn password_verify_login(&self, password: &str, st: &SentinelToken) -> RequestSpec {
+        let mut headers = self.auth_api_headers(PAGE_LOG_IN_PASSWORD);
+        headers.extend(self.sentinel_headers(st));
+        RequestSpec::post_json(
+            "auth.password_verify",
+            EP_PASSWORD_VERIFY,
+            Some(headers),
+            Some(json!({ "password": password })),
+        )
+    }
+
+    /// `POST /api/accounts/mfa/issue_challenge` —— 申请 TOTP challenge。
+    pub fn mfa_issue_challenge(&self, factor_id: &str) -> RequestSpec {
+        let headers = self.auth_api_headers(PAGE_MFA_CHALLENGE);
+        RequestSpec::post_json(
+            "auth.mfa_issue_challenge",
+            EP_MFA_ISSUE,
+            Some(headers),
+            Some(json!({
+                "id": factor_id,
+                "type": "totp",
+                "force_fresh_challenge": false,
+            })),
+        )
+    }
+
+    /// `POST /api/accounts/mfa/verify` —— 已有账号登录（v3 等价头，不带 sentinel）。
+    pub fn mfa_verify_login(&self, factor_id: &str, code: &str) -> RequestSpec {
+        let headers = self.auth_api_headers(PAGE_MFA_CHALLENGE);
+        RequestSpec::post_json(
+            "auth.mfa_verify",
+            EP_MFA_VERIFY,
+            Some(headers),
+            Some(json!({ "id": factor_id, "type": "totp", "code": code })),
+        )
+    }
+
+    /// `GET /api/accounts/email-otp/send` —— 重新发送邮箱验证码。
+    ///
+    /// Python `send_email_otp` 是 GET + `allow_redirects`，不是 POST。
+    pub fn otp_send(&self) -> RequestSpec {
+        let mut headers = self.navigation_headers(PAGE_EMAIL_VERIFICATION);
+        headers.push(("sec-fetch-site".into(), "same-origin".into()));
+        headers.push(("sec-fetch-user".into(), "?1".into()));
+        RequestSpec::get("auth.email_otp_send", EP_OTP_SEND).with_headers(headers)
+    }
+
+    /// `POST /api/accounts/email-otp/validate` —— 提交邮箱验证码（不加 sentinel）。
+    pub fn otp_validate(&self, code: &str) -> RequestSpec {
+        let headers = self.auth_api_headers(PAGE_EMAIL_VERIFICATION);
+        RequestSpec::post_json(
+            "auth.email_otp_validate",
+            EP_OTP_VALIDATE,
+            Some(headers),
+            Some(json!({ "code": code })),
+        )
+    }
+
     /// 整页导航到某个 auth 页面（纯协议用它等价建立页面状态）。
     pub fn navigation(&self, url: &str) -> RequestSpec {
         self.navigation_from(url, PAGE_CREATE_ACCOUNT)
@@ -667,10 +750,29 @@ impl AuthRequestBuilder {
         )
     }
 
+    /// NextAuth `/api/auth/*` 头（对齐 Python `get_nextauth_headers`）。
+    pub fn nextauth_headers(&self, referer: &str) -> Vec<(String, String)> {
+        let mut headers = self.base_headers();
+        headers.push(("accept".into(), "*/*".into()));
+        headers.push(("content-type".into(), "application/json".into()));
+        headers.push(("sec-fetch-site".into(), "same-origin".into()));
+        headers.push(("sec-fetch-mode".into(), "cors".into()));
+        headers.push(("sec-fetch-dest".into(), "empty".into()));
+        headers.push(("referer".into(), referer.into()));
+        headers.push(("priority".into(), "u=1, i".into()));
+        headers
+    }
+
     /// `GET https://chatgpt.com/api/auth/session` —— 拿 `accessToken` / `sessionToken`。
     pub fn chat_session(&self) -> RequestSpec {
         RequestSpec::get("auth.chat_session", EP_CHAT_SESSION)
             .with_headers(self.common_json_headers(CHATGPT_BASE_REFERER))
+    }
+
+    /// 同 [`Self::chat_session`]，但用 v3 观测到的 NextAuth 头。
+    pub fn chat_session_nextauth(&self) -> RequestSpec {
+        RequestSpec::get("auth.chat_session", EP_CHAT_SESSION)
+            .with_headers(self.nextauth_headers(CHATGPT_BASE_REFERER))
     }
 }
 

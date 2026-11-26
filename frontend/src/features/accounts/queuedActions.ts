@@ -104,13 +104,19 @@ function tokenSettings(raw: unknown): {description: string; debugDescription: st
   const fields = Array.isArray(raw) ? raw.filter(item => item && typeof item === 'object') as Record<string, unknown>[] : [];
   const field = (key: string) => fields.find(item => item.key === key);
   const driverField = field('ACCOUNT_AT_REFRESH_DRIVER');
-  const driver = String(driverField?.value || 'protocol').trim().toLowerCase() === 'browser_roxy' ? 'browser_roxy' : 'protocol';
+  const rawDriver = String(driverField?.value || 'protocol').trim().toLowerCase();
+  const driver = rawDriver === 'browser_roxy'
+    ? 'browser_roxy'
+    : ['rust', 'sentinel_rs', 'sentinel-rs'].includes(rawDriver) ? 'rust' : 'protocol';
   const debug = field('ACCOUNT_AT_REFRESH_ROXY_DEBUG_ENABLED')?.value;
   const debugEnabled = debug === true || String(debug).trim().toLowerCase() === 'true';
   const requestedVersion = String(field('OPENAI_PROTOCOL_VERSION')?.value || 'v1').trim().toLowerCase();
   const version = ['v2', 'v3'].includes(requestedVersion) ? requestedVersion : 'v1';
-  const label = driverField ? driver === 'browser_roxy' ? 'Roxy 指纹浏览器' : `协议刷新（${version}）` : '已保存的刷新驱动';
-  const description = driver === 'protocol' && version === 'v3'
+  const label = driverField
+    ? driver === 'browser_roxy' ? 'Roxy 指纹浏览器'
+      : driver === 'rust' ? 'Rust sentinel-rs' : `协议刷新（${version}）`
+    : '已保存的刷新驱动';
+  const description = (driver === 'protocol' && version === 'v3') || driver === 'rust'
     ? `使用${label}先复用该账号有效的登录会话；会话失效或尚未保存时，按实际挑战完成密码、2FA 或邮箱验证，核对账号身份并保存最新 accessToken。`
     : `使用${label}重新登录，按实际挑战完成密码、2FA 或邮箱验证，并保存最新 accessToken。`;
   return {description, debugDescription: debugEnabled ? 'Roxy 刷新调试已开启：实际使用 Roxy 时将显示浏览器并全程抓包；失败保留窗口，可从任务日志查看现场并下载 HAR。' : ''};

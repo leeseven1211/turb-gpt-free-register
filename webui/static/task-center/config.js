@@ -123,6 +123,7 @@ function V(e) {
 		"USE_EMAIL_SERVICE",
 		"REGISTER_EMAIL",
 		"OTP_MAX_WAIT",
+		"OTP_RESEND_COUNT",
 		"OTP_POLL_INTERVAL",
 		"EMAIL_SOURCE"
 	].includes(e) ? ["通用邮箱 / OTP", "邮箱来源选择、OTP 等待参数、手动邮箱等通用设置"] : e.startsWith("EMAIL_BUTLER_") ? ["Email Butler", "已导入邮箱的租约连接与取码权限"] : e.startsWith("REMAIL_") ? ["Remail", "历史 Remail 原订单收码连接；新邮箱请在邮箱服务中准备后导入"] : e.startsWith("ICLOUD_HME_") ? ["iCloud 隐藏邮箱", "已导入与历史隐藏邮箱的固定收件连接；邮箱管理在邮箱服务完成"] : ["其他邮箱配置", ""];

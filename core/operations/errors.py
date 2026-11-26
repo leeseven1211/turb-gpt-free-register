@@ -1342,6 +1342,7 @@ _CAUSE_DETAILS: dict[str, tuple[str, str]] = {
     "protocol_network_error": ("NET-AUTH-001", "协议认证网络请求失败"),
     "protocol_v2_unknown_error": ("AUTH-PROTOCOL-001", "协议认证异常（细项未记录）"),
     "protocol_v3_unknown_error": ("AUTH-PROTOCOL-003", "协议 v3 认证异常，诊断记录缺少错误细项"),
+    "protocol_rust_unknown_error": ("AUTH-PROTOCOL-004", "Rust 刷新内核认证异常，诊断记录缺少错误细项"),
     "identity_mismatch": ("AUTH-IDENTITY-001", "认证返回的账号身份与目标账号不一致"),
     "identity_unconfirmed": ("AUTH-IDENTITY-002", "认证响应缺少可核验的账号身份"),
     "account_reference_mismatch": ("AUTH-IDENTITY-003", "本地账号与刷新目标邮箱不一致"),
@@ -2896,7 +2897,8 @@ def classify_task_error(
             stage = "email_otp"
     raw_projection = None
     if cause is not None and cause["cause_code"] in {
-        "refresh_driver_exception", "protocol_v2_unknown_error", "protocol_v3_unknown_error", "post_register_failure",
+        "refresh_driver_exception", "protocol_v2_unknown_error", "protocol_v3_unknown_error",
+        "protocol_rust_unknown_error", "post_register_failure",
     }:
         raw_projection = _classify_raw_task_error(raw, stage=stage, task_type=task_type, error_code=error_code)
         # 驱动兜底异常只定位失败范围；明确的代理、数据库等原始错误仍应作为主原因。

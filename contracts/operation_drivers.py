@@ -51,6 +51,7 @@ _DRIVERS: Mapping[str, tuple[DriverDefinition, ...]] = MappingProxyType({
     "refresh_at": (
         DriverDefinition("protocol", "协议刷新"),
         DriverDefinition("browser_roxy", "Roxy 指纹浏览器"),
+        DriverDefinition("rust", "Rust sentinel-rs"),
     ),
     "password_setup": (
         DriverDefinition("roxy", "RoxyBrowser（默认）"),
@@ -83,7 +84,10 @@ _ALIASES: Mapping[str, Mapping[str, str]] = MappingProxyType({
         "browser_use": "roxy", "skyvern": "roxy", "cloak": "roxy", "cloakbrowser": "roxy",
         "rust": "sentinel_rs", "sentinel-rs": "sentinel_rs", "sentinel": "sentinel_rs",
     }),
-    "refresh_at": MappingProxyType({"roxy": "browser_roxy"}),
+    "refresh_at": MappingProxyType({
+        "roxy": "browser_roxy",
+        "rust": "rust", "sentinel_rs": "rust", "sentinel-rs": "rust",
+    }),
     "password_setup": MappingProxyType({"roxybrowser": "roxy", "browser": "roxy"}),
     "twofa": MappingProxyType({
         "protocol_direct": "auto", "api": "protocol", "http": "protocol",

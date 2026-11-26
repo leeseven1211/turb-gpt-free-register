@@ -280,6 +280,21 @@ impl RetryPolicy {
     }
 }
 
+/// Cookie 的结构化快照（`expires` 为 Unix 秒，None 表示会话 Cookie）。
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct CookieSnapshot {
+    pub name: String,
+    pub value: String,
+    #[serde(default)]
+    pub domain: String,
+    #[serde(default)]
+    pub path: String,
+    #[serde(default)]
+    pub secure: bool,
+    #[serde(default)]
+    pub expires: Option<i64>,
+}
+
 /// 响应：与传输库解耦，方便上层/测试断言。
 #[derive(Debug, Clone, Default)]
 pub struct HttpResponse {
@@ -607,6 +622,56 @@ impl Client {
             user_agent: user_agent.to_string(),
             emulation,
         })
+    }
+
+    /// 注入一条会话 Cookie（刷新 AT 的可选快路径使用）。
+    ///
+    /// 入参与私有会话缓存一致：name/value/domain/path/secure。`expires` 为空表示
+    /// 会话 Cookie；过期的 Cookie 由调用方在传入前过滤。
+    pub fn add_cookie(
+        &self,
+        name: &str,
+        value: &str,
+        domain: &str,
+        path: &str,
+        secure: bool,
+    ) -> Result<()> {
+        let name = name.trim();
+        let domain = domain.trim();
+        if name.is_empty() || domain.is_empty() {
+            bail!("cookie 缺少 name/domain");
+        }
+        let host = domain.trim_start_matches('.');
+        let path = if path.trim().is_empty() { "/" } else { path.trim() };
+        let mut raw = format!("{name}={value}; Domain={domain}; Path={path}");
+        if secure {
+            raw.push_str("; Secure");
+        }
+        let url = format!("https://{host}/");
+        self.jar.add(raw, url);
+        Ok(())
+    }
+
+    /// jar 内全部 Cookie 的结构化快照（刷新成功后交回 Python 加密落库）。
+    ///
+    /// wreq 的 `Jar::get_all` 已按域/路径存储，这里只做字段投影，不做筛选；
+    /// 领域白名单由 `flow::refresh` 负责。
+    pub fn cookie_snapshot(&self) -> Vec<CookieSnapshot> {
+        self.jar
+            .get_all()
+            .map(|item| CookieSnapshot {
+                name: item.name().to_string(),
+                value: item.value().to_string(),
+                domain: item.domain().unwrap_or_default().to_string(),
+                path: item.path().unwrap_or("/").to_string(),
+                secure: item.secure(),
+                expires: item.expires().and_then(|when| {
+                    when.duration_since(std::time::UNIX_EPOCH)
+                        .ok()
+                        .map(|value| value.as_secs() as i64)
+                }),
+            })
+            .collect()
     }
 
     /// 当前 jar 里对 `url` 的 Cookie 头（落库/调试用）。

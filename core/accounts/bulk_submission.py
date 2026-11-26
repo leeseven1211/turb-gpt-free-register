@@ -152,7 +152,7 @@ def _prepare(account, *, operation, trigger, parameters, settings, raw_snapshot)
         if refresh and not str(account.get("access_token") or "").strip():
             reason = "账号没有现有 access_token，拒绝刷新 AT；请先完成账号注册或执行注册续跑"
             return None, {"reason": reason, "error": reason, "submission_failed": True}
-        if refresh and account.get("email_invalid") is True and selected not in {"browser_roxy", "protocol_v3"}:
+        if refresh and account.get("email_invalid") is True and selected not in {"browser_roxy", "protocol_v3", "rust"}:
             selected = "protocol_v2"
         return {"force_refresh": refresh, "driver": None if refresh else selected,
                 "refresh_driver": service._refresh_driver_request(selected) if refresh else None,
