@@ -31,8 +31,8 @@ test('flow_version2 失败摘要显示具体原因和结果状态，并折叠技
   const failure = {step_id:'auth',stage:'oauth',label:'Codex 授权',event_id:'evt-9',message:'<远端结果待确认>',
     error_info:{code:'REMOTE-001',summary:'远端结果待确认',cause_summary:'密码验证请求返回 HTTP 401'},reconcile_required:true};
   const w = failureView(failure);
-  assert.match(w.get('summary').text(), /失败位置：Codex 授权 · oauth.*密码验证请求返回 HTTP 401/);
-  assert.doesNotMatch(w.get('summary').text(), /待确认|未确认|需要对账/);
+  assert.match(w.get('summary').text(), /失败位置：Codex 授权.*密码验证请求返回 HTTP 401/);
+  assert.doesNotMatch(w.get('summary').text(), /oauth|待确认|未确认|需要对账/);
   assert.equal(w.attributes('open'), undefined);
   assert.match(w.get('pre').text(), /<远端结果待确认>/);
   assert.match(w.text(), /事件 evt-9/);
@@ -48,10 +48,12 @@ test('待确认状态不要求人工处理，并保留原单状态查询标签',
   }
   assert.equal(taskPresentation.label('stage', 'remote_sync'), '原单状态查询');
 });
-test('详情失败位置优先采用有具体证据纠正的阶段', () => {
+test('详情失败位置优先采用有具体证据纠正的阶段，并翻译子阶段去重展示', () => {
   const failure = {label:'校验 Token',stage:'access_token',message:'原单查询 HTTP 404',error_info:{stage:'remote_sync',summary:'原单查询 HTTP 404'}};
   assert.match(failureView(failure).get('summary').text(), /失败位置：原单状态查询/);
-  assert.match(failureView({...failure,error_info:null}).get('summary').text(), /校验 Token · access_token/);
+  assert.match(failureView({...failure,error_info:null}).get('summary').text(), /失败位置：校验 Token/);
+  assert.doesNotMatch(failureView({...failure,error_info:null}).get('summary').text(), /access_token/);
+  assert.match(failureView({...failure,stage:'login_password',error_info:null}).get('summary').text(), /校验 Token · 账号密码/);
 });
 test('Roxy 登录失败显示具体分类并保留原始事件文案', () => {
   const failure = {label:'登录与身份验证',stage:'authenticate',message:'Roxy 浏览器登录未完成',
