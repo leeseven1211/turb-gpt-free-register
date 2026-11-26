@@ -1,14 +1,8 @@
-# sentinel-rs 修改版（注册 + 刷新 AT）构建说明
+# sentinel-rs 构建说明
 
-本目录是 Turb 使用的 `sentinel-rs` 修改版源码，包含：
+本目录是 `sentinel-rs` 源码，不含编译产物，也没有 `target/`。
 
-- 注册流程（`register`）
-- **刷新 AT**（`refresh`）：会话 Cookie 快路径 → 密码 / 邮箱验证码 / TOTP 重登
-- OTP 等待窗口 + 重新发送（窗口和次数由 Turb 配置注入）
-- 密码被拒 / 要求改密的错误分类
-- sentinel token 失败重试、checkpoint 确认等待 180 秒
-
-> 目录内不含编译产物，也没有 `target/`。二进制必须按目标系统和 CPU 架构分别构建，**不要把 Linux/macOS 的二进制复制到 Windows 使用**。
+> 二进制必须按目标系统和 CPU 架构分别构建，**不要把 Linux/macOS 的二进制复制到 Windows 使用**。
 > 上游来源与授权说明见 `FORK.md`。
 
 ---
