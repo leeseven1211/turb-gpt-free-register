@@ -558,6 +558,27 @@ async fn post_json(
             .detail(error.to_string())
     })?;
     if !(200..300).contains(&response.status) {
+        // 密码被明确拒绝/要求改密：这是账号凭据决定，不是网络故障，也不该自动回落浏览器。
+        let parsed: Option<Value> = serde_json::from_str(&response.body).ok();
+        let api_code = parsed
+            .as_ref()
+            .and_then(|value| value.pointer("/error/code").or_else(|| value.get("code")))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        if api_code == "password_reset_required" {
+            return Err(err("password_change_required", "auth")
+                .no_roxy()
+                .status(response.status)
+                .detail(snippet(&response.body)));
+        }
+        if operation == "password_verify" && matches!(response.status, 400 | 401) {
+            return Err(err("password_rejected", "auth")
+                .no_roxy()
+                .status(response.status)
+                .detail(snippet(&response.body)));
+        }
         return Err(err(&format!("{operation}_failed"), "network")
             .retryable(matches!(response.status, 403 | 429) || response.status >= 500)
             .status(response.status)
