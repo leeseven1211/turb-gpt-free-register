@@ -55,13 +55,30 @@ const example = (): BulkPageData => ({
     },
   ],
   page: { page_size: 20, has_more: true, next_cursor: 'next.one' },
-  summary: { total_batches: 39, active_batches: 3, ended_batches: 7, failed_targets: 2 },
+  summary: {
+    total_batches: 39,
+    active_batches: 3,
+    paused_batches: 2,
+    ended_batches: 7,
+    success_targets: 12,
+    partial_success_targets: 2,
+    failed_targets: 2,
+  },
 });
 describe('批次列表组件', () => {
   it('真实汇总与两行身份保留，结果和报告入口传完整字符串ID', async () => {
     const h = fixture(example());
     await flushPromises();
-    expect(h.wrapper.get('.bl-kpis').text()).toBe('执行中3批已结束7批失败账号2个');
+    const stats = h.wrapper.get('.bl-kpis');
+    expect(stats.findAll('.bl-kpi')).toHaveLength(6);
+    expect(stats.get('[data-bulk-stat="total_batches"]').text()).toContain('39');
+    expect(stats.get('[data-bulk-stat="active_batches"]').text()).toContain('已暂停 2');
+    expect(stats.get('[data-bulk-stat="ended_batches"]').text()).toContain('17.9%');
+    expect(stats.get('[data-bulk-stat="success_targets"]').text()).toContain('12');
+    expect(stats.get('[data-bulk-stat="success_targets"]').text()).toContain('部分成功 2');
+    expect(stats.get('[data-bulk-stat="failed_targets"]').text()).toContain('12.5%');
+    expect(stats.get('[data-bulk-stat="success_rate"]').text()).toContain('75.0');
+    expect(stats.get('[role="img"]').attributes('aria-label')).toContain('成功 12，部分成功 2，失败 2');
     expect(h.wrapper.find('.bl-toolbar').exists()).toBe(false);
     expect(h.wrapper.text()).toContain('#9007199254740993');
     expect(h.wrapper.get('.bl-name').text()).toBe('<script>批次</script>');
@@ -110,6 +127,25 @@ describe('批次列表组件', () => {
     expect(h.wrapper.find('progress').exists()).toBe(false);
     expect(h.wrapper.find('.bl-kpis').exists()).toBe(false);
     expect(h.wrapper.text()).not.toContain('0 / 0');
+  });
+
+  it('零执行结果不显示虚假成功率，兼容旧接口缺少成功统计', async () => {
+    const empty = example();
+    Object.assign(empty.summary!, { success_targets: 0, partial_success_targets: 0, failed_targets: 0 });
+    const zero = fixture(empty);
+    await flushPromises();
+    expect(zero.wrapper.get('[data-bulk-stat="success_rate"] strong').text()).toBe('—');
+    expect(zero.wrapper.find('.bl-kpi-rail').exists()).toBe(false);
+
+    const legacy = example();
+    delete legacy.summary!.success_targets;
+    delete legacy.summary!.partial_success_targets;
+    legacy.summary!.attention_targets = 3;
+    const older = fixture(legacy);
+    await flushPromises();
+    expect(older.wrapper.find('[data-bulk-stat="success_rate"]').exists()).toBe(false);
+    expect(older.wrapper.find('[data-bulk-stat="success_targets"]').exists()).toBe(false);
+    expect(older.wrapper.get('[data-bulk-stat="failed_targets"] strong').text()).toContain('5');
   });
 
   it('表头操作筛选与摘要删除沿用同一导航范围并清游标', async () => {

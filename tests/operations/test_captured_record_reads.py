@@ -16,8 +16,10 @@ from tests.support_pg import PostgresTestCase
 def account_row():
     return {
         "id": 7, "email": "captured@example.test", "deactivated": False,
+        "plan_check_status": "success", "codex_status": "success",
         "data": {
             "access_token": "fixture-token",
+            "totp_secret": "fixture-totp-secret",
             "extra_json": {"account_password": "fixture-confirmed", "account_password_state": "confirmed"},
         },
     }
@@ -77,6 +79,42 @@ class CapturedRecordReadUnitTests(TestCase):
         queries = [str(call.args[0]) for call in cur.execute.call_args_list]
         for name in ("registration_jobs", "registered_accounts"):
             self.assertTrue(any(f'"test_captured_business"."{name}"' in query for query in queries))
+
+    def test_registration_job_closeout_reads_and_writes_through_captured_cursor(self):
+        cur = MagicMock()
+        cur.rowcount = 1
+        cur.fetchone.side_effect = [
+            {
+                "id": 10, "status": "partial_success", "account_id": 7,
+                "data": {"config_snapshot": {
+                    "password_enabled": True, "plan_check_enabled": True,
+                    "twofa_enabled": True, "codex_enabled": True,
+                }},
+            },
+            account_row(),
+        ]
+        with common.settlement_scope(self.domain), patch.object(
+            records, "_READY_KEY", "another-domain",
+        ), patch.object(
+            records, "init", side_effect=AssertionError("captured read attempted record migration"),
+        ) as initialize, patch.object(common, "_connect") as connect, patch.object(
+            postgres, "connect", side_effect=AssertionError("captured read borrowed another connection"),
+        ) as borrow:
+            result = registration_completion.reconcile_parent_registration_job(
+                cur, 10, account_id=7,
+            )
+        self.assertTrue(result)
+        initialize.assert_not_called()
+        connect.assert_not_called()
+        borrow.assert_not_called()
+        queries = [str(call.args[0]) for call in cur.execute.call_args_list]
+        self.assertTrue(any('"test_captured_business"."registration_jobs"' in query for query in queries))
+        self.assertTrue(any('"test_captured_business"."registered_accounts"' in query for query in queries))
+        self.assertTrue(any(
+            query.lstrip().upper().startswith("UPDATE")
+            and '"test_captured_business"."registration_jobs"' in query
+            for query in queries
+        ))
 
     def test_ordinary_registration_reconcile_keeps_the_record_owner_read_path(self):
         cur = MagicMock()

@@ -413,23 +413,40 @@ def _reconcile_parent_task_cur(cur, parent_task_id: int, *, child_task_id: int |
     if not parent:
         return None
     observed_run_id = int(parent.get("last_run_id") or 0)
+    terminal_registration_child = False
     if str(parent.get("source_system") or "") == "registration_chains":
-        cur.execute(f"SELECT data FROM {_common._table('operation_runs')} WHERE id=%s", (observed_run_id,))
+        cur.execute(f"SELECT data,status FROM {_common._table('operation_runs')} WHERE id=%s", (observed_run_id,))
         completion_parent = cur.fetchone() or {}
         auto_child = False
         if child_task_id:
-            cur.execute(f"SELECT data->>'registration_completion' AS automatic FROM {_common._table('operation_tasks')} WHERE id=%s",
+            cur.execute(f"SELECT status,data->>'registration_completion' AS automatic FROM {_common._table('operation_tasks')} WHERE id=%s",
                         (int(child_task_id),))
-            auto_child = (cur.fetchone() or {}).get("automatic") == "true"
+            child_state = cur.fetchone() or {}
+            auto_child = child_state.get("automatic") == "true"
+            terminal_registration_child = child_state.get("status") in _common._TERMINAL_STATUSES
+        if terminal_registration_child and (
+            parent.get("status") in {"cancelled", "stopped"}
+            or completion_parent.get("status") in {"cancelled", "stopped"}
+        ):
+            return None
         if auto_child or (_common._decode(completion_parent.get("data")) or {}).get("completion_handoff"):
             from core.storage.operations import registration_completion
 
             return registration_completion.reconcile(cur, observed_run_id)
     if observed_run_id:
-        cur.execute(f"SELECT id FROM {_common._table('operation_runs')} WHERE id=%s FOR UPDATE", (observed_run_id,))
+        cur.execute(f"SELECT status FROM {_common._table('operation_runs')} WHERE id=%s FOR UPDATE", (observed_run_id,))
+        locked_run = cur.fetchone() or {}
+    else:
+        locked_run = {}
     cur.execute(f"SELECT * FROM {_common._table('operation_tasks')} WHERE id=%s FOR UPDATE", (int(parent_task_id),))
     parent = cur.fetchone()
     if not parent or int(parent.get("last_run_id") or 0) != observed_run_id:
+        return None
+    if terminal_registration_child and (
+        parent.get("status") in {"cancelled", "stopped"}
+        or locked_run.get("status") in {"cancelled", "stopped"}
+    ):
+        # 迟到的补跑回执保留子任务结果，不撤销用户对原批次的取消或停止。
         return None
     if str(parent.get("task_type") or "") == "account_inspection_batch":
         # 巡检批次用定长聚合摘要，避免每个账号完成都重写全部子任务 JSON。
@@ -2949,11 +2966,29 @@ def finish_run(
             registration_completion.reconcile_for_child(cur, int(found["task_id"]))
         if (str(result.get("status") or status_value) == "success"
                 and str(found.get("source_system") or "") == "registration_jobs"):
-            # 2FA/套餐补跑完成后，同一事务内直接回写父注册任务，不依赖周期对账。
+            # 直接来源于旧注册 Job 的 Run 仍沿用原有收口入口。
             from core.storage.operations import registration_completion
 
             registration_completion.reconcile_parent_registration_job(
                 cur, int(found.get("source_id") or 0), account_id=found.get("account_id"),
+            )
+        elif (str(result.get("status") or status_value) == "success"
+              and str(found.get("source_system") or "") == "webui_runtime"
+              and str(found.get("task_type") or "") in {"account_setup_retry", "password_setup"}):
+            # 账号配置子 Run 成功后，按当前父链在同一事务内回写原注册 Job。
+            from core.storage.operations import registration_completion
+
+            registration_completion.reconcile_parent_registration_job_for_child(
+                cur, int(found["task_id"]), child_run_id=int(run_id),
+            )
+        elif (str(result.get("status") or status_value) == "success"
+              and str(found.get("source_system") or "") == "native_operations"
+              and str(found.get("task_type") or "") in {"plan_check", "codex_retry"}):
+            # 套餐及 Codex 补跑按冻结的原 Job 关联完成收口。
+            from core.storage.operations import registration_completion
+
+            registration_completion.reconcile_parent_registration_job_for_child(
+                cur, int(found["task_id"]), child_run_id=int(run_id),
             )
     if _settlement_conn is not None:
         return result

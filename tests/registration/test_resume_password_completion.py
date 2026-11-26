@@ -38,7 +38,11 @@ class ResumePasswordCompletionTests(PostgresTestCase):
         self.job, _ = db.create_retry_job(
             self.root["id"], job_type="registration_resume", email_source="outlook",
             email=self.email, account_id=self.account_id,
-            data={"config_snapshot": {"password_enabled": True, "registration_driver": "protocol_oss_2"}},
+            data={"config_snapshot": {
+                "password_enabled": True, "plan_check_enabled": False,
+                "twofa_enabled": False, "codex_enabled": False,
+                "registration_driver": "protocol_oss_2",
+            }},
         )
         self.run = registration.start_run(
             self.job["attempt_id"], job_id=self.job["id"], action_type="registration_resume",
@@ -182,6 +186,7 @@ class ResumePasswordCompletionTests(PostgresTestCase):
             result = task_gateway._execute_operation_handler("password_setup", child["last_run_id"])
         self.assertEqual("success", result["status"], result)
         self.assertEqual("success", self.parent()["status"])
+        self.assertEqual("success", db.get_job(self.job["id"])["status"])
 
     def test_queued_automatic_task_skips_remote_submission_if_password_was_confirmed(self):
         from webui import runtime
@@ -228,6 +233,17 @@ class ResumePasswordCompletionTests(PostgresTestCase):
         store.finish_run(self.tasks()[0]["last_run_id"], status="success")
         self.assertEqual("partial_success", self.parent()["status"])
         self.assertEqual("registration_completion_incomplete", self.parent()["error_code"])
+
+    def test_completion_uses_original_job_requirements_instead_of_current_global_settings(self):
+        records.patch_row(records.JOBS, self.job["id"], changes={"config_snapshot": {
+            "password_enabled": True, "plan_check_enabled": False,
+            "twofa_enabled": True, "codex_enabled": False,
+        }})
+        self.invoke()
+        self.finish_auth()
+        self.confirm_password()
+        store.finish_run(self.tasks()[0]["last_run_id"], status="success")
+        self.assertEqual("partial_success", db.get_job(self.job["id"])["status"])
 
     def test_progress_keeps_waiting_even_after_authentication_completion_event(self):
         self.invoke()
@@ -293,6 +309,10 @@ class ResumePasswordCompletionTests(PostgresTestCase):
         self.assertEqual(1, len(store.get_task(child["id"], include_events=False)["runs"]))
 
     def test_successful_password_does_not_hide_another_postprocess_failure(self):
+        records.patch_row(records.JOBS, self.job["id"], {"config_snapshot": {
+            **db.get_job(self.job["id"])["config_snapshot"], "codex_enabled": True,
+        }})
+        records.patch_row(records.ACCOUNTS, self.account_id, {"codex_status": "failed"})
         self.result["error"] = "Codex 未完成：网络超时; 原密码尚未确认生效"
         self.invoke()
         self.assertEqual(1, len(self.tasks()))
@@ -365,6 +385,7 @@ class ResumePasswordCompletionTests(PostgresTestCase):
         parent = self.parent()
         self.assertEqual(newest_run_id, parent["last_run_id"])
         self.assertEqual("queued", parent["status"])
+        self.assertEqual("partial_success", db.get_job(self.job["id"])["status"])
 
     def test_old_waiting_completion_cannot_hide_a_newer_terminal_resume(self):
         self.invoke()

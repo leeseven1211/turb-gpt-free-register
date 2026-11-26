@@ -33,8 +33,10 @@ describe('共享列筛选浮层', () => {
     expect(trigger.attributes('title')).toBe('状态：已完成');
     expect(trigger.attributes('aria-expanded')).toBe('true');
     const page = new DOMWrapper(document.body);
-    await page.get('.tc-filter-popover').trigger('keydown', {key: 'Escape'});
+    const escape = new KeyboardEvent('keydown', {key: 'Escape', bubbles: true, cancelable: true});
+    page.get('.tc-filter-popover').element.dispatchEvent(escape);
     await flushPromises();
+    expect(escape.defaultPrevented).toBe(true);
     expect(wrapper.emitted('update:open')?.at(-1)).toEqual([false]);
   });
 });

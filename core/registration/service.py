@@ -57,6 +57,8 @@ _DISPATCH_WAKE = threading.Event()
 _DISPATCH_THREAD: threading.Thread | None = None
 _DISPATCHING_JOBS: dict[int, dict] = {}
 _DISPATCH_INTERVAL = 0.5
+# 周期收口轮转历史候选，避免长期缺项或旧代次占住每轮前几条。
+_COMPLETED_ACCOUNT_TASKS_CURSOR: tuple[int, int] = (0, 0)
 
 _STOP_EVENTS: dict[int, threading.Event] = {}
 _ACTIVE_JOBS: set[int] = set()
@@ -1824,49 +1826,80 @@ def _execute_queued_job(job: dict) -> None:
 def close_jobs_for_completed_account_tasks(*, limit: int = 50) -> int:
     """账号配置子任务已成功、但注册任务仍停在 partial/failed 时收口。
 
-    2FA/套餐重跑是入队式执行：入队时只能标记 partial，子任务完成没有回调
-    修改父任务，必须由定期对账把它收口，否则账号已完成、任务却一直不全。
+    2FA/套餐重跑是入队式执行：事务内即时收口，同时由定期对账修复历史
+    成功但未触发回调的子任务。
     """
-    from core.accounts.completion import completion_plan
     from core.storage import postgres
+    from psycopg.rows import dict_row
 
+    global _COMPLETED_ACCOUNT_TASKS_CURSOR
     if not postgres.enabled():
         return 0
+    jobs_table = postgres.qualified("registration_jobs")
+    tasks_table = postgres.qualified("operation_tasks")
+    runs_table = postgres.qualified("operation_runs")
+    registration_runs_table = postgres.qualified("registration_runs")
     try:
-        with postgres.connect() as conn, conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT DISTINCT j.id
-                FROM registration_jobs j
-                JOIN operation_tasks t
-                  ON t.source_system = 'registration_jobs'
-                 AND t.source_id = j.id::text
-                WHERE j.status IN ('partial_success', 'failed')
-                  AND t.status = 'success'
-                ORDER BY j.id
-                LIMIT %s
-                """,
-                (max(1, int(limit)),),
-            )
-            job_ids = [int(row[0]) for row in cur.fetchall()]
+        with postgres.connect(row_factory=dict_row) as conn:
+            with conn.cursor() as cur:
+                candidate_sql = f"""
+                    SELECT DISTINCT j.id AS job_id,
+                                    child_task.id AS child_task_id,
+                                    child_run.id AS child_run_id
+                    FROM {jobs_table} j
+                    JOIN {tasks_table} child_task
+                      ON child_task.account_id = j.account_id
+                    JOIN {runs_table} child_run
+                      ON child_run.id = child_task.last_run_id
+                     AND child_run.status = 'success'
+                    WHERE j.status IN ('partial_success', 'failed')
+                      AND (j.id, child_task.id) > (%s, %s)
+                      AND (
+                        child_task.data->>'source_job_id' = j.id::text
+                        OR EXISTS (
+                            SELECT 1
+                            FROM {registration_runs_table} registration_run
+                            WHERE registration_run.id = CASE
+                                WHEN child_task.data->>'registration_run_id' ~ '^[0-9]+$'
+                                THEN (child_task.data->>'registration_run_id')::bigint
+                                ELSE NULL
+                            END
+                              AND registration_run.job_id = j.id
+                        )
+                      )
+                    ORDER BY j.id, child_task.id
+                    LIMIT %s
+                    """
+                candidate_limit = max(1, int(limit))
+                cursor = _COMPLETED_ACCOUNT_TASKS_CURSOR
+                cur.execute(candidate_sql, (*cursor, candidate_limit))
+                rows = cur.fetchall()
+                if not rows and cursor != (0, 0):
+                    # 到尾部后只回绕一次，每轮仍最多处理 limit 个候选。
+                    _COMPLETED_ACCOUNT_TASKS_CURSOR = (0, 0)
+                    cur.execute(candidate_sql, (0, 0, candidate_limit))
+                    rows = cur.fetchall()
+                candidates = [
+                    (int(row["job_id"]), int(row["child_task_id"]), int(row["child_run_id"]))
+                    for row in rows
+                ]
+                _COMPLETED_ACCOUNT_TASKS_CURSOR = (
+                    candidates[-1][:2] if candidates else (0, 0)
+                )
     except Exception:
         logger.exception("[Service] 读取账号配置对账候选失败")
         return 0
     closed = 0
-    for job_id in job_ids:
+    for job_id, child_task_id, child_run_id in candidates:
         try:
-            job = db.get_job(job_id) or {}
-            account_id = job.get("account_id")
-            if not account_id:
-                continue
-            account = db.get_account(int(account_id))
-            if not account or not str(account.get("access_token") or "").strip():
-                continue
-            if completion_plan(account)["missing_steps"]:
-                continue
-            if db.transition_job_status(job_id, ("partial_success", "failed"), "success",
-                                       completed_at=_now_iso()):
-                db.update_job(job_id, error="")
+            from core.storage.operations import registration_completion
+
+            with postgres.connect(row_factory=dict_row) as conn:
+                with conn.cursor() as cur:
+                    changed = registration_completion.reconcile_parent_registration_job_for_child(
+                        cur, child_task_id, child_run_id=child_run_id,
+                    )
+            if changed:
                 _finish_registration_run(
                     "success", result_summary={"job_id": job_id, "status": "success",
                                                "manual_reconcile": "account_setup_completed"},
@@ -3975,14 +4008,21 @@ def _build_retry_info(
     if codex_step_state == "skipped" and codex_status != "deactivated":
         codex_status = "skipped"
     twofa_step = steps.get("twofa") if isinstance(steps.get("twofa"), dict) else {}
-    twofa_failed = str(twofa_step.get("state") or "") == "failed"
+    current_twofa_ready = _account_twofa_ready(account)
+    # 旧注册 Job 的失败步骤只保留为历史证据；当前账号已有完整 2FA 事实时，
+    # 不能再让旧失败标记把当前任务显示成 partial_success。
+    twofa_failed = str(twofa_step.get("state") or "") == "failed" and not current_twofa_ready
     if not twofa_failed and account:
         try:
             import json
 
             extra = json.loads(str(account.get("extra_json") or "{}"))
             twofa = extra.get("twofa") if isinstance(extra, dict) else None
-            twofa_failed = isinstance(twofa, dict) and str(twofa.get("status") or "") == "failed"
+            twofa_failed = (
+                isinstance(twofa, dict)
+                and str(twofa.get("status") or "") == "failed"
+                and not current_twofa_ready
+            )
         except Exception:
             pass
 
@@ -4410,6 +4450,7 @@ def retry_job(
                 email=email,
                 access_token=str((account or {}).get("access_token") or ""),
                 trigger="registration_retry_plan_check",
+                source_job_id=int(job_id),
             )
         except Exception as exc:
             return {"ok": False, "error": f"套餐查询入队异常：{type(exc).__name__}: {exc}", "status": 503}
@@ -4455,6 +4496,7 @@ def retry_job(
             email,
             trigger="registration_job_retry",
             parent_task_id=int(parent["id"]) if parent else None,
+            source_job_id=int(job_id),
         )
         if not queued.get("accepted"):
             return {

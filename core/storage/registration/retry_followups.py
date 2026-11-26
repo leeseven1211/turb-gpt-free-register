@@ -383,6 +383,7 @@ def _prepare(
             output[source_id] = _error("原账号配置执行缺失，请刷新后重试")
             continue
         payload = dict(spec.data)
+        payload["source_job_id"] = source_id
         payload["config_snapshot"] = task_gateway.normalize_config_snapshot(
             spec.config_snapshot, allowlist=spec.config_allowlist,
         )

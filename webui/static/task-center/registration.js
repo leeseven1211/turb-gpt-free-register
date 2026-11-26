@@ -1,7 +1,7 @@
 import { C as e, F as t, G as n, H as r, K as i, L as a, M as o, Q as s, S as c, _ as l, a as u, c as d, d as f, dt as p, et as m, ft as h, g, h as _, i as v, j as y, l as b, lt as x, m as S, n as C, o as w, s as T, st as E, t as D, v as O, w as ee, x as k } from "./_plugin-vue_export-helper-CBsH_ZoE.js";
-import { i as A, n as j, r as M, t as te } from "./ListFilterSummary-DsJDWIjH.js";
-import { n as ne, t as re } from "./ColumnResizer-C2889-lj.js";
-import { t as ie } from "./ListResult-BADeMxD2.js";
+import { i as A, n as j, r as M, t as te } from "./ListFilterSummary-C1Al5Lxz.js";
+import { n as ne, t as re } from "./ColumnResizer-DnqXkWpl.js";
+import { t as ie } from "./ListResult-QC9hZL-_.js";
 import { n as N, r as ae } from "./client-B5R_MNgP.js";
 import { t as oe } from "./errorLabels-fdGNkTBr.js";
 import { n as P, t as F } from "./time-DOD6oyhP.js";
@@ -430,37 +430,45 @@ var de = { class: "registration-filter-fields" }, fe = { key: 0 }, X = ["value"]
 				label: "失败"
 			},
 			{
-				key: "active",
-				label: "运行 / 排队"
+				key: "running",
+				label: "运行"
+			},
+			{
+				key: "queued",
+				label: "排队"
 			},
 			{
 				key: "other",
 				label: "其他"
 			}
-		], u = m("all"), d = m(null), g = m(!1), v = S(() => i.batch?.items || []), b = S(() => i.batch && !i.batches.some((e) => String(e.batch_id) === String(i.batch?.batch_id)) ? [i.batch, ...i.batches] : i.batches), x = (e) => e.status || e.display_status || "";
+		], u = m("all"), d = m(null), g = m(!1), v = S(() => i.batch?.items || []), b = S(() => i.batch && !i.batches.some((e) => String(e.batch_id) === String(i.batch?.batch_id)) ? [i.batch, ...i.batches] : i.batches), x = (e) => e.display_status || e.status || "";
 		function C(e) {
 			let t = x(e);
-			return t === "success" || t === "failed" ? t : [
-				"running",
+			return t === "success" || t === "failed" ? t : ["running", "stopping"].includes(t) ? "running" : [
 				"pending",
-				"stopping"
-			].includes(t) ? "active" : "other";
+				"queued",
+				"waiting"
+			].includes(t) ? "queued" : "other";
 		}
 		let w = S(() => {
 			let e = {
 				all: v.value.length,
 				success: 0,
 				failed: 0,
-				active: 0,
+				running: 0,
+				queued: 0,
 				other: 0
 			};
 			for (let t of v.value) e[C(t)]++;
 			return e;
 		}), T = S(() => s.filter((e) => e.key !== "other" || w.value.other || u.value === "other")), D = S(() => u.value === "all" ? v.value : v.value.filter((e) => C(e) === u.value)), ee = S(() => D.value.find((e) => String(e.id) === d.value)), A = m(), j = m(""), M, te = S(() => {
 			let e = w.value;
-			return e.all ? e.active ? {
-				label: v.value.some((e) => x(e) !== "pending" && C(e) === "active") ? "运行中" : "排队中",
-				tone: "active"
+			return e.all ? e.running ? {
+				label: "运行中",
+				tone: "running"
+			} : e.queued ? {
+				label: "排队中",
+				tone: "queued"
 			} : e.failed ? {
 				label: e.failed === e.all ? "失败" : "部分失败",
 				tone: "failed"
@@ -480,7 +488,7 @@ var de = { class: "registration-filter-fields" }, fe = { key: 0 }, X = ["value"]
 		}, re = S(() => ne(i.batch?.started_at, i.batch?.completed_at)), ie = (e) => e.toLocaleString("zh-CN"), ae = (e) => V(V(e.progress).failure), R = S(() => {
 			let e = Date.now();
 			return D.value.map((t) => {
-				let n = C(t), r = n === "active" && x(t) !== "pending";
+				let n = C(t), r = n === "running";
 				return {
 					job: t,
 					tone: n,
@@ -510,7 +518,7 @@ var de = { class: "registration-filter-fields" }, fe = { key: 0 }, X = ["value"]
 				let t = e.error_info ? oe(V(e.error_info)) : "", n = I(ae(e).label);
 				return t && t !== "执行异常" ? t : n && Array.from(n).length <= 10 ? n : t || "执行异常";
 			}
-			return t === "active" ? I(V(V(e.progress).current).label) : "";
+			return t === "running" || t === "queued" ? I(V(V(e.progress).current).label) : "";
 		}
 		function B(e) {
 			return e.debug_state === "paused" ? "调试暂停" : i.statusLabel(e.display_status || x(e));
@@ -582,7 +590,7 @@ var de = { class: "registration-filter-fields" }, fe = { key: 0 }, X = ["value"]
 				return;
 			}
 			let c = t !== a || String(n.id) !== String(o?.id) || J(n) !== J(o) || x(n) !== (o && x(o)), l = r !== s;
-			(c || l) && q(), (c || l || !A.value && !j.value || C(n) === "active") && le(n);
+			(c || l) && q(), (c || l || !A.value && !j.value || C(n) === "running") && le(n);
 		}), y(q), (n, r) => (t(), O("section", {
 			class: "registration-batch",
 			"aria-labelledby": "registration-batch-title",
@@ -655,7 +663,11 @@ var de = { class: "registration-filter-fields" }, fe = { key: 0 }, X = ["value"]
 					class: "registration-batch-card",
 					"data-tone": i
 				}, [_("div", xt, [
-					_("div", St, [_("strong", null, h(n.email || (n.status === "pending" ? "等待执行…" : "准备邮箱中…")), 1), _("small", null, h(u), 1)]),
+					_("div", St, [_("strong", null, h(n.email || ([
+						"pending",
+						"queued",
+						"waiting"
+					].includes(x(n)) ? "等待执行…" : "准备邮箱中…")), 1), _("small", null, h(u), 1)]),
 					_("div", Ct, [_("span", {
 						class: "registration-state",
 						"data-tone": i
@@ -754,9 +766,9 @@ function en() {
 // src/features/registration/useRegistration.ts
 var tn = [
 	"pending",
-	"running",
-	"stopping"
-], nn = [
+	"queued",
+	"waiting"
+], nn = ["running", "stopping"], rn = [...tn, ...nn], an = [
 	"success",
 	"partial_success",
 	"failed",
@@ -769,16 +781,14 @@ var tn = [
 	"password_confirmation_pending",
 	"unsupported",
 	"deactivated"
-], rn = [
+], on = [
 	"failed",
 	"partial_success",
-	"stopped",
-	"cancelled",
 	"interrupted",
 	"request_unknown",
 	"manual_reconcile",
 	"attention_required"
-], an = 1e4, on = () => ({
+], sn = 1e4, cn = () => ({
 	page: 1,
 	page_size: 20,
 	status: "",
@@ -789,7 +799,7 @@ var tn = [
 	error: "",
 	date_from: "",
 	date_to: ""
-}), sn = (e) => e instanceof Error ? e.message : "请求失败", cn = (e) => e == null ? "" : String(e).trim(), ln = (e) => encodeURIComponent(String(Y(e))), un = () => ({
+}), ln = (e) => e instanceof Error ? e.message : "请求失败", un = (e) => e == null ? "" : String(e).trim(), dn = (e) => encodeURIComponent(String(Y(e))), fn = () => ({
 	id: null,
 	job: null,
 	log: "",
@@ -801,7 +811,7 @@ var tn = [
 	compareError: "",
 	comparing: !1
 });
-function dn(e) {
+function pn(e) {
 	let t = e.api || en(), n = m(!!e.visible), r = m(!document.hidden), i = !1, a = S(() => n.value && r.value && !i), o = s({
 		jobs: [],
 		total: 0,
@@ -813,7 +823,7 @@ function dn(e) {
 		loading: !1,
 		error: "",
 		receipt: null,
-		query: on(),
+		query: cn(),
 		batchId: "",
 		batchRefreshGeneration: 0,
 		statusCounts: {},
@@ -822,7 +832,7 @@ function dn(e) {
 		pendingActions: {},
 		lastCreate: null,
 		lastAction: null,
-		detail: un(),
+		detail: fn(),
 		metaError: ""
 	}), c = S(() => o.creating), l = S(() => {
 		let e = o.meta?.capabilities?.features?.register;
@@ -841,10 +851,10 @@ function dn(e) {
 		if (!a.value || re > 0) return !1;
 		if (o.view === "tasks") return !0;
 		let e = o.batch;
-		return !e || String(e.batch_id) !== o.batchId || e.projection_delayed ? !0 : tn.some((t) => Number(e.status_counts?.[t] || 0) > 0) || e.items.some((e) => tn.includes(String(e.status || "")));
+		return !e || String(e.batch_id) !== o.batchId || e.projection_delayed ? !0 : rn.some((t) => Number(e.status_counts?.[t] || 0) > 0) || e.items.some((e) => rn.includes(String(e.status || "")));
 	}
 	function I(e) {
-		for (let t of Object.keys(on())) {
+		for (let t of Object.keys(cn())) {
 			let n = e[t];
 			if (n !== void 0) {
 				if (t === "page" || t === "page_size") {
@@ -854,7 +864,7 @@ function dn(e) {
 			}
 		}
 		if (e.progress_batch_id !== void 0) {
-			let t = cn(e.progress_batch_id);
+			let t = un(e.progress_batch_id);
 			t !== o.batchId && (o.batchId = t, o.batch = null);
 		}
 	}
@@ -888,10 +898,10 @@ function dn(e) {
 						o.batches = a.progress_batches || [];
 						let e = a.progress_batch || null;
 						if (!e && o.batchId) {
-							let e = cn(o.batches[0]?.batch_id);
+							let e = un(o.batches[0]?.batch_id);
 							if (e !== o.batchId && (o.batchId = e, o.batch = null, e && !n)) continue;
 						}
-						!o.batchId && e?.batch_id && (o.batchId = cn(e.batch_id)), o.batch = e, o.batchRefreshGeneration = l;
+						!o.batchId && e?.batch_id && (o.batchId = un(e.batch_id)), o.batch = e, o.batchRefreshGeneration = l;
 					} else {
 						o.total = Math.max(0, Number(a.total ?? a.items?.length ?? 0) || 0), Object.prototype.hasOwnProperty.call(a, "facets") && (o.facets = a.facets || {}, k = r, A = Date.now());
 						let e = Math.max(1, Math.ceil(o.total / o.query.page_size));
@@ -909,7 +919,7 @@ function dn(e) {
 					return;
 				}
 			} catch (e) {
-				p() && !N(e) && (o.error = sn(e));
+				p() && !N(e) && (o.error = ln(e));
 			} finally {
 				i === d && (o.loading = !1, w = void 0);
 			}
@@ -922,7 +932,7 @@ function dn(e) {
 		}, m;
 	}
 	function R(e) {
-		return L({ progress_batch_id: cn(e) });
+		return L({ progress_batch_id: un(e) });
 	}
 	function z(e, n) {
 		return t.progress(Y(e), n);
@@ -975,7 +985,7 @@ function dn(e) {
 	}
 	function G(e = !1) {
 		if (E) return E.promise;
-		if (e && (M = !0), !a.value || !M && o.meta && Date.now() - j < an) return Promise.resolve();
+		if (e && (M = !0), !a.value || !M && o.meta && Date.now() - j < sn) return Promise.resolve();
 		let n = ++h, r = new AbortController(), i = (async () => {
 			try {
 				let e = await t.metadata(r.signal);
@@ -986,7 +996,7 @@ function dn(e) {
 				}, o.metaError = "", j = Date.now(), M = !1;
 			} catch (e) {
 				if (n === h && a.value && !N(e)) {
-					let t = sn(e);
+					let t = ln(e);
 					o.metaError = /[\u3400-\u9fff]/.test(t) ? t : `邮箱来源读取失败，请稍后重试${t ? `（${t}）` : ""}`;
 				}
 			} finally {
@@ -1020,7 +1030,7 @@ function dn(e) {
 		}, u(o.receipt.message);
 	}
 	function ue(e) {
-		let t = cn(e.jobs?.[0]?.batch_id || e.job?.batch_id || e.batch_id);
+		let t = un(e.jobs?.[0]?.batch_id || e.job?.batch_id || e.batch_id);
 		t && (o.batchId = t, o.batch = null);
 	}
 	function de(e, n = {}) {
@@ -1034,7 +1044,7 @@ function dn(e) {
 			} catch (e) {
 				throw o.receipt = {
 					tone: "danger",
-					message: sn(e)
+					message: ln(e)
 				}, u(o.receipt.message), e;
 			} finally {
 				ne.delete(r), delete o.pendingActions[r];
@@ -1058,7 +1068,7 @@ function dn(e) {
 			} catch (e) {
 				throw o.receipt = {
 					tone: "danger",
-					message: sn(e)
+					message: ln(e)
 				}, u(o.receipt.message), e;
 			} finally {
 				o.creating = !1, te = void 0;
@@ -1066,8 +1076,11 @@ function dn(e) {
 		})(), te);
 	}
 	function X(e) {
-		let t = o.batch?.items || [];
-		return e === "stopBatch" ? t.filter((e) => e.status === "running" || e.status === "stopping") : e === "cancelBatch" ? t.filter((e) => e.status === "pending") : t.filter((e) => rn.includes(String(e.status)) && e.retryable);
+		let t = o.batch?.items || [], n = (e) => String(e.display_status || e.status || "");
+		return e === "stopBatch" ? t.filter((e) => nn.includes(n(e))) : e === "cancelBatch" ? t.filter((e) => tn.includes(n(e))) : t.filter((e) => {
+			let t = String(e.status || "");
+			return t === "cancelled" || t === "stopped" ? !1 : on.includes(n(e)) && e.retryable;
+		});
 	}
 	let pe = S(() => ({
 		stopBatch: !!o.batchId && X("stopBatch").length > 0,
@@ -1100,7 +1113,7 @@ function dn(e) {
 			retry: `${n?.retry_label || "重试"}任务 #${n?.id}`,
 			deleteBulk: `删除选中的 ${s.length} 个任务与对应日志`,
 			retryBulk: `重试选中的 ${s.length} 个任务`
-		}, l = t === "retry" && n?.retry_action === "codex" ? "仅补跑 Codex 授权" : t === "retry" && n?.retry_action === "twofa" ? "重新登录检查并补齐 Authenticator 2FA" : t === "retry" && n?.retry_action === "registration_resume" ? "使用已保存账号密码继续邮箱验证" : "有原邮箱则复用，没有原邮箱则重新领取；已创建账号的任务按缺失步骤补跑，不能重试的由后端校验", d = t === "retry" || t === "retryBulk" || t === "retryBatch" ? `\n${l}。原任务记录和日志会保留。` : t === "stop" || t === "stopBatch" ? "\n任务会在当前步骤检查点退出。" : t === "cancelAll" || t === "cancelBatch" ? "\n运行中的任务不受影响。" : "", f = encodeURIComponent(o.batchId), p = n ? ln(n.id) : "";
+		}, l = t === "retry" && n?.retry_action === "codex" ? "仅补跑 Codex 授权" : t === "retry" && n?.retry_action === "twofa" ? "重新登录检查并补齐 Authenticator 2FA" : t === "retry" && n?.retry_action === "registration_resume" ? "使用已保存账号密码继续邮箱验证" : "有原邮箱则复用，没有原邮箱则重新领取；已创建账号的任务按缺失步骤补跑，不能重试的由后端校验", d = t === "retry" || t === "retryBulk" || t === "retryBatch" ? `\n${l}。原任务记录和日志会保留。` : t === "stop" || t === "stopBatch" ? "\n任务会在当前步骤检查点退出。" : t === "cancelAll" || t === "cancelBatch" ? "\n运行中的任务不受影响。" : "", f = encodeURIComponent(o.batchId), p = n ? dn(n.id) : "";
 		return await (e.confirm ? e.confirm(`确定${c[t]}吗？${d}`) : window.confirm(`确定${c[t]}吗？${d}`)) ? de(...{
 			cancelAll: ["/api/jobs/cancel-pending", {}],
 			stopBatch: [`/api/jobs/batches/${f}/stop`, {}],
@@ -1142,20 +1155,20 @@ function dn(e) {
 			}
 			C = !0, o.detail.error = "";
 		} catch (e) {
-			s() && !N(e) && (o.detail.error = sn(e));
+			s() && !N(e) && (o.detail.error = ln(e));
 		} finally {
-			s() && (o.detail.loading = !1, nn.includes(String(o.detail.job?.status || "")) || (x = window.setTimeout(() => void Z(), 2e3)));
+			s() && (o.detail.loading = !1, an.includes(String(o.detail.job?.status || "")) || (x = window.setTimeout(() => void Z(), 2e3)));
 		}
 	}
 	function ge(t, n) {
 		let r = Y(t), i = [...o.jobs, ...o.batch?.items || []].find((e) => String(e.id) === String(r));
 		i?.operation_task_id && e.openTask ? e.openTask(i.operation_task_id, i.operation_run_id || null, n || null) : (he(), C = !1, o.detail = {
-			...un(),
+			...fn(),
 			id: r
 		}, Z(!1, !0));
 	}
 	function _e() {
-		he(), C = !1, o.detail = un();
+		he(), C = !1, o.detail = fn();
 	}
 	async function ve(e) {
 		let n = Y(e);
@@ -1169,7 +1182,7 @@ function dn(e) {
 			let e = await t.compare(n, r.signal);
 			return i() ? (o.detail.comparison = e, e) : null;
 		} catch (e) {
-			if (i() && !N(e)) throw o.detail.compareError = sn(e), e;
+			if (i() && !N(e)) throw o.detail.compareError = ln(e), e;
 			return null;
 		} finally {
 			i() && (o.detail.comparing = !1, O = void 0);
@@ -1206,69 +1219,69 @@ function dn(e) {
 		refreshDetail: Z,
 		closeDetail: _e,
 		notify: u,
-		terminalStatuses: nn,
-		activeStatuses: tn,
+		terminalStatuses: an,
+		activeStatuses: rn,
 		batchActions: pe,
 		readBatchProgress: z,
 		dispose: be
 	};
 }
 // src/features/registration/RegistrationPage.vue?vue&type=script&setup=true&lang.ts
-var fn = ["data-view"], pn = { class: "registration-launch" }, mn = {
+var mn = ["data-view"], hn = { class: "registration-launch" }, gn = {
 	class: "registration-summary",
 	"aria-label": "注册与本地邮箱概览"
-}, hn = {
+}, _n = {
 	class: "registration-launch-panel",
 	"aria-labelledby": "registration-launch-title"
-}, gn = { class: "registration-launcher" }, _n = ["disabled", "aria-describedby"], vn = ["value"], yn = { class: "registration-debug" }, bn = ["disabled", "title"], xn = { class: "registration-hint registration-hint-bar" }, Sn = {
+}, vn = { class: "registration-launcher" }, yn = ["disabled", "aria-describedby"], bn = ["value"], xn = { class: "registration-debug" }, Sn = ["disabled", "title"], Cn = { class: "registration-hint registration-hint-bar" }, wn = {
 	id: "registrationEmailSupplyHint",
 	class: "registration-supply-note"
-}, Cn = { class: "ui-list registration-tasks" }, wn = {
+}, Tn = { class: "ui-list registration-tasks" }, En = {
 	class: "ui-list-toolbar registration-count-row",
 	"data-registration-count-row": ""
-}, Tn = { class: "ui-list-toolbar__main registration-count-main" }, En = { class: "ui-list-count registration-count" }, Dn = {
+}, Dn = { class: "ui-list-toolbar__main registration-count-main" }, On = { class: "ui-list-count registration-count" }, kn = {
 	key: 0,
 	class: "registration-selection",
 	role: "status"
-}, On = { class: "ui-list-toolbar__actions registration-count-actions" }, kn = {
+}, An = { class: "ui-list-toolbar__actions registration-count-actions" }, jn = {
 	class: "registration-toolbar",
 	role: "group",
 	"aria-label": "注册任务操作"
-}, An = ["disabled"], jn = ["disabled"], Mn = { class: "registration-mobile-filter" }, Nn = {
+}, Mn = ["disabled"], Nn = ["disabled"], Pn = { class: "registration-mobile-filter" }, Fn = {
 	key: 0,
 	class: "ui-list-feedback is-error registration-list-error",
 	role: "alert"
-}, Pn = {
+}, In = {
 	class: "ui-table-scroll registration-table-wrap",
 	tabindex: "0",
 	"aria-label": "注册任务列表，可横向滚动"
-}, Fn = { key: 2 }, In = { class: "ui-col-check" }, Ln = [
+}, Ln = { key: 2 }, Rn = { class: "ui-col-check" }, zn = [
 	"aria-label",
 	"checked",
 	"disabled",
 	"onChange"
-], Rn = { class: "registration-col-email" }, zn = ["title"], Bn = { key: 0 }, Vn = { class: "registration-row-actions" }, Hn = { class: "ui-row-actions registration-row-actions-inner" }, Un = ["onClick"], Wn = ["onUpdate:modelValue"], Gn = ["onClick"], Kn = ["onClick"], qn = ["onClick"], Jn = ["disabled", "onClick"], Yn = { class: "registration-dialog-title" }, Xn = { id: "registration-log-title" }, Zn = ["title"], Qn = { class: "registration-dialog-body" }, $n = {
+], Bn = { class: "registration-col-email" }, Vn = ["title"], Hn = { key: 0 }, Un = { class: "registration-row-actions" }, Wn = { class: "ui-row-actions registration-row-actions-inner" }, Gn = ["onClick"], Kn = ["onUpdate:modelValue"], qn = ["onClick"], Jn = ["onClick"], Yn = ["onClick"], Xn = ["disabled", "onClick"], Zn = { class: "registration-dialog-title" }, Qn = { id: "registration-log-title" }, $n = ["title"], er = { class: "registration-dialog-body" }, tr = {
 	key: 0,
 	class: "registration-dialog-status"
-}, er = {
+}, nr = {
 	key: 1,
 	class: "registration-dialog-error",
 	role: "alert"
-}, tr = { class: "registration-dialog-log" }, nr = {
+}, rr = { class: "registration-dialog-log" }, ir = {
 	key: 2,
 	class: "registration-dialog-section"
-}, rr = { class: "registration-dialog-actions" }, ir = ["disabled"], ar = ["href"], or = { key: 0 }, sr = {
+}, ar = { class: "registration-dialog-actions" }, or = ["disabled"], sr = ["href"], cr = { key: 0 }, lr = {
 	key: 1,
 	class: "registration-dialog-error",
 	role: "alert"
-}, cr = {
+}, ur = {
 	key: 3,
 	class: "registration-dialog-section"
-}, lr = ["href"], ur = { class: "registration-dialog-details" }, dr = /* @__PURE__ */ e({
+}, dr = ["href"], fr = { class: "registration-dialog-details" }, pr = /* @__PURE__ */ e({
 	__name: "RegistrationPage",
 	props: { deps: {} },
 	setup(e, { expose: s }) {
-		let d = e, y = dn(d.deps), { state: C } = y, D = ne({
+		let d = e, y = pn(d.deps), { state: C } = y, D = ne({
 			defaults: [
 				38,
 				100,
@@ -1420,6 +1433,8 @@ var fn = ["data-view"], pn = { class: "registration-launch" }, mn = {
 			roxy_oss: "开源 Roxy（历史）"
 		}[String(e || "")] || String(e || "未知"), Ae = (e) => xe.value.find((t) => String(t.value) === String(e))?.label || String(e || "-"), je = (e) => ({
 			pending: "排队中",
+			queued: "排队中",
+			waiting: "等待中",
 			running: "运行中",
 			stopping: "停止中",
 			success: "成功",
@@ -1607,12 +1622,12 @@ var fn = ["data-view"], pn = { class: "registration-launch" }, mn = {
 			class: "registration-vue-page",
 			"data-view": E(C).view
 		}, [
-			i(_("section", pn, [
-				_("dl", mn, [(t(!0), O(f, null, a(Oe.value, (e) => (t(), O("div", { key: e.label }, [_("dt", null, h(e.label), 1), _("dd", null, h(typeof e.value == "number" ? e.value.toLocaleString("zh-CN") : e.value), 1)]))), 128))]),
-				_("section", hn, [r[24] ||= _("h2", { id: "registration-launch-title" }, "新建注册批次", -1), _("form", {
+			i(_("section", hn, [
+				_("dl", gn, [(t(!0), O(f, null, a(Oe.value, (e) => (t(), O("div", { key: e.label }, [_("dt", null, h(e.label), 1), _("dd", null, h(typeof e.value == "number" ? e.value.toLocaleString("zh-CN") : e.value), 1)]))), 128))]),
+				_("section", _n, [r[24] ||= _("h2", { id: "registration-launch-title" }, "新建注册批次", -1), _("form", {
 					novalidate: "",
 					onSubmit: b(Le, ["prevent"])
-				}, [_("div", gn, [
+				}, [_("div", vn, [
 					_("label", null, [r[20] ||= k("邮箱来源 ", -1), i(_("select", {
 						"onUpdate:modelValue": r[0] ||= (e) => I.value = e,
 						disabled: !E(C).meta || ye.value || !Se.value.length,
@@ -1620,7 +1635,7 @@ var fn = ["data-view"], pn = { class: "registration-launch" }, mn = {
 					}, [r[19] ||= _("option", { value: "" }, "请选择本次邮箱来源", -1), (t(!0), O(f, null, a(Se.value, (e) => (t(), O("option", {
 						key: String(e.value),
 						value: String(e.value)
-					}, h(e.label || e.value), 9, vn))), 128))], 8, _n), [[u, I.value]])]),
+					}, h(e.label || e.value), 9, bn))), 128))], 8, yn), [[u, I.value]])]),
 					_("label", null, [r[21] ||= k("注册数量", -1), i(_("input", {
 						"onUpdate:modelValue": r[1] ||= (e) => ae.value = e,
 						min: "1",
@@ -1644,7 +1659,7 @@ var fn = ["data-view"], pn = { class: "registration-launch" }, mn = {
 						void 0,
 						{ number: !0 }
 					]])]),
-					_("label", yn, [i(_("input", {
+					_("label", xn, [i(_("input", {
 						"onUpdate:modelValue": r[3] ||= (e) => L.value = e,
 						type: "checkbox"
 					}, null, 512), [[v, L.value]]), r[23] ||= k(" 调试模式", -1)]),
@@ -1653,8 +1668,8 @@ var fn = ["data-view"], pn = { class: "registration-launch" }, mn = {
 						class: "registration-start",
 						disabled: E(C).creating || be.value || !I.value || !!Ce.value,
 						title: Ce.value || void 0
-					}, h(E(C).creating ? "提交中…" : "开始注册"), 9, bn)
-				]), _("p", xn, [
+					}, h(E(C).creating ? "提交中…" : "开始注册"), 9, Sn)
+				]), _("p", Cn, [
 					we.value ? (t(), O("span", {
 						key: 0,
 						id: "registration-launch-hint",
@@ -1668,7 +1683,7 @@ var fn = ["data-view"], pn = { class: "registration-launch" }, mn = {
 						"data-registration-source-retry": "",
 						onClick: r[4] ||= (e) => E(y).ensureMeta(!0)
 					}, "重试")) : l("", !0),
-					_("span", Sn, h(De.value), 1)
+					_("span", wn, h(De.value), 1)
 				])], 32)]),
 				ue.value ? (t(), g(Qt, {
 					key: 0,
@@ -1704,28 +1719,28 @@ var fn = ["data-view"], pn = { class: "registration-launch" }, mn = {
 					"onLog"
 				])) : l("", !0)
 			], 512), [[T, ue.value]]),
-			i(_("section", Cn, [
-				_("div", wn, [_("div", Tn, [
-					_("span", En, "共 " + h(E(C).total.toLocaleString()) + " 条任务", 1),
-					q.value.size ? (t(), O("span", Dn, "已选 " + h(q.value.size) + " 项", 1)) : l("", !0),
+			i(_("section", Tn, [
+				_("div", En, [_("div", Dn, [
+					_("span", On, "共 " + h(E(C).total.toLocaleString()) + " 条任务", 1),
+					q.value.size ? (t(), O("span", kn, "已选 " + h(q.value.size) + " 项", 1)) : l("", !0),
 					c(te, {
 						items: he.value,
 						onRemove: r[8] ||= (e) => Z(e, "")
 					}, null, 8, ["items"])
-				]), _("div", On, [
-					_("div", kn, [
+				]), _("div", An, [
+					_("div", jn, [
 						_("button", {
 							type: "button",
 							class: x(["ui-button registration-toolbar-bulk", { "is-idle": !q.value.size }]),
 							onClick: r[9] ||= (e) => Q("retryBulk"),
 							disabled: !q.value.size
-						}, "重试", 10, An),
+						}, "重试", 10, Mn),
 						_("button", {
 							type: "button",
 							class: x(["ui-button ui-button--danger registration-toolbar-bulk", { "is-idle": !q.value.size }]),
 							onClick: r[10] ||= (e) => Q("deleteBulk"),
 							disabled: !q.value.size
-						}, "删除", 10, jn),
+						}, "删除", 10, Nn),
 						_("button", {
 							type: "button",
 							class: "ui-button",
@@ -1743,7 +1758,7 @@ var fn = ["data-view"], pn = { class: "registration-launch" }, mn = {
 						"aria-label": "恢复注册任务列宽",
 						onClick: ee
 					}, "恢复列宽"),
-					_("span", Mn, [c(ve, {
+					_("span", Pn, [c(ve, {
 						values: pe.value,
 						sources: xe.value,
 						open: X.value === "all",
@@ -1761,12 +1776,12 @@ var fn = ["data-view"], pn = { class: "registration-launch" }, mn = {
 						onClick: Re
 					}, "清筛")) : l("", !0)
 				])]),
-				E(C).error ? (t(), O("div", Nn, [k(h(E(C).error) + " ", 1), _("button", {
+				E(C).error ? (t(), O("div", Fn, [k(h(E(C).error) + " ", 1), _("button", {
 					type: "button",
 					class: "ui-link",
 					onClick: ze
 				}, "重试")])) : l("", !0),
-				_("div", Pn, [_("table", {
+				_("div", In, [_("table", {
 					class: "ui-table ui-table--sticky-end registration-table",
 					style: p({ "--ui-table-width": `${E(D).total.value}px` })
 				}, [
@@ -1796,7 +1811,7 @@ var fn = ["data-view"], pn = { class: "registration-launch" }, mn = {
 						"sources",
 						"open",
 						"onUpdate:open"
-					])) : (t(), O("span", Fn, h(e.label), 1)), n < A.length - 1 ? (t(), g(re, {
+					])) : (t(), O("span", Ln, h(e.label), 1)), n < A.length - 1 ? (t(), g(re, {
 						key: 3,
 						label: e.label,
 						onStart: (e) => E(D).resize(n, e),
@@ -1816,18 +1831,18 @@ var fn = ["data-view"], pn = { class: "registration-launch" }, mn = {
 						key: String(e.id),
 						class: x({ "is-selected": q.value.has(String(e.id)) })
 					}, [
-						_("td", In, [_("input", {
+						_("td", Rn, [_("input", {
 							type: "checkbox",
 							"aria-label": `选择任务 ${e.id}`,
 							checked: q.value.has(String(e.id)),
 							disabled: ["running", "stopping"].includes(String(e.status)),
 							onChange: (t) => Ve(e.id, t)
-						}, null, 40, Ln)]),
+						}, null, 40, zn)]),
 						_("td", null, [c(M, {
 							text: `#${e.id}`,
 							secondary: e.parent_job_id ? `↳ #${e.parent_job_id}` : void 0
 						}, null, 8, ["text", "secondary"])]),
-						_("td", Rn, [c(M, {
+						_("td", Bn, [c(M, {
 							text: String(e.email || "—"),
 							title: e.email ? String(e.email) : void 0
 						}, null, 8, ["text", "title"])]),
@@ -1840,7 +1855,7 @@ var fn = ["data-view"], pn = { class: "registration-launch" }, mn = {
 						_("td", null, [_("span", {
 							class: x(["ui-badge registration-status-badge", `ui-badge--${Me(e)}`]),
 							title: je(e.debug_state === "paused" ? "debug_paused" : e.display_status || e.status)
-						}, h(je(e.debug_state === "paused" ? "debug_paused" : e.display_status || e.status)), 11, zn)]),
+						}, h(je(e.debug_state === "paused" ? "debug_paused" : e.display_status || e.status)), 11, Vn)]),
 						_("td", null, [c(M, {
 							class: "ui-time",
 							text: E(F)(e.started_at).text,
@@ -1868,27 +1883,27 @@ var fn = ["data-view"], pn = { class: "registration-launch" }, mn = {
 							title: String(e.error_message || ge(e)),
 							tone: "danger"
 						}, {
-							details: n(() => [_("p", null, h(e.error_message || ge(e)), 1), e.error_info ? (t(), O("p", Bn, h(e.error_info), 1)) : l("", !0)]),
+							details: n(() => [_("p", null, h(e.error_message || ge(e)), 1), e.error_info ? (t(), O("p", Hn, h(e.error_info), 1)) : l("", !0)]),
 							_: 2
 						}, 1032, ["label", "title"])) : (t(), g(M, {
 							key: 1,
 							text: "—"
 						}))]),
-						_("td", Vn, [_("div", Hn, [
+						_("td", Un, [_("div", Wn, [
 							_("button", {
 								type: "button",
 								class: "ui-link",
 								onClick: (t) => E(y).openLog(e.id)
-							}, "日志", 8, Un),
+							}, "日志", 8, Gn),
 							e.manual_otp_required && e.status === "running" ? (t(), O(f, { key: 0 }, [i(_("input", {
 								"onUpdate:modelValue": (t) => Y.value[String(e.id)] = t,
 								class: "registration-otp-input",
 								placeholder: "邮箱验证码"
-							}, null, 8, Wn), [[w, Y.value[String(e.id)]]]), _("button", {
+							}, null, 8, Kn), [[w, Y.value[String(e.id)]]]), _("button", {
 								type: "button",
 								class: "ui-button registration-otp-btn",
 								onClick: (t) => Ge(e)
-							}, "提交验证码", 8, Gn)], 64)) : l("", !0),
+							}, "提交验证码", 8, qn)], 64)) : l("", !0),
 							[
 								"pending",
 								"running",
@@ -1898,19 +1913,19 @@ var fn = ["data-view"], pn = { class: "registration-launch" }, mn = {
 								type: "button",
 								class: "ui-link ui-link--danger",
 								onClick: (t) => Q("stop", e)
-							}, "停止", 8, Kn)) : l("", !0),
+							}, "停止", 8, Jn)) : l("", !0),
 							e.retryable ? (t(), O("button", {
 								key: 2,
 								type: "button",
 								class: "ui-link",
 								onClick: (t) => Q("retry", e)
-							}, "重试", 8, qn)) : l("", !0),
+							}, "重试", 8, Yn)) : l("", !0),
 							_("button", {
 								type: "button",
 								class: "ui-link ui-link--danger",
 								disabled: ["running", "stopping"].includes(String(e.status)),
 								onClick: (t) => Q("delete", e)
-							}, "删除", 8, Jn)
+							}, "删除", 8, Xn)
 						])])
 					], 2))), 128))])
 				], 4)]),
@@ -1946,42 +1961,42 @@ var fn = ["data-view"], pn = { class: "registration-launch" }, mn = {
 				onCancel: r[17] ||= b((...e) => E(y).closeDetail && E(y).closeDetail(...e), ["prevent"]),
 				onClose: r[18] ||= (...e) => E(y).closeDetail && E(y).closeDetail(...e),
 				onClick: Ie
-			}, [_("header", null, [_("div", Yn, [_("h2", Xn, "任务 #" + h(E(C).detail.id) + " 日志", 1), E(C).detail.job ? (t(), O(f, { key: 0 }, [E(C).detail.job.email ? (t(), O("span", {
+			}, [_("header", null, [_("div", Zn, [_("h2", Qn, "任务 #" + h(E(C).detail.id) + " 日志", 1), E(C).detail.job ? (t(), O(f, { key: 0 }, [E(C).detail.job.email ? (t(), O("span", {
 				key: 0,
 				class: "registration-dialog-email",
 				title: String(E(C).detail.job.email)
-			}, h(E(C).detail.job.email), 9, Zn)) : l("", !0), _("span", { class: x(["ui-badge registration-status-badge", `ui-badge--${Me(E(C).detail.job)}`]) }, h(je(E(C).detail.job.debug_state === "paused" ? "debug_paused" : E(C).detail.job.display_status || E(C).detail.job.status)), 3)], 64)) : l("", !0)]), _("button", {
+			}, h(E(C).detail.job.email), 9, $n)) : l("", !0), _("span", { class: x(["ui-badge registration-status-badge", `ui-badge--${Me(E(C).detail.job)}`]) }, h(je(E(C).detail.job.debug_state === "paused" ? "debug_paused" : E(C).detail.job.display_status || E(C).detail.job.status)), 3)], 64)) : l("", !0)]), _("button", {
 				type: "button",
 				class: "ui-button registration-dialog-close",
 				onClick: r[15] ||= (...e) => E(y).closeDetail && E(y).closeDetail(...e)
-			}, "关闭")]), _("div", Qn, [
-				E(C).detail.loading ? (t(), O("p", $n, "加载中…")) : l("", !0),
-				E(C).detail.error ? (t(), O("p", er, h(E(C).detail.error), 1)) : l("", !0),
-				_("pre", tr, h(E(C).detail.log || "（暂无日志）"), 1),
-				E(C).detail.debug?.enabled ? (t(), O("div", nr, [
+			}, "关闭")]), _("div", er, [
+				E(C).detail.loading ? (t(), O("p", tr, "加载中…")) : l("", !0),
+				E(C).detail.error ? (t(), O("p", nr, h(E(C).detail.error), 1)) : l("", !0),
+				_("pre", rr, h(E(C).detail.log || "（暂无日志）"), 1),
+				E(C).detail.debug?.enabled ? (t(), O("div", ir, [
 					r[25] ||= _("strong", null, "网络调试", -1),
-					_("div", rr, [
+					_("div", ar, [
 						_("button", {
 							type: "button",
 							class: "ui-button",
 							disabled: E(C).detail.comparing,
 							onClick: Ke
-						}, "与同批成功任务对比", 8, ir),
+						}, "与同批成功任务对比", 8, or),
 						_("a", {
 							class: "ui-link",
 							href: `/api/jobs/${E(C).detail.id}/debug/har`,
 							download: ""
-						}, "下载脱敏 HAR", 8, ar),
+						}, "下载脱敏 HAR", 8, sr),
 						_("button", {
 							type: "button",
 							class: "ui-button ui-button--primary",
 							onClick: r[16] ||= (e) => E(y).action(`/api/jobs/${E(C).detail.id}/debug/release`, { action: "finish" })
 						}, "结束调试并收口")
 					]),
-					E(C).detail.comparison ? (t(), O("pre", or, h(typeof E(C).detail.comparison == "object" ? JSON.stringify(E(C).detail.comparison, null, 2) : E(C).detail.comparison), 1)) : l("", !0),
-					E(C).detail.compareError ? (t(), O("p", sr, h(E(C).detail.compareError), 1)) : l("", !0)
+					E(C).detail.comparison ? (t(), O("pre", cr, h(typeof E(C).detail.comparison == "object" ? JSON.stringify(E(C).detail.comparison, null, 2) : E(C).detail.comparison), 1)) : l("", !0),
+					E(C).detail.compareError ? (t(), O("p", lr, h(E(C).detail.compareError), 1)) : l("", !0)
 				])) : l("", !0),
-				E(C).detail.diagnostics?.captured ? (t(), O("div", cr, [
+				E(C).detail.diagnostics?.captured ? (t(), O("div", ur, [
 					r[27] ||= _("strong", null, "失败诊断", -1),
 					E(C).detail.diagnostics.screenshot_url ? (t(), O("a", {
 						key: 0,
@@ -1989,16 +2004,16 @@ var fn = ["data-view"], pn = { class: "registration-launch" }, mn = {
 						href: String(E(C).detail.diagnostics.screenshot_url),
 						target: "_blank",
 						rel: "noopener"
-					}, "打开失败截图", 8, lr)) : l("", !0),
-					_("details", ur, [r[26] ||= _("summary", null, "完整诊断证据", -1), _("pre", null, h(typeof E(C).detail.diagnostics == "object" ? JSON.stringify(E(C).detail.diagnostics, null, 2) : E(C).detail.diagnostics), 1)])
+					}, "打开失败截图", 8, dr)) : l("", !0),
+					_("details", fr, [r[26] ||= _("summary", null, "完整诊断证据", -1), _("pre", null, h(typeof E(C).detail.diagnostics == "object" ? JSON.stringify(E(C).detail.diagnostics, null, 2) : E(C).detail.diagnostics), 1)])
 				])) : l("", !0)
 			])], 544)
-		], 8, fn));
+		], 8, mn));
 	}
 });
 // src/registration.ts
-function fr(e, t = {}) {
-	let n = C(dr, { deps: {
+function mr(e, t = {}) {
+	let n = C(pr, { deps: {
 		...t,
 		api: t.api || en()
 	} }), r = n.mount(e);
@@ -2020,4 +2035,4 @@ function fr(e, t = {}) {
 		destroy: () => n.unmount()
 	};
 }
-export { fr as mountRegistration };
+export { mr as mountRegistration };

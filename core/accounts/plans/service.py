@@ -1268,7 +1268,7 @@ def _country_proxy_source(snapshot) -> str:
 def _submit_native_plan(
     *, account_id: int, email: str, trigger: str, timezone_offset_min: str,
     batch_id: str | None, idempotency_key: str | None,
-    account_request_key: str | None = None,
+    account_request_key: str | None = None, source_job_id: int | None = None,
 ) -> dict:
     register_operation_handlers()
     key = str(idempotency_key or "").strip() or None
@@ -1311,6 +1311,7 @@ def _submit_native_plan(
             # fallback while preventing a queued Run from changing route
             # halfway through execution.
             "proxy_source": source,
+            **({"source_job_id": int(source_job_id)} if source_job_id is not None else {}),
         },
         **snapshot_kwargs,
         config_allowlist=PLAN_CONFIG_ALLOWLIST,
@@ -1329,6 +1330,7 @@ def enqueue_account_plan_check(
     batch_id: str | None = None,
     idempotency_key: str | None = None,
     account_request_key: str | None = None,
+    source_job_id: int | None = None,
 ) -> dict:
     """Persist a plan check in the native operation queue when available."""
     account_id = int(account_id)
@@ -1359,6 +1361,7 @@ def enqueue_account_plan_check(
             timezone_offset_min=str(timezone_offset_min or "-"),
             batch_id=batch_id, idempotency_key=key,
             **({"account_request_key": account_request_key} if account_request_key else {}),
+            source_job_id=source_job_id,
         )
     except Exception as exc:
         error = f"套餐查询任务持久化失败: {type(exc).__name__}: {str(exc)[:300]}"

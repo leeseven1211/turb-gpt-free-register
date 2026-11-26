@@ -673,6 +673,7 @@ class JobProgressTests(PostgresTestCase):
         self.assertEqual(702, result["run_id"])
         submit.assert_called_once_with(
             "native@example.com", trigger="registration_job_retry", parent_task_id=700,
+            source_job_id=17,
         )
         legacy_create.assert_not_called()
 

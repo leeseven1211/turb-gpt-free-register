@@ -81,7 +81,8 @@ describe('registration list standards',()=>{
    main_steps:[{id:'set_twofa',label:'配置 2FA',state:'failed',message:'校验失败的详细记录'}],
   }}});
   (wrapper.vm as any).setView('launch');await (wrapper.vm as any).load();await flushPromises();
-  expect(wrapper.get('[aria-pressed="false"][data-batch-filter="active"]').text()).toBe('运行 / 排队 1');
+  expect(wrapper.get('[aria-pressed="false"][data-batch-filter="running"]').text()).toBe('运行 0');
+  expect(wrapper.get('[aria-pressed="false"][data-batch-filter="queued"]').text()).toBe('排队 1');
   expect(wrapper.get('.registration-batch').text()).not.toContain('校验失败的详细记录');
   expect(api.progress).not.toHaveBeenCalled();
   await wrapper.get('[data-batch-filter="failed"]').trigger('click');
@@ -92,9 +93,27 @@ describe('registration list standards',()=>{
   expect(wrapper.get('.registration-stage-selected').text()).toContain('配置 2FA');
   expect(wrapper.get('.registration-stage-selected').text()).toContain('校验失败的详细记录');
   expect(api.log).not.toHaveBeenCalled();
-  await wrapper.get('[data-batch-filter="active"]').trigger('click');
+  await wrapper.get('[data-batch-filter="queued"]').trigger('click');
   expect(wrapper.get('.registration-batch-card').text()).toContain('queued@example.test');
   expect(wrapper.find('.registration-progress').exists()).toBe(false);
+ });
+ it('以当前显示状态分组批次任务并隐藏成功任务的历史失败摘要',async()=>{
+  const {wrapper,api}=setup();
+  launchBatch(api,'display-status-batch',[
+   {id:7,email:'recovered@example.test',status:'partial_success',display_status:'success',error_info:{label:'旧失败原因'}},
+   {id:8,email:'running@example.test',status:'running',display_status:'running'},
+   {id:9,email:'queued@example.test',status:'pending',display_status:'queued'},
+  ]);
+  (wrapper.vm as any).setView('launch');await (wrapper.vm as any).load();await flushPromises();
+  expect(wrapper.get('[data-batch-filter="success"]').text()).toBe('成功 1');
+  expect(wrapper.get('[data-batch-filter="running"]').text()).toBe('运行 1');
+  expect(wrapper.get('[data-batch-filter="queued"]').text()).toBe('排队 1');
+  const recovered=wrapper.findAll('.registration-batch-card').find(card=>card.text().includes('recovered@example.test'))!;
+  const queued=wrapper.findAll('.registration-batch-card').find(card=>card.text().includes('queued@example.test'))!;
+  expect(recovered.get('.registration-state').text()).toBe('成功');
+  expect(recovered.text()).not.toContain('旧失败原因');
+  expect(recovered.attributes('data-tone')).toBe('success');
+  expect(queued.get('.registration-state').text()).toBe('排队中');
  });
  it('从批次摘要展示运行耗时和执行时间，失败原因仍然可见',async()=>{
   const {wrapper,api}=setup();

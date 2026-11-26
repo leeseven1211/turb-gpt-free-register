@@ -4,9 +4,11 @@ import {taskId} from '../../api/taskIds';
 import {createRegistrationApi,type RegistrationId,type RegistrationJob,type RegistrationSummary} from '../../api/registration';
 import type {RegistrationAction,RegistrationDeps,RegistrationLoadOptions,RegistrationQuery,RegistrationState} from './contracts';
 
-const activeStatuses=['pending','running','stopping'];
+const queuedStatuses=['pending','queued','waiting'];
+const runningStatuses=['running','stopping'];
+const activeStatuses=[...queuedStatuses,...runningStatuses];
 const terminalStatuses=['success','partial_success','failed','stopped','cancelled','interrupted','request_unknown','manual_reconcile','attention_required','password_confirmation_pending','unsupported','deactivated'];
-const retryStatuses=['failed','partial_success','stopped','cancelled','interrupted','request_unknown','manual_reconcile','attention_required'];
+const batchRetryStatuses=['failed','partial_success','interrupted','request_unknown','manual_reconcile','attention_required'];
 const metadataCacheMs=10000;
 type BatchAction = 'stopBatch' | 'cancelBatch' | 'retryBatch';
 const emptyQuery=():RegistrationQuery=>({page:1,page_size:20,status:'',id:'',email:'',email_source:'',proxy:'',error:'',date_from:'',date_to:''});
@@ -253,9 +255,14 @@ export function useRegistration(deps:RegistrationDeps){
   }
   function batchCandidates(kind:BatchAction) {
     const items=state.batch?.items||[];
-    if(kind==='stopBatch')return items.filter(row=>row.status==='running'||row.status==='stopping');
-    if(kind==='cancelBatch')return items.filter(row=>row.status==='pending');
-    return items.filter(row=>retryStatuses.includes(String(row.status))&&row.retryable);
+    const statusOf=(row:RegistrationJob)=>String(row.display_status||row.status||'');
+    if(kind==='stopBatch')return items.filter(row=>runningStatuses.includes(statusOf(row)));
+    if(kind==='cancelBatch')return items.filter(row=>queuedStatuses.includes(statusOf(row)));
+    return items.filter(row=>{
+      const rawStatus=String(row.status||'');
+      if(rawStatus==='cancelled'||rawStatus==='stopped')return false;
+      return batchRetryStatuses.includes(statusOf(row))&&row.retryable;
+    });
   }
   const batchActions=computed(()=>({
     stopBatch:Boolean(state.batchId)&&batchCandidates('stopBatch').length>0,

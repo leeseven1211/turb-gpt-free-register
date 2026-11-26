@@ -12,6 +12,10 @@ describe('目标表的身份、详情和焦点',()=>{
     (checkbox.element as HTMLElement).focus();await wrapper.setProps({items:[{...item}]});expect(document.activeElement).toBe(checkbox.element);
     await wrapper.get('[data-result-detail]').trigger('click');await flushPromises();const dialog=document.querySelector('[role="dialog"]')!;expect(dialog.textContent).toContain('REQUEST_UNKNOWN');expect(dialog.textContent).toContain('设置密码');expect(dialog.textContent).toContain('补密码：失败');
     (dialog.querySelector('[data-close-detail]') as HTMLElement).click();await flushPromises();expect(document.activeElement).toBe(wrapper.get('[data-result-detail]').element);
+    await wrapper.get('[data-result-detail]').trigger('click');await flushPromises();
+    const escape=new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true});
+    document.querySelector('[role="dialog"]')!.dispatchEvent(escape);await flushPromises();
+    expect(escape.defaultPrevented).toBe(true);expect(document.querySelector('[role="dialog"]')).toBeNull();
   });
   it('页选半选，服务端摘要按文本渲染且加载时不提供旧范围操作',async()=>{
     const wrapper=mount(BulkTargets,{props:{items:[{canonical_target_id:'1',account_id:'5',result:{summary:'<img src=x onerror=alert(1)>'}},{canonical_target_id:'2',account_id:'6'}],selected:new Set(['1']),loading:false,error:'',openTask:vi.fn()}});wrappers.push(wrapper);
