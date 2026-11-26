@@ -454,12 +454,13 @@ def _select_current_run(runs: Iterable[dict]) -> dict | None:
 
 def _compatibility_run_status_sql(
     *, run_alias: str = "rr", registration_alias: str = "registration_job",
-    account_alias: str = "account_task",
+    account_alias: str = "account_task", completion_overlay_alias: str | None = None,
 ) -> str:
     """Read the source status for compatibility runs before trusting projection rows."""
     return (
         f"CASE "
-        f"WHEN {_registration_completion_overlay_sql(run_alias, registration_alias)} THEN {run_alias}.status "
+        f"WHEN {_registration_completion_overlay_sql(run_alias, registration_alias, completion_overlay_alias=completion_overlay_alias)} "
+        f"THEN {run_alias}.status "
         f"WHEN {run_alias}.source_system='registration_jobs' AND {registration_alias}.id IS NOT NULL "
         f"THEN CASE WHEN {registration_alias}.status='pending' THEN 'queued' ELSE {registration_alias}.status END "
         f"WHEN {run_alias}.source_system='account_action_tasks' AND {account_alias}.id IS NOT NULL "
@@ -468,8 +469,16 @@ def _compatibility_run_status_sql(
     )
 
 
-def _registration_completion_overlay_sql(run_alias: str, registration_alias: str) -> str:
+def _registration_completion_overlay_sql(
+    run_alias: str, registration_alias: str, *, completion_overlay_alias: str | None = None,
+) -> str:
     """注册主体终态后，已关联子任务的执行汇总优先于旧 Job 状态。"""
+    if completion_overlay_alias:
+        return (
+            f"({run_alias}.source_system='registration_jobs' "
+            f"AND {registration_alias}.status IN ('success','partial_success') "
+            f"AND {completion_overlay_alias}.id IS NOT NULL)"
+        )
     return (
         f"({run_alias}.source_system='registration_jobs' "
         f"AND {registration_alias}.status IN ('success','partial_success') "
@@ -478,6 +487,24 @@ def _registration_completion_overlay_sql(run_alias: str, registration_alias: str
         f"AND NOT EXISTS (SELECT 1 FROM {_table('operation_runs')} completion_newer "
         f"WHERE completion_newer.task_id={run_alias}.task_id "
         f"AND (completion_newer.run_no,completion_newer.id)>({run_alias}.run_no,{run_alias}.id)))"
+    )
+
+
+def _completion_handoff_runs_join_sql(
+    *, run_alias: str = "rr", alias: str = "completion_overlay",
+) -> str:
+    """利用部分索引 idx_operation_runs_completion_child 预筛交接 Run，避免全表解压 data。"""
+    runs_table = _table("operation_runs")
+    return (
+        f"LEFT JOIN ("
+        f"SELECT ch.id FROM {runs_table} ch "
+        f"WHERE ch.source_system='registration_jobs' "
+        f"AND ch.data ? 'completion_handoff' "
+        f"AND ch.result_summary ? 'completion_handoff' "
+        f"AND NOT EXISTS (SELECT 1 FROM {runs_table} completion_newer "
+        f"WHERE completion_newer.task_id=ch.task_id "
+        f"AND (completion_newer.run_no,completion_newer.id)>(ch.run_no,ch.id))"
+        f") {alias} ON {alias}.id={run_alias}.id"
     )
 
 
@@ -502,10 +529,12 @@ def _compatibility_created_at_sort_sql(value_sql: str) -> str:
 def _compatibility_run_projection_sql(
     *, run_alias: str = "rr", registration_alias: str = "registration_job",
     account_alias: str = "account_task", fields: Iterable[str] | None = None,
+    completion_overlay_alias: str | None = None,
 ) -> str:
     """Project requested source-backed fields, keeping one definition per field."""
     status_sql = _compatibility_run_status_sql(
         run_alias=run_alias, registration_alias=registration_alias, account_alias=account_alias,
+        completion_overlay_alias=completion_overlay_alias,
     )
     stage_sql = (
         f"CASE WHEN ({status_sql})='queued' THEN 'queued' "
@@ -519,6 +548,9 @@ def _compatibility_run_projection_sql(
         f"WHEN {run_alias}.source_system='account_action_tasks' AND {account_alias}.id IS NOT NULL "
         f"THEN {account_alias}.queued_at "
         f"ELSE NULL END"
+    )
+    overlay_sql = _registration_completion_overlay_sql(
+        run_alias, registration_alias, completion_overlay_alias=completion_overlay_alias,
     )
     expressions = {
         "effective_status": status_sql,
@@ -534,7 +566,7 @@ def _compatibility_run_projection_sql(
         ),
         "effective_completed_at": (
             f"CASE "
-            f"WHEN {_registration_completion_overlay_sql(run_alias, registration_alias)} "
+            f"WHEN {overlay_sql} "
             f"THEN {run_alias}.completed_at::text "
             f"WHEN {run_alias}.source_system='registration_jobs' AND {registration_alias}.id IS NOT NULL "
             f"THEN NULLIF({registration_alias}.data->>'completed_at', '') "
@@ -545,7 +577,7 @@ def _compatibility_run_projection_sql(
         "effective_created_at_sort": _compatibility_created_at_sort_sql(created_at_sql),
         "effective_error_message": (
             f"CASE "
-            f"WHEN {_registration_completion_overlay_sql(run_alias, registration_alias)} "
+            f"WHEN {overlay_sql} "
             f"THEN {run_alias}.error_message "
             f"WHEN {run_alias}.source_system='registration_jobs' AND {registration_alias}.id IS NOT NULL "
             f"THEN {registration_alias}.data->>'error_message' "
@@ -576,14 +608,20 @@ def _compatibility_source_bigint_sql(run_alias: str, source_system: str) -> str:
     )
 
 
-def _compatibility_run_joins_sql(*, run_alias: str = "rr") -> str:
+def _compatibility_run_joins_sql(
+    *, run_alias: str = "rr", completion_overlay_alias: str | None = None,
+) -> str:
     registration_id_sql = _compatibility_source_bigint_sql(run_alias, "registration_jobs")
     account_task_id_sql = _compatibility_source_bigint_sql(run_alias, "account_action_tasks")
+    overlay_join = (
+        f" {_completion_handoff_runs_join_sql(run_alias=run_alias, alias=completion_overlay_alias)}"
+        if completion_overlay_alias else ""
+    )
     return (
         f"LEFT JOIN {postgres_store.qualified(record_store.JOBS.name)} registration_job "
         f"ON registration_job.id={registration_id_sql} "
         f"LEFT JOIN {_table('account_action_tasks')} account_task "
-        f"ON account_task.id={account_task_id_sql}"
+        f"ON account_task.id={account_task_id_sql}{overlay_join}"
     )
 
 

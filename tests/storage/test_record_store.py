@@ -230,7 +230,7 @@ class RecordStoreMigrationTests(PostgresTestCase):
             for column in rs._UI_QUERY_JOB_COLUMNS:
                 cur.execute(f"ALTER TABLE {jobs} DROP COLUMN {rs.postgres_store.quote_identifier(column)}")
             cur.execute(
-                f"DELETE FROM {migrations} WHERE version = %s",
+                f"DELETE FROM {migrations} WHERE version >= %s",
                 (rs._UI_QUERY_COLUMNS_SCHEMA_VERSION,),
             )
             cur.execute(
@@ -282,6 +282,34 @@ class RecordStoreMigrationTests(PostgresTestCase):
             cur.execute(
                 "SELECT indexdef FROM pg_indexes WHERE schemaname = %s AND indexname = %s",
                 (self.schema, "idx_registered_accounts_archived_account_registration_region_id"),
+            )
+            self.assertIsNotNone(cur.fetchone())
+
+    def test_v5_upgrades_existing_v4_tables_with_job_attempt_index(self):
+        rs.init()
+        migrations = rs.postgres_store.qualified(rs._SCHEMA_MIGRATIONS)
+        attempt_index = rs.postgres_store.qualified("idx_registration_jobs_attempt_id")
+        with rs._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"DROP INDEX IF EXISTS {attempt_index}")
+            cur.execute(
+                f"DELETE FROM {migrations} WHERE version >= %s",
+                (rs._UI_QUERY_INDEXES_R2_SCHEMA_VERSION,),
+            )
+
+        with (
+            patch.object(rs, "_READY_KEY", ""),
+            patch.object(rs, "_apply_record_schema", wraps=rs._apply_record_schema) as apply_v1,
+            patch.object(rs, "_ensure_ui_query_columns", wraps=rs._ensure_ui_query_columns) as apply_v4,
+        ):
+            rs.init()
+        apply_v1.assert_not_called()
+        apply_v4.assert_not_called()
+
+        with rs._connect() as conn, conn.cursor() as cur:
+            self.assertTrue(rs._migration_completed(conn, rs._UI_QUERY_INDEXES_R2_SCHEMA_VERSION))
+            cur.execute(
+                "SELECT indexdef FROM pg_indexes WHERE schemaname = %s AND indexname = %s",
+                (self.schema, "idx_registration_jobs_attempt_id"),
             )
             self.assertIsNotNone(cur.fetchone())
 

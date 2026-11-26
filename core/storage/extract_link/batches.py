@@ -340,12 +340,18 @@ def batch_task_counts(batch_ids: list[int], *, public_status: bool = False) -> d
 
     operation.init()
     accounts = admin_repository._q(record_store.ACCOUNTS)
-    account_columns = """id, CASE WHEN LOWER(plan_check_status)='success'
-            AND BTRIM(LOWER(COALESCE(NULLIF(current_plan_type, ''), plan_type, ''))) IN ('plus','pro')
-        THEN COALESCE(NULLIF(BTRIM(data->>'plan_checked_at'), ''),
-                      NULLIF(BTRIM(plan_last_success_at), '')) END AS plan_checked_at"""
-    checked_at_sql = _workbench_timestamp_sql("raw_plan_checked_at")
-    payment_anchor_sql = _workbench_timestamp_sql("raw_payment_submitted_at")
+
+    def _account_plan_checked_sql(alias: str) -> str:
+        return (
+            f"CASE WHEN LOWER({alias}.plan_check_status)='success' "
+            f"AND BTRIM(LOWER(COALESCE(NULLIF({alias}.current_plan_type, ''), {alias}.plan_type, ''))) IN ('plus','pro') "
+            f"THEN COALESCE(NULLIF(BTRIM({alias}.data->>'plan_checked_at'), ''), "
+            f"NULLIF(BTRIM({alias}.plan_last_success_at), '')) END"
+        )
+
+    raw_checked_expr = f"COALESCE({_account_plan_checked_sql('by_id')}, {_account_plan_checked_sql('by_email')})"
+    checked_at_sql = _workbench_timestamp_sql("candidate_checked.raw_plan_checked_at")
+    payment_anchor_sql = _workbench_timestamp_sql("candidate_checked.raw_payment_submitted_at")
     mode_sql = "COALESCE(NULLIF(task.task_mode, ''), 'extract_only')"
     paid_mode_sql = f"{mode_sql} IN ('auto_payment', 'manual_payment')"
     provider_id_sql = "COALESCE(NULLIF(task.task_provider_id, ''), NULLIF(job.provider_id, ''), 'legacy')"
@@ -360,6 +366,7 @@ def batch_task_counts(batch_ids: list[int], *, public_status: bool = False) -> d
     count_columns = [f"COUNT(*) FILTER (WHERE {condition}) AS {name}"
                      for name, condition in _WORKBENCH_STATUS_SQL.items()]
     with operation._connect() as conn, conn.cursor() as cur:
+        cur.execute("SET LOCAL jit = off")
         cur.execute(
             f"""WITH filtered_tasks AS MATERIALIZED (
                 SELECT task.id, task.batch_id, task.account_id, task.email_snapshot,
@@ -370,18 +377,9 @@ def batch_task_counts(batch_ids: list[int], *, public_status: bool = False) -> d
                 FROM {operation._table('operation_tasks')} task
                 WHERE task.task_type='extract_link' AND task.batch_id=ANY(%s)
                   AND LOWER(COALESCE(task.data->>'deleted_by_user', '')) <> 'true'
-            ), missing_account_emails AS MATERIALIZED (
-                SELECT DISTINCT LOWER(BTRIM(task.email_snapshot)) AS email_key
-                FROM filtered_tasks task WHERE {paid_mode_sql} AND BTRIM(task.email_snapshot) <> ''
-                    AND NOT EXISTS (SELECT 1 FROM {accounts} known WHERE known.id=task.account_id)
-            ), account_emails AS (
-                SELECT LOWER(fallback_account.email) AS email_key, MIN(fallback_account.id) AS account_id
-                FROM {accounts} fallback_account
-                WHERE EXISTS (SELECT 1 FROM missing_account_emails)
-                    AND LOWER(fallback_account.email) IN (SELECT email_key FROM missing_account_emails)
-                GROUP BY LOWER(fallback_account.email)
             ), raw AS (
-                SELECT task.batch_id, task.created_at AS task_created_at,
+                SELECT task.id AS task_id, task.batch_id, task.account_id, task.email_snapshot,
+                    task.created_at AS task_created_at,
                     task.task_payment_source,
                     CASE WHEN {paid_mode_sql} AND task.task_payment_source='xxsyun'
                         THEN job.public_state->'summary'->>'payment_submitted_at' END AS raw_payment_submitted_at,
@@ -400,19 +398,11 @@ def batch_task_counts(batch_ids: list[int], *, public_status: bool = False) -> d
                     CASE WHEN {provider_id_sql}='legacy' AND NULLIF(job.public_state->>'extraction_state', '') IS NULL
                         THEN COALESCE((run.result_summary->>'has_link')::boolean, FALSE)
                             OR COALESCE(run.result_summary->>'remote_job_id', '') <> ''
-                        ELSE FALSE END AS legacy_succeeded,
-                    COALESCE(by_id.plan_checked_at, by_email.plan_checked_at) AS raw_plan_checked_at
+                        ELSE FALSE END AS legacy_succeeded
                 FROM filtered_tasks task
                 LEFT JOIN {operation._table('operation_runs')} run ON run.id=task.last_run_id
                 LEFT JOIN {operation._table('extract_link_provider_jobs')} job ON job.run_id=run.id
-                LEFT JOIN (SELECT {account_columns} FROM {accounts}) by_id ON {paid_mode_sql} AND by_id.id=task.account_id
-                LEFT JOIN account_emails email_match ON {paid_mode_sql} AND by_id.id IS NULL
-                    AND BTRIM(task.email_snapshot) <> ''
-                    AND email_match.email_key=LOWER(BTRIM(task.email_snapshot))
-                LEFT JOIN LATERAL (
-                    SELECT {account_columns} FROM {accounts} WHERE id=email_match.account_id LIMIT 1
-                ) by_email ON TRUE
-            ), normalized AS (
+            ), normalized AS MATERIALIZED (
                 SELECT *, CASE
                     WHEN extraction IN ('succeeded', 'success') THEN 'success'
                     WHEN extraction IN ('queued', 'running', 'failed', 'pending', 'unknown', 'not_started') THEN extraction
@@ -427,16 +417,43 @@ def batch_task_counts(batch_ids: list[int], *, public_status: bool = False) -> d
                         WHEN payment='unknown' THEN 'request_unknown'
                         ELSE 'pending_payment' END AS payment_status
                 FROM raw
-            ), projected AS (
-                SELECT *, CASE WHEN mode IN ('auto_payment','manual_payment') AND extraction_status='success'
-                    AND payment_status='paid'
-                    AND raw_plan_checked_at IS NOT NULL
-                    AND ({checked_at_sql}) > (
-                        CASE WHEN task_payment_source='xxsyun' THEN {payment_anchor_sql} ELSE task_created_at END
-                    )
-                    THEN 'confirmed'
-                    ELSE plus END AS plus_status
+            ), plus_candidates AS MATERIALIZED (
+                SELECT task_id, account_id, email_snapshot, task_created_at, task_payment_source, raw_payment_submitted_at
                 FROM normalized
+                WHERE mode IN ('auto_payment','manual_payment')
+                    AND extraction_status='success'
+                    AND payment_status='paid'
+                    AND plus <> 'confirmed'
+            ), missing_account_emails AS MATERIALIZED (
+                SELECT DISTINCT LOWER(BTRIM(c.email_snapshot)) AS email_key
+                FROM plus_candidates c WHERE BTRIM(c.email_snapshot) <> ''
+                    AND NOT EXISTS (SELECT 1 FROM {accounts} known WHERE known.id=c.account_id)
+            ), account_emails AS (
+                SELECT LOWER(fallback_account.email) AS email_key, MIN(fallback_account.id) AS account_id
+                FROM {accounts} fallback_account
+                WHERE EXISTS (SELECT 1 FROM missing_account_emails)
+                    AND LOWER(fallback_account.email) IN (SELECT email_key FROM missing_account_emails)
+                GROUP BY LOWER(fallback_account.email)
+            ), confirmed_plus_tasks AS MATERIALIZED (
+                SELECT candidate_checked.task_id
+                FROM (
+                    SELECT c.task_id, c.task_created_at, c.task_payment_source, c.raw_payment_submitted_at,
+                        {raw_checked_expr} AS raw_plan_checked_at
+                    FROM plus_candidates c
+                    LEFT JOIN {accounts} by_id ON by_id.id=c.account_id
+                    LEFT JOIN account_emails email_match ON by_id.id IS NULL AND BTRIM(c.email_snapshot) <> ''
+                        AND email_match.email_key=LOWER(BTRIM(c.email_snapshot))
+                    LEFT JOIN {accounts} by_email ON by_email.id=email_match.account_id
+                ) candidate_checked
+                WHERE candidate_checked.raw_plan_checked_at IS NOT NULL
+                    AND ({checked_at_sql}) > (
+                        CASE WHEN candidate_checked.task_payment_source='xxsyun'
+                            THEN {payment_anchor_sql} ELSE candidate_checked.task_created_at END
+                    )
+            ), projected AS (
+                SELECT n.*, CASE WHEN cp.task_id IS NOT NULL THEN 'confirmed' ELSE n.plus END AS plus_status
+                FROM normalized n
+                LEFT JOIN confirmed_plus_tasks cp ON cp.task_id=n.task_id
             )
             SELECT batch_id, COUNT(*) AS all,
                 {', '.join(count_columns)},

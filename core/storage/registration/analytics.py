@@ -102,45 +102,70 @@ def _rows_by_date(start: date, end: date) -> list[dict]:
 
 
 def _account_promotions_sql() -> str:
-    """先过滤入库日期，仅读取本次账号的轻量优惠及必要的一个成功快照字段。"""
+    """先过滤入库日期，仅按集合聚合轻量优惠，并仅在需要时回读最小快照字段。"""
     accounts = admin_repository._q(record_store.ACCOUNTS)
     offers = admin_repository._promotion_table()
     created_date = account_created_date_sql("a")
     promotion = admin_repository._account_facet_expressions()["promotion"]
+    narrow_snapshot_sql = """CASE
+        WHEN snapshot_row.snap IS NULL THEN NULL::jsonb
+        WHEN jsonb_typeof(snapshot_row.snap) = 'object' THEN
+            CASE WHEN snapshot_row.snap->'ok' IS DISTINCT FROM 'true'::jsonb THEN NULL::jsonb
+                 ELSE jsonb_build_object(
+                     'ok', snapshot_row.snap->'ok',
+                     'account_promotions', snapshot_row.snap->'account_promotions',
+                     'promotion_query_snapshot', snapshot_row.snap->'promotion_query_snapshot',
+                     'plan_check_partial', snapshot_row.snap->'plan_check_partial',
+                     'plan_check_countries', snapshot_row.snap->'plan_check_countries',
+                     'plan_check_country_results', snapshot_row.snap->'plan_check_country_results'
+                 )
+            END
+        ELSE snapshot_row.snap
+    END"""
     return f"""
         WITH account_cohort AS MATERIALIZED (
             SELECT a.id, ({created_date}) AS account_date,
                    COALESCE(NULLIF(LOWER(BTRIM(a.current_plan_type)), ''),
                             NULLIF(LOWER(BTRIM(a.plan_type)), ''), 'unknown') AS plan,
-                   (a.archived IS FALSE AND ({promotion}) = 'none') AS unpromoted
+                   (a.archived IS FALSE AND ({promotion}) = 'none') AS unpromoted,
+                   (a.account_has_plan_snapshot IS TRUE) AS has_plan_snapshot
               FROM {accounts} a
              WHERE ({created_date}) >= %s::date AND ({created_date}) <= %s::date
+        ), cohort_offers AS MATERIALIZED (
+            SELECT grouped.account_id,
+                   jsonb_agg(jsonb_build_object(
+                       'key', grouped.offer_key, 'plan', grouped.plan, 'kind', grouped.kind,
+                       'discount_percentage', grouped.discount_percentage::text,
+                       'duration_num_periods', grouped.duration_num_periods::text,
+                       'duration_period', grouped.duration_period
+                   ) ORDER BY grouped.offer_key) AS offers
+              FROM (
+                  SELECT offer.account_id, offer.offer_key, MAX(offer.plan) AS plan, MAX(offer.kind) AS kind,
+                         MAX(offer.discount_percentage) AS discount_percentage,
+                         MAX(offer.duration_num_periods) AS duration_num_periods,
+                         MAX(offer.duration_period) AS duration_period
+                    FROM {offers} offer
+                    JOIN account_cohort cohort ON cohort.id = offer.account_id
+                   WHERE offer.eligible IS TRUE
+                     AND offer.stale IS FALSE
+                     AND offer.kind IN ('free_trial', 'discount', 'other_promo')
+                   GROUP BY offer.account_id, offer.offer_key
+              ) grouped
+             GROUP BY grouped.account_id
         )
         SELECT member.account_date::text AS day, member.plan, member.unpromoted,
                COALESCE(fresh.offers, '[]'::jsonb) AS offers,
-               CASE WHEN fresh.offers IS NULL AND a.account_has_plan_snapshot IS TRUE
-                    THEN a.data->'plan_last_success_result_json' END AS promotion_snapshot
+               {narrow_snapshot_sql} AS promotion_snapshot
           FROM account_cohort member
+          LEFT JOIN cohort_offers fresh ON fresh.account_id = member.id
           LEFT JOIN LATERAL (
-              SELECT jsonb_agg(jsonb_build_object(
-                         'key', grouped.offer_key, 'plan', grouped.plan, 'kind', grouped.kind,
-                         'discount_percentage', grouped.discount_percentage::text,
-                         'duration_num_periods', grouped.duration_num_periods::text,
-                         'duration_period', grouped.duration_period
-                     ) ORDER BY grouped.offer_key) AS offers
-                FROM (
-                    SELECT offer.offer_key, MAX(offer.plan) AS plan, MAX(offer.kind) AS kind,
-                           MAX(offer.discount_percentage) AS discount_percentage,
-                           MAX(offer.duration_num_periods) AS duration_num_periods,
-                           MAX(offer.duration_period) AS duration_period
-                      FROM {offers} offer
-                     WHERE offer.account_id = member.id AND offer.eligible IS TRUE
-                       AND offer.stale IS FALSE
-                       AND offer.kind IN ('free_trial', 'discount', 'other_promo')
-                     GROUP BY offer.offer_key
-                ) grouped
-          ) fresh ON TRUE
-          LEFT JOIN {accounts} a ON a.id = member.id
+              SELECT a.data->'plan_last_success_result_json' AS snap
+                FROM {accounts} a
+               WHERE fresh.offers IS NULL
+                 AND member.has_plan_snapshot IS TRUE
+                 AND a.id = member.id
+               OFFSET 0
+          ) snapshot_row ON TRUE
     """
 
 
@@ -194,25 +219,29 @@ def registration_daily_analytics(
     day_offers = {row["date"]: {} for row in rows}
     summary = _empty_stats()
     summary_offers = {}
-    # 命名游标只保留一批账号。无任务关联、无整段账号/凭据 JSON，
-    # 当前优惠已明确的账号连成功快照也不解压；其余每个账号最多读取一次该字段。
-    with admin_repository._connect() as conn, conn.cursor(name="daily_account_promotions") as cur:
-        cur.execute(_account_promotions_sql(), (start_text, end_text))
-        while batch := cur.fetchmany(256):
-            for item in batch:
-                day = item["day"]
-                offers = item.get("offers") or []
-                snapshot = item.get("promotion_snapshot")
-                if not offers:
-                    if isinstance(snapshot, str):
-                        try:
-                            snapshot = json.loads(snapshot)
-                        except (ValueError, RecursionError):
-                            snapshot = None
-                    offers = _snapshot_offers(snapshot)
-                presence = "eligible" if offers else promotion_presence_from_snapshot(snapshot)
-                _add_account(by_date[day], item, presence, offers, day_offers[day])
-                _add_account(summary, item, presence, offers, summary_offers)
+    # 命名游标只保留一批账号；关闭本事务 JIT 并按全量结果规划游标，
+    # 避免命名游标默认 cursor_tuple_fraction=0.1 退化为逐行 Nested Loop。
+    with admin_repository._connect() as conn:
+        with conn.cursor() as setup_cur:
+            setup_cur.execute("SET LOCAL jit = off")
+            setup_cur.execute("SET LOCAL cursor_tuple_fraction = 1.0")
+        with conn.cursor(name="daily_account_promotions") as cur:
+            cur.execute(_account_promotions_sql(), (start_text, end_text))
+            while batch := cur.fetchmany(256):
+                for item in batch:
+                    day = item["day"]
+                    offers = item.get("offers") or []
+                    snapshot = item.get("promotion_snapshot")
+                    if not offers:
+                        if isinstance(snapshot, str):
+                            try:
+                                snapshot = json.loads(snapshot)
+                            except (ValueError, RecursionError):
+                                snapshot = None
+                        offers = _snapshot_offers(snapshot)
+                    presence = "eligible" if offers else promotion_presence_from_snapshot(snapshot)
+                    _add_account(by_date[day], item, presence, offers, day_offers[day])
+                    _add_account(summary, item, presence, offers, summary_offers)
     for row in rows:
         row["offers"] = sorted(day_offers[row["date"]].values(), key=lambda offer: (offer["plan"], offer["key"]))
     summary["offers"] = sorted(summary_offers.values(), key=lambda offer: (offer["plan"], offer["key"]))

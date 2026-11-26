@@ -48,39 +48,103 @@ def unavailable(reason="未找到可核验的原注册任务，请在任务记�
             "label": "重跑注册", "reason": reason, "active": False}
 
 
+_RETRY_JOB_COLUMNS = ", ".join(
+    f"j.{postgres.quote_identifier(col)}" for col in ("id", *records.JOBS.promoted)
+)
+# 重试判定仅读取 progress_steps 的 codex/twofa 状态和 config_snapshot；
+# 剥离单条可达 1 MB 的步骤明细和套餐快照，避免每次加载账号页产生大量 TOAST 解压。
+_RETRY_JOB_BIG_DATA_KEYS = (
+    "ARRAY['plan_check_result_json','plan_last_success_result_json',"
+    "'plan_check_country_results','progress_steps','route_attempts','occurrences']::text[]"
+)
+_RETRY_JOB_DATA_SQL = f"""
+    CASE WHEN jsonb_typeof(j.data->'progress_steps') = 'object' THEN
+        (j.data - {_RETRY_JOB_BIG_DATA_KEYS})
+        || jsonb_build_object('progress_steps', jsonb_build_object(
+            'codex', jsonb_build_object('state', j.data#>>'{{progress_steps,codex,state}}'),
+            'twofa', jsonb_build_object('state', NULLIF(j.job_twofa_state, ''))
+        ))
+    ELSE
+        (j.data - {_RETRY_JOB_BIG_DATA_KEYS})
+    END
+"""
+
+
 def _sources(account_ids: list[int]) -> tuple[dict, dict, dict]:
     """固定次数读取账号、显式关联 Attempt 和任务链；不按邮箱认领历史失败。"""
-    accounts = records.list_rows(records.ACCOUNTS, where="id = ANY(%s)", params=(account_ids,),
-                                 exclude_columns=("chatgpt_session",))
-    by_account = {int(row["id"]): row for row in accounts}
-    if not by_account:
-        return {}, {}, {}
     if not readonly_task_query():
+        records.init()
         registration.init()
+    accounts_table = postgres.qualified(records.ACCOUNTS.name)
+    attempts_table = postgres.qualified("registration_attempts")
+    jobs_table = postgres.qualified(records.JOBS.name)
     with postgres.connect(row_factory=dict_row) as conn, conn.cursor() as cur:
         cur.execute(
+            f"SELECT id, email, deactivated, codex_status, "
+            f"data->>'account_status' AS account_status, "
+            f"data->>'codex_credential_state' AS codex_credential_state "
+            f"FROM {accounts_table} WHERE id = ANY(%s)",
+            (account_ids,),
+        )
+        accounts = list(cur.fetchall())
+        by_account = {int(row["id"]): row for row in accounts}
+        if not by_account:
+            return {}, {}, {}
+        cur.execute(
+            f"WITH matched_attempt_ids AS ("
+            f"SELECT a.id FROM {attempts_table} a WHERE a.account_id = ANY(%s) "
+            f"UNION "
+            f"SELECT j.attempt_id AS id FROM {jobs_table} j "
+            f"WHERE j.account_id = ANY(%s) AND j.attempt_id IS NOT NULL"
+            f") "
             f"SELECT a.id, a.account_id, a.root_job_id, a.source_root_job_id, a.email_snapshot, a.email "
-            f"FROM {postgres.qualified('registration_attempts')} a "
-            "WHERE a.account_id = ANY(%s) OR EXISTS ("
-            f"SELECT 1 FROM {postgres.qualified(records.JOBS.name)} j "
-            "WHERE j.attempt_id=a.id AND j.account_id = ANY(%s)) ORDER BY a.id DESC",
+            f"FROM matched_attempt_ids m JOIN {attempts_table} a ON a.id = m.id ORDER BY a.id DESC",
             (account_ids, account_ids),
         )
         attempts = list(cur.fetchall())
-    roots = sorted({root for row in attempts for value in (row.get("root_job_id"), row.get("source_root_job_id"))
-                    if (root := _id(value)) is not None})
-    attempt_ids = [int(row["id"]) for row in attempts]
-    emails = sorted({_email(row.get("email")) for row in accounts if _email(row.get("email"))})
-    jobs = records.list_rows(
-        records.JOBS,
-        where=("(COALESCE(NULLIF(job_type, ''), 'registration') = ANY(%s) AND "
-               "(attempt_id = ANY(%s) OR id = ANY(%s) OR root_job_id = ANY(%s) OR account_id = ANY(%s) "
-               "OR (status = ANY(%s) AND LOWER(BTRIM(email)) = ANY(%s)))) "
-               "OR (job_type = ANY(%s) AND root_job_id = ANY(%s))"),
-        params=(list(_REGISTRATION_TYPES), attempt_ids, roots, roots, account_ids, list(_ACTIVE), emails,
-                list(_POSTPROCESS_TYPES), roots),
-        order_by="id DESC",
-    )
+        roots = sorted({root for row in attempts for value in (row.get("root_job_id"), row.get("source_root_job_id"))
+                        if (root := _id(value)) is not None})
+        attempt_ids = [int(row["id"]) for row in attempts]
+        emails = sorted({_email(row.get("email")) for row in accounts if _email(row.get("email"))})
+        reg_types = list(_REGISTRATION_TYPES)
+        post_types = list(_POSTPROCESS_TYPES)
+        active_statuses = list(_ACTIVE)
+        # 拆成独立索引分支 UNION，避免多条件 OR 退化为全表扫描 registration_jobs。
+        branches: list[str] = [
+            f"SELECT id FROM {jobs_table} WHERE account_id = ANY(%s) "
+            f"AND COALESCE(NULLIF(job_type, ''), 'registration') = ANY(%s)"
+        ]
+        job_params: list = [account_ids, reg_types]
+        if attempt_ids:
+            branches.append(
+                f"SELECT id FROM {jobs_table} WHERE attempt_id = ANY(%s) "
+                f"AND COALESCE(NULLIF(job_type, ''), 'registration') = ANY(%s)"
+            )
+            job_params.extend((attempt_ids, reg_types))
+        if roots:
+            branches.append(
+                f"SELECT id FROM {jobs_table} WHERE id = ANY(%s) "
+                f"AND COALESCE(NULLIF(job_type, ''), 'registration') = ANY(%s)"
+            )
+            job_params.extend((roots, reg_types))
+            branches.append(
+                f"SELECT id FROM {jobs_table} WHERE root_job_id = ANY(%s) "
+                f"AND (COALESCE(NULLIF(job_type, ''), 'registration') = ANY(%s) OR job_type = ANY(%s))"
+            )
+            job_params.extend((roots, reg_types, post_types))
+        if emails:
+            branches.append(
+                f"SELECT id FROM {jobs_table} WHERE LOWER(BTRIM(email)) = ANY(%s) "
+                f"AND status = ANY(%s) AND COALESCE(NULLIF(job_type, ''), 'registration') = ANY(%s)"
+            )
+            job_params.extend((emails, active_statuses, reg_types))
+        cur.execute(
+            f"WITH matched_job_ids AS ({' UNION '.join(branches)}) "
+            f"SELECT {_RETRY_JOB_COLUMNS}, ({_RETRY_JOB_DATA_SQL}) AS data "
+            f"FROM matched_job_ids m JOIN {jobs_table} j ON j.id = m.id ORDER BY j.id DESC",
+            tuple(job_params),
+        )
+        jobs = [records.merge_row(records.JOBS, row) for row in cur.fetchall()]
     by_job = {int(row["id"]): row for row in jobs}
     linked = defaultdict(list)
     for attempt in attempts:

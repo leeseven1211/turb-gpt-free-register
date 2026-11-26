@@ -36,7 +36,8 @@ _BASE_SCHEMA_VERSION = 1
 _EMAIL_INVENTORY_SCHEMA_VERSION = 2
 _PROMOTION_OFFERS_SCHEMA_VERSION = 3
 _UI_QUERY_COLUMNS_SCHEMA_VERSION = 4
-_SCHEMA_VERSION = _UI_QUERY_COLUMNS_SCHEMA_VERSION
+_UI_QUERY_INDEXES_R2_SCHEMA_VERSION = 5
+_SCHEMA_VERSION = _UI_QUERY_INDEXES_R2_SCHEMA_VERSION
 _SCHEMA_MIGRATIONS = "record_store_schema_migrations"
 
 
@@ -290,6 +291,8 @@ JOBS = TableSpec(
     unique=("job_uuid",),
     indexes=(
         ("status", "id"), ("batch_id",), ("account_id",), ("root_job_id",),
+        # 账号页原注册重跑投影按 attempt_id 关联任务链，避免全表扫描 registration_jobs。
+        ("attempt_id",),
         # 账号 facets 的注册驱动回退会按 account_id 取最新任务；复合索引把
         # 排序也放进索引，避免每个账号再排一次。
         ("account_id", "id"),
@@ -1079,6 +1082,12 @@ def _ensure_ui_query_columns(cur) -> None:
     cur.execute(f"CREATE INDEX IF NOT EXISTS {idx} ON {_qualified(ACCOUNTS)} ({rendered})")
 
 
+def _ensure_ui_query_indexes_r2(cur) -> None:
+    """为老库幂等补齐账号重跑投影所需的轻量索引，不触发整表重写。"""
+    idx = postgres_store.quote_identifier(f"idx_{JOBS.name}_attempt_id")
+    cur.execute(f"CREATE INDEX IF NOT EXISTS {idx} ON {_qualified(JOBS)} (attempt_id)")
+
+
 def ensure_record_schema(conn) -> None:
     """Prepare record tables in the caller's transaction; its commit owns the version."""
     postgres_store._guard_production_schema()
@@ -1113,15 +1122,19 @@ def ensure_record_schema(conn) -> None:
     if _UI_QUERY_COLUMNS_SCHEMA_VERSION not in applied and not base_applied_now:
         with conn.cursor() as cur:
             _ensure_ui_query_columns(cur)
+    if _UI_QUERY_INDEXES_R2_SCHEMA_VERSION not in applied and not base_applied_now:
+        with conn.cursor() as cur:
+            _ensure_ui_query_indexes_r2(cur)
 
     with conn.cursor() as cur:
         cur.execute(
-            f"INSERT INTO {table} (version) VALUES (%s), (%s), (%s), (%s) ON CONFLICT DO NOTHING",
+            f"INSERT INTO {table} (version) VALUES (%s), (%s), (%s), (%s), (%s) ON CONFLICT DO NOTHING",
             (
                 _BASE_SCHEMA_VERSION,
                 _EMAIL_INVENTORY_SCHEMA_VERSION,
                 _PROMOTION_OFFERS_SCHEMA_VERSION,
                 _UI_QUERY_COLUMNS_SCHEMA_VERSION,
+                _UI_QUERY_INDEXES_R2_SCHEMA_VERSION,
             ),
         )
 

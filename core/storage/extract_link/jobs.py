@@ -886,14 +886,21 @@ def _workbench_projection_sql(
 ) -> str:
     """仅归一化筛选所需标量，不载入账号凭据、付款内容和历史 Run。"""
     accounts = record_store._qualified(record_store.ACCOUNTS)
-    # 与账号投影保持 account_id 优先、找不到时按规范化邮箱回填的规则。
-    # 账号 JSON 可能存放在 TOAST 中。没有成功的 Plus/Pro 检查时无需读取其中的时间。
-    account_columns = """id, CASE WHEN LOWER(plan_check_status)='success'
-            AND BTRIM(LOWER(COALESCE(NULLIF(current_plan_type, ''), plan_type, ''))) IN ('plus','pro')
-        THEN COALESCE(NULLIF(BTRIM(data->>'plan_checked_at'), ''),
-                      NULLIF(BTRIM(plan_last_success_at), '')) END AS plan_checked_at"""
-    checked_at_sql = _workbench_timestamp_sql("raw_plan_checked_at")
-    payment_anchor_sql = _workbench_timestamp_sql("raw_payment_submitted_at")
+    # 账号 JSON 可能存放在 TOAST 中；仅对已出链已付款且尚未 confirmed 的少数任务回查账号套餐时间，
+    # 避免每次工作台汇总、分页或分析对全量 registered_accounts 做 Hash Join 与 TOAST 解压。
+    def _account_plan_checked_sql(alias: str) -> str:
+        return (
+            f"CASE WHEN LOWER({alias}.plan_check_status)='success' "
+            f"AND BTRIM(LOWER(COALESCE(NULLIF({alias}.current_plan_type, ''), {alias}.plan_type, ''))) IN ('plus','pro') "
+            f"THEN COALESCE(NULLIF(BTRIM({alias}.data->>'plan_checked_at'), ''), "
+            f"NULLIF(BTRIM({alias}.plan_last_success_at), '')) END"
+        )
+
+    by_id_checked_sql = _account_plan_checked_sql("by_id")
+    by_email_checked_sql = _account_plan_checked_sql("by_email")
+    raw_checked_expr = f"COALESCE({by_id_checked_sql}, {by_email_checked_sql})"
+    checked_at_sql = _workbench_timestamp_sql("candidate_checked.raw_plan_checked_at")
+    payment_anchor_sql = _workbench_timestamp_sql("candidate_checked.raw_payment_submitted_at")
     mode_sql = "COALESCE(NULLIF(t.task_mode, ''), 'extract_only')"
     paid_mode_sql = f"{mode_sql} IN ('auto_payment', 'manual_payment')"
     provider_id_sql = "COALESCE(NULLIF(t.task_provider_id, ''), NULLIF(job.provider_id, ''), 'legacy')"
@@ -931,26 +938,16 @@ def _workbench_projection_sql(
                 AND r.completed_at IS NOT NULL AND r.started_at IS NOT NULL
                 THEN EXTRACT(EPOCH FROM (r.completed_at - r.started_at)) END AS raw_success_seconds"""
         provider_projected_columns = (
-            ", raw_task_provider_id, raw_active_status, raw_outcome_status, raw_success_seconds"
+            ", n.raw_task_provider_id, n.raw_active_status, n.raw_outcome_status, n.raw_success_seconds"
         )
-    # 套餐时间正则解析推迟到 projected 的已出链已付款分支内执行，避免对无关任务做正则与 JSONB 解析。
+    # 账号关联与套餐时间正则解析推迟到 normalized 之后，仅对少数待确认 Plus 的已出链已付款任务执行。
     return f"""filtered_tasks AS MATERIALIZED (
         SELECT t.id, t.batch_id, t.account_id, t.email_snapshot, t.last_run_id, t.created_at, t.status,
             t.data->>'provider_id' AS task_provider_id, t.data->>'mode' AS task_mode,
             COALESCE(t.data->>'payment_source', 'native') AS task_payment_source
         FROM {operation_store._table('operation_tasks')} t WHERE {' AND '.join(clauses)}
-    ), missing_account_emails AS MATERIALIZED (
-        SELECT DISTINCT LOWER(BTRIM(t.email_snapshot)) AS email_key
-        FROM filtered_tasks t WHERE {paid_mode_sql} AND BTRIM(t.email_snapshot) <> ''
-            AND NOT EXISTS (SELECT 1 FROM {accounts} known WHERE known.id=t.account_id)
-    ), account_emails AS (
-        SELECT LOWER(fallback_account.email) AS email_key, MIN(fallback_account.id) AS account_id
-        FROM {accounts} fallback_account
-        WHERE EXISTS (SELECT 1 FROM missing_account_emails)
-            AND LOWER(fallback_account.email) IN (SELECT email_key FROM missing_account_emails)
-        GROUP BY LOWER(fallback_account.email)
     ), raw AS (
-        SELECT t.id AS task_id, t.batch_id, t.created_at AS task_created_at,
+        SELECT t.id AS task_id, t.batch_id, t.account_id, t.email_snapshot, t.created_at AS task_created_at,
             t.task_payment_source,
             CASE WHEN {paid_mode_sql} AND t.task_payment_source='xxsyun'
                 THEN job.public_state->'summary'->>'payment_submitted_at' END AS raw_payment_submitted_at,
@@ -970,18 +967,11 @@ def _workbench_projection_sql(
                 THEN COALESCE(r.result_summary->'has_link' NOT IN
                     ('null'::jsonb, 'false'::jsonb, '0'::jsonb, '\"\"'::jsonb, '[]'::jsonb, '{{}}'::jsonb), FALSE)
                     OR COALESCE(r.result_summary->>'remote_job_id', '') <> ''
-                ELSE FALSE END AS legacy_succeeded,
-            COALESCE(by_id.plan_checked_at, by_email.plan_checked_at) AS raw_plan_checked_at{provider_raw_columns}
+                ELSE FALSE END AS legacy_succeeded{provider_raw_columns}
         FROM filtered_tasks t
         LEFT JOIN {operation_store._table('operation_runs')} r ON r.id=t.last_run_id
         LEFT JOIN {operation_store._table('extract_link_provider_jobs')} job ON job.run_id=r.id
-        LEFT JOIN (SELECT {account_columns} FROM {accounts}) by_id ON {paid_mode_sql} AND by_id.id=t.account_id
-        LEFT JOIN account_emails email_match ON {paid_mode_sql} AND by_id.id IS NULL AND BTRIM(t.email_snapshot) <> ''
-            AND email_match.email_key=LOWER(BTRIM(t.email_snapshot))
-        LEFT JOIN LATERAL (
-            SELECT {account_columns} FROM {accounts} WHERE id=email_match.account_id LIMIT 1
-        ) by_email ON TRUE
-    ), normalized AS (
+    ), normalized AS MATERIALIZED (
         SELECT *, CASE
             WHEN extraction IN ('succeeded','success') THEN 'success'
             WHEN extraction='' AND provider_id='legacy' AND task_status='success' AND legacy_succeeded THEN 'success'
@@ -994,18 +984,45 @@ def _workbench_projection_sql(
                 WHEN payment='not_started' THEN 'unpaid' WHEN payment='failed' THEN 'failed'
                 WHEN {payment_unknown_condition} THEN {payment_unknown_sql} ELSE 'pending_payment' END AS payment_status
         FROM raw
-    ), projected AS {"MATERIALIZED " if materialized else ""}(
-        SELECT task_id, batch_id, task_created_at, sort_created_at, task_status, provider_id, mode,
-            local_reconcile_halted, extraction_status, payment_status, payment_processing,
-            CASE WHEN mode IN ('auto_payment','manual_payment') AND extraction_status='success'
-                AND payment_status='paid'
-                AND raw_plan_checked_at IS NOT NULL
-                AND ({checked_at_sql}) > (
-                    CASE WHEN task_payment_source='xxsyun' THEN {payment_anchor_sql} ELSE task_created_at END
-                )
-            THEN 'confirmed'
-            ELSE plus END AS plus_status{provider_projected_columns}
+    ), plus_candidates AS MATERIALIZED (
+        SELECT task_id, account_id, email_snapshot, task_created_at, task_payment_source, raw_payment_submitted_at
         FROM normalized
+        WHERE mode IN ('auto_payment','manual_payment')
+            AND extraction_status='success'
+            AND payment_status='paid'
+            AND plus <> 'confirmed'
+    ), missing_account_emails AS MATERIALIZED (
+        SELECT DISTINCT LOWER(BTRIM(c.email_snapshot)) AS email_key
+        FROM plus_candidates c WHERE BTRIM(c.email_snapshot) <> ''
+            AND NOT EXISTS (SELECT 1 FROM {accounts} known WHERE known.id=c.account_id)
+    ), account_emails AS (
+        SELECT LOWER(fallback_account.email) AS email_key, MIN(fallback_account.id) AS account_id
+        FROM {accounts} fallback_account
+        WHERE EXISTS (SELECT 1 FROM missing_account_emails)
+            AND LOWER(fallback_account.email) IN (SELECT email_key FROM missing_account_emails)
+        GROUP BY LOWER(fallback_account.email)
+    ), confirmed_plus_tasks AS MATERIALIZED (
+        SELECT candidate_checked.task_id
+        FROM (
+            SELECT c.task_id, c.task_created_at, c.task_payment_source, c.raw_payment_submitted_at,
+                {raw_checked_expr} AS raw_plan_checked_at
+            FROM plus_candidates c
+            LEFT JOIN {accounts} by_id ON by_id.id=c.account_id
+            LEFT JOIN account_emails email_match ON by_id.id IS NULL AND BTRIM(c.email_snapshot) <> ''
+                AND email_match.email_key=LOWER(BTRIM(c.email_snapshot))
+            LEFT JOIN {accounts} by_email ON by_email.id=email_match.account_id
+        ) candidate_checked
+        WHERE candidate_checked.raw_plan_checked_at IS NOT NULL
+            AND ({checked_at_sql}) > (
+                CASE WHEN candidate_checked.task_payment_source='xxsyun'
+                    THEN {payment_anchor_sql} ELSE candidate_checked.task_created_at END
+            )
+    ), projected AS {"MATERIALIZED " if materialized else ""}(
+        SELECT n.task_id, n.batch_id, n.task_created_at, n.sort_created_at, n.task_status, n.provider_id, n.mode,
+            n.local_reconcile_halted, n.extraction_status, n.payment_status, n.payment_processing,
+            CASE WHEN cp.task_id IS NOT NULL THEN 'confirmed' ELSE n.plus END AS plus_status{provider_projected_columns}
+        FROM normalized n
+        LEFT JOIN confirmed_plus_tasks cp ON cp.task_id=n.task_id
     )"""
 
 

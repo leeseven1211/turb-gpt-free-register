@@ -274,22 +274,38 @@ def _registration_driver_matches(drivers: frozenset[str]) -> tuple[str, list[Any
     )
 
 
-def _account_registration_driver_sql() -> str:
-    """只投影注册驱动，兼容账号元数据和历史注册任务快照。"""
+def _latest_account_drivers_cte_sql() -> str:
+    """一次按 account_id 归并最新注册任务驱动，避免分面统计对每行账号做相关子查询。"""
     jobs = _q(record_store.JOBS)
-    return f"""LOWER(BTRIM(COALESCE(
-        NULLIF(BTRIM(a.account_registration_driver), ''),
-        (SELECT NULLIF(j.job_registration_driver, '')
+    return f"""__latest_account_drivers AS MATERIALIZED (
+        SELECT DISTINCT ON (j.account_id)
+               j.account_id, NULLIF(j.job_registration_driver, '') AS driver
+          FROM {jobs} j
+         WHERE j.account_id IS NOT NULL
+           AND LOWER(COALESCE(j.job_type, 'registration'))
+               IN ('registration', 'registration_resume')
+         ORDER BY j.account_id, j.id DESC
+    )"""
+
+
+def _account_registration_driver_sql(*, fallback_driver_sql: str | None = None) -> str:
+    """只投影注册驱动，兼容账号元数据和历史注册任务快照。"""
+    if fallback_driver_sql is None:
+        jobs = _q(record_store.JOBS)
+        fallback_driver_sql = f"""(SELECT NULLIF(j.job_registration_driver, '')
          FROM {jobs} j WHERE j.account_id = a.id
            AND LOWER(COALESCE(j.job_type, 'registration'))
                IN ('registration', 'registration_resume')
-         ORDER BY j.id DESC LIMIT 1)
+         ORDER BY j.id DESC LIMIT 1)"""
+    return f"""LOWER(BTRIM(COALESCE(
+        NULLIF(BTRIM(a.account_registration_driver), ''),
+        {fallback_driver_sql}
     )))"""
 
 
-def _account_registration_driver_filter_sql() -> str:
+def _account_registration_driver_filter_sql(*, fallback_driver_sql: str | None = None) -> str:
     """筛选选项与列表当前及历史驱动的显示一致，其余记录合并为未记录。"""
-    return f"""CASE {_account_registration_driver_sql()}
+    return f"""CASE {_account_registration_driver_sql(fallback_driver_sql=fallback_driver_sql)}
         WHEN 'roxy' THEN 'roxy'
         WHEN 'roxy_oss' THEN 'roxy_oss'
         WHEN 'protocol' THEN 'protocol'
@@ -301,11 +317,13 @@ def _account_registration_driver_filter_sql() -> str:
     END"""
 
 
-def _account_facet_expressions() -> dict[str, str]:
+def _account_facet_expressions(*, fallback_driver_sql: str | None = None) -> dict[str, str]:
     """列表筛选和选项统计共用同一组账号状态投影。"""
     return {
         "source": "LOWER(COALESCE(a.email_source, ''))",
-        "registration_driver": _account_registration_driver_filter_sql(),
+        "registration_driver": _account_registration_driver_filter_sql(
+            fallback_driver_sql=fallback_driver_sql,
+        ),
         "token": _ACCOUNT_TOKEN_STATE,
         "password": f"CASE WHEN {_ACCOUNT_PASSWORD_PRESENT} THEN 'has' ELSE 'none' END",
         "plan": _ACCOUNT_PLAN_VALUE,
@@ -759,7 +777,10 @@ def account_query_facets(spec: dict) -> dict:
     filters = {key: ",".join(value) if isinstance(value, list) else value for key, value in normalized["filters"].items()}
     where, params = _compile_account_predicates(normalized["archived"], "", normalized["q"],
         normalized["date_from"], normalized["date_to"], {key: filters.get(key, "") for key in ("id", "email")})
-    expressions = _account_facet_expressions()
+    use_driver_cte = not (normalized["q"] or filters.get("id") or filters.get("email"))
+    expressions = _account_facet_expressions(
+        fallback_driver_sql="__lad.driver" if use_driver_cte else None,
+    )
     predicates = ["NULLIF(f.value, '') IS NOT NULL"]
     predicate_specs = _account_facet_predicates(
         ",".join(normalized["plan"]), filters, {key: f"b.{key}" for key in expressions},
@@ -799,8 +820,11 @@ def account_query_facets(spec: dict) -> dict:
         "NULL::numeric AS offer_percentage, NULL::numeric AS offer_periods, "
         "NULL::text AS offer_period"
     )
+    driver_cte_prefix = f"{_latest_account_drivers_cte_sql()}, " if use_driver_cte else ""
+    driver_join = " LEFT JOIN __latest_account_drivers __lad ON __lad.account_id = a.id" if use_driver_cte else ""
     with _connect() as conn, conn.cursor() as cur:
-        cur.execute(f"""WITH base AS MATERIALIZED (SELECT {columns} FROM {_q(record_store.ACCOUNTS)} a
+        cur.execute(f"""WITH {driver_cte_prefix}base AS MATERIALIZED (SELECT {columns}
+            FROM {_q(record_store.ACCOUNTS)} a{driver_join}
             WHERE {' AND '.join(where) or 'TRUE'})
             SELECT f.facet,f.value,COUNT(*) AS count,{static_columns} FROM base b
             CROSS JOIN LATERAL (VALUES {facet_values}) AS f(facet,value)
@@ -841,7 +865,7 @@ def _account_list_grouped_facets_sql(
     accounts: str, base_clause: str, base_params: list[Any],
 ) -> tuple[str, list[Any]]:
     """Aggregate unchanged unfiltered facet projections without VALUES fanout."""
-    expressions = _account_facet_expressions()
+    expressions = _account_facet_expressions(fallback_driver_sql="__lad.driver")
     dimensions = tuple(expressions)
     columns = ", ".join(
         f"{expression} AS {key}" for key, expression in expressions.items()
@@ -862,8 +886,9 @@ def _account_list_grouped_facets_sql(
     grouping_sets = ", ".join(
         f"(__a2_dim_{index})" for index in range(len(dimensions))
     )
-    sql = f"""WITH base AS MATERIALIZED (
-        SELECT {columns} FROM {accounts} a{base_clause}
+    sql = f"""WITH {_latest_account_drivers_cte_sql()}, base AS MATERIALIZED (
+        SELECT {columns} FROM {accounts} a
+          LEFT JOIN __latest_account_drivers __lad ON __lad.account_id = a.id{base_clause}
     ), __a2_matches AS NOT MATERIALIZED (
         SELECT b.* FROM base b
     ), __a2_gated AS NOT MATERIALIZED (
@@ -913,7 +938,10 @@ def _list_account_facet_query(
             accounts, base_clause, facet_params,
         )
     else:
-        expressions = _account_facet_expressions()
+        use_driver_cte = not (q or request.filters.get("id") or request.filters.get("email"))
+        expressions = _account_facet_expressions(
+            fallback_driver_sql="__lad.driver" if use_driver_cte else None,
+        )
         facet_columns = ", ".join(f"{expression} AS {key}" for key, expression in expressions.items())
         promotion_match, promotion_params = _selected_promotion_match(
             request.filters, expressions, "a.id",
@@ -962,8 +990,10 @@ def _list_account_facet_query(
         # facets 一项就要约 200 ms。这里先物化一次轻量投影，再展开各个维度聚合；
         # 复杂 JSON/正则表达式只计算一遍。每列统计保留其他列条件，仅忽略自身筛选；
         # 搜索、日期、ID、邮箱与归档范围始终生效，且不受当前页限制。
-        facet_base = f"""WITH base AS MATERIALIZED (
-            SELECT {facet_columns} FROM {accounts} a{base_clause}
+        driver_cte_prefix = f"{_latest_account_drivers_cte_sql()}, " if use_driver_cte else ""
+        driver_join = " LEFT JOIN __latest_account_drivers __lad ON __lad.account_id = a.id" if use_driver_cte else ""
+        facet_base = f"""WITH {driver_cte_prefix}base AS MATERIALIZED (
+            SELECT {facet_columns} FROM {accounts} a{driver_join}{base_clause}
         )"""
         facet_summary = f"""
             SELECT f.facet, f.value, COUNT(*) AS count{latest_column},

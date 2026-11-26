@@ -183,11 +183,18 @@ _UNCONFIRMED_RESULT_STATUS_SQL = ",".join(
 )
 
 
-def _operation_task_run_columns_sql(fields: tuple[str, ...] | None = None) -> str:
+def _operation_task_run_columns_sql(
+    fields: tuple[str, ...] | None = None, *, completion_overlay_alias: str | None = None,
+) -> str:
     """Only internal callers supply field names; source expressions stay shared."""
     if fields is None:
-        return f"rr.*, {_common._compatibility_run_projection_sql()}"
-    status_sql = _common._compatibility_run_status_sql()
+        return (
+            f"rr.*, "
+            f"{_common._compatibility_run_projection_sql(completion_overlay_alias=completion_overlay_alias)}"
+        )
+    status_sql = _common._compatibility_run_status_sql(
+        completion_overlay_alias=completion_overlay_alias,
+    )
     # 仅在有效状态属于未确认回执集合时读取 result_summary，避免常规状态行解压 JSONB。
     requested_status_sql = (
         f"CASE WHEN LOWER(BTRIM(COALESCE(({status_sql})::text, ''))) "
@@ -200,7 +207,9 @@ def _operation_task_run_columns_sql(fields: tuple[str, ...] | None = None) -> st
     ]
     projected_fields = tuple(field for field in fields if field.startswith("effective_"))
     if projected_fields:
-        raw_fields.append(_common._compatibility_run_projection_sql(fields=projected_fields))
+        raw_fields.append(_common._compatibility_run_projection_sql(
+            fields=projected_fields, completion_overlay_alias=completion_overlay_alias,
+        ))
     return ", ".join(raw_fields)
 
 
@@ -236,15 +245,24 @@ def _operation_task_running_candidates_cte_sql() -> str:
 
 def _operation_task_current_run_relation_sql(
     *, fields: tuple[str, ...] | None = None, running_candidates: bool = False,
+    legacy_only: bool = False, include_run_count: bool = False,
 ) -> str:
     """Run相关筛选保留有效活跃优先的集合投影。"""
     candidate_join = (
         "JOIN running_task_candidates running_runs ON running_runs.id=rr.task_id "
         if running_candidates else ""
     )
-    run_source = (
-        f"FROM {_common._table('operation_runs')} rr {candidate_join}{_common._compatibility_run_joins_sql()}"
+    legacy_join = (
+        f"JOIN {_common._table('operation_tasks')} legacy_tasks ON legacy_tasks.id=rr.task_id "
+        "AND legacy_tasks.source_system IN ('registration_jobs','registration_chains','account_action_tasks') "
+        if legacy_only else ""
     )
+    overlay_alias = "completion_overlay"
+    run_source = (
+        f"FROM {_common._table('operation_runs')} rr {candidate_join}{legacy_join}"
+        f"{_common._compatibility_run_joins_sql(completion_overlay_alias=overlay_alias)}"
+    )
+    run_count_select = ", COUNT(*) OVER (PARTITION BY task_id) AS run_count" if include_run_count else ""
     if fields and "effective_status" in fields:
         sort_by_legacy_time = "effective_created_at_sort" in fields
         derive_stage = "effective_progress_stage" in fields
@@ -258,10 +276,12 @@ def _operation_task_current_run_relation_sql(
                 inner_fields.append(field)
         winner_fields = tuple(dict.fromkeys(inner_fields))
         projected = tuple(dict.fromkeys((*winner_fields, "run_no", "id")))
-        # 先计算兼容状态和所需列。OFFSET 0 保留投影边界，避免将宽 JSON 送入排序。
+        # 先计算兼容状态和所需列。OFFSET 0 保留投影边界，避免将宽 JSON 送入排序；
+        # 同一趟 task_id 排序内顺带用窗口函数统计 run_count，省去二次全表聚合。
         winner_query = (
-            f"SELECT DISTINCT ON (task_id) {','.join(winner_fields)} "
-            f"FROM (SELECT {_operation_task_run_columns_sql(projected)} {run_source} OFFSET 0) projected_run "
+            f"SELECT DISTINCT ON (task_id) {','.join(winner_fields)}{run_count_select} "
+            f"FROM (SELECT {_operation_task_run_columns_sql(projected, completion_overlay_alias=overlay_alias)} "
+            f"{run_source} OFFSET 0) projected_run "
             f"ORDER BY task_id, CASE WHEN effective_status IN ({_common._ACTIVE_RUN_STATUS_SQL}) THEN 0 ELSE 1 END, "
             "run_no DESC, id DESC"
         )
@@ -279,22 +299,29 @@ def _operation_task_current_run_relation_sql(
                 else field
                 for field in fields
             )
+            if include_run_count:
+                columns += ", run_count"
             return f"SELECT {columns} FROM ({winner_query}) current_run"
         return winner_query
+    raw_run_count_select = ", COUNT(*) OVER (PARTITION BY rr.task_id) AS run_count" if include_run_count else ""
     return (
-        f"SELECT DISTINCT ON (rr.task_id) {_operation_task_run_columns_sql(fields)} "
+        f"SELECT DISTINCT ON (rr.task_id) "
+        f"{_operation_task_run_columns_sql(fields, completion_overlay_alias=overlay_alias)}{raw_run_count_select} "
         f"{run_source} "
         f"ORDER BY rr.task_id, "
-        f"CASE WHEN ({_common._compatibility_run_status_sql()}) IN ({_common._ACTIVE_RUN_STATUS_SQL}) THEN 0 ELSE 1 END, "
+        f"CASE WHEN ({_common._compatibility_run_status_sql(completion_overlay_alias=overlay_alias)}) "
+        f"IN ({_common._ACTIVE_RUN_STATUS_SQL}) THEN 0 ELSE 1 END, "
         f"rr.run_no DESC, rr.id DESC"
     )
 
 
 def _operation_task_current_run_join_sql(
     *, fields: tuple[str, ...] | None = None, running_candidates: bool = False,
+    legacy_only: bool = False, include_run_count: bool = False,
 ) -> str:
     relation = _operation_task_current_run_relation_sql(
         fields=fields, running_candidates=running_candidates,
+        legacy_only=legacy_only, include_run_count=include_run_count,
     )
     return f"LEFT JOIN ({relation}) r ON r.task_id=t.id"
 
@@ -302,6 +329,7 @@ def _operation_task_current_run_join_sql(
 def _operation_task_query_base(
     *, include_current_run: bool, include_run_count: bool, facet_cte: bool = False,
     current_run_fields: tuple[str, ...] | None = None, running_candidates: bool = False,
+    current_run_include_run_count: bool = False,
 ) -> str:
     """Build the read-only task-list relation with only needed derived joins."""
     candidate_join = (
@@ -327,6 +355,7 @@ def _operation_task_query_base(
             "LEFT JOIN facet_current_runs r ON r.task_id=t.id "
             if facet_cte else _operation_task_current_run_join_sql(
                 fields=current_run_fields, running_candidates=running_candidates,
+                include_run_count=current_run_include_run_count,
             )
         )
     return query
@@ -399,12 +428,13 @@ def list_tasks(
     )
     count_cte = f"WITH {running_candidates_cte} " if running_candidates else ""
     requested_status_expression = "r.requested_status" if public_status and not (q or result) else None
+    run_count_expression = "COALESCE(r.run_count, 0)"
     filters = dict(
         task_type=task_type, status=status, source=source, q=q, batch_id=batch_id,
         task_id=task_id, target=target, target_status=target_status, batch=batch,
         run_count=run_count, stage=stage, created_from=created_from,
         created_to=created_to, result=result,
-        run_count_expression="COALESCE(run_counts.run_count, 0)",
+        run_count_expression=run_count_expression,
         public_status=public_status,
         requested_status_expression=requested_status_expression,
     )
@@ -422,7 +452,6 @@ def list_tasks(
             or facet_name in {"status", "stage"}
         )
 
-    run_count_expression = "COALESCE(run_counts.run_count, 0)"
     filter_run_fields = ("task_id", "effective_status", "effective_progress_stage")
     if q or result:
         filter_run_fields += ("result_summary", "effective_error_message")
@@ -447,27 +476,40 @@ def list_tasks(
             current_run_fields=filter_run_fields,
             running_candidates=running_candidates,
         )
-        # 先确定50个任务ID，再加载这些任务的Run/次数/结果。原生任务按任务创建时间，
+        # 先确定当前页任务ID，再加载这些任务的Run/次数/结果。原生任务按任务创建时间，
         # 兼容任务仍按其有效Run来源时间排序，不以last_run_id替代活跃优先选择。
-        candidate_from = (f"FROM {_common._table('operation_tasks')} t "
-                          f"LEFT JOIN {_common._table('operation_batches')} b ON b.id=t.batch_id ")
+        candidate_from = (
+            f"FROM {_common._table('operation_tasks')} t "
+            if len(where) == 1 else
+            f"FROM {_common._table('operation_tasks')} t "
+            f"LEFT JOIN {_common._table('operation_batches')} b ON b.id=t.batch_id "
+        )
         ordinary_clause = (clause + " AND " if clause else " WHERE ") + "t.source_system NOT IN ('registration_jobs','registration_chains','account_action_tasks')"
         legacy_clause = (clause + " AND " if clause else " WHERE ") + "t.source_system IN ('registration_jobs','registration_chains','account_action_tasks')"
         if len(where) == 1:
-            # 仅有软删除条件的分页一次批量选中兼容 Run，避免为全量历史逐条访问索引。
+            # 仅有软删除条件的分页仅扫描兼容任务的 Run，避免把数万条原生任务 Run 混入归并。
             legacy_run_join = _operation_task_current_run_join_sql(
                 fields=("task_id", "effective_status", "effective_created_at_sort"),
+                legacy_only=True,
             )
             legacy_sort = "r.effective_created_at_sort"
         else:
             legacy_run_join = _operation_task_indexed_run_join_sql(sort_only=True)
             legacy_sort = "sort_run.effective_created_at_sort"
-        page_cte = (f"WITH page_ids AS MATERIALIZED (SELECT * FROM ("
-                    f"SELECT t.id,t.created_at AS sort_at {candidate_from}{ordinary_clause} "
-                    f"UNION ALL SELECT t.id,COALESCE({legacy_sort},t.created_at) AS sort_at "
-                    f"{candidate_from}{legacy_run_join}{legacy_clause}"
-                    f") candidates ORDER BY sort_at DESC,id DESC LIMIT %s OFFSET %s) ")
-        page_params = (*params, *params, page_size, (page - 1) * page_size)
+        offset = (page - 1) * page_size
+        branch_limit = page_size + offset
+        # 两个分支各自先取 Top-(limit+offset)，再归并取当前页，避免对全量任务联合排序。
+        page_cte = (
+            f"WITH page_ids AS MATERIALIZED (SELECT * FROM ("
+            f"(SELECT t.id,t.created_at AS sort_at {candidate_from}{ordinary_clause} "
+            f"ORDER BY t.created_at DESC,t.id DESC LIMIT %s) "
+            f"UNION ALL "
+            f"(SELECT t.id,COALESCE({legacy_sort},t.created_at) AS sort_at "
+            f"{candidate_from}{legacy_run_join}{legacy_clause} "
+            f"ORDER BY COALESCE({legacy_sort},t.created_at) DESC,t.id DESC LIMIT %s)"
+            f") candidates ORDER BY sort_at DESC,id DESC LIMIT %s OFFSET %s) "
+        )
+        page_params = (*params, branch_limit, *params, branch_limit, page_size, offset)
         page_from_sql = (f"FROM page_ids selected JOIN {_common._table('operation_tasks')} t ON t.id=selected.id "
                          f"LEFT JOIN {_common._table('operation_batches')} b ON b.id=t.batch_id "
                          + _operation_task_indexed_run_join_sql())
@@ -476,9 +518,10 @@ def list_tasks(
         # 避免对全量历史重复执行两次 DISTINCT ON (task_id) 归并；空页仍返回精确总数。
         candidate_fields = (*filter_run_fields, "id", "effective_created_at_sort")
         candidate_from = _operation_task_query_base(
-            include_current_run=True, include_run_count=bool(run_count),
+            include_current_run=True, include_run_count=False,
             current_run_fields=candidate_fields,
             running_candidates=running_candidates,
+            current_run_include_run_count=bool(run_count),
         )
         page_cte_prefix = f"{running_candidates_cte}, " if running_candidates else ""
         combined_sql = (
@@ -613,14 +656,13 @@ def list_tasks(
                 **filters, only=frozenset(filters) - facet_dimensions | {"visibility"},
             )
             candidate_from = _operation_task_query_base(
-                include_current_run=True, include_run_count=True, facet_cte=True,
+                include_current_run=True, include_run_count=False, facet_cte=True,
             )
-            # 同时计算各分面的命中次数，聚合后展开，避免每个历史任务产生五行。
+            # 同时计算各分面的命中次数，聚合后展开，避免每个历史任务产生五行；
+            # run_count 已在 facet_current_runs 同一趟排序中用窗口函数算出，不再二次扫描 Run 表。
             cur.execute(
                 f"WITH facet_current_runs AS MATERIALIZED ("
-                f"{_operation_task_current_run_relation_sql(fields=filter_run_fields)}), "
-                f"facet_run_counts AS MATERIALIZED (SELECT task_id,COUNT(*) AS run_count "
-                f"FROM {_common._table('operation_runs')} GROUP BY task_id), "
+                f"{_operation_task_current_run_relation_sql(fields=filter_run_fields, include_run_count=True)}), "
                 f"facet_candidates AS MATERIALIZED (SELECT {','.join(facet_columns)} "
                 f"{candidate_from} WHERE {' AND '.join(shared_where)}), "
                 f"facet_groups AS (SELECT {','.join(facet_values)},{','.join(facet_counts)} "
