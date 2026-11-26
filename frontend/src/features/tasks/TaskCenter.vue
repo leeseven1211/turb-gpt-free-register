@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import {computed, nextTick, onBeforeUnmount, onMounted, ref, watch} from 'vue';
+import {computed, nextTick, onBeforeUnmount, ref, watch} from 'vue';
 import {tasksApi, type OperationTask, type TaskAction, type TaskFilters, type TaskId} from '../../api/tasks';
 import {BulkMutationPendingError} from '../../api/bulkMutations';
 import TaskDetail from './detail/TaskDetail.vue';
@@ -11,7 +11,6 @@ import ListFilterSummary from '../../components/ListFilterSummary.vue';
 import ListToolbar from '../../components/ListToolbar.vue';
 import {eligible, isActive, record} from './presentation';
 import {useTaskList} from './useTaskList';
-import {createConfigApi} from '../../api/config';
 import '../../styles/task-center.css';
 
 const emit = defineEmits<{batch: [string, string?]; changed: []}>();
@@ -20,32 +19,6 @@ const {filters, page, size, pages, total, items, facets, selected, loading, erro
 const detail = ref<InstanceType<typeof TaskDetail> | null>(null);
 const table = ref<InstanceType<typeof TaskTable> | null>(null);
 const busy = ref(false), notice = ref(''), actionError = ref('');
-const configApi = createConfigApi();
-const autoRetry = ref<boolean | null>(null);
-async function loadAutoRetry() {
-  try {
-    const fields = await configApi.getSchema();
-    const field = fields.find(item => item.key === 'REGISTRATION_AUTO_RETRY_ENABLED');
-    autoRetry.value = field ? field.value === true : false;
-  } catch {
-    autoRetry.value = null;
-  }
-}
-async function toggleAutoRetry() {
-  if (autoRetry.value === null || busy.value) return;
-  const next = !autoRetry.value;
-  busy.value = true;
-  try {
-    await configApi.save({REGISTRATION_AUTO_RETRY_ENABLED: next});
-    autoRetry.value = next;
-    notice.value = next ? '已开启失败自动重试' : '已关闭失败自动重试';
-  } catch (error) {
-    actionError.value = `自动重试设置失败：${(error as Error).message}`;
-  } finally {
-    busy.value = false;
-  }
-}
-onMounted(loadAutoRetry);
 const openFilter = ref<string | null>(null);
 const targetInput = ref<HTMLInputElement | null>(null);
 const targetDraft = ref(filters.target || '');
@@ -178,7 +151,6 @@ defineExpose({open, refresh, closeDetail, setVisible});
           <button v-if="activeFilters.length" type="button" class="ui-link" @click="list.applyFilters({})">清除全部筛选</button>
           <span class="tc-timezone" :title="timezone">时间按 {{ timezone }} 显示</span>
           <button type="button" class="ui-link" @click="table?.resetColumns()">恢复列宽</button>
-          <button id="btnAutoRetryTasksV2" type="button" class="ui-button" :class="{'ui-button--primary': autoRetry === true}" :disabled="busy || autoRetry === null" title="失败后按原身份自动重试" @click="toggleAutoRetry">{{ autoRetry === null ? '自动重试：…' : autoRetry ? '自动重试：开' : '自动重试：关' }}</button>
           <button id="btnRefreshTasksV2" type="button" class="ui-button" :disabled="loading" @click="list.refresh()">{{ loading ? '刷新中…' : '刷新' }}</button>
         </template>
       </ListToolbar>
