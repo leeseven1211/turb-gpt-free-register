@@ -91,26 +91,10 @@ sudo install -m 0755 target/release/sentinel-rs /usr/local/bin/sentinel-rs
 
 ```bash
 sentinel-rs --version
-sentinel-rs refresh --config refresh.sample.json          # dry-run：只打印计划，不联网
+sentinel-rs --help
 ```
 
-`refresh` 子命令存在，说明这一版包含刷新 AT 的能力。
-
-需要真实刷新时：
-
-```bash
-sentinel-rs refresh --config refresh.sample.json --live
-```
-
-`refresh.sample.json` 字段说明：
-
-- `email`：账号邮箱（必填）
-- `password` / `totp_secret`：登录凭据，可空
-- `cookies`：上次登录保存的 Cookie，可空（为空则直接重登）
-- `device_id`：上次登录的 `oai-did`，可空
-- `user_id` / `account_id`：账号身份，用于核验返回的会话
-- `proxy`：`host:port` 或 `http://user:pass@host:port`，可空
-- `country`：两位国家码，影响指纹档位
+能看到版本号和命令列表即可，说明二进制可以正常运行。
 
 ---
 
