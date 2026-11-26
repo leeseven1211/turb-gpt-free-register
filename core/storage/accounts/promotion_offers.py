@@ -15,6 +15,7 @@ from core.storage.records import ACCOUNTS, _ACCOUNT_PROMOTION_KIND_SQL
 
 TABLE_NAME = "account_promotion_offers"
 LEGACY_OFFER_CHECKED_FIELD = "plus_offer_last_checked_at"
+LEGACY_OFFER_DURATION_FIELD = "plus_offer_duration_num_periods_exact"
 _KEY_PREFIX = "offer_v1_"
 _DECIMAL_SYNTAX = r"^[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$"
 _ASCII_WHITESPACE = " \t\n\r\f\v"
@@ -150,6 +151,17 @@ def _sql_json_number(expression: str) -> str:
     )
 
 
+def _sql_json_object(expression: str) -> str:
+    return (f"CASE WHEN ({expression}) IS JSON OBJECT AND pg_input_is_valid(({expression}), 'jsonb') "
+            f"THEN ({expression})::JSONB END")
+
+
+def _sql_rounds_to_promoted_periods(original: str, promoted: str) -> str:
+    return f"""CASE WHEN {original} > 0 AND {original} <= 2147483647.5
+                      AND pg_input_is_valid({original}::TEXT, 'double precision')
+                    THEN ROUND({original}::DOUBLE PRECISION) = {promoted} ELSE FALSE END"""
+
+
 def _sql_members(values: Iterable[str]) -> str:
     return ", ".join(f"'{value}'" for value in sorted(values))
 
@@ -163,12 +175,15 @@ def _sql_legacy_confirmed(row: str) -> str:
 
 def _sql_legacy_snapshot_status(row: str) -> str:
     """旧结果只有保存了优惠字段时才能证明当前活动状态。"""
-    snapshot = f"{row}.data->>'plan_last_success_result_json'"
-    return f"""CASE WHEN ({snapshot}) IS JSON OBJECT AND pg_input_is_valid(({snapshot}), 'jsonb') THEN EXISTS (
-        SELECT 1 FROM jsonb_object_keys(({snapshot})::JSONB) AS fields(name)
-         WHERE name = 'plus_discount_eligible' OR name LIKE 'plus!_promo!_%' ESCAPE '!'
-               OR name LIKE 'plus!_trial!_%' ESCAPE '!'
-    ) END"""
+    snapshot = _sql_json_object(f"{row}.data->>'plan_last_success_result_json'")
+    return f"""(
+        SELECT CASE WHEN payload IS NOT NULL THEN EXISTS (
+            SELECT 1 FROM jsonb_object_keys(payload) AS fields(name)
+             WHERE name = 'plus_discount_eligible' OR name LIKE 'plus!_promo!_%' ESCAPE '!'
+                   OR name LIKE 'plus!_trial!_%' ESCAPE '!'
+        ) END
+          FROM (SELECT {snapshot} AS payload) AS history
+    )"""
 
 
 def _sql_legacy_none_confirmed(row: str) -> str:
@@ -224,6 +239,8 @@ def _create_projection_function(cur, function: str, accounts: str) -> None:
     country_text = _sql_text("offer->>'country'")
     country = f'UPPER({country_text} COLLATE "C")'
     legacy_kind_columns = ", ".join(f"source_account.{field}" for field in _LEGACY_OFFER_COLUMNS[:4])
+    exact_periods = _sql_json_number(f"source_account.data->>'{LEGACY_OFFER_DURATION_FIELD}'")
+    trial_periods = _sql_json_number("source_account.data->>'plus_trial_duration_num_periods'")
     # 顶层数组存在时以它为准，空数组也不能回退到历史 Plus。
     # 历史迁移曾默认写入 none，因此旧记录需要成功证据才能确认无优惠。
     # 原期限和提升整数能互相对应时，动态项保留未舍入的原始期限。
@@ -242,7 +259,7 @@ def _create_projection_function(cur, function: str, accounts: str) -> None:
                        ({_ACCOUNT_PROMOTION_KIND_SQL}) AS promoted_kind,
                        {_sql_legacy_none_confirmed('source_account')} AS confirmed_none,
                        source_account.plus_promo_duration_num_periods AS promoted_periods,
-                       {_sql_json_number("source_account.data->>'plus_trial_duration_num_periods'")} AS trial_periods,
+                       COALESCE({exact_periods}, {trial_periods}) AS original_periods,
                        COALESCE(source_account.plus_promo_discount_percentage::TEXT,
                                 source_account.data->>'plus_trial_discount_percentage') AS percentage,
                        COALESCE(NULLIF({_sql_text("source_account.plus_promo_duration_period")}, ''),
@@ -262,11 +279,9 @@ def _create_projection_function(cur, function: str, accounts: str) -> None:
                        percentage IS NOT NULL AS has_percentage,
                        CASE WHEN pg_input_is_valid(percentage, 'numeric') THEN percentage::NUMERIC END AS percentage,
                        CASE
-                            WHEN promoted_periods IS NULL THEN trial_periods
-                            WHEN trial_periods > 0 AND trial_periods <= 2147483647.5
-                                 AND pg_input_is_valid(trial_periods::TEXT, 'double precision') THEN CASE
-                                WHEN ROUND(trial_periods::DOUBLE PRECISION) = promoted_periods THEN trial_periods
-                                ELSE promoted_periods::NUMERIC END
+                            WHEN promoted_periods IS NULL
+                              OR ({_sql_rounds_to_promoted_periods('original_periods', 'promoted_periods')})
+                              THEN original_periods
                             ELSE promoted_periods::NUMERIC
                        END AS periods,
                        period, campaign, promo_type,
@@ -338,6 +353,68 @@ def _create_projection_function(cur, function: str, accounts: str) -> None:
     """)
 
 
+def _backfill_exact_legacy_duration(cur, accounts: str) -> None:
+    """只从可与当前提升列核对的历史成功快照提取新版小数期限。"""
+    result = "account.data->>'plan_last_success_result_json'"
+    snapshot = _sql_json_object(result)
+    duration = _sql_json_number("saved.result->>'plus_promo_duration_num_periods'")
+    result_unit = _sql_text("COALESCE(NULLIF(saved.result->>'plus_promo_duration_period', ''), "
+                            "saved.result->>'plus_trial_duration_period')")
+    cur.execute(f"""
+        WITH saved AS MATERIALIZED (
+            SELECT account.id, account.plus_promo_duration_num_periods AS promoted,
+                   account.plus_promo_duration_period AS unit, account.plan_last_success_at AS succeeded_at,
+                   {snapshot} AS result
+              FROM {accounts} AS account
+             WHERE NULLIF(account.plan_last_success_at, '') IS NOT NULL
+               AND account.plus_promo_duration_num_periods IS NOT NULL
+               AND ({result}) LIKE '%"plus_promo_duration_num_periods"%'
+               AND jsonb_typeof(account.data->'account_promotions') IS DISTINCT FROM 'array'
+               AND NOT account.data ? '{LEGACY_OFFER_DURATION_FIELD}'
+               AND COALESCE(account.data->>'{LEGACY_OFFER_CHECKED_FIELD}', account.plan_last_success_at)
+                   = account.plan_last_success_at
+        ), matching AS (
+            SELECT saved.id, saved.promoted, {duration} AS duration
+              FROM saved
+             WHERE saved.result->'ok' = 'true'::JSONB
+               AND COALESCE(NULLIF(saved.result->>'checked_at', ''), saved.succeeded_at) = saved.succeeded_at
+               AND ({result_unit}) IS NOT DISTINCT FROM ({_sql_text('saved.unit')})
+        )
+        UPDATE {accounts} AS account
+           SET data = jsonb_set(account.data, ARRAY['{LEGACY_OFFER_DURATION_FIELD}'], to_jsonb(matching.duration))
+          FROM matching
+         WHERE account.id = matching.id AND matching.duration <> matching.promoted
+           AND ({_sql_rounds_to_promoted_periods('matching.duration', 'matching.promoted')})
+    """)
+
+
+def _create_clear_exact_legacy_duration_trigger(cur, accounts: str) -> None:
+    """改写提升期限时，移除随旧期限保存的精确值。"""
+    name = "clear_account_legacy_promotion_duration"
+    function = pg.qualified(name)
+    trigger = pg.quote_identifier(name)
+    old_exact = f"OLD.data->'{LEGACY_OFFER_DURATION_FIELD}'"
+    new_exact = f"NEW.data->'{LEGACY_OFFER_DURATION_FIELD}'"
+    cur.execute(f"""
+        CREATE OR REPLACE FUNCTION {function}() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+        BEGIN
+            NEW.data := NEW.data - '{LEGACY_OFFER_DURATION_FIELD}';
+            RETURN NEW;
+        END
+        $$
+    """)
+    cur.execute(f"""
+        CREATE OR REPLACE TRIGGER {trigger}
+        BEFORE UPDATE OF data, plus_promo_duration_num_periods ON {accounts}
+        FOR EACH ROW WHEN (
+            {new_exact} = 'null'::JSONB OR (
+                {new_exact} IS NOT NULL AND {new_exact} IS NOT DISTINCT FROM {old_exact}
+                AND NEW.plus_promo_duration_num_periods IS DISTINCT FROM OLD.plus_promo_duration_num_periods
+            )
+        ) EXECUTE FUNCTION {function}()
+    """)
+
+
 def _create_remember_legacy_none_trigger(cur, accounts: str) -> None:
     name = "remember_account_legacy_no_promotion"
     function = pg.qualified(name)
@@ -380,7 +457,11 @@ def _create_sync_trigger(cur, accounts: str, offers: str, project: str) -> None:
 
     def legacy_values(row: str) -> str:
         columns = [f"{row}.{column}" for column in _LEGACY_OFFER_COLUMNS]
-        json_fields = [f"{row}.data->'{key}'" for key in (*_LEGACY_JSON_FIELDS, LEGACY_OFFER_CHECKED_FIELD)]
+        json_fields = [
+            f"{row}.data->'{key}'" for key in (
+                *_LEGACY_JSON_FIELDS, LEGACY_OFFER_CHECKED_FIELD, LEGACY_OFFER_DURATION_FIELD,
+            )
+        ]
         return ", ".join([*columns, *json_fields])
 
     changes = ", ".join((
@@ -460,7 +541,9 @@ def ensure_schema(conn) -> None:
               ON {offers} (offer_key, account_id)
         """)
         _create_projection_function(cur, project, accounts)
+        _create_clear_exact_legacy_duration_trigger(cur, accounts)
         _create_remember_legacy_none_trigger(cur, accounts)
+        _backfill_exact_legacy_duration(cur, accounts)
         _create_sync_trigger(cur, accounts, offers, project)
         cur.execute(f"""
             INSERT INTO {offers} AS current_offer (account_id, {_OFFER_COLUMNS})

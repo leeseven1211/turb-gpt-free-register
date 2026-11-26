@@ -399,7 +399,9 @@ def _promotion_filter_sql(
     return f"({' OR '.join(parts)})", params
 
 
-def _make_scenarios(expected_codes: Sequence[str]) -> tuple[Scenario, ...]:
+def _make_scenarios(
+    expected_codes: Sequence[str], *, names: Sequence[str] | None = None
+) -> tuple[Scenario, ...]:
     definitions = synthetic_offer_definitions()
     old_by_key = {
         _offer_key(definition): (
@@ -454,7 +456,13 @@ def _make_scenarios(expected_codes: Sequence[str]) -> tuple[Scenario, ...]:
         if scenario.values not in seen:
             seen.add(scenario.values)
             result.append(scenario)
-    return tuple(result)
+    if names is None:
+        return tuple(result)
+    selected = set(names)
+    unknown = selected.difference(scenario.name for scenario in result)
+    if unknown:
+        raise ValueError(f"未知基准场景：{', '.join(sorted(unknown))}")
+    return tuple(scenario for scenario in result if scenario.name in selected)
 
 
 def _normalize_facets(payload: Any) -> dict[str, int]:
@@ -1030,6 +1038,7 @@ def _compare_scenario(
     old_samples: int,
     expected_keys: Sequence[str],
     expected_truth: Mapping[str, set[int]],
+    facet_samples: int | None = None,
 ) -> dict[str, Any]:
     old_values = scenario.old_values if scenario.old_values is not None else scenario.values
     old_ids = _old_ids(old_values)
@@ -1048,8 +1057,9 @@ def _compare_scenario(
     measurements: dict[str, dict[str, list[dict[str, Any]]]] = {}
     for operation in ("list", "count", "facets"):
         measurements[operation] = {"old_json": [], "new_projection": []}
-        old_limit = old_samples if old_samples < samples else samples
-        for index in range(max(samples, old_limit)):
+        new_limit = facet_samples if operation == "facets" and facet_samples is not None else samples
+        old_limit = min(old_samples, new_limit)
+        for index in range(new_limit):
             order = ("old_json", "new_projection") if index % 2 == 0 else ("new_projection", "old_json")
             for variant in order:
                 if variant == "old_json" and index >= old_limit:
@@ -1170,7 +1180,10 @@ def _run_isolated(args: argparse.Namespace) -> dict[str, Any]:
 
     definitions = synthetic_offer_definitions()
     expected_keys = _expected_codes(definitions)
-    scenarios = _make_scenarios(expected_keys)
+    try:
+        scenarios = _make_scenarios(expected_keys, names=args.scenario)
+    except ValueError as exc:
+        _parser().error(str(exc))
     result: dict[str, Any] = {
         "metadata": _host_metadata(database_label, schema, args),
         "method": {
@@ -1298,6 +1311,7 @@ def _run_isolated(args: argparse.Namespace) -> dict[str, Any]:
                 old_samples=args.old_samples if args.old_samples is not None else args.samples,
                 expected_keys=expected_keys,
                 expected_truth=expected_truth,
+                facet_samples=args.facet_samples,
             )
             for scenario in scenarios
         ]
@@ -1322,6 +1336,18 @@ def _parser() -> argparse.ArgumentParser:
         default=None,
         help="旧 JSON 路径样本数；300000 账号建议 1-3，少于 30 不输出旧 P95",
     )
+    parser.add_argument(
+        "--scenario",
+        action="append",
+        metavar="名称",
+        help="只采样指定场景，可多次传入，例如 --scenario 无筛选 --scenario Team。默认采样全部场景",
+    )
+    parser.add_argument(
+        "--facet-samples",
+        type=int,
+        default=None,
+        help="单独指定每个场景的新 facets 样本数，旧 facets 样本数也不超过此值。默认沿用 --samples",
+    )
     parser.add_argument("--output", type=Path)
     return parser
 
@@ -1337,6 +1363,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error("--samples 必须为正整数")
     if args.old_samples is not None and args.old_samples < 1:
         parser.error("--old-samples 必须为正整数")
+    if args.facet_samples is not None and args.facet_samples < 1:
+        parser.error("--facet-samples 必须为正整数")
     try:
         from tools.test_isolated import build_isolated_environment
 

@@ -440,6 +440,53 @@ class PromotionOfferProjectionTests(PostgresTestCase):
         self.assertEqual(row["offer_key"], offer_key("plus", "discount", 50, 0.25, "month"))
         self.assertEqual(row["legacy_filter_values"], ["plus_50"])
 
+    def test_plan_save_preserves_new_plus_duration_until_explicit_periods_change(self):
+        from core.storage.accounts.promotion_offers import offer_key
+
+        for duration, promoted_periods, legacy_codes in (
+            (1.5, 2, ["plus_50", "plus_50_2m"]),
+            (0.25, 0, ["plus_50"]),
+        ):
+            with self.subTest(duration=duration):
+                account_id = rs.insert_row(rs.ACCOUNTS, {"email": f"new-plus-fraction-{promoted_periods}@example.test"})
+                self.assertTrue(db.update_account_plan_check(acc_id=account_id, result={
+                    "ok": True, "current_plan_type": "free", "plus_promo_kind": "discount",
+                    "plus_promo_discount_percentage": 50, "plus_promo_duration_num_periods": duration,
+                    "plus_promo_duration_period": "month",
+                }))
+                account = rs.get_row(rs.ACCOUNTS, account_id)
+                self.assertEqual(account["plus_promo_duration_num_periods"], promoted_periods)
+                self.assertIsNone(account.get("plus_trial_duration_num_periods"))
+                original, = self._offers(account_id)
+                self.assertEqual(original["duration_num_periods"], Decimal(str(duration)))
+                self.assertEqual(original["offer_key"], offer_key("plus", "discount", 50, duration, "month"))
+                self.assertEqual(original["legacy_filter_values"], legacy_codes)
+
+                self.assertTrue(rs.patch_row(rs.ACCOUNTS, account_id, {"plus_promo_duration_num_periods": 1}))
+                changed, = self._offers(account_id)
+                self.assertEqual(changed["duration_num_periods"], 1)
+                self.assertEqual(changed["offer_key"], offer_key("plus", "discount", 50, 1, "month"))
+                self.assertEqual(changed["legacy_filter_values"], ["plus_50", "plus_50_1m"])
+
+                self.assertTrue(rs.patch_row(rs.ACCOUNTS, account_id, {"plus_promo_duration_num_periods": promoted_periods}))
+                changed_again, = self._offers(account_id)
+                self.assertEqual(changed_again["duration_num_periods"], promoted_periods or None)
+                self.assertEqual(changed_again["legacy_filter_values"], legacy_codes)
+
+    def test_plan_success_without_offer_fields_keeps_new_plus_duration(self):
+        account_id = rs.insert_row(rs.ACCOUNTS, {"email": "new-plus-fraction-unchanged@example.test"})
+        self.assertTrue(db.update_account_plan_check(acc_id=account_id, result={
+            "ok": True, "checked_at": "2026-11-20T02:00:00+00:00", "plus_promo_kind": "discount",
+            "plus_promo_discount_percentage": 50, "plus_promo_duration_num_periods": 1.5,
+            "plus_promo_duration_period": "month",
+        }))
+        original, = self._offers(account_id)
+        self.assertEqual(original["duration_num_periods"], Decimal("1.5"))
+        self.assertTrue(db.update_account_plan_check(acc_id=account_id, result={
+            "ok": True, "checked_at": "2026-11-21T02:00:00+00:00", "current_plan_type": "free",
+        }))
+        self.assertEqual(self._offers(account_id), [original])
+
     def test_evidence_only_changes_keep_identical_projection_rows(self):
         account_id = rs.insert_row(rs.ACCOUNTS, {
             "email": "evidence-only@example.test", "account_promotions": [_PLUS_OFFER],
@@ -535,6 +582,29 @@ class PromotionOfferProjectionTests(PostgresTestCase):
             cur.execute(f"""INSERT INTO {accounts} (
                     id, email, created_at, updated_at, plan_check_status, plus_promo_kind
                 ) VALUES (60, 'legacy-none-backfill@example.test', '', '', 'success', 'none')""")
+            checked_at = "2026-11-20T02:00:00+00:00"
+            for account_id, periods, raw_periods, result_checked_at in (
+                (70, 2, 1.5, checked_at),
+                (80, 1, 1.5, checked_at),
+                (90, 2, 1.5, "2026-11-19T02:00:00+00:00"),
+                (100, 0, 0.25, None),
+            ):
+                result = {
+                    "ok": True, "plus_promo_kind": "discount", "plus_promo_discount_percentage": 50,
+                    "plus_promo_duration_num_periods": raw_periods, "plus_promo_duration_period": "month",
+                }
+                if result_checked_at is not None:
+                    result["checked_at"] = result_checked_at
+                cur.execute(
+                    f"""INSERT INTO {accounts} (
+                        id, email, created_at, updated_at, plan_check_status, plan_last_success_at,
+                        plus_promo_kind, plus_promo_discount_percentage, plus_promo_duration_num_periods,
+                        plus_promo_duration_period, data
+                    ) VALUES (%s, %s, '', '', 'success', %s, 'discount', 50, %s, 'month', %s::jsonb)""",
+                    (account_id, f"fixture-{account_id}@example.test", checked_at, periods, json.dumps({
+                        "plan_last_success_result_json": json.dumps(result),
+                    })),
+                )
 
         rs.reset_ready()
         with (
@@ -554,6 +624,15 @@ class PromotionOfferProjectionTests(PostgresTestCase):
         self.assertEqual(promotion_offers.offer_label(fractional[0]), "Plus 半价 1.5个月")
         self.assertIsNone(self._offers(50)[0]["duration_num_periods"])
         self.assertEqual([(r["kind"], r["eligible"]) for r in self._offers(60)], [("none", False)])
+        for account_id, expected, legacy_codes in (
+            (70, Decimal("1.5"), ["plus_50", "plus_50_2m"]), (80, 1, ["plus_50", "plus_50_1m"]),
+            (90, 2, ["plus_50", "plus_50_2m"]), (100, Decimal("0.25"), ["plus_50"]),
+        ):
+            with self.subTest(history=account_id):
+                projected, = self._offers(account_id)
+                self.assertEqual(projected["duration_num_periods"], expected)
+                self.assertEqual(projected["offer_key"], promotion_offers.offer_key("plus", "discount", 50, expected, "month"))
+                self.assertEqual(projected["legacy_filter_values"], legacy_codes)
         with rs._connect() as conn:
             self.assertTrue(rs._migration_completed(conn, 3))
             promotion_offers.ensure_schema(conn)

@@ -65,6 +65,46 @@ def test_cli_cannot_bypass_isolated_environment_with_hidden_mode():
         raise AssertionError("不应接受可复用 schema 的 --isolated 入口")
 
 
+def test_cli_scenario_restricts_sampling_to_selected_scenarios():
+    parser = benchmark._parser()
+    expected_keys = benchmark._expected_codes(benchmark.synthetic_offer_definitions())
+    default = parser.parse_args([])
+    selected = parser.parse_args(
+        ["--scenario", "无筛选", "--scenario", "Team", "--facet-samples", "1"]
+    )
+
+    assert default.facet_samples is None
+    assert len(benchmark._make_scenarios(expected_keys, names=default.scenario)) == 15
+    assert selected.facet_samples == 1
+    assert [
+        scenario.name for scenario in benchmark._make_scenarios(expected_keys, names=selected.scenario)
+    ] == ["无筛选", "Team"]
+
+
+def test_facet_sample_override_preserves_list_and_count_sampling(monkeypatch):
+    for variant in ("old", "new"):
+        monkeypatch.setattr(benchmark, f"_{variant}_ids", lambda _values: [])
+        monkeypatch.setattr(benchmark, f"_{variant}_count", lambda _values: 0)
+        monkeypatch.setattr(benchmark, f"_{variant}_facets", lambda _values: {})
+
+    result = benchmark._compare_scenario(
+        benchmark.Scenario("无筛选", ()),
+        samples=30,
+        old_samples=2,
+        facet_samples=1,
+        expected_keys=(),
+        expected_truth={},
+    )
+
+    for operation in ("list", "count"):
+        variants = result["measurements"][operation]
+        assert variants["old_json"]["summary"]["samples"] == 2
+        assert variants["new_projection"]["summary"]["samples"] == 30
+    for facet in result["measurements"]["facets"].values():
+        assert facet["summary"]["samples"] == 1
+        assert "p95_ms" not in facet["summary"]
+
+
 def test_synthetic_truth_deduplicates_same_offer_across_countries():
     definitions = benchmark.synthetic_offer_definitions()
     truth = benchmark.synthetic_offer_truth(50, definitions)

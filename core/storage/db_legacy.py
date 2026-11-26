@@ -1362,12 +1362,20 @@ def update_account_plan_check(acc_id: int | None = None, email: str | None = Non
         if "account_promotions" in result or "plus_discount_eligible" in result or any(
             key.startswith(("plus_promo_", "plus_trial_")) for key in result
         ):
-            from core.storage.accounts.promotion_offers import LEGACY_OFFER_CHECKED_FIELD
+            from core.storage.accounts.promotion_offers import LEGACY_OFFER_CHECKED_FIELD, LEGACY_OFFER_DURATION_FIELD
 
             promo_kind = promotion_kind_from_record(result)
             promo_eligible = promo_kind in ELIGIBLE_PROMO_KINDS
+            raw_promo_periods = result.get("plus_promo_duration_num_periods")
+            # 提升列仍使用原有整数。动态筛选另外保留新版字段的正小数。
+            exact_periods = (
+                raw_promo_periods
+                if isinstance(raw_promo_periods, float) and raw_promo_periods > 0 and not raw_promo_periods.is_integer()
+                else None
+            )
             changes.update({
                 LEGACY_OFFER_CHECKED_FIELD: checked_at,
+                LEGACY_OFFER_DURATION_FIELD: exact_periods,
                 "plus_promo_eligible": promo_eligible,
                 "plus_promo_kind": promo_kind,
                 "plus_discount_eligible": promo_kind == DISCOUNT,
