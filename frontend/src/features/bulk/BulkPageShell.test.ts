@@ -5,8 +5,18 @@ import {createBulkIntent} from './useBulkIntent';
 import type {BulkNavigation,BulkPageDependencies} from './contracts';
 import {realAdapter} from '../accounts/uiTestSupport';
 const wrappers:ReturnType<typeof mount>[]=[];
-beforeEach(()=>{vi.useFakeTimers();sessionStorage.clear();vi.stubGlobal('ResizeObserver',class{observe(){}unobserve(){}disconnect(){}});});
-afterEach(()=>{wrappers.splice(0).forEach(wrapper=>wrapper.unmount());vi.useRealTimers();vi.unstubAllGlobals();});
+const originalShowModal=Object.getOwnPropertyDescriptor(HTMLDialogElement.prototype,'showModal');
+const originalClose=Object.getOwnPropertyDescriptor(HTMLDialogElement.prototype,'close');
+beforeEach(()=>{vi.useFakeTimers();sessionStorage.clear();vi.stubGlobal('ResizeObserver',class{observe(){}unobserve(){}disconnect(){}});
+ Object.defineProperty(HTMLDialogElement.prototype,'showModal',{configurable:true,value:function(this:HTMLDialogElement){this.open=true;}});
+ Object.defineProperty(HTMLDialogElement.prototype,'close',{configurable:true,value:function(this:HTMLDialogElement){this.open=false;}});
+ vi.spyOn(window,'scrollTo').mockImplementation(()=>{});
+});
+afterEach(()=>{
+ wrappers.splice(0).forEach(wrapper=>wrapper.unmount());vi.useRealTimers();vi.unstubAllGlobals();
+ if(originalShowModal)Object.defineProperty(HTMLDialogElement.prototype,'showModal',originalShowModal);else Reflect.deleteProperty(HTMLDialogElement.prototype,'showModal');
+ if(originalClose)Object.defineProperty(HTMLDialogElement.prototype,'close',originalClose);else Reflect.deleteProperty(HTMLDialogElement.prototype,'close');
+});
 function fixture(navigation:Partial<BulkNavigation>={}){
  let visible=true;
  const request=vi.fn<(path:string,options?:RequestInit)=>Promise<unknown>>(async path=>{
@@ -28,7 +38,7 @@ it('inactive detail link does not read until activation, and preserves exact str
  const h=fixture({view:'detail',batch_id:'9007199254740993'});await flushPromises();expect(h.request).not.toHaveBeenCalled();
  await h.wrapper.vm.activate();await flushPromises();
  expect(h.request.mock.calls.filter(([path])=>path==='/batches/9007199254740993?view=current')).toHaveLength(1);
- expect(h.wrapper.text()).toContain('#9007199254740993');
+ expect(document.body.textContent).toContain('#9007199254740993');
 });
 it('one visible list timer stops when hidden and unmount removes it',async()=>{
  const h=fixture();await h.wrapper.vm.activate();await flushPromises();expect(h.request).toHaveBeenCalledTimes(1);
@@ -82,7 +92,7 @@ it('failed write immediately exposes its retained recovery intent on a terminal 
  h.request.mockRejectedValueOnce(new Error('回执丢失'));
  await expect(detail.props('deps').intents.submit('control:9007199254740993:pause','/batches/9007199254740993/control',{action:'pause'})).rejects.toThrow('回执丢失');
  await flushPromises();
- expect(h.wrapper.find('[data-bulk-recovery]').exists()).toBe(true);
+ expect(document.querySelector('[data-bulk-recovery]')).not.toBeNull();
 });
 it('reopening terminal detail starts a fresh read without waiting on the aborted read',async()=>{
  const h=fixture({view:'detail',batch_id:'9007199254740993'});await h.wrapper.vm.activate();await flushPromises();
@@ -94,5 +104,51 @@ it('reopening terminal detail starts a fresh read without waiting on the aborted
  expect(oldRequest.signal?.aborted).toBe(true);
  expect(h.request.mock.calls.filter(([path])=>path==='/batches/9007199254740993?view=current')).toHaveLength(3);
  release({id:'9007199254740993',name:'aborted old result'});await old;await flushPromises();
- expect(h.wrapper.text()).not.toContain('aborted old result');
+ expect(document.body.textContent).not.toContain('aborted old result');
+});
+it('查看批次在浮窗中打开，关闭后恢复列表筛选、分页和入口焦点',async()=>{
+ const h=fixture({q:'套餐',state:'ended',cursor:'list.page.2'});
+ await h.wrapper.vm.activate();await flushPromises();
+ const trigger=h.wrapper.get('[data-bulk-open]');(trigger.element as HTMLElement).focus();
+ await trigger.trigger('click');await flushPromises();
+ const dialog=document.querySelector<HTMLElement>('[data-bulk-dialog][data-state="open"]');
+ expect(dialog).not.toBeNull();expect(dialog?.tagName).toBe('DIALOG');
+ expect(dialog?.textContent).toContain('大整数批次');expect(dialog?.contains(document.activeElement)).toBe(true);
+ expect(h.wrapper.get('[aria-label="批次列表"]').isVisible()).toBe(true);
+ dialog!.querySelector<HTMLButtonElement>('[data-bulk-dialog-close]')!.click();await flushPromises();
+ expect(h.wrapper.vm.navigationState()).toEqual({tab:'bulk',view:'list',q:'套餐',state:'ended',cursor:'list.page.2'});
+ expect(document.querySelector('[data-bulk-dialog][data-state="open"]')).toBeNull();
+ expect(document.activeElement).toBe(trigger.element);
+ expect(h.deps.onNavigation).toHaveBeenLastCalledWith({tab:'bulk',view:'list',q:'套餐',state:'ended',cursor:'list.page.2'},'push');
+});
+it('隐藏批量任务时浮窗关闭并停止读取，返回时恢复原批次',async()=>{
+ const h=fixture({view:'detail',batch_id:'9007199254740993'});
+ await h.wrapper.vm.activate();await flushPromises();
+ expect(document.querySelector('[data-bulk-dialog][data-state="open"]')).not.toBeNull();
+ h.wrapper.vm.setVisible(false);await flushPromises();
+ expect(document.querySelector('[data-bulk-dialog][data-state="open"]')).toBeNull();
+ const reads=h.request.mock.calls.length;await vi.advanceTimersByTimeAsync(14000);
+ expect(h.request).toHaveBeenCalledTimes(reads);expect(h.wrapper.vm.navigationState().view).toBe('detail');
+ await h.wrapper.vm.activate();await flushPromises();
+ expect(document.querySelector('[data-bulk-dialog][data-state="open"]')?.textContent).toContain('大整数批次');
+});
+it('重跑确认留在批次浮窗内，Esc 取消确认后保留批次，再次 Esc 才返回列表',async()=>{
+ const h=fixture({view:'detail',batch_id:'9007199254740993'});
+ h.request.mockImplementation(async path=>path.includes('/targets')?{items:[],page:{page_size:50,has_more:false}}:{
+  id:'9007199254740993',operation_key:'plan_check',name:'失败批次',summary_revision:1,target_count:11,
+  control:{state:'ended',revision:1},summary:{failed:11},rounds_head:[],
+ });
+ await h.wrapper.vm.activate();await flushPromises();
+ const dialog=document.querySelector<HTMLDialogElement>('[data-bulk-dialog]')!;
+ dialog.querySelector<HTMLButtonElement>('[data-bulk-action="retry"]')!.click();await flushPromises();
+ const confirmation=dialog.querySelector<HTMLElement>('[role="alertdialog"]');
+ expect(confirmation).not.toBeNull();
+ const escape=new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true});
+ confirmation!.dispatchEvent(escape);await flushPromises();
+ expect(escape.defaultPrevented).toBe(true);
+ expect(dialog.querySelector('[role="alertdialog"]')).toBeNull();expect(h.wrapper.vm.navigationState().view).toBe('detail');
+ dialog.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));
+ dialog.dispatchEvent(new Event('cancel',{cancelable:true}));await flushPromises();
+ expect(h.wrapper.vm.navigationState().view).toBe('list');
+ expect(h.request.mock.calls.every(([,options])=>!options?.method||options.method==='GET')).toBe(true);
 });
