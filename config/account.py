@@ -22,6 +22,7 @@ ACCOUNT_PASSWORD_RESET_ENABLED = schema_default("ACCOUNT_PASSWORD_RESET_ENABLED"
 # 账号级执行器。same_as_registration 只对 Codex 有意义，其它驱动值由对应
 # 服务校验；先保留为配置项，便于后续增加新的协议/浏览器实现。
 ACCOUNT_PASSWORD_DRIVER = schema_default("ACCOUNT_PASSWORD_DRIVER")
+ACCOUNT_PASSWORD_CHANGE_REFRESH_BEFORE_RESET = schema_default("ACCOUNT_PASSWORD_CHANGE_REFRESH_BEFORE_RESET")
 ACCOUNT_PLAN_CHECK_DRIVER = schema_default("ACCOUNT_PLAN_CHECK_DRIVER")
 ACCOUNT_2FA_DRIVER = schema_default("ACCOUNT_2FA_DRIVER")
 # Each account action can choose a cheaper/direct route independently. The
@@ -95,6 +96,7 @@ def completion_settings() -> dict[str, object]:
         "refresh_at_country": str(ACCOUNT_AT_REFRESH_COUNTRY or "").strip().upper(),
         "password_reset_enabled": bool(ACCOUNT_PASSWORD_RESET_ENABLED),
         "password_driver": str(ACCOUNT_PASSWORD_DRIVER or "roxy").strip().lower() or "roxy",
+        "password_change_refresh_before_reset": bool(ACCOUNT_PASSWORD_CHANGE_REFRESH_BEFORE_RESET),
         "plan_check_driver": str(ACCOUNT_PLAN_CHECK_DRIVER or "protocol").strip().lower() or "protocol",
         "password_proxy_mode": str(ACCOUNT_PASSWORD_PROXY_MODE or "registration").strip().lower() or "registration",
         "twofa_proxy_mode": str(ACCOUNT_2FA_PROXY_MODE or "registration").strip().lower() or "registration",

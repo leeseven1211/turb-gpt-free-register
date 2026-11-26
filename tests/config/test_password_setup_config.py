@@ -25,3 +25,23 @@ class PasswordSetupConfigTests(unittest.TestCase):
     def test_completion_snapshot_preserves_selected_password_driver(self):
         with patch.object(account, "ACCOUNT_PASSWORD_DRIVER", "protocol"):
             self.assertEqual("protocol", account.completion_settings()["password_driver"])
+
+    def test_password_change_refresh_policy_is_frozen_in_execution_snapshot(self):
+        from core.accounts import operation_settings
+        from core.operations import task_gateway
+
+        with patch.object(account, "ACCOUNT_PASSWORD_CHANGE_REFRESH_BEFORE_RESET", False):
+            self.assertIs(
+                False, account.completion_settings()["password_change_refresh_before_reset"],
+            )
+        captured = task_gateway.normalize_config_snapshot(
+            {"ACCOUNT_PASSWORD_CHANGE_REFRESH_BEFORE_RESET": False},
+            allowlist=operation_settings.RUNTIME_CONFIG_ALLOWLIST,
+        )
+        self.assertIs(False, captured["password_change_refresh_before_reset"])
+        self.assertIs(
+            False,
+            operation_settings.completion_settings_from_snapshot({
+                "password_change_refresh_before_reset": "false",
+            })["password_change_refresh_before_reset"],
+        )

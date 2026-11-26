@@ -8,6 +8,36 @@ the account's TOTP secret are returned to an authentication adapter in memory.
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, field
+
+
+@dataclass(frozen=True)
+class _CredentialOverride:
+    email: str
+    password: str = field(repr=False)
+    totp_secret: str = field(repr=False)
+
+
+_CREDENTIAL_OVERRIDE: ContextVar[_CredentialOverride | None] = ContextVar(
+    "account_login_credentials_override", default=None,
+)
+
+
+@contextmanager
+def override_account_login_credentials(email: str, password: str, totp_secret: str = ""):
+    """在当前认证上下文临时提供候选凭据，不影响其他账号或线程。"""
+    override = _CredentialOverride(
+        email=str(email or "").strip().casefold(),
+        password=str(password or "").strip(),
+        totp_secret=str(totp_secret or "").strip(),
+    )
+    token = _CREDENTIAL_OVERRIDE.set(override)
+    try:
+        yield
+    finally:
+        _CREDENTIAL_OVERRIDE.reset(token)
 
 
 def account_email_is_invalid(email: str) -> bool:
@@ -40,6 +70,10 @@ def get_account_totp_secret_candidate(account: dict | None) -> str:
 
 def get_account_login_credentials(email: str) -> tuple[str, str]:
     """Return ``(OpenAI password, TOTP secret)`` without logging either value."""
+    override = _CREDENTIAL_OVERRIDE.get()
+    normalized_email = str(email or "").strip().casefold()
+    if override is not None and normalized_email == override.email:
+        return override.password, override.totp_secret
     try:
         from core import db
 

@@ -307,6 +307,16 @@ def _rust_refresh_result(*, email, checked_at, payload, remote_started):
     return result
 
 
+def _rust_profile(payload: dict, cached: dict) -> dict:
+    """把原生指纹投影成 Python 稳定画像字段；旧二进制没有画像时沿用缓存。"""
+    from core.storage.accounts.auth import _STABLE_PROFILE_FIELDS
+
+    raw = payload.get("browser_profile")
+    if isinstance(raw, dict) and raw:
+        return {key: value for key, value in raw.items() if key in _STABLE_PROFILE_FIELDS}
+    return dict(cached.get("browser_profile") or {})
+
+
 def run_refresh_at(
     email: str, *, proxy=None, proxy_supplier=None, identity=None,
     context_recorder=None, on_remote_request_started=None,
@@ -320,21 +330,35 @@ def run_refresh_at(
         RefreshBridgeRequest, log_level, resolve_binary, run_refresh_protocol, timeout_seconds,
     )
     from core.storage import accounts as db
-    from core.storage.accounts import protocol_sessions
+    from core.storage.accounts import device_profiles, protocol_sessions
 
     email = str(email or "").strip()
     checked_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     target = (db.get_account(int(account_id)) if account_id else db.get_account_by_email(email)) or {}
     actual_id = int(account_id or target.get("id") or 0) or None
     cached = {}
+    remembered = {}
     if actual_id:
         try:
             cached = protocol_sessions.load_session(actual_id, email) or {}
         except Exception:
             logger.warning("Rust 刷新：私有会话读取不可用，改用凭据重登")
+        try:
+            # 设备画像不带过期时间，会话过期后仍能沿用同一台设备。
+            remembered = device_profiles.load_profile(actual_id, email) or {}
+        except Exception:
+            remembered = {}
+    if not str(country or "").strip():
+        # 未显式指定时跟随账号刷新区域，避免 JP 线路配 UTC/en-US 画像。
+        from config import account as account_config
+
+        country = str(getattr(account_config, "ACCOUNT_AT_REFRESH_COUNTRY", "") or "")
     password, secret = get_account_login_credentials(email)
     identity_payload = identity if isinstance(identity, dict) else {}
-    device_id = str(cached.get("device_id") or identity_payload.get("device_id") or "").strip()
+    device_id = str(
+        cached.get("device_id") or remembered.get("device_id")
+        or identity_payload.get("device_id") or ""
+    ).strip()
     cookies = tuple(
         item for item in (cached.get("cookies") or []) if isinstance(item, dict)
     )
@@ -388,11 +412,15 @@ def run_refresh_at(
             saved = protocol_sessions.save_session(actual_id, email, {
                 "cookies": list(payload.get("cookies") or []),
                 "device_id": str(payload.get("device_id") or device_id),
-                "browser_profile": cached.get("browser_profile") or {},
+                "browser_profile": _rust_profile(payload, cached or remembered),
                 "user_id": str((result.get("session") or {}).get("user", {}).get("id") or ""),
                 "chatgpt_account_id": str((result.get("session") or {}).get("account", {}).get("id") or ""),
             })
             result["session_cache_status"] = "saved" if saved is not False else "unavailable"
+            device_profiles.remember_session(actual_id, email, {
+                "device_id": str(payload.get("device_id") or device_id),
+                "browser_profile": _rust_profile(payload, cached or remembered),
+            }, origin="refresh_at_rust")
         except Exception:
             result["session_cache_status"] = "unavailable"
             logger.warning("Rust 刷新：AT 已取得，私有会话缓存未保存")

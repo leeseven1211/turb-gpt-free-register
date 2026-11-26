@@ -34,6 +34,10 @@ class PasswordSetupFixture:
         key = patch.dict(os.environ, {"TURB_CONFIG_ENCRYPTION_KEY": Fernet.generate_key().decode()})
         key.start()
         self.addCleanup(key.stop)
+        # 临时 schema 没有迁移配置库：让配置读取按文件/环境默认值走，而不是抛 config_not_migrated。
+        loader = patch("config.runtime.load_values", return_value=None)
+        loader.start()
+        self.addCleanup(loader.stop)
         operations.init()
         self.email = "add-password@example.test"
         self.account_id = records.insert_row(records.ACCOUNTS, {

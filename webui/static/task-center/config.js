@@ -1,4 +1,4 @@
-import { $ as e, A as t, C as n, E as r, F as i, H as a, J as o, K as s, L as c, M as l, Q as u, S as d, Z as f, _ as p, d as m, et as h, ft as g, g as _, h as v, j as y, lt as b, m as x, n as S, nt as C, o as w, s as T, st as E, t as D, v as O, x as k } from "./_plugin-vue_export-helper-BSZsFlS8.js";
+import { $ as e, A as t, C as n, E as r, F as i, H as a, J as o, K as s, L as c, M as l, Q as u, S as d, Z as f, _ as p, d as m, et as h, ft as g, g as _, h as v, j as y, lt as b, m as x, n as S, nt as C, o as w, s as T, st as E, t as D, v as O, x as k } from "./_plugin-vue_export-helper-CBsH_ZoE.js";
 import { n as ee } from "./time-DOD6oyhP.js";
 import { r as A } from "./client-B5R_MNgP.js";
 import { a as j, n as M, r as N } from "./taskIds-BlchWwUp.js";
@@ -77,7 +77,11 @@ var P = {
 			"AT_REFRESH_MAX_PER_CYCLE"
 		]]
 	],
-	补密码: [["密码补全策略", ["ACCOUNT_PASSWORD_DRIVER", "ACCOUNT_PASSWORD_RESET_ENABLED"]]],
+	补密码: [["密码补全策略", [
+		"ACCOUNT_PASSWORD_DRIVER",
+		"ACCOUNT_PASSWORD_RESET_ENABLED",
+		"ACCOUNT_PASSWORD_CHANGE_REFRESH_BEFORE_RESET"
+	]]],
 	"补 2FA": [["2FA 补全策略", [
 		"ACCOUNT_2FA_DRIVER",
 		"ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED",
@@ -107,6 +111,7 @@ var P = {
 	["AT_REFRESH_MAX_PER_CYCLE", "刷新 AT"],
 	["ACCOUNT_PASSWORD_DRIVER", "补密码"],
 	["ACCOUNT_PASSWORD_RESET_ENABLED", "补密码"],
+	["ACCOUNT_PASSWORD_CHANGE_REFRESH_BEFORE_RESET", "补密码"],
 	["ACCOUNT_2FA_DRIVER", "补 2FA"],
 	["ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED", "补 2FA"],
 	["ACCOUNT_2FA_PROTOCOL_REAUTH_ENABLED", "补 2FA"],

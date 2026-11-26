@@ -218,6 +218,7 @@ _DEFAULTS: dict[str, Any] = {
     "ACCOUNT_COMPLETION_REFRESH_AT_ENABLED": False,
     "ACCOUNT_PASSWORD_RESET_ENABLED": False,
     "ACCOUNT_PASSWORD_DRIVER": "roxy",
+    "ACCOUNT_PASSWORD_CHANGE_REFRESH_BEFORE_RESET": True,
     "ACCOUNT_PLAN_CHECK_DRIVER": "protocol",
     "ACCOUNT_PASSWORD_PROXY_MODE": "registration",
     "ACCOUNT_2FA_PROXY_MODE": "registration",
@@ -743,8 +744,13 @@ _FIELD_DEFINITIONS = [
         "label": "允许邮箱重置账号密码", "help": "默认关闭。开启后，账号补全登录时若本地没有 OpenAI 密码，会点击忘记密码、读取邮箱验证码并设置新密码；只影响账号补全，不影响注册、查活和刷新 AT",
     },
     {
+        "key": "ACCOUNT_PASSWORD_CHANGE_REFRESH_BEFORE_RESET", "file": "account.py", "type": "bool", "group": "账号补全",
+        "label": "改密前先刷新 AT",
+        "help": "协议改密时，若账号 AT 已过期或缺失，先跑一次刷新 AT，再进入重置流程；关闭后只支持会话仍有效的账号。",
+    },
+    {
         "key": "ACCOUNT_PASSWORD_DRIVER", "file": "account.py", "type": "str", "group": "账号补全",
-        "label": "密码补全驱动", "help": "roxy=RoxyBrowser（默认）；protocol=纯协议登录后添加密码，无需浏览器。只处理缺少密码的账号；修改密码仍使用 Roxy，不受此选项影响",
+        "label": "密码补全驱动", "help": "roxy=RoxyBrowser（默认）；protocol=纯协议添加密码或显式修改密码，无需浏览器。补密码保留原添加流程；修改密码使用邮箱验证码重置并验证新密码",
     },
     {
         "key": "ACCOUNT_EMAIL_CHANGE_ENABLED", "file": "account.py", "type": "bool", "group": "账号补全",

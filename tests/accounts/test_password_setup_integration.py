@@ -87,6 +87,41 @@ class PasswordSetupIntegrationTests(unittest.TestCase):
         service = ModuleType("core.accounts.password_setup.service")
         service.run_protocol_password_setup = password_setup
 
+        def password_reset(
+            email,
+            *,
+            proxy,
+            execution_fence,
+            checkpoint=None,
+            report=None,
+            proxy_supplier=None,
+            refresh_before_reset=True,
+        ):
+            actions.append(("password_reset", email, proxy, execution_fence))
+            if password_ok:
+                account.update(
+                    access_token="fixture-new-at",
+                    extra_json={
+                        "account_password": "fixture-password",
+                        "account_password_state": "confirmed",
+                    },
+                )
+            return {
+                "ok": password_ok,
+                "status": password_status or ("success" if password_ok else "failed"),
+                "message": "改密完成" if password_ok else "改密失败",
+                "password_driver": "protocol",
+                "password_reset": "confirmed" if password_ok else "unconfirmed",
+                "password_confirmed": password_ok,
+                "browser_opened": False,
+                "remote_receipt_state": "confirmed" if password_ok else "rejected",
+                "mutation_submitted": True,
+                "stop_requested": stop_after_password,
+            }
+
+        reset_service = ModuleType("core.accounts.password_setup.reset")
+        reset_service.run_protocol_password_reset = password_reset
+
         def twofa_setup(_email, current, *_args, **_kwargs):
             actions.append(("twofa", current.get("access_token")))
             if not twofa_ok:
@@ -119,7 +154,15 @@ class PasswordSetupIntegrationTests(unittest.TestCase):
             return True
 
         with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
-            stack.enter_context(patch.dict(sys.modules, {service.__name__: service}))
+            stack.enter_context(
+                patch.dict(
+                    sys.modules,
+                    {
+                        service.__name__: service,
+                        reset_service.__name__: reset_service,
+                    },
+                )
+            )
             stack.enter_context(patch("config.reload_all"))
             stack.enter_context(patch("config.account.ACCOUNT_2FA_BROWSER_FALLBACK_ENABLED", fallback))
             stack.enter_context(patch("config.account.ACCOUNT_PASSWORD_RESET_ENABLED", reset_enabled))
@@ -324,7 +367,7 @@ class PasswordSetupIntegrationTests(unittest.TestCase):
                 )
             )
             self.assertIsNotNone(account_setup_unavailable({"password"}, {"password_driver": "roxy"}))
-            self.assertIsNotNone(
+            self.assertIsNone(
                 account_setup_unavailable(
                     {"password"},
                     {"password_driver": "protocol"},
@@ -332,9 +375,21 @@ class PasswordSetupIntegrationTests(unittest.TestCase):
                 )
             )
 
-    def test_forced_password_change_keeps_browser_path(self):
+    def test_forced_password_change_uses_protocol_reset_without_browser(self):
         result, actions, _account, _fence = self.run_setup(force_reset=True)
         self.assertTrue(result["ok"], result)
+        self.assertFalse(result["browser_opened"])
+        self.assertEqual("confirmed", result["password_reset"])
+        self.assertEqual("protocol", result["password_driver"])
+        self.assertEqual([("password_reset", "fixture@example.test", "http://fixture.proxy:8080", _fence)], actions)
+
+    def test_forced_password_change_keeps_browser_path_for_roxy(self):
+        result, actions, _account, _fence = self.run_setup(
+            force_reset=True,
+            password_driver="roxy",
+        )
+        self.assertTrue(result["ok"], result)
+        self.assertTrue(result["browser_opened"])
         self.assertEqual([("browser",)], actions)
 
     def test_browser_missing_entry_cache_does_not_block_protocol_password(self):

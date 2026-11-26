@@ -144,7 +144,21 @@ class BrowserSession:
         self.react_resources_key = "__reactResources$" + self.react_container_key.split("$", 1)[1]
 
         # TLS、HTTP 头与 Sentinel 环境必须共用一次解析出的 Chrome 版本。
-        self.chrome_identity = resolve_chrome_identity(IMPERSONATE)
+        # 复用别的驱动留下的设备画像时，TLS 档位也要跟着走（如 rust 的 chrome146/149）。
+        configured_chrome = resolve_chrome_identity(IMPERSONATE)
+        identity_chrome = (
+            identity.get("chrome_identity") if isinstance(identity, dict)
+            else getattr(identity, "chrome_identity", None)
+        )
+        if isinstance(identity_chrome, dict) and identity_chrome:
+            merged_chrome = dict(configured_chrome)
+            merged_chrome.update({
+                str(key): str(value) for key, value in identity_chrome.items()
+                if str(value or "").strip()
+            })
+            self.chrome_identity = merged_chrome
+        else:
+            self.chrome_identity = configured_chrome
         self.session = Session(impersonate=self.chrome_identity["impersonate"])
 
         # 设置代理

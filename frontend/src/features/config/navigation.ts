@@ -113,7 +113,8 @@ export const actions: Record<string,[string,string[]][]> = {
       "密码补全策略",
       [
         "ACCOUNT_PASSWORD_DRIVER",
-        "ACCOUNT_PASSWORD_RESET_ENABLED"
+        "ACCOUNT_PASSWORD_RESET_ENABLED",
+        "ACCOUNT_PASSWORD_CHANGE_REFRESH_BEFORE_RESET"
       ]
     ]
   ],
@@ -231,6 +232,10 @@ export const overrides: [string,string][] = [
   ],
   [
     "ACCOUNT_PASSWORD_RESET_ENABLED",
+    "补密码"
+  ],
+  [
+    "ACCOUNT_PASSWORD_CHANGE_REFRESH_BEFORE_RESET",
     "补密码"
   ],
   [

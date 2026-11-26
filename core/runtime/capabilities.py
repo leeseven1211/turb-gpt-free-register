@@ -56,7 +56,8 @@ def account_setup_unavailable(
     from core.auth.twofa import canonical_twofa_executor
 
     protocol_password = str(settings.get("password_driver") or "roxy").strip().lower() == "protocol"
-    if ("password" in steps and (not protocol_password or force_password_reset)) or ("twofa" in steps and force_twofa_change):
+    # 协议驱动同时支持“补密码”和“重置密码”；只有非协议驱动才需要浏览器。
+    if ("password" in steps and not protocol_password) or ("twofa" in steps and force_twofa_change):
         return browser_operation_unavailable("browser")
     if "twofa" not in steps:
         return None

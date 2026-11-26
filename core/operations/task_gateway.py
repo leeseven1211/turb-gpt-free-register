@@ -74,12 +74,14 @@ _SAFE_PASSWORD_POLICY_KEYS = frozenset({
     "ACCOUNT_COMPLETION_PASSWORD_ENABLED",
     "ACCOUNT_PASSWORD_RESET_ENABLED",
     "ACCOUNT_PASSWORD_DRIVER",
+    "ACCOUNT_PASSWORD_CHANGE_REFRESH_BEFORE_RESET",
     "ACCOUNT_PASSWORD_PROXY_MODE",
     "ACCOUNT_AUTH_PASSWORD_EMAIL_FALLBACK",
     # Stable execution projections used inside durable task data.
     "password_enabled",
     "password_reset_enabled",
     "password_driver",
+    "password_change_refresh_before_reset",
     "password_proxy_mode",
     "auth_password_email_fallback",
 })

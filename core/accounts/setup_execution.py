@@ -159,7 +159,8 @@ def handle_native_account_setup(context: task_gateway.OperationHandlerContext) -
                 force_twofa_change=force_twofa_change,
                 execution_fence=context.execution_fence,
                 **({"execution_settings": dict(settings)}
-                   if data.get("bulk_target_round_id") or data.get("registration_completion") else {}),
+                   if (data.get("bulk_target_round_id") or data.get("registration_completion")
+                       or context.task_type == "password_change") else {}),
                 **({"proxy_country_override": country} if country is not None else {}),
             )
         except (task_gateway.OperationSettlementPending, task_gateway.OperationSettlementConflict, task_gateway.OperationSettlementFenced):

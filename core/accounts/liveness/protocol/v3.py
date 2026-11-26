@@ -30,7 +30,7 @@ from core.email.provider import wait_for_otp
 from core.operations.runtime import OperationCancelled
 from core.operations.task_gateway import OperationLeaseLost
 from core.storage import accounts as db
-from core.storage.accounts import protocol_sessions
+from core.storage.accounts import device_profiles, protocol_sessions
 from core.storage.accounts.auth import _STABLE_PROFILE_FIELDS
 
 logger = logging.getLogger("core.protocol_v3_liveness")
@@ -212,8 +212,10 @@ def _success(session, info, *, email, target, account_id, checked_at, methods, o
               "session_cache_status": "not_applicable"}
     if account_id:
         try:
-            saved = protocol_sessions.save_session(account_id, email, _cookie_payload(session, info))
+            cached_payload = _cookie_payload(session, info)
+            saved = protocol_sessions.save_session(account_id, email, cached_payload)
             result["session_cache_status"] = "saved" if saved is not False else "unavailable"
+            device_profiles.remember_session(account_id, email, cached_payload, origin="refresh_at")
         except Exception:
             result["session_cache_status"] = "unavailable"
             logger.warning("[Protocol v3] AT 已取得，私有会话缓存未保存")

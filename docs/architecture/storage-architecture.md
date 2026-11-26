@@ -55,6 +55,7 @@ core/email/remail/order_coordinator.py  Remail 意图 CAS、原订单恢复和�
 | `extract_link_payment_orders` | 独立支付尝试、稳定幂等键、远端订单身份、支付状态和加密恢复请求 |
 | `account_password_recoveries` | Roxy 原账号及手动改密的密文候选、执行归属和确认历史 |
 | `account_protocol_sessions` | v3 刷新 AT 使用的加密登录 Cookie、设备画像和已验证身份，绑定账号及当前邮箱，默认保存 24 小时 |
+| `account_device_profiles` | 刷新 AT、补密码和改密实际使用的加密设备画像，绑定账号及当前邮箱；不保存 Cookie，不随会话过期，换绑后不可复用 |
 | `app_collections` | 调度状态、兼容集合、迁移期旧数据；不是正常账号/邮箱/Codex 列表的事实来源 |
 
 ### 公开结果与远端回执

@@ -312,27 +312,56 @@ def build_browser_environment(
     locale = _build_locale_from_geo(geo)
     profile = dict(base_profile or random.choice(BROWSER_PROFILE_POOL))
     chrome = dict(chrome_identity or {})
-    chrome_major = str(chrome.get("major") or CHROME_MAJOR)
-    chrome_full_version = str(chrome.get("full_version") or CHROME_FULL_VERSION)
-    user_agent = str(chrome.get("user_agent") or USER_AGENT)
-    sec_ch_ua = str(chrome.get("sec_ch_ua") or SEC_CH_UA)
-    sec_ch_ua_full_version_list = str(
-        chrome.get("sec_ch_ua_full_version_list") or SEC_CH_UA_FULL_VERSION_LIST
-    )
+    # 复用别的驱动（如 rust/Windows）留下的设备画像时，整套 OS 相关字段必须跟着画像走，
+    # 否则会出现“Windows 的 UA + macOS 的 client hints”这种一眼假的组合。
+    device_os = str(profile.get("device_os") or profile.get("browser_os") or "").strip()
+    windows_device = device_os.lower() == "windows"
+    if windows_device:
+        chrome_major = str(profile.get("chrome_major") or chrome.get("major") or CHROME_MAJOR)
+        chrome_full_version = str(
+            profile.get("chrome_full_version") or chrome.get("full_version")
+            or f"{chrome_major}.0.0.0"
+        )
+        user_agent = str(
+            profile.get("user_agent") or chrome.get("user_agent")
+            or f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+               f"(KHTML, like Gecko) Chrome/{chrome_full_version} Safari/537.36"
+        )
+        sec_ch_ua = str(
+            profile.get("sec_ch_ua") or chrome.get("sec_ch_ua")
+            or f'"Google Chrome";v="{chrome_major}", "Chromium";v="{chrome_major}", "Not)A;Brand";v="24"'
+        )
+        sec_ch_ua_full_version_list = str(
+            profile.get("sec_ch_ua_full_version_list") or chrome.get("sec_ch_ua_full_version_list")
+            or f'"Google Chrome";v="{chrome_full_version}", "Chromium";v="{chrome_full_version}", '
+               '"Not)A;Brand";v="24.0.0.0"'
+        )
+    else:
+        chrome_major = str(chrome.get("major") or CHROME_MAJOR)
+        chrome_full_version = str(chrome.get("full_version") or CHROME_FULL_VERSION)
+        user_agent = str(chrome.get("user_agent") or USER_AGENT)
+        sec_ch_ua = str(chrome.get("sec_ch_ua") or SEC_CH_UA)
+        sec_ch_ua_full_version_list = str(
+            chrome.get("sec_ch_ua_full_version_list") or SEC_CH_UA_FULL_VERSION_LIST
+        )
     profile.update({
         "locale_profile": locale.get("locale_profile", BROWSER_LOCALE_PROFILE),
         "geo": dict(geo or {}),
-        "timezone_iana": locale["timezone_iana"],
-        "timezone_offset_minutes": int(locale["timezone_offset_minutes"]),
-        "timezone_name": locale["timezone_name"],
-        "navigator_language": locale["navigator_language"],
-        "navigator_languages": list(locale["navigator_languages"]),
-        "accept_language": locale["accept_language"],
+        "timezone_iana": profile.get("timezone_iana") or locale["timezone_iana"],
+        "timezone_offset_minutes": int(
+            profile.get("timezone_offset_minutes", locale["timezone_offset_minutes"])
+        ),
+        "timezone_name": profile.get("timezone_name") or locale["timezone_name"],
+        "navigator_language": profile.get("navigator_language") or locale["navigator_language"],
+        "navigator_languages": list(
+            profile.get("navigator_languages") or locale["navigator_languages"]
+        ),
+        "accept_language": profile.get("accept_language") or locale["accept_language"],
         "browser_family": BROWSER_FAMILY,
-        "browser_os": BROWSER_OS,
-        "navigator_platform": NAVIGATOR_PLATFORM,
+        "browser_os": "Windows" if windows_device else BROWSER_OS,
+        "navigator_platform": "Win32" if windows_device else NAVIGATOR_PLATFORM,
         "navigator_vendor": NAVIGATOR_VENDOR,
-        "user_agent_data_platform": USER_AGENT_DATA_PLATFORM,
+        "user_agent_data_platform": "Windows" if windows_device else USER_AGENT_DATA_PLATFORM,
         "safari_version": SAFARI_VERSION,
         "safari_webkit_version": SAFARI_WEBKIT_VERSION,
         "chrome_major": chrome_major,
@@ -340,13 +369,15 @@ def build_browser_environment(
         "user_agent": user_agent,
         "send_client_hints": SEND_CLIENT_HINTS,
         "sec_ch_ua": sec_ch_ua,
-        "sec_ch_ua_platform": SEC_CH_UA_PLATFORM,
-        "sec_ch_ua_platform_version": SEC_CH_UA_PLATFORM_VERSION,
-        "sec_ch_ua_arch": SEC_CH_UA_ARCH,
-        "sec_ch_ua_bitness": SEC_CH_UA_BITNESS,
-        "sec_ch_ua_model": SEC_CH_UA_MODEL,
+        "sec_ch_ua_platform": str(profile.get("sec_ch_ua_platform") or ('"Windows"' if windows_device else SEC_CH_UA_PLATFORM)),
+        "sec_ch_ua_platform_version": str(
+            profile.get("sec_ch_ua_platform_version") or ('"15.0.0"' if windows_device else SEC_CH_UA_PLATFORM_VERSION)
+        ),
+        "sec_ch_ua_arch": str(profile.get("sec_ch_ua_arch") or ('"x86"' if windows_device else SEC_CH_UA_ARCH)),
+        "sec_ch_ua_bitness": str(profile.get("sec_ch_ua_bitness") or SEC_CH_UA_BITNESS),
+        "sec_ch_ua_model": str(profile.get("sec_ch_ua_model") or SEC_CH_UA_MODEL),
         "sec_ch_ua_full_version_list": sec_ch_ua_full_version_list,
-        "sec_ch_ua_mobile": SEC_CH_UA_MOBILE,
+        "sec_ch_ua_mobile": str(profile.get("sec_ch_ua_mobile") or SEC_CH_UA_MOBILE),
         "navigator_proto_samples": list(NAVIGATOR_PROTO_SAMPLES),
         "document_key_samples": list(DOCUMENT_KEY_SAMPLES),
         "window_key_samples": list(WINDOW_KEY_SAMPLES),
@@ -365,12 +396,20 @@ def build_browser_environment(
     profile.setdefault("viewport_width", int(profile["outer_width"]))
     profile.setdefault("viewport_height", max(0, int(profile["outer_height"]) - 87))
     cores = int(profile.get("hardware_concurrency", 8))
-    chip = "Apple M2 Max" if cores >= 12 else "Apple M2 Pro" if cores >= 10 else "Apple M2"
-    profile.setdefault("webgl_vendor", "Google Inc. (Apple)")
-    profile.setdefault(
-        "webgl_renderer",
-        f"ANGLE (Apple, ANGLE Metal Renderer: {chip}, Unspecified Version)",
-    )
+    if windows_device:
+        # Windows 上 Chrome 走 D3D11 ANGLE；沿用 Apple Metal 字符串会自相矛盾。
+        profile.setdefault("webgl_vendor", "Google Inc. (NVIDIA)")
+        profile.setdefault(
+            "webgl_renderer",
+            "ANGLE (NVIDIA, NVIDIA GeForce GTX 1660 SUPER Direct3D11 vs_5_0 ps_5_0, D3D11)",
+        )
+    else:
+        chip = "Apple M2 Max" if cores >= 12 else "Apple M2 Pro" if cores >= 10 else "Apple M2"
+        profile.setdefault("webgl_vendor", "Google Inc. (Apple)")
+        profile.setdefault(
+            "webgl_renderer",
+            f"ANGLE (Apple, ANGLE Metal Renderer: {chip}, Unspecified Version)",
+        )
     return profile
 
 
@@ -402,6 +441,13 @@ def validate_browser_profile(profile: dict) -> list[str]:
             issues.append("macOS 画像但 navigator.platform 不是 MacIntel")
         if "macOS" not in str(profile.get("sec_ch_ua_platform") or ""):
             issues.append("macOS 画像但 sec-ch-ua-platform 不是 macOS")
+    if profile.get("browser_os") == "Windows":
+        if "Windows NT" not in ua:
+            issues.append("Windows 画像但 UA 不是 Windows NT")
+        if str(profile.get("navigator_platform") or "") != "Win32":
+            issues.append("Windows 画像但 navigator.platform 不是 Win32")
+        if "Windows" not in str(profile.get("sec_ch_ua_platform") or ""):
+            issues.append("Windows 画像但 sec-ch-ua-platform 不是 Windows")
     if not profile.get("navigator_language"):
         issues.append("navigator_language 为空")
     languages = profile.get("navigator_languages") or []

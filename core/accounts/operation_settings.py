@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 RUNTIME_CONFIG_ALLOWLIST = {
     "password_enabled": "ACCOUNT_COMPLETION_PASSWORD_ENABLED",
     "password_reset_enabled": "ACCOUNT_PASSWORD_RESET_ENABLED",
+    "password_change_refresh_before_reset": "ACCOUNT_PASSWORD_CHANGE_REFRESH_BEFORE_RESET",
     "plan_check_enabled": "ACCOUNT_COMPLETION_PLAN_CHECK_ENABLED",
     "twofa_enabled": "ACCOUNT_COMPLETION_2FA_ENABLED",
     "codex_enabled": "ACCOUNT_COMPLETION_CODEX_ENABLED",
@@ -68,7 +69,7 @@ def completion_settings_from_snapshot(
             if str(key) != "config_snapshot_revision"
         })
     bool_keys = {
-        "password_enabled", "password_reset_enabled", "plan_check_enabled",
+        "password_enabled", "password_reset_enabled", "password_change_refresh_before_reset", "plan_check_enabled",
         "twofa_enabled", "codex_enabled", "refresh_at_enabled",
         "twofa_browser_fallback_enabled", "twofa_protocol_reauth_enabled",
         "auth_raw_context_enabled",

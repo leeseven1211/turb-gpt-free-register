@@ -77,6 +77,7 @@ class AccountChangeActionTests(unittest.TestCase):
 
     def test_manual_change_handler_passes_real_execution_fence_to_worker(self):
         fence = {"run_id": 702, "execution_id": "current-worker", "lease_token": "current-lease"}
+        settings = {"password_change_refresh_before_reset": False}
         context = SimpleNamespace(
             run={"data": {"steps": ["password"]}}, task_type="password_change", config_snapshot={},
             account_id=17, task_id=701, run_id=702, email="account@example.com",
@@ -85,7 +86,7 @@ class AccountChangeActionTests(unittest.TestCase):
             remote_request_receipt=Mock(), finish=Mock(),
         )
         with (
-            patch.object(operation_settings, "completion_settings_from_snapshot", return_value={}),
+            patch.object(operation_settings, "completion_settings_from_snapshot", return_value=settings),
             patch.object(runtime.codex_retry_service, "run_twofa_worker", return_value={
                 "ok": True, "status": "success",
             }) as worker,
@@ -94,6 +95,7 @@ class AccountChangeActionTests(unittest.TestCase):
             result = runtime._handle_native_account_setup(context)
         self.assertEqual("success", result.status)
         self.assertEqual(fence, worker.call_args.kwargs["execution_fence"])
+        self.assertEqual(settings, worker.call_args.kwargs["execution_settings"])
 
     def test_password_reset_calls_confirmed_checkpoint_only_after_relogin(self):
         driver = Mock()
