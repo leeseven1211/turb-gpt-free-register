@@ -272,12 +272,18 @@ def test_legacy_routes_history_and_tab_visibility(bulk_browser):
     assert (f'bulk/batches/{BATCH_ID}/targets',
             {'view': ['current'], 'page_size': ['50'], 'state[]': ['failed']}) in calls
     page.go_back()
+    list_url = page.url
     row.get_by_role('button', name='查看报告').click()
     report = page.get_by_role('region', name='批次报告')
     expect(report.get_by_role('heading', name='查套餐完成报告')).to_be_visible()
-    expect(report).to_be_focused()
-    page.go_back()
+    assert page.url == list_url
+    expect(page.locator('.bulk-detail-owner')).not_to_be_visible()
+    page.get_by_role('button', name='关闭批次报告').click()
+    expect(page.locator('[data-bulk-report-dialog]')).not_to_be_visible()
     expect(row).to_be_visible()
+    expect(row.get_by_role('button', name='查看报告')).to_be_focused()
+    assert page.url == list_url
+    assert list_query(page)['q'] == ['合成']
     search(page, '无匹配')
     expect(listing.get_by_text('没有匹配的批次')).to_be_visible()
     listing.get_by_role('button', name='新建批次').click()
