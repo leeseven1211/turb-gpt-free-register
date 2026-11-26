@@ -81,6 +81,7 @@ def main() -> None:
     runtime = None
     shutdown_deadline = None
     started = False
+    terminal_owner_loss = False
 
     def begin_shutdown():
         nonlocal shutdown_deadline
@@ -107,6 +108,7 @@ def main() -> None:
             publish_managed_identity(bootstrap)
         while not stopped.wait(.5):
             if execution_owner_lost():
+                terminal_owner_loss = True
                 begin_shutdown()
                 logger.error("后台执行归属已失效，当前进程将收尾退出：code=runtime_execution_owner_lost")
                 raise SystemExit(1)
@@ -131,6 +133,10 @@ def main() -> None:
                 logger.exception('role_exit_receipt_failed')
         if not clean:
             logger.error("后台排空未完成：code=%s", _stop_failure_code(runtime))
+            if started and terminal_owner_loss:
+                # 已失去归属且原收尾未完成，避免解释器无限等待线程池。
+                # 不提前释放业务资源；由后继进程按原恢复机制核验。
+                os._exit(failure_code or 1)
             if not original_failure:
                 raise SystemExit(3)
 

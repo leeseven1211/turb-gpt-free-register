@@ -3,7 +3,9 @@ from __future__ import annotations
 
 from contextlib import ExitStack
 import importlib.util
+import json
 from pathlib import Path
+import subprocess
 import sys
 from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
@@ -20,7 +22,8 @@ def _module(name, **values):
     return module
 
 
-def _exercise(*, owner=True, owner_paused=False, runtime_clean=True, stop_failure=None, log_delay=0, total=55):
+def _exercise(*, owner=True, owner_paused=False, runtime_clean=True, stop_failure=None,
+              log_delay=0, total=55, subprocess_mode=False):
     spec = importlib.util.spec_from_file_location("worker_owner_loss_entry", ROOT / "worker.py")
     entry = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(entry)
@@ -41,7 +44,18 @@ def _exercise(*, owner=True, owner_paused=False, runtime_clean=True, stop_failur
 
     def error(message, *args):
         diagnostics.append(message % args if args else message)
+        if subprocess_mode:
+            print(json.dumps({"event": "diagnostic", "message": diagnostics[-1]}), flush=True)
         now[0] += log_delay
+
+    def receipt(**value):
+        receipts.append(value)
+        if subprocess_mode:
+            print(json.dumps({"event": "receipt", **value}), flush=True)
+
+    def process_exit(code):
+        calls.append(("process_exit", code))
+        raise SystemExit(code)
 
     def manager_status():
         if isinstance(stop_failure, Exception):
@@ -88,7 +102,7 @@ def _exercise(*, owner=True, owner_paused=False, runtime_clean=True, stop_failur
         "core.runtime.role_launcher": _module(
             "core.runtime.role_launcher",
             publish_managed_identity=lambda _bootstrap: calls.append("identity"),
-            write_exit_receipt=lambda **value: receipts.append(value),
+            write_exit_receipt=receipt,
         ),
         "core.storage": _module(
             "core.storage", postgres=SimpleNamespace(require_ready=lambda: None),
@@ -110,6 +124,8 @@ def _exercise(*, owner=True, owner_paused=False, runtime_clean=True, stop_failur
             side_effect=lambda number, handler: handlers.__setitem__(number, handler)))
         stack.enter_context(patch.object(entry.logging, "basicConfig"))
         stack.enter_context(patch.object(entry.logging, "getLogger", return_value=logger))
+        if not subprocess_mode:
+            stack.enter_context(patch.object(entry.os, "_exit", side_effect=process_exit))
         try:
             entry.main()
         except BaseException as exc:
@@ -143,7 +159,10 @@ def test_owner_loss_runs_existing_cleanup_and_exits_nonzero(runtime_clean):
     )
     assert isinstance(failure, SystemExit)
     assert failure.code == 1
-    assert calls == ["install", "start", "identity", "owner", ("stop", 55)]
+    assert calls == [
+        "install", "start", "identity", "owner", ("stop", 55),
+        *([] if runtime_clean else [("process_exit", 1)]),
+    ]
     assert receipts == [{"role": "worker", "clean": False, "code": 1}]
     assert any("runtime_execution_owner_lost" in message for message in diagnostics)
 
@@ -181,3 +200,52 @@ def test_failed_drain_uses_fixed_fallback_if_stage_is_unknown_or_unavailable(sto
     assert isinstance(failure, SystemExit)
     assert failure.code == 3
     assert receipts == [{"role": "worker", "clean": False, "code": 3}]
+
+
+def test_owner_loss_failed_drain_exits_without_waiting_for_executor():
+    """收尾失败后必须实际退出，不能被解释器的线程池 join 无限拖住。"""
+    script = """
+import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from tests.runtime.test_worker_owner_loss_entrypoint import _exercise
+
+entered = threading.Event()
+def blocked():
+    entered.set()
+    sys.stdin.buffer.read(1)
+pool = ThreadPoolExecutor(max_workers=1)
+pool.submit(blocked)
+assert entered.wait(2)
+_, _, _, failure = _exercise(owner=False, runtime_clean=False,
+    stop_failure="runtime_settlement_drain_timeout", subprocess_mode=True)
+raise failure
+"""
+    child = subprocess.Popen(
+        [sys.executable, "-c", script], cwd=ROOT,
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    timed_out = False
+    try:
+        try:
+            child.wait(timeout=4)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+    finally:
+        # 旧实现会停在解释器退出阶段；释放合成回调后回收子进程。
+        child.stdin.close()
+        child.wait(timeout=5)
+        output = child.stdout.read().decode()
+        errors = child.stderr.read().decode()
+        child.stdout.close()
+        child.stderr.close()
+    assert not timed_out, f"Worker 收尾失败后仍被线程池阻塞：{errors}"
+    assert child.returncode == 1, errors
+    events = [json.loads(line) for line in output.splitlines()]
+    receipt_index = next(i for i, event in enumerate(events) if event["event"] == "receipt")
+    assert events[receipt_index] == {"event": "receipt", "role": "worker", "clean": False, "code": 1}
+    assert any(
+        event["event"] == "diagnostic"
+        and "runtime_settlement_drain_timeout" in event["message"]
+        for event in events[receipt_index + 1:]
+    )
