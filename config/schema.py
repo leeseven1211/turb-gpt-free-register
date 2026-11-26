@@ -208,6 +208,9 @@ _DEFAULTS: dict[str, Any] = {
     "REGISTRATION_COUNTRY": "JP",
     "REGISTRATION_PASSWORD_TRANSITION_TIMEOUT_SECONDS": 60,
     "REGISTRATION_PLAN_CHECK_ENABLED": True,
+    "REGISTRATION_AUTO_RETRY_ENABLED": False,
+    "REGISTRATION_AUTO_RETRY_MAX_ATTEMPTS": 2,
+    "REGISTRATION_AUTO_RETRY_DELAY_SECONDS": 180,
     "ACCOUNT_COMPLETION_PASSWORD_ENABLED": True,
     "ACCOUNT_COMPLETION_PLAN_CHECK_ENABLED": True,
     "ACCOUNT_COMPLETION_2FA_ENABLED": True,
@@ -668,6 +671,19 @@ _FIELD_DEFINITIONS = [
     {
         "key": "ACCOUNT_AT_REFRESH_ROXY_DEBUG_ENABLED", "file": "account.py", "type": "bool", "group": "账号补全",
         "label": "Roxy 刷新调试", "help": "实际使用 Roxy 刷新 AT 时，以有头浏览器全程抓包；失败保留窗口，可从任务日志查看现场并下载 HAR。网络恢复或总时限耗尽时会关闭本次窗口。仅影响 Roxy 刷新，默认关闭。",
+    },
+    {
+        "key": "REGISTRATION_AUTO_RETRY_ENABLED", "file": "register.py", "type": "bool", "group": "注册主链路",
+        "label": "失败自动重试",
+        "help": "注册任务失败后按原身份自动重试；身份验证等不可自动重试的失败会直接跳过。",
+    },
+    {
+        "key": "REGISTRATION_AUTO_RETRY_MAX_ATTEMPTS", "file": "register.py", "type": "int", "group": "注册主链路",
+        "label": "自动重试上限", "help": "每个失败任务最多自动重试几次；达到上限后停止。",
+    },
+    {
+        "key": "REGISTRATION_AUTO_RETRY_DELAY_SECONDS", "file": "register.py", "type": "int", "group": "注册主链路",
+        "label": "自动重试延迟(秒)", "help": "任务失败后等待多少秒再自动触发重试，避免与收尾清理冲突。",
     },
     {
         "key": "REGISTRATION_DRIVER", "file": "roxybrowser.py", "type": "str", "group": "注册主链路",
@@ -2021,6 +2037,8 @@ _RANGES: dict[str, tuple[int | float | None, int | float | None]] = {
     "ROXY_CODEX_CALLBACK_TIMEOUT": (1, 86400),
     "OTP_MAX_WAIT": (1, 86400),
     "OTP_RESEND_COUNT": (0, 10),
+    "REGISTRATION_AUTO_RETRY_MAX_ATTEMPTS": (0, 10),
+    "REGISTRATION_AUTO_RETRY_DELAY_SECONDS": (30, 3600),
     "OTP_POLL_INTERVAL": (1, 3600),
     "EMAIL_DERIVATION_MAX_CHILDREN": (1, 10000),
     "EMAIL_DERIVATION_TAG_LENGTH": (4, 24),

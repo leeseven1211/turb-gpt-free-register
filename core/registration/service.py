@@ -1979,6 +1979,12 @@ def start_dispatcher(*, interval_seconds: float = 0.5) -> bool:
                         close_jobs_for_completed_account_tasks()
                     except Exception:
                         logger.exception("[Service] 收口中断任务行失败")
+                    try:
+                        from core.registration import auto_retry
+
+                        auto_retry.run_once()
+                    except Exception:
+                        logger.exception("[Service] 自动重试扫描失败")
                 _DISPATCH_WAKE.wait(_DISPATCH_INTERVAL)
 
         _DISPATCH_THREAD = threading.Thread(target=loop, name="registration-dispatcher", daemon=True)

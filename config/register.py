@@ -25,6 +25,9 @@ REGISTRATION_PASSWORD_TRANSITION_TIMEOUT_SECONDS = schema_default("REGISTRATION_
 # 注册后套餐查询是独立后处理能力。默认保持原有行为，关闭后账号仍会保存，
 # 之后可在账号管理中手动查套餐或由“补全账号”按其自身配置处理。
 REGISTRATION_PLAN_CHECK_ENABLED = schema_default("REGISTRATION_PLAN_CHECK_ENABLED")
+REGISTRATION_AUTO_RETRY_ENABLED = schema_default("REGISTRATION_AUTO_RETRY_ENABLED")
+REGISTRATION_AUTO_RETRY_MAX_ATTEMPTS = schema_default("REGISTRATION_AUTO_RETRY_MAX_ATTEMPTS")
+REGISTRATION_AUTO_RETRY_DELAY_SECONDS = schema_default("REGISTRATION_AUTO_RETRY_DELAY_SECONDS")
 
 # 用户名（注册完成后设置的显示名称，留空会自动生成 "Foo Bar" 形式）
 # OpenAI 限制：name_invalid_chars —— 只允许字母和空格
