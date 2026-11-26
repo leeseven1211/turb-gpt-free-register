@@ -102,7 +102,15 @@
 
 处理方式：**canonical 字段 + 每个驱动一个 adapter**。
 
-### 3.3 canonical 字段（存储与复用都以它为准）
+### 3.3 字段模型（定稿）：canonical + raw
+
+存储分两层，职责不同：
+
+- **canonical（约 50 个）**：复用的唯一依据，必须完整、自洽
+- **raw（原始字典）**：驱动原生结构，只读追溯（含别名、诊断字段），不参与回放
+- **明确不存**：`react_listening_key`、`react_container_key`、`react_resources_key`（页面级随机）
+
+canonical 字段清单：
 
 - 标识：`device_id`
 - 引擎：`browser_family`、`browser_type`、`browser_os`、`chrome_major`、`chrome_full_version`
@@ -115,24 +123,52 @@
   `device_pixel_ratio`、`hardware_concurrency`、`device_memory`、`js_heap_size_limit`、
   `webgl_vendor`、`webgl_renderer`
 - 语言/时区：`timezone_iana`、`timezone_name`、`timezone_offset_minutes`、`locale_profile`
-- 传输：`impersonate`、`fallback_impersonates`、`tls_fp`、`akamai_fp`
-- 元信息：`fingerprint_id`、`country_code`
+- 传输：`impersonate`、`fallback_impersonates`
+- 元信息：`country_code`
 
-归一规则（adapter）：
-- 协议：别名映射到 canonical；`screen`(str) → `screen_width/height`；`viewport`(dict) → `viewport_*`；
-  `ua_*` → `sec_ch_ua_*`；`browser_os`/`webgl_*` 以 UA 为准重写
-- rust：直接是 canonical 子集；缺 `webgl_*` 时按 OS 补默认值
-- Roxy：只存 `profile_id` + `os` + `osVersion`，其余标记 `unavailable`
+### 3.4 adapter 规则（定稿）
+
+**协议 adapter（重点：空值回填）**
+
+实测 120 个协议账号，规范名字段全为空，真值在上游别名里：
+
+| canonical | 协议里的真值来源 |
+|---|---|
+| `sec_ch_ua_arch` | `ua_arch`（`x86`） |
+| `sec_ch_ua_bitness` | `ua_bitness`（`64`） |
+| `sec_ch_ua_model` | `ua_model`（`""`） |
+| `sec_ch_ua_platform_version` | `ua_platform_version`（`15.0.0`） |
+| `sec_ch_ua_full_version_list` | `ua_full_version_list` |
+| `screen_width/height` | `screen`（字符串 `1366x768`） |
+| `viewport_width/height` | `viewport`（对象 `{width,height}`） |
+| `navigator_language` | `lang` / `locale` |
+| `navigator_languages` | `languages` |
+| `accept_language` | `lang_full` |
+| `timezone_iana` | `timezone` |
+
+规则：**canonical 为空时用别名回填；两者都有值但冲突时以别名（上游实际发送值）为准**。
+空 client hints 比不发更假，这一步不能省。
+
+**OS 一致性修正**：以 UA 判定 OS，重写 `browser_os`、`navigator_platform`、
+`sec_ch_ua_platform`、`user_agent_data_platform`、`sec_ch_ua_arch`；`webgl_*` 按 OS 给默认
+（Windows → D3D11 ANGLE，macOS → Apple Metal）。版本字段一律不动。
+
+**rust adapter**：字段已是 canonical 命名，直接映射；缺 `webgl_*` 时按 OS 补默认；
+回传时同时给 canonical 与 raw（rust 内部字段：`browser_version`、`emulation`、`lang`、
+`locale`、`lang_full`、`has_touch`、`viewport_w/h`、`timezone`、`fingerprint_id`、`country_code`）。
+
+**Roxy adapter**：只写接口能拿到的字段（`profile_id`、`os`、`osVersion`、窗口名、时间），
+其余标 `unavailable`；代理凭据不存。
 
 ## 4. 存储设计
 
-### 4.1 表 `account_device_profiles`（已建）
+### 4.1 表 `account_device_profiles`（已建，需加列）
 
 | 列 | 说明 |
 |---|---|
 | `account_id` PK | 外键到 `registered_accounts`，级联删除 |
 | `normalized_email` | 与当前账号邮箱强绑定，换绑即失效 |
-| `encrypted_payload` | 加密 JSON：`{device_id, profile(canonical), raw(原始), impersonate, browser_ref}` |
+| `encrypted_payload` | 加密 JSON：`{device_id, canonical, raw, browser_ref}` |
 | `source` | `registration` / `refresh_at` / `refresh_at_rust` / `password_reset` / `password_setup` / `backfill` |
 | `trust` | `trusted` / `placeholder` / `unusable`（新增列） |
 | `last_used_at` / `updated_at` | 观测用 |
@@ -149,29 +185,30 @@
 
 | 场景 | 写什么 | trust |
 |---|---|---|
-| 协议注册成功 | 上游真实画像（74→canonical） | trusted |
-| rust 注册成功 | rust 回传的真实画像（需新增回传） | trusted |
+| 协议注册成功 | 上游真实画像（74 → canonical + raw） | trusted |
+| rust 注册成功 | rust 回传的 canonical + raw（需新增回传） | trusted |
 | rust 刷新成功 | rust 实际画像 | trusted |
 | 协议 v2/v3 刷新成功 | 会话画像 | trusted |
 | 改密/补密码成功 | 本次会话画像 | trusted |
-| 历史回填：协议号 | 规范化后的注册画像 | trusted |
+| 历史回填：协议号 | 归一后的注册画像 | trusted |
 | 历史回填：rust 号 | Python 占位 macOS 画像 | placeholder（不复用） |
-| 浏览器注册 | `profile_id` 引用 | trusted（字段不全） |
+| 浏览器注册 | `profile_id` 等接口字段 | trusted（字段不全） |
 
 失败一律只记日志，不阻断主流程。
 
 ## 5. 三步实施
 
-### 第一步：注册画像写入 + 格式归一（本文档范围）
+### 第一步：注册画像写入 + 格式归一（本文档范围，定稿）
 
-1. 新建 `core/storage/accounts/device_profiles.py`（已完成基础版）
-2. 加 `trust` 列
-3. 定义 canonical schema + 三个 adapter（protocol / rust / roxy）
-4. 注册链路写入：
-   - 协议：生命周期落库后，从 `session.browser_profile` 归一后写
-   - rust：**需要内核回传** `device_id` + 画像，且新增 `--device-profile` 无关（第一步只做回传）
-   - 浏览器：写 `profile_id` + `os`
-5. 校验：注册后设备行存在、`trust=trusted`、canonical 字段自洽
+1. 设备表加 `trust` 列；payload 改为 `{device_id, canonical, raw, browser_ref}`
+2. 实现 canonical 定义与三个 adapter（protocol / rust / roxy），含空值回填与 OS 一致性修正
+3. 注册写入点：
+   - 协议：落库后从 `session.browser_profile` 归一写入（数据现成）
+   - rust：内核回传 `device_id` + canonical + raw（第一步唯一代码缺口）
+   - 浏览器：写接口字段 + `profile_id`
+4. 校验标准：设备行存在、`trust=trusted`、`browser_os` 与 UA 一致、`webgl` 与 OS 一致、
+   `sec_ch_ua_arch` 等非空、无 `react_*`
+5. 上游生成器补 WebGL / `browser_os` 单独立项，不与本步混做
 
 ### 第二步：复用
 
@@ -191,5 +228,5 @@
 1. **rust 传输栈升级**：`wreq-util 0.2.0` 只到 Chrome149，协议画像常是 152。
    要么升级 rust 到 `wreq 6 + wreq-util 3`（有编译风险），要么接受"UA 152 + TLS 149"。
 2. **Safari 家族**：目前 0 个真实 Safari 画像；是否支持回放 Safari（rust 当前不支持）。
-3. **Roxy 画像细节**：是否需要调 Roxy API 拉取 Profile 的真实 UA/屏幕，还是只存 `profile_id`。
-4. **协议注册的 webgl 脏值**：是否在本步一起修正上游生成器（给 chrome 画像补 Windows GPU 默认值）。
+3. **Roxy 画像细节**：接口不返回 UA/屏幕，只能存基本信息；是否需要额外手段补齐。
+4. **上游生成器补 WebGL**：单独立项，需重新验证注册成功率。
