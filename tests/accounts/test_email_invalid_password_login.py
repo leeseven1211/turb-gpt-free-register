@@ -311,7 +311,7 @@ class InvalidEmailProtocolLoginTests(unittest.TestCase):
             _Response(OTP_URL, "<p>请输入验证码</p>"),
         ]
 
-        result = v2.refresh_access_token(EMAIL, proxy="")
+        result = v2.refresh_access_token(EMAIL, proxy="", callback_recovery=True)
 
         self.assertTrue(result["ok"])
         self.assertEqual("email_otp", result["auth_method"])
@@ -321,7 +321,7 @@ class InvalidEmailProtocolLoginTests(unittest.TestCase):
         )
         verify.assert_not_called()
         mfa.assert_not_called()
-        send.assert_called_once()
+        send.assert_not_called()
         email.assert_called_once()
         legacy.assert_not_called()
 
@@ -329,21 +329,23 @@ class InvalidEmailProtocolLoginTests(unittest.TestCase):
         from core.accounts.liveness.protocol import v2 as v2_module
 
         open_offered = v2_module._open_offered_password_login
-        session = _Session()
+        v2, session, _, opened, verify, mfa, send, email, legacy = self._context(invalid=False)
+        opened.side_effect = open_offered
         session.get.side_effect = [
             _Response(OTP_URL, "<p>请输入验证码</p>"),
             _Response(PASSWORD_URL, status_code=404),
         ]
 
-        result = open_offered(
-            session,
-            OTP_URL,
-            allow_standard_route=True,
-            require_standard_route=False,
-        )
+        result = v2.refresh_access_token(EMAIL, proxy="", callback_recovery=True)
 
-        self.assertEqual(OTP_URL, result)
+        self.assertTrue(result["ok"])
+        self.assertEqual("email_otp", result["auth_method"])
         self.assertEqual([OTP_URL, PASSWORD_URL], [call.args[0] for call in session.get.call_args_list])
+        verify.assert_not_called()
+        mfa.assert_not_called()
+        send.assert_not_called()
+        email.assert_called_once()
+        legacy.assert_not_called()
 
     def test_unmarked_email_follows_real_password_offer_and_authenticates_without_otp(self):
         from core.accounts.liveness.protocol import v2 as v2_module
@@ -381,6 +383,29 @@ class InvalidEmailProtocolLoginTests(unittest.TestCase):
         ]
 
         result = v2.refresh_access_token(EMAIL, proxy="")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("verified", result["password_auth_status"])
+        self.assertEqual("password_mfa_totp", result["auth_method"])
+        self.assertEqual([OTP_URL, PASSWORD_URL], [call.args[0] for call in session.get.call_args_list])
+        verify.assert_called_once_with(session, "fixture-password")
+        mfa.assert_called_once()
+        send.assert_not_called()
+        email.assert_not_called()
+        legacy.assert_not_called()
+
+    def test_at_callback_recovery_still_probes_password_before_first_email_challenge(self):
+        from core.accounts.liveness.protocol import v2 as v2_module
+
+        open_offered = v2_module._open_offered_password_login
+        v2, session, _, opened, verify, mfa, send, email, legacy = self._context(invalid=False)
+        opened.side_effect = open_offered
+        session.get.side_effect = [
+            _Response(OTP_URL, "<p>请输入验证码</p>"),
+            _Response(PASSWORD_URL, '<input type="password">'),
+        ]
+
+        result = v2.refresh_access_token(EMAIL, proxy="", callback_recovery=True)
 
         self.assertTrue(result["ok"])
         self.assertEqual("verified", result["password_auth_status"])

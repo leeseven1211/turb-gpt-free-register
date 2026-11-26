@@ -110,6 +110,10 @@ class ProtocolV2LivenessTests(unittest.TestCase):
                     return email_result, "email_otp"
 
                 with (
+                    patch.object(session, "get", return_value=SimpleNamespace(
+                        url="https://auth.openai.com/email-verification",
+                        text="<p>请输入邮箱验证码</p>", raise_for_status=lambda: None,
+                    )),
                     patch.object(v2, "get_account_login_credentials", return_value=("saved-password", "secret")),
                     patch.object(v2, "_network_preflight_with_retry", return_value=(session, "authorize")),
                     patch.object(v2, "follow_authorize", return_value="https://auth.openai.com/email-verification?state=private"),
@@ -185,6 +189,10 @@ class ProtocolV2LivenessTests(unittest.TestCase):
         session = _Session()
         timeout = EmailButlerClientError("private response body", error_code="inbound_code_timeout")
         with (
+            patch.object(session, "get", return_value=SimpleNamespace(
+                url="https://auth.openai.com/email-verification",
+                text="<p>请输入邮箱验证码</p>", raise_for_status=lambda: None,
+            )),
             patch.object(v2, "get_account_login_credentials", return_value=("saved-password", "")),
             patch.object(v2, "account_email_is_invalid", return_value=False),
             patch.object(v2, "_network_preflight_with_retry", return_value=(session, "authorize")),

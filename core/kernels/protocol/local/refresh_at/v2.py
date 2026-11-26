@@ -611,12 +611,11 @@ def _refresh_with_password(email: str, proxy: str | None, *, proxy_supplier: Cal
             and parsed_final_url.path.rstrip("/") == "/email-verification"
         ):
             auth_method = "password"
-            callback_recovery = _AT_CALLBACK_CONTEXT.get() is not None
             final_url = _open_offered_password_login(
                 session,
                 str(final_url),
-                # 回调恢复沿用原会话事实，不重新探测密码入口，避免在未知回执后重复派发认证。
-                allow_standard_route=not callback_recovery or email_invalid,
+                # 当前仍是首次认证；启用回调恢复能力不代表已经进入回调恢复阶段。
+                allow_standard_route=True,
                 require_standard_route=email_invalid,
             )
             parsed_final_url = urlparse(final_url)
