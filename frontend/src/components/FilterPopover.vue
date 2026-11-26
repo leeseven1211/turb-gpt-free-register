@@ -18,7 +18,7 @@ const emit = defineEmits<{'update:open': [boolean]}>();
       </button>
     </PopoverTrigger>
     <PopoverPortal>
-      <PopoverContent class="tc-filter-popover list-filter-popover" :aria-label="`筛选${label}`" side="bottom" align="start" :side-offset="6" :collision-padding="10" hide-when-detached>
+      <PopoverContent class="tc-filter-popover list-filter-popover" :aria-label="`筛选${label}`" side="bottom" align="start" :side-offset="6" :collision-padding="10" hide-when-detached @escape-key-down="event=>{event.preventDefault();emit('update:open',false)}">
         <div class="tc-filter-popover-heading list-filter-popover__heading">筛选{{ label }}</div>
         <slot />
         <PopoverClose class="tc-filter-popover-close list-filter-popover__close" :aria-label="`关闭${label}筛选`" title="关闭筛选">
