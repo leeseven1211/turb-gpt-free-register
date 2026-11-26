@@ -38,12 +38,13 @@ describe('dashboard Vue owner',()=>{
    extractSummary:async()=>extractSample,
    registrationDaily:async()=>({
     ok:true,date_from:'2026-11-26',date_to:'2026-11-26',
-    rows:[{date:'2026-11-26',total:3,counts:{success:2,failed:1},accounts_total:2,plans:{free:2},unpromoted_count:0}],
+    rows:[{date:'2026-11-26',total:3,counts:{success:2,failed:1},accounts_total:2,plans:{free:2},promoted_accounts_total:1,offers:[{key:'offer-team-trial',plan:'team',label:'Team 免费 1个月',count:1,stale_count:0}],unpromoted_count:0}],
    }),
   };
   const wrapper=mount(DashboardPage,{attachTo:document.body,props:{api,deps:{visible:true}}});wrappers.push(wrapper);
   await flushPromises();
-  expect(wrapper.get('[data-daily-row="2026-11-26"]').text()).toContain('成功 2');
+  expect(wrapper.get('[data-daily-row="2026-11-26"]').text()).toContain('Team 免费 1个月');
+  expect(wrapper.get('[data-daily-offer="offer-team-trial"]').text()).toContain('1 个账号 · 50%');
   expect(wrapper.find('[data-overview-card="accounts"]').exists()).toBe(false);
   expect(wrapper.find('[aria-label="正在读取总览"]').exists()).toBe(true);
   resolveDashboard(sample);

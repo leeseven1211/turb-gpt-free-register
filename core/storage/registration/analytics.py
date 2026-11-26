@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 from core.accounts.query import normalize_query
 from core.operations.presentation import public_result_status_sql
 from core.storage import admin_repository, postgres as postgres_store, records as record_store
+from core.storage.accounts import promotion_offers
 from core.storage.task_query_context import readonly_task_query
 from core.storage.registration import init as init_registration_schema
 
@@ -86,7 +87,7 @@ def _query_for_range(start: str, end: str) -> dict:
 def _rows_by_date(start: date, end: date) -> list[dict]:
     return [{"date": (start + timedelta(days=index)).isoformat(),
              "total": 0, "counts": {}, "accounts_total": 0, "plans": {},
-             "unpromoted_count": 0,
+             "unpromoted_count": 0, "offers": [], "promoted_accounts_total": 0,
              "query": _query_for_range((start + timedelta(days=index)).isoformat(),
                                        (start + timedelta(days=index)).isoformat())}
             for index in range((end - start).days + 1)]
@@ -113,6 +114,7 @@ def registration_daily_analytics(
         date_range=(start_text, end_text),
     )
     accounts = admin_repository._q(record_store.ACCOUNTS)
+    offers = admin_repository._promotion_table()
     compatible_display_status_sql = (
         admin_repository._registration_completion_display_status_sql()
         .replace("j.account_id", "cohort.job_account_id")
@@ -143,7 +145,7 @@ def registration_daily_analytics(
              AND ({promo_kind_sql}) IN ('other_promo', 'unknown') THEN 'free_promo_unknown'
         ELSE COALESCE(NULLIF(LOWER(COALESCE(scoped.current_plan_type, scoped.plan_type, '')), ''), 'unknown')
     END"""
-    # 每日任务、账号归属、套餐分布和无优惠数量共用一条 SQL，
+    # 每日任务、账号归属、套餐优惠分布和无优惠数量共用一条 SQL，
     # 不把任务或凭据 JSON 加载到 Python。
     sql = f"""
         WITH cohort AS MATERIALIZED ({source}),
@@ -162,6 +164,44 @@ def registration_daily_analytics(
         scoped AS MATERIALIZED (
             SELECT displayed_jobs.*, {status_sql} AS public_status FROM displayed_jobs
         ),
+        account_members AS MATERIALIZED (
+            SELECT DISTINCT task_date, account_id
+              FROM scoped WHERE account_id IS NOT NULL
+        ),
+        account_offers AS MATERIALIZED (
+            SELECT members.account_id, offer.offer_key,
+                   MAX(offer.plan) AS plan, MAX(offer.kind) AS kind,
+                   MAX(offer.discount_percentage) AS discount_percentage,
+                   MAX(offer.duration_num_periods) AS duration_num_periods,
+                   MAX(offer.duration_period) AS duration_period,
+                   BOOL_AND(offer.stale) AS stale
+              FROM (SELECT DISTINCT account_id FROM account_members) members
+              JOIN {offers} offer ON offer.account_id = members.account_id
+             WHERE offer.eligible IS TRUE
+               AND offer.kind IN ('free_trial', 'discount', 'other_promo')
+             GROUP BY members.account_id, offer.offer_key
+        ),
+        offer_distribution AS (
+            SELECT members.task_date, GROUPING(members.task_date) AS is_summary,
+                   offer.offer_key, MAX(offer.plan) AS plan, MAX(offer.kind) AS kind,
+                   MAX(offer.discount_percentage) AS discount_percentage,
+                   MAX(offer.duration_num_periods) AS duration_num_periods,
+                   MAX(offer.duration_period) AS duration_period,
+                   COUNT(DISTINCT members.account_id) AS count,
+                   COUNT(DISTINCT members.account_id) FILTER (WHERE offer.stale) AS stale_count
+              FROM account_members members
+              JOIN account_offers offer ON offer.account_id = members.account_id
+             GROUP BY GROUPING SETS (
+                 (members.task_date, offer.offer_key), (offer.offer_key)
+             )
+        ),
+        promoted_accounts AS (
+            SELECT members.task_date, GROUPING(members.task_date) AS is_summary,
+                   COUNT(DISTINCT members.account_id) AS count
+              FROM account_members members
+             WHERE EXISTS (SELECT 1 FROM account_offers offer WHERE offer.account_id = members.account_id)
+             GROUP BY GROUPING SETS ((members.task_date), ())
+        ),
         task_daily AS (
             SELECT task_date, SUM(count) AS total,
                    jsonb_object_agg(public_status, count ORDER BY public_status) AS counts
@@ -173,7 +213,7 @@ def registration_daily_analytics(
         ),
         account_daily AS (
             SELECT task_date, COUNT(*) AS accounts_total
-              FROM (SELECT DISTINCT task_date, account_id FROM scoped WHERE account_id IS NOT NULL) unique_accounts
+              FROM account_members
              GROUP BY task_date
         ),
         plan_daily AS (
@@ -232,6 +272,15 @@ def registration_daily_analytics(
                    'plan', plan, 'count', count) FROM summary_plans
         UNION ALL SELECT 'summary_unpromoted', NULL, jsonb_build_object(
                    'count', count) FROM summary_unpromoted
+        UNION ALL SELECT CASE WHEN is_summary = 1 THEN 'summary_offer' ELSE 'offer_daily' END,
+                   task_date::text, jsonb_build_object(
+                       'key', offer_key, 'plan', plan, 'kind', kind,
+                       'discount_percentage', discount_percentage::text,
+                       'duration_num_periods', duration_num_periods::text,
+                       'duration_period', duration_period,
+                       'count', count, 'stale_count', stale_count) FROM offer_distribution
+        UNION ALL SELECT CASE WHEN is_summary = 1 THEN 'summary_promoted' ELSE 'promoted_daily' END,
+                   task_date::text, jsonb_build_object('count', count) FROM promoted_accounts
     """
     # registration.init() 幂等执行，确保旧安装在准备共享归属 SQL 前已有
     # 可选的 Attempt 表。
@@ -240,7 +289,8 @@ def registration_daily_analytics(
     with admin_repository._connect() as conn, conn.cursor() as cur:
         cur.execute(sql, (start_text, end_text))
         result_rows = cur.fetchall()
-    summary = {"total": 0, "counts": {}, "accounts_total": 0, "plans": {}, "unpromoted_count": 0}
+    summary = {"total": 0, "counts": {}, "accounts_total": 0, "plans": {}, "unpromoted_count": 0,
+               "offers": [], "promoted_accounts_total": 0}
     for item in result_rows:
         kind = item["kind"]
         day = item.get("day")
@@ -263,6 +313,22 @@ def registration_daily_analytics(
             summary["plans"][str(payload.get("plan") or "unknown")] = int(payload.get("count") or 0)
         elif kind == "summary_unpromoted":
             summary["unpromoted_count"] = int(payload.get("count") or 0)
+        elif kind in ("offer_daily", "summary_offer"):
+            target = summary if kind == "summary_offer" else row_by_date.get(day)
+            if target is not None:
+                target["offers"].append({
+                    "key": str(payload["key"]),
+                    "plan": str(payload["plan"]),
+                    "label": promotion_offers.offer_label(payload),
+                    "count": int(payload.get("count") or 0),
+                    "stale_count": int(payload.get("stale_count") or 0),
+                })
+        elif kind == "promoted_daily" and day in row_by_date:
+            row_by_date[day]["promoted_accounts_total"] = int(payload.get("count") or 0)
+        elif kind == "summary_promoted":
+            summary["promoted_accounts_total"] = int(payload.get("count") or 0)
+    for group in [*rows, summary]:
+        group["offers"].sort(key=lambda offer: (offer["plan"], offer["key"]))
     summary["query"] = _query_for_range(start_text, end_text)
     instant = (now or datetime.now(TIMEZONE))
     if instant.tzinfo is None:

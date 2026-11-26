@@ -6,6 +6,7 @@ from core.storage import admin_repository
 from core.storage import records as rs
 from core.storage import postgres as postgres_store
 from core.storage import registration
+from core.storage.accounts import promotion_offers
 from core.storage.registration import analytics
 from core.storage.registration.account_links import registration_account_link
 from tests.support_pg import PostgresTestCase
@@ -61,6 +62,95 @@ class RegistrationDailyAnalyticsTests(PostgresTestCase):
                 (attempt["id"], root_job_id, account_id, root_job_id),
             )
         return int(attempt["id"])
+
+    def test_offer_distribution_uses_all_plans_and_deduplicates_accounts_and_countries(self):
+        plus = {
+            "plan": "plus", "kind": "discount", "eligible": True,
+            "discount_percentage": 50, "duration_num_periods": 2, "duration_period": "month",
+        }
+        team = {
+            "plan": "team", "kind": "free_trial", "eligible": True,
+            "discount_percentage": 100, "duration_num_periods": 1, "duration_period": "month",
+        }
+        go = {
+            "plan": "go", "kind": "discount", "eligible": True,
+            "discount_percentage": 25, "duration_num_periods": 1.5, "duration_period": "month",
+        }
+        account_a = self._account(
+            "all-offers-a@example.test",
+            current_plan_type="free",
+            account_promotions=[
+                {**plus, "country": "US", "stale": True},
+                {**plus, "country": "JP", "duration_period": "months", "stale": False},
+                {**team, "country": "IN", "stale": True},
+                {**team, "country": "VN", "stale": True},
+                {**go, "eligible": False},
+            ],
+        )
+        account_b = self._account(
+            "all-offers-b@example.test",
+            current_plan_type="plus", archived=True,
+            account_promotions=[
+                {**plus, "country": "US", "stale": True},
+                {**plus, "country": "JP", "stale": True},
+                {**go, "country": "IN"},
+            ],
+        )
+        account_c = self._account(
+            "all-offers-c@example.test",
+            account_promotions=[
+                {**plus, "eligible": False},
+                {**team, "kind": "none"},
+                {**go, "kind": "unknown"},
+            ],
+        )
+        account_d = self._account("all-offers-unqueried@example.test")
+        self._job("all-offers-a@example.test", "2026-11-26T01:00:00+00:00", account_id=account_a)
+        self._job("all-offers-a@example.test", "2026-11-26T02:00:00+00:00", account_id=account_a)
+        self._job("all-offers-a@example.test", "2026-11-27T01:00:00+00:00", account_id=account_a)
+        for email, account_id in (
+            ("all-offers-b@example.test", account_b),
+            ("all-offers-c@example.test", account_c),
+            ("all-offers-unqueried@example.test", account_d),
+        ):
+            self._job(email, "2026-11-26T03:00:00+00:00", account_id=account_id)
+
+        result = analytics.registration_daily_analytics(
+            date_from="2026-11-26", date_to="2026-11-28",
+        )
+
+        def by_key(row):
+            return {offer["key"]: offer for offer in row["offers"]}
+
+        plus_key = promotion_offers.offer_key("plus", "discount", 50, 2, "month")
+        team_key = promotion_offers.offer_key("team", "free_trial", 100, 1, "month")
+        go_key = promotion_offers.offer_key("go", "discount", 25, 1.5, "month")
+        expected = {
+            plus_key: {"key": plus_key, "plan": "plus", "label": "Plus 半价 2个月",
+                       "count": 2, "stale_count": 1},
+            team_key: {"key": team_key, "plan": "team", "label": "Team 免费 1个月",
+                       "count": 1, "stale_count": 1},
+            go_key: {"key": go_key, "plan": "go", "label": "Go 减 25% 1.5个月",
+                     "count": 1, "stale_count": 0},
+        }
+        first, second, empty = result["rows"]
+        self.assertEqual(first["accounts_total"], 4)
+        self.assertEqual(first["promoted_accounts_total"], 2)
+        self.assertEqual(by_key(first), expected)
+        self.assertEqual(second["promoted_accounts_total"], 1)
+        self.assertEqual(
+            by_key(second),
+            {
+                plus_key: {**expected[plus_key], "count": 1, "stale_count": 0},
+                team_key: expected[team_key],
+            },
+        )
+        self.assertEqual(empty["offers"], [])
+        self.assertEqual(empty["promoted_accounts_total"], 0)
+        # 区间再次按账号去重，同一账号跨日不重复累计。
+        self.assertEqual(result["summary"]["accounts_total"], 4)
+        self.assertEqual(result["summary"]["promoted_accounts_total"], 2)
+        self.assertEqual(by_key(result["summary"]), expected)
 
     def test_aggregates_jobs_by_beijing_date_and_deduplicates_accounts(self):
         account_a = self._account(

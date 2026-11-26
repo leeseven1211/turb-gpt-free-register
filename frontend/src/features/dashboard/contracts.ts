@@ -32,11 +32,21 @@ export interface DashboardPreferences {
  heights:Record<string,number>;
 }
 
+export interface DailyPromotionOffer {
+ key:string;
+ plan:string;
+ label:string;
+ count:number;
+ stale_count:number;
+}
+
 export interface DailyRegistrationRow {
  date:string;
  total?:number|null;
  counts?:Record<string,number>|null;
  accounts_total?:number|null;
+ promoted_accounts_total?:number|null;
+ offers?:DailyPromotionOffer[]|null;
  plans?:Record<string,number>|null;
  unpromoted_count?:number|null;
  query?:AccountQuerySpec;
