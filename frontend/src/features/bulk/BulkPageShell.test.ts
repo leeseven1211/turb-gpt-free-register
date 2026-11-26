@@ -127,49 +127,46 @@ it('reopening terminal detail starts a fresh read without waiting on the aborted
  release({id:'9007199254740993',name:'aborted old result'});await old;await flushPromises();
  expect(document.body.textContent).not.toContain('aborted old result');
 });
-it('查看批次在浮窗中打开，关闭后恢复列表筛选、分页和入口焦点',async()=>{
+it('查看批次在页面内展示，返回列表后恢复原筛选和分页',async()=>{
  const h=fixture({q:'套餐',state:'ended',cursor:'list.page.2'});
  await h.wrapper.vm.activate();await flushPromises();
- const trigger=h.wrapper.get('[data-bulk-open]');(trigger.element as HTMLElement).focus();
- await trigger.trigger('click');await flushPromises();
- const dialog=document.querySelector<HTMLElement>('[data-bulk-dialog][data-state="open"]');
- expect(dialog).not.toBeNull();expect(dialog?.tagName).toBe('DIALOG');
- expect(dialog?.textContent).toContain('大整数批次');expect(dialog?.contains(document.activeElement)).toBe(true);
- expect(h.wrapper.get('[aria-label="批次列表"]').isVisible()).toBe(true);
- dialog!.querySelector<HTMLButtonElement>('[data-bulk-dialog-close]')!.click();await flushPromises();
+ await h.wrapper.get('[data-bulk-open]').trigger('click');await flushPromises();
+ expect(h.wrapper.get('.bulk-detail-owner').isVisible()).toBe(true);
+ expect(h.wrapper.get('[data-bulk-title]').text()).toContain('大整数批次');
+ expect(h.wrapper.get('[aria-label="批次列表"]').isVisible()).toBe(false);
+ expect(document.querySelector('dialog[open]')).toBeNull();
+ await h.wrapper.get('[data-bulk-action="back-list"]').trigger('click');await flushPromises();
  expect(h.wrapper.vm.navigationState()).toEqual({tab:'bulk',view:'list',q:'套餐',state:'ended',cursor:'list.page.2'});
- expect(document.querySelector('[data-bulk-dialog][data-state="open"]')).toBeNull();
- expect(document.activeElement).toBe(trigger.element);
- expect(h.deps.onNavigation).toHaveBeenLastCalledWith({tab:'bulk',view:'list',q:'套餐',state:'ended',cursor:'list.page.2'},'push');
+ expect(h.wrapper.get('[aria-label="批次列表"]').isVisible()).toBe(true);
 });
-it('隐藏批量任务时浮窗关闭并停止读取，返回时恢复原批次',async()=>{
+it('列表查看报告打开报告浮窗，关闭后仍展示普通批次详情',async()=>{
+ const h=fixture();await h.wrapper.vm.activate();await flushPromises();
+ await h.wrapper.get('[data-bulk-report]').trigger('click');await flushPromises();
+ const dialog=document.querySelector<HTMLDialogElement>('[data-bulk-report-dialog][open]');
+ expect(dialog).not.toBeNull();expect(dialog?.textContent).toContain('查套餐');
+ expect(dialog?.textContent).not.toContain('账号明细');
+ expect(h.wrapper.get('.bulk-detail-owner').isVisible()).toBe(true);
+ dialog!.querySelector<HTMLButtonElement>('[data-bulk-report-close]')!.click();await flushPromises();
+ expect(document.querySelector('dialog[open]')).toBeNull();
+ expect(h.wrapper.vm.navigationState()).toMatchObject({view:'detail',batch_id:'9007199254740993'});
+ expect(h.wrapper.get('.bulk-results-card').isVisible()).toBe(true);
+});
+it('隐藏批量任务时报告浮窗关闭并停止读取，返回时恢复原范围',async()=>{
  const h=fixture({view:'detail',batch_id:'9007199254740993'});
- await h.wrapper.vm.activate();await flushPromises();
- expect(document.querySelector('[data-bulk-dialog][data-state="open"]')).not.toBeNull();
+ await h.wrapper.vm.activate();await h.wrapper.vm.showReport();await flushPromises();
+ expect(document.querySelector('[data-bulk-report-dialog][open]')).not.toBeNull();
  h.wrapper.vm.setVisible(false);await flushPromises();
- expect(document.querySelector('[data-bulk-dialog][data-state="open"]')).toBeNull();
+ expect(document.querySelector('dialog[open]')).toBeNull();
  const reads=h.request.mock.calls.length;await vi.advanceTimersByTimeAsync(14000);
  expect(h.request).toHaveBeenCalledTimes(reads);expect(h.wrapper.vm.navigationState().view).toBe('detail');
  await h.wrapper.vm.activate();await flushPromises();
- expect(document.querySelector('[data-bulk-dialog][data-state="open"]')?.textContent).toContain('大整数批次');
+ expect(h.wrapper.get('.bulk-detail-owner').text()).toContain('账号明细');
 });
-it('重跑确认留在批次浮窗内，Esc 取消确认后保留批次，再次 Esc 才返回列表',async()=>{
- const h=fixture({view:'detail',batch_id:'9007199254740993'});
- h.request.mockImplementation(async path=>path.includes('/targets')?{items:[],page:{page_size:50,has_more:false}}:{
-  id:'9007199254740993',operation_key:'plan_check',name:'失败批次',summary_revision:1,target_count:11,
-  control:{state:'ended',revision:1},summary:{failed:11},rounds_head:[],
- });
- await h.wrapper.vm.activate();await flushPromises();
- const dialog=document.querySelector<HTMLDialogElement>('[data-bulk-dialog]')!;
- dialog.querySelector<HTMLButtonElement>('[data-bulk-action="retry"]')!.click();await flushPromises();
- const confirmation=dialog.querySelector<HTMLElement>('[role="alertdialog"]');
- expect(confirmation).not.toBeNull();
- const escape=new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true});
- confirmation!.dispatchEvent(escape);await flushPromises();
- expect(escape.defaultPrevented).toBe(true);
- expect(dialog.querySelector('[role="alertdialog"]')).toBeNull();expect(h.wrapper.vm.navigationState().view).toBe('detail');
- dialog.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));
- dialog.dispatchEvent(new Event('cancel',{cancelable:true}));await flushPromises();
- expect(h.wrapper.vm.navigationState().view).toBe('list');
- expect(h.request.mock.calls.every(([,options])=>!options?.method||options.method==='GET')).toBe(true);
+it('查看报告时详情读取失败会保留页面错误，不打开空白浮窗',async()=>{
+ const h=fixture();await h.wrapper.vm.activate();await flushPromises();
+ h.request.mockRejectedValueOnce(new Error('批次详情读取失败'));
+ await h.wrapper.get('[data-bulk-report]').trigger('click');await flushPromises();
+ expect(h.wrapper.get('.bulk-detail-owner [role="alert"]').text()).toContain('批次详情读取失败');
+ expect(document.querySelector('dialog[open]')).toBeNull();
+ expect(h.request.mock.calls.some(([path])=>path.includes('/report?'))).toBe(false);
 });

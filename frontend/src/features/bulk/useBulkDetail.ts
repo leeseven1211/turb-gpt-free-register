@@ -108,9 +108,11 @@ export function useBulkDetail(getNavigation: () => BulkNavigation, deps: BulkDet
     return tracked;
   }
   function openReport() {
+    if(!visible.value || navigation.value.view!=='detail' || !hasReport.value)return Promise.resolve();
     reportOpen.value=true;
     return refreshReport(Boolean(reportError.value));
   }
+  function closeReport() {reportOpen.value=false;abort('report');reportLoading.value=false;}
   function refresh(force=false):Promise<void> {
     if(disposed || !visible.value || navigation.value.view!=='detail' || !navigation.value.batch_id)return Promise.resolve();
     const showLoading=force||!detail.value;
@@ -180,7 +182,7 @@ export function useBulkDetail(getNavigation: () => BulkNavigation, deps: BulkDet
   function copyBatch(fixed: boolean) {if(!detail.value)return;const query=object(detail.value.selection_summary).query||detail.value.query_spec||object(detail.value.selection).query_spec;if(!fixed&&!query)return;deps.callbacks.copyBatch?.((query||{}) as AccountQuerySpec,fixed?{kind:'batch_targets',batch_id:bulkId(navigation.value.batch_id),selection:{kind:'all'}}:null,operationKey(detail.value));}
   function setVisible(value: boolean) {visible.value=value;if(!value){abort('detail','targets','report','rounds');loading.value=false;targetsLoading.value=false;reportLoading.value=false;roundsLoading.value=false;confirmation.value=null;}}
   watch(getNavigation, value=>{if(JSON.stringify(value)!==JSON.stringify(navigation.value)){previousCursors.value=[];navigation.value={...value};}}, {deep:true,flush:'sync'});
-  watch(()=>navigation.value.view,value=>{if(value!=='detail')setVisible(false);},{flush:'sync'});
+  watch(()=>navigation.value.view,value=>{if(value!=='detail'){closeReport();setVisible(false);}},{flush:'sync'});
   watch(()=>[scopeKey(),targetKey(),navigation.value.cursor||'',navigation.value.batch_id],(current,old)=>{
     confirmation.value=null;actionError.value='';
     if(!old||current[0]!==old[0]){
@@ -190,5 +192,5 @@ export function useBulkDetail(getNavigation: () => BulkNavigation, deps: BulkDet
     else {if(current[1]!==old[1]){clearSelection();previousCursors.value=[];}targets.value=null;void loadTargets();}
   },{immediate:true,flush:'sync'});
   onScopeDispose(()=>{disposed=true;abort('detail','targets','report','rounds');confirmation.value=null;});
-  return {navigation,detail,targets,report,reportOpen,rounds,roundsCursor,selected,pendingRound,loading,targetsLoading,reportLoading,roundsLoading,writing,error,targetError,reportError,actionError,confirmation,counts,ended,paused,needsPolling,hasReport,hasPrevious,nextCursor,controlDisabled,refresh,loadTargets,openReport,refreshReport,moreRounds,next,previous,first,setFilter,setRound,toggleTarget,selectPage,clearSelection,retryCount,retry,control,confirm,cancelConfirmation,copyBatch,setVisible};
+  return {navigation,detail,targets,report,reportOpen,rounds,roundsCursor,selected,pendingRound,loading,targetsLoading,reportLoading,roundsLoading,writing,error,targetError,reportError,actionError,confirmation,counts,ended,paused,needsPolling,hasReport,hasPrevious,nextCursor,controlDisabled,refresh,loadTargets,openReport,closeReport,refreshReport,moreRounds,next,previous,first,setFilter,setRound,toggleTarget,selectPage,clearSelection,retryCount,retry,control,confirm,cancelConfirmation,copyBatch,setVisible};
 }

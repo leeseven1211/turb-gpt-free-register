@@ -1,9 +1,20 @@
 import {DOMWrapper,flushPromises,mount} from '@vue/test-utils';
-import {afterEach,describe,expect,it,vi} from 'vitest';
+import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
 import type {BulkDetailDependencies,BulkNavigation} from './contracts';
 import BulkDetail from './BulkDetail.vue';
 const wrappers:ReturnType<typeof mount>[]=[];
-afterEach(()=>{wrappers.splice(0).forEach(w=>w.unmount());document.body.innerHTML='';});
+const originalShowModal=Object.getOwnPropertyDescriptor(HTMLDialogElement.prototype,'showModal');
+const originalClose=Object.getOwnPropertyDescriptor(HTMLDialogElement.prototype,'close');
+beforeEach(()=>{
+ Object.defineProperty(HTMLDialogElement.prototype,'showModal',{configurable:true,value:function(this:HTMLDialogElement){this.open=true;}});
+ Object.defineProperty(HTMLDialogElement.prototype,'close',{configurable:true,value:function(this:HTMLDialogElement){this.open=false;}});
+ vi.spyOn(window,'scrollTo').mockImplementation(()=>{});
+});
+afterEach(()=>{
+ wrappers.splice(0).forEach(w=>w.unmount());document.body.innerHTML='';
+ if(originalShowModal)Object.defineProperty(HTMLDialogElement.prototype,'showModal',originalShowModal);else Reflect.deleteProperty(HTMLDialogElement.prototype,'showModal');
+ if(originalClose)Object.defineProperty(HTMLDialogElement.prototype,'close',originalClose);else Reflect.deleteProperty(HTMLDialogElement.prototype,'close');
+});
 function fixture(view:BulkNavigation['view']='detail',visible?:boolean,initial:Partial<BulkNavigation>={}) {
   const request=vi.fn(async<T>(path:string):Promise<T>=>(path.includes('/report?')?{operation_key:'plan_check',phase:'running',totals:{accounts:11}}:path.includes('/targets?')?{items:[{canonical_target_id:'6',account_id:'7',email:'test@example.test'}],page:{has_more:false,next_cursor:null,page_size:50}}:{id:'9007199254740993',name:'批次甲',operation_key:'plan_check',summary_revision:7,target_count:11,summary:{failed:11},control:{state:'active',revision:5},selection_summary:{query:{status:['active']}},rounds_head:[{id:'9007199254740994',round_no:1,state:'completed'}]}) as T);
   const submit=vi.fn(async<T>():Promise<T>=>({id:'9007199254740998',state:'preparing'} as T));
@@ -22,9 +33,13 @@ describe('真实批次详情组件',()=>{
   });
   it('报告入口焦点、复制语义、目标刷新不打断checkbox',async()=>{
     const h=fixture();await flushPromises();const vm=h.wrapper.vm as unknown as {refresh(force?:boolean):Promise<void>;showReport():Promise<void>};
-    expect(h.wrapper.find('[data-bulk-plan-report]').exists()).toBe(false);
-    await h.wrapper.get('[data-bulk-action="view-report"]').trigger('click');await flushPromises();
-    expect(document.activeElement).toBe(h.wrapper.get('[data-bulk-plan-report]').element);
+    expect(document.querySelector('[data-bulk-report-dialog][open]')).toBeNull();
+    const reportButton=h.wrapper.get('[data-bulk-action="view-report"]');(reportButton.element as HTMLElement).focus();await reportButton.trigger('click');await flushPromises();
+    const dialog=document.querySelector<HTMLDialogElement>('[data-bulk-report-dialog][open]')!;
+    expect(dialog).not.toBeNull();expect(dialog.contains(document.activeElement)).toBe(true);
+    dialog.querySelector<HTMLButtonElement>('[data-bulk-report-close]')!.click();await flushPromises();
+    expect(document.activeElement).toBe(h.wrapper.get('[data-bulk-action="view-report"]').element);
+    expect(h.wrapper.get('.bulk-summary-grid').isVisible()).toBe(true);
     const checkbox=h.wrapper.get('[data-bulk-target]');(checkbox.element as HTMLElement).focus();await vm.refresh(true);expect(document.activeElement).toBe(checkbox.element);
     await h.wrapper.get('[data-bulk-action="copy-targets"]').trigger('click');expect(h.callbacks.copyBatch).toHaveBeenLastCalledWith({status:['active']},{kind:'batch_targets',batch_id:'9007199254740993',selection:{kind:'all'}},'plan_check');
     await h.wrapper.get('[data-bulk-action="copy-query"]').trigger('click');expect(h.callbacks.copyBatch).toHaveBeenLastCalledWith({status:['active']},null,'plan_check');

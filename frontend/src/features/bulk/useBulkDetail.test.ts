@@ -227,4 +227,18 @@ describe('批次详情范围与写入契约', () => {
     release({operation_key:'plan_check',phase:'running',summary_revision:7});
     await Promise.all([poll,second]);
   });
+  it('关闭报告中止在途读取，继续刷新批次时不再查询报告，迟到结果不可回写',async()=>{
+    const h=fixture();await flushPromises();await h.state.openReport();
+    let release!:(value:unknown)=>void;
+    h.request.mockImplementationOnce(()=>new Promise(resolve=>{release=resolve;}));
+    const reading=h.state.refreshReport(true);
+    const signal=(h.request.mock.calls.at(-1) as unknown as [string,RequestInit])[1].signal;
+    h.state.closeReport();expect(signal?.aborted).toBe(true);expect(h.state.reportOpen.value).toBe(false);
+    release({operation_key:'plan_check',old:true});await reading;
+    expect(h.state.report.value?.old).toBeUndefined();
+    const reports=h.request.mock.calls.filter(([path])=>path.includes('/report?')).length;
+    await h.state.refresh(true);
+    expect(h.request.mock.calls.filter(([path])=>path.includes('/report?'))).toHaveLength(reports);
+  });
+
 });

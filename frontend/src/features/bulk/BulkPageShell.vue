@@ -1,7 +1,5 @@
 <script setup lang="ts">
 import {computed,nextTick,onBeforeUnmount,onMounted,ref,shallowRef,watch} from 'vue';
-import {ConfigProvider} from 'reka-ui';
-import {useNativeDialog} from '../../shared/useNativeDialog';
 import BulkList from './BulkList.vue';
 import BulkCreate from './BulkCreate.vue';
 import BulkDetail from './BulkDetail.vue';
@@ -11,12 +9,10 @@ import type {AccountQuerySpec} from '../accounts/queryAdapter';
 const props=defineProps<{deps:BulkPageDependencies;initialNavigation?:BulkNavigation}>();
 const navigation=shallowRef(normalizeBulkNavigation(props.initialNavigation));
 const listNavigation=shallowRef<BulkNavigation>(navigation.value.view==='list'?{...navigation.value}:{tab:'bulk',view:'list'});
-const backgroundNavigation=computed(()=>navigation.value.view==='detail'?listNavigation.value:navigation.value);
 const active=ref(false),hostVisible=ref(false),error=ref(''),notice=ref(''),recovering=ref(false),pendingRevision=ref(0);
 const seed=shallowRef<BulkDraft|null>(null);
 const list=ref<InstanceType<typeof BulkList>|null>(null),create=ref<InstanceType<typeof BulkCreate>|null>(null),detail=ref<InstanceType<typeof BulkDetail>|null>(null);
 let disposed=false,navigationEpoch=0,visibilityEpoch=0,lastVisible=false,timer:ReturnType<typeof setTimeout>|undefined,refreshing:Promise<void>|null=null,refreshKey='',focusReport=false;
-const batchDialog=ref<HTMLDialogElement>();
 const visible=computed(()=>active.value&&hostVisible.value);
 const callbacks:BulkSliceCallbacks={...props.deps.callbacks,navigate:(view,extra,focus)=>{void navigate(view,extra,focus);},updateNavigation:extra=>{void updateNavigation(extra);},
  notify:message=>{notice.value=message;pendingRevision.value++;props.deps.callbacks.notify(message);},
@@ -31,9 +27,7 @@ const createDeps={...props.deps,intents,callbacks};
 const detailDeps={api:props.deps.api,intents,callbacks,now:props.deps.now};
 const pending=computed(()=>{pendingRevision.value;try{return props.deps.intents.pending();}catch{return[];}});
 const delay=computed(()=>!visible.value?0:navigation.value.view==='list'?7000:navigation.value.view==='create'?(create.value?.needsRefresh?2000:0):(detail.value?.needsRefresh?2000:0));
-const title=computed(()=>navigation.value.view==='create'?'新建批次':'批量任务');
-const dialogOpen=computed(()=>visible.value&&navigation.value.view==='detail');
-useNativeDialog(batchDialog,()=>dialogOpen.value,()=>visible.value&&navigation.value.view==='list');
+const title=computed(()=>navigation.value.view==='detail'?detail.value?.batchName||'批次详情':navigation.value.view==='create'?'新建批次':'批量任务');
 type AccountSnapshot={ids:readonly (string|number)[];query:AccountQuerySpec;name?:string};
 function syncVisibility(){
  hostVisible.value=!document.hidden&&(props.deps.isVisible?.()??true);
@@ -72,11 +66,6 @@ async function navigate(view:BulkNavigation['view'],extra:Partial<BulkNavigation
  props.deps.onNavigation(navigationState(),'push');await refresh(false);
 }
 async function closeDetail(){await navigate('list',listNavigation.value);}
-function backdropClick(event:MouseEvent){
- const dialog=batchDialog.value;if(!dialog||event.target!==dialog)return;
- const rect=dialog.getBoundingClientRect();
- if(event.clientX<rect.left||event.clientX>rect.right||event.clientY<rect.top||event.clientY>rect.bottom)void closeDetail();
-}
 async function updateNavigation(extra:Partial<BulkNavigation>){
  navigationEpoch++;
  navigation.value=normalizeBulkNavigation({...navigation.value,...extra});
@@ -116,31 +105,16 @@ defineExpose({activate,setVisible,refresh,showReport,navigationState,restoreNavi
 <template>
  <div class="bulk-page bulk-page-shell" data-bulk-vue :data-bulk-view="navigation.view">
   <header class="bulk-page-heading">
-   <h2 data-bulk-title>{{title}}</h2>
-   <div class="bulk-actions"><button v-if="navigation.view==='create'" type="button" class="jobs-tb-btn" @click="navigate('list')">批次列表</button><button type="button" class="jobs-tb-btn" data-bulk-action="refresh" @click="refresh(true)">刷新</button><button type="button" class="jobs-tb-btn" :class="navigation.view==='create'?'is-current':'jobs-tb-btn--primary'" :aria-current="navigation.view==='create'?'page':undefined" data-bulk-action="new" @click="newBatch">新建批次</button></div>
+   <h2 data-bulk-title>{{title}} <span v-if="navigation.view==='detail'" class="bulk-heading-id">#{{navigation.batch_id}}</span></h2>
+   <div class="bulk-actions"><button v-if="navigation.view!=='list'" type="button" class="jobs-tb-btn" data-bulk-action="back-list" @click="navigation.view==='detail'?closeDetail():navigate('list')">批次列表</button><button type="button" class="jobs-tb-btn" data-bulk-action="refresh" @click="refresh(true)">刷新</button><button type="button" class="jobs-tb-btn" :class="navigation.view==='create'?'is-current':'jobs-tb-btn--primary'" :aria-current="navigation.view==='create'?'page':undefined" data-bulk-action="new" @click="newBatch">新建批次</button></div>
   </header>
-  <p v-if="error&&navigation.view!=='detail'" class="bulk-error" data-bulk-error role="alert">{{error}}</p>
-  <p v-if="notice&&navigation.view!=='detail'" class="bulk-notice" data-bulk-notice role="status">{{notice}}</p>
-  <div v-if="pending.length&&navigation.view==='list'" class="bulk-notice bulk-global-recovery" data-bulk-recovery role="status"><span>有 {{pending.length}} 个请求未收到回执，草稿已保留。</span><button type="button" class="jobs-tb-btn" :disabled="recovering" @click="recover">{{recovering?'正在找回…':'找回原请求'}}</button></div>
+  <p v-if="error" class="bulk-error" data-bulk-error role="alert">{{error}}</p>
+  <p v-if="notice" class="bulk-notice" data-bulk-notice role="status">{{notice}}</p>
+  <div v-if="pending.length&&navigation.view!=='create'" class="bulk-notice bulk-global-recovery" data-bulk-recovery role="status"><span>有 {{pending.length}} 个请求未收到回执，草稿已保留。</span><button type="button" class="jobs-tb-btn" :disabled="recovering" @click="recover">{{recovering?'正在找回…':'找回原请求'}}</button></div>
   <div data-bulk-content>
-   <BulkList v-show="navigation.view!=='create'" ref="list" :navigation="backgroundNavigation" :deps="listDeps"/>
+   <BulkList v-show="navigation.view==='list'" ref="list" :navigation="navigation" :deps="listDeps"/>
    <BulkCreate v-show="navigation.view==='create'" ref="create" :navigation="navigation" :deps="createDeps" :seed="seed" :visible="visible&&navigation.view==='create'"/>
-   <Teleport to="body">
-    <dialog ref="batchDialog" class="bulk-page bulk-batch-dialog" data-bulk-dialog :data-state="dialogOpen?'open':'closed'" aria-labelledby="bulkBatchDialogTitle" aria-describedby="bulkBatchDialogDescription" @cancel.prevent="closeDetail" @click="backdropClick">
-     <ConfigProvider :teleport-to="batchDialog">
-      <header class="bulk-batch-heading">
-       <div class="bulk-batch-heading-copy"><h2 id="bulkBatchDialogTitle">{{detail?.batchName||'批次详情'}}</h2><p id="bulkBatchDialogDescription">批次 #{{navigation.batch_id}} · 查看进度、统计和账号明细</p></div>
-       <div class="bulk-actions"><button type="button" class="jobs-tb-btn" data-bulk-action="refresh" @click="refresh(true)">刷新</button><button type="button" class="jobs-tb-btn" @click="newBatch">新建批次</button><button type="button" class="jobs-tb-btn bulk-batch-close" data-bulk-dialog-close aria-label="关闭批次详情" @click="closeDetail">关闭 <span aria-hidden="true">×</span></button></div>
-      </header>
-      <div class="bulk-batch-body">
-       <p v-if="error" class="bulk-error" data-bulk-error role="alert">{{error}}</p>
-       <p v-if="notice" class="bulk-notice" data-bulk-notice role="status">{{notice}}</p>
-       <div v-if="pending.length" class="bulk-notice bulk-global-recovery" data-bulk-recovery role="status"><span>有 {{pending.length}} 个请求未收到回执，草稿已保留。</span><button type="button" class="jobs-tb-btn" :disabled="recovering" @click="recover">{{recovering?'正在找回…':'找回原请求'}}</button></div>
-       <BulkDetail ref="detail" :navigation="navigation" :deps="detailDeps" :visible="visible&&navigation.view==='detail'"/>
-      </div>
-     </ConfigProvider>
-    </dialog>
-   </Teleport>
+   <BulkDetail v-show="navigation.view==='detail'" ref="detail" :navigation="navigation" :deps="detailDeps" :visible="visible&&navigation.view==='detail'"/>
   </div>
  </div>
 </template>
@@ -152,17 +126,8 @@ defineExpose({activate,setVisible,refresh,showReport,navigationState,restoreNavi
 .bulk-page-heading .jobs-tb-btn.is-current{border-color:var(--ui-color-brand);background:var(--ui-color-brand-soft);color:var(--ui-color-brand);box-shadow:none}
 .bulk-global-recovery{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
 @media(max-width:680px){.bulk-page-heading{align-items:flex-start;flex-wrap:wrap;padding:10px 12px}.bulk-page-heading .bulk-actions{flex-wrap:wrap}}
-.bulk-batch-dialog{position:fixed;inset:24px;flex-direction:column;gap:0;width:calc(100% - 48px);max-width:1480px;height:calc(100dvh - 48px);max-height:calc(100dvh - 48px);margin:auto;padding:0;overflow:hidden;border:1px solid var(--ui-color-border-strong);border-radius:var(--ui-radius-lg);background:var(--ui-color-surface-subtle);color:var(--ui-color-text);font-family:var(--ui-font-sans);box-shadow:var(--ui-shadow-lg);box-sizing:border-box}
-.bulk-batch-dialog:not([open]){display:none}
-.bulk-batch-dialog[open]{display:flex}
-.bulk-batch-dialog::backdrop{background:color-mix(in srgb,var(--ui-color-text) 38%,transparent)}
-.bulk-batch-heading{display:flex;align-items:center;justify-content:space-between;flex:none;gap:16px;padding:16px 20px;border-bottom:1px solid var(--ui-color-border);background:var(--ui-color-surface)}
-.bulk-batch-heading-copy{min-width:0}
-.bulk-batch-heading h2{margin:0;font-size:18px;line-height:1.5;font-weight:700;overflow-wrap:anywhere}
-.bulk-batch-heading p{margin:4px 0 0;color:var(--ui-color-text-secondary);font-size:12px;overflow-wrap:anywhere}
-.bulk-batch-heading>.bulk-actions{flex-shrink:0;gap:8px}
-.bulk-batch-close span{margin-left:6px;font-size:18px;line-height:1}
-.bulk-batch-body{flex:1;min-height:0;overflow:auto;padding:16px;overscroll-behavior:contain;scroll-padding-block:12px}
-.bulk-batch-body>.bulk-error,.bulk-batch-body>.bulk-notice{margin-bottom:12px}
-@media(max-width:680px){.bulk-batch-dialog{inset:8px;width:calc(100% - 16px);height:calc(100dvh - 16px);max-height:calc(100dvh - 16px)}.bulk-batch-heading{align-items:flex-start;flex-wrap:wrap;gap:12px;padding:12px}.bulk-batch-heading>.bulk-actions{width:100%;justify-content:flex-end}.bulk-batch-heading h2{font-size:16px}.bulk-batch-body{padding:10px}}
+.bulk-page-shell[data-bulk-view="detail"]{row-gap:10px}
+.bulk-page-shell[data-bulk-view="detail"]>.bulk-page-heading{flex-wrap:wrap;margin-bottom:0}
+.bulk-page-heading h2{overflow-wrap:anywhere}
+.bulk-heading-id{margin-inline-start:4px;color:var(--ui-color-text-secondary);font-size:13px;font-weight:500;white-space:nowrap}
 </style>
