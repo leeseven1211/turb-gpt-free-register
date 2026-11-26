@@ -882,7 +882,7 @@ def _workbench_timestamp_sql(value_sql: str) -> str:
 
 def _workbench_projection_sql(
     clauses: list[str], *, public_status: bool = False, materialized: bool = False,
-    include_payment_processing: bool = True,
+    include_payment_processing: bool = True, include_provider_metrics: bool = False,
 ) -> str:
     """仅归一化筛选所需标量，不载入账号凭据、付款内容和历史 Run。"""
     accounts = record_store._qualified(record_store.ACCOUNTS)
@@ -892,8 +892,11 @@ def _workbench_projection_sql(
             AND BTRIM(LOWER(COALESCE(NULLIF(current_plan_type, ''), plan_type, ''))) IN ('plus','pro')
         THEN COALESCE(NULLIF(BTRIM(data->>'plan_checked_at'), ''),
                       NULLIF(BTRIM(plan_last_success_at), '')) END AS plan_checked_at"""
-    checked_at_sql = _workbench_timestamp_sql("COALESCE(by_id.plan_checked_at, by_email.plan_checked_at)")
-    payment_anchor_sql = _workbench_timestamp_sql("(job.public_state->'summary'->>'payment_submitted_at')")
+    checked_at_sql = _workbench_timestamp_sql("raw_plan_checked_at")
+    payment_anchor_sql = _workbench_timestamp_sql("raw_payment_submitted_at")
+    mode_sql = "COALESCE(NULLIF(t.task_mode, ''), 'extract_only')"
+    paid_mode_sql = f"{mode_sql} IN ('auto_payment', 'manual_payment')"
+    provider_id_sql = "COALESCE(NULLIF(t.task_provider_id, ''), NULLIF(job.provider_id, ''), 'legacy')"
     task_status = "LOWER(COALESCE(NULLIF(r.status, ''), NULLIF(t.status, ''), 'queued'))"
     task_status_sql = (public_result_status_sql(task_status, "r.result_summary") if public_status else
                        f"CASE WHEN {task_status}='attention_required' THEN 'request_unknown' ELSE {task_status} END")
@@ -904,16 +907,33 @@ def _workbench_projection_sql(
     payment_unknown_sql = (f"CASE WHEN task_status IN ({active_statuses}) THEN 'pending_payment' ELSE 'failed' END"
                            if public_status else "'request_unknown'")
     payment_unknown_condition = "payment IN ('unknown','request_unknown')" if public_status else "payment='unknown'"
-    payment_sql = "LOWER(COALESCE(NULLIF(job.public_state->>'payment_state', ''), NULLIF(r.result_summary->>'payment_status', ''), 'not_started'))"
+    raw_payment_sql = "LOWER(COALESCE(NULLIF(job.public_state->>'payment_state', ''), NULLIF(r.result_summary->>'payment_status', ''), 'not_started'))"
+    payment_sql = f"CASE WHEN {mode_sql}='extract_only' THEN 'not_started' ELSE {raw_payment_sql} END"
     payment_processing_exclusions = "'unknown','not_started','failed','succeeded','success','paid'" + (
         ",'request_unknown'" if public_status else ""
     )
     payment_processing_sql = "FALSE"
     if include_payment_processing:
-        # 仅可能处于扫码阶段的任务才读取付款进度摘要。
+        # 仅自动付款且可能处于扫码阶段的任务才读取付款进度摘要。
         progress = _workbench_payment_processing_sql("job.public_state->'summary'")
-        payment_processing_sql = f"CASE WHEN {payment_sql} NOT IN ({payment_processing_exclusions}) THEN {progress} ELSE FALSE END"
-    # 最后只保留统计和分页所需标量，物化时无需为无关任务计算套餐时间等中间列。
+        payment_processing_sql = (
+            f"CASE WHEN {mode_sql}='auto_payment' AND {raw_payment_sql} NOT IN ({payment_processing_exclusions}) "
+            f"THEN {progress} ELSE FALSE END"
+        )
+    provider_raw_columns = ""
+    provider_projected_columns = ""
+    if include_provider_metrics:
+        provider_raw_columns = """,
+            t.task_provider_id AS raw_task_provider_id,
+            LOWER(COALESCE(r.status, t.status, 'queued')) AS raw_active_status,
+            LOWER(COALESCE(r.status, t.status, '')) AS raw_outcome_status,
+            CASE WHEN LOWER(COALESCE(r.status, ''))='success'
+                AND r.completed_at IS NOT NULL AND r.started_at IS NOT NULL
+                THEN EXTRACT(EPOCH FROM (r.completed_at - r.started_at)) END AS raw_success_seconds"""
+        provider_projected_columns = (
+            ", raw_task_provider_id, raw_active_status, raw_outcome_status, raw_success_seconds"
+        )
+    # 套餐时间正则解析推迟到 projected 的已出链已付款分支内执行，避免对无关任务做正则与 JSONB 解析。
     return f"""filtered_tasks AS MATERIALIZED (
         SELECT t.id, t.batch_id, t.account_id, t.email_snapshot, t.last_run_id, t.created_at, t.status,
             t.data->>'provider_id' AS task_provider_id, t.data->>'mode' AS task_mode,
@@ -921,7 +941,7 @@ def _workbench_projection_sql(
         FROM {operation_store._table('operation_tasks')} t WHERE {' AND '.join(clauses)}
     ), missing_account_emails AS MATERIALIZED (
         SELECT DISTINCT LOWER(BTRIM(t.email_snapshot)) AS email_key
-        FROM filtered_tasks t WHERE BTRIM(t.email_snapshot) <> ''
+        FROM filtered_tasks t WHERE {paid_mode_sql} AND BTRIM(t.email_snapshot) <> ''
             AND NOT EXISTS (SELECT 1 FROM {accounts} known WHERE known.id=t.account_id)
     ), account_emails AS (
         SELECT LOWER(fallback_account.email) AS email_key, MIN(fallback_account.id) AS account_id
@@ -931,11 +951,13 @@ def _workbench_projection_sql(
         GROUP BY LOWER(fallback_account.email)
     ), raw AS (
         SELECT t.id AS task_id, t.batch_id, t.created_at AS task_created_at,
-            CASE WHEN t.task_payment_source='xxsyun' THEN {payment_anchor_sql} ELSE t.created_at END AS plus_freshness_anchor,
+            t.task_payment_source,
+            CASE WHEN {paid_mode_sql} AND t.task_payment_source='xxsyun'
+                THEN job.public_state->'summary'->>'payment_submitted_at' END AS raw_payment_submitted_at,
             COALESCE(r.created_at, t.created_at) AS sort_created_at,
             {task_status_sql} AS task_status,
-            COALESCE(NULLIF(t.task_provider_id, ''), NULLIF(job.provider_id, ''), 'legacy') AS provider_id,
-            COALESCE(NULLIF(t.task_mode, ''), 'extract_only') AS mode,
+            {provider_id_sql} AS provider_id,
+            {mode_sql} AS mode,
             COALESCE(job.provider_id IN ('huanguang', 'legacy')
                 AND job.public_state->'summary'->'local_reconcile_halted'='true'::jsonb, FALSE) AS local_reconcile_halted,
             CASE WHEN job.provider_id='huanguang' AND job.public_state->'summary'->'extraction_ever_succeeded'='true'::jsonb
@@ -944,15 +966,17 @@ def _workbench_projection_sql(
             {payment_sql} AS payment,
             {payment_processing_sql} AS payment_processing,
             LOWER(COALESCE(NULLIF(job.public_state->>'plus_status', ''), NULLIF(r.result_summary->>'plus_status', ''), 'unknown')) AS plus,
-            COALESCE(r.result_summary->'has_link' NOT IN
-                ('null'::jsonb, 'false'::jsonb, '0'::jsonb, '\"\"'::jsonb, '[]'::jsonb, '{{}}'::jsonb), FALSE)
-                OR COALESCE(r.result_summary->>'remote_job_id', '') <> '' AS legacy_succeeded,
-            {checked_at_sql} AS plan_checked_at
+            CASE WHEN {provider_id_sql}='legacy' AND NULLIF(job.public_state->>'extraction_state', '') IS NULL
+                THEN COALESCE(r.result_summary->'has_link' NOT IN
+                    ('null'::jsonb, 'false'::jsonb, '0'::jsonb, '\"\"'::jsonb, '[]'::jsonb, '{{}}'::jsonb), FALSE)
+                    OR COALESCE(r.result_summary->>'remote_job_id', '') <> ''
+                ELSE FALSE END AS legacy_succeeded,
+            COALESCE(by_id.plan_checked_at, by_email.plan_checked_at) AS raw_plan_checked_at{provider_raw_columns}
         FROM filtered_tasks t
         LEFT JOIN {operation_store._table('operation_runs')} r ON r.id=t.last_run_id
         LEFT JOIN {operation_store._table('extract_link_provider_jobs')} job ON job.run_id=r.id
-        LEFT JOIN (SELECT {account_columns} FROM {accounts}) by_id ON by_id.id=t.account_id
-        LEFT JOIN account_emails email_match ON by_id.id IS NULL AND BTRIM(t.email_snapshot) <> ''
+        LEFT JOIN (SELECT {account_columns} FROM {accounts}) by_id ON {paid_mode_sql} AND by_id.id=t.account_id
+        LEFT JOIN account_emails email_match ON {paid_mode_sql} AND by_id.id IS NULL AND BTRIM(t.email_snapshot) <> ''
             AND email_match.email_key=LOWER(BTRIM(t.email_snapshot))
         LEFT JOIN LATERAL (
             SELECT {account_columns} FROM {accounts} WHERE id=email_match.account_id LIMIT 1
@@ -974,10 +998,13 @@ def _workbench_projection_sql(
         SELECT task_id, batch_id, task_created_at, sort_created_at, task_status, provider_id, mode,
             local_reconcile_halted, extraction_status, payment_status, payment_processing,
             CASE WHEN mode IN ('auto_payment','manual_payment') AND extraction_status='success'
-            AND payment_status='paid'
-            AND plan_checked_at > plus_freshness_anchor
+                AND payment_status='paid'
+                AND raw_plan_checked_at IS NOT NULL
+                AND ({checked_at_sql}) > (
+                    CASE WHEN task_payment_source='xxsyun' THEN {payment_anchor_sql} ELSE task_created_at END
+                )
             THEN 'confirmed'
-            ELSE plus END AS plus_status
+            ELSE plus END AS plus_status{provider_projected_columns}
         FROM normalized
     )"""
 
@@ -986,71 +1013,74 @@ def workbench_summary(*, public_status: bool = False) -> dict:
     """北京时间今日创建的未删除任务按最新 Run 统计产出，积压统计全部日期。"""
     operation_store.init()
     clauses, params = _workbench_where()
-    # 多个统计共享一次状态归一化，防止内联后每个 FILTER 重复计算 JSON 与套餐表达式。
+    # 汇总卡片与分平台指标共享同一次投影扫描，避免重复全表扫描 operation_tasks 与 operation_runs。
     projection = _workbench_projection_sql(
-        clauses, public_status=public_status, materialized=True, include_payment_processing=False,
+        clauses, public_status=public_status, materialized=True,
+        include_payment_processing=False, include_provider_metrics=True,
     )
     status_conditions = workbench_status_conditions(public_status=public_status)
-    provider_status = "LOWER(COALESCE(r.status, t.status, ''))"
+    # 公开映射下未确认状态只会归入 partial_success 或 failed，二者均计入今日失败，无需读取 result_summary。
     provider_failure_status = (
-        public_result_status_sql(provider_status, "r.result_summary") if public_status else provider_status
+        public_result_status_sql("raw_outcome_status", requested_status_expression="NULL")
+        if public_status else "raw_outcome_status"
     )
     today_sql = "date_trunc('day', now() AT TIME ZONE 'Asia/Shanghai') AT TIME ZONE 'Asia/Shanghai'"
     with operation_store._connect() as conn, conn.cursor() as cur:
         # 交互聚合的 JIT 编译成本高于执行收益；仅作用于本次只读事务。
         cur.execute("SET LOCAL jit = off")
         cur.execute(
-            f"""WITH {projection} SELECT
-                    COUNT(*) FILTER (WHERE task_created_at >= {today_sql}
-                        AND task_created_at < {today_sql} + INTERVAL '1 day'
-                        AND extraction_status='success') AS today_extracted,
-                    COUNT(*) FILTER (WHERE task_created_at >= {today_sql}
-                        AND task_created_at < {today_sql} + INTERVAL '1 day'
-                        AND plus_status='confirmed') AS today_plus_confirmed,
-                    COUNT(*) FILTER (WHERE {status_conditions["awaiting_payment"]}) AS awaiting_payment,
-                    COUNT(*) FILTER (WHERE {status_conditions["needs_review"]}) AS needs_review,
-                    COUNT(*) FILTER (WHERE {status_conditions["processing"]}) AS processing,
-                    COUNT(*) AS all_tasks FROM projected""",
+            f"""WITH {projection}, summary_totals AS (
+                    SELECT
+                        COUNT(*) FILTER (WHERE task_created_at >= {today_sql}
+                            AND task_created_at < {today_sql} + INTERVAL '1 day'
+                            AND extraction_status='success') AS today_extracted,
+                        COUNT(*) FILTER (WHERE task_created_at >= {today_sql}
+                            AND task_created_at < {today_sql} + INTERVAL '1 day'
+                            AND plus_status='confirmed') AS today_plus_confirmed,
+                        COUNT(*) FILTER (WHERE {status_conditions["awaiting_payment"]}) AS awaiting_payment,
+                        COUNT(*) FILTER (WHERE {status_conditions["needs_review"]}) AS needs_review,
+                        COUNT(*) FILTER (WHERE {status_conditions["processing"]}) AS processing,
+                        COUNT(*) AS all_tasks
+                    FROM projected
+                ), provider_totals AS (
+                    SELECT COALESCE(NULLIF(raw_task_provider_id, ''), 'legacy') AS provider_id,
+                        COUNT(*) FILTER (WHERE raw_active_status
+                            IN ('queued','running','waiting','cancelling','settling','stopping')) AS active_now,
+                        COUNT(*) FILTER (WHERE raw_active_status='queued') AS queued_now,
+                        COUNT(*) FILTER (WHERE raw_outcome_status='success'
+                            AND COALESCE(task_created_at, now()) >= {today_sql}) AS today_success,
+                        COUNT(*) FILTER (WHERE COALESCE(task_created_at, now()) >= {today_sql}
+                            AND ({provider_failure_status})
+                                IN ('failed','attention_required','partial_success')) AS today_failed,
+                        AVG(raw_success_seconds) FILTER (WHERE raw_success_seconds IS NOT NULL
+                            AND COALESCE(task_created_at, now()) >= {today_sql}) AS avg_seconds
+                    FROM projected
+                    GROUP BY 1 ORDER BY 1
+                )
+                SELECT 'totals' AS kind, to_jsonb(summary_totals) AS data FROM summary_totals
+                UNION ALL
+                SELECT 'provider' AS kind, to_jsonb(provider_totals) AS data FROM provider_totals""",
             tuple(params),
         )
-        row = cur.fetchone()
-        totals = dict(row) if isinstance(row, dict) else dict(zip(
-            ("today_extracted", "today_plus_confirmed", "awaiting_payment", "needs_review", "processing", "all_tasks"), row))
-        cur.execute(
-            f"""SELECT COALESCE(NULLIF(t.data->>'provider_id', ''), 'legacy') AS provider_id,
-                    COUNT(*) FILTER (WHERE LOWER(COALESCE(r.status, t.status, 'queued'))
-                        IN ('queued','running','waiting','cancelling','settling','stopping')) AS active_now,
-                    COUNT(*) FILTER (WHERE LOWER(COALESCE(r.status, t.status, 'queued'))='queued') AS queued_now,
-                    COUNT(*) FILTER (WHERE LOWER(COALESCE(r.status, t.status, ''))='success'
-                        AND COALESCE(t.created_at, now()) >= {today_sql}) AS today_success,
-                    COUNT(*) FILTER (WHERE ({provider_failure_status})
-                        IN ('failed','attention_required','partial_success')
-                        AND COALESCE(t.created_at, now()) >= {today_sql}) AS today_failed,
-                    AVG(EXTRACT(EPOCH FROM (r.completed_at - r.started_at)))
-                        FILTER (WHERE LOWER(COALESCE(r.status, ''))='success'
-                            AND r.completed_at IS NOT NULL AND r.started_at IS NOT NULL
-                            AND COALESCE(t.created_at, now()) >= {today_sql}) AS avg_seconds
-                FROM {operation_store._table('operation_tasks')} t
-                LEFT JOIN {operation_store._table('operation_runs')} r ON r.id=t.last_run_id
-                WHERE t.task_type='extract_link'
-                  AND LOWER(COALESCE(t.data->>'deleted_by_user', '')) <> 'true'
-                GROUP BY 1 ORDER BY 1""",
-            (),
-        )
+        totals: dict[str, Any] = {}
         providers = []
-        for provider in cur.fetchall():
-            item = dict(provider) if isinstance(provider, dict) else {}
-            success = int(item.get("today_success") or 0)
-            failed = int(item.get("today_failed") or 0)
-            providers.append({
-                "provider_id": str(item.get("provider_id") or "legacy"),
-                "active_now": int(item.get("active_now") or 0),
-                "queued_now": int(item.get("queued_now") or 0),
-                "today_success": success,
-                "today_failed": failed,
-                "success_rate": round(success / (success + failed), 4) if success + failed else None,
-                "avg_seconds": int(round(float(item["avg_seconds"]))) if item.get("avg_seconds") is not None else None,
-            })
+        for raw_row in cur.fetchall():
+            entry = dict(raw_row) if isinstance(raw_row, dict) else {"kind": raw_row[0], "data": raw_row[1]}
+            payload = entry.get("data") if isinstance(entry.get("data"), dict) else {}
+            if entry.get("kind") == "totals":
+                totals = payload
+            else:
+                success = int(payload.get("today_success") or 0)
+                failed = int(payload.get("today_failed") or 0)
+                providers.append({
+                    "provider_id": str(payload.get("provider_id") or "legacy"),
+                    "active_now": int(payload.get("active_now") or 0),
+                    "queued_now": int(payload.get("queued_now") or 0),
+                    "today_success": success,
+                    "today_failed": failed,
+                    "success_rate": round(success / (success + failed), 4) if success + failed else None,
+                    "avg_seconds": int(round(float(payload["avg_seconds"]))) if payload.get("avg_seconds") is not None else None,
+                })
     return {
         "today_extracted": int(totals.get("today_extracted") or 0),
         "today_plus_confirmed": int(totals.get("today_plus_confirmed") or 0),

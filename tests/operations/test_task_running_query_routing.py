@@ -63,22 +63,21 @@ class TaskRunningQueryRoutingTests(unittest.TestCase):
             response = store.list_tasks(**kwargs)
         self.assertEqual([], response["items"])
         self.assertEqual(0, response["total"])
-        return statements
+        return [item for item in statements if item[0] != "SET LOCAL jit = off"]
 
     def test_only_canonical_public_running_count_and_page_use_candidates(self):
         for page, size in ((1, 50), (40, 50), (3, 1)):
             with self.subTest(page=page, size=size):
                 statements = self._capture(page=page, page_size=size)
-                self.assertEqual(2, len(statements))
-                for sql, _ in statements:
-                    self.assertIn("running_task_candidates AS MATERIALIZED", sql)
-                    self.assertEqual(1, sql.count("running_task_candidates AS MATERIALIZED"))
-                self.assertEqual(("running",), statements[0][1])
-                self.assertEqual(("running", size, (page - 1) * size), statements[1][1])
+                self.assertEqual(1, len(statements))
+                sql, params = statements[0]
+                self.assertIn("running_task_candidates AS MATERIALIZED", sql)
+                self.assertEqual(1, sql.count("running_task_candidates AS MATERIALIZED"))
+                self.assertEqual(("running", size, (page - 1) * size), params)
                 # Paging still carries the exact winning Run identity into
                 # the unchanged display reload, never a last-run pointer.
-                self.assertIn("r.id AS current_run_id", statements[1][0])
-                self.assertIn("WHERE rr.id=selected.current_run_id LIMIT 1", statements[1][0])
+                self.assertIn("r.id AS current_run_id", sql)
+                self.assertIn("WHERE rr.id=selected.current_run_id LIMIT 1", sql)
 
     def test_extra_filters_keep_the_existing_query_path(self):
         filters = (

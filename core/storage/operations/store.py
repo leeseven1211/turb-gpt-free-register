@@ -13,7 +13,9 @@ from core.operations import run_log as task_run_log
 from core.bulk_operations import execution as bulk_execution
 from core.operations import account_receipts
 from core.operations.progress import build_progress_snapshot
-from core.operations.presentation import public_result_status, public_result_status_sql
+from core.operations.presentation import (
+    UNCONFIRMED_RESULT_STATUSES, public_result_status, public_result_status_sql,
+)
 from core.operations.stages import flow_for, stage_label
 from core.storage.operations import common as _common
 from core.storage.operations.history import cleanup_terminal_history
@@ -176,12 +178,24 @@ _TASK_LIST_RUN_FIELDS = (
 )
 
 
+_UNCONFIRMED_RESULT_STATUS_SQL = ",".join(
+    repr(value) for value in sorted(UNCONFIRMED_RESULT_STATUSES)
+)
+
+
 def _operation_task_run_columns_sql(fields: tuple[str, ...] | None = None) -> str:
     """Only internal callers supply field names; source expressions stay shared."""
     if fields is None:
         return f"rr.*, {_common._compatibility_run_projection_sql()}"
+    status_sql = _common._compatibility_run_status_sql()
+    # 仅在有效状态属于未确认回执集合时读取 result_summary，避免常规状态行解压 JSONB。
+    requested_status_sql = (
+        f"CASE WHEN LOWER(BTRIM(COALESCE(({status_sql})::text, ''))) "
+        f"IN ({_UNCONFIRMED_RESULT_STATUS_SQL}) "
+        f"THEN rr.result_summary->>'requested_status' END AS requested_status"
+    )
     raw_fields = [
-        "rr.result_summary->>'requested_status' AS requested_status" if field == "requested_status" else f"rr.{field}"
+        requested_status_sql if field == "requested_status" else f"rr.{field}"
         for field in fields if not field.startswith("effective_")
     ]
     projected_fields = tuple(field for field in fields if field.startswith("effective_"))
@@ -233,9 +247,16 @@ def _operation_task_current_run_relation_sql(
     )
     if fields and "effective_status" in fields:
         sort_by_legacy_time = "effective_created_at_sort" in fields
-        winner_fields = tuple(dict.fromkeys(
-            "effective_created_at" if field == "effective_created_at_sort" else field for field in fields
-        ))
+        derive_stage = "effective_progress_stage" in fields
+        inner_fields = []
+        for field in fields:
+            if field == "effective_created_at_sort":
+                inner_fields.append("effective_created_at")
+            elif field == "effective_progress_stage":
+                inner_fields.append("progress_stage")
+            else:
+                inner_fields.append(field)
+        winner_fields = tuple(dict.fromkeys(inner_fields))
         projected = tuple(dict.fromkeys((*winner_fields, "run_no", "id")))
         # 先计算兼容状态和所需列。OFFSET 0 保留投影边界，避免将宽 JSON 送入排序。
         winner_query = (
@@ -244,11 +265,20 @@ def _operation_task_current_run_relation_sql(
             f"ORDER BY task_id, CASE WHEN effective_status IN ({_common._ACTIVE_RUN_STATUS_SQL}) THEN 0 ELSE 1 END, "
             "run_no DESC, id DESC"
         )
-        if sort_by_legacy_time:
-            # 兼容时间只在当前 Run 上解析。废弃历史执行的旧时间可能无法转换。
+        if sort_by_legacy_time or derive_stage:
+            # 兼容时间与有效阶段仅在当前胜出 Run 上计算，避免废弃历史执行重复求值。
             time_expression = _common._compatibility_created_at_sort_sql("effective_created_at")
-            columns = ",".join(f"{time_expression} AS {field}" if field == "effective_created_at_sort" else field
-                               for field in fields)
+            stage_expression = (
+                f"CASE WHEN effective_status='queued' THEN 'queued' "
+                f"WHEN effective_status IN ({_common._TERMINAL_STATUS_SQL}) THEN 'complete' "
+                f"ELSE progress_stage END"
+            )
+            columns = ",".join(
+                f"{time_expression} AS {field}" if field == "effective_created_at_sort"
+                else f"{stage_expression} AS {field}" if field == "effective_progress_stage"
+                else field
+                for field in fields
+            )
             return f"SELECT {columns} FROM ({winner_query}) current_run"
         return winner_query
     return (
@@ -398,18 +428,25 @@ def list_tasks(
         filter_run_fields += ("result_summary", "effective_error_message")
     elif requested_status_expression:
         filter_run_fields += ("requested_status",)
-    count_from_sql = _operation_task_query_base(
-        include_current_run=uses_current_run(),
-        include_run_count=bool(run_count),
-        current_run_fields=filter_run_fields,
-        running_candidates=running_candidates,
-    )
-    page_run_count_expression = run_count_expression
-    page_cte = ""
-    page_clause = clause
-    page_params = (*params, page_size, (page - 1) * page_size)
-    page_order = "selected.sort_at DESC,t.id DESC"
-    if not uses_current_run() and not run_count:
+    combined_filtered_query = bool(uses_current_run() or run_count)
+    page_select_columns = """t.*, b.batch_uuid, b.title AS batch_title, b.batch_type,
+                   r.id AS __current_run_id, r.effective_status AS __current_run_status,
+                   r.effective_progress_stage AS __current_run_stage,
+                   r.effective_created_at AS __current_run_created_at,
+                   r.effective_completed_at AS __current_run_completed_at,
+                   r.effective_debug_pause AS __current_run_debug_pause,
+                   r.error_category AS __current_run_error_category,
+                   r.error_code AS __current_run_error_code,
+                   r.effective_error_message AS __current_run_error_message,
+                   r.run_no AS last_run_no, r.duration_ms, r.result_summary,
+                   r.source_system AS run_source_system, r.source_id AS run_source_id"""
+    if not combined_filtered_query:
+        count_from_sql = _operation_task_query_base(
+            include_current_run=False,
+            include_run_count=False,
+            current_run_fields=filter_run_fields,
+            running_candidates=running_candidates,
+        )
         # 先确定50个任务ID，再加载这些任务的Run/次数/结果。原生任务按任务创建时间，
         # 兼容任务仍按其有效Run来源时间排序，不以last_run_id替代活跃优先选择。
         candidate_from = (f"FROM {_common._table('operation_tasks')} t "
@@ -434,11 +471,9 @@ def list_tasks(
         page_from_sql = (f"FROM page_ids selected JOIN {_common._table('operation_tasks')} t ON t.id=selected.id "
                          f"LEFT JOIN {_common._table('operation_batches')} b ON b.id=t.batch_id "
                          + _operation_task_indexed_run_join_sql())
-        page_clause = ""
     else:
-        # The same statement chooses/filter/sorts the winning Run once. Load
-        # display fields only for selected page IDs, never last_run_id or a
-        # second active-priority lookup that could select a different Run.
+        # 单条查询一次完成当前胜出 Run 选择、条件过滤、总数统计与分页切片，
+        # 避免对全量历史重复执行两次 DISTINCT ON (task_id) 归并；空页仍返回精确总数。
         candidate_fields = (*filter_run_fields, "id", "effective_created_at_sort")
         candidate_from = _operation_task_query_base(
             include_current_run=True, include_run_count=bool(run_count),
@@ -446,53 +481,59 @@ def list_tasks(
             running_candidates=running_candidates,
         )
         page_cte_prefix = f"{running_candidates_cte}, " if running_candidates else ""
-        page_cte = (
-            f"WITH {page_cte_prefix}page_ids AS MATERIALIZED ("
+        combined_sql = (
+            f"WITH {page_cte_prefix}matched AS MATERIALIZED ("
             f"SELECT t.id,r.id AS current_run_id,"
             f"COALESCE(r.effective_created_at_sort,t.created_at) AS sort_at,"
             f"{run_count_expression if run_count else 'NULL::bigint'} AS run_count "
-            f"{candidate_from}{clause} ORDER BY sort_at DESC,t.id DESC LIMIT %s OFFSET %s) "
-        )
-        page_from_sql = (
+            f"{candidate_from}{clause}), "
+            f"totals AS (SELECT COUNT(*) AS n FROM matched), "
+            f"page_ids AS MATERIALIZED ("
+            f"SELECT * FROM matched ORDER BY sort_at DESC,id DESC LIMIT %s OFFSET %s), "
+            f"page_rows AS ("
+            f"SELECT {page_select_columns}, selected.run_count AS run_count, selected.sort_at AS __sort_at "
             f"FROM page_ids selected JOIN {_common._table('operation_tasks')} t ON t.id=selected.id "
             f"LEFT JOIN {_common._table('operation_batches')} b ON b.id=t.batch_id "
             f"LEFT JOIN LATERAL (SELECT {_operation_task_run_columns_sql(_TASK_LIST_RUN_FIELDS)} "
             f"FROM {_common._table('operation_runs')} rr {_common._compatibility_run_joins_sql()} "
-            f"WHERE rr.id=selected.current_run_id LIMIT 1) r ON TRUE "
+            f"WHERE rr.id=selected.current_run_id LIMIT 1) r ON TRUE) "
+            f"SELECT totals.n AS __total_count, page_rows.* "
+            f"FROM totals LEFT JOIN page_rows ON TRUE "
+            f"ORDER BY page_rows.__sort_at DESC, page_rows.id DESC"
         )
-        page_clause = ""
-        page_run_count_expression = "selected.run_count"
+        page_params = (*params, page_size, (page - 1) * page_size)
     with _task_read_connection() as conn, conn.cursor() as cur:
         if public_status and _common._SETTLEMENT_CONNECTION.get() is None:
             # 公开列表的兼容 Run 投影和筛选统计会触发秒级 JIT 编译。
             # 只作用于本次独立读取事务，结算事务沿用调用方的设置。
             cur.execute("SET LOCAL jit = off")
-        cur.execute(f"{count_cte}SELECT COUNT(*) AS n {count_from_sql}{clause}", params)
-        total = int(cur.fetchone()["n"])
-        cur.execute(
-            f"""
-            {page_cte}
-            SELECT t.*, b.batch_uuid, b.title AS batch_title, b.batch_type,
-                   r.id AS __current_run_id, r.effective_status AS __current_run_status,
-                   r.effective_progress_stage AS __current_run_stage,
-                   r.effective_created_at AS __current_run_created_at,
-                   r.effective_completed_at AS __current_run_completed_at,
-                   r.effective_debug_pause AS __current_run_debug_pause,
-                   r.error_category AS __current_run_error_category,
-                   r.error_code AS __current_run_error_code,
-                   r.effective_error_message AS __current_run_error_message,
-                   r.run_no AS last_run_no, r.duration_ms, r.result_summary,
-                   r.source_system AS run_source_system, r.source_id AS run_source_id,
-                   {page_run_count_expression if run_count else 'NULL::bigint'} AS run_count
-            {page_from_sql}
-            {page_clause}
-            ORDER BY {page_order}
-            """,
-            page_params,
-        )
+        if combined_filtered_query:
+            cur.execute(combined_sql, page_params)
+            fetched_rows = cur.fetchall()
+            total = int(fetched_rows[0]["__total_count"]) if fetched_rows else 0
+            raw_page_rows = []
+            for raw_row in fetched_rows:
+                row_copy = dict(raw_row)
+                row_copy.pop("__total_count", None)
+                row_copy.pop("__sort_at", None)
+                if row_copy.get("id") is not None:
+                    raw_page_rows.append(row_copy)
+        else:
+            cur.execute(f"{count_cte}SELECT COUNT(*) AS n {count_from_sql}{clause}", params)
+            total = int(cur.fetchone()["n"])
+            cur.execute(
+                f"""
+                {page_cte}
+                SELECT {page_select_columns}, NULL::bigint AS run_count
+                {page_from_sql}
+                ORDER BY selected.sort_at DESC,t.id DESC
+                """,
+                page_params,
+            )
+            raw_page_rows = [dict(raw_row) for raw_row in cur.fetchall()]
         items = []
-        for raw_row in cur.fetchall():
-            item = _common._row(dict(raw_row)) or {}
+        for raw_row in raw_page_rows:
+            item = _common._row(raw_row) or {}
             current_run = {
                 "id": item.pop("__current_run_id", None),
                 "source_system": item.pop("run_source_system", None),

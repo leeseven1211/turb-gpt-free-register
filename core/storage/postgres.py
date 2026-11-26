@@ -161,7 +161,7 @@ def _pool_for(target: str, kwargs: dict):
             pool = ConnectionPool(
                 target,
                 min_size=1,
-                max_size=int(os.getenv("TURB_DB_POOL_MAX") or 12),
+                max_size=int(os.getenv("TURB_DB_POOL_MAX") or 24),
                 timeout=10.0,
                 max_idle=300.0,
                 kwargs={"connect_timeout": 5, **kwargs},

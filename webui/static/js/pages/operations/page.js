@@ -3,6 +3,7 @@ window.TaskCenter = (() => {
   let instance = null;
   let loading = null;
   let visible = false;
+  let opening = false;
   let detailGeneration = 0;
 
   function operationId(value, optional = false) {
@@ -59,13 +60,22 @@ window.TaskCenter = (() => {
     async open(options = {}) {
       const generation = ++detailGeneration;
       try {
-        const api = await ensure();
-        if (generation !== detailGeneration) return;
-        activateTab('tasks');
-        await api.open({...options,
+        const payload = {
+          ...options,
           ...(options.taskId != null ? {taskId: operationId(options.taskId)} : {}),
           ...(options.runId != null ? {runId: operationId(options.runId, true)} : {}),
-        });
+        };
+        const api = await ensure();
+        if (generation !== detailGeneration) return;
+        // 切页激活期间暂缓触发无筛选列表刷新，待目标筛选与详情参数应用后再统一激活可见读取。
+        opening = true;
+        try {
+          activateTab('tasks');
+        } finally {
+          opening = false;
+        }
+        await api.open(payload);
+        if (visible) api.setVisible(true);
       } catch (error) { report(error); }
     },
     async openDetail(taskId, runId = null, stepId = null) {
@@ -90,7 +100,10 @@ window.TaskCenter = (() => {
         instance?.setVisible(false);
         return;
       }
-      void ensure().then(api => api.setVisible(visible)).catch(report);
+      if (opening) return;
+      void ensure().then(api => {
+        if (!opening) api.setVisible(visible);
+      }).catch(report);
     },
   };
 })();

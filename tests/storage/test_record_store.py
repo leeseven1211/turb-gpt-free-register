@@ -173,7 +173,7 @@ class RecordStoreMigrationTests(PostgresTestCase):
         with rs._connect() as conn, conn.cursor() as cur:
             cur.execute(f"DROP TRIGGER sync_account_promotion_offers ON {accounts}")
             cur.execute(f"DROP TABLE {offers}")
-            cur.execute(f"DELETE FROM {migrations} WHERE version = %s", (rs._PROMOTION_OFFERS_SCHEMA_VERSION,))
+            cur.execute(f"DELETE FROM {migrations} WHERE version >= %s", (rs._PROMOTION_OFFERS_SCHEMA_VERSION,))
             cur.execute(
                 f"INSERT INTO {accounts} (email, created_at, updated_at, plus_promo_kind) "
                 "VALUES ('fail-backfill@example.test', '', '', 'free_trial') RETURNING id"
@@ -214,6 +214,76 @@ class RecordStoreMigrationTests(PostgresTestCase):
             definition = cur.fetchone()
         self.assertIsNotNone(definition)
         self.assertIn("lower(btrim(email)), id DESC", definition["indexdef"])
+
+    def test_v4_upgrades_existing_v3_tables_with_ui_query_columns_and_region_index(self):
+        rs.init()
+        accounts = rs._qualified(ACCOUNTS)
+        jobs = rs._qualified(JOBS)
+        migrations = rs.postgres_store.qualified(rs._SCHEMA_MIGRATIONS)
+        region_index = rs.postgres_store.qualified(
+            "idx_registered_accounts_archived_account_registration_region_id"
+        )
+        with rs._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"DROP INDEX IF EXISTS {region_index}")
+            for column in rs._UI_QUERY_ACCOUNT_COLUMNS:
+                cur.execute(f"ALTER TABLE {accounts} DROP COLUMN {rs.postgres_store.quote_identifier(column)}")
+            for column in rs._UI_QUERY_JOB_COLUMNS:
+                cur.execute(f"ALTER TABLE {jobs} DROP COLUMN {rs.postgres_store.quote_identifier(column)}")
+            cur.execute(
+                f"DELETE FROM {migrations} WHERE version = %s",
+                (rs._UI_QUERY_COLUMNS_SCHEMA_VERSION,),
+            )
+            cur.execute(
+                f"INSERT INTO {accounts} (email, created_at, updated_at, data) "
+                "VALUES ('v3-legacy@example.test', '2026-11-26', '2026-11-26', %s::jsonb) RETURNING id",
+                (json.dumps({
+                    "extra_json": json.dumps({"totp_setup_pending": "YES"}),
+                    "registration_proxy_region": " jp ",
+                    "user_name": "历史用户",
+                    "note": "历史备注",
+                    "plan_last_success_result_json": {"ok": True},
+                }),),
+            )
+            account_id = cur.fetchone()["id"]
+            cur.execute(
+                f"INSERT INTO {jobs} (job_uuid, created_at, updated_at, data) "
+                "VALUES ('v3-legacy-job', '2026-11-26', '2026-11-26', %s::jsonb) RETURNING id",
+                (json.dumps({
+                    "requested_status": " PARTIAL_SUCCESS ",
+                    "config_snapshot": {"registration_driver": " Protocol_OSS_2 "},
+                }),),
+            )
+            job_id = cur.fetchone()["id"]
+
+        with (
+            patch.object(rs, "_READY_KEY", ""),
+            patch.object(rs, "_apply_record_schema", wraps=rs._apply_record_schema) as apply_v1,
+        ):
+            rs.init()
+        apply_v1.assert_not_called()
+
+        with rs._connect() as conn, conn.cursor() as cur:
+            self.assertTrue(rs._migration_completed(conn, rs._UI_QUERY_COLUMNS_SCHEMA_VERSION))
+            cur.execute(
+                f"SELECT account_totp_setup_pending, account_registration_region, "
+                f"account_user_name, account_note, account_has_plan_snapshot "
+                f"FROM {accounts} WHERE id = %s",
+                (account_id,),
+            )
+            self.assertEqual(
+                tuple(cur.fetchone().values()),
+                (True, "JP", "历史用户", "历史备注", True),
+            )
+            cur.execute(
+                f"SELECT job_requested_status, job_registration_driver FROM {jobs} WHERE id = %s",
+                (job_id,),
+            )
+            self.assertEqual(tuple(cur.fetchone().values()), ("partial_success", "protocol_oss_2"))
+            cur.execute(
+                "SELECT indexdef FROM pg_indexes WHERE schemaname = %s AND indexname = %s",
+                (self.schema, "idx_registered_accounts_archived_account_registration_region_id"),
+            )
+            self.assertIsNotNone(cur.fetchone())
 
 
 class PartialUpdateTests(PostgresTestCase):

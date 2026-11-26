@@ -263,7 +263,7 @@ def _registration_driver_matches(drivers: frozenset[str]) -> tuple[str, list[Any
     jobs = _q(record_store.JOBS)
     return (
         f"""COALESCE((
-            SELECT LOWER(COALESCE(j.data #>> '{{config_snapshot,registration_driver}}', ''))
+            SELECT COALESCE(j.job_registration_driver, '')
               FROM {jobs} j
              WHERE j.account_id = a.id
                AND LOWER(COALESCE(j.job_type, 'registration'))
@@ -279,7 +279,7 @@ def _account_registration_driver_sql() -> str:
     jobs = _q(record_store.JOBS)
     return f"""LOWER(BTRIM(COALESCE(
         NULLIF(BTRIM(a.account_registration_driver), ''),
-        (SELECT j.data #>> '{{config_snapshot,registration_driver}}'
+        (SELECT NULLIF(j.job_registration_driver, '')
          FROM {jobs} j WHERE j.account_id = a.id
            AND LOWER(COALESCE(j.job_type, 'registration'))
                IN ('registration', 'registration_resume')
@@ -658,7 +658,7 @@ def _compile_account_predicates(
             where.append(predicate)
             params.extend(predicate_params)
         elif term.field == "region":
-            where.append("UPPER(BTRIM(COALESCE(a.data->>'registration_proxy_region', ''))) = %s")
+            where.append("a.account_registration_region = %s")
             params.append(term.value)
         elif term.field == "id":
             where.append("CAST(a.id AS TEXT) = %s")
@@ -677,13 +677,13 @@ def _compile_account_predicates(
         else:
             # 只搜索列表可安全展示的固定字段；不要把整段 JSONB 或凭证纳入 ILIKE。
             columns = {
-                "email": "a.email", "name": "COALESCE(a.data->>'user_name', '')",
-                "source": "COALESCE(a.email_source, '')", "note": "COALESCE(a.data->>'note', '')",
+                "email": "a.email", "name": "a.account_user_name",
+                "source": "COALESCE(a.email_source, '')", "note": "a.account_note",
             }
             expression = columns.get(term.field) or (
                 "concat_ws(' ', "
-                "CAST(a.id AS TEXT), a.email, COALESCE(a.data->>'user_name', ''), "
-                "COALESCE(a.email_source, ''), COALESCE(a.data->>'note', '')"
+                "CAST(a.id AS TEXT), a.email, a.account_user_name, "
+                "COALESCE(a.email_source, ''), a.account_note"
                 ")"
             )
             where.append(f"{expression} ILIKE %s")
@@ -703,7 +703,7 @@ def _compile_account_predicates(
         params.append(f"%{value.lstrip('#')}%")
     value = _text(filters.get("email"))
     if value:
-        where.append("(a.email ILIKE %s OR COALESCE(a.data->>'user_name', '') ILIKE %s)")
+        where.append("(a.email ILIKE %s OR a.account_user_name ILIKE %s)")
         params.extend((f"%{value}%", f"%{value}%"))
     for _key, predicate, values in _account_facet_predicates(plan, filters, _account_facet_expressions()):
         where.append(predicate)
@@ -1214,17 +1214,7 @@ def list_account_statuses(
 
 _JOB_PASSWORD_PRESENT = _ACCOUNT_PASSWORD_PRESENT
 _JOB_TOTP_PRESENT = _ACCOUNT_TOTP_PRESENT
-_ACCOUNT_TOTP_SETUP_PENDING = """LOWER(COALESCE(
-    CASE
-        WHEN jsonb_typeof(a.data->'extra_json') = 'object'
-            THEN a.data #>> '{extra_json,totp_setup_pending}'
-        WHEN jsonb_typeof(a.data->'extra_json') = 'string'
-             AND (a.data->>'extra_json') IS JSON OBJECT
-            THEN (a.data->>'extra_json')::jsonb->>'totp_setup_pending'
-        ELSE NULL
-    END,
-    'false'
-)) IN ('true', '1', 'yes')"""
+_ACCOUNT_TOTP_SETUP_PENDING = "COALESCE(a.account_totp_setup_pending, FALSE)"
 _JOB_PASSWORD_REQUIRED = "COALESCE(j.job_config_password_enabled, TRUE)"
 _JOB_PLAN_CHECK_REQUIRED = "COALESCE(j.job_config_plan_check_enabled, TRUE)"
 _JOB_TWOFA_REQUIRED = "COALESCE(j.job_config_twofa_enabled, TRUE)"
@@ -1245,54 +1235,7 @@ _JOB_DISPLAY_STATUS = f"""CASE
 END"""
 
 
-def _registration_completion_accounts_sql(job_source: str, *, successful_jobs_only: bool = False) -> str:
-    """按相关账号读取一次 2FA 待确认事实；跳过其余条件已不完整的账号。"""
-    accounts = _q(record_store.ACCOUNTS)
-    status_filter = (
-        "AND LOWER(BTRIM(COALESCE(j.status, ''))) IN ('success', 'partial_success')"
-        if successful_jobs_only else ""
-    )
-    return f"""
-        completion_account_ids AS MATERIALIZED (
-            SELECT DISTINCT a.id
-              FROM {job_source} j
-              JOIN {accounts} a ON a.id = j.account_id
-             WHERE j.job_account_id IS NOT NULL
-               {status_filter}
-               AND (NOT {_JOB_CODEX_REQUIRED} OR COALESCE(a.codex_status, '') = 'success')
-               AND (NOT {_JOB_PASSWORD_REQUIRED} OR {_JOB_PASSWORD_PRESENT})
-               AND (NOT {_JOB_PLAN_CHECK_REQUIRED} OR COALESCE(a.plan_check_status, '') = 'success')
-               AND {_JOB_TWOFA_REQUIRED} AND {_JOB_TOTP_PRESENT}
-        ),
-        completion_account_extra AS MATERIALIZED (
-            SELECT a.id, a.data->'extra_json' AS extra_json
-              FROM {accounts} a
-              JOIN completion_account_ids needed ON needed.id = a.id
-        ),
-        completion_account_states AS MATERIALIZED (
-            SELECT id, LOWER(COALESCE(
-                CASE
-                    WHEN jsonb_typeof(extra_json) = 'object'
-                        THEN extra_json->>'totp_setup_pending'
-                    WHEN jsonb_typeof(extra_json) = 'string'
-                         AND (extra_json #>> '{{}}') IS JSON OBJECT
-                        THEN (extra_json #>> '{{}}')::jsonb->>'totp_setup_pending'
-                    ELSE NULL
-                END, 'false'
-            )) IN ('true', '1', 'yes') AS totp_setup_pending
-              FROM completion_account_extra
-        )
-    """
-
-
-def _registration_completion_display_status_sql() -> str:
-    """总览使用窄投影；其他任务列表继续沿用自己的展示状态读取路径。"""
-    return _JOB_DISPLAY_STATUS.replace(
-        _ACCOUNT_TOTP_SETUP_PENDING, "COALESCE(account_setup.totp_setup_pending, FALSE)",
-    )
-
-
-# 批次进度行只需要表格/按钮用到的字段。progress_steps 单条可达 1 MB，
+# 批次进度行与表格行只需要表格/按钮用到的字段。progress_steps 单条可达 1 MB，
 # 不能把整段 data 原样搬进 Python 再丢掉。
 _PROGRESS_JOB_COLUMNS = ", ".join(
     f"j.{postgres_store.quote_identifier(column)}"
@@ -1308,6 +1251,17 @@ _PROGRESS_SUMMARY_DATA_SQL = f"""
         'codex', jsonb_build_object('state', j.data#>>'{{progress_steps,codex,state}}'),
         'twofa', jsonb_build_object('state', j.data#>>'{{progress_steps,twofa,state}}')
     ))
+"""
+_JOB_TABLE_DATA_SQL = f"""
+    CASE WHEN jsonb_typeof(j.data->'progress_steps') = 'object' THEN
+        (j.data - {_PROGRESS_BIG_DATA_KEYS} - ARRAY['progress_steps','route_attempts','occurrences']::text[])
+        || jsonb_build_object('progress_steps', jsonb_build_object(
+            'codex', jsonb_build_object('state', j.data#>>'{{progress_steps,codex,state}}'),
+            'twofa', jsonb_build_object('state', NULLIF(j.job_twofa_state, ''))
+        ))
+    ELSE
+        (j.data - {_PROGRESS_BIG_DATA_KEYS} - ARRAY['progress_steps','route_attempts','occurrences']::text[])
+    END
 """
 _PROGRESS_SUMMARY_STAGE_COLUMNS = """
     , CASE WHEN j.status <> 'success' THEN (
@@ -1382,7 +1336,10 @@ def _job_where(filters: dict[str, str], *, public_status: bool = False) -> tuple
         params.append(value[:10])
     value = _text(filters.get("status")).lower()
     if value:
-        status_sql = public_result_status_sql(_JOB_DISPLAY_STATUS, "j.data") if public_status else _JOB_DISPLAY_STATUS
+        status_sql = (
+            public_result_status_sql(_JOB_DISPLAY_STATUS, requested_status_expression="j.job_requested_status")
+            if public_status else _JOB_DISPLAY_STATUS
+        )
         where.append(f"({status_sql}) = %s")
         params.append(public_result_status(value) if public_status else value)
     return where, params
@@ -1394,8 +1351,14 @@ def list_jobs(request: PageRequest, *, progress_batch_id: str = "", view: str = 
 
     jobs = _q(record_store.JOBS)
     accounts = _q(record_store.ACCOUNTS)
-    display_status_sql = public_result_status_sql(_JOB_DISPLAY_STATUS, "j.data") if public_status else _JOB_DISPLAY_STATUS
-    batch_status_sql = public_result_status_sql("j.status", "j.data") if public_status else "j.status"
+    display_status_sql = (
+        public_result_status_sql(_JOB_DISPLAY_STATUS, requested_status_expression="j.job_requested_status")
+        if public_status else _JOB_DISPLAY_STATUS
+    )
+    batch_status_sql = (
+        public_result_status_sql("j.status", requested_status_expression="j.job_requested_status")
+        if public_status else "j.status"
+    )
     where, params = _job_where(request.filters, public_status=public_status)
     clause = f" WHERE {' AND '.join(where)}" if where else ""
     from_sql = f" FROM {jobs} j LEFT JOIN {accounts} a ON a.id = j.account_id"
@@ -1421,8 +1384,14 @@ def list_jobs(request: PageRequest, *, progress_batch_id: str = "", view: str = 
                 (operation_runs_relation, *params),
             )
             aggregate = cur.fetchone()
+            page_select = (
+                f"{_PROGRESS_JOB_COLUMNS}, ({_JOB_TABLE_DATA_SQL}) AS data, "
+                f"({display_status_sql}) AS projected_display_status"
+                if view == "table"
+                else f"j.*, ({display_status_sql}) AS projected_display_status"
+            )
             cur.execute(
-                f"SELECT j.*, ({display_status_sql}) AS projected_display_status{from_sql}{clause} "
+                f"SELECT {page_select}{from_sql}{clause} "
                 "ORDER BY j.id DESC LIMIT %s OFFSET %s",
                 (*params, request.limit, request.offset),
             )
@@ -2066,27 +2035,23 @@ def dashboard_aggregates(*, public_status: bool = False, include_email_status: b
             """
         )
         plans = {str(row["plan"]): int(row["count"]) for row in cur.fetchall()}
-        display_status_sql = _registration_completion_display_status_sql().replace("j.account_id", "j.job_account_id")
-        requested_status_sql = (
-            f"(SELECT original.data->>'requested_status' FROM {jobs} original WHERE original.id = p.job_id)"
-        )
         status_sql = (
-            public_result_status_sql("p.display_status", requested_status_expression=requested_status_sql)
+            public_result_status_sql("p.display_status", requested_status_expression="p.job_requested_status")
             if public_status else "p.display_status"
         )
         cur.execute(
             f"""WITH dashboard_jobs AS MATERIALIZED (
                 SELECT j.id AS job_id, j.status, j.created_at, j.account_id,
-                       j.account_id AS job_account_id,
+                       j.job_requested_status,
                        j.job_config_password_enabled, j.job_config_plan_check_enabled,
                        j.job_config_twofa_enabled, j.job_config_codex_enabled
                   FROM {jobs} j
-            ), {_registration_completion_accounts_sql("dashboard_jobs")},
+            ),
             displayed_jobs AS MATERIALIZED (
-                SELECT j.job_id, j.created_at, {display_status_sql} AS display_status
+                SELECT j.job_id, j.created_at, j.job_requested_status,
+                       {_JOB_DISPLAY_STATUS} AS display_status
                   FROM dashboard_jobs j
                   LEFT JOIN {accounts} a ON a.id = j.account_id
-                  LEFT JOIN completion_account_states account_setup ON account_setup.id = a.id
             ),
             folded_jobs AS MATERIALIZED (
                 SELECT p.created_at, {status_sql} AS status FROM displayed_jobs p

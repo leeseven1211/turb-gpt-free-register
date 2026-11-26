@@ -9,6 +9,8 @@ const expanded = ref(false);
 const toggle = ref<HTMLButtonElement>();
 const searchQuery = computed(() => props.query.trim().toLowerCase());
 
+const menuList = computed(() => orderedMenus(props.owner.fields.value));
+
 const fieldsByMenu = computed(() => {
   const result = new Map<string, ReturnType<typeof projectedFields>>();
   for (const field of projectedFields(props.owner.fields.value)) {
@@ -20,14 +22,33 @@ const fieldsByMenu = computed(() => {
   return result;
 });
 
+const keyToMenu = computed(() => {
+  const map = new Map<string, string>();
+  for (const [menu, fields] of fieldsByMenu.value) {
+    for (const field of fields) map.set(field.key, menu);
+  }
+  return map;
+});
+
+// 仅遍历实际修改过的字段键汇总各菜单待保存数，避免每次搜索按键扫描全部配置项。
+const dirtyCountByMenu = computed(() => {
+  const counts = new Map<string, number>();
+  for (const key of props.owner.dirtyKeys.value) {
+    const menu = keyToMenu.value.get(key);
+    if (menu) counts.set(menu, (counts.get(menu) || 0) + 1);
+  }
+  return counts;
+});
+
 const groups = computed(() => {
-  const items = orderedMenus(props.owner.fields.value).flatMap(name => {
+  const query = searchQuery.value;
+  const schemaFields = props.owner.fields.value;
+  const items = menuList.value.flatMap(name => {
     const fields = fieldsByMenu.value.get(name) || [];
-    const query = searchQuery.value;
     if (
       query &&
       !name.toLowerCase().includes(query) &&
-      !fields.some(field => searchText(field, props.owner.fields.value).includes(query))
+      !fields.some(field => searchText(field, schemaFields).includes(query))
     ) {
       return [];
     }
@@ -35,7 +56,7 @@ const groups = computed(() => {
       {
         name,
         category: navigationCategory(name),
-        dirty: fields.filter(field => props.owner.isDirty(field.key)).length,
+        dirty: dirtyCountByMenu.value.get(name) || 0,
       },
     ];
   });

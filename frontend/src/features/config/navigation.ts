@@ -343,6 +343,26 @@ export function codexConfigSectionForKey(key: string): string[] {
 
 const overridesMap = new Map(overrides);
 const planKeys = new Set(plans);
+const aliasesByDomain = new Map<string, readonly string[]>();
+for (const [alias, target] of Object.entries(aliases)) {
+  const existing = aliasesByDomain.get(target);
+  if (existing) (existing as string[]).push(alias);
+  else aliasesByDomain.set(target, [alias]);
+}
+interface CachedSearchEntry {
+  label?: string;
+  help?: string;
+  group?: string;
+  text: string;
+}
+// 按 schema 数组引用缓存投影字段、提链平台与小写搜索索引；配置重载替换数组时自动失效回收。
+const projectedFieldsCache = new WeakMap<readonly ConfigField[], readonly ConfigField[]>();
+const extractProvidersCache = new WeakMap<
+  readonly ConfigField[],
+  readonly (ConfigOption & {value: string; label: string; enabledKey: string})[]
+>();
+const searchTextCache = new WeakMap<readonly ConfigField[], Map<string, CachedSearchEntry>>();
+
 export const menuStorageKey = 'gpt_console_config_group';
 export const providerLabels: Record<string,string> = {legacy:'虾扯蛋链',lumen_flow:'流光',huanguang:'幻光',anguang:'暗光（XXSYUN 一条龙）'};
 const legacyExtract = new Set(['EXTRACT_LINK_API_BASE','EXTRACT_LINK_CDK','EXTRACT_LINK_TYPE','EXTRACT_LINK_REQUEST_TIMEOUT','EXTRACT_LINK_EVENT_TIMEOUT']);
@@ -353,17 +373,26 @@ export function menuFor(name: string): string {
   const domain = aliases[name] || name || '其他';
   return Object.keys(menus).find(menu => menus[menu]!.includes(domain)) || domain;
 }
+function readProjectedFields(fields: readonly ConfigField[]): readonly ConfigField[] {
+  let cached = projectedFieldsCache.get(fields);
+  if (!cached) {
+    const seen = new Set<string>();
+    cached = fields
+      .filter(field => !field.hidden && !seen.has(field.key) && !!seen.add(field.key))
+      .map(field => ({...field, group: fieldDomain(field)}));
+    projectedFieldsCache.set(fields, cached);
+  }
+  return cached;
+}
 export function projectedFields(fields: readonly ConfigField[]): ConfigField[] {
-  const seen = new Set<string>();
-  return fields.filter(field => !field.hidden && !seen.has(field.key) && !!seen.add(field.key))
-    .map(field => ({...field, group: fieldDomain(field)}));
+  return readProjectedFields(fields).slice();
 }
 export function orderedMenus(fields: readonly ConfigField[]): string[] {
-  const available = [...new Set(projectedFields(fields).map(field => menuFor(field.group)))];
+  const available = [...new Set(readProjectedFields(fields).map(field => menuFor(field.group)))];
   return [...Object.keys(menus).filter(menu => available.includes(menu)), ...available.filter(menu => !menus[menu])];
 }
 export function domainsFor(menu: string, fields: readonly ConfigField[]): string[] {
-  const available = [...new Set(projectedFields(fields).filter(field => menuFor(field.group) === menu).map(field => field.group))];
+  const available = [...new Set(readProjectedFields(fields).filter(field => menuFor(field.group) === menu).map(field => field.group))];
   return [...(menus[menu] || []).filter(domain => available.includes(domain)), ...available.filter(domain => !(menus[menu] || []).includes(domain))];
 }
 export function schemaOptions(field?: ConfigField): ConfigOption[] {
@@ -374,10 +403,19 @@ export function registrationDriverValue(value: unknown): string {
   const current=String(value??'roxy').trim().toLowerCase()||'roxy';
   return ({protocol:'protocol_oss_2',protocol_oss:'protocol_oss_2',roxy_oss:'roxy'} as Record<string,string>)[current]||current;
 }
+function readExtractProviders(fields: readonly ConfigField[]) {
+  let cached = extractProvidersCache.get(fields);
+  if (!cached) {
+    const existingKeys = new Set(fields.map(field => field.key));
+    cached = schemaOptions(fields.find(field => field.key === 'EXTRACT_LINK_DEFAULT_PROVIDER'))
+      .map(option => ({...option,value:option.value.toLowerCase(),label:providerLabels[option.value.toLowerCase()] || option.label,enabledKey:`EXTRACT_LINK_${option.value.toUpperCase()}_ENABLED`}))
+      .filter(option => existingKeys.has(option.enabledKey));
+    extractProvidersCache.set(fields, cached);
+  }
+  return cached;
+}
 export function extractProviders(fields: readonly ConfigField[]) {
-  return schemaOptions(fields.find(field => field.key === 'EXTRACT_LINK_DEFAULT_PROVIDER'))
-    .map(option => ({...option,value:option.value.toLowerCase(),label:providerLabels[option.value.toLowerCase()] || option.label,enabledKey:`EXTRACT_LINK_${option.value.toUpperCase()}_ENABLED`}))
-    .filter(option => fields.some(field => field.key === option.enabledKey));
+  return readExtractProviders(fields).slice();
 }
 export function subsectionFor(field: ConfigField, fields: readonly ConfigField[]): string {
   const domain = fieldDomain(field), key = field.key;
@@ -387,7 +425,7 @@ export function subsectionFor(field: ConfigField, fields: readonly ConfigField[]
   if (domain === 'Codex') return codexConfigSectionForKey(key)[0]!;
   if (domain === '提链') {
     if (key.startsWith('EXTRACT_LINK_PAYMENT_')) return '独立支付';
-    const providers = extractProviders(fields);
+    const providers = readExtractProviders(fields);
     if (providers.some(provider => provider.enabledKey === key)) return '通用配置';
     return providers.find(provider => provider.value === 'legacy' ? legacyExtract.has(key) || key.startsWith('EXTRACT_LINK_LEGACY_') : key.startsWith(`EXTRACT_LINK_${provider.value.toUpperCase()}_`))?.label || '通用配置';
   }
@@ -399,8 +437,8 @@ const subsectionOrder: Record<string,string[]> = {
   '代理与网络':['任务用池','代理来源','库存策略','高级兼容'], 'Codex':['基础配置','CPA配置','sub2api','Token 自动刷新'],
 };
 export function subsectionsFor(domain: string, fields: readonly ConfigField[]): string[] {
-  if (domain === '提链') return ['通用配置',...extractProviders(fields).map(provider => provider.label),'独立支付'];
-  const available = [...new Set(projectedFields(fields).filter(field => field.group === domain).map(field => subsectionFor(field,fields)))].filter(Boolean);
+  if (domain === '提链') return ['通用配置',...readExtractProviders(fields).map(provider => provider.label),'独立支付'];
+  const available = [...new Set(readProjectedFields(fields).filter(field => field.group === domain).map(field => subsectionFor(field,fields)))].filter(Boolean);
   const order = subsectionOrder[domain] || [];
   if (domain === '代理与网络') available.unshift('任务用池');
   return [...order.filter(section => available.includes(section)), ...available.filter(section => !order.includes(section))];
@@ -416,13 +454,35 @@ export function fieldDestination(field: ConfigField, fields: readonly ConfigFiel
   return {menu:menuFor(domain),domain,section:subsectionFor(field,fields)};
 }
 export function searchText(field: ConfigField, fields: readonly ConfigField[]): string {
+  let index = searchTextCache.get(fields);
+  if (!index) {
+    index = new Map();
+    searchTextCache.set(fields, index);
+  }
+  const cached = index.get(field.key);
+  if (cached && cached.label === field.label && cached.help === field.help && cached.group === field.group) {
+    return cached.text;
+  }
   const domain = fieldDomain(field);
-  return [field.key,field.label,field.help,field.group,domain,menuFor(domain),subsectionFor(field,fields),...Object.keys(aliases).filter(name => aliases[name] === domain)].join(' ').toLowerCase();
+  const text = [
+    field.key,
+    field.label,
+    field.help,
+    field.group,
+    domain,
+    menuFor(domain),
+    subsectionFor(field, fields),
+    ...(aliasesByDomain.get(domain) || []),
+  ]
+    .join(' ')
+    .toLowerCase();
+  index.set(field.key, {label: field.label, help: field.help, group: field.group, text});
+  return text;
 }
 export function findDestination(query: string, fields: readonly ConfigField[], currentMenu=''): Destination | null {
   const needle = query.trim().toLowerCase();
   if (!needle) return null;
-  const visible = projectedFields(fields);
+  const visible = readProjectedFields(fields);
   const exact = visible.find(field => field.key.toLowerCase() === needle);
   const matches = visible.filter(field => searchText(field,fields).includes(needle));
   const hit = exact || matches.find(field => menuFor(field.group) === currentMenu) || matches[0];
@@ -431,9 +491,9 @@ export function findDestination(query: string, fields: readonly ConfigField[], c
   return menu ? destination(menu,fields) : null;
 }
 export function visibleFields(owner: ConfigDraftOwner, current: Destination, searching: boolean): ConfigField[] {
-  let fields = projectedFields(owner.fields.value).filter(field => field.group === current.domain && (!current.section || subsectionFor(field,owner.fields.value) === current.section));
+  let fields = readProjectedFields(owner.fields.value).filter(field => field.group === current.domain && (!current.section || subsectionFor(field,owner.fields.value) === current.section));
   if (current.domain === '提链' && current.section === '通用配置') {
-    const enabled = new Set(extractProviders(owner.fields.value).map(provider => provider.enabledKey));
+    const enabled = new Set(readExtractProviders(owner.fields.value).map(provider => provider.enabledKey));
     fields = fields.filter(field => !enabled.has(field.key));
   }
   if (current.domain === '代理与网络' && current.section === '代理来源' && !searching) {

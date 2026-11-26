@@ -17,7 +17,7 @@
 		<string>--port</string>
 		<string>8000</string>
 		<string>--http-threads</string>
-		<string>4</string>
+		<string>16</string>
 		<string>--http-drain-timeout</string>
 		<string>20</string>
 		<string>--shutdown-timeout</string>

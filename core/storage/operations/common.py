@@ -566,14 +566,24 @@ def _compatibility_run_projection_sql(
     return ", ".join(f"{expressions[name]} AS {name}" for name in selected)
 
 
+def _compatibility_source_bigint_sql(run_alias: str, source_system: str) -> str:
+    """将兼容来源 ID 安全转为 BIGINT，保持主键索引可用且与文本精确匹配等价。"""
+    return (
+        f"CASE WHEN {run_alias}.source_system='{source_system}' "
+        f"AND {run_alias}.source_id ~ '^-?(0|[1-9][0-9]{{0,18}})$' "
+        f"AND pg_input_is_valid({run_alias}.source_id, 'bigint') "
+        f"THEN ({run_alias}.source_id)::bigint END"
+    )
+
+
 def _compatibility_run_joins_sql(*, run_alias: str = "rr") -> str:
+    registration_id_sql = _compatibility_source_bigint_sql(run_alias, "registration_jobs")
+    account_task_id_sql = _compatibility_source_bigint_sql(run_alias, "account_action_tasks")
     return (
         f"LEFT JOIN {postgres_store.qualified(record_store.JOBS.name)} registration_job "
-        f"ON registration_job.id::text=CASE WHEN {run_alias}.source_system='registration_jobs' "
-        f"THEN {run_alias}.source_id END "
+        f"ON registration_job.id={registration_id_sql} "
         f"LEFT JOIN {_table('account_action_tasks')} account_task "
-        f"ON account_task.id::text=CASE WHEN {run_alias}.source_system='account_action_tasks' "
-        f"THEN {run_alias}.source_id END"
+        f"ON account_task.id={account_task_id_sql}"
     )
 
 

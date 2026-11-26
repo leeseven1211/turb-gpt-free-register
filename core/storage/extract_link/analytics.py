@@ -120,17 +120,20 @@ def workbench_analytics(*, days: int = 7, provider_id: str | None = None, now: d
             WHEN error_text LIKE '%%任务处理失败%%' THEN 'extract_provider_task_failed'
             ELSE stored_failure_code END
         ELSE stored_failure_code END"""
+    # 仅成功任务计算耗时、仅失败任务关联读取错误诊断与 JSONB，缩小 scoped 物化宽度与索引探测次数。
     sql = f"""WITH {projection}, scoped AS MATERIALIZED (
         SELECT p.*, (p.task_created_at AT TIME ZONE 'Asia/Shanghai')::date AS task_date,
-            EXTRACT(EPOCH FROM (r.completed_at-r.started_at)) AS duration_seconds,
-            COALESCE(NULLIF(r.result_summary->>'cause_code',''),
+            CASE WHEN p.task_status='success' THEN EXTRACT(EPOCH FROM (r.completed_at-r.started_at)) END AS duration_seconds,
+            CASE WHEN {conditions['failed']} THEN COALESCE(NULLIF(r.result_summary->>'cause_code',''),
                 NULLIF(job.public_state->'summary'->>'failure_code',''),
-                NULLIF(r.error_code,''), '') AS stored_failure_code,
-            COALESCE(r.error_message,'') AS error_text
+                NULLIF(r.error_code,''), '') END AS stored_failure_code,
+            CASE WHEN {conditions['failed']} THEN COALESCE(r.error_message,'') END AS error_text
         FROM projected p
         JOIN filtered_tasks task ON task.id=p.task_id
-        LEFT JOIN {operation_store._table('operation_runs')} r ON r.id=task.last_run_id
-        LEFT JOIN {operation_store._table('extract_link_provider_jobs')} job ON job.run_id=r.id
+        LEFT JOIN {operation_store._table('operation_runs')} r
+            ON (p.task_status='success' OR ({conditions['failed']})) AND r.id=task.last_run_id
+        LEFT JOIN {operation_store._table('extract_link_provider_jobs')} job
+            ON ({conditions['failed']}) AND job.run_id=r.id
         WHERE p.task_created_at >= %s AND p.task_created_at < %s
     ), grouped AS (
         SELECT GROUPING(task_date) AS g_date, GROUPING(provider_id) AS g_provider,

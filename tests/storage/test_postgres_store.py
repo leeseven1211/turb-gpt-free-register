@@ -32,6 +32,25 @@ class PostgresPrimaryStoreTests(unittest.TestCase):
             save.assert_called_once_with("jobs.json", payload)
             self.assertEqual(json.loads(path.read_text(encoding="utf-8")), payload)
 
+    def test_pool_defaults_to_max_size_24_when_env_unset(self):
+        captured = {}
+
+        class FakePool:
+            def __init__(self, target, **kwargs):
+                captured["target"] = target
+                captured.update(kwargs)
+
+        with (
+            patch.dict("os.environ", {}, clear=False),
+            patch.object(postgres_store, "_POOLS", {}),
+            patch("psycopg_pool.ConnectionPool", FakePool),
+        ):
+            import os
+            os.environ.pop("TURB_DB_POOL_MAX", None)
+            postgres_store._pool_for("postgresql://localhost:55432/turb_test", {})
+
+        self.assertEqual(captured["max_size"], 24)
+
 
 if __name__ == "__main__":
     unittest.main()
