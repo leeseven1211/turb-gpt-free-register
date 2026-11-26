@@ -85,6 +85,9 @@ class Sub2ApiJobTests(PostgresTestCase):
         self.assertEqual("backend-a", update.call_args.kwargs["expected_backend"])
         self.assertEqual("success", self.rows()[0]["status"])
         self.assertEqual("local-original", codex.get_account_by_email(self.credential["email"])["access_token"])
+        credential = records.get_row_by(records.CODEX_CREDENTIALS, "filename", self.filename)
+        self.assertEqual(41, credential.get("sub2api_account_id"))
+        self.assertEqual("backend-a", credential.get("sub2api_backend_identity"))
 
     def test_each_remote_target_is_preserved_and_processed(self):
         self.jobs.queue_sync(self.filename, remote_account_ids=[41, 42, 41])

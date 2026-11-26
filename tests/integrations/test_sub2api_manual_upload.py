@@ -92,6 +92,18 @@ class Sub2ApiManualUploadTests(PostgresTestCase):
         self.assertEqual(0, row["exported_count"])
         self.assertEqual(0, row["sub2_uploaded_count"])
 
+    def test_upload_persists_remote_id_on_original_credential_without_enabling(self):
+        queued = manual_upload.queue_filename(self.filename)
+        with patch.object(client, "upload_configured_codex_oauth_credential", return_value={
+            "ok": True, "uploaded": True, "enabled": False,
+            "sub2api_account_id": 321, "backend_identity": "fixture-backend",
+        }):
+            self.assertTrue(self.execute(queued)["ok"])
+        reference = records.get_row_by(records.CODEX_CREDENTIALS, "filename", self.filename)
+        self.assertEqual(321, reference.get("sub2api_account_id"))
+        self.assertEqual("fixture-backend", reference.get("sub2api_backend_identity"))
+        self.assertEqual(1, reference["sub2_uploaded_count"])
+
     def test_timeout_remains_unknown_and_explicit_retry_is_not_blocked(self):
         result = manual_upload.queue_filename(self.filename)
         with patch.object(client, "upload_configured_codex_oauth_credential", side_effect=client.Sub2ApiSyncError(

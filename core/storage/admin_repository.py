@@ -49,14 +49,14 @@ def _text(value: Any) -> str:
 
 
 _SUB2API_ID_SQL = """
-CASE
+COALESCE(NULLIF(BTRIM(CASE
     WHEN jsonb_typeof(a.data->'extra_json') = 'object'
         THEN (a.data->'extra_json')->>'sub2api_account_id'
     WHEN jsonb_typeof(a.data->'extra_json') = 'string'
          AND LEFT(BTRIM(a.data->>'extra_json'), 1) = '{'
         THEN ((a.data->>'extra_json')::jsonb)->>'sub2api_account_id'
     ELSE NULL
-END
+END), ''), NULLIF(BTRIM(c.data->>'sub2api_account_id'), ''))
 """
 
 # 沿用历史导出语义：下载、已确认上传或远端关联任一事实成立即计入。

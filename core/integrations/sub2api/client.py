@@ -528,8 +528,6 @@ def _configured_upload(auth_json: dict[str, Any], *, checkpoint: Callable[[], No
         error.backend_identity = config.backend_identity
         raise error from None
     result["backend_identity"] = config.backend_identity
-    if not enable and not config.options:
-        return result
     data = result.get("response", {}).get("data")
     uploaded = False
     try:
@@ -546,7 +544,13 @@ def _configured_upload(auth_json: dict[str, Any], *, checkpoint: Callable[[], No
             raise ValueError
         account_id = _positive_id(item.get("account_id"))
     except (ValueError, TypeError, AttributeError):
+        if not enable and not config.options:
+            return result
         raise Sub2ApiSyncError("resolve_account", "sub2api_import_result_invalid", "Sub2API 导入结果无法唯一确认成功账号", uploaded=uploaded, backend_identity=config.backend_identity) from None
+    if not enable and not config.options:
+        # 手动导入不执行恢复请求；仅在回执唯一确认成功账号时补回远端 ID。
+        result["sub2api_account_id"] = account_id
+        return result
     # 导入接口不保证支持所有可选设置；按导入结果确认的原 ID 增量应用。
     if config.options:
         try:
