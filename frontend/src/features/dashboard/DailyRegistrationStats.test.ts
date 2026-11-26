@@ -6,257 +6,167 @@ import type {AccountQuerySpec} from '../accounts/queryAdapter';
 
 const wrappers:ReturnType<typeof mount>[]=[];
 const baseQuery:AccountQuerySpec={
- schema_version:1,
- entity:'account',
- archived:'0',
- q:'注册任务日期:2026-11-20..2026-11-26',
- date_from:'',
- date_to:'',
- plan:[],
- filters:{
-  id:'',email:'',source:[],registration_driver:[],token:[],password:[],
-  promotion:['none'],totp:[],risk:[],codex:[],account_status:[],email_status:[],
- },
- order:[{field:'id',direction:'desc'}],
- limit:null,
+ schema_version:1,entity:'account',archived:'0',q:'',date_from:'2026-11-24',date_to:'2026-11-24',plan:[],
+ filters:{id:'',email:'',source:[],registration_driver:[],token:[],password:[],promotion:['none'],totp:[],risk:[],codex:[],account_status:[],email_status:[]},
+ order:[{field:'id',direction:'desc'}],limit:null,
 };
 const offers=[
- {key:'offer-plus-half',plan:'plus',label:'Plus 半价 2个月',count:2,stale_count:1},
- {key:'offer-team-trial',plan:'team',label:'Team 免费 1个月',count:3,stale_count:0},
- {key:'offer-go-discount',plan:'go',label:'Go 减 25% 1个月',count:1,stale_count:0},
+ {key:'offer-plus-half',plan:'plus',label:'Plus 半价 2个月',count:20,stale_count:1},
+ {key:'offer-team-trial',plan:'team',label:'Team 免费 1个月',count:30,stale_count:0},
+ {key:'offer-go-discount',plan:'go',label:'Go 减 25% 1个月',count:10,stale_count:0},
 ];
 const state:DailyRegistrationStatsState={
- data:{
-  ok:true,timezone:'Asia/Shanghai',date_from:'2026-11-20',date_to:'2026-11-26',
-  updated_at:'2026-11-26T12:00:00+08:00',
+ data:{ok:true,timezone:'Asia/Shanghai',date_from:'2026-11-24',date_to:'2026-11-26',cohort_basis_label:'按账号首次入库日期统计',
   rows:[
-   {date:'2026-11-20',total:8,counts:{success:5,failed:3},accounts_total:4,plans:{plus:2,free:2},offers,promoted_accounts_total:3,unpromoted_count:2,query:baseQuery},
-   {date:'2026-11-21',total:0,counts:{},accounts_total:0,plans:{},offers:[],promoted_accounts_total:0,unpromoted_count:0,query:{...baseQuery,q:'注册任务日期:2026-11-21'}},
-  ],
-  summary:{total:8,accounts_total:4,unpromoted_count:2,offers,promoted_accounts_total:3,query:{...baseQuery,q:'注册任务日期:2026-11-20..2026-11-21'}},
- },
- loading:false,error:'',updatedAt:'2026-11-26T12:00:00+08:00',
- requestedRange:null,displayedRange:{from:'2026-11-20',to:'2026-11-26'},scopeCurrent:true,
- load:vi.fn(),
+   {date:'2026-11-24',total:150,counts:{success:90,failed:60},accounts_total:100,promoted_accounts_total:40,promotion_presence:{eligible:40,none:50,unknown:10},offers,unpromoted_count:55,query:baseQuery},
+   {date:'2026-11-25',accounts_total:200,promoted_accounts_total:80,promotion_presence:{eligible:80,none:100,unknown:20},offers:[{...offers[0]!,count:10,stale_count:0},{...offers[1]!,count:60}],unpromoted_count:100,query:{...baseQuery,date_from:'2026-11-25',date_to:'2026-11-25'}},
+   {date:'2026-11-26',accounts_total:0,promoted_accounts_total:0,promotion_presence:{eligible:0,none:0,unknown:0},offers:[],unpromoted_count:0,query:{...baseQuery,date_from:'2026-11-26',date_to:'2026-11-26'}},
+  ],summary:{accounts_total:300,promoted_accounts_total:120,promotion_presence:{eligible:120,none:150,unknown:30},offers,unpromoted_count:155,query:{...baseQuery,date_to:'2026-11-26'}},
+ },loading:false,error:'',updatedAt:'2026-11-26T12:00:00+08:00',requestedRange:null,displayedRange:{from:'2026-11-24',to:'2026-11-26'},scopeCurrent:true,load:vi.fn(),
 };
-
+function render(value=state,onBulkPlanCreate=vi.fn()){
+ const wrapper=mount(DailyRegistrationStats,{props:{state:value,onBulkPlanCreate}});wrappers.push(wrapper);return wrapper;
+}
 beforeEach(()=>{vi.useFakeTimers();});
 afterEach(()=>{wrappers.splice(0).forEach(wrapper=>wrapper.unmount());vi.useRealTimers();});
 
 describe('DailyRegistrationStats',()=>{
- it('shows all concrete plan offers for the selected day without registration result charts',async()=>{
-  const wrapper=mount(DailyRegistrationStats,{props:{state}});
-  wrappers.push(wrapper);
-  expect(wrapper.get('[data-daily-range]').text()).toContain('2026-11-20');
-  expect(wrapper.get('[data-daily-range]').text()).toContain('2026-11-26');
-  expect(wrapper.text()).toContain('每日账号套餐优惠');
-  expect(wrapper.text()).toContain('同一账号有多项优惠时分别计数');
-  expect(wrapper.text()).toContain('每项按账号去重');
-  expect(wrapper.find('[data-daily-view="status"]').exists()).toBe(false);
-  const row=wrapper.get('[data-daily-row="2026-11-20"]');
-  expect(row.text()).toContain('注册任务总数 8');
-  expect(row.text()).toContain('账号总数（含归档） 4');
-  expect(row.text()).toContain('有优惠账号 3');
-  expect(row.text()).not.toContain('成功');
-  expect(row.text()).not.toContain('失败');
-  expect(row.text()).toContain('Team 免费 1个月');
-  expect(row.text()).toContain('Plus 半价 2个月');
-  expect(row.text()).toContain('Go 减 25% 1个月');
-  expect(wrapper.findAll('[data-daily-row]')).toHaveLength(1);
-  expect(wrapper.findAll('[data-daily-bar]')).toHaveLength(2);
-  await wrapper.get('[data-daily-bar="2026-11-21"]').trigger('click');
-  expect(wrapper.find('[data-daily-row="2026-11-20"]').exists()).toBe(false);
-  expect(wrapper.get('[data-daily-row="2026-11-21"]').text()).toContain('注册任务总数 0');
-  expect(wrapper.get('[data-daily-row="2026-11-21"]').text()).toContain('暂无可用优惠记录');
+ it('shows account totals, presence proportions and every offer date together without opening a day',()=>{
+  const wrapper=render();
+  expect(wrapper.text()).toContain('每日账号总数');
+  expect(wrapper.text()).toContain('每日有无优惠占比');
+  expect(wrapper.text()).toContain('每日优惠种类占比');
+  expect(wrapper.text()).not.toContain('优惠覆盖数');
+  expect(wrapper.text()).not.toContain('注册任务总数');
+  expect(wrapper.text()).not.toContain('成功 90');
+  expect(wrapper.findAll('[data-daily-bar]')).toHaveLength(3);
+  expect(wrapper.findAll('[data-daily-presence]')).toHaveLength(3);
+  expect(wrapper.findAll('[data-daily-offer-cell]')).toHaveLength(9);
+  expect(wrapper.get('[data-daily-range]').text()).toContain('2026-11-24 至 2026-11-26');
+  expect(wrapper.get('[data-daily-range-3]').classes()).toContain('active');
  });
 
- it('uses the deduplicated account total as every offer percentage denominator and marks stale offers',()=>{
-  const wrapper=mount(DailyRegistrationStats,{props:{state}});
-  wrappers.push(wrapper);
-  const team=wrapper.get('[data-daily-offer="offer-team-trial"]');
-  const plus=wrapper.get('[data-daily-offer="offer-plus-half"]');
-  const go=wrapper.get('[data-daily-offer="offer-go-discount"]');
-  expect(team.text()).toContain('3 个账号');
-  expect(team.text()).toContain('75%');
-  expect(plus.text()).toContain('2 个账号');
-  expect(plus.text()).toContain('50%');
-  expect(plus.text()).toContain('1 个待复查');
-  expect(go.text()).toContain('25%');
-  expect(team.text()).not.toContain('待复查');
-  expect(wrapper.findAll('[data-daily-offer-group]').map(group=>group.attributes('data-daily-offer-group'))).toEqual(['team','plus','go']);
+ it('sizes quantity columns by unique account totals and keeps the zero date without a fake quantity',()=>{
+  const wrapper=render();
+  expect(wrapper.get('[data-daily-axis]').text()).toContain('账号数');
+  expect(wrapper.findAll('[data-daily-axis-tick]').map(tick=>tick.text())).toEqual(['200','150','100','50','0']);
+  const first=wrapper.get('[data-daily-bar="2026-11-24"]');
+  expect(first.get('[data-daily-account-total]').text()).toBe('100');
+  expect(first.get('[data-daily-quantity]').attributes('style')).toContain('height: 50%');
+  expect(first.attributes('aria-label')).toContain('账号总数 100');
+  expect(wrapper.get('[data-daily-bar="2026-11-26"] [data-daily-quantity]').attributes('style')).toContain('height: 0%');
  });
 
- it('disables empty batches and sends only the unchanged server query and generated name',async()=>{
-  const onBulkPlanCreate=vi.fn();
-  const wrapper=mount(DailyRegistrationStats,{props:{state,onBulkPlanCreate}});
-  wrappers.push(wrapper);
-  await wrapper.get('[data-daily-bulk]').trigger('click');
-  expect(onBulkPlanCreate).toHaveBeenCalledExactlyOnceWith({
-   name:'2026-11-20 无优惠账号查套餐',query:baseQuery,
-  });
-  expect(wrapper.get('[data-daily-row]').text()).toContain('未归档 Plus 无优惠 2');
-  await wrapper.get('[data-daily-bar="2026-11-21"]').trigger('click');
-  expect(wrapper.get('[data-daily-bulk]').attributes('disabled')).toBeDefined();
-  expect(wrapper.get('[data-daily-row]').text()).toContain('未归档 Plus 无优惠 0');
+ it('shows mutually exclusive daily presence labels using the entire day account denominator',()=>{
+  const wrapper=render();
+  const first=wrapper.get('[data-daily-presence="2026-11-24"]');
+  expect(first.text()).toContain('有优惠 40 个 · 40%');
+  expect(first.text()).toContain('无优惠 50 个 · 50%');
+  expect(first.text()).toContain('待确认 10 个 · 10%');
+  expect(first.get('[data-presence-segment="eligible"]').attributes('style')).toContain('width: 40%');
+  expect(first.get('[data-presence-segment="none"]').attributes('style')).toContain('width: 50%');
+  expect(first.get('[data-presence-segment="unknown"]').attributes('style')).toContain('width: 10%');
+  expect(wrapper.get('[data-daily-presence="2026-11-25"]').text()).toContain('有优惠 80 个 · 40%');
+  expect(wrapper.get('[data-daily-presence="2026-11-26"]').text()).toContain('暂无账号');
+  expect(wrapper.get('[data-daily-presence="2026-11-26"]').findAll('[data-presence-segment]')).toHaveLength(0);
  });
 
- it('stacks all offer coverage against an absolute axis without counting the stack as unique accounts',()=>{
-  const wrapper=mount(DailyRegistrationStats,{props:{state}});
-  wrappers.push(wrapper);
-  const bar=wrapper.get('[data-daily-bar="2026-11-20"]');
-  expect(wrapper.get('[data-daily-axis]').text()).toContain('优惠覆盖数');
-  expect(wrapper.findAll('[data-daily-axis-tick]').map(tick=>tick.text())).toEqual(['8','6','4','2','0']);
-  expect(bar.get('[data-daily-segment="offer-team-trial"]').attributes('style')).toContain('height: 37.5%');
-  expect(bar.get('[data-daily-segment="offer-plus-half"]').attributes('style')).toContain('height: 25%');
-  expect(bar.get('[data-daily-segment="offer-go-discount"]').attributes('style')).toContain('height: 12.5%');
-  expect(bar.attributes('aria-label')).toContain('优惠覆盖数 6');
-  expect(bar.attributes('aria-label')).toContain('有优惠账号 3');
-  expect(bar.attributes('aria-label')).toContain('Team 免费 1个月 3');
-  expect(wrapper.get('[data-daily-bar="2026-11-21"]').findAll('[data-daily-segment]')).toHaveLength(0);
-  expect(wrapper.get('[data-daily-bar="2026-11-21"]').text()).toContain('0');
-  expect(wrapper.get('[data-daily-legend]').text()).toContain('Plus 半价 2个月');
+ it('compares concrete offer shares across all dates without treating categories as a whole',()=>{
+  const wrapper=render();
+  expect(wrapper.findAll('[data-daily-offer-row]').map(row=>row.attributes('data-daily-offer-row'))).toEqual(['offer-team-trial','offer-plus-half','offer-go-discount']);
+  const first=wrapper.get('[data-daily-offer-cell="offer-team-trial:2026-11-24"]');
+  const second=wrapper.get('[data-daily-offer-cell="offer-team-trial:2026-11-25"]');
+  expect(first.text()).toContain('30%');expect(first.text()).toContain('30 个');
+  expect(second.text()).toContain('30%');expect(second.text()).toContain('60 个');
+  expect(first.get('[data-daily-offer-fill]').attributes('style')).toContain('width: 30%');
+  expect(wrapper.get('[data-daily-offer-cell="offer-plus-half:2026-11-24"]').text()).toContain('1 个待复查');
+  expect(wrapper.get('[data-daily-offer-cell="offer-go-discount:2026-11-25"]').text()).toContain('0%');
+  expect(wrapper.get('[data-daily-offer-cell="offer-go-discount:2026-11-26"]').text()).toContain('—');
+  expect(wrapper.text()).toContain('每项占比均以当天账号总数为分母');
  });
 
- it('shows each day account total beside separate offer coverage and offers the daily percentage on hover',()=>{
-  const wrapper=mount(DailyRegistrationStats,{props:{state}});
-  wrappers.push(wrapper);
-  const first=wrapper.get('[data-daily-bar="2026-11-20"]');
-  const empty=wrapper.get('[data-daily-bar="2026-11-21"]');
-  expect(first.get('[data-daily-account-total]').text()).toBe('账号 4');
-  expect(first.get('[data-daily-coverage-total]').text()).toBe('覆盖 6');
-  expect(empty.get('[data-daily-account-total]').text()).toBe('账号 0');
-  expect(empty.get('[data-daily-coverage-total]').text()).toBe('覆盖 0');
-  expect(first.get('[data-daily-segment="offer-team-trial"]').attributes('title')).toBe('Team 免费 1个月 3个账号 · 75%（占当日账号）');
-  expect(first.get('[data-daily-segment="offer-plus-half"]').attributes('title')).toBe('Plus 半价 2个月 2个账号 · 50%（占当日账号）');
-  expect(wrapper.text()).toContain('优惠账号数 ÷ 当日账号总数');
-  expect(wrapper.text()).toContain('多项占比合计可超过100%');
- });
-
- it('keeps small nonzero daily offer percentages visible in details and chart titles',async()=>{
-  const wrapper=mount(DailyRegistrationStats,{props:{state}});
-  wrappers.push(wrapper);
+ it('keeps small nonzero offer and presence percentages visible',async()=>{
+  const wrapper=render();
   for(const [accounts,count,share] of [[999,1,'0.1%'],[999,26,'2.6%'],[67,4,'5.97%'],[100000,1,'<0.01%']] as const){
    const offer={...offers[0]!,count};
-   await wrapper.setProps({state:{...state,data:{...state.data!,rows:[{...state.data!.rows![0]!,accounts_total:accounts,offers:[offer]}]}}});
-   expect(wrapper.get(`[data-daily-offer="${offer.key}"]`).text()).toContain(`${count} 个账号 · ${share}`);
-   expect(wrapper.get(`[data-daily-segment="${offer.key}"]`).attributes('title')).toBe(`${offer.label} ${count}个账号 · ${share}（占当日账号）`);
+   await wrapper.setProps({state:{...state,data:{...state.data!,rows:[{date:'2026-11-24',accounts_total:accounts,offers:[offer],promotion_presence:{eligible:count,none:accounts-count,unknown:0}}]}}});
+   expect(wrapper.get('[data-daily-offer-cell="offer-plus-half:2026-11-24"]').text()).toContain(share);
+   expect(wrapper.get('[data-daily-presence="2026-11-24"]').text()).toContain(`有优惠 ${count} 个 · ${share}`);
   }
  });
 
- it('keeps offer order and color consistent across dates with different offer sizes',()=>{
-  const chartState={...state,data:{...state.data!,rows:[
-   state.data!.rows![0]!,
-   {...state.data!.rows![1]!,accounts_total:4,offers:[...offers].reverse().map(item=>({...item,count:item.plan==='team'?1:3}))},
-  ]}};
-  const wrapper=mount(DailyRegistrationStats,{props:{state:chartState}});
-  wrappers.push(wrapper);
-  const first=wrapper.get('[data-daily-bar="2026-11-20"]');
-  const second=wrapper.get('[data-daily-bar="2026-11-21"]');
-  const expected=['offer-team-trial','offer-plus-half','offer-go-discount'];
-  expect(first.findAll('[data-daily-segment]').map(segment=>segment.attributes('data-daily-segment'))).toEqual(expected);
-  expect(second.findAll('[data-daily-segment]').map(segment=>segment.attributes('data-daily-segment'))).toEqual(expected);
-  for(const key of expected){
-   expect((first.get(`[data-daily-segment="${key}"]`).element as HTMLElement).style.backgroundColor)
-    .toBe((second.get(`[data-daily-segment="${key}"]`).element as HTMLElement).style.backgroundColor);
-  }
+ it('keeps missing presence and offer data pending instead of calling the remaining accounts none',()=>{
+  const wrapper=render({...state,data:{...state.data!,rows:[{...state.data!.rows![0]!,promotion_presence:null,offers:null,unpromoted_count:null},state.data!.rows![1]!]}});
+  const first=wrapper.get('[data-daily-presence="2026-11-24"]');
+  expect(first.text()).toContain('有无优惠数据待查');
+  expect(first.findAll('[data-presence-segment]')).toHaveLength(0);
+  expect(first.text()).not.toContain('无优惠 100');
+  expect(wrapper.get('[data-daily-offer-cell="offer-team-trial:2026-11-24"]').text()).toContain('待查');
+  expect(wrapper.get('[data-daily-bulk]').attributes('disabled')).toBeDefined();
  });
 
- it('supports keyboard date selection and preserves it until a new range removes the date',async()=>{
-  const wrapper=mount(DailyRegistrationStats,{props:{state}});
-  wrappers.push(wrapper);
-  const first=wrapper.get('[data-daily-bar="2026-11-20"]');
-  expect(first.attributes('tabindex')).toBe('0');
-  await first.trigger('keydown',{key:'ArrowRight'});
-  const second=wrapper.get('[data-daily-bar="2026-11-21"]');
-  expect(second.attributes('aria-pressed')).toBe('true');
-  expect(second.attributes('tabindex')).toBe('0');
-  expect(wrapper.find('[data-daily-row="2026-11-21"]').exists()).toBe(true);
+ it('does not render misleading presence ratios when counts disagree with the day total',()=>{
+  const wrapper=render({...state,data:{...state.data!,rows:[{...state.data!.rows![0]!,promotion_presence:{eligible:40,none:100,unknown:10}}]}});
+  expect(wrapper.get('[data-daily-presence="2026-11-24"]').text()).toContain('有无优惠数据待查');
+  expect(wrapper.get('[data-daily-presence="2026-11-24"]').findAll('[data-presence-segment]')).toHaveLength(0);
+ });
+
+ it('keeps daily and interval batch actions as unchanged query/name prefills and disables empty days',async()=>{
+  const onBulkPlanCreate=vi.fn();const wrapper=render(state,onBulkPlanCreate);
+  await wrapper.get('[data-daily-bulk]').trigger('click');
+  expect(onBulkPlanCreate).toHaveBeenCalledExactlyOnceWith({name:'2026-11-24 无优惠账号查套餐',query:baseQuery});
+  expect(wrapper.get('[data-daily-row]').text()).toContain('Plus 无优惠账号查套餐');
+  await wrapper.get('[data-daily-summary-bulk]').trigger('click');
+  expect(onBulkPlanCreate).toHaveBeenLastCalledWith({name:'2026-11-24..2026-11-26 无优惠账号查套餐',query:state.data!.summary!.query});
+  await wrapper.get('[data-daily-bar="2026-11-26"]').trigger('click');
+  expect(wrapper.get('[data-daily-bulk]').attributes('disabled')).toBeDefined();
+ });
+
+ it('supports keyboard day selection and retains the selected day until a new range removes it',async()=>{
+  const wrapper=render();const first=wrapper.get('[data-daily-bar="2026-11-24"]');
+  expect(first.attributes('tabindex')).toBe('0');await first.trigger('keydown',{key:'End'});
+  const last=wrapper.get('[data-daily-bar="2026-11-26"]');
+  expect(last.attributes('aria-pressed')).toBe('true');expect(last.attributes('tabindex')).toBe('0');
+  expect(wrapper.get('[data-daily-row]').attributes('data-daily-row')).toBe('2026-11-26');
   await wrapper.setProps({state:{...state,data:{...state.data!,rows:[...state.data!.rows!]}}});
-  expect(second.attributes('aria-pressed')).toBe('true');
-  await second.trigger('keydown',{key:'Home'});
-  expect(first.attributes('aria-pressed')).toBe('true');
-  await first.trigger('keydown',{key:'End'});
-  expect(second.attributes('aria-pressed')).toBe('true');
+  expect(last.attributes('aria-pressed')).toBe('true');await last.trigger('keydown',{key:'Home'});
+  expect(first.attributes('aria-pressed')).toBe('true');await first.trigger('keydown',{key:'ArrowRight'});
+  expect(wrapper.get('[data-daily-bar="2026-11-25"]').attributes('aria-pressed')).toBe('true');
   await wrapper.setProps({state:{...state,data:{...state.data!,rows:[state.data!.rows![0]!]}}});
-  expect(wrapper.find('[data-daily-row="2026-11-20"]').exists()).toBe(true);
+  expect(wrapper.get('[data-daily-row]').attributes('data-daily-row')).toBe('2026-11-24');
  });
 
- it('distinguishes missing offer data from a confirmed empty array without drawing a fake bar',()=>{
-  const unknown={...state,data:{...state.data!,rows:[{...state.data!.rows![0]!,offers:null,promoted_accounts_total:null,unpromoted_count:null},state.data!.rows![1]!]}};
-  const wrapper=mount(DailyRegistrationStats,{props:{state:unknown}});
-  wrappers.push(wrapper);
-  const pending=wrapper.get('[data-daily-bar="2026-11-20"]');
-  expect(pending.attributes('aria-label')).toContain('优惠数据待查');
-  expect(pending.get('[data-daily-account-total]').text()).toBe('账号 4');
-  expect(pending.get('[data-daily-coverage-total]').text()).toBe('覆盖 待查');
-  expect(pending.findAll('[data-daily-segment]')).toHaveLength(0);
-  expect(wrapper.get('[data-daily-row]').text()).toContain('优惠数据待查');
-  expect(wrapper.get('[data-daily-row]').text()).toContain('有优惠账号 —');
-  expect(wrapper.get('[data-daily-row]').text()).toContain('Plus 无优惠 待查');
-  expect(wrapper.get('[data-daily-bulk]').attributes('disabled')).toBeDefined();
-  expect(wrapper.get('[data-daily-bar="2026-11-21"]').attributes('aria-label')).not.toContain('待查');
- });
-
- it('keeps a pending legend when offer data is unavailable and does not fall back to subscription or status counts',()=>{
-  const unknown={...state,data:{...state.data!,rows:[{...state.data!.rows![0]!,offers:undefined,accounts_total:null}]}};
-  const wrapper=mount(DailyRegistrationStats,{props:{state:unknown}});
-  wrappers.push(wrapper);
-  expect(wrapper.get('[data-daily-legend]').text()).toContain('优惠数据待查');
-  expect(wrapper.get('[data-daily-legend]').text()).not.toContain('暂无可用优惠记录');
-  expect(wrapper.get('[data-daily-bar="2026-11-20"]').findAll('[data-daily-segment]')).toHaveLength(0);
-  expect(wrapper.text()).not.toContain('成功 5');
- });
-
- it('keeps old data visible during a local error and retries the daily read',async()=>{
-  const load=vi.fn();
-  const errorState={...state,error:'统计暂不可用',load};
-  const wrapper=mount(DailyRegistrationStats,{props:{state:errorState}});
-  wrappers.push(wrapper);
+ it('keeps old successful figures visible during a local error and retries only the daily read',async()=>{
+  const load=vi.fn();const wrapper=render({...state,error:'统计暂不可用',load});
   expect(wrapper.get('[data-daily-error]').text()).toContain('统计暂不可用');
-  expect(wrapper.get('[data-daily-row="2026-11-20"]').element).toBeTruthy();
-  await wrapper.get('[data-daily-retry]').trigger('click');
-  expect(load).toHaveBeenCalledOnce();
+  expect(wrapper.findAll('[data-daily-presence]')).toHaveLength(3);
+  await wrapper.get('[data-daily-retry]').trigger('click');expect(load).toHaveBeenCalledOnce();
  });
 
- it('blocks daily and interval batch actions while a changed range is pending or failed, then restores both after success',async()=>{
-  const onBulkPlanCreate=vi.fn();
-  const pendingState={...state,loading:true,scopeCurrent:false,requestedRange:{from:'2026-11-01',to:'2026-11-30'}};
-  const wrapper=mount(DailyRegistrationStats,{props:{state:pendingState,onBulkPlanCreate}});
-  wrappers.push(wrapper);
+ it('blocks daily and interval batch actions for a pending or failed changed range',async()=>{
+  const onBulkPlanCreate=vi.fn();const pending={...state,loading:true,scopeCurrent:false,requestedRange:{from:'2026-11-01',to:'2026-11-30'}};
+  const wrapper=render(pending,onBulkPlanCreate);
   expect(wrapper.get('[data-daily-stale]').text()).toContain('正在读取新日期范围');
-  expect(wrapper.get('[data-daily-bulk]').attributes('disabled')).toBeDefined();
-  expect(wrapper.get('[data-daily-summary-bulk]').attributes('disabled')).toBeDefined();
-  await wrapper.get('[data-daily-bulk]').trigger('click');
-  await wrapper.get('[data-daily-summary-bulk]').trigger('click');
-  expect(onBulkPlanCreate).not.toHaveBeenCalled();
-
-  await wrapper.setProps({state:{...pendingState,loading:false,error:'统计暂不可用'}});
-  expect(wrapper.get('[data-daily-stale]').text()).toContain('读取失败');
-  expect(wrapper.get('[data-daily-bulk]').attributes('disabled')).toBeDefined();
-  expect(wrapper.get('[data-daily-summary-bulk]').attributes('disabled')).toBeDefined();
-
-  await wrapper.setProps({state:{...state,load:vi.fn(),scopeCurrent:true,error:''},onBulkPlanCreate});
-  await wrapper.get('[data-daily-bulk]').trigger('click');
-  await wrapper.get('[data-daily-summary-bulk]').trigger('click');
-  expect(onBulkPlanCreate).toHaveBeenCalledTimes(2);
+  expect(wrapper.get('[data-daily-bulk]').attributes('disabled')).toBeDefined();expect(wrapper.get('[data-daily-summary-bulk]').attributes('disabled')).toBeDefined();
+  await wrapper.get('[data-daily-bulk]').trigger('click');await wrapper.get('[data-daily-summary-bulk]').trigger('click');expect(onBulkPlanCreate).not.toHaveBeenCalled();
+  await wrapper.setProps({state:{...pending,loading:false,error:'统计暂不可用'}});expect(wrapper.get('[data-daily-stale]').text()).toContain('读取失败');
+  await wrapper.setProps({state});await wrapper.get('[data-daily-bulk]').trigger('click');expect(onBulkPlanCreate).toHaveBeenCalledOnce();
  });
 
- it('requests a new range after switching to 30 days and never uses a selection request',async()=>{
-  const load=vi.fn();
-  const wrapper=mount(DailyRegistrationStats,{props:{state:{...state,load}}});
-  wrappers.push(wrapper);
-  await wrapper.get('[data-daily-range-30]').trigger('click');
-  await flushPromises();
-  expect(load).toHaveBeenCalledWith(expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/));
-  expect(wrapper.html()).not.toContain('data-daily-selection-request');
- });
-
- it('anchors preset ranges to the current Beijing day instead of the previous response end',async()=>{
-  vi.setSystemTime(new Date('2026-12-15T01:00:00Z'));
-  const load=vi.fn();
-  const wrapper=mount(DailyRegistrationStats,{props:{state:{...state,load}}});
-  wrappers.push(wrapper);
-  await wrapper.get('[data-daily-range-30]').trigger('click');
-  expect(load).toHaveBeenCalledWith('2026-11-16','2026-12-15');
+ it('supports three, seven, thirty and custom day ranges anchored to the current Beijing date',async()=>{
+  vi.setSystemTime(new Date('2026-12-14T20:00:00Z'));const load=vi.fn();const wrapper=render({...state,load});
+  await wrapper.get('[data-daily-range-3]').trigger('click');expect(load).toHaveBeenLastCalledWith('2026-12-13','2026-12-15');
+  await wrapper.get('[data-daily-range-7]').trigger('click');expect(load).toHaveBeenLastCalledWith('2026-12-09','2026-12-15');
+  await wrapper.get('[data-daily-range-30]').trigger('click');expect(load).toHaveBeenLastCalledWith('2026-11-16','2026-12-15');
+  const requestedBeforeCustom=load.mock.calls.length;
+  await wrapper.get('[data-daily-range-custom]').trigger('click');
+  expect(load).toHaveBeenCalledTimes(requestedBeforeCustom);
+  expect((wrapper.get('input[aria-label="开始日期"]').element as HTMLInputElement).value).toBe('2026-11-24');
+  await wrapper.get('input[aria-label="开始日期"]').setValue('2026-11-28');
+  expect(load).toHaveBeenCalledTimes(requestedBeforeCustom);
+  await wrapper.get('input[aria-label="开始日期"]').setValue('');
+  expect(load).toHaveBeenCalledTimes(requestedBeforeCustom);
+  await wrapper.get('input[aria-label="开始日期"]').setValue('2026-11-01');await wrapper.get('input[aria-label="结束日期"]').setValue('2026-11-03');
+  await flushPromises();expect(load).toHaveBeenLastCalledWith('2026-11-01','2026-11-03');
  });
 });

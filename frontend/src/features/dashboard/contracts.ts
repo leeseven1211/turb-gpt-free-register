@@ -45,6 +45,7 @@ export interface DailyRegistrationRow {
  total?:number|null;
  counts?:Record<string,number>|null;
  accounts_total?:number|null;
+ promotion_presence?:{eligible:number;none:number;unknown:number}|null;
  promoted_accounts_total?:number|null;
  offers?:DailyPromotionOffer[]|null;
  plans?:Record<string,number>|null;
@@ -60,6 +61,7 @@ export interface DailyRegistrationData {
  timezone?:string;
  date_from?:string;
  date_to?:string;
+ cohort_basis_label?:string;
  updated_at?:string|null;
  rows?:DailyRegistrationRow[];
  summary?:DailyRegistrationSummary|null;

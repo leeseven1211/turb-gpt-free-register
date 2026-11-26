@@ -1,15 +1,31 @@
 # -*- coding: utf-8 -*-
+"""账号首次入库日及完整套餐优惠总览契约。"""
+import json
 import unittest
 from datetime import datetime
+from unittest.mock import patch
 
 from core.storage import admin_repository
 from core.storage import records as rs
-from core.storage import postgres as postgres_store
-from core.storage import registration
 from core.storage.accounts import promotion_offers
 from core.storage.registration import analytics
-from core.storage.registration.account_links import registration_account_link
 from tests.support_pg import PostgresTestCase
+
+
+def _offer(plan="plus", kind="discount", *, eligible=True, percentage=50, periods=2,
+           period="month", country="", stale=False):
+    return {
+        "plan": plan, "kind": kind, "eligible": eligible,
+        "discount_percentage": percentage, "duration_num_periods": periods,
+        "duration_period": period, "country": country, "stale": stale,
+    }
+
+
+def _none_snapshot():
+    return {"ok": True, "promotion_query_snapshot": {"truncated": False}, "account_promotions": [
+        {"plan": plan, "kind": "none", "eligible": False}
+        for plan in ("plus", "team", "go")
+    ]}
 
 
 class RegistrationDailyAnalyticsTests(PostgresTestCase):
@@ -18,404 +34,158 @@ class RegistrationDailyAnalyticsTests(PostgresTestCase):
         rs.init()
 
     def _account(self, email, **values):
-        return rs.insert_row(rs.ACCOUNTS, {"email": email, **values})
-
-    def _job(self, email, created_at, *, status="success", job_type=None, account_id=None, batch_id="batch"):
-        return rs.insert_row(rs.JOBS, {
-            "job_uuid": f"{email}-{created_at}-{status}-{job_type or 'empty'}",
-            "email": email,
-            "created_at": created_at,
-            "status": status,
-            "job_type": job_type,
-            "account_id": account_id,
-            "batch_id": batch_id,
+        return rs.insert_row(rs.ACCOUNTS, {
+            "email": email, "created_at": "2026-11-26T09:00:00", **values,
         })
 
-    def _link_attempt(self, root_job_id, *, email_snapshot, account_id=None, email="", email_source=None,
-                      source_root_job_id=None):
-        attempt = registration.create_attempt(
-            email_snapshot,
-            email_source=email_source,
-            root_job_id=root_job_id,
-        )
-        attempts = postgres_store.qualified("registration_attempts")
-        jobs = postgres_store.qualified(rs.JOBS.name)
-        with postgres_store.connect() as conn, conn.cursor() as cur:
-            cur.execute(
-                f"""UPDATE {attempts}
-                       SET source_root_job_id=%s, email_snapshot=%s, email=%s, account_id=%s,
-                           email_source=%s
-                     WHERE id=%s""",
-                (
-                    source_root_job_id if source_root_job_id is not None else root_job_id,
-                    email_snapshot,
-                    email,
-                    account_id,
-                    email_source,
-                    attempt["id"],
-                ),
-            )
-            cur.execute(
-                f"""UPDATE {jobs}
-                       SET attempt_id=%s, root_job_id=%s, account_id=%s
-                     WHERE id=%s""",
-                (attempt["id"], root_job_id, account_id, root_job_id),
-            )
-        return int(attempt["id"])
+    def _job(self, email, created_at, account_id):
+        return rs.insert_row(rs.JOBS, {
+            "job_uuid": f"{email}-{created_at}", "email": email,
+            "created_at": created_at, "status": "success", "job_type": "registration_resume",
+            "account_id": account_id,
+        })
 
-    def test_offer_distribution_uses_all_plans_and_deduplicates_accounts_and_countries(self):
-        plus = {
-            "plan": "plus", "kind": "discount", "eligible": True,
-            "discount_percentage": 50, "duration_num_periods": 2, "duration_period": "month",
+    def test_accounts_belong_only_to_first_created_date_without_requiring_tasks(self):
+        old = self._account("old@example.test", created_at="2026-11-25T15:59:59+00:00")
+        current = self._account("current@example.test", created_at="2026-11-25T16:00:00Z")
+        self._account("archived@example.test", created_at="2026-11-26T15:59:59+00:00", archived=True)
+        self._account("next@example.test", created_at="2026-11-26T16:00:00+00:00")
+        self._job("old@example.test", "2026-11-26T01:00:00+00:00", old)
+        self._job("current@example.test", "2026-11-27T01:00:00+00:00", current)
+        self._job("current@example.test", "2026-11-28T01:00:00+00:00", current)
+
+        with patch.object(admin_repository, "_registration_cohort_source_sql", side_effect=AssertionError("must not read jobs")):
+            result = analytics.registration_daily_analytics(date_from="2026-11-26", date_to="2026-11-28")
+
+        self.assertEqual(result["cohort_basis"], "account_created_at")
+        self.assertEqual(result["cohort_basis_label"], "按账号首次入库日期统计")
+        self.assertEqual([row["accounts_total"] for row in result["rows"]], [2, 1, 0])
+        self.assertEqual(result["summary"]["accounts_total"], 3)
+        self.assertEqual(result["summary"]["total"], 3)
+        self.assertEqual(result["summary"]["counts"], {})
+        self.assertEqual(result["rows"][2]["promotion_presence"], {"eligible": 0, "none": 0, "unknown": 0})
+
+    def test_invalid_created_dates_are_ignored_and_naive_dates_use_beijing(self):
+        for index, created_at in enumerate((
+            "2026-11-26", "2026-11-26T01:00:00+0800", "2026-11-26T02:00:00z",
+            "2026-11-26 03:00:00", "2026-11-26T23:59:59.5+08:00",
+        )):
+            self._account(f"valid-{index}@example.test", created_at=created_at)
+        for index, created_at in enumerate(("", "2026-99-99T99:99:99", "2026-02-30", "not-a-date")):
+            self._account(f"invalid-{index}@example.test", created_at=created_at)
+        result = analytics.registration_daily_analytics(date_from="2026-11-26", date_to="2026-11-26")
+        self.assertEqual(result["summary"]["accounts_total"], 5)
+
+    def test_presence_is_mutually_exclusive_and_none_requires_complete_success_snapshot(self):
+        self._account("fresh@example.test", account_promotions=[_offer()])
+        self._account("none@example.test", plan_last_success_result_json=json.dumps(_none_snapshot()))
+        self._account("none-object@example.test", plan_last_success_result_json=_none_snapshot())
+        self._account("plus-none@example.test", plus_promo_kind="none", plan_check_ok=True,
+                      plan_check_status="success", plan_last_success_result_json=json.dumps({
+                          "ok": True, "account_promotions": [{"plan": "plus", "kind": "none", "eligible": False}],
+                      }))
+        self._account("unqueried@example.test")
+        self._account("stale@example.test", account_promotions=[_offer(stale=True)])
+        self._account("broken@example.test", plan_last_success_result_json="not-json")
+        result = analytics.registration_daily_analytics(date_from="2026-11-26", date_to="2026-11-27")
+        for row in (result["rows"][0], result["summary"]):
+            self.assertEqual(row["promotion_presence"], {"eligible": 1, "none": 2, "unknown": 4})
+            self.assertEqual(row["promoted_accounts_total"], 1)
+            self.assertEqual(sum(row["promotion_presence"].values()), row["accounts_total"])
+
+    def test_fresh_offer_counts_all_plans_and_deduplicates_countries_but_excludes_stale_only(self):
+        plus = _offer()
+        team = _offer("team", "free_trial", percentage=100, periods=1)
+        go = _offer("go", percentage=25, periods=1.5)
+        self._account("a@example.test", account_promotions=[
+            {**plus, "country": "US", "stale": True},
+            {**plus, "country": "JP", "duration_period": "months"},
+            {**team, "country": "IN"}, {**team, "country": "VN"},
+            {**go, "eligible": False},
+        ])
+        self._account("b@example.test", created_at="2026-11-27T01:00:00", archived=True,
+                      account_promotions=[
+                          {**plus, "country": "US", "stale": True},
+                          {**plus, "country": "JP", "stale": True},
+                          {**go, "country": "IN"},
+                      ])
+        self._account("c@example.test", account_promotions=[
+            {**plus, "eligible": False}, {**team, "kind": "none"}, {**go, "kind": "unknown"},
+        ])
+        result = analytics.registration_daily_analytics(date_from="2026-11-26", date_to="2026-11-28")
+        keys = {
+            "plus": promotion_offers.offer_key("plus", "discount", 50, 2, "month"),
+            "team": promotion_offers.offer_key("team", "free_trial", 100, 1, "month"),
+            "go": promotion_offers.offer_key("go", "discount", 25, 1.5, "month"),
         }
-        team = {
-            "plan": "team", "kind": "free_trial", "eligible": True,
-            "discount_percentage": 100, "duration_num_periods": 1, "duration_period": "month",
+        expected = {
+            keys["plus"]: {"key": keys["plus"], "plan": "plus", "label": "Plus 半价 2个月", "count": 1, "stale_count": 0},
+            keys["team"]: {"key": keys["team"], "plan": "team", "label": "Team 免费 1个月", "count": 1, "stale_count": 0},
+            keys["go"]: {"key": keys["go"], "plan": "go", "label": "Go 减 25% 1.5个月", "count": 1, "stale_count": 0},
         }
-        go = {
-            "plan": "go", "kind": "discount", "eligible": True,
-            "discount_percentage": 25, "duration_num_periods": 1.5, "duration_period": "month",
-        }
-        account_a = self._account(
-            "all-offers-a@example.test",
-            current_plan_type="free",
-            account_promotions=[
-                {**plus, "country": "US", "stale": True},
-                {**plus, "country": "JP", "duration_period": "months", "stale": False},
-                {**team, "country": "IN", "stale": True},
-                {**team, "country": "VN", "stale": True},
-                {**go, "eligible": False},
-            ],
-        )
-        account_b = self._account(
-            "all-offers-b@example.test",
-            current_plan_type="plus", archived=True,
-            account_promotions=[
-                {**plus, "country": "US", "stale": True},
-                {**plus, "country": "JP", "stale": True},
-                {**go, "country": "IN"},
-            ],
-        )
-        account_c = self._account(
-            "all-offers-c@example.test",
-            account_promotions=[
-                {**plus, "eligible": False},
-                {**team, "kind": "none"},
-                {**go, "kind": "unknown"},
-            ],
-        )
-        account_d = self._account("all-offers-unqueried@example.test")
-        self._job("all-offers-a@example.test", "2026-11-26T01:00:00+00:00", account_id=account_a)
-        self._job("all-offers-a@example.test", "2026-11-26T02:00:00+00:00", account_id=account_a)
-        self._job("all-offers-a@example.test", "2026-11-27T01:00:00+00:00", account_id=account_a)
-        for email, account_id in (
-            ("all-offers-b@example.test", account_b),
-            ("all-offers-c@example.test", account_c),
-            ("all-offers-unqueried@example.test", account_d),
+        self.assertEqual({offer["key"]: offer for offer in result["summary"]["offers"]}, expected)
+        self.assertEqual({offer["key"] for offer in result["rows"][0]["offers"]}, {keys["plus"], keys["team"]})
+        self.assertEqual({offer["key"] for offer in result["rows"][1]["offers"]}, {keys["go"]})
+        self.assertEqual(result["rows"][2]["offers"], [])
+        self.assertEqual(result["summary"]["promotion_presence"], {"eligible": 2, "none": 0, "unknown": 1})
+        for field in ("accounts_total", "promoted_accounts_total", "unpromoted_count"):
+            self.assertEqual(result["summary"][field], sum(row[field] for row in result["rows"]))
+        for category in ("eligible", "none", "unknown"):
+            self.assertEqual(result["summary"]["promotion_presence"][category], sum(row["promotion_presence"][category] for row in result["rows"]))
+
+    def test_plus_none_batch_query_uses_account_created_dates_and_matches_counts(self):
+        for email, fields in (
+            ("match@example.test", {}),
+            ("utc-match@example.test", {"created_at": "2026-11-25T16:00:00Z"}),
+            ("outside@example.test", {"created_at": "2026-11-26T16:00:00Z"}),
+            ("archived@example.test", {"archived": True}),
+            ("queued@example.test", {"plan_check_status": "Queued"}),
+            ("promoted@example.test", {"plus_promo_kind": "free_trial", "plus_trial_eligible": True}),
         ):
-            self._job(email, "2026-11-26T03:00:00+00:00", account_id=account_id)
+            self._account(email, **{
+                "current_plan_type": "free", "plus_promo_kind": "none",
+                "plan_check_status": "success", "plan_check_ok": True, **fields,
+            })
+        result = analytics.registration_daily_analytics(date_from="2026-11-26", date_to="2026-11-26")
+        summary = result["summary"]
+        query = summary["query"]
+        self.assertEqual(query["q"], "")
+        self.assertEqual((query["date_from"], query["date_to"]), ("2026-11-26", "2026-11-26"))
+        self.assertEqual(query["filters"]["promotion"], ["none"])
+        self.assertEqual(summary["unpromoted_count"], 2)
+        self.assertEqual(admin_repository.account_query_count(query), summary["unpromoted_count"])
+        self.assertEqual(result["rows"][0]["unpromoted_count"], summary["unpromoted_count"])
 
-        result = analytics.registration_daily_analytics(
-            date_from="2026-11-26", date_to="2026-11-28",
-        )
-
-        def by_key(row):
-            return {offer["key"]: offer for offer in row["offers"]}
-
-        plus_key = promotion_offers.offer_key("plus", "discount", 50, 2, "month")
+    def test_snapshot_only_positive_offers_are_counted_and_deduplicated(self):
+        team = _offer("team", "free_trial", percentage="100.0", periods="1", period="months")
+        go = _offer("go", percentage="25", periods="1.5", period="个月")
+        self._account("snapshot-top@example.test", plan_last_success_result_json=json.dumps({
+            "ok": True,
+            "account_promotions": [
+                {**team, "country": "US"}, {**team, "country": "JP", "duration_period": "month"},
+            ],
+        }))
+        self._account("snapshot-countries@example.test", plan_last_success_result_json={
+            "ok": True, "plan_check_partial": True,
+            "plan_check_country_results": [
+                {"country": "IN", "status": "success", "result": {"ok": True, "account_promotions": [go]}},
+                {"country": "JP", "status": "success", "result": {"ok": True, "account_promotions": [go]}},
+                {"country": "US", "status": "failed", "result": {"ok": True, "account_promotions": [team]}},
+                {"country": "VN", "status": "success", "result": {
+                    "ok": True, "account_promotions": [{**team, "stale": True}, {**team, "expired": True}],
+                }},
+            ],
+        })
+        result = analytics.registration_daily_analytics(date_from="2026-11-26", date_to="2026-11-26")
         team_key = promotion_offers.offer_key("team", "free_trial", 100, 1, "month")
         go_key = promotion_offers.offer_key("go", "discount", 25, 1.5, "month")
         expected = {
-            plus_key: {"key": plus_key, "plan": "plus", "label": "Plus 半价 2个月",
-                       "count": 2, "stale_count": 1},
-            team_key: {"key": team_key, "plan": "team", "label": "Team 免费 1个月",
-                       "count": 1, "stale_count": 1},
-            go_key: {"key": go_key, "plan": "go", "label": "Go 减 25% 1.5个月",
-                     "count": 1, "stale_count": 0},
+            team_key: {"key": team_key, "plan": "team", "label": "Team 免费 1个月", "count": 1, "stale_count": 0},
+            go_key: {"key": go_key, "plan": "go", "label": "Go 减 25% 1.5个月", "count": 1, "stale_count": 0},
         }
-        first, second, empty = result["rows"]
-        self.assertEqual(first["accounts_total"], 4)
-        self.assertEqual(first["promoted_accounts_total"], 2)
-        self.assertEqual(by_key(first), expected)
-        self.assertEqual(second["promoted_accounts_total"], 1)
-        self.assertEqual(
-            by_key(second),
-            {
-                plus_key: {**expected[plus_key], "count": 1, "stale_count": 0},
-                team_key: expected[team_key],
-            },
-        )
-        self.assertEqual(empty["offers"], [])
-        self.assertEqual(empty["promoted_accounts_total"], 0)
-        # 区间再次按账号去重，同一账号跨日不重复累计。
-        self.assertEqual(result["summary"]["accounts_total"], 4)
-        self.assertEqual(result["summary"]["promoted_accounts_total"], 2)
-        self.assertEqual(by_key(result["summary"]), expected)
-
-    def test_aggregates_jobs_by_beijing_date_and_deduplicates_accounts(self):
-        account_a = self._account(
-            "daily-a@example.test",
-            current_plan_type="free",
-            plan_check_status="success",
-            plus_promo_kind="none",
-            archived=False,
-        )
-        account_b = self._account(
-            "daily-b@example.test",
-            current_plan_type="plus",
-            plan_check_status="success",
-            plus_promo_kind="none",
-            archived=True,
-        )
-        # 2026-11-25 16:30 UTC 是北京时间 2026-11-26 00:30。
-        self._job("daily-a@example.test", "2026-11-25T16:30:00+00:00", account_id=account_a)
-        # 显式新建的重跑是第二个任务，但当天账号仍只计一个归属成员。
-        self._job("daily-a@example.test", "2026-11-25T16:40:00+00:00", status="failed")
-        self._job(
-            "daily-b@example.test",
-            "2026-11-26T15:59:00+00:00",
-            status="request_unknown",
-            job_type="registration_resume",
-            account_id=account_b,
-        )
-        # 下一北京时间日期和非注册任务应排除。
-        self._job("daily-a@example.test", "2026-11-26T16:00:00+00:00", account_id=account_a)
-        self._job("daily-a@example.test", "2026-11-25T16:50:00+00:00", job_type="account_setup", account_id=account_a)
-
-        result = analytics.registration_daily_analytics(
-            date_from="2026-11-26",
-            date_to="2026-11-27",
-        )
-
-        self.assertEqual(result["timezone"], "Asia/Shanghai")
-        self.assertEqual(result["date_from"], "2026-11-26")
-        self.assertEqual(result["date_to"], "2026-11-27")
-        rows = {row["date"]: row for row in result["rows"]}
-        self.assertEqual(rows["2026-11-26"]["total"], 3)
-        self.assertEqual(rows["2026-11-26"]["counts"], {"failed": 2, "partial_success": 1})
-        self.assertEqual(rows["2026-11-26"]["accounts_total"], 2)
-        self.assertEqual(rows["2026-11-26"]["plans"], {"free": 1, "plus": 1})
-        self.assertEqual(rows["2026-11-26"]["unpromoted_count"], 1)
-        self.assertEqual(rows["2026-11-27"]["total"], 1)
-        self.assertEqual(result["summary"]["total"], 4)
-        self.assertEqual(result["summary"]["accounts_total"], 2)
-
-    def test_explicit_account_attribution_does_not_fall_back_to_colliding_batch_email(self):
-        account_id = self._account(
-            "collision@example.test",
-            current_plan_type="free",
-            plan_check_status="success",
-            plus_promo_kind="none",
-        )
-        self._job(
-            "collision@example.test",
-            "2026-11-26T01:00:00+00:00",
-            account_id=None,
-            batch_id="collision-batch",
-        )
-        self._job(
-            "collision@example.test",
-            "2026-11-26T02:00:00+00:00",
-            account_id=None,
-            batch_id="collision-batch",
-        )
-        result = analytics.registration_daily_analytics(
-            date_from="2026-11-26",
-            date_to="2026-11-26",
-        )
-        self.assertEqual(result["summary"]["total"], 2)
-        self.assertEqual(result["summary"]["accounts_total"], 0)
-        self.assertEqual(result["summary"]["unpromoted_count"], 0)
-
-    def test_explicit_account_tasks_retain_non_success_statuses(self):
-        statuses = ("running", "cancelled", "failed")
-        for status in statuses:
-            email = f"status-{status}@example.test"
-            account_id = self._account(email)
-            self._job(
-                email,
-                "2026-11-26T01:00:00+00:00",
-                status=status,
-                account_id=account_id,
-            )
-
-        result = analytics.registration_daily_analytics(
-            date_from="2026-11-26",
-            date_to="2026-11-26",
-        )
-
-        self.assertEqual(
-            result["rows"][0]["counts"],
-            {"cancelled": 1, "failed": 1, "running": 1},
-        )
-        self.assertEqual(result["summary"]["counts"], result["rows"][0]["counts"])
-
-    def test_historical_explicit_account_with_empty_email_is_retained(self):
-        account_id = self._account("historical-empty-email@example.test")
-        self._job(
-            "",
-            "2026-11-26T01:00:00+00:00",
-            account_id=account_id,
-            job_type="",
-        )
-
-        result = analytics.registration_daily_analytics(
-            date_from="2026-11-26",
-            date_to="2026-11-26",
-        )
-
-        self.assertEqual(result["summary"]["total"], 1)
-        self.assertEqual(result["summary"]["accounts_total"], 1)
-
-    def test_invalid_or_empty_created_at_is_ignored_without_breaking_other_jobs(self):
-        account_id = self._account("valid-created-at@example.test")
-        self._job("valid-created-at@example.test", "2026-11-26T01:00:00+00:00", account_id=account_id)
-        self._job("empty-created-at@example.test", "", account_id=account_id)
-        self._job("invalid-created-at@example.test", "2026-99-99T99:99:99", account_id=account_id)
-
-        result = analytics.registration_daily_analytics(
-            date_from="2026-11-26",
-            date_to="2026-11-26",
-        )
-
-        self.assertEqual(result["summary"]["total"], 1)
-
-    def test_compatible_created_at_offset_formats_are_counted(self):
-        for index, created_at in enumerate((
-            "2026-11-26T01:00:00+0800",
-            "2026-11-26T02:00:00z",
-            "2026-11-26T03:00:00",
-        )):
-            self._job(f"created-format-{index}@example.test", created_at)
-
-        result = analytics.registration_daily_analytics(
-            date_from="2026-11-26",
-            date_to="2026-11-26",
-        )
-
-        self.assertEqual(result["summary"]["total"], 3)
-
-    def test_date_filter_is_inside_materialized_cohort_source(self):
-        source = admin_repository._registration_cohort_source_sql(
-            date_range=("2026-11-26", "2026-11-26"),
-        )
-        self.assertLess(
-            source.index("::date >= %s::date"),
-            source.index("), verified AS MATERIALIZED"),
-        )
-        self.assertLess(
-            source.index("::date <= %s::date"),
-            source.index("), verified AS MATERIALIZED"),
-        )
-
-    def test_sql_cohort_rejects_conflicting_attempt_identity_and_allows_root_email_backfill(self):
-        valid_account = self._account(
-            "root-backfill@example.test",
-            plan_check_status="success",
-            plan_check_ok=True,
-            plus_promo_kind="none",
-        )
-        wrong_email_account = self._account("actual-account@example.test")
-        conflicting_root = self._job(
-            "root-conflict@example.test", "2026-11-26T01:00:00+00:00",
-            account_id=valid_account,
-        )
-        self._link_attempt(
-            conflicting_root,
-            email_snapshot="root-conflict@example.test",
-            account_id=valid_account,
-            source_root_job_id=conflicting_root + 999,
-        )
-        no_explicit_account = self._job(
-            "no-explicit@example.test", "2026-11-26T02:00:00+00:00",
-        )
-        self._link_attempt(
-            no_explicit_account,
-            email_snapshot="no-explicit@example.test",
-        )
-        wrong_email = self._job(
-            "wrong-identity@example.test", "2026-11-26T03:00:00+00:00",
-            account_id=wrong_email_account,
-        )
-        self._link_attempt(
-            wrong_email,
-            email_snapshot="wrong-identity@example.test",
-            account_id=wrong_email_account,
-        )
-        backfilled = self._job(
-            "", "2026-11-26T04:00:00+00:00",
-            account_id=valid_account,
-        )
-        # 根任务和 Attempt 都没有明文邮箱，只能由同源 email_source 回填。
-        attempts = postgres_store.qualified("registration_attempts")
-        jobs = postgres_store.qualified(rs.JOBS.name)
-        with postgres_store.connect() as conn, conn.cursor() as cur:
-            cur.execute(
-                f"UPDATE {jobs} SET data=data || %s::jsonb WHERE id=%s",
-                ('{"email_source":"outlook"}', backfilled),
-            )
-        self._link_attempt(
-            backfilled,
-            email_snapshot="root-backfill@example.test",
-            account_id=valid_account,
-            email_source="outlook",
-        )
-        with postgres_store.connect() as conn, conn.cursor() as cur:
-            cur.execute(
-                f"""UPDATE {attempts}
-                       SET email_snapshot=%s, email='', email_source='outlook'
-                     WHERE root_job_id=%s""",
-                ("root-backfill@example.test", backfilled),
-            )
-
-        result = analytics.registration_daily_analytics(
-            date_from="2026-11-26",
-            date_to="2026-11-26",
-        )
-
-        self.assertEqual(result["summary"]["total"], 4)
-        self.assertEqual(result["summary"]["accounts_total"], 1)
-        self.assertEqual(result["summary"]["plans"], {"unknown": 1})
-
-    def test_unpromoted_count_matches_accounts_returned_by_summary_query(self):
-        unpromoted = self._account(
-            "unpromoted@example.test",
-            current_plan_type="free",
-            plus_promo_kind="none",
-            plan_check_status="success",
-            plan_check_ok=True,
-            archived=False,
-        )
-        queued = self._account(
-            "queued-none@example.test",
-            current_plan_type="free",
-            plus_promo_kind="none",
-            plan_check_status="Queued",
-            plan_check_ok=True,
-            archived=False,
-        )
-        promoted = self._account(
-            "promoted@example.test",
-            current_plan_type="free",
-            plus_promo_kind="free_trial",
-            plus_trial_eligible=True,
-            plan_check_status="success",
-            plan_check_ok=True,
-            archived=False,
-        )
-        self._job("unpromoted@example.test", "2026-11-26T05:00:00+00:00", account_id=unpromoted)
-        self._job("queued-none@example.test", "2026-11-26T05:30:00+00:00", account_id=queued)
-        self._job("promoted@example.test", "2026-11-26T06:00:00+00:00", account_id=promoted)
-
-        result = analytics.registration_daily_analytics(
-            date_from="2026-11-26",
-            date_to="2026-11-26",
-        )
-        query = result["summary"]["query"]
-        matched = admin_repository.account_query_count(query)
-
-        self.assertEqual(result["summary"]["unpromoted_count"], 1)
-        self.assertEqual(matched, result["summary"]["unpromoted_count"])
+        for row in (result["rows"][0], result["summary"]):
+            self.assertEqual(row["promotion_presence"], {"eligible": 2, "none": 0, "unknown": 0})
+            self.assertEqual({offer["key"]: offer for offer in row["offers"]}, expected)
 
 
 class RegistrationDailyAnalyticsValidationTests(unittest.TestCase):
@@ -432,42 +202,11 @@ class RegistrationDailyAnalyticsValidationTests(unittest.TestCase):
                 with self.assertRaises(analytics.RegistrationDailyAnalyticsError) as raised:
                     analytics.registration_daily_analytics(**values)
                 self.assertEqual(raised.exception.error_code, code)
-                self.assertTrue(str(raised.exception))
 
-    def test_default_range_uses_the_last_seven_beijing_dates(self):
-        result = analytics.normalize_registration_date_range(
-            now=datetime(2026, 11, 26, 1, 0, 0),
-        )
-        self.assertEqual(result, ("2026-11-20", "2026-11-26"))
-
-    def test_registration_account_link_rejects_conflicting_attempt_identity(self):
-        base_job = {"id": 9, "root_job_id": 9, "attempt_id": 7, "account_id": 11, "email": "a@example.test"}
-        root = {
-            "id": 9, "root_job_id": None, "attempt_id": 7,
-            "account_id": 11, "email": "a@example.test",
-        }
-        for attempt in (
-            {"id": 7, "email_snapshot": "a@example.test", "account_id": 11},
-            {"id": 7, "root_job_id": 8, "email_snapshot": "a@example.test", "account_id": 11},
-            {"id": 7, "root_job_id": 9, "source_root_job_id": 8,
-             "email_snapshot": "a@example.test", "account_id": 11},
-            {"id": 7, "root_job_id": 9, "email_snapshot": "other@example.test", "account_id": 11},
-            {"id": 7, "root_job_id": 9, "email_snapshot": "a@example.test", "account_id": 12},
-        ):
-            with self.subTest(attempt=attempt):
-                self.assertIsNone(registration_account_link(base_job, root, attempt))
-
-    def test_registration_account_link_allows_root_email_source_backfill(self):
-        job = {
-            "id": 9, "root_job_id": 9, "attempt_id": 7, "account_id": 11,
-            "email": "", "email_source": "outlook",
-        }
-        root = {
-            "id": 9, "root_job_id": None, "attempt_id": 7, "account_id": 11,
-            "email": "", "email_source": "outlook",
-        }
-        attempt = {
-            "id": 7, "root_job_id": 9, "email_snapshot": "a@example.test",
-            "email": "", "email_source": "outlook", "account_id": 11,
-        }
-        self.assertEqual(registration_account_link(job, root, attempt), ("a@example.test", 11))
+    def test_default_and_one_sided_ranges_use_three_beijing_dates(self):
+        self.assertEqual(analytics.normalize_registration_date_range(now=datetime(2026, 11, 26, 1)),
+                         ("2026-11-24", "2026-11-26"))
+        self.assertEqual(analytics.normalize_registration_date_range(date_to="2026-11-26"),
+                         ("2026-11-24", "2026-11-26"))
+        self.assertEqual(analytics.normalize_registration_date_range(date_from="2026-11-24"),
+                         ("2026-11-24", "2026-11-26"))

@@ -287,9 +287,8 @@ class DashboardApiTests(PostgresTestCase):
         self.client = self.app.test_client()
         self.headers = {"X-Auth-Code": "test-auth"}
 
-    @patch("webui.routes.dashboard.registration_analytics.init_registration_schema")
     @patch("webui.routes.dashboard.registration_analytics.registration_daily_analytics")
-    def test_registration_daily_route_passes_date_range_and_is_read_only(self, aggregate, init_schema):
+    def test_registration_daily_route_passes_date_range_and_is_read_only(self, aggregate):
         aggregate.return_value = {
             "ok": True,
             "timezone": "Asia/Shanghai",
@@ -311,7 +310,6 @@ class DashboardApiTests(PostgresTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json()["timezone"], "Asia/Shanghai")
         aggregate.assert_called_once_with(date_from="2026-11-20", date_to="2026-11-26")
-        init_schema.assert_not_called()
 
     def test_registration_daily_route_returns_stable_chinese_error(self):
         response = self.client.get(

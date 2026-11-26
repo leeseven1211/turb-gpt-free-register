@@ -53,18 +53,27 @@ class DashboardAggregationReadTests(PostgresTestCase):
                     RETURN value;
                 END $$""")
         original = psycopg.Cursor.execute
+        original_server = psycopg.ServerCursor.execute
         counts = {}
 
-        def execute(cursor, query, params=None, **kwargs):
+        def observed_query(query):
             if isinstance(query, str):
                 query = re.sub(
                     r"\b(?:a|account)\.data\b",
                     lambda match: f"{function}({match.group(0)})",
                     query,
                 )
-            return original(cursor, query, params, **kwargs)
+            return query
 
-        with patch.object(psycopg.Cursor, "execute", execute):
+        def execute(cursor, query, params=None, **kwargs):
+            return original(cursor, observed_query(query), params, **kwargs)
+
+        def server_execute(cursor, query, params=None, **kwargs):
+            return original_server(cursor, observed_query(query), params, **kwargs)
+
+        with patch.object(psycopg.Cursor, "execute", execute), patch.object(
+            psycopg.ServerCursor, "execute", server_execute
+        ):
             yield counts
         with postgres.connect() as conn, conn.cursor() as cur:
             cur.execute(f"SELECT CASE WHEN is_called THEN last_value ELSE 0 END FROM {sequence}")
@@ -86,8 +95,8 @@ class DashboardAggregationReadTests(PostgresTestCase):
         self.assertEqual(result["jobs"]["today_counts"], {"success": 6})
         self.assertEqual(counts["reads"], 1)
 
-    def test_daily_reads_account_json_once_for_repeated_registration_jobs(self):
-        account_id = self._account("daily-repeated")
+    def test_daily_reads_account_evidence_once_and_ignores_repeated_registration_jobs(self):
+        account_id = self._account("daily-repeated", created_at="2026-11-25T08:00:00+08:00")
         for index in range(12):
             self._job(
                 f"daily-repeated-job-{index}", account_id,
@@ -99,9 +108,9 @@ class DashboardAggregationReadTests(PostgresTestCase):
                 date_from="2026-11-25", date_to="2026-11-26",
             )
 
-        self.assertEqual(result["summary"]["counts"], {"success": 12})
         self.assertEqual(result["summary"]["accounts_total"], 1)
-        self.assertEqual([row["accounts_total"] for row in result["rows"]], [1, 1])
+        self.assertEqual([row["accounts_total"] for row in result["rows"]], [1, 0])
+        self.assertEqual(result["summary"]["promotion_presence"], {"eligible": 0, "none": 0, "unknown": 1})
         self.assertEqual(counts["reads"], 1)
 
     def test_missing_other_setup_requirements_skip_account_json(self):
@@ -121,13 +130,10 @@ class DashboardAggregationReadTests(PostgresTestCase):
 
         with self._account_json_reads() as counts:
             dashboard = repository.dashboard_aggregates(public_status=True, include_email_status=False)
-            daily = analytics.registration_daily_analytics(date_from="2026-11-26", date_to="2026-11-26")
-
         self.assertEqual(dashboard["jobs"]["counts"], {"success": 1, "partial_success": 4})
-        self.assertEqual(daily["summary"]["counts"], dashboard["jobs"]["counts"])
         self.assertEqual(counts["reads"], 0)
 
-    def test_dashboard_and_daily_keep_current_setup_and_requested_status_rules(self):
+    def test_dashboard_keeps_current_setup_and_requested_status_rules(self):
         cases = (
             ("object-pending", {"totp_setup_pending": True}, "partial_success"),
             ("string-pending", json.dumps({"totp_setup_pending": "yes"}), "partial_success"),
@@ -158,9 +164,5 @@ class DashboardAggregationReadTests(PostgresTestCase):
         )
 
         dashboard = repository.dashboard_aggregates(public_status=True, include_email_status=False)
-        daily = analytics.registration_daily_analytics(date_from="2026-11-26", date_to="2026-11-26")
-
-        # 总览仍按当前账号完成性重算显式关联任务；daily 保留非成功任务状态。
+        # 任务概览继续按当前账号完成性重算显式关联任务。
         self.assertEqual(dashboard["jobs"]["counts"], {"success": 5, "partial_success": 3, "failed": 1})
-        self.assertEqual(daily["summary"]["counts"], {"success": 4, "partial_success": 4, "running": 1})
-        self.assertEqual(daily["summary"]["accounts_total"], 7)

@@ -1,17 +1,19 @@
 # -*- coding: utf-8 -*-
-"""总览注册任务按日只读聚合。"""
+"""按账号首次入库日只读聚合最近成功查询的套餐优惠。"""
 from __future__ import annotations
 
-from datetime import date, datetime, time, timedelta
-from typing import Any
+import json
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from core.accounts.query import normalize_query
-from core.operations.presentation import public_result_status_sql
-from core.storage import admin_repository, postgres as postgres_store, records as record_store
+from core.storage import admin_repository, records as record_store
+from core.storage.account_dates import account_created_date_sql
 from core.storage.accounts import promotion_offers
-from core.storage.task_query_context import readonly_task_query
-from core.storage.registration import init as init_registration_schema
+from core.storage.registration.promotion_presence import (
+    fresh_promotion_offers_from_snapshot,
+    promotion_presence_from_snapshot,
+)
 
 
 TIMEZONE = ZoneInfo("Asia/Shanghai")
@@ -19,7 +21,7 @@ MAX_DAYS = 366
 
 
 class RegistrationDailyAnalyticsError(ValueError):
-    """注册日统计请求参数错误。"""
+    """账号日统计请求参数错误。"""
 
     def __init__(self, error_code: str, message: str):
         super().__init__(message)
@@ -50,21 +52,18 @@ def normalize_registration_date_range(
     if instant.tzinfo is None:
         instant = instant.replace(tzinfo=TIMEZONE)
     instant = instant.astimezone(TIMEZONE)
-    default_end = instant.date()
     start = _date_value(date_from, "开始日期")
     end = _date_value(date_to, "结束日期")
     try:
         if start is None and end is None:
-            end = default_end
-            start = end - timedelta(days=6)
+            end = instant.date()
+            start = end - timedelta(days=2)
         elif start is None:
-            start = end - timedelta(days=6)
+            start = end - timedelta(days=2)
         elif end is None:
-            end = start + timedelta(days=6)
+            end = start + timedelta(days=2)
     except OverflowError:
-        raise RegistrationDailyAnalyticsError(
-            "date_invalid", "日期范围超出可处理的日期边界。"
-        ) from None
+        raise RegistrationDailyAnalyticsError("date_invalid", "日期范围超出可处理的日期边界。") from None
     if start > end:
         raise RegistrationDailyAnalyticsError("date_range_reversed", "开始日期不能晚于结束日期。")
     if (end - start).days + 1 > MAX_DAYS:
@@ -77,26 +76,110 @@ def _query_for_range(start: str, end: str) -> dict:
         "schema_version": 1,
         "entity": "account",
         "archived": "0",
-        "q": f"注册任务日期:{start}..{end}",
+        "q": "",
+        "date_from": start,
+        "date_to": end,
         "filters": {"promotion": ["none"]},
         "order": [{"field": "id", "direction": "desc"}],
         "limit": None,
     })
 
 
+def _empty_stats() -> dict:
+    return {
+        "total": 0, "counts": {}, "accounts_total": 0, "plans": {},
+        "unpromoted_count": 0, "offers": [], "promoted_accounts_total": 0,
+        "promotion_presence": {"eligible": 0, "none": 0, "unknown": 0},
+    }
+
+
 def _rows_by_date(start: date, end: date) -> list[dict]:
-    return [{"date": (start + timedelta(days=index)).isoformat(),
-             "total": 0, "counts": {}, "accounts_total": 0, "plans": {},
-             "unpromoted_count": 0, "offers": [], "promoted_accounts_total": 0,
-             "query": _query_for_range((start + timedelta(days=index)).isoformat(),
-                                       (start + timedelta(days=index)).isoformat())}
-            for index in range((end - start).days + 1)]
+    result = []
+    for index in range((end - start).days + 1):
+        day = (start + timedelta(days=index)).isoformat()
+        result.append({"date": day, **_empty_stats(), "query": _query_for_range(day, day)})
+    return result
 
 
-def _decode_json(value: Any) -> dict:
-    if isinstance(value, dict):
-        return value
-    return {}
+def _account_promotions_sql() -> str:
+    """先过滤入库日期，仅读取本次账号的轻量优惠及必要的一个成功快照字段。"""
+    accounts = admin_repository._q(record_store.ACCOUNTS)
+    offers = admin_repository._promotion_table()
+    created_date = account_created_date_sql("a")
+    promotion = admin_repository._account_facet_expressions()["promotion"]
+    return f"""
+        WITH account_cohort AS MATERIALIZED (
+            SELECT a.id, ({created_date}) AS account_date,
+                   COALESCE(NULLIF(LOWER(BTRIM(a.current_plan_type)), ''),
+                            NULLIF(LOWER(BTRIM(a.plan_type)), ''), 'unknown') AS plan,
+                   (a.archived IS FALSE AND ({promotion}) = 'none') AS unpromoted
+              FROM {accounts} a
+             WHERE ({created_date}) >= %s::date AND ({created_date}) <= %s::date
+        )
+        SELECT member.account_date::text AS day, member.plan, member.unpromoted,
+               COALESCE(fresh.offers, '[]'::jsonb) AS offers,
+               CASE WHEN fresh.offers IS NULL
+                    THEN a.data->'plan_last_success_result_json' END AS promotion_snapshot
+          FROM account_cohort member
+          LEFT JOIN LATERAL (
+              SELECT jsonb_agg(jsonb_build_object(
+                         'key', grouped.offer_key, 'plan', grouped.plan, 'kind', grouped.kind,
+                         'discount_percentage', grouped.discount_percentage::text,
+                         'duration_num_periods', grouped.duration_num_periods::text,
+                         'duration_period', grouped.duration_period
+                     ) ORDER BY grouped.offer_key) AS offers
+                FROM (
+                    SELECT offer.offer_key, MAX(offer.plan) AS plan, MAX(offer.kind) AS kind,
+                           MAX(offer.discount_percentage) AS discount_percentage,
+                           MAX(offer.duration_num_periods) AS duration_num_periods,
+                           MAX(offer.duration_period) AS duration_period
+                      FROM {offers} offer
+                     WHERE offer.account_id = member.id AND offer.eligible IS TRUE
+                       AND offer.stale IS FALSE
+                       AND offer.kind IN ('free_trial', 'discount', 'other_promo')
+                     GROUP BY offer.offer_key
+                ) grouped
+          ) fresh ON TRUE
+          LEFT JOIN {accounts} a ON a.id = member.id
+    """
+
+
+def _add_account(stats: dict, item: dict, presence: str, offers: list[dict], offer_counts: dict) -> None:
+    stats["accounts_total"] += 1
+    stats["total"] += 1
+    plan = str(item.get("plan") or "unknown")
+    stats["plans"][plan] = stats["plans"].get(plan, 0) + 1
+    stats["unpromoted_count"] += int(bool(item.get("unpromoted")))
+    stats["promotion_presence"][presence] += 1
+    stats["promoted_accounts_total"] += int(presence == "eligible")
+    for offer in offers:
+        key = str(offer["key"])
+        projected = offer_counts.get(key)
+        if projected is None:
+            projected = {
+                "key": key, "plan": str(offer["plan"]),
+                "label": promotion_offers.offer_label(offer), "count": 0, "stale_count": 0,
+            }
+            offer_counts[key] = projected
+        projected["count"] += 1
+
+
+def _snapshot_offers(snapshot: object) -> list[dict]:
+    """成功快照旧数据没有轻量投影时，按相同组合键补齐优惠明细。"""
+    offers = {}
+    for item in fresh_promotion_offers_from_snapshot(snapshot):
+        key = promotion_offers.offer_key(
+            item.get("plan"), item.get("kind"), item.get("discount_percentage"),
+            item.get("duration_num_periods"), item.get("duration_period"),
+        )
+        # 只留下标签需要的有限字段，不把快照中的其他证据带入响应。
+        offers.setdefault(key, {
+            "key": key,
+            **{field: item.get(field) for field in (
+                "plan", "kind", "discount_percentage", "duration_num_periods", "duration_period",
+            )},
+        })
+    return list(offers.values())
 
 
 def registration_daily_analytics(
@@ -106,236 +189,42 @@ def registration_daily_analytics(
     now: datetime | None = None,
 ) -> dict:
     start_text, end_text = normalize_registration_date_range(date_from, date_to, now=now)
-    start = date.fromisoformat(start_text)
-    end = date.fromisoformat(end_text)
-    rows = _rows_by_date(start, end)
-    row_by_date = {row["date"]: row for row in rows}
-    source = admin_repository._registration_cohort_source_sql(
-        date_range=(start_text, end_text),
-    )
-    accounts = admin_repository._q(record_store.ACCOUNTS)
-    offers = admin_repository._promotion_table()
-    compatible_display_status_sql = (
-        admin_repository._registration_completion_display_status_sql()
-        .replace("j.account_id", "cohort.job_account_id")
-        .replace("j.", "cohort.")
-        .replace("a.", "account.")
-    )
-    display_status_sql = f"""CASE
-        WHEN LOWER(BTRIM(COALESCE(cohort.status, ''))) IN
-             ('success', 'partial_success')
-        THEN ({compatible_display_status_sql})
-        ELSE LOWER(BTRIM(COALESCE(cohort.status, '')))
-    END"""
-    status_sql = public_result_status_sql(
-        "displayed_jobs.display_status",
-        requested_status_expression="displayed_jobs.requested_status",
-    )
-    promo_kind_sql = admin_repository._ACCOUNT_PROMO_KIND.replace("a.", "scoped.")
-    promotion_sql = admin_repository._account_facet_expressions()["promotion"].replace("a.", "unique_accounts.")
-    plan_sql = f"""CASE
-        WHEN LOWER(COALESCE(scoped.current_plan_type, scoped.plan_type, '')) = 'free'
-             AND ({promo_kind_sql}) = 'free_trial' THEN 'free_trial_eligible'
-        WHEN LOWER(COALESCE(scoped.current_plan_type, scoped.plan_type, '')) = 'free'
-             AND ({promo_kind_sql}) = 'discount'
-             AND scoped.plus_promo_discount_percentage = 50 THEN 'free_half_price_eligible'
-        WHEN LOWER(COALESCE(scoped.current_plan_type, scoped.plan_type, '')) = 'free'
-             AND ({promo_kind_sql}) = 'discount' THEN 'free_discount_eligible'
-        WHEN LOWER(COALESCE(scoped.current_plan_type, scoped.plan_type, '')) = 'free'
-             AND ({promo_kind_sql}) IN ('other_promo', 'unknown') THEN 'free_promo_unknown'
-        ELSE COALESCE(NULLIF(LOWER(COALESCE(scoped.current_plan_type, scoped.plan_type, '')), ''), 'unknown')
-    END"""
-    # 每日任务、账号归属、套餐优惠分布和无优惠数量共用一条 SQL，
-    # 不把任务或凭据 JSON 加载到 Python。
-    sql = f"""
-        WITH cohort AS MATERIALIZED ({source}),
-        {admin_repository._registration_completion_accounts_sql("cohort", successful_jobs_only=True)},
-        displayed_jobs AS MATERIALIZED (
-            SELECT cohort.*, {display_status_sql} AS display_status,
-                   account.current_plan_type, account.plan_type,
-                   account.plus_promo_kind, account.plus_discount_eligible,
-                   account.plus_promo_eligible, account.plus_trial_eligible,
-                   account.plus_promo_discount_percentage,
-                   account.account_promotion_value, account.plan_check_status, account.archived
-              FROM cohort
-              LEFT JOIN {accounts} account ON account.id = cohort.account_id
-              LEFT JOIN completion_account_states account_setup ON account_setup.id = account.id
-        ),
-        scoped AS MATERIALIZED (
-            SELECT displayed_jobs.*, {status_sql} AS public_status FROM displayed_jobs
-        ),
-        account_members AS MATERIALIZED (
-            SELECT DISTINCT task_date, account_id
-              FROM scoped WHERE account_id IS NOT NULL
-        ),
-        account_offers AS MATERIALIZED (
-            SELECT members.account_id, offer.offer_key,
-                   MAX(offer.plan) AS plan, MAX(offer.kind) AS kind,
-                   MAX(offer.discount_percentage) AS discount_percentage,
-                   MAX(offer.duration_num_periods) AS duration_num_periods,
-                   MAX(offer.duration_period) AS duration_period,
-                   BOOL_AND(offer.stale) AS stale
-              FROM (SELECT DISTINCT account_id FROM account_members) members
-              JOIN {offers} offer ON offer.account_id = members.account_id
-             WHERE offer.eligible IS TRUE
-               AND offer.kind IN ('free_trial', 'discount', 'other_promo')
-             GROUP BY members.account_id, offer.offer_key
-        ),
-        offer_distribution AS (
-            SELECT members.task_date, GROUPING(members.task_date) AS is_summary,
-                   offer.offer_key, MAX(offer.plan) AS plan, MAX(offer.kind) AS kind,
-                   MAX(offer.discount_percentage) AS discount_percentage,
-                   MAX(offer.duration_num_periods) AS duration_num_periods,
-                   MAX(offer.duration_period) AS duration_period,
-                   COUNT(DISTINCT members.account_id) AS count,
-                   COUNT(DISTINCT members.account_id) FILTER (WHERE offer.stale) AS stale_count
-              FROM account_members members
-              JOIN account_offers offer ON offer.account_id = members.account_id
-             GROUP BY GROUPING SETS (
-                 (members.task_date, offer.offer_key), (offer.offer_key)
-             )
-        ),
-        promoted_accounts AS (
-            SELECT members.task_date, GROUPING(members.task_date) AS is_summary,
-                   COUNT(DISTINCT members.account_id) AS count
-              FROM account_members members
-             WHERE EXISTS (SELECT 1 FROM account_offers offer WHERE offer.account_id = members.account_id)
-             GROUP BY GROUPING SETS ((members.task_date), ())
-        ),
-        task_daily AS (
-            SELECT task_date, SUM(count) AS total,
-                   jsonb_object_agg(public_status, count ORDER BY public_status) AS counts
-              FROM (
-                  SELECT task_date, public_status, COUNT(*) AS count
-                    FROM scoped GROUP BY task_date, public_status
-              ) grouped
-             GROUP BY task_date
-        ),
-        account_daily AS (
-            SELECT task_date, COUNT(*) AS accounts_total
-              FROM account_members
-             GROUP BY task_date
-        ),
-        plan_daily AS (
-            SELECT task_date, {plan_sql} AS plan, COUNT(*) AS count
-              FROM (SELECT DISTINCT task_date, account_id, current_plan_type, plan_type,
-                                   plus_promo_kind, plus_discount_eligible, plus_promo_eligible,
-                                   plus_trial_eligible, plus_promo_discount_percentage
-                      FROM scoped WHERE account_id IS NOT NULL) scoped
-             GROUP BY task_date, plan
-        ),
-        unpromoted_daily AS (
-            SELECT task_date, COUNT(*) AS count
-              FROM (SELECT DISTINCT task_date, account_id, account_promotion_value, plan_check_status, archived
-                      FROM scoped WHERE account_id IS NOT NULL) unique_accounts
-             WHERE ({promotion_sql}) = 'none' AND archived IS FALSE
-             GROUP BY task_date
-        ),
-        summary_tasks AS (
-            SELECT SUM(count) AS total,
-                   jsonb_object_agg(public_status, count ORDER BY public_status) AS counts
-              FROM (
-                  SELECT public_status, COUNT(*) AS count FROM scoped GROUP BY public_status
-              ) grouped
-        ),
-        summary_accounts AS (
-            SELECT COUNT(*) AS accounts_total
-              FROM (SELECT DISTINCT account_id FROM scoped WHERE account_id IS NOT NULL) unique_accounts
-        ),
-        summary_plans AS (
-            SELECT {plan_sql} AS plan, COUNT(*) AS count
-              FROM (SELECT DISTINCT account_id, current_plan_type, plan_type, plus_promo_kind,
-                                   plus_discount_eligible, plus_promo_eligible, plus_trial_eligible,
-                                   plus_promo_discount_percentage
-                      FROM scoped WHERE account_id IS NOT NULL) scoped
-             GROUP BY plan
-        ),
-        summary_unpromoted AS (
-            SELECT COUNT(*) AS count
-              FROM (SELECT DISTINCT account_id, account_promotion_value, plan_check_status, archived
-                      FROM scoped WHERE account_id IS NOT NULL) unique_accounts
-             WHERE ({promotion_sql}) = 'none' AND archived IS FALSE
-        )
-        SELECT 'task_daily' AS kind, task_date::text AS day, jsonb_build_object(
-                   'total', total, 'counts', counts) AS payload FROM task_daily
-        UNION ALL SELECT 'account_daily', task_date::text, jsonb_build_object(
-                   'accounts_total', accounts_total) FROM account_daily
-        UNION ALL SELECT 'plan_daily', task_date::text, jsonb_build_object(
-                   'plan', plan, 'count', count) FROM plan_daily
-        UNION ALL SELECT 'unpromoted_daily', task_date::text, jsonb_build_object(
-                   'count', count) FROM unpromoted_daily
-        UNION ALL SELECT 'summary_tasks', NULL, jsonb_build_object(
-                   'total', total, 'counts', counts) FROM summary_tasks
-        UNION ALL SELECT 'summary_accounts', NULL, jsonb_build_object(
-                   'accounts_total', accounts_total) FROM summary_accounts
-        UNION ALL SELECT 'summary_plan', NULL, jsonb_build_object(
-                   'plan', plan, 'count', count) FROM summary_plans
-        UNION ALL SELECT 'summary_unpromoted', NULL, jsonb_build_object(
-                   'count', count) FROM summary_unpromoted
-        UNION ALL SELECT CASE WHEN is_summary = 1 THEN 'summary_offer' ELSE 'offer_daily' END,
-                   task_date::text, jsonb_build_object(
-                       'key', offer_key, 'plan', plan, 'kind', kind,
-                       'discount_percentage', discount_percentage::text,
-                       'duration_num_periods', duration_num_periods::text,
-                       'duration_period', duration_period,
-                       'count', count, 'stale_count', stale_count) FROM offer_distribution
-        UNION ALL SELECT CASE WHEN is_summary = 1 THEN 'summary_promoted' ELSE 'promoted_daily' END,
-                   task_date::text, jsonb_build_object('count', count) FROM promoted_accounts
-    """
-    # registration.init() 幂等执行，确保旧安装在准备共享归属 SQL 前已有
-    # 可选的 Attempt 表。
-    if not readonly_task_query():
-        init_registration_schema()
-    with admin_repository._connect() as conn, conn.cursor() as cur:
-        cur.execute(sql, (start_text, end_text))
-        result_rows = cur.fetchall()
-    summary = {"total": 0, "counts": {}, "accounts_total": 0, "plans": {}, "unpromoted_count": 0,
-               "offers": [], "promoted_accounts_total": 0}
-    for item in result_rows:
-        kind = item["kind"]
-        day = item.get("day")
-        payload = _decode_json(item.get("payload"))
-        if kind == "task_daily" and day in row_by_date:
-            row_by_date[day]["total"] = int(payload.get("total") or 0)
-            row_by_date[day]["counts"] = {str(k): int(v or 0) for k, v in (payload.get("counts") or {}).items()}
-        elif kind == "account_daily" and day in row_by_date:
-            row_by_date[day]["accounts_total"] = int(payload.get("accounts_total") or 0)
-        elif kind == "plan_daily" and day in row_by_date:
-            row_by_date[day]["plans"][str(payload.get("plan") or "unknown")] = int(payload.get("count") or 0)
-        elif kind == "unpromoted_daily" and day in row_by_date:
-            row_by_date[day]["unpromoted_count"] = int(payload.get("count") or 0)
-        elif kind == "summary_tasks":
-            summary["total"] = int(payload.get("total") or 0)
-            summary["counts"] = {str(k): int(v or 0) for k, v in (payload.get("counts") or {}).items()}
-        elif kind == "summary_accounts":
-            summary["accounts_total"] = int(payload.get("accounts_total") or 0)
-        elif kind == "summary_plan":
-            summary["plans"][str(payload.get("plan") or "unknown")] = int(payload.get("count") or 0)
-        elif kind == "summary_unpromoted":
-            summary["unpromoted_count"] = int(payload.get("count") or 0)
-        elif kind in ("offer_daily", "summary_offer"):
-            target = summary if kind == "summary_offer" else row_by_date.get(day)
-            if target is not None:
-                target["offers"].append({
-                    "key": str(payload["key"]),
-                    "plan": str(payload["plan"]),
-                    "label": promotion_offers.offer_label(payload),
-                    "count": int(payload.get("count") or 0),
-                    "stale_count": int(payload.get("stale_count") or 0),
-                })
-        elif kind == "promoted_daily" and day in row_by_date:
-            row_by_date[day]["promoted_accounts_total"] = int(payload.get("count") or 0)
-        elif kind == "summary_promoted":
-            summary["promoted_accounts_total"] = int(payload.get("count") or 0)
-    for group in [*rows, summary]:
-        group["offers"].sort(key=lambda offer: (offer["plan"], offer["key"]))
+    rows = _rows_by_date(date.fromisoformat(start_text), date.fromisoformat(end_text))
+    by_date = {row["date"]: row for row in rows}
+    day_offers = {row["date"]: {} for row in rows}
+    summary = _empty_stats()
+    summary_offers = {}
+    # 命名游标只保留一批账号。无任务关联、无整段账号/凭据 JSON，
+    # 当前优惠已明确的账号连成功快照也不解压；其余每个账号最多读取一次该字段。
+    with admin_repository._connect() as conn, conn.cursor(name="daily_account_promotions") as cur:
+        cur.execute(_account_promotions_sql(), (start_text, end_text))
+        while batch := cur.fetchmany(256):
+            for item in batch:
+                day = item["day"]
+                offers = item.get("offers") or []
+                snapshot = item.get("promotion_snapshot")
+                if not offers:
+                    if isinstance(snapshot, str):
+                        try:
+                            snapshot = json.loads(snapshot)
+                        except (ValueError, RecursionError):
+                            snapshot = None
+                    offers = _snapshot_offers(snapshot)
+                presence = "eligible" if offers else promotion_presence_from_snapshot(snapshot)
+                _add_account(by_date[day], item, presence, offers, day_offers[day])
+                _add_account(summary, item, presence, offers, summary_offers)
+    for row in rows:
+        row["offers"] = sorted(day_offers[row["date"]].values(), key=lambda offer: (offer["plan"], offer["key"]))
+    summary["offers"] = sorted(summary_offers.values(), key=lambda offer: (offer["plan"], offer["key"]))
     summary["query"] = _query_for_range(start_text, end_text)
-    instant = (now or datetime.now(TIMEZONE))
+    instant = now or datetime.now(TIMEZONE)
     if instant.tzinfo is None:
         instant = instant.replace(tzinfo=TIMEZONE)
     return {
         "ok": True,
         "timezone": "Asia/Shanghai",
+        "cohort_basis": "account_created_at",
+        "cohort_basis_label": "按账号首次入库日期统计",
         "date_from": start_text,
         "date_to": end_text,
         "updated_at": instant.astimezone(TIMEZONE).isoformat(),

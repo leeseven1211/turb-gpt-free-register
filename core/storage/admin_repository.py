@@ -15,6 +15,7 @@ from typing import Any
 from psycopg.rows import dict_row
 
 from core.storage import postgres as postgres_store, records as record_store
+from core.storage.account_dates import account_created_date_sql
 from core.storage.task_query_context import MISSING_SCHEMA_ERRORS, readonly_task_query
 from core.accounts.search import REGISTRATION_DRIVERS, parse_account_search, parse_registration_date_range
 from core.operations.presentation import UNCONFIRMED_RESULT_STATUSES, public_result_status, public_result_status_sql
@@ -688,11 +689,12 @@ def _compile_account_predicates(
             where.append(f"{expression} ILIKE %s")
             literal = term.value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
             params.append(f"%{literal}%")
+    created_date = f"({account_created_date_sql()})::text" if date_from or date_to else ""
     if date_from:
-        where.append("LEFT(a.created_at, 10) >= %s")
+        where.append(f"{created_date} >= %s")
         params.append(date_from[:10])
     if date_to:
-        where.append("LEFT(a.created_at, 10) <= %s")
+        where.append(f"{created_date} <= %s")
         params.append(date_to[:10])
 
     value = _text(filters.get("id"))
