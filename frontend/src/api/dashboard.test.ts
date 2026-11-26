@@ -13,6 +13,17 @@ describe('dashboard API',()=>{
   await expect(api.extractSummary?.(controller.signal)).resolves.toEqual({path:'/api/extract-workbench/summary',signal:controller.signal});
   expect(send).toHaveBeenCalledTimes(3);
  });
+ it('encodes an optional Beijing date range for daily registration statistics',async()=>{
+  const send=vi.fn(async(path:string,options?:RequestInit)=>({path,signal:options?.signal}));
+  const api=createDashboardApi(send);
+  const controller=new AbortController();
+  await expect(api.registrationDaily?.('2026-11-20','2026-11-26',controller.signal)).resolves.toEqual({
+   path:'/api/dashboard/registration-daily?date_from=2026-11-20&date_to=2026-11-26',signal:controller.signal,
+  });
+  await expect(api.registrationDaily?.(undefined,undefined,controller.signal)).resolves.toEqual({
+   path:'/api/dashboard/registration-daily',signal:controller.signal,
+  });
+ });
  it('uses only same-origin GET requests with no mutation payload through the default transport',async()=>{
   const fetch=vi.fn(async()=>new Response('{"ok":true}',{headers:{'Content-Type':'application/json'}}));
   vi.stubGlobal('fetch',fetch);

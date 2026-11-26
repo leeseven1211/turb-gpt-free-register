@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import {computed,onMounted,ref} from 'vue';
 import {proxyLabel,useDashboard} from './useDashboard';
-import type {DashboardDeps} from './contracts';
+import DailyRegistrationStats from './DailyRegistrationStats.vue';
+import type {DashboardDeps,DailyRegistrationStatsState} from './contracts';
 
 const props=defineProps<{api:any;deps:DashboardDeps}>();
 const owner=useDashboard(props.api,props.deps);
-const {data,extract,caps,loading,error,updatedAt}=owner;
+const {data,extract,caps,daily,dailyLoading,dailyError,dailyUpdatedAt,dailyRequestedRange,dailyDisplayedRange,dailyScopeCurrent,loading,error,updatedAt}=owner;
 const mounted=ref(false);
 onMounted(()=>{mounted.value=true;});
 
@@ -88,6 +89,16 @@ const updatedLabel=computed(()=>{
   return `数据更新 ${new Date(updatedAt.value).toLocaleTimeString('zh-CN',{hour12:false})}`;
 });
 const go=(tab:string)=>props.deps.onNavigate?.(tab);
+const dailyState=computed<DailyRegistrationStatsState>(()=>({
+ data:daily.value,
+ loading:dailyLoading.value,
+ error:dailyError.value,
+ updatedAt:dailyUpdatedAt.value,
+ requestedRange:dailyRequestedRange.value,
+ displayedRange:dailyDisplayedRange.value,
+ scopeCurrent:dailyScopeCurrent.value,
+ load:owner.loadDaily,
+}));
 
 defineExpose({
   load:owner.load,
@@ -140,6 +151,8 @@ defineExpose({
      <span class="ov-pulse-badge"><strong>{{item.badge}}</strong></span>
     </button>
    </nav>
+
+   <DailyRegistrationStats :state="dailyState" :on-bulk-plan-create="props.deps.onBulkPlanCreate"/>
 
    <div class="ov-grid">
     <article class="ov-card ov-card--email" data-overview-card="email" style="--accent:#1f9d75;--accent-soft:#e7f6f0">

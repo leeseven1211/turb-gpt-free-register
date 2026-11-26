@@ -17,6 +17,8 @@ from flask import Response, jsonify, redirect, render_template, request, url_for
 
 from core import account_task_store
 from core.storage import admin_repository
+from core.storage.registration import analytics as registration_analytics
+from core.storage.task_query_context import task_query
 from core.codex import operation_service as codex_operation_service, retry_service as codex_retry_service, token_refresh_service as codex_token_refresh_service
 from core import db
 from core.accounts.deactivation import mail_scan as deactivation_mail_service
@@ -145,6 +147,29 @@ def create_dashboard_blueprint(context: WebUIContext):
             },
             "codex": aggregates["codex"],
         })
+
+    @bp.get("/api/dashboard/registration-daily")
+    def api_registration_daily():
+        with task_query():
+            try:
+                result = registration_analytics.registration_daily_analytics(
+                    date_from=request.args.get("date_from"),
+                    date_to=request.args.get("date_to"),
+                )
+            except registration_analytics.RegistrationDailyAnalyticsError as exc:
+                return jsonify({
+                    "ok": False,
+                    "error_code": exc.error_code,
+                    "message": str(exc),
+                }), 400
+            except Exception:
+                logger.exception("读取按日注册统计失败")
+                return jsonify({
+                    "ok": False,
+                    "error_code": "registration_daily_unavailable",
+                    "message": "按日注册统计暂时不可用，请稍后重试",
+                }), 503
+            return jsonify(result)
 
     @bp.get("/api/capabilities")
     def api_capabilities():

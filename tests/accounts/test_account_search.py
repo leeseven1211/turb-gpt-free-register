@@ -76,3 +76,21 @@ class AccountSearchTests(unittest.TestCase):
 
     def test_empty_search_has_no_conditions(self):
         self.assertEqual(parse_account_search("   "), [])
+
+    def test_registration_task_date_range_is_parsed_and_displayed(self):
+        terms = parse_account_search("注册任务日期:2026-11-20..2026-11-26")
+        self.assertEqual([(term.field, term.value) for term in terms], [
+            ("registration_date", "2026-11-20..2026-11-26"),
+        ])
+        self.assertEqual(account_search_filters(terms)[0]["label"], "注册任务日期")
+        self.assertEqual(account_search_filters(terms)[0]["display_value"], "2026-11-20..2026-11-26")
+
+    def test_registration_task_date_range_rejects_invalid_or_unbounded_values(self):
+        for query in (
+            "注册任务日期:2026-02-30..2026-03-01",
+            "注册任务日期:2026-11-27..2026-11-26",
+            "注册任务日期:2025-01-01..2026-01-02",
+        ):
+            with self.subTest(query=query):
+                with self.assertRaises(AccountSearchError):
+                    parse_account_search(query)
