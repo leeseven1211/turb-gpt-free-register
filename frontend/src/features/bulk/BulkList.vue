@@ -88,15 +88,43 @@ const rows = computed(() =>
     };
   }),
 );
-const kpis = computed(() => {
-  const values = [
-    { key: 'active_batches', label: '执行中', value: count(summary.value.active_batches), unit: '批' },
-    { key: 'ended_batches', label: '已结束', value: count(summary.value.ended_batches), unit: '批' },
-    { key: 'failed_targets', label: '失败账号', value: count(summary.value.failed_targets), unit: '个' },
-  ];
+const resultSummary = computed(() => {
+  const success = count(summary.value.success_targets);
+  const partial = count(summary.value.partial_success_targets);
+  let failed = count(summary.value.failed_targets);
   const oldFailed = count(summary.value.attention_targets);
-  if (oldFailed != null && values[2]!.value != null) values[2]!.value! += oldFailed;
-  return values.filter((value) => value.value !== null);
+  if (oldFailed !== null && failed !== null) failed += oldFailed;
+  const total = success !== null && partial !== null && failed !== null ? success + partial + failed : null;
+  return { success, partial, failed, total };
+});
+function percentage(value: number, total: number): string {
+  return ((100 * value) / total).toFixed(1);
+}
+const kpis = computed(() => {
+  const total = count(summary.value.total_batches);
+  const paused = count(summary.value.paused_batches);
+  const ended = count(summary.value.ended_batches);
+  const result = resultSummary.value;
+  return [
+    { key: 'total_batches', label: '批次总数', value: total, unit: '批', tone: 'neutral', detail: chips.value.length ? '当前筛选' : '全部批次' },
+    { key: 'active_batches', label: '执行中', value: count(summary.value.active_batches), unit: '批', tone: 'active', detail: paused === null ? '' : `已暂停 ${paused.toLocaleString('zh-CN')}` },
+    { key: 'ended_batches', label: '已结束', value: ended, unit: '批', tone: 'neutral', detail: ended !== null && total ? `占 ${percentage(ended, total)}%` : '' },
+    { key: 'success_targets', label: '成功账号', value: result.success, unit: '个', tone: 'success', detail: result.partial === null ? '' : `部分成功 ${result.partial.toLocaleString('zh-CN')}` },
+    { key: 'failed_targets', label: '失败账号', value: result.failed, unit: '个', tone: 'warning', detail: result.failed !== null && result.total ? `占 ${percentage(result.failed, result.total)}%` : '' },
+    { key: 'success_rate', label: '成功率', value: result.total && result.success !== null ? (100 * result.success) / result.total : null, unit: '%', tone: 'success', detail: '', available: result.total !== null },
+  ].filter((item) => item.value !== null || item.available).map((item) => ({
+    ...item,
+    display: item.value === null ? '—' : item.key === 'success_rate' ? item.value.toFixed(1) : item.value.toLocaleString('zh-CN'),
+  }));
+});
+const resultSegments = computed(() => {
+  const { success, partial, failed, total } = resultSummary.value;
+  if (!total) return [];
+  return [
+    { key: 'success', label: '成功', value: success! },
+    { key: 'partial', label: '部分成功', value: partial! },
+    { key: 'failed', label: '失败', value: failed! },
+  ].map((item) => ({ ...item, width: `${(100 * item.value) / total}%` }));
 });
 const chips = computed(() => {
   const nav = navigation.value;
@@ -164,17 +192,32 @@ defineExpose({ refresh, setVisible });
 </script>
 <template>
   <section class="ui-list bl-root" aria-label="批次列表" :aria-busy="loading">
-    <div v-if="kpis.length" class="bl-kpis">
+    <div
+      v-if="kpis.length"
+      class="bl-kpis"
+      :style="{ '--bl-kpi-count': kpis.length }"
+      aria-label="当前筛选范围的全部批次统计"
+      title="统计覆盖当前筛选范围的全部批次；同一账号在不同批次分别计数，批次内取账号当前结果。"
+    >
       <div
         v-for="kpi in kpis"
         :key="kpi.key"
         class="bl-kpi"
-        :class="{ 'is-warning': kpi.key === 'failed_targets' && !!kpi.value }"
+        :class="`is-${kpi.tone}`"
+        :data-bulk-stat="kpi.key"
+        :title="kpi.key === 'success_rate' ? '成功率 = 成功 ÷（成功 + 部分成功 + 失败），不含待执行、取消和未执行。' : undefined"
       >
         <span>{{ kpi.label }}</span
-        ><strong
-          >{{ kpi.value }}<small>{{ kpi.unit }}</small></strong
-        >
+        ><div class="bl-kpi-value">
+          <strong :title="kpi.display">{{ kpi.display }}<small v-if="kpi.value !== null">{{ kpi.unit }}</small></strong>
+          <span v-if="kpi.detail" class="bl-kpi-detail" :title="kpi.detail">{{ kpi.detail }}</span>
+        </div>
+        <span
+          v-if="kpi.key === 'success_rate' && resultSegments.length"
+          class="bl-kpi-rail"
+          role="img"
+          :aria-label="resultSegments.map((item) => `${item.label} ${item.value}`).join('，')"
+        ><i v-for="segment in resultSegments" :key="segment.key" :class="`is-${segment.key}`" :style="{ width: segment.width }" aria-hidden="true"></i></span>
       </div>
     </div>
       <div v-if="chips.length" class="ui-list-toolbar bl-toolbar">
