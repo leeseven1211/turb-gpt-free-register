@@ -14,7 +14,7 @@ from core.auth.protocol.session import BrowserSession
 from core.auth.state_machine import CancellationRequested
 from core.operations.runtime import OperationCancelled
 from core.operations.task_gateway import OperationLeaseLost
-from core.storage.accounts import protocol_sessions
+from core.storage.accounts import device_profiles, protocol_sessions
 
 logger = logging.getLogger(__name__)
 _CONTROL_ERRORS = (CancellationRequested, OperationCancelled, OperationLeaseLost)
@@ -199,7 +199,9 @@ def try_reuse_session(account: dict, email: str, *, proxy: str | None, checkpoin
 def cache_authenticated_session(session, info: dict, account_id: int, email: str) -> None:
     """保存完整 Cookie 供后续复用，缓存故障不覆盖已确认的账号事实。"""
     try:
-        protocol_sessions.save_session(account_id, email, v3._cookie_payload(session, info))
+        payload = v3._cookie_payload(session, info)
+        protocol_sessions.save_session(account_id, email, payload)
+        device_profiles.remember_session(account_id, email, payload, origin="password_setup")
     except Exception as exc:
         _reraise_control(exc)
         logger.warning("[补密码] 协议会话缓存保存失败")

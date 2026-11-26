@@ -157,23 +157,31 @@ def run_protocol_password_reset(
             return failure
         account = db.get_account_by_email(email) or account
 
-    # 复用上次登录的指纹与 Cookie，避免“新设备 + 改密”触发 sensitive_action_cooldown。
-    from core.storage.accounts import protocol_sessions
+    # 复用账号最后一次使用的设备指纹（设备表优先，其次是会话缓存里的 Cookie）。
+    from core.storage.accounts import device_profiles, protocol_sessions
 
+    account_id = int(account.get("id") or 0)
     cached = {}
     try:
-        cached = protocol_sessions.load_session(int(account.get("id") or 0), email) or {}
+        cached = protocol_sessions.load_session(account_id, email) or {}
     except Exception:
         cached = {}
+    remembered = {}
+    try:
+        remembered = device_profiles.load_profile(account_id, email) or {}
+    except Exception:
+        remembered = {}
+    device = remembered or cached
     identity = None
-    cached_profile = cached.get("browser_profile") if isinstance(cached.get("browser_profile"), dict) else {}
-    if cached.get("device_id") and cached_profile:
+    device_profile = device.get("browser_profile") if isinstance(device.get("browser_profile"), dict) else {}
+    if device.get("device_id") and device_profile:
         identity = {
-            "device_id": str(cached.get("device_id")),
-            "browser_profile": dict(cached_profile),
+            "device_id": str(device.get("device_id")),
+            "browser_profile": dict(device_profile),
         }
-        if cached_profile.get("impersonate"):
-            identity["chrome_identity"] = {"impersonate": str(cached_profile["impersonate"])}
+        impersonate = device_profile.get("impersonate") or device.get("impersonate")
+        if impersonate:
+            identity["chrome_identity"] = {"impersonate": str(impersonate)}
 
     session: BrowserSession | None = None
     cancelled = False
@@ -212,6 +220,9 @@ def run_protocol_password_reset(
                                                   "account": {"id": account.get("chatgpt_account_id") or ""}})
 
             protocol_sessions.save_session(int(account.get("id") or 0), email, payload)
+            device_profiles.remember_session(
+                int(account.get("id") or 0), email, payload, origin="password_reset",
+            )
         except Exception:
             logger.warning("[改密] 设备画像缓存保存失败", exc_info=True)
 
