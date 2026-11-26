@@ -102,5 +102,8 @@ defineExpose({batchName,refresh:state.refresh,showReport,setVisible,needsRefresh
   </div>
 </template>
 <style scoped>
+.bulk-detail-toolbar{padding:12px;border:1px solid var(--ui-color-border);border-radius:var(--ui-radius-md);background:var(--ui-color-surface-subtle)}
+.bulk-control-strip{margin-top:12px;padding:12px;border:1px solid var(--ui-color-border);border-radius:var(--ui-radius-md)}
+.bulk-results-heading{border-bottom:1px solid var(--ui-color-border)}
 .bulk-detail-owner{min-width:0}.bulk-target-count-row{display:flex;align-items:center;gap:10px;min-width:0;padding:8px 16px}.bulk-target-count{flex:none;font-size:12px;color:var(--ui-color-text-secondary)}.bulk-target-count-row :deep(.list-filter-summary){flex:1}.bulk-results-heading h3{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.bulk-results-heading h3>span{font-size:12px;font-weight:400}.bulk-report-target:focus{outline:2px solid var(--ui-color-brand);outline-offset:4px}@media(max-width:680px){.bulk-target-count-row{padding:8px 10px;gap:6px}.bulk-target-count{max-width:55%;overflow-wrap:anywhere}.bulk-results-heading{flex-wrap:wrap}}
 </style>

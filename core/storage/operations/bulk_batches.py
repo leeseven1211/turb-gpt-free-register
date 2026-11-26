@@ -262,6 +262,8 @@ def list_batches(*, limit: int = 20, after_id: int | None = None, operation_key=
               count(*) FILTER (WHERE c.state IN ('active','settling','cancel_requested','stop_requested') AND NOT c.is_paused) AS active_batches,
               count(*) FILTER (WHERE c.state='active' AND c.is_paused) AS paused_batches,
               count(*) FILTER (WHERE c.state='ended') AS ended_batches,
+              coalesce(sum(coalesce(nullif(c.counts->>'success','')::bigint,0)),0) AS success_targets,
+              coalesce(sum(coalesce(nullif(c.counts->>'partial_success','')::bigint,0)),0) AS partial_success_targets,
               coalesce(sum(coalesce(nullif(c.counts->>'failed','')::bigint,0)),0) AS failed_targets,
               coalesce(sum(coalesce(nullif(c.counts->>'attention_required','')::bigint,0)),0) AS attention_targets
             FROM {table("operation_batch_controls")} c
@@ -270,7 +272,8 @@ def list_batches(*, limit: int = 20, after_id: int | None = None, operation_key=
             )
             row = cur.fetchone() or {}
             summary = {key: int(row.get(key) or 0) for key in (
-                "total_batches", "active_batches", "paused_batches", "ended_batches", "failed_targets", "attention_targets")}
+                "total_batches", "active_batches", "paused_batches", "ended_batches",
+                "success_targets", "partial_success_targets", "failed_targets", "attention_targets")}
             summary["failed_targets"] += summary.pop("attention_targets", 0)
             historical = f"""SELECT c.batch_id FROM {table('operation_batch_controls')} c
               JOIN {table('operation_batches')} b ON b.id=c.batch_id
@@ -278,7 +281,9 @@ def list_batches(*, limit: int = 20, after_id: int | None = None, operation_key=
             scope = "c.batch_id IN (SELECT batch_id FROM historical_batches)"
             cur.execute(f"""WITH historical_batches AS MATERIALIZED ({historical})
               SELECT coalesce(sum(n),0) AS n FROM ({partial_counts_sql(scope)}) partials""", tuple(params))
-            summary["failed_targets"] -= int(cur.fetchone()["n"])
+            historical_partials = int(cur.fetchone()["n"])
+            summary["failed_targets"] -= historical_partials
+            summary["partial_success_targets"] += historical_partials
         except Exception:
             summary = {}
         return {
