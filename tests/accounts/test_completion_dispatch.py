@@ -27,6 +27,8 @@ class CompletionDispatchTests(PostgresTestCase):
         self.stack.enter_context(patch.object(account_task_store, "_READY_KEY", ""))
         # 只执行本用例显式派发的父任务，子任务保持在持久队列中。
         self.stack.enter_context(patch.object(task_gateway, "notify_dispatch"))
+        # 这些用例验证协调器派发，不验证本机是否装了浏览器：按“有浏览器”部署固定能力位。
+        self.stack.enter_context(patch("core.runtime.capabilities.browser_enabled", return_value=True))
         self.setup_worker = self.stack.enter_context(
             patch.object(runtime.codex_retry_service, "run_twofa_worker"),
         )
@@ -39,7 +41,10 @@ class CompletionDispatchTests(PostgresTestCase):
             "_OPERATION_ACTIONS", "_OPERATION_ACTION_SOURCES",
             "_DISPATCH_HANDLERS", "_DISPATCH_CAPACITY_HANDLERS",
         ):
-            self.stack.enter_context(patch.dict(getattr(task_gateway, registry_name), {}))
+                self.stack.enter_context(patch.dict(getattr(task_gateway, registry_name), {}))
+        # 部署能力校验会读运行配置快照；测试 schema 不迁移配置库，按“未启用数据库配置”
+        # 走文件/环境默认值，避免 config_not_migrated 打断派发用例。
+        self.stack.enter_context(patch("config.runtime.load_values", return_value=None))
         task_gateway.register_operation_handler(
             "account_completion",
             runtime._handle_native_account_completion,

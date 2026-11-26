@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from datetime import datetime, timezone
 
@@ -26,6 +27,8 @@ from core.auth.protocol.session import BrowserSession
 from core.email.provider import wait_for_otp
 from core.operations.runtime import OperationCancelled
 from core.operations.task_gateway import OperationLeaseLost
+
+logger = logging.getLogger(__name__)
 
 _AUTH = "https://auth.openai.com"
 _RESET_PAGE = _AUTH + "/reset-password"
@@ -61,11 +64,19 @@ def _session_stale(account: dict) -> bool:
 
 
 def _refresh_before_reset(email: str, *, proxy, proxy_supplier) -> dict | None:
-    """AT 过期/缺失时先刷新一次；成功返回 None，失败返回错误字典。"""
+    """AT 过期/缺失时先刷新一次；成功返回 None，失败返回错误字典。
+
+    只在刷新驱动与改密驱动同为 `protocol` 时执行：跨驱动（如 rust）刷新会在
+    改密前引入一次“另一套设备指纹”的登录，随后紧跟的密码重置会被 OpenAI
+    判定为敏感操作并挂 24 小时 cooldown。驱动不一致时交给改密自身的登录预检。
+    """
     from core.accounts.liveness import service as live_service
 
     try:
         driver = live_service._resolve_refresh_driver(None)
+        if str(driver or "").strip().lower() not in {"protocol", "protocol_v3", "protocol_current"}:
+            logger.info("[改密] 跳过刷新 AT：刷新驱动 %s 与改密驱动 protocol 不一致", driver)
+            return None
         runner = live_service._refresh_execution_runner(driver)
         result = runner(
             email,
@@ -195,6 +206,17 @@ def run_protocol_password_reset(
         session.get(_RESET_PAGE, headers=session.get_auth_navigate_headers(referer=_AUTH + "/log-in/password"),
                     allow_redirects=True)
         note("password_reset", "已进入密码重置页面")
+        # 记住这次改密实际使用的设备（Python 协议画像），下次刷新/改密可原样复用。
+        try:
+            from core.kernels.protocol.local.refresh_at.v3 import _cookie_payload
+
+            protocol_sessions.save_session(
+                int(account.get("id") or 0), email,
+                _cookie_payload(session, {"user": {"id": account.get("user_id") or ""},
+                                          "account": {"id": account.get("chatgpt_account_id") or ""}}),
+            )
+        except Exception:
+            logger.warning("[改密] 设备画像缓存保存失败", exc_info=False)
 
         from config import email as email_cfg
 

@@ -21,6 +21,8 @@ class CompletionRefreshAuthTests(unittest.TestCase):
             patch.object(live_check_service, "register_operation_handlers"),
             patch.object(live_check_service, "_captured_proxy_source", return_value="auto"),
             patch.object(live_check_service, "_append_log"),
+            # 本用例验证派发逻辑，不验证部署是否装了浏览器：按“有浏览器”环境固定能力位。
+            patch("core.runtime.capabilities.browser_enabled", return_value=True),
             patch.object(account_completion_service, "active_registration_job", return_value=active_job, create=True) as active,
             patch.object(
                 live_check_service.account_task_store,
@@ -84,6 +86,7 @@ class CompletionRefreshAuthTests(unittest.TestCase):
             patch.object(live_check_service.db, "get_account", return_value=dict(self.account)),
             patch.object(account_completion_service, "active_registration_job", return_value={"id": 44}, create=True) as active,
             patch.object(live_check_service, "operation_log_context", return_value=nullcontext()),
+            patch("core.runtime.capabilities.browser_enabled", return_value=True),
             patch.object(live_check_service, "_run_live_check") as run,
         ):
             with self.assertRaises(task_gateway.OperationLeaseUnavailable):
@@ -165,6 +168,7 @@ class CompletionRefreshFallbackTests(unittest.TestCase):
             patch("core.accounts.liveness.protocol.v2.refresh_access_token", side_effect=protocol),
             patch.object(live_check_service, "check_account_liveness", side_effect=AssertionError("本用例不应调用 v1 认证")),
             patch("core.accounts.liveness.roxy.flow.available", return_value=True),
+            patch("core.runtime.capabilities.browser_enabled", return_value=True),
             patch("core.accounts.liveness.roxy.flow.refresh_access_token", side_effect=browser),
         ):
             live_check_service._handle_live_operation(context)
