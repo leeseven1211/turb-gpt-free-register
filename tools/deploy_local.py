@@ -102,10 +102,13 @@ def _retarget_plist(
     role: str,
     release: Path,
     interpreter: Path | None = None,
+    http_threads: int | None = None,
 ) -> dict[str, Any]:
-    """只改变包目录、入口脚本和明确传入的解释器。"""
+    """改变包目录、入口脚本及明确传入的本地启动参数。"""
     if role not in ROLES:
         _fail("role_invalid")
+    if http_threads is not None and (type(http_threads) is not int or not 1 <= http_threads <= 128):
+        _fail("http_threads_invalid")
     value = deepcopy(original)
     arguments = value.get("ProgramArguments")
     working = value.get("WorkingDirectory")
@@ -126,6 +129,14 @@ def _retarget_plist(
             _fail("interpreter_invalid")
         arguments[0] = str(interpreter)
     arguments[1] = str(release / entrypoint)
+    if role == "web" and http_threads is not None:
+        if "--http-threads" in arguments:
+            index = arguments.index("--http-threads") + 1
+            if index >= len(arguments):
+                _fail("manager_arguments_invalid")
+            arguments[index] = str(http_threads)
+        else:
+            arguments += ["--http-threads", str(http_threads)]
     value["ProgramArguments"] = arguments
     value["WorkingDirectory"] = str(release)
     value["EnvironmentVariables"] = environment
@@ -299,6 +310,7 @@ class _Deployment:
         timeout: float,
         interpreter: Path | None,
         allow_same_release: bool,
+        http_threads: int | None = None,
     ) -> None:
         self.source = source.resolve()
         self.release = release.resolve()
@@ -306,6 +318,7 @@ class _Deployment:
         self.deadline = time.monotonic() + timeout
         self.interpreter = interpreter
         self.allow_same_release = allow_same_release
+        self.http_threads = http_threads
         self.configs: dict[str, dict[str, Any]] = {}
         self.original: dict[str, bytes] = {}
         self.next: dict[str, dict[str, Any]] = {}
@@ -346,6 +359,7 @@ class _Deployment:
             self.configs[role] = config
             self.next[role] = _retarget_plist(
                 config, role=role, release=self.release, interpreter=self.interpreter,
+                http_threads=self.http_threads,
             )
             environment = config.get("EnvironmentVariables", {})
             for key in ("StandardOutPath", "StandardErrorPath"):
@@ -552,6 +566,7 @@ def deploy_local(
     timeout: float = 180,
     interpreter: Path | None = None,
     allow_same_release: bool = False,
+    http_threads: int | None = None,
 ) -> dict[str, Any]:
     """切换本机 launchd 固定 release，并在失败时恢复原 plist。"""
     if not isinstance(timeout, (int, float)) or timeout <= 0:
@@ -560,6 +575,7 @@ def deploy_local(
         source=Path(source), release=Path(release), receipt_dir=Path(receipt_dir),
         timeout=float(timeout), interpreter=Path(interpreter) if interpreter is not None else None,
         allow_same_release=allow_same_release,
+        http_threads=http_threads,
     )
     try:
         return task.run()

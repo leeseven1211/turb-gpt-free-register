@@ -26,6 +26,8 @@ python3 tools/deploy.py oracle --apply
 
 可热编辑运行配置由现有 observer 应用，无需重启；`python3 tools/deploy.py local --check` 或 `oracle --check` 只检查 `/healthz`、`/readyz`、`/login`。启动环境或需重启字段变化时，使用 `--restart --apply`。Python 代码和模板变化需要重启；Oracle 可变 checkout 仅有 `webui/static/` 产物变化时免重启，本地固定 release 的静态资源变化仍须切换 release 并重启。文档、测试、这三个部署入口脚本及尚未构建的 `frontend/` 源码变化不触发重启；前端产物应在开发阶段构建并提交，部署时不重复运行 npm。
 
+本地默认保留现役启动参数；需要调整 Web HTTP 线程数时，使用 `python3 tools/deploy.py local --http-threads 16 --apply` 显式设置并重启，Worker 参数与其他环境覆盖保持原值。
+
 依赖未变时复用现役环境；本地依赖变化时，通过 `--interpreter` 指定已准备好的包外 Python 环境。Oracle 依赖变化时，先按原服务准备匹配环境，脚本核对现役 `.venv` 的已安装版本是否符合目标提交的 `requirements.txt`，不匹配则返回 `deployment_dependency_environment_mismatch`；脚本不原地安装依赖，准备新环境时保留现役环境用于回退。脚本不运行测试；非重大架构变动在开发阶段只做少量、直接相关的回归测试。
 
 执行后，在目标端 `logs/run/deploy/<target>/<时间戳>/deployment.json` 保存结果，成功时更新 `logs/run/deploy/<target>/last-success.json`。Oracle 优先通过持久运行记录或部署回执核对当前进程版本；两者均无法核对时，才重启建立版本基线。预览和健康检查不代表已部署；页面交互仍按本次改动范围验收。数据库迁移及相应备份继续按下文维护流程执行。

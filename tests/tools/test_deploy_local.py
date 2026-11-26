@@ -61,6 +61,21 @@ def test_retarget_plist_only_changes_release_entrypoint_and_optional_interpreter
     assert original["ProgramArguments"][1] == str(current / "web.py")
 
 
+def test_retarget_plist_applies_explicit_web_threads_and_preserves_worker_arguments(tmp_path):
+    web = _plist("com.example.web", "web", tmp_path / "old", Path("/opt/python"))
+    web["ProgramArguments"] += ["--http-threads", "4"]
+    worker = _plist("com.example.worker", "worker", tmp_path / "old", Path("/opt/python"))
+    updated = deploy_local._retarget_plist(
+        web, role="web", release=tmp_path / "new", http_threads=16,
+    )
+    arguments = updated["ProgramArguments"]
+    assert arguments[arguments.index("--http-threads") + 1] == "16"
+    assert web["ProgramArguments"][-1] == "4"
+    assert deploy_local._retarget_plist(
+        worker, role="worker", release=tmp_path / "new", http_threads=16,
+    )["ProgramArguments"][2:] == worker["ProgramArguments"][2:]
+
+
 def test_deploy_local_stops_and_starts_in_role_order_and_writes_sanitized_receipt(
     tmp_path: Path,
 ) -> None:

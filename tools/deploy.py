@@ -137,7 +137,8 @@ def build_plan(args: argparse.Namespace) -> dict:
     changed = git(source, "diff", "--name-only", "--no-renames", comparison, revision).splitlines()
     pending = git(source, "diff", "--name-only", "--no-renames", head, revision).splitlines()
     action = classify_changes(changed, fixed_release=args.target == "local")
-    if args.restart or args.target == "oracle" and backend is None:
+    http_threads = getattr(args, "http_threads", None)
+    if args.restart or http_threads is not None or args.target == "oracle" and backend is None:
         action = "restart"
     dependency_paths = changed if backend else pending
     dependencies_changed = "requirements.txt" in dependency_paths
@@ -148,6 +149,8 @@ def build_plan(args: argparse.Namespace) -> dict:
         "frontend_build": "使用已提交的前端产物，部署阶段不重复构建",
         **layout,
     }
+    if http_threads is not None:
+        plan["http_threads"] = http_threads
     if args.target == "oracle" and backend is None:
         plan["reason"] = "尚无法核对当前进程的运行版本，执行时需重启建立版本基线"
     return plan
@@ -289,7 +292,8 @@ def execute(args: argparse.Namespace, plan: dict) -> dict:
         result = deploy_local(
             source=source, release=release, receipt_dir=receipt_dir, timeout=args.timeout,
             interpreter=Path(args.interpreter) if args.interpreter else None,
-            allow_same_release=args.restart,
+            allow_same_release=args.restart or args.http_threads is not None,
+            http_threads=args.http_threads,
         )
         plan.update(result, backend_commit=plan["source_commit"])
     elif args.target == "oracle" and (
@@ -330,6 +334,7 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--source", help="目标端源码根目录；Oracle 路径在远端解释")
     value.add_argument("--revision", help="目标端已有的提交；Oracle 只允许快进合并，默认该端 HEAD")
     value.add_argument("--interpreter", help="依赖变化时指定已准备好的本地包外 Python 环境")
+    value.add_argument("--http-threads", type=int, help="显式设置本地 Web HTTP 线程数并重启")
     value.add_argument("--host", default="oracle", help="Oracle SSH 别名")
     value.add_argument("--base-url", default="http://127.0.0.1:8000")
     value.add_argument("--timeout", type=float, default=180, help="等待空闲和启动的秒数")
@@ -342,6 +347,11 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if not math.isfinite(args.timeout) or args.timeout <= 0:
             raise DeployError("deployment_timeout_invalid")
+        if args.http_threads is not None:
+            if args.target != "local":
+                raise DeployError("deployment_http_threads_local_only")
+            if not 1 <= args.http_threads <= 128:
+                raise DeployError("deployment_http_threads_invalid")
         if args.target == "oracle" and args.interpreter:
             raise DeployError("deployment_oracle_environment_requires_service_update")
         if args.target == "oracle" and not args.on_host:

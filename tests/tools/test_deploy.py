@@ -18,6 +18,33 @@ def test_cli_help_is_read_only_and_available():
     assert result.returncode == 0
     assert "--apply" in result.stdout
     assert "--check" in result.stdout
+    assert "--http-threads" in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("arguments", "error"),
+    [
+        (["local", "--http-threads", "0"], "deployment_http_threads_invalid"),
+        (["local", "--http-threads", "129"], "deployment_http_threads_invalid"),
+        (["oracle", "--http-threads", "16"], "deployment_http_threads_local_only"),
+    ],
+)
+def test_http_threads_rejects_invalid_scope_without_service_access(arguments, error, capsys):
+    from tools import deploy
+
+    assert deploy.main(arguments) == 1
+    assert json.loads(capsys.readouterr().out)["error_code"] == error
+
+
+def test_explicit_local_http_threads_plans_restart_even_without_code_changes(tmp_path, monkeypatch):
+    from tools import deploy
+
+    monkeypatch.setattr(deploy, "git", lambda *args: "" if args[1] in {"status", "diff"} else "a" * 40)
+    monkeypatch.setattr(deploy, "local_layout", lambda: {"backend_commit": "a" * 40})
+    args = deploy.parser().parse_args(["local", "--source", str(tmp_path), "--http-threads", "16"])
+    plan = deploy.build_plan(args)
+    assert plan["action"] == "restart"
+    assert plan["http_threads"] == 16
 
 
 @pytest.mark.parametrize(
