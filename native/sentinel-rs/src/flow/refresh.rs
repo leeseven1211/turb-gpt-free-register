@@ -86,6 +86,8 @@ pub struct RefreshOutcome {
     pub session_reused: bool,
     pub methods: Vec<String>,
     pub device_id: String,
+    /// 本次刷新实际使用的设备画像（供 Python 侧复用同一台设备）。
+    pub profile: serde_json::Value,
 }
 
 // ─────────────────────────── 错误 ───────────────────────────
@@ -238,7 +240,7 @@ pub async fn refresh_once(
         match read_session(&client, &builder, true).await {
             Ok(Some(info)) => {
                 verify_identity(&info, &email, cfg)?;
-                let outcome = build_outcome(&client, &builder, info, true, vec!["session_cookie".into()], &device_id);
+                let outcome = build_outcome(&client, &builder, info, true, vec!["session_cookie".into()], &device_id, &fp);
                 crate::protocol::progress("session_cache", "success", Some("会话有效，已取得新 AT"));
                 crate::protocol::progress("token", "success", Some("已取得并核验最新 AT"));
                 return Ok(outcome);
@@ -303,7 +305,7 @@ pub async fn refresh_once(
     )
     .await?;
     verify_identity(&info, &email, cfg)?;
-    let outcome = build_outcome(&client, &builder, info, false, methods, &device_id);
+    let outcome = build_outcome(&client, &builder, info, false, methods, &device_id, &fp);
     crate::protocol::progress("token", "success", Some("已取得并核验最新 AT"));
     Ok(outcome)
 }
@@ -319,6 +321,7 @@ fn build_outcome(
     reused: bool,
     methods: Vec<String>,
     device_id: &str,
+    fp: &crate::fingerprint::DeviceFingerprint,
 ) -> RefreshOutcome {
     let access_token = info
         .get("accessToken")
@@ -332,6 +335,7 @@ fn build_outcome(
         session_reused: reused,
         methods,
         device_id: device_id.to_string(),
+        profile: fp.python_profile(),
     }
 }
 
@@ -1005,6 +1009,7 @@ pub fn success_json(outcome: &RefreshOutcome) -> Value {
         "session_reused": outcome.session_reused,
         "methods": outcome.methods,
         "device_id": outcome.device_id,
+        "browser_profile": outcome.profile,
     })
 }
 

@@ -66,17 +66,12 @@ def _session_stale(account: dict) -> bool:
 def _refresh_before_reset(email: str, *, proxy, proxy_supplier) -> dict | None:
     """AT 过期/缺失时先刷新一次；成功返回 None，失败返回错误字典。
 
-    只在刷新驱动与改密驱动同为 `protocol` 时执行：跨驱动（如 rust）刷新会在
-    改密前引入一次“另一套设备指纹”的登录，随后紧跟的密码重置会被 OpenAI
-    判定为敏感操作并挂 24 小时 cooldown。驱动不一致时交给改密自身的登录预检。
+    刷新会用账号最近一次登录的设备画像，成功后把“刚刚用过的那套画像”写回
+    会话缓存，改密随后原样复用，保证整条链路是同一台设备。
     """
     from core.accounts.liveness import service as live_service
 
     try:
-        driver = live_service._resolve_refresh_driver(None)
-        if str(driver or "").strip().lower() not in {"protocol", "protocol_v3", "protocol_current"}:
-            logger.info("[改密] 跳过刷新 AT：刷新驱动 %s 与改密驱动 protocol 不一致", driver)
-            return None
         runner = live_service._refresh_execution_runner(driver)
         result = runner(
             email,
@@ -171,11 +166,14 @@ def run_protocol_password_reset(
     except Exception:
         cached = {}
     identity = None
-    if cached.get("device_id") and isinstance(cached.get("browser_profile"), dict) and cached.get("browser_profile"):
+    cached_profile = cached.get("browser_profile") if isinstance(cached.get("browser_profile"), dict) else {}
+    if cached.get("device_id") and cached_profile:
         identity = {
             "device_id": str(cached.get("device_id")),
-            "browser_profile": dict(cached.get("browser_profile") or {}),
+            "browser_profile": dict(cached_profile),
         }
+        if cached_profile.get("impersonate"):
+            identity["chrome_identity"] = {"impersonate": str(cached_profile["impersonate"])}
 
     session: BrowserSession | None = None
     cancelled = False

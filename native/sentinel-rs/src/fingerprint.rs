@@ -607,6 +607,62 @@ pub struct DeviceFingerprint {
 const SEED_DOMAIN: &[u8] = b"sentinel-rs/fp/v1/";
 
 impl DeviceFingerprint {
+    /// 投影成 Python 协议栈的稳定画像字段，供改密等 Python 链路复用同一台设备。
+    ///
+    /// 字段名与 `config/browser.build_browser_environment` 的输出保持一致；只放
+    /// 设备层（UA / client hints / 屏幕 / 硬件 / 语言 / 时区），不含会话或路由信息。
+    pub fn python_profile(&self) -> serde_json::Value {
+        let languages: Vec<String> = self
+            .lang_full
+            .split(',')
+            .map(|item| item.split(';').next().unwrap_or("").trim().to_string())
+            .filter(|item| !item.is_empty())
+            .collect();
+        serde_json::json!({
+            "device_os": "Windows",
+            "browser_os": "Windows",
+            "browser_family": self.browser_family,
+            "user_agent": self.user_agent,
+            "user_agent_data_platform": "Windows",
+            "navigator_platform": self.platform,
+            "navigator_vendor": self.vendor,
+            "navigator_language": self.locale,
+            "navigator_languages": languages,
+            "accept_language": self.lang_full,
+            "timezone_iana": self.timezone,
+            "screen_width": self.screen_width,
+            "screen_height": self.screen_height,
+            "screen_avail_width": self.screen_width,
+            "screen_avail_height": self.screen_height - 40,
+            "outer_width": self.screen_width,
+            "outer_height": self.screen_height - 40,
+            "viewport_width": self.viewport_w,
+            "viewport_height": self.viewport_h,
+            "color_depth": 24,
+            "device_pixel_ratio": self.device_pixel_ratio,
+            "hardware_concurrency": self.hardware_concurrency,
+            "device_memory": self.device_memory,
+            "max_touch_points": self.max_touch_points,
+            "js_heap_size_limit": 4294967296i64,
+            "chrome_major": self.chrome_major,
+            // Python 侧用该字段拼 UA（Chrome/<full_version>），必须是 UA 的缩减版本；
+            // 真实构建号放在 sec_ch_ua_full_version_list 里。
+            "chrome_full_version": self.browser_version,
+            "impersonate": self.impersonate,
+            "sec_ch_ua": self.sec_ch_ua,
+            "sec_ch_ua_mobile": self.sec_ch_ua_mobile,
+            "sec_ch_ua_platform": self.sec_ch_ua_platform,
+            "sec_ch_ua_platform_version": self.ua_platform_version,
+            "sec_ch_ua_full_version_list": self.ua_full_version_list,
+            "sec_ch_ua_arch": self.ua_arch,
+            "sec_ch_ua_bitness": self.ua_bitness,
+            "sec_ch_ua_model": self.ua_model,
+            "send_client_hints": true,
+            "webgl_vendor": "Google Inc. (NVIDIA)",
+            "webgl_renderer": "ANGLE (NVIDIA, NVIDIA GeForce GTX 1660 SUPER Direct3D11 vs_5_0 ps_5_0, D3D11)",
+        })
+    }
+
     /// 生成一套指纹。`seed=None` 用系统随机；`Some(seed)` 同 seed 可复现。
     pub fn generate(seed: Option<&str>) -> Self {
         Self::generate_for_country(seed, None)
