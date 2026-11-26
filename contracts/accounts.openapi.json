@@ -2603,6 +2603,12 @@
           "count": {
             "type": "integer",
             "minimum": 0
+          },
+          "label": {
+            "type": "string"
+          },
+          "group": {
+            "type": "string"
           }
         },
         "additionalProperties": false,
@@ -2682,7 +2688,7 @@
           }
         },
         "additionalProperties": false,
-        "description": "联动分面：只排除自身列过滤，保留 q/archive/date/id/email 等范围。无 label。"
+        "description": "联动分面：只排除自身列过滤，保留 q/archive/date/id/email 等范围。优惠项可带中文 label 与套餐 group。"
       },
       "AccountSearchTerm": {
         "type": "object",

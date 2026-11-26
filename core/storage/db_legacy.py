@@ -1339,8 +1339,6 @@ def update_account_plan_check(acc_id: int | None = None, email: str | None = Non
     # 查询失败只更新本次错误和网络信息，不覆盖上一次成功拿到的套餐、
     # Go/Plus 优惠及有效期，避免临时网络故障把真实权益清空。
     if ok:
-        promo_kind = promotion_kind_from_record(result)
-        promo_eligible = promo_kind in ELIGIBLE_PROMO_KINDS
         if result.get("current_plan_type"):
             changes["current_plan_type"] = result.get("current_plan_type")
             changes["plan_type"] = result.get("current_plan_type")
@@ -1360,28 +1358,40 @@ def update_account_plan_check(acc_id: int | None = None, email: str | None = Non
             if result.get(key) is not None:
                 changes[key] = result.get(key)
 
+        # 旧调用可能只更新套餐，只有实际提供优惠字段才替换 Plus 兼容字段。
+        if "account_promotions" in result or "plus_discount_eligible" in result or any(
+            key.startswith(("plus_promo_", "plus_trial_")) for key in result
+        ):
+            from core.storage.accounts.promotion_offers import LEGACY_OFFER_CHECKED_FIELD
+
+            promo_kind = promotion_kind_from_record(result)
+            promo_eligible = promo_kind in ELIGIBLE_PROMO_KINDS
+            changes.update({
+                LEGACY_OFFER_CHECKED_FIELD: checked_at,
+                "plus_promo_eligible": promo_eligible,
+                "plus_promo_kind": promo_kind,
+                "plus_discount_eligible": promo_kind == DISCOUNT,
+                "plus_promo_campaign_id": result.get("plus_promo_campaign_id") or result.get("plus_trial_campaign_id"),
+                "plus_promo_title": result.get("plus_promo_title") or result.get("plus_trial_title"),
+                "plus_promo_summary": result.get("plus_promo_summary") or result.get("plus_trial_summary"),
+                "plus_promo_discount_percentage": result.get("plus_promo_discount_percentage", result.get("plus_trial_discount_percentage")),
+                "plus_promo_duration_num_periods": result.get("plus_promo_duration_num_periods", result.get("plus_trial_duration_num_periods")),
+                "plus_promo_duration_period": result.get("plus_promo_duration_period") or result.get("plus_trial_duration_period"),
+                "plus_promo_promotion_type": result.get("plus_promo_promotion_type"),
+                "plus_promo_promotion_type_label": result.get("plus_promo_promotion_type_label") or result.get("plus_trial_promotion_type_label"),
+                # 兼容旧字段；eligible 只保留真正免费试用语义。
+                "plus_trial_eligible": promo_kind == FREE_TRIAL,
+                "plus_trial_campaign_id": result.get("plus_trial_campaign_id"),
+                "plus_trial_title": result.get("plus_trial_title"),
+                "plus_trial_summary": result.get("plus_trial_summary"),
+                "plus_trial_discount_percentage": result.get("plus_trial_discount_percentage"),
+                "plus_trial_duration_num_periods": result.get("plus_trial_duration_num_periods"),
+                "plus_trial_duration_period": result.get("plus_trial_duration_period"),
+                "plus_trial_promotion_type_label": result.get("plus_trial_promotion_type_label"),
+            })
+        if "eligible_offer_ids" in result:
+            changes["eligible_offer_ids"] = result["eligible_offer_ids"] or []
         changes.update({
-            "plus_promo_eligible": promo_eligible,
-            "plus_promo_kind": promo_kind,
-            "plus_discount_eligible": promo_kind == DISCOUNT,
-            "plus_promo_campaign_id": result.get("plus_promo_campaign_id") or result.get("plus_trial_campaign_id"),
-            "plus_promo_title": result.get("plus_promo_title") or result.get("plus_trial_title"),
-            "plus_promo_summary": result.get("plus_promo_summary") or result.get("plus_trial_summary"),
-            "plus_promo_discount_percentage": result.get("plus_promo_discount_percentage", result.get("plus_trial_discount_percentage")),
-            "plus_promo_duration_num_periods": result.get("plus_promo_duration_num_periods", result.get("plus_trial_duration_num_periods")),
-            "plus_promo_duration_period": result.get("plus_promo_duration_period") or result.get("plus_trial_duration_period"),
-            "plus_promo_promotion_type": result.get("plus_promo_promotion_type"),
-            "plus_promo_promotion_type_label": result.get("plus_promo_promotion_type_label") or result.get("plus_trial_promotion_type_label"),
-            # 兼容旧字段；eligible 只保留真正免费试用语义。
-            "plus_trial_eligible": promo_kind == FREE_TRIAL,
-            "plus_trial_campaign_id": result.get("plus_trial_campaign_id"),
-            "plus_trial_title": result.get("plus_trial_title"),
-            "plus_trial_summary": result.get("plus_trial_summary"),
-            "plus_trial_discount_percentage": result.get("plus_trial_discount_percentage"),
-            "plus_trial_duration_num_periods": result.get("plus_trial_duration_num_periods"),
-            "plus_trial_duration_period": result.get("plus_trial_duration_period"),
-            "plus_trial_promotion_type_label": result.get("plus_trial_promotion_type_label"),
-            "eligible_offer_ids": result.get("eligible_offer_ids") or [],
             "plan_last_success_at": checked_at,
             "plan_last_success_result_json": json.dumps(result, ensure_ascii=False),
         })

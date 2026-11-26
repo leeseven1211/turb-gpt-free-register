@@ -1,19 +1,48 @@
 import {flushPromises,mount} from '@vue/test-utils';
 import {afterEach,describe,expect,it,vi} from 'vitest';
 import {realAdapter} from '../accounts/uiTestSupport';
-import type {BulkApi,BulkCreateDependencies,BulkRecord} from './contracts';
+import type {BulkApi,BulkCreateDependencies,BulkDraft,BulkRecord} from './contracts';
 import {createBulkIntent} from './useBulkIntent';
 import BulkCreate from './BulkCreate.vue';
 const wrappers:ReturnType<typeof mount>[]=[];
-function page(){
+function page(facets:Record<string,unknown[]>={source:[{value:'cloudflare',count:4}]},seed?:BulkDraft){
  const calls:{path:string;body?:BulkRecord}[]=[];let preparing=true;
- const api:BulkApi={async request<T>(path:string,options?:RequestInit){const body=options?.body?JSON.parse(String(options.body)):undefined;calls.push({path,body});return(path==='/catalog'?{operations:[{key:'plan_check',version:1,label:'查询套餐',parameter_schema:{timezone_offset_min:{}}},{key:'token_refresh',version:1,label:'刷新 AT',availability:{available:false,reason:'未配置驱动'}}],limits:{concurrency_max:128},query_schema:{fields:[{key:'token',values:['has','none']}]},config_revision:'r1'}:path.startsWith('/query-facets')?{facets:{source:[{value:'cloudflare',count:4}]},matched:4}:path==='/selections'?{id:'71',state:'preparing'}:path.startsWith('/selections/')?{id:'71',state:preparing?'preparing':'ready',target_count:4,selection_revision:1}:{id:'81'}) as T;}};
+ const api:BulkApi={async request<T>(path:string,options?:RequestInit){const body=options?.body?JSON.parse(String(options.body)):undefined;calls.push({path,body});return(path==='/catalog'?{operations:[{key:'plan_check',version:1,label:'查询套餐',parameter_schema:{timezone_offset_min:{}}},{key:'token_refresh',version:1,label:'刷新 AT',availability:{available:false,reason:'未配置驱动'}}],limits:{concurrency_max:128},query_schema:{fields:[{key:'token',values:['has','none']}]},config_revision:'r1'}:path.startsWith('/query-facets')?{facets,matched:4}:path==='/selections'?{id:'71',state:'preparing'}:path.startsWith('/selections/')?{id:'71',state:preparing?'preparing':'ready',target_count:4,selection_revision:1}:{id:'81'}) as T;}};
  const callbacks={navigate:vi.fn(),updateNavigation:vi.fn(),notify:vi.fn(),formatDateTime:String,openTask:vi.fn(),facetLabel:(group:string,value:string)=>`${group}:${value}`};
  const deps:BulkCreateDependencies={api,adapter:realAdapter(),storage:sessionStorage,callbacks,intents:createBulkIntent(api,sessionStorage,()=> 'request-key'),now:Date.now};
- const w=mount(BulkCreate,{attachTo:document.body,props:{navigation:{tab:'bulk',view:'create'},deps}});wrappers.push(w);return{w,calls,callbacks,ready(){preparing=false;}};
+ const w=mount(BulkCreate,{attachTo:document.body,props:{navigation:{tab:'bulk',view:'create'},deps,seed}});wrappers.push(w);return{w,calls,callbacks,ready(){preparing=false;}};
 }
 afterEach(()=>{wrappers.splice(0).forEach(w=>w.unmount());sessionStorage.clear();vi.useRealTimers();});
 describe('BulkCreate 实际表单',()=>{
+ it('优惠选项显示可读标签、去重数量并保留已选零命中',async()=>{
+  const offer='offer_v1_0000000000000000000000000000000a';
+  const seed:BulkDraft={name:'',operation_key:'plan_check',query:realAdapter().normalize({filters:{promotion:[offer]}}),source:null,parameters:{},max_concurrency:3};
+  const{w}=page({promotion:[
+   {value:offer,group:'plus',label:'Plus 其他折扣 12 个月',count:0},
+   {value:'offer_v1_0000000000000000000000000000000b',group:'team',label:'Team 免费 1 个月',count:7},
+  ]},seed);
+  await flushPromises();
+  await w.get('[data-filter-field="promotion"] summary').trigger('click');
+  const options=w.findAll('[data-filter-field="promotion"] .bulk-filter-options label');
+  expect(options.map(option=>option.text())).toEqual([
+   'Team 免费 1 个月7',
+   'Plus 其他折扣 12 个月0',
+  ]);
+  expect(w.get<HTMLInputElement>(`[data-filter-field="promotion"] input[value="${offer}"]`).element.checked).toBe(true);
+ });
+ it('非优惠 catalog 选项不显示伪造数量',async()=>{
+  const{w}=page();
+  await flushPromises();
+  await w.get('[data-filter-field="token"] summary').trigger('click');
+  expect(w.get('[data-filter-field="token"]').findAll('small')).toHaveLength(0);
+ });
+ it('批量筛选分组标题使用 BulkCreate 自身样式作用域',async()=>{
+  const{w}=page({promotion:[{value:'offer_v1_0000000000000000000000000000000b',group:'team',label:'Team 免费 1 个月',count:7}]});
+  await flushPromises();
+  await w.get('[data-filter-field="promotion"] summary').trigger('click');
+  expect(Object.keys(w.get('.bulk-filter-group-title').attributes()).some(key=>key.startsWith('data-v-'))).toBe(true);
+  expect(w.get('.bulk-filter-group-title').text()).toBe('Team');
+ });
  it('保留原三步创建、两种提交方式和全量匹配提示',async()=>{const{w,calls,ready,callbacks}=page();await flushPromises();expect(w.text()).toContain('选择操作');expect(w.text()).toContain('批次设置');expect(w.text()).toContain('账号范围');expect(w.text()).toContain('当前条件匹配 4 个账号，将全部执行');await w.get('input[name="name"]').setValue('实际表单');await w.get('input[name="max_concurrency"]').setValue('5');await w.get('[data-bulk-action="create-paused"]').trigger('click');await flushPromises();expect(w.get<HTMLButtonElement>('[data-bulk-submit]').element.disabled).toBe(true);expect(w.get<HTMLInputElement>('input[name="name"]').element.disabled).toBe(true);ready();await w.vm.refresh();await flushPromises();expect(calls.find(call=>call.path==='/batches')?.body).toMatchObject({name:'实际表单',execution:{max_concurrency:5,start_paused:true}});expect(callbacks.navigate).toHaveBeenCalledWith('detail',{batch_id:'81'});});
  it('复用账号查询字段且中文标签不依赖旧DOM；清除条件保留筛选焦点',async()=>{const{w}=page();await flushPromises();expect(w.get('[data-filter-field="token"]').text()).toContain('account_token:has');await w.get('[data-query="email"]').setValue('saved@example.test');await w.get('[data-query="q"]').setValue('协议 jp');await w.get('[data-query="archived"]').setValue('only');expect(JSON.parse(sessionStorage.getItem('turb_bulk_draft_v1')!).query).toMatchObject({q:'协议 jp',archived:'only',filters:{email:'saved@example.test'}});expect(w.get('[data-query-chips]').text()).toContain('saved@example.test');await w.get('[data-clear-query="email"]').trigger('click');expect(w.get<HTMLInputElement>('[data-query="email"]').element.value).toBe('');await w.get('[data-bulk-action="clear-filters"]').trigger('click');expect(w.get<HTMLSelectElement>('[data-query="archived"]').element.value).toBe('0');});
  it('seed 固定名单隐藏查询编辑，返回条件后还原默认查询',async()=>{const{w}=page();await flushPromises();await w.setProps({seed:{name:'固定名单',operation_key:'plan_check',query:realAdapter().normalize({archived:'only'}),source:{kind:'ids',entity:'account',ids:['9007199254740993','5']},parameters:{},max_concurrency:3}});expect(w.text()).toContain('已选 2 个账号');expect(w.get('[data-bulk-filters]').isVisible()).toBe(false);await w.get('[data-bulk-action="use-query"]').trigger('click');expect(w.get('[data-bulk-filters]').isVisible()).toBe(true);expect(w.get<HTMLSelectElement>('[data-query="archived"]').element.value).toBe('0');});

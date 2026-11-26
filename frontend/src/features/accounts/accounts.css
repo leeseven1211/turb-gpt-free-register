@@ -196,6 +196,9 @@
 .ac-filter-fields{display:grid;gap:10px;min-width:0;font-size:12px}
 .ac-filter-field{display:grid;gap:5px}
 .ac-filter-field input,.ac-filter-field select{min-height:32px;padding:5px 8px;border:1px solid var(--ui-color-border);border-radius:5px;background:var(--ui-color-surface);color:var(--ui-color-text);font:inherit}
+.ac-filter-group{display:grid;gap:2px}
+.ac-filter-group-title{margin:7px 0 2px;color:var(--ui-color-text-secondary);font-size:11px;font-weight:650}
+.ac-filter-group:first-child .ac-filter-group-title{margin-top:0}
 .ac-row-menu{z-index:1200;width:312px;min-width:164px;max-width:min(320px,calc(100vw - 16px));max-height:var(--reka-popper-available-height);overflow:auto;overscroll-behavior:contain;box-sizing:border-box;padding:6px;border:1px solid var(--ui-color-border,#e2e8f0);border-radius:8px;background:var(--ui-color-surface,#fff);box-shadow:0 10px 30px rgb(15 23 42 / .14)}
 .ac-row-menu .ac-menu-content{display:grid!important;position:static!important;grid-template-columns:repeat(2,minmax(0,1fr));gap:3px 6px;min-width:0;max-height:none!important;overflow:visible!important;padding:0;border:0;box-shadow:none}
 .ac-row-menu .ac-menu-group-label{grid-column:1 / -1;font-size:11px;font-weight:600;color:#64748b;padding:4px 6px 2px;line-height:1.3}

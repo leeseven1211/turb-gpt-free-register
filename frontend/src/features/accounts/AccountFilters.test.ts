@@ -19,4 +19,22 @@ describe('账号列筛选组件',()=>{
   expect(body.get<HTMLInputElement>('input[type="text"]').element.value).toBe('#12,3');await body.get('input[type="text"]').setValue('#07,8');expect(w.emitted('change')?.at(-1)).toEqual(['id','#07,8']);
   await body.get('select[aria-label="选择账号筛选列"]').setValue('date');expect(body.findAll<HTMLInputElement>('input[type="date"]').map(x=>x.element.value)).toEqual(['2026-11-01','']);await body.findAll('button').find(x=>x.text()==='清除此列')!.trigger('click');expect(w.emitted('clear')?.at(-1)).toEqual(['date']);
  });
+
+ it('优惠分面按套餐分组且选中零命中动态项显示 metadata 标签',async()=>{
+  const offer='offer_v1_0000000000000000000000000000000a';
+  const query=realAdapter().normalize({filters:{promotion:[offer]}});
+  const w=mount(AccountFilters,{attachTo:document.body,props:{query,facets:{promotion:[
+   {value:offer,count:0,group:'plus',label:'Plus 其他折扣 12 个月'},
+   {value:'offer_v1_0000000000000000000000000000000b',count:4,group:'team',label:'Team 免费 1 个月'},
+   {value:'none',count:2,group:'status',label:'Plus 无优惠'},
+  ]},label:(_g:string,v:string)=>v, column:{key:'promotion',label:'套餐优惠',kind:'enum'},open:true}});
+  wrappers.push(w);await flushPromises();
+  const body=new DOMWrapper(document.body);
+  expect(body.text()).toContain('Team');
+  expect(body.text()).toContain('Plus');
+  expect(body.text()).toContain('状态');
+  expect(body.text()).toContain('Plus 其他折扣 12 个月');
+  expect(body.text()).not.toContain(offer);
+  expect(body.get<HTMLInputElement>(`input[value="${offer}"]`).element.checked).toBe(true);
+ });
 });

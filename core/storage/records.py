@@ -33,7 +33,9 @@ _READY_KEY = ""
 _FORCE_SCHEMA_CHECK = False
 # 修改记录表定义、索引或兼容回填时递增版本。每个 schema 独立记录迁移结果。
 _BASE_SCHEMA_VERSION = 1
-_SCHEMA_VERSION = 2
+_EMAIL_INVENTORY_SCHEMA_VERSION = 2
+_PROMOTION_OFFERS_SCHEMA_VERSION = 3
+_SCHEMA_VERSION = _PROMOTION_OFFERS_SCHEMA_VERSION
 _SCHEMA_MIGRATIONS = "record_store_schema_migrations"
 
 
@@ -1027,34 +1029,27 @@ def ensure_record_schema(conn) -> None:
     if not _FORCE_SCHEMA_CHECK and _migration_completed(conn):
         return
     postgres_store.ensure_collection_schema(conn)
-    has_base_schema = _migration_completed(conn, _BASE_SCHEMA_VERSION)
-    has_current_schema = _migration_completed(conn, _SCHEMA_VERSION)
-    if has_base_schema and not has_current_schema:
-        # v1 已完成时只补邮箱库存资格索引；不能再次运行会重扫/回填的旧 schema。
-        from core.storage.email.inventory_indexes import ensure_indexes
-        ensure_indexes(conn, concurrent=False)
-    elif not has_current_schema:
+    table = postgres_store.qualified(_SCHEMA_MIGRATIONS)
+    with conn.cursor() as cur:
+        cur.execute(f"CREATE TABLE IF NOT EXISTS {table} (version INTEGER PRIMARY KEY)")
+        cur.execute(f"SELECT version FROM {table}")
+        applied = {row["version"] for row in cur.fetchall()}
+
+    if _BASE_SCHEMA_VERSION not in applied or (_FORCE_SCHEMA_CHECK and _SCHEMA_VERSION in applied):
+        # 保留 reset_ready() 在版本已齐备时对旧表和序列的检查。
         with conn.cursor() as cur:
             _apply_record_schema(cur)
-            table = postgres_store.qualified(_SCHEMA_MIGRATIONS)
-            cur.execute(f"CREATE TABLE IF NOT EXISTS {table} (version INTEGER PRIMARY KEY)")
-            cur.execute(
-                f"INSERT INTO {table} (version) VALUES (%s) ON CONFLICT DO NOTHING",
-                (_BASE_SCHEMA_VERSION,),
-            )
+    if _EMAIL_INVENTORY_SCHEMA_VERSION not in applied:
         from core.storage.email.inventory_indexes import ensure_indexes
         ensure_indexes(conn, concurrent=False)
-    elif _FORCE_SCHEMA_CHECK:
-        # 保留 reset_ready() 对 v2 以前序列/列检查的语义；不影响已完成的 v2 索引。
-        with conn.cursor() as cur:
-            _apply_record_schema(cur)
+    if _PROMOTION_OFFERS_SCHEMA_VERSION not in applied:
+        from core.storage.accounts.promotion_offers import ensure_schema
+        ensure_schema(conn)
 
     with conn.cursor() as cur:
-        table = postgres_store.qualified(_SCHEMA_MIGRATIONS)
-        cur.execute(f"CREATE TABLE IF NOT EXISTS {table} (version INTEGER PRIMARY KEY)")
         cur.execute(
-            f"INSERT INTO {table} (version) VALUES (%s) ON CONFLICT DO NOTHING",
-            (_SCHEMA_VERSION,),
+            f"INSERT INTO {table} (version) VALUES (%s), (%s), (%s) ON CONFLICT DO NOTHING",
+            (_BASE_SCHEMA_VERSION, _EMAIL_INVENTORY_SCHEMA_VERSION, _PROMOTION_OFFERS_SCHEMA_VERSION),
         )
 
 

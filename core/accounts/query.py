@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import date
 from typing import Any, Mapping
 
@@ -19,6 +20,7 @@ FIELD_LABELS = {
 PROMOTION_OFFER_VALUES = tuple(
     f"{plan}_{discount}" for plan in ("plus", "go") for discount in ("100", "50", "other")
 ) + ("plus_50_1m", "plus_50_2m", "plus_50_3m", "team_eligible")
+PROMOTION_OFFER_KEY_RE = re.compile(r"^offer_v1_[0-9a-f]{32}$")
 STATIC_VALUES = {
     "registration_driver": ["roxy", "roxy_oss", "protocol", "protocol_oss", "protocol_oss_2", "sentinel_rs", "cloakbrowser", "unknown"],
     "token": ["has", "none", "expired", "invalid_401", "invalid_403", "invalid_other"],
@@ -35,6 +37,11 @@ class AccountQueryError(ValueError):
     def __init__(self, message: str, field: str = "query"):
         super().__init__(message)
         self.field = field
+
+
+def is_promotion_offer_key(value: str) -> bool:
+    """判断动态优惠组合键，避免把任意长文本放进 SQL。"""
+    return bool(PROMOTION_OFFER_KEY_RE.fullmatch(str(value or "")))
 
 
 def _values(value: Any) -> list[str]:
@@ -102,7 +109,10 @@ def normalize_query(raw: Mapping[str, Any] | None, *, strict: bool = True) -> di
     clean["promotion"] = sorted({v for old in clean["promotion"] for v in aliases.get(old, [old])})
     if strict:
         for key, allowed in STATIC_VALUES.items():
-            if set(clean[key]) - set(allowed):
+            unsupported = set(clean[key]) - set(allowed)
+            if key == "promotion":
+                unsupported = {value for value in unsupported if not is_promotion_offer_key(value)}
+            if unsupported:
                 raise AccountQueryError("列筛选包含不支持的值。", key)
     q = raw.get("q") or ""
     if not isinstance(q, str) or len(q) > 1000:
@@ -146,5 +156,7 @@ def query_hash(spec: Mapping[str, Any]) -> str:
 def query_schema() -> dict:
     return {"version": 1, "entity": "account", "order": [{"field": "id", "direction": "desc"}],
             "fields": [{"key": key, "label": FIELD_LABELS[key], "type": "text" if key in {"id", "email"} else "multi",
-                        "values": STATIC_VALUES.get(key, []), "enum_source": "static" if key in STATIC_VALUES else "facets"}
+                        "values": STATIC_VALUES.get(key, []),
+                        "enum_source": "facets" if key == "promotion"
+                        else "static" if key in STATIC_VALUES else "facets"}
                        for key in FILTER_FIELDS]}

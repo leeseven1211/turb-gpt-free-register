@@ -538,8 +538,10 @@ export interface components {
         AccountFacet: {
             value: string;
             count: number;
+            label?: string;
+            group?: string;
         };
-        /** @description 联动分面：只排除自身列过滤，保留 q/archive/date/id/email 等范围。无 label。 */
+        /** @description 联动分面：只排除自身列过滤，保留 q/archive/date/id/email 等范围。优惠项可带中文 label 与套餐 group。 */
         AccountFacets: {
             source?: components["schemas"]["AccountFacet"][];
             registration_driver?: components["schemas"]["AccountFacet"][];

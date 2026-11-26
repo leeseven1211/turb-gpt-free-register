@@ -124,6 +124,9 @@ class RecordStoreMigrationTests(PostgresTestCase):
             patch.object(rs, "_READY_KEY", ""),
             patch.object(rs, "_SCHEMA_VERSION", rs._SCHEMA_VERSION + 1),
             patch.object(rs, "_apply_record_schema", wraps=rs._apply_record_schema) as migrate,
+            patch.object(
+                rs.postgres_store, "ensure_collection_schema", wraps=rs.postgres_store.ensure_collection_schema,
+            ) as ensure_collection,
             rs._connect() as first,
             first.cursor() as cur,
         ):
@@ -158,6 +161,48 @@ class RecordStoreMigrationTests(PostgresTestCase):
             self.assertFalse(second.is_alive())
             self.assertEqual(errors, [])
             migrate.assert_not_called()
+            ensure_collection.assert_not_called()
+
+    def test_v3_backfill_failure_rolls_back_projection_and_keeps_older_versions(self):
+        from core.storage.accounts import promotion_offers
+
+        rs.init()
+        accounts = rs.postgres_store.qualified(ACCOUNTS.name)
+        migrations = rs.postgres_store.qualified(rs._SCHEMA_MIGRATIONS)
+        offers = rs.postgres_store.qualified(promotion_offers.TABLE_NAME)
+        with rs._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"DROP TRIGGER sync_account_promotion_offers ON {accounts}")
+            cur.execute(f"DROP TABLE {offers}")
+            cur.execute(f"DELETE FROM {migrations} WHERE version = %s", (rs._PROMOTION_OFFERS_SCHEMA_VERSION,))
+            cur.execute(
+                f"INSERT INTO {accounts} (email, created_at, updated_at, plus_promo_kind) "
+                "VALUES ('fail-backfill@example.test', '', '', 'free_trial') RETURNING id"
+            )
+            account_id = cur.fetchone()["id"]
+
+        create_sync_trigger = promotion_offers._create_sync_trigger
+
+        def reject_backfill(cur, account_table, offer_table, project):
+            create_sync_trigger(cur, account_table, offer_table, project)
+            cur.execute(f"ALTER TABLE {offer_table} ADD CHECK (account_id < 0)")
+
+        rs.reset_ready()
+        from psycopg.errors import CheckViolation
+        with patch.object(promotion_offers, "_create_sync_trigger", side_effect=reject_backfill):
+            with self.assertRaises(CheckViolation):
+                rs.init()
+
+        with rs._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"SELECT version FROM {migrations} ORDER BY version")
+            self.assertEqual([row["version"] for row in cur.fetchall()], [1, 2])
+            cur.execute("SELECT to_regclass(%s) AS relation", (offers,))
+            self.assertIsNone(cur.fetchone()["relation"])
+
+        rs.init()
+        with rs._connect() as conn, conn.cursor() as cur:
+            self.assertTrue(rs._migration_completed(conn, rs._PROMOTION_OFFERS_SCHEMA_VERSION))
+            cur.execute(f"SELECT kind FROM {offers} WHERE account_id = %s", (account_id,))
+            self.assertEqual(cur.fetchone()["kind"], "free_trial")
 
     def test_registration_jobs_have_normalized_email_index(self):
         rs.init()

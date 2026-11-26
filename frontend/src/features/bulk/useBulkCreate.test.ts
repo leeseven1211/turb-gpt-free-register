@@ -26,13 +26,35 @@ afterEach(()=>{scopes.splice(0).forEach(scope=>scope.stop());vi.useRealTimers();
 describe('批次创建 owner',()=>{
  it('载入筛选统计后仍可选择指定套餐与优惠比例',async()=>{
   const h=setup();
-  h.handlers.read=async path=>path==='/catalog'?catalog():{facets:{promotion:[{value:'half_price',count:3}]},matched:3};
+  h.handlers.read=async path=>path==='/catalog'?catalog():{facets:{promotion:[
+   {value:'offer_v1_00000000000000000000000000000001',group:'plus',label:'Plus 半价 1 个月',count:3},
+   {value:'offer_v1_00000000000000000000000000000002',group:'go',label:'Go 免费 1 个月',count:2},
+  ]},matched:3};
   await h.owner.initialize();
   expect(h.owner.filterOptions('promotion')).toEqual(expect.arrayContaining([
-    expect.objectContaining({value:'half_price',count:3}),
-    expect.objectContaining({value:'go_50'}),
-    expect.objectContaining({value:'plus_50_1m'}),
+    expect.objectContaining({value:'offer_v1_00000000000000000000000000000001',count:3,label:'Plus 半价 1 个月'}),
+    expect.objectContaining({value:'offer_v1_00000000000000000000000000000002',label:'Go 免费 1 个月'}),
   ]));
+  expect(h.owner.filterOptions('promotion').some(option=>option.value==='half_price')).toBe(false);
+  h.owner.setQueryField('promotion',['offer_v1_00000000000000000000000000000001']);
+  expect(h.owner.chips.value.find(chip=>chip.key==='promotion')?.label).toContain('Plus 半价 1 个月');
+  expect(h.owner.chips.value.find(chip=>chip.key==='promotion')?.label).not.toContain('offer_v1_');
+ });
+ it('catalog 静态优惠值不伪造数量，动态分面缺失时只保留真实计数或已选项',async()=>{
+  const h=setup();
+  h.handlers.read=async path=>path==='/catalog'?{...catalog(),query_schema:{fields:[{key:'promotion',values:['plus_50','plus_50_1m']}]}}:{facets:{source:[{value:'cloudflare',count:30}]},matched:30};
+  await h.owner.initialize();
+  expect(h.owner.filterOptions('promotion')).toEqual([]);
+  h.owner.setQueryField('promotion',['plus_50']);
+  expect(h.owner.filterOptions('promotion')).toEqual([expect.objectContaining({value:'plus_50',count:0})]);
+ });
+ it('动态优惠缺少 metadata 时批量摘要使用可读 fallback',async()=>{
+  const h=setup();
+  h.handlers.read=async path=>path==='/catalog'?catalog():{facets:{promotion:[{value:'offer_v1_0000000000000000000000000000000a',count:0}]},matched:0};
+  await h.owner.initialize();
+  h.owner.setQueryField('promotion',['offer_v1_0000000000000000000000000000000a']);
+  expect(h.owner.chips.value.find(chip=>chip.key==='promotion')?.label).toContain('已选优惠（信息暂不可用）');
+  expect(h.owner.chips.value.find(chip=>chip.key==='promotion')?.label).not.toContain('offer_v1_');
  });
  it('固定名单保留大整数字符串及来源快照，按 ready revision 创建暂停批次',async()=>{
   const h=setup();const ids=['9007199254740993','9007199254740995'];const seed=h.draft({source:{kind:'ids',entity:'account',ids}});h.owner.applySeed(seed);ids.push('5');await h.owner.initialize();await h.owner.createBatch(true);

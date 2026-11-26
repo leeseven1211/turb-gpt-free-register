@@ -19,7 +19,7 @@ const openFilter=ref<string|null>(null),documentVisible=ref(typeof document==='u
 const pendingActions=new Set<string>();
 const emailStatus=accountFilters.find(column=>column.key==='email_status')!;
 const chips=computed(()=>[
-  ...filterChips(query.value,props.presentation.facetLabel),
+  ...filterChips(query.value,props.presentation.facetLabel,facets.value),
   ...searchTerms.value.map((term,index)=>({key:`search:${index}`,label:`${term.label}：${term.display_value}`,title:`高级搜索 · 同时满足：${term.label}：${term.display_value}`,removeLabel:`移除${term.label}：${term.display_value}`})),
 ]);
 function changeFilter(key:AccountFilterField,value:string|readonly string[]){

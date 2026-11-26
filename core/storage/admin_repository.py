@@ -70,16 +70,33 @@ _CODEX_EXPORTED_SQL = f"""
 
 
 def _facet_dict(rows: list[dict]) -> dict[str, list[dict]]:
-    grouped: dict[str, list[dict]] = {}
+    grouped: dict[str, dict[str, dict]] = {}
     for row in rows:
         facet = str(row.get("facet") or "")
         value = str(row.get("value") or "").strip().lower()
         if not facet or not value:
             continue
-        grouped.setdefault(facet, []).append({"value": value, "count": int(row.get("count") or 0)})
-    for items in grouped.values():
+        item = grouped.setdefault(facet, {}).setdefault(
+            value, {"value": value, "count": 0},
+        )
+        item["count"] += int(row.get("count") or 0)
+        if facet == "promotion" and value.startswith("offer_v1_"):
+            offer_row = {
+                "plan": row.get("offer_plan") or row.get("plan"),
+                "kind": row.get("offer_kind") or row.get("kind"),
+                "discount_percentage": row.get("offer_percentage"),
+                "duration_num_periods": row.get("offer_periods"),
+                "duration_period": row.get("offer_period"),
+            }
+            from core.storage.accounts import promotion_offers
+            item["label"] = promotion_offers.offer_label(offer_row)
+            item["group"] = str(offer_row.get("plan") or "").strip().lower()
+    result = {}
+    for facet, values in grouped.items():
+        items = list(values.values())
         items.sort(key=lambda item: (-int(item["count"]), str(item["value"])))
-    return grouped
+        result[facet] = items
+    return result
 
 
 def _revision(total: int, latest: Any, visible_state: Any = None) -> str:
@@ -145,6 +162,75 @@ _ACCOUNT_PLAN_VALUE = """LOWER(COALESCE(
 def _filter_values(value: str) -> list[str]:
     """同列多选使用逗号分隔，保留旧单值查询并去除重复项。"""
     return list(dict.fromkeys(part.strip().lower() for part in _text(value).split(",") if part.strip()))
+
+
+def _promotion_table() -> str:
+    from core.storage.accounts import promotion_offers
+
+    return postgres_store.qualified(promotion_offers.TABLE_NAME)
+
+
+def _promotion_filter_values(filters: dict[str, str]) -> list[str]:
+    raw = _filter_values(filters.get("promotion") or filters.get("trial"))
+    aliases = {
+        "eligible": ["free_trial"],
+        "ineligible": ["none"],
+        "discount": ["half_price", "other_discount"],
+    }
+    return list(dict.fromkeys(item for value in raw for item in aliases.get(value, [value])))
+
+
+def _promotion_offer_values(filters: dict[str, str]) -> list[str]:
+    from core.accounts.query import is_promotion_offer_key
+
+    return [
+        value for value in _promotion_filter_values(filters)
+        if is_promotion_offer_key(value) or value in _offer_legacy_values()
+    ]
+
+
+def _dynamic_offer_filter_values(filters: dict[str, str]) -> list[str]:
+    from core.accounts.query import is_promotion_offer_key
+
+    return [
+        value for value in _promotion_filter_values(filters)
+        if is_promotion_offer_key(value)
+    ]
+
+
+def _offer_legacy_values() -> frozenset[str]:
+    from core.accounts.query import PROMOTION_OFFER_VALUES
+
+    return frozenset(PROMOTION_OFFER_VALUES)
+
+
+def _promotion_offer_predicate(
+    values: list[str], account_ref: str,
+) -> tuple[str, list[Any]]:
+    """按投影列匹配动态 key 和兼容的旧套餐细项。"""
+    from core.accounts.query import is_promotion_offer_key
+
+    dynamic = [value for value in values if is_promotion_offer_key(value)]
+    legacy = [value for value in values if value in _offer_legacy_values()]
+    clauses: list[str] = []
+    params: list[Any] = []
+    if dynamic:
+        clauses.append(
+            "p.eligible IS TRUE AND p.kind IN ('free_trial', 'discount', 'other_promo') "
+            "AND p.offer_key = ANY(%s)"
+        )
+        params.append(dynamic)
+    if legacy:
+        clauses.append("p.legacy_filter_values && %s::text[]")
+        params.append(legacy)
+    if not clauses:
+        return "FALSE", []
+    relation = _promotion_table()
+    return (
+        f"EXISTS (SELECT 1 FROM {relation} p "
+        f"WHERE p.account_id = {account_ref} AND ({' OR '.join(clauses)}))",
+        params,
+    )
 
 _ACCOUNT_PROMO_KIND = """CASE
     WHEN LOWER(COALESCE(a.plus_promo_kind, '')) IN
@@ -230,51 +316,13 @@ def _account_facet_expressions() -> dict[str, str]:
     }
 
 
-def _promotion_offers_sql() -> str:
-    """按同一条优惠生成套餐筛选值；Team 资格不要求数值折扣，保留历史 Plus 投影。"""
-    offers = "a.data->'account_promotions'"
-    percentage = "offer->'discount_percentage'"
-    period = "lower(COALESCE(offer->>'duration_period', ''))"
-    periods = "COALESCE(offer->>'duration_num_periods', '')"
-    legacy_period = "lower(COALESCE(a.plus_promo_duration_period, ''))"
-    return f"""CASE WHEN jsonb_typeof({offers}) = 'array' THEN ARRAY(
-        SELECT code FROM jsonb_array_elements({offers}) AS offer
-        CROSS JOIN LATERAL (VALUES
-            (CASE WHEN offer->>'plan' = 'team' THEN 'team_eligible'
-                  ELSE (offer->>'plan') || '_' || CASE {percentage}
-                    WHEN '100'::jsonb THEN '100' WHEN '50'::jsonb THEN '50' ELSE 'other' END END),
-            (CASE WHEN offer->>'plan' = 'plus' AND {percentage} = '50'::jsonb
-                   AND {period} IN ('month', 'months', '月')
-                   AND {periods} ~ '^[123]$'
-                  THEN 'plus_50_' || {periods} || 'm' END)
-        ) AS v(code)
-        WHERE offer->'eligible' = 'true'::jsonb
-          AND ((offer->>'plan' IN ('plus', 'go') AND jsonb_typeof({percentage}) = 'number'
-                AND {percentage} > '0'::jsonb AND {percentage} <= '100'::jsonb)
-               OR (offer->>'plan' = 'team' AND offer->>'kind' IN ('free_trial', 'discount', 'other_promo')))
-          AND v.code IS NOT NULL
-    ) WHEN {_ACCOUNT_PROMO_KIND} IN ('free_trial', 'discount', 'other_promo')
-         AND a.plus_promo_discount_percentage > 0 AND a.plus_promo_discount_percentage <= 100
-    THEN ARRAY_REMOVE(ARRAY[
-        CASE a.plus_promo_discount_percentage
-            WHEN 100 THEN 'plus_100' WHEN 50 THEN 'plus_50' ELSE 'plus_other' END,
-        CASE WHEN a.plus_promo_discount_percentage = 50
-               AND {legacy_period} IN ('month', 'months', '月')
-               AND a.plus_promo_duration_num_periods IN (1, 2, 3)
-              THEN 'plus_50_' || a.plus_promo_duration_num_periods::text || 'm' END
-    ], NULL)
-    ELSE ARRAY[]::text[] END"""
-
-
 def _offer_filter_values(filters: dict[str, str]) -> list[str]:
-    from core.accounts.query import PROMOTION_OFFER_VALUES
-
-    return [value for value in _filter_values(filters.get("promotion") or filters.get("trial"))
-            if value in PROMOTION_OFFER_VALUES]
+    return _promotion_offer_values(filters)
 
 
 def _account_facet_predicates(
-    plan: str, filters: dict[str, str], expressions: dict[str, str], *, offer_column: str = "",
+    plan: str, filters: dict[str, str], expressions: dict[str, str], *,
+    account_ref: str = "a.id",
 ) -> list[tuple[str, str, list[Any]]]:
     """生成带列名的筛选条件，方便统计时仅跳过当前列。"""
     predicates: list[tuple[str, str, list[Any]]] = []
@@ -296,8 +344,7 @@ def _account_facet_predicates(
             predicates.append((key, f"({expression}) = ANY(%s)", [values]))
     promotions = _filter_values(filters.get("promotion") or filters.get("trial"))
     if promotions:
-        aliases = {"eligible": ["free_trial"], "ineligible": ["none"], "discount": ["half_price", "other_discount"]}
-        values = list(dict.fromkeys(item for value in promotions for item in aliases.get(value, [value])))
+        values = _promotion_filter_values(filters)
         offers = _offer_filter_values(filters)
         categories = [value for value in values if value not in offers]
         parts = []
@@ -306,10 +353,86 @@ def _account_facet_predicates(
             parts.append(f"({expressions['promotion']}) = ANY(%s)")
             params.append(categories)
         if offers:
-            parts.append(f"({offer_column or _promotion_offers_sql()}) && %s::text[]")
-            params.append(offers)
+            predicate, predicate_params = _promotion_offer_predicate(offers, account_ref)
+            parts.append(predicate)
+            params.extend(predicate_params)
         predicates.append(("promotion", f"({' OR '.join(parts)})", params))
     return predicates
+
+
+def _promotion_dynamic_facet_sql(
+    *,
+    selected_values: list[str],
+    selected_legacy_values: list[str],
+    other_predicates: list[str],
+    other_params: list[Any],
+    include_latest: bool = False,
+) -> tuple[str, list[Any]]:
+    """生成动态优惠分面，跨国家按账号和组合键去重。"""
+    table = _promotion_table()
+    eligible_kinds = "('free_trial', 'discount', 'other_promo')"
+    where = [f"p.eligible IS TRUE", f"p.kind IN {eligible_kinds}", *other_predicates]
+    latest_column = ", NULL::text AS latest" if include_latest else ""
+    sql = f"""
+        UNION ALL
+        SELECT 'promotion'::text AS facet,
+               p.offer_key AS value,
+               COUNT(DISTINCT b.__account_id) AS count{latest_column},
+               MAX(p.plan) AS offer_plan,
+               MAX(p.kind) AS offer_kind,
+               MAX(p.discount_percentage) AS offer_percentage,
+               MAX(p.duration_num_periods) AS offer_periods,
+               MAX(p.duration_period) AS offer_period
+          FROM base b
+          JOIN {table} p ON p.account_id = b.__account_id
+         WHERE {' AND '.join(where)}
+         GROUP BY p.offer_key
+    """
+    # 其他条件在动态优惠计数中出现一次；选中旧细项时，旧细项计数还会再次出现。
+    # 返回参数必须严格按照 SQL 占位符出现的顺序排列。
+    params: list[Any] = [*other_params]
+    if selected_values:
+        sql += f"""
+        UNION ALL
+        SELECT 'promotion'::text AS facet,
+               p.offer_key AS value,
+               0::bigint AS count{latest_column},
+               MAX(p.plan) AS offer_plan,
+               MAX(p.kind) AS offer_kind,
+               MAX(p.discount_percentage) AS offer_percentage,
+               MAX(p.duration_num_periods) AS offer_periods,
+               MAX(p.duration_period) AS offer_period
+          FROM {table} p
+         WHERE p.eligible IS TRUE
+           AND p.kind IN {eligible_kinds}
+           AND p.offer_key = ANY(%s)
+         GROUP BY p.offer_key
+        """
+        params.append(selected_values)
+    if selected_legacy_values:
+        sql += f"""
+        UNION ALL
+        SELECT 'promotion'::text AS facet,
+               legacy.value AS value,
+               COUNT(DISTINCT b.__account_id) AS count{latest_column},
+               NULL::text AS offer_plan,
+               NULL::text AS offer_kind,
+               NULL::numeric AS offer_percentage,
+               NULL::numeric AS offer_periods,
+               NULL::text AS offer_period
+          FROM base b
+          JOIN {table} p ON p.account_id = b.__account_id
+          CROSS JOIN LATERAL unnest(p.legacy_filter_values) AS legacy(value)
+         WHERE legacy.value = ANY(%s)
+           AND {' AND '.join(other_predicates) if other_predicates else 'TRUE'}
+         GROUP BY legacy.value
+        UNION ALL
+        SELECT 'promotion'::text, value, 0::bigint{latest_column},
+               NULL::text, NULL::text, NULL::numeric, NULL::numeric, NULL::text
+          FROM unnest(%s::text[]) AS selected(value)
+        """
+        params.extend((selected_legacy_values, *other_params, selected_legacy_values))
+    return sql, params
 
 
 def _compile_account_predicates(
@@ -423,22 +546,44 @@ def account_query_facets(spec: dict) -> dict:
     where, params = _compile_account_predicates(normalized["archived"], "", normalized["q"],
         normalized["date_from"], normalized["date_to"], {key: filters.get(key, "") for key in ("id", "email")})
     expressions = _account_facet_expressions()
-    offer_column = "b.promotion_offers" if _offer_filter_values(filters) else ""
     predicates = ["NULLIF(f.value, '') IS NOT NULL"]
-    for key, predicate, values in _account_facet_predicates(
-        ",".join(normalized["plan"]), filters, {key: f"b.{key}" for key in expressions}, offer_column=offer_column):
+    predicate_specs = _account_facet_predicates(
+        ",".join(normalized["plan"]), filters, {key: f"b.{key}" for key in expressions},
+        account_ref="b.__account_id",
+    )
+    for key, predicate, values in predicate_specs:
         predicates.append(f"(f.facet = %s OR ({predicate}))")
         params.extend((key, *values))
     columns = ", ".join(f"{expression} AS {key}" for key, expression in expressions.items())
-    if offer_column:
-        columns += f", {_promotion_offers_sql()} AS promotion_offers"
+    columns += ", a.id AS __account_id"
     facet_values = ", ".join(f"('{key}',b.{key})" for key in expressions)
+    dynamic_predicates = [
+        predicate for key, predicate, _values in predicate_specs if key != "promotion"
+    ]
+    dynamic_params = [
+        value for key, _predicate, values in predicate_specs if key != "promotion" for value in values
+    ]
+    dynamic_sql, dynamic_offer_params = _promotion_dynamic_facet_sql(
+        selected_values=_dynamic_offer_filter_values(filters),
+        selected_legacy_values=[
+            value for value in _promotion_offer_values(filters)
+            if value in _offer_legacy_values()
+        ],
+        other_predicates=dynamic_predicates,
+        other_params=dynamic_params,
+    )
+    static_columns = (
+        "NULL::text AS offer_plan, NULL::text AS offer_kind, "
+        "NULL::numeric AS offer_percentage, NULL::numeric AS offer_periods, "
+        "NULL::text AS offer_period"
+    )
     with _connect() as conn, conn.cursor() as cur:
         cur.execute(f"""WITH base AS MATERIALIZED (SELECT {columns} FROM {_q(record_store.ACCOUNTS)} a
             WHERE {' AND '.join(where) or 'TRUE'})
-            SELECT f.facet,f.value,COUNT(*) AS count FROM base b
+            SELECT f.facet,f.value,COUNT(*) AS count,{static_columns} FROM base b
             CROSS JOIN LATERAL (VALUES {facet_values}) AS f(facet,value)
-            WHERE {' AND '.join(predicates)} GROUP BY f.facet,f.value""", params)
+            WHERE {' AND '.join(predicates)} GROUP BY f.facet,f.value
+            {dynamic_sql}""", (*params, *dynamic_offer_params))
         return _facet_dict(cur.fetchall())
 
 
@@ -479,6 +624,7 @@ def _account_list_grouped_facets_sql(
     columns = ", ".join(
         f"{expression} AS {key}" for key, expression in expressions.items()
     )
+    columns += ", a.id AS __account_id"
     gated = ", ".join(
         f"CASE WHEN TRUE THEN NULLIF(m.{dimension}, '') END AS __a2_dim_{index}"
         for index, dimension in enumerate(dimensions)
@@ -508,7 +654,21 @@ def _account_list_grouped_facets_sql(
          GROUP BY GROUPING SETS ({grouping_sets})
     )
     SELECT facet, value, count FROM __a2_grouped WHERE value IS NOT NULL"""
-    return sql, list(base_params)
+    sql = sql.replace(
+        "SELECT facet, value, count FROM __a2_grouped WHERE value IS NOT NULL",
+        """SELECT facet, value, count,
+                      NULL::text AS offer_plan, NULL::text AS offer_kind,
+                      NULL::numeric AS offer_percentage, NULL::numeric AS offer_periods,
+                      NULL::text AS offer_period
+                 FROM __a2_grouped WHERE value IS NOT NULL""",
+    )
+    dynamic_sql, dynamic_params = _promotion_dynamic_facet_sql(
+        selected_values=[],
+        selected_legacy_values=[],
+        other_predicates=[],
+        other_params=[],
+    )
+    return sql + dynamic_sql, [*base_params, *dynamic_params]
 
 
 def _list_account_facet_query(
@@ -533,9 +693,7 @@ def _list_account_facet_query(
     else:
         expressions = _account_facet_expressions()
         facet_columns = ", ".join(f"{expression} AS {key}" for key, expression in expressions.items())
-        offer_column = "b.promotion_offers" if _offer_filter_values(request.filters) else ""
-        if offer_column:
-            facet_columns += f", {_promotion_offers_sql()} AS promotion_offers"
+        facet_columns += ", a.id AS __account_id"
         latest_column = ""
         if share_search_scope:
             facet_columns += ", a.updated_at"
@@ -544,11 +702,31 @@ def _list_account_facet_query(
                 facet_columns += ", a.id"
         facet_values = ", ".join(f"('{key}', b.{key})" for key in expressions)
         facet_where = ["NULLIF(f.value, '') IS NOT NULL"]
-        for key, predicate, values in _account_facet_predicates(
-            plan, request.filters, {key: f"b.{key}" for key in expressions}, offer_column=offer_column,
-        ):
+        predicate_specs = _account_facet_predicates(
+            plan, request.filters, {key: f"b.{key}" for key in expressions},
+            account_ref="b.__account_id",
+        )
+        for key, predicate, values in predicate_specs:
             facet_where.append(f"(f.facet = %s OR ({predicate}))")
             facet_params.extend((key, *values))
+        dynamic_predicates = [
+            predicate for key, predicate, _values in predicate_specs if key != "promotion"
+        ]
+        dynamic_params = [
+            value for key, _predicate, values in predicate_specs if key != "promotion"
+            for value in values
+        ]
+        dynamic_sql, dynamic_offer_params = _promotion_dynamic_facet_sql(
+            selected_values=_dynamic_offer_filter_values(request.filters),
+            selected_legacy_values=[
+                value for value in _promotion_offer_values(request.filters)
+                if value in _offer_legacy_values()
+            ],
+            other_predicates=dynamic_predicates,
+            other_params=dynamic_params,
+            include_latest=share_search_scope,
+        )
+        facet_params.extend(dynamic_offer_params)
         # 旧写法用 9 段 UNION ALL 重复扫描账号表，生产数据里的 extra_json 较大时，
         # facets 一项就要约 200 ms。这里先物化一次轻量投影，再展开各个维度聚合；
         # 复杂 JSON/正则表达式只计算一遍。每列统计保留其他列条件，仅忽略自身筛选；
@@ -557,14 +735,21 @@ def _list_account_facet_query(
             SELECT {facet_columns} FROM {accounts} a{base_clause}
         )"""
         facet_summary = f"""
-            SELECT f.facet, f.value, COUNT(*) AS count{latest_column}
+            SELECT f.facet, f.value, COUNT(*) AS count{latest_column},
+                   NULL::text AS offer_plan, NULL::text AS offer_kind,
+                   NULL::numeric AS offer_percentage, NULL::numeric AS offer_periods,
+                   NULL::text AS offer_period
               FROM base b
               CROSS JOIN LATERAL (VALUES {facet_values}) AS f(facet, value)
              WHERE {' AND '.join(facet_where)}
              GROUP BY f.facet, f.value
         """
         if share_search_scope:
-            facet_summary += " UNION ALL SELECT NULL, NULL, COUNT(*), MAX(updated_at) FROM base"
+            facet_summary += (
+                " UNION ALL SELECT NULL, NULL, COUNT(*), MAX(updated_at), "
+                "NULL::text, NULL::text, NULL::numeric, NULL::numeric, NULL::text FROM base"
+            )
+        facet_summary += dynamic_sql
         facet_sql = f"{facet_base} {facet_summary}"
         if share_search_scope and page_projection:
             # 分页先从基集选取 ID，再读取宽字段和列表展示的历史注册驱动。

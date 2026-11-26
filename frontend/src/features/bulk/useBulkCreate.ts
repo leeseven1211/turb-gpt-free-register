@@ -1,12 +1,12 @@
 import {computed,onScopeDispose,ref} from 'vue';
 import {BulkApiError} from '../../api/bulk';
 import type {AccountQuerySpec} from '../accounts/queryAdapter';
-import {accountFilters,filterChips,promotionOffers,selectedValues,type AccountFilterField,type AccountFilterKey} from '../accounts/filterDefinitions';
+import {accountFilters,facetOptionGroups,filterChips,selectedValues,type AccountFacetOption,type AccountFilterField,type AccountFilterKey} from '../accounts/filterDefinitions';
 import type {BulkCatalog,BulkCreateDependencies,BulkDraft,BulkRecord} from './contracts';
 import {bulkId} from './contracts';
 
 interface Selection extends BulkRecord {id:string;state?:string;status?:string;target_count?:number;total_count?:number;selection_revision?:number;request_parameters?:BulkRecord;parameters?:BulkRecord;config_revision?:string;error_code?:string;error?:{message?:string};error_detail?:{message?:string}}
-interface FacetOption {value:string;label?:string;count?:number}
+interface FacetOption extends AccountFacetOption {}
 type Facets=Record<string,FacetOption[]>;
 const draftKey='turb_bulk_draft_v1',selectionKey='turb_bulk_selection_v1';
 const clone=<T>(value:T):T=>JSON.parse(JSON.stringify(value));
@@ -84,20 +84,27 @@ export function useBulkCreate(deps:BulkCreateDependencies) {
  function clearFilter(field:string){if(field==='date'){updateQuery({...draft.value.query,date_from:'',date_to:''});return;}setQueryField(field as AccountFilterField,field==='archived'?'0':['q','email','id'].includes(field)?'':[]);}
  function clearFilters(){if(creating.value)return;draft.value.source=null;draft.value.query=deps.adapter.normalize();matched.value=null;invalidate();clearError();saveDraft();scheduleFacets();}
  function facetLabel(group:string,value:string){return deps.callbacks.facetLabel?.(group,value)||value;}
- function filterOptions(key:AccountFilterKey):FacetOption[]{
+ function filterOptionGroups(key:AccountFilterKey) {
+  const column=accountFilters.find(entry=>entry.key===key);
+  if(!column||column.kind!=='enum')return [];
   const fields=catalog.value?.query_schema?.fields,definition=Array.isArray(fields)?fields.map(record).find(field=>field.key===key):undefined;
   const configured=definition?.options??definition?.enum??definition?.values;
-  const rows=facets.value[key]??(Array.isArray(configured)?configured:[]),found=new Map<string,FacetOption>();
-  for(const entry of rows){const row=typeof entry==='object'&&entry?entry as FacetOption:{value:String(entry)};if(row.value)found.set(row.value,{...row,label:row.label||facetLabel(key==='token'?'account_token':key,row.value)});}
-  if(key==='promotion'){
-    const options=promotionOffers.map(value=>({value,count:found.get(value)?.count??undefined,label:facetLabel(key,value)}));
-    for(const value of selectedValues(draft.value.query,key))if(!options.some(option=>option.value===value))options.push({value,count:0,label:facetLabel(key,value)});
-    return options;
-  }
-  for(const value of selectedValues(draft.value.query,key))if(!found.has(value))found.set(value,{value,label:facetLabel(key==='token'?'account_token':key,value)});
-  return[...found.values()];
+  const liveRows=facets.value[key];
+  const rows=key==='promotion'?(liveRows??[]):(liveRows??(Array.isArray(configured)?configured:[]));
+  const configuredOnly=key!=='promotion'&&liveRows==null&&Array.isArray(configured);
+  const source:Record<string,FacetOption[]>=key==='promotion'?{promotion:rows.map(entry=>{
+   const row=typeof entry==='object'&&entry?entry as FacetOption:{value:String(entry)};
+   return {...row,value:String(row.value),count:row.count==null?(configuredOnly?1:0):Number(row.count)};
+  })}:{[key]:rows.map(entry=>{
+   const row=typeof entry==='object'&&entry?entry as FacetOption:{value:String(entry)};
+   return {...row,value:String(row.value),count:row.count==null?(configuredOnly?1:0):Number(row.count)};
+  })};
+  return facetOptionGroups(draft.value.query,source,column,facetLabel);
  }
- const chips=computed(()=>[...filterChips(draft.value.query,facetLabel),...(draft.value.query.q?[{key:'q',label:`搜索：${draft.value.query.q}`,removeLabel:'清除高级搜索',title:draft.value.query.q}]:[]),...(draft.value.query.archived!=='0'?[{key:'archived',label:draft.value.query.archived==='only'?'仅归档账号':'含归档账号',removeLabel:'清除归档筛选',title:''}]:[])]);
+ function filterOptions(key:AccountFilterKey):FacetOption[]{
+  return filterOptionGroups(key).flatMap(group=>group.options);
+ }
+ const chips=computed(()=>[...filterChips(draft.value.query,facetLabel,facets.value),...(draft.value.query.q?[{key:'q',label:`搜索：${draft.value.query.q}`,removeLabel:'清除高级搜索',title:draft.value.query.q}]:[]),...(draft.value.query.archived!=='0'?[{key:'archived',label:draft.value.query.archived==='only'?'仅归档账号':'含归档账号',removeLabel:'清除归档筛选',title:''}]:[])]);
  function parameters():BulkRecord{const schema=operation.value?.parameter_schema;return schema?.timezone_offset_min||record(schema?.properties).timezone_offset_min?{timezone_offset_min:new Date().getTimezoneOffset()}:{};}
  async function pollSelection(){
   if(!selection.value||!visible||disposed)return;const id=bulkId(selection.value.id),currentEpoch=epoch;
@@ -175,6 +182,6 @@ export function useBulkCreate(deps:BulkCreateDependencies) {
   }catch(failure){report(failure,'找回请求失败：');}finally{recovering.value=false;pendingRevision.value++;}
  }
  onScopeDispose(()=>{disposed=true;epoch++;clearTimeout(facetTimer);reads.forEach(controller=>controller.abort());reads.clear();pendingCreation=null;});
- return{draft,selection,catalog,facets,matched,loading,creating,recovering,error,errorField,existingBatchId,operations,operation,configRevision,selectionState,needsRefresh,concurrencyMax,pendingCount,count,scopeLabel,summary,hint,availabilityWarning,chips,accountFilters,
+ return{draft,selection,catalog,facets,matched,loading,creating,recovering,error,errorField,existingBatchId,operations,operation,configRevision,selectionState,needsRefresh,concurrencyMax,pendingCount,count,scopeLabel,summary,hint,availabilityWarning,chips,accountFilters,filterOptionGroups,
   initialize,refresh,recover,restoreSelectionRequest,loadFacets,applySeed,setVisible,setDraftField,setOperation,setQueryField,clearFilter,clearFilters,filterOptions,createBatch,clearError};
 }

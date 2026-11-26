@@ -49,8 +49,8 @@ class EmailInventoryIndexMigrationTests(PostgresTestCase):
         rs.init()
         with rs._connect() as conn, conn.cursor() as cur:
             cur.execute(
-                f"DELETE FROM {rs.postgres_store.qualified(rs._SCHEMA_MIGRATIONS)} WHERE version = %s",
-                (rs._SCHEMA_VERSION,),
+                f"DELETE FROM {rs.postgres_store.qualified(rs._SCHEMA_MIGRATIONS)} WHERE version >= %s",
+                (rs._EMAIL_INVENTORY_SCHEMA_VERSION,),
             )
             for spec in inventory_indexes.INDEX_SPECS:
                 cur.execute(
@@ -65,7 +65,7 @@ class EmailInventoryIndexMigrationTests(PostgresTestCase):
         with rs._connect() as conn, conn.cursor() as cur:
             cur.execute(
                 f"SELECT 1 FROM {rs.postgres_store.qualified(rs._SCHEMA_MIGRATIONS)} WHERE version = %s",
-                (rs._SCHEMA_VERSION,),
+                (rs._EMAIL_INVENTORY_SCHEMA_VERSION,),
             )
             self.assertIsNotNone(cur.fetchone())
 
@@ -94,8 +94,8 @@ class EmailInventoryIndexMigrationTests(PostgresTestCase):
         rs.init()
         with rs._connect() as conn, conn.cursor() as cur:
             cur.execute(
-                f"DELETE FROM {rs.postgres_store.qualified(rs._SCHEMA_MIGRATIONS)} WHERE version = %s",
-                (rs._SCHEMA_VERSION,),
+                f"DELETE FROM {rs.postgres_store.qualified(rs._SCHEMA_MIGRATIONS)} WHERE version >= %s",
+                (rs._EMAIL_INVENTORY_SCHEMA_VERSION,),
             )
             for spec in inventory_indexes.INDEX_SPECS:
                 cur.execute(f"DROP INDEX {rs.postgres_store.qualified(spec.name)}")
@@ -151,8 +151,8 @@ class EmailInventoryIndexMigrationTests(PostgresTestCase):
         rs.init()
         with rs._connect() as conn, conn.cursor() as cur:
             cur.execute(
-                f"DELETE FROM {rs.postgres_store.qualified(rs._SCHEMA_MIGRATIONS)} WHERE version = %s",
-                (rs._SCHEMA_VERSION,),
+                f"DELETE FROM {rs.postgres_store.qualified(rs._SCHEMA_MIGRATIONS)} WHERE version >= %s",
+                (rs._EMAIL_INVENTORY_SCHEMA_VERSION,),
             )
 
         from tools.maintenance import prepare_email_inventory_indexes as tool

@@ -71,7 +71,13 @@ defineExpose({refresh:owner.refresh,recover:owner.recover,restoreSelectionReques
        <summary @click.prevent="switchFilter(column.key,$event)">{{ column.label }}<span v-if="column.kind==='enum'&&selectedValues(draft.query,column.key).length" data-filter-count>{{ selectedValues(draft.query,column.key).length }}</span><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg></summary>
        <div class="bulk-filter-popover-panel"><div class="bulk-filter-popover-heading"><strong>{{ column.label }}</strong><button type="button" :aria-label="`关闭${column.label}筛选`" @click="closeFilter($event)">完成</button></div>
         <label v-if="column.kind==='text'" class="bulk-field">{{ column.label }}<input :data-query-filter="column.key" :value="textValue(draft.query,column.key as AccountFilterField)" inputmode="numeric" placeholder="输入账号 ID" :disabled="disabled" @input="owner.setQueryField(column.key as AccountFilterField,value($event))"></label>
-        <div v-else class="bulk-filter-options"><label v-for="entry in owner.filterOptions(column.key)" :key="entry.value"><input type="checkbox" :data-query-filter="column.key" :value="entry.value" :checked="selectedValues(draft.query,column.key).includes(entry.value)" :disabled="disabled" @change="toggle(column.key,entry.value,($event.target as HTMLInputElement).checked)"><span>{{ entry.label }}</span></label><span v-if="!owner.filterOptions(column.key).length" class="bulk-muted">暂无可用选项</span></div>
+        <div v-else class="bulk-filter-options">
+         <template v-for="group in owner.filterOptionGroups(column.key)" :key="group.key">
+          <p v-if="group.label" class="bulk-filter-group-title">{{ group.label }}</p>
+          <label v-for="entry in group.options" :key="entry.value"><input type="checkbox" :data-query-filter="column.key" :value="entry.value" :checked="selectedValues(draft.query,column.key).includes(entry.value)" :disabled="disabled" @change="toggle(column.key,entry.value,($event.target as HTMLInputElement).checked)"><span>{{ entry.label }}</span><small v-if="column.key==='promotion'&&entry.count!==null&&entry.count!==undefined">{{ entry.count }}</small></label>
+         </template>
+         <span v-if="!owner.filterOptions(column.key).length" class="bulk-muted">暂无可用选项</span>
+        </div>
        </div>
       </details>
      </div>
@@ -92,3 +98,4 @@ defineExpose({refresh:owner.refresh,recover:owner.recover,restoreSelectionReques
   </div></aside>
  </form>
 </template>
+<style scoped src="./bulk-create.css"></style>

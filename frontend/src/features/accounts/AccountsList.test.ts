@@ -24,6 +24,18 @@ describe('账号列表实际controller整合',()=>{
   expect(w.get('[aria-label="账号列表分页"] .list-pagination__range').text()).toContain('共 30 条');
   const bar=w.get('.ac-toolbar-main');expect(bar.get('[aria-label="已应用筛选"]').text()).toContain('来源：cloudflare');expect(bar.text()).toContain('备注：a/b');await bar.get('button[aria-label="移除备注：a/b"]').trigger('click');await flushPromises();expect(requests.at(-1)?.q).toBe('');expect(w.vm.getAccountSelectionSnapshot().query.filters.source).toEqual(['cloudflare']);
  });
+
+ it('列表摘要使用动态优惠 metadata，不暴露 offer_v1 摘要键',async()=>{
+  const offer='offer_v1_0000000000000000000000000000000a';
+  const {w,api}=await page();
+  api.list=async(query,page,size)=>({...listResponse([accountRow()],page,size),facets:{promotion:[
+   {value:offer,count:0,group:'plus',label:'Plus 其他折扣 12 个月'},
+  ]}});
+  w.vm.updateFilters({promotion:[offer]});
+  await flushPromises();
+  expect(w.get('[aria-label="已应用筛选"]').text()).toContain('Plus 其他折扣 12 个月');
+  expect(w.get('[aria-label="已应用筛选"]').text()).not.toContain(offer);
+ });
  it('行点击只invoke一次且确认等待期间换页清选不改变冻结context',async()=>{
   let captured:AccountActionContext|undefined;const pending=deferred<void>();const invoke=vi.fn(async(_action:string,context:AccountActionContext)=>{captured=context;await pending.promise;});const {w}=await page({invoke});await w.get('[data-account-action="twofa"]').trigger('click');expect(invoke).toHaveBeenCalledTimes(1);expect(invoke.mock.calls[0]?.[0]).toBe('account-action:twofa');expect(captured?.accountIds).toEqual(['1']);expect(Object.isFrozen(captured)).toBe(true);expect(Object.isFrozen(captured?.querySnapshot.filters)).toBe(true);
   w.vm.setPage(2);await flushPromises();w.vm.clearSelection();expect(captured?.expectedEmails).toEqual({'1':'account-1@example.test'});expect(captured?.rowHints[0]?.id).toBe(1);pending.resolve();await flushPromises();

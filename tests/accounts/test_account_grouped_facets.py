@@ -16,6 +16,7 @@ import unittest
 from unittest.mock import patch
 
 from core.storage import admin_repository as admin
+from core.storage.accounts import promotion_offers
 from core.storage import records as rs
 from tests.support_pg import PostgresTestCase
 from webui.app import create_app
@@ -53,7 +54,7 @@ class _SqlCaptureCursor:
         return {"total": 0, "latest": None}
 
     def fetchall(self):
-        if "UNION ALL SELECT NULL, NULL, COUNT(*), MAX(updated_at) FROM base" in self.statements[-1][0]:
+        if "FULL JOIN summary ON FALSE" in self.statements[-1][0]:
             return [{"id": None, "facet": None, "value": None, "count": 0, "latest": None}]
         return []
 
@@ -263,7 +264,11 @@ class AccountGroupedFacetPayloadTests(PostgresTestCase):
             "token": {"none": 2, "has": 1, "expired": 1},
             "password": {"none": 3, "has": 1},
             "plan": {"free": 2, "plus": 1, "unqueried": 1},
-            "promotion": {"not_applicable": 2, "free_trial": 1, "pending": 1},
+            "promotion": {
+                "not_applicable": 2, "free_trial": 1,
+                promotion_offers.offer_key("plus", "free_trial", None, None, None): 1,
+                "pending": 1,
+            },
             "totp": {"disabled": 3, "enabled": 1},
             "risk": {"pending": 2, "detected": 1, "clear": 1},
             "codex": {"success": 1, "failed": 1, "skipped": 1},
@@ -278,7 +283,11 @@ class AccountGroupedFacetPayloadTests(PostgresTestCase):
             "token": {"none": 2, "has": 1, "expired": 1, "invalid_403": 1},
             "password": {"none": 4, "has": 1},
             "plan": {"free": 2, "plus": 1, "unqueried": 1, "pro": 1},
-            "promotion": {"not_applicable": 3, "free_trial": 1, "pending": 1},
+            "promotion": {
+                "not_applicable": 3, "free_trial": 1,
+                promotion_offers.offer_key("plus", "free_trial", None, None, None): 1,
+                "pending": 1,
+            },
             "totp": {"disabled": 4, "enabled": 1},
             "risk": {"pending": 3, "detected": 1, "clear": 1},
             "codex": {"success": 2, "failed": 1, "skipped": 1},

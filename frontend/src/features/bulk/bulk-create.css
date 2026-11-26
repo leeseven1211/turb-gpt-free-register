@@ -1,0 +1,9 @@
+.bulk-filter-group-title {
+  margin: 7px 0 2px;
+  color: var(--ui-color-text-secondary);
+  font-size: 11px;
+  font-weight: 650;
+}
+.bulk-filter-group-title:first-child {
+  margin-top: 0;
+}
