@@ -1446,7 +1446,8 @@ def run_twofa_worker(
             "password_setup", include_aliases=True
         ):
             raise RuntimeError(f"账号密码补全不支持当前驱动={password_driver or '-'}")
-        protocol_password = "password" in requested_steps and password_driver == "protocol" and not force_password_reset
+        # 协议驱动同时支持补密码和重置密码；强制改密不再要求浏览器。
+        protocol_password = "password" in requested_steps and password_driver == "protocol"
         if "plan_check" in requested_steps and plan_driver not in operation_driver_values(
             "plan_check", include_aliases=True
         ):
@@ -1678,13 +1679,26 @@ def run_twofa_worker(
                             raise RuntimeError("account_action_route_exhausted: 账号动作线路额度已耗尽")
                     return account_route.proxy_url
 
-                password_result = run_protocol_password_setup(
-                    email, proxy=account_route.proxy_url, execution_fence=execution_fence,
-                    checkpoint=lambda: check_stop_requested(email),
-                    report=lambda **event: _report_account_setup_event(task_id, **event),
-                    proxy_supplier=acquire_password_route, on_network_failure=network_failed,
-                    route_recover=recover_account_request,
-                )
+                if force_password_reset:
+                    from core.accounts.password_setup.reset import run_protocol_password_reset
+
+                    password_result = run_protocol_password_reset(
+                        email, proxy=account_route.proxy_url, execution_fence=execution_fence,
+                        checkpoint=lambda: check_stop_requested(email),
+                        report=lambda **event: _report_account_setup_event(task_id, **event),
+                        proxy_supplier=acquire_password_route,
+                        refresh_before_reset=bool(getattr(
+                            account_cfg, "ACCOUNT_PASSWORD_CHANGE_REFRESH_BEFORE_RESET", True,
+                        )),
+                    )
+                else:
+                    password_result = run_protocol_password_setup(
+                        email, proxy=account_route.proxy_url, execution_fence=execution_fence,
+                        checkpoint=lambda: check_stop_requested(email),
+                        report=lambda **event: _report_account_setup_event(task_id, **event),
+                        proxy_supplier=acquire_password_route, on_network_failure=network_failed,
+                        route_recover=recover_account_request,
+                    )
             password_proxy_fault = password_proxy_fault or password_result.get("proxy_transport_failed") is True
             remaining_setup_steps.discard("password")
             account = db.get_account_by_email(email) or account

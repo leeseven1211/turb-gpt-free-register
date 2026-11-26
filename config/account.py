@@ -22,6 +22,7 @@ ACCOUNT_PASSWORD_RESET_ENABLED = schema_default("ACCOUNT_PASSWORD_RESET_ENABLED"
 # 账号级执行器。same_as_registration 只对 Codex 有意义，其它驱动值由对应
 # 服务校验；先保留为配置项，便于后续增加新的协议/浏览器实现。
 ACCOUNT_PASSWORD_DRIVER = schema_default("ACCOUNT_PASSWORD_DRIVER")
+ACCOUNT_PASSWORD_CHANGE_REFRESH_BEFORE_RESET = schema_default("ACCOUNT_PASSWORD_CHANGE_REFRESH_BEFORE_RESET")
 ACCOUNT_PLAN_CHECK_DRIVER = schema_default("ACCOUNT_PLAN_CHECK_DRIVER")
 ACCOUNT_2FA_DRIVER = schema_default("ACCOUNT_2FA_DRIVER")
 # Each account action can choose a cheaper/direct route independently. The
