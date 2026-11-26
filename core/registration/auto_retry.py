@@ -58,26 +58,38 @@ def _completed_at(job: dict) -> datetime | None:
 
 
 def _candidates(now: datetime, delay_seconds: int, max_attempts: int) -> list[dict]:
-    from core.storage import db_legacy as db
+    from psycopg.rows import dict_row
 
-    rows = db.list_jobs(limit=_SCAN_LIMIT)
+    from core.storage import postgres as postgres_store
+
     cutoff = now - timedelta(hours=24)
     ready_before = now - timedelta(seconds=delay_seconds)
+    table = postgres_store.qualified("registration_jobs")
+    with postgres_store.connect(row_factory=dict_row) as conn, conn.cursor() as cur:
+        cur.execute(
+            f"""SELECT j.id, j.email, j.status, j.job_type, j.data,
+                       COALESCE(j.job_retry_attempt, 0) AS retry_attempt
+                FROM {table} j
+                WHERE j.status = 'failed'
+                  AND j.job_type IN ('registration', 'registration_resume')
+                  AND NOT EXISTS (
+                      SELECT 1 FROM {table} child WHERE child.parent_job_id = j.id
+                  )
+                  AND COALESCE(j.job_retry_attempt, 0) < %s
+                ORDER BY j.id DESC
+                LIMIT %s""",
+            (int(max_attempts), _SCAN_LIMIT),
+        )
+        rows = cur.fetchall()
     selected: list[dict] = []
     for job in rows:
-        if str(job.get("status") or "") != "failed":
-            continue
-        if str(job.get("job_type") or "") not in {"registration", "registration_resume"}:
-            continue
         completed = _completed_at(job)
         if completed is None or completed < cutoff or completed > ready_before:
             continue
         data = _job_data(job)
         if data.get("auto_retry_disabled") is True:
             continue
-        if int(data.get("auto_retry_count") or 0) >= max_attempts:
-            continue
-        selected.append(job)
+        selected.append(dict(job))
         if len(selected) >= _ACTION_LIMIT:
             break
     return selected
