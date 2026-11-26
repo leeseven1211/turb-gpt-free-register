@@ -33,9 +33,10 @@ const root = ref<HTMLElement>();
 const rememberedDomains: Record<string, string> = {};
 const rememberedSections: Record<string, string> = {};
 
+const isSearching = computed(() => Boolean(query.value.trim()));
 const domainNames = computed(() => domainsFor(current.menu, props.owner.fields.value));
 const sections = computed(() => subsectionsFor(current.domain, props.owner.fields.value));
-const fields = computed(() => visibleFields(props.owner, current, !!query.value.trim()));
+const fields = computed(() => visibleFields(props.owner, current, isSearching.value));
 const groups = computed(() => settingGroups(current.domain, fields.value));
 
 const proxyPrimaryKeys = new Set([
@@ -389,7 +390,7 @@ const poolRules = [
               </div>
             </div>
 
-            <details v-if="proxyAdvanced.length" class="config-vue-source-advanced" :open="!!query.trim()">
+            <details v-if="proxyAdvanced.length" class="config-vue-source-advanced" :open="isSearching">
               <summary>高级提取与检测参数</summary>
               <div class="config-vue-advanced-body">
                 <div

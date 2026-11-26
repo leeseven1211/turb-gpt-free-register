@@ -35,7 +35,8 @@ _FORCE_SCHEMA_CHECK = False
 _BASE_SCHEMA_VERSION = 1
 _EMAIL_INVENTORY_SCHEMA_VERSION = 2
 _PROMOTION_OFFERS_SCHEMA_VERSION = 3
-_SCHEMA_VERSION = _PROMOTION_OFFERS_SCHEMA_VERSION
+_UI_QUERY_COLUMNS_SCHEMA_VERSION = 4
+_SCHEMA_VERSION = _UI_QUERY_COLUMNS_SCHEMA_VERSION
 _SCHEMA_MIGRATIONS = "record_store_schema_migrations"
 
 
@@ -212,6 +213,31 @@ ACCOUNTS = TableSpec(
                 END), '')
             )
         ) STORED""",
+        "account_totp_setup_pending": """BOOLEAN GENERATED ALWAYS AS (
+            LOWER(COALESCE(
+                CASE
+                    WHEN jsonb_typeof(data->'extra_json') = 'object'
+                        THEN data #>> '{extra_json,totp_setup_pending}'
+                    WHEN jsonb_typeof(data->'extra_json') = 'string'
+                         AND (data->>'extra_json') IS JSON OBJECT
+                        THEN (data->>'extra_json')::jsonb->>'totp_setup_pending'
+                    ELSE NULL
+                END,
+                'false'
+            )) IN ('true', '1', 'yes')
+        ) STORED""",
+        "account_registration_region": """TEXT GENERATED ALWAYS AS (
+            UPPER(BTRIM(COALESCE(data->>'registration_proxy_region', '')))
+        ) STORED""",
+        "account_user_name": """TEXT GENERATED ALWAYS AS (
+            COALESCE(data->>'user_name', '')
+        ) STORED""",
+        "account_note": """TEXT GENERATED ALWAYS AS (
+            COALESCE(data->>'note', '')
+        ) STORED""",
+        "account_has_plan_snapshot": """BOOLEAN GENERATED ALWAYS AS (
+            jsonb_typeof(data->'plan_last_success_result_json') IN ('object', 'string')
+        ) STORED""",
     },
     unique=("email",),
     indexes=(
@@ -228,6 +254,7 @@ ACCOUNTS = TableSpec(
         ("account_deactivation_detected",),
         ("archived", "plus_promo_kind"),
         ("archived", "account_promotion_value", "id"),
+        ("archived", "account_registration_region", "id"),
     ),
     derived={
         "deactivated": (
@@ -297,6 +324,12 @@ JOBS = TableSpec(
         ) STORED""",
         "job_email_source": """TEXT GENERATED ALWAYS AS (
             COALESCE(data->>'email_source', '')
+        ) STORED""",
+        "job_requested_status": """TEXT GENERATED ALWAYS AS (
+            LOWER(BTRIM(COALESCE(data->>'requested_status', '')))
+        ) STORED""",
+        "job_registration_driver": """TEXT GENERATED ALWAYS AS (
+            LOWER(BTRIM(COALESCE(data #>> '{config_snapshot,registration_driver}', '')))
         ) STORED""",
     },
 )
@@ -1015,6 +1048,37 @@ def _apply_record_schema(cur) -> None:
         _sync_identity_cursor(cur, spec)
 
 
+_UI_QUERY_ACCOUNT_COLUMNS = (
+    "account_totp_setup_pending",
+    "account_registration_region",
+    "account_user_name",
+    "account_note",
+    "account_has_plan_snapshot",
+)
+_UI_QUERY_JOB_COLUMNS = (
+    "job_requested_status",
+    "job_registration_driver",
+)
+
+
+def _ensure_ui_query_columns(cur) -> None:
+    """为老库幂等补齐列表、分面与总览所需的窄生成列和复合索引。"""
+    for spec, columns in (
+        (ACCOUNTS, _UI_QUERY_ACCOUNT_COLUMNS),
+        (JOBS, _UI_QUERY_JOB_COLUMNS),
+    ):
+        table = _qualified(spec)
+        for col in columns:
+            cur.execute(
+                f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS "
+                f"{postgres_store.quote_identifier(col)} {spec.generated[col]}"
+            )
+    idx_cols = ("archived", "account_registration_region", "id")
+    idx = postgres_store.quote_identifier(f"idx_{ACCOUNTS.name}_{'_'.join(idx_cols)}")
+    rendered = ", ".join(postgres_store.quote_identifier(c) for c in idx_cols)
+    cur.execute(f"CREATE INDEX IF NOT EXISTS {idx} ON {_qualified(ACCOUNTS)} ({rendered})")
+
+
 def ensure_record_schema(conn) -> None:
     """Prepare record tables in the caller's transaction; its commit owns the version."""
     postgres_store._guard_production_schema()
@@ -1035,7 +1099,8 @@ def ensure_record_schema(conn) -> None:
         cur.execute(f"SELECT version FROM {table}")
         applied = {row["version"] for row in cur.fetchall()}
 
-    if _BASE_SCHEMA_VERSION not in applied or (_FORCE_SCHEMA_CHECK and _SCHEMA_VERSION in applied):
+    base_applied_now = _BASE_SCHEMA_VERSION not in applied or (_FORCE_SCHEMA_CHECK and _SCHEMA_VERSION in applied)
+    if base_applied_now:
         # 保留 reset_ready() 在版本已齐备时对旧表和序列的检查。
         with conn.cursor() as cur:
             _apply_record_schema(cur)
@@ -1045,11 +1110,19 @@ def ensure_record_schema(conn) -> None:
     if _PROMOTION_OFFERS_SCHEMA_VERSION not in applied:
         from core.storage.accounts.promotion_offers import ensure_schema
         ensure_schema(conn)
+    if _UI_QUERY_COLUMNS_SCHEMA_VERSION not in applied and not base_applied_now:
+        with conn.cursor() as cur:
+            _ensure_ui_query_columns(cur)
 
     with conn.cursor() as cur:
         cur.execute(
-            f"INSERT INTO {table} (version) VALUES (%s), (%s), (%s) ON CONFLICT DO NOTHING",
-            (_BASE_SCHEMA_VERSION, _EMAIL_INVENTORY_SCHEMA_VERSION, _PROMOTION_OFFERS_SCHEMA_VERSION),
+            f"INSERT INTO {table} (version) VALUES (%s), (%s), (%s), (%s) ON CONFLICT DO NOTHING",
+            (
+                _BASE_SCHEMA_VERSION,
+                _EMAIL_INVENTORY_SCHEMA_VERSION,
+                _PROMOTION_OFFERS_SCHEMA_VERSION,
+                _UI_QUERY_COLUMNS_SCHEMA_VERSION,
+            ),
         )
 
 

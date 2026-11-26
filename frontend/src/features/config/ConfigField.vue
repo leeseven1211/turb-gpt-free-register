@@ -1,6 +1,49 @@
+<script lang="ts">
+import type {ConfigOption} from './contracts';
+
+// 模块级复用 ICU 地区名称实例与默认国家选项缓存，避免每次切组重复构造上千次 Intl.DisplayNames。
+let sharedRegionDisplayNames: Intl.DisplayNames | undefined;
+const regionLabelCache = new Map<string, string>();
+const defaultCountryOptionsCache = new Map<string, readonly ConfigOption[]>();
+
+function resolveDefaultCountryLabel(code: string): string {
+  const cached = regionLabelCache.get(code);
+  if (cached !== undefined) return cached;
+  let label: string;
+  try {
+    sharedRegionDisplayNames ??= new Intl.DisplayNames(['zh-CN'], {type: 'region'});
+    label = `${sharedRegionDisplayNames.of(code) || code} · ${code}`;
+  } catch {
+    label = code;
+  }
+  regionLabelCache.set(code, label);
+  return label;
+}
+
+function buildCountryOptions(
+  codes: readonly string[],
+  customNames?: Readonly<Record<string, string>>,
+): ConfigOption[] {
+  if (customNames && Object.keys(customNames).length > 0) {
+    return codes.map(code => {
+      const name = customNames[code];
+      return {value: code, label: name ? `${name} · ${code}` : resolveDefaultCountryLabel(code)};
+    });
+  }
+  const cacheKey = codes.join(',');
+  let cached = defaultCountryOptionsCache.get(cacheKey);
+  if (!cached) {
+    if (defaultCountryOptionsCache.size >= 16) defaultCountryOptionsCache.clear();
+    cached = codes.map(code => ({value: code, label: resolveDefaultCountryLabel(code)}));
+    defaultCountryOptionsCache.set(cacheKey, cached);
+  }
+  return cached as ConfigOption[];
+}
+</script>
+
 <script setup lang="ts">
 import {computed} from 'vue';
-import type {ConfigDraftOwner, ConfigField as Field, ConfigOption, ConfigValue} from './contracts';
+import type {ConfigDraftOwner, ConfigField as Field, ConfigValue} from './contracts';
 import type {ConfigActions} from './configActions';
 import ConfigChoicePicker from './ConfigChoicePicker.vue';
 import ConfigFieldActions from './ConfigFieldActions.vue';
@@ -31,6 +74,8 @@ const multi = computed(
     ].includes(props.field.key) ||
     (props.field.type === 'list_str_multiline' && !!(props.field.options?.length || props.field.csv_options?.length)),
 );
+const parsedSchemaOptions = computed(() => schemaOptions(props.field));
+
 const list = computed(() => {
   const separator = ['EMAIL_SOURCE', 'ROXY_RANDOM_OS_CHOICES'].includes(props.field.key)
     ? /[,\n]+/
@@ -42,24 +87,15 @@ const list = computed(() => {
     .filter(Boolean);
   const values = countryList.value ? [...new Set(raw.map(item => item.toUpperCase()))] : raw;
   return props.field.key === 'EMAIL_SOURCE' && Array.isArray(props.field.options)
-    ? values.filter(item => schemaOptions(props.field).some(option => option.value === item))
+    ? values.filter(item => parsedSchemaOptions.value.some(option => option.value === item))
     : values;
 });
-
-function countryLabel(code: string) {
-  const name = props.field.country_names?.[code];
-  try {
-    return `${name || new Intl.DisplayNames(['zh-CN'], {type: 'region'}).of(code) || code} · ${code}`;
-  } catch {
-    return name ? `${name} · ${code}` : code;
-  }
-}
 
 const baseOptions = computed<ConfigOption[]>(() => {
   let result: ConfigOption[] =
     isCountry.value || singleCountry.value
-      ? (props.field.country_codes || []).map(code => ({value: code, label: countryLabel(code)}))
-      : schemaOptions(props.field);
+      ? buildCountryOptions(props.field.country_codes || [], props.field.country_names)
+      : parsedSchemaOptions.value;
   if (!result.length && props.field.csv_options) result = props.field.csv_options.map(item => ({value: item, label: item}));
   if (props.field.key === 'EXTRACT_LINK_TYPE' && props.actions?.extractTypeOptions.value.length) {
     result = props.actions.extractTypeOptions.value;

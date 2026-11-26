@@ -340,47 +340,78 @@ def batch_task_counts(batch_ids: list[int], *, public_status: bool = False) -> d
 
     operation.init()
     accounts = admin_repository._q(record_store.ACCOUNTS)
-    checked_at_sql = _workbench_timestamp_sql("COALESCE(NULLIF(BTRIM(account.data->>'plan_checked_at'), ''), NULLIF(BTRIM(account.plan_last_success_at), ''), NULLIF(BTRIM(fallback.data->>'plan_checked_at'), ''), NULLIF(BTRIM(fallback.plan_last_success_at), ''))")
-    payment_anchor_sql = _workbench_timestamp_sql("(job.public_state->'summary'->>'payment_submitted_at')")
-    payment_processing_sql = _workbench_payment_processing_sql("job.public_state->'summary'")
+    account_columns = """id, CASE WHEN LOWER(plan_check_status)='success'
+            AND BTRIM(LOWER(COALESCE(NULLIF(current_plan_type, ''), plan_type, ''))) IN ('plus','pro')
+        THEN COALESCE(NULLIF(BTRIM(data->>'plan_checked_at'), ''),
+                      NULLIF(BTRIM(plan_last_success_at), '')) END AS plan_checked_at"""
+    checked_at_sql = _workbench_timestamp_sql("raw_plan_checked_at")
+    payment_anchor_sql = _workbench_timestamp_sql("raw_payment_submitted_at")
+    mode_sql = "COALESCE(NULLIF(task.task_mode, ''), 'extract_only')"
+    paid_mode_sql = f"{mode_sql} IN ('auto_payment', 'manual_payment')"
+    provider_id_sql = "COALESCE(NULLIF(task.task_provider_id, ''), NULLIF(job.provider_id, ''), 'legacy')"
+    raw_payment_sql = "LOWER(COALESCE(NULLIF(job.public_state->>'payment_state', ''), NULLIF(run.result_summary->>'payment_status', ''), 'not_started'))"
+    payment_sql = f"CASE WHEN {mode_sql}='extract_only' THEN 'not_started' ELSE {raw_payment_sql} END"
+    payment_progress_sql = _workbench_payment_processing_sql("job.public_state->'summary'")
+    payment_processing_sql = (
+        f"CASE WHEN {mode_sql}='auto_payment' AND {raw_payment_sql} NOT IN "
+        f"('unknown','not_started','failed','succeeded','success','paid') "
+        f"THEN {payment_progress_sql} ELSE FALSE END"
+    )
     count_columns = [f"COUNT(*) FILTER (WHERE {condition}) AS {name}"
                      for name, condition in _WORKBENCH_STATUS_SQL.items()]
     with operation._connect() as conn, conn.cursor() as cur:
         cur.execute(
-            f"""WITH raw AS (
+            f"""WITH filtered_tasks AS MATERIALIZED (
+                SELECT task.id, task.batch_id, task.account_id, task.email_snapshot,
+                    task.last_run_id, task.created_at, task.status,
+                    task.data->>'provider_id' AS task_provider_id,
+                    task.data->>'mode' AS task_mode,
+                    COALESCE(task.data->>'payment_source', 'native') AS task_payment_source
+                FROM {operation._table('operation_tasks')} task
+                WHERE task.task_type='extract_link' AND task.batch_id=ANY(%s)
+                  AND LOWER(COALESCE(task.data->>'deleted_by_user', '')) <> 'true'
+            ), missing_account_emails AS MATERIALIZED (
+                SELECT DISTINCT LOWER(BTRIM(task.email_snapshot)) AS email_key
+                FROM filtered_tasks task WHERE {paid_mode_sql} AND BTRIM(task.email_snapshot) <> ''
+                    AND NOT EXISTS (SELECT 1 FROM {accounts} known WHERE known.id=task.account_id)
+            ), account_emails AS (
+                SELECT LOWER(fallback_account.email) AS email_key, MIN(fallback_account.id) AS account_id
+                FROM {accounts} fallback_account
+                WHERE EXISTS (SELECT 1 FROM missing_account_emails)
+                    AND LOWER(fallback_account.email) IN (SELECT email_key FROM missing_account_emails)
+                GROUP BY LOWER(fallback_account.email)
+            ), raw AS (
                 SELECT task.batch_id, task.created_at AS task_created_at,
-                    CASE WHEN task.data->>'payment_source'='xxsyun' THEN {payment_anchor_sql} ELSE task.created_at END AS plus_freshness_anchor,
+                    task.task_payment_source,
+                    CASE WHEN {paid_mode_sql} AND task.task_payment_source='xxsyun'
+                        THEN job.public_state->'summary'->>'payment_submitted_at' END AS raw_payment_submitted_at,
                     LOWER(COALESCE(NULLIF(run.status, ''), NULLIF(task.status, ''), 'queued')) AS task_status,
-                    COALESCE(NULLIF(task.data->>'provider_id', ''), NULLIF(job.provider_id, ''), 'legacy') AS provider_id,
-                    COALESCE(NULLIF(task.data->>'mode', ''), 'extract_only') AS mode,
+                    {provider_id_sql} AS provider_id,
+                    {mode_sql} AS mode,
                     COALESCE(job.provider_id IN ('huanguang', 'legacy')
                         AND job.public_state->'summary'->'local_reconcile_halted'='true'::jsonb, FALSE) AS local_reconcile_halted,
                     CASE WHEN job.provider_id='huanguang' AND job.public_state->'summary'->'extraction_ever_succeeded'='true'::jsonb
                         THEN 'succeeded' ELSE LOWER(COALESCE(NULLIF(job.public_state->>'extraction_state', ''),
                             NULLIF(run.result_summary->>'extraction_status', ''), '')) END AS extraction,
-                    LOWER(COALESCE(NULLIF(job.public_state->>'payment_state', ''),
-                        NULLIF(run.result_summary->>'payment_status', ''), 'not_started')) AS payment,
-                    {payment_processing_sql} AND LOWER(COALESCE(NULLIF(job.public_state->>'payment_state', ''),
-                        NULLIF(run.result_summary->>'payment_status', ''), 'not_started')) NOT IN
-                        ('unknown','not_started','failed','succeeded','success','paid') AS payment_processing,
+                    {payment_sql} AS payment,
+                    {payment_processing_sql} AS payment_processing,
                     LOWER(COALESCE(NULLIF(job.public_state->>'plus_status', ''),
                         NULLIF(run.result_summary->>'plus_status', ''), 'unknown')) AS plus,
-                    COALESCE((run.result_summary->>'has_link')::boolean, FALSE)
-                        OR COALESCE(run.result_summary->>'remote_job_id', '') <> '' AS legacy_succeeded,
-                    LOWER(COALESCE(account.plan_check_status, fallback.plan_check_status, '')) AS plan_check_status,
-                    LOWER(COALESCE(NULLIF(account.current_plan_type, ''), account.plan_type,
-                        NULLIF(fallback.current_plan_type, ''), fallback.plan_type, '')) AS plan,
-                    {checked_at_sql} AS plan_checked_at
-                FROM {operation._table('operation_tasks')} task
+                    CASE WHEN {provider_id_sql}='legacy' AND NULLIF(job.public_state->>'extraction_state', '') IS NULL
+                        THEN COALESCE((run.result_summary->>'has_link')::boolean, FALSE)
+                            OR COALESCE(run.result_summary->>'remote_job_id', '') <> ''
+                        ELSE FALSE END AS legacy_succeeded,
+                    COALESCE(by_id.plan_checked_at, by_email.plan_checked_at) AS raw_plan_checked_at
+                FROM filtered_tasks task
                 LEFT JOIN {operation._table('operation_runs')} run ON run.id=task.last_run_id
                 LEFT JOIN {operation._table('extract_link_provider_jobs')} job ON job.run_id=run.id
-                LEFT JOIN {accounts} account ON account.id=task.account_id
-                LEFT JOIN LATERAL (SELECT candidate.* FROM {accounts} candidate
-                    WHERE account.id IS NULL AND BTRIM(task.email_snapshot) <> ''
-                      AND LOWER(candidate.email)=LOWER(BTRIM(task.email_snapshot))
-                    ORDER BY candidate.id LIMIT 1) fallback ON TRUE
-                WHERE task.task_type='extract_link' AND task.batch_id=ANY(%s)
-                  AND LOWER(COALESCE(task.data->>'deleted_by_user', '')) <> 'true'
+                LEFT JOIN (SELECT {account_columns} FROM {accounts}) by_id ON {paid_mode_sql} AND by_id.id=task.account_id
+                LEFT JOIN account_emails email_match ON {paid_mode_sql} AND by_id.id IS NULL
+                    AND BTRIM(task.email_snapshot) <> ''
+                    AND email_match.email_key=LOWER(BTRIM(task.email_snapshot))
+                LEFT JOIN LATERAL (
+                    SELECT {account_columns} FROM {accounts} WHERE id=email_match.account_id LIMIT 1
+                ) by_email ON TRUE
             ), normalized AS (
                 SELECT *, CASE
                     WHEN extraction IN ('succeeded', 'success') THEN 'success'
@@ -399,7 +430,10 @@ def batch_task_counts(batch_ids: list[int], *, public_status: bool = False) -> d
             ), projected AS (
                 SELECT *, CASE WHEN mode IN ('auto_payment','manual_payment') AND extraction_status='success'
                     AND payment_status='paid'
-                    AND plan_check_status='success' AND BTRIM(plan) IN ('plus','pro') AND plan_checked_at > plus_freshness_anchor
+                    AND raw_plan_checked_at IS NOT NULL
+                    AND ({checked_at_sql}) > (
+                        CASE WHEN task_payment_source='xxsyun' THEN {payment_anchor_sql} ELSE task_created_at END
+                    )
                     THEN 'confirmed'
                     ELSE plus END AS plus_status
                 FROM normalized

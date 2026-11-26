@@ -82,7 +82,7 @@ def main() -> None:
                         help="默认 combined；web 只受理和查询，独立执行使用 worker.py")
     parser.add_argument('--server', choices=('flask', 'waitress'), default='flask',
                         help='默认开发 Flask；Waitress 仅用于显式 web 角色')
-    parser.add_argument('--http-threads', type=int, default=4)
+    parser.add_argument('--http-threads', type=int, default=16)
     parser.add_argument('--http-drain-timeout', type=float, default=20.0)
     parser.add_argument('--shutdown-timeout', type=float, default=80.0,
                         help='HTTP 与后台收尾共享的总预算（秒），默认 80')

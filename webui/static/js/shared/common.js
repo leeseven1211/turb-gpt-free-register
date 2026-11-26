@@ -1247,13 +1247,18 @@ function recordNavigationHistory(mode = 'push') {
 function applyNavigationState(raw) {
   const nav = normalizeNavigationState(raw);
   if (nav.tab === 'bulk' && window.BulkTasks) BulkTasks.restoreNavigation(nav);
-  // Codex 先确定归档范围，避免历史恢复时先请求上一个菜单的数据。
-  if (nav.module === 'codex' && nav.view) {
-    const tab = document.getElementById('tab-codex');
+  // 激活标签前先同步目标子视图与归档范围，避免历史恢复或直开 Hash 时先按旧视图发请求。
+  if (nav.module && nav.view) {
+    const tab = document.getElementById(`tab-${nav.module}`);
+    if (tab && tab.dataset.moduleView !== nav.view && nav.tab === ACTIVE_TAB) closePageDialogsForNavigation();
     if (tab) tab.dataset.moduleView = nav.view;
+    if (nav.module === 'accounts') SHOW_ARCHIVED_ACCOUNTS = nav.view === 'archived';
+    localStorage.setItem(`gpt_console_module_view_${nav.module}`, nav.view);
+    document.querySelectorAll(`[data-module-subnav="${nav.module}"] [data-view]`).forEach(btn => {
+      btn.classList.toggle('is-active', btn.dataset.view === nav.view);
+    });
   }
   activateTab(nav.tab, true, 'none');
-  if (nav.module && nav.view) setModuleView(nav.module, nav.view, true, 'none');
   updateNavigationBackButton();
 }
 function initializeNavigationHistory(fallbackTab = 'overview') {
@@ -1371,6 +1376,10 @@ function activateTab(tab, persist=true, historyMode=persist ? 'push' : 'none') {
   closeMobileSidebar();
   if (persist) localStorage.setItem('gpt_console_active_tab', tab);
   window.DashboardPage?.setVisible(tab === 'overview');
+  if (tab === 'register') {
+    window.RegistrationPage?.setView($('#tab-register')?.dataset.moduleView === 'tasks' ? 'tasks' : 'launch');
+    if (!window.RegistrationPage) refreshJobs({coalesce: true});
+  }
   window.RegistrationPage?.setVisible(tab === 'register');
   window.ExtractWorkbenchPage?.setVisible(tab === 'extract-workbench');
   window.ExtractStatsPage?.setVisible(tab === 'extract-stats');
@@ -1397,10 +1406,6 @@ function activateTab(tab, persist=true, historyMode=persist ? 'push' : 'none') {
   if (tab === 'config') ensureViewLoaded('config', loadConfig, 30000);
   if (tab === 'extract-workbench' && !window.ExtractWorkbenchPage) ensureViewLoaded('extract-workbench', loadExtractWorkbench, 0);
   if (tab === 'extract-stats' && !window.ExtractStatsPage) ensureViewLoaded('extract-stats', loadExtractStats, 0);
-  if (tab === 'register') {
-    window.RegistrationPage?.setView($('#tab-register')?.dataset.moduleView === 'tasks' ? 'tasks' : 'launch');
-    if (!window.RegistrationPage) refreshJobs({coalesce: true});
-  }
   if (historyMode === 'push') recordNavigationHistory();
   else updateNavigationBackButton();
 }
@@ -1478,6 +1483,7 @@ $$('[data-module-subnav]').forEach(nav => nav.addEventListener('click', event =>
     // new view again, producing a visible waterfall on submenu clicks.
     tab.dataset.moduleView = btn.dataset.view;
     if (module === 'accounts') SHOW_ARCHIVED_ACCOUNTS = btn.dataset.view === 'archived';
+    if (module === 'register') localStorage.setItem('gpt_console_module_view_register', btn.dataset.view);
     if (module === 'accounts') localStorage.setItem('gpt_console_module_view_accounts', btn.dataset.view);
     if (module === 'codex') localStorage.setItem('gpt_console_module_view_codex', btn.dataset.view);
     if (module === 'outlook') localStorage.setItem('gpt_console_module_view_outlook', btn.dataset.view);

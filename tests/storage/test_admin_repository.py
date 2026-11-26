@@ -510,6 +510,54 @@ class AdminRepositoryTests(PostgresTestCase):
         self.assertEqual([], result["progress_rows"])
         self.assertEqual([], result["progress_batches"])
         self.assertFalse(any("effective_batch_id" in query for query in counter.queries))
+        self.assertFalse(any("SELECT j.*" in query for query in counter.queries))
+
+    def test_job_table_view_projects_narrow_data_without_losing_retry_step_states(self):
+        account_id = rs.insert_row(rs.ACCOUNTS, {
+            "email": "skipped-codex-table@example.test",
+            "access_token": "tok-1",
+            "extra_json": json.dumps({"account_password": "pwd-1", "account_password_state": "confirmed"}),
+            "totp_secret": "",
+            "plan_check_status": "success",
+            "codex_status": "failed",
+        })
+        job_id = rs.insert_row(rs.JOBS, {
+            "job_uuid": "narrow-table-job",
+            "email": "skipped-codex-table@example.test",
+            "account_id": account_id,
+            "status": "partial_success",
+            "batch_id": "narrow-table-batch",
+            "data": {
+                "config_snapshot": {
+                    "password_enabled": True,
+                    "plan_check_enabled": True,
+                    "twofa_enabled": True,
+                    "codex_enabled": False,
+                },
+                "progress_steps": {
+                    "submit_email": {"state": "success", "detail": "x" * 4096},
+                    "codex": {"state": "skipped"},
+                    "twofa": {"state": "failed", "detail": "2FA 失败"},
+                },
+                "route_attempts": [{"attempt": 1, "detail": "y" * 2048}],
+                "occurrences": [{"id": 1}],
+                "plan_check_result_json": {"huge": "z" * 2048},
+            },
+        })
+        table_result = repo.list_jobs(
+            repo.PageRequest(filters={"id": str(job_id)}), view="table", public_status=True,
+        )
+        item = table_result["items"][0]
+        self.assertNotIn("route_attempts", item)
+        self.assertNotIn("occurrences", item)
+        self.assertNotIn("plan_check_result_json", item)
+        self.assertNotIn("submit_email", item.get("progress_steps") or {})
+        self.assertTrue(item["retryable"])
+        self.assertEqual("twofa", item["retry_action"])
+        self.assertEqual("重试 2FA", item["retry_label"])
+
+        legacy_result = repo.list_jobs(repo.PageRequest(filters={"id": str(job_id)}))
+        self.assertIn("submit_email", legacy_result["items"][0]["progress_steps"])
 
     def test_job_table_aggregates_status_and_email_source_from_same_candidates(self):
         for index, (status, source) in enumerate((

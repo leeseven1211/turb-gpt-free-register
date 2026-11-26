@@ -77,7 +77,7 @@ class OperationTaskReadOptimizationTests(PostgresTestCase):
             for page in (1, 40):
                 recorded.clear()
                 operation_task_store.list_tasks(**defaults, page=page)
-                self.assertEqual([("running",), ("running", 3, (page - 1) * 3)], recorded)
+                self.assertEqual([("running", 3, (page - 1) * 3)], recorded)
             for filters in (
                 {"status": " RUNNING "}, {"status": "queued"}, {"public_status": False},
                 {"include_facets": True}, {"task_type": "x"}, {"source": "x"}, {"q": " "},

@@ -93,13 +93,23 @@ class DashboardAggregationReadTests(PostgresTestCase):
 
         self.assertEqual(result["jobs"]["counts"], {"success": 12})
         self.assertEqual(result["jobs"]["today_counts"], {"success": 6})
-        self.assertEqual(counts["reads"], 1)
+        # account_totp_setup_pending 已提升为窄生成列，总览不再解压账号 JSONB。
+        self.assertEqual(counts["reads"], 0)
 
     def test_daily_reads_account_evidence_once_and_ignores_repeated_registration_jobs(self):
-        account_id = self._account("daily-repeated", created_at="2026-11-25T08:00:00+08:00")
+        no_snapshot_id = self._account("daily-no-snapshot", created_at="2026-11-25T08:00:00+08:00")
+        snapshot_id = self._account(
+            "daily-repeated",
+            created_at="2026-11-25T09:00:00+08:00",
+            plan_last_success_result_json={"ok": True, "account_promotions": []},
+        )
         for index in range(12):
             self._job(
-                f"daily-repeated-job-{index}", account_id,
+                f"daily-repeated-job-{index}", snapshot_id,
+                created_at=f"2026-11-{25 + index % 2}T08:00:00+08:00",
+            )
+            self._job(
+                f"daily-no-snapshot-job-{index}", no_snapshot_id,
                 created_at=f"2026-11-{25 + index % 2}T08:00:00+08:00",
             )
 
@@ -108,9 +118,10 @@ class DashboardAggregationReadTests(PostgresTestCase):
                 date_from="2026-11-25", date_to="2026-11-26",
             )
 
-        self.assertEqual(result["summary"]["accounts_total"], 1)
-        self.assertEqual([row["accounts_total"] for row in result["rows"]], [1, 0])
-        self.assertEqual(result["summary"]["promotion_presence"], {"eligible": 0, "none": 0, "unknown": 1})
+        self.assertEqual(result["summary"]["accounts_total"], 2)
+        self.assertEqual([row["accounts_total"] for row in result["rows"]], [2, 0])
+        self.assertEqual(result["summary"]["promotion_presence"], {"eligible": 0, "none": 0, "unknown": 2})
+        # 无成功快照的账号跳过 a.data 解压，有成功快照的账号在重复注册任务下也只读 1 次。
         self.assertEqual(counts["reads"], 1)
 
     def test_missing_other_setup_requirements_skip_account_json(self):

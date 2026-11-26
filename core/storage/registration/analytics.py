@@ -118,7 +118,7 @@ def _account_promotions_sql() -> str:
         )
         SELECT member.account_date::text AS day, member.plan, member.unpromoted,
                COALESCE(fresh.offers, '[]'::jsonb) AS offers,
-               CASE WHEN fresh.offers IS NULL
+               CASE WHEN fresh.offers IS NULL AND a.account_has_plan_snapshot IS TRUE
                     THEN a.data->'plan_last_success_result_json' END AS promotion_snapshot
           FROM account_cohort member
           LEFT JOIN LATERAL (
