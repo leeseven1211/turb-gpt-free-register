@@ -8,7 +8,7 @@ import {formatDateTime, formatDuration} from '../tasks/presentation';
 import {object, records, text} from '../tasks/detail/model';
 import RegistrationProgress from './RegistrationProgress.vue';
 
-type Filter = 'all' | 'success' | 'failed' | 'active' | 'other';
+type Filter = 'all' | 'success' | 'failed' | 'running' | 'queued' | 'other';
 type BatchAction = 'stopBatch' | 'cancelBatch' | 'retryBatch';
 const props = defineProps<{
   batch: RegistrationBatch | null;
@@ -35,7 +35,7 @@ const emit = defineEmits<{
 
 const filters: {key: Filter; label: string}[] = [
   {key:'all', label:'全部'}, {key:'success', label:'成功'}, {key:'failed', label:'失败'},
-  {key:'active', label:'运行 / 排队'}, {key:'other', label:'其他'},
+  {key:'running', label:'运行'}, {key:'queued', label:'排队'}, {key:'other', label:'其他'},
 ];
 const filter = ref<Filter>('all');
 const expandedId = ref<string | null>(null);
@@ -47,17 +47,19 @@ const batchOptions = computed(() => {
   }
   return props.batches;
 });
-const status = (job: RegistrationJob) => job.status || job.display_status || '';
+const status = (job: RegistrationJob) => job.display_status || job.status || '';
 function category(job: RegistrationJob): Exclude<Filter, 'all'> {
   const value = status(job);
   if (value === 'success' || value === 'failed') return value;
-  return ['running', 'pending', 'stopping'].includes(value) ? 'active' : 'other';
+  if (['running', 'stopping'].includes(value)) return 'running';
+  if (['pending', 'queued', 'waiting'].includes(value)) return 'queued';
+  return 'other';
 }
 
 // A selected batch carries the current attempts of all slots. Derive the
 // counts and actions from those rows so the filter always matches the number.
 const counts = computed(() => {
-  const result = {all:rows.value.length, success:0, failed:0, active:0, other:0};
+  const result = {all:rows.value.length, success:0, failed:0, running:0, queued:0, other:0};
   for (const row of rows.value) result[category(row)]++;
   return result;
 });
@@ -70,9 +72,8 @@ let progressRequest: AbortController | undefined;
 const batchStatus = computed(() => {
   const value = counts.value;
   if (!value.all) return {label:'暂无任务', tone:'other'};
-  if (value.active) {
-    return {label: rows.value.some(row => status(row) !== 'pending' && category(row) === 'active') ? '运行中' : '排队中', tone:'active'};
-  }
+  if (value.running) return {label:'运行中', tone:'running'};
+  if (value.queued) return {label:'排队中', tone:'queued'};
   if (value.failed) return {label:value.failed === value.all ? '失败' : '部分失败', tone:'failed'};
   if (value.success === value.all) return {label:'已完成', tone:'success'};
   return {label:'已结束', tone:'other'};
@@ -91,7 +92,7 @@ const rowSummaries = computed(() => {
   const now = Date.now();
   return displayedRows.value.map(job => {
     const tone = category(job);
-    const running = tone === 'active' && status(job) !== 'pending';
+    const running = tone === 'running';
     return {
       job, tone, result: rowResult(job, tone),
       identity: [
@@ -119,7 +120,7 @@ function rowResult(job: RegistrationJob, tone: Exclude<Filter, 'all'>) {
     if (stage && Array.from(stage).length <= 10) return stage;
     return short || '执行异常';
   }
-  if (tone === 'active') return text(object(object(job.progress).current).label);
+  if (tone === 'running' || tone === 'queued') return text(object(object(job.progress).current).label);
   return '';
 }
 function rowStatus(job: RegistrationJob) {
@@ -221,7 +222,7 @@ watch([() => props.active, () => props.batchId, expandedJob, () => props.refresh
       || runId(job) !== runId(previousJob) || status(job) !== (previousJob && status(previousJob));
     const refreshed = generation !== previousGeneration;
     if (changed || refreshed) resetProgress();
-    if (changed || refreshed || (!progressJob.value && !progressError.value) || category(job) === 'active') {
+    if (changed || refreshed || (!progressJob.value && !progressError.value) || category(job) === 'running') {
       void loadProgress(job);
     }
   },
@@ -269,7 +270,7 @@ onBeforeUnmount(resetProgress);
       <article v-for="{job, tone, result, identity, elapsed, started, completed} in rowSummaries" :key="String(job.id)" class="registration-batch-card" :data-tone="tone">
         <div class="registration-batch-row">
           <div class="registration-batch-identity">
-            <strong>{{ job.email || (job.status === 'pending' ? '等待执行…' : '准备邮箱中…') }}</strong>
+            <strong>{{ job.email || (['pending', 'queued', 'waiting'].includes(status(job)) ? '等待执行…' : '准备邮箱中…') }}</strong>
             <small>{{ identity }}</small>
           </div>
           <div class="registration-batch-result">

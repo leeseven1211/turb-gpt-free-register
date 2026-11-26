@@ -798,6 +798,17 @@ def list_account_statuses(
 
 _JOB_PASSWORD_PRESENT = _ACCOUNT_PASSWORD_PRESENT
 _JOB_TOTP_PRESENT = _ACCOUNT_TOTP_PRESENT
+_ACCOUNT_TOTP_SETUP_PENDING = """LOWER(COALESCE(
+    CASE
+        WHEN jsonb_typeof(a.data->'extra_json') = 'object'
+            THEN a.data #>> '{extra_json,totp_setup_pending}'
+        WHEN jsonb_typeof(a.data->'extra_json') = 'string'
+             AND (a.data->>'extra_json') IS JSON OBJECT
+            THEN (a.data->>'extra_json')::jsonb->>'totp_setup_pending'
+        ELSE NULL
+    END,
+    'false'
+)) IN ('true', '1', 'yes')"""
 _JOB_PASSWORD_REQUIRED = "COALESCE(j.job_config_password_enabled, TRUE)"
 _JOB_PLAN_CHECK_REQUIRED = "COALESCE(j.job_config_plan_check_enabled, TRUE)"
 _JOB_TWOFA_REQUIRED = "COALESCE(j.job_config_twofa_enabled, TRUE)"
@@ -807,8 +818,7 @@ _JOB_SETUP_COMPLETE = f"""(
     AND (NOT {_JOB_PLAN_CHECK_REQUIRED} OR COALESCE(a.plan_check_status, '') = 'success')
     AND (NOT {_JOB_TWOFA_REQUIRED} OR (
         {_JOB_TOTP_PRESENT}
-        AND COALESCE(j.job_twofa_state, '') <> 'failed'
-        AND NOT COALESCE(a.account_twofa_failed, FALSE)
+        AND NOT {_ACCOUNT_TOTP_SETUP_PENDING}
     ))
 )"""
 _JOB_DISPLAY_STATUS = f"""CASE

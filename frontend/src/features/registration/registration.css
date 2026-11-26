@@ -102,12 +102,14 @@
 }
 .registration-state[data-tone=success] { background: var(--ui-color-success-soft); color: var(--registration-success-text); }
 .registration-state[data-tone=failed] { background: var(--ui-color-danger-soft); color: var(--registration-danger-text); }
-.registration-state[data-tone=active] { background: var(--ui-color-brand-soft); color: var(--ui-color-brand-hover); }
+.registration-state[data-tone=running] { background: var(--ui-color-brand-soft); color: var(--ui-color-brand-hover); }
+.registration-state[data-tone=queued] { background: var(--ui-color-warning-soft); color: var(--registration-warning-text); }
 .registration-batch-meter { display: flex; height: 7px; margin: 0 15px; overflow: hidden; border-radius: var(--ui-radius-pill); background: var(--ui-color-border); }
 .registration-batch-meter > span { flex-basis: 0; transition: flex-grow .25s ease; }
 .registration-batch-meter [data-tone=success], .registration-status-dot[data-tone=success] { background: var(--ui-color-success); }
 .registration-batch-meter [data-tone=failed], .registration-status-dot[data-tone=failed] { background: var(--ui-color-danger); }
-.registration-batch-meter [data-tone=active], .registration-status-dot[data-tone=active] { background: var(--ui-color-brand); }
+.registration-batch-meter [data-tone=running], .registration-status-dot[data-tone=running] { background: var(--ui-color-brand); }
+.registration-batch-meter [data-tone=queued], .registration-status-dot[data-tone=queued] { background: var(--ui-color-warning); }
 .registration-batch-meter [data-tone=other], .registration-status-dot[data-tone=other] { background: var(--ui-color-border-strong); }
 .registration-batch-filters { display: flex; flex-wrap: wrap; gap: 4px; padding: 9px 15px; }
 .registration-launch .registration-batch-filters button { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; border-color: transparent; color: var(--ui-color-text-secondary); font-variant-numeric: tabular-nums; }

@@ -44,6 +44,37 @@ describe('registration owner lifecycle',()=>{
     expect(notify).toHaveBeenCalledWith('已提交 1 个任务');
     owner.setVisible(false);
   });
+  it('批次重跑只提交失败与部分成功任务，取消项仍可单条重试',async()=>{
+    const api=apiFixture(),confirm=vi.fn(async()=>true),owner=makeOwner({api,visible:true,confirm});
+    owner.state.batchId='batch-retry';
+    owner.state.batch={
+      batch_id:'batch-retry',
+      items:[
+        {id:1,status:'failed',retryable:true},
+        {id:2,status:'partial_success',retryable:true},
+        {id:3,status:'cancelled',retryable:true},
+        {id:4,status:'stopped',retryable:true},
+        {id:5,status:'cancelled',display_status:'partial_success',retryable:true},
+        {id:6,status:'stopped',display_status:'failed',retryable:true},
+      ],
+    };
+    const cancelled=owner.state.batch.items[2]!;
+    await owner.executeAction('retryBatch');
+    expect(api.action).toHaveBeenCalledWith('/api/jobs/retry-bulk',{
+      job_ids:[1,2],
+      debug_enabled:false,
+    });
+
+    await owner.executeAction('retry',cancelled);
+    expect(api.action).toHaveBeenLastCalledWith('/api/jobs/3/retry',{debug_enabled:false});
+    await owner.executeAction('retryBulk',undefined,[5,6]);
+    expect(api.action).toHaveBeenLastCalledWith('/api/jobs/retry-bulk',{
+      job_ids:[5,6],
+      debug_enabled:false,
+    });
+    expect(confirm).toHaveBeenCalledTimes(3);
+    owner.setVisible(false);
+  });
   it('does not submit before registration eligibility is confirmed',async()=>{
     const api=apiFixture(),owner=makeOwner({api,visible:true});
     await expect(owner.create({count:1,workers:3,email_source:'outlook',debug_enabled:false})).rejects.toThrow('注册资格未确认');

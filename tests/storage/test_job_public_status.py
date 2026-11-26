@@ -77,6 +77,38 @@ class JobPublicStatusTests(PostgresTestCase):
         self.assertEqual(1, repository.dashboard_aggregates(public_status=True)["jobs"]["counts"]["partial_success"])
         self.assertEqual("attention_required", records.get_row(records.JOBS, partial_id)["status"])
 
+    def test_historical_twofa_failure_does_not_override_current_complete_account(self):
+        account_id = records.insert_row(records.ACCOUNTS, {
+            "email": "historical-twofa-failure@example.test",
+            "access_token": "current-token",
+            "extra_json": {
+                "account_password": "current-password",
+                "account_password_state": "confirmed",
+            },
+            "totp_secret": "current-totp",
+            "plan_check_status": "success",
+            "codex_status": "success",
+        })
+        job_id = records.insert_row(records.JOBS, {
+            "job_uuid": "historical-twofa-failure-job",
+            "email": "historical-twofa-failure@example.test",
+            "account_id": account_id,
+            "status": "partial_success",
+            "batch_id": "historical-twofa-failure-batch",
+            "data": {
+                "config_snapshot": {
+                    "password_enabled": True, "plan_check_enabled": True,
+                    "twofa_enabled": True, "codex_enabled": True,
+                },
+                "progress_steps": {"twofa": {"state": "failed", "detail": "历史失败"}},
+            },
+        })
+        listing = repository.list_jobs(
+            repository.PageRequest(filters={"id": str(job_id)}), view="table",
+        )
+        self.assertEqual("success", listing["items"][0]["display_status"])
+        self.assertEqual("partial_success", records.get_row(records.JOBS, job_id)["status"])
+
     def test_jobs_api_enables_public_queries_and_classifies_empty_error_messages(self):
         app = Flask("public-jobs")
         context = WebUIContext(app, logging.getLogger("public-jobs"))

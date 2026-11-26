@@ -597,6 +597,7 @@ def submit(
     completion_auth: bool = False,
     sub2api_targets: Mapping[str, Any] | None = None,
     config_snapshot: Mapping[str, Any] | None = None,
+    source_job_id: int | None = None,
 ) -> dict:
     """提交一个 Codex OAuth 逻辑任务和第一次 attempt。"""
     email = str(email or "").strip()
@@ -628,6 +629,7 @@ def submit(
                 "config_snapshot": snapshot,
                 **({"completion_auth": True} if completion_auth else {}),
                 **({"sub2api_targets": dict(sub2api_targets)} if sub2api_targets else {}),
+                **({"source_job_id": int(source_job_id)} if source_job_id is not None else {}),
             },
             idempotency_key=idempotency_key,
         )
