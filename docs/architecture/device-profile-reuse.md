@@ -1,18 +1,18 @@
 # 设备画像复用方案（讨论稿，2026-11-26）
 
-> 状态：方案讨论已完成，**未开发**。本文档是第一步（记录注册画像）的设计依据。
+> 状态：**未开发**。第一部分已定稿，第二部分待讨论。
+> 原则：先存后用；第一部分只记录，不改注册链路行为。
 
-## 0. 结论摘要
+## 0. 三步走
 
-- 复用画像的目的：让同一账号后续的刷新 / 改密 / 登录沿用**上一次真实用过的设备**，
-  避免"换设备 + 敏感操作"触发 OpenAI 的 24 小时 `sensitive_action_cooldown`。
-- 复用的前提是**存的是真画像**：必须记录驱动**实际发出**的那一套，而不是本地占位会话的画像。
-- 三种驱动的画像格式**不一致**（字段名、字段集、来源都不同），需要一层 canonical 归一。
-- 版本号原样保留，不做降级；TLS 档位由画像决定，UA 不改。
+1. **第一部分：原样存储**（本文档重点）——注册成功后把驱动实际用的画像原样存库，不做归一、不推导
+2. **第二部分：回放**——刷新/改密等操作复用画像（待讨论）
+3. **第三步：回填 + 观测 + 对照实验**（待讨论）
+
+目标：让同一账号后续操作沿用上一次真实设备，避免"换设备 + 敏感操作"触发
+OpenAI 的 24 小时 `sensitive_action_cooldown`。
 
 ## 1. 实测现状（2026-11-26）
-
-### 1.1 账号分布
 
 | 注册驱动 | 账号数 | 画像来源 | 真实 UA 系统 |
 |---|---|---|---|
@@ -20,213 +20,155 @@
 | `protocol_oss_2` | 5,241 | 上游引擎（真） | Windows Chrome |
 | 无/历史 | 14 | 无 | — |
 
-抽样 800 条：`browser_type` 全部为 `chrome`；`protocol_oss_2` 全部 Windows，
-`sentinel_rs` 全部 macOS（占位）。全库 **0 条 Safari 画像**。
-
-### 1.2 已有的冷却证据
-
-- 4 个"刷新 AT（新设备登录）→ 立刻改密"的账号：**4/4** 返回
-  `403 sensitive_action_cooldown`（`cooldownAction=password_reset`，24 小时）
-- 7 个"会话仍有效（同设备，无新登录）→ 改密"的账号：**7/7** 成功
-
-结论：触发点是**设备变化**，不是设备未变。
-
-### 1.3 传输层能力（决定能否原样回放）
-
-| 栈 | 组件 | 最高 Chrome 档位 |
-|---|---|---|
-| 协议注册（上游引擎） | Python `wreq` | Chrome154（含 152/153） |
-| rust sentinel-rs | `wreq 0.16.1` + `wreq-util 0.2.0` | **Chrome149** |
-| Python BrowserSession | `curl_cffi 0.16.0` | **Chrome146** |
-
-- 协议注册画像：UA 写 `152.0.0.0`，`impersonate=chrome152`，**传输层真的能发 152**（wreq）
-- 若用 rust 或 curl_cffi 回放同一画像，TLS 只能到 149/146 → 会出现"UA 152 + TLS 149"的错位
+- 抽样 800 条：`browser_type` 全部为 `chrome`；全库 0 条 Safari 画像
+- 冷却证据：4 个"刷新 AT 后立刻改密"的账号 4/4 命中 24h 冷却；
+  7 个"会话有效、同设备改密"的账号 7/7 成功 → 触发点是设备变化
 
 ## 2. 三种驱动的画像来源
 
 ### 2.1 浏览器（Roxy）
-
-- 本地**没有指纹字段**，只有绑定关系：`extra_json.roxybrowser = {profile_id, retained, window_name, ...}`
-- 指纹（UA / 屏幕 / WebGL / 时区）保存在 Roxy 客户端内部的 Profile 里
-- 创建时可控的字段只有：`os`（Windows/macOS/Linux/IOS/Android）、`osVersion`、`windowName`、代理
-- 复用语义：**重新打开同一个 `profile_id`**，而不是回灌字段
-- 本机浏览器能力关闭，库内 0 个 roxy 注册账号
+- 本地只有绑定：`extra_json.roxybrowser = {profile_id, retained, window_name, ...}`
+- `/browser/list_v2` 可返回：`dirId`、`windowName`、`os`、`osVersion`
+- UA / 屏幕 / WebGL 在 Roxy 客户端内部，接口不返回
+- 复用语义：重新打开同一 `profile_id`
 
 ### 2.2 协议（`protocol_oss_2` 上游引擎）
-
-- 生成：`generate_fingerprint(country_code, browser_family)`，`browser_family ∈ {chrome, safari}`
-  - `chrome` → 仅 `chrome`（Windows Chrome）
+- 生成：`generate_fingerprint(country_code, browser_family)`，40 个字段
+  - `chrome` → Windows Chrome（UA 152，`impersonate=chrome146/145`，上游再覆写为 `chrome152`）
   - `safari` → `mac_safari` / `ios_safari`
-- 版本池：`ua_ver=152.0.0.0`，`impersonate=chrome146/145`（上游配置里再被覆写为 `chrome152`）
-- 落库：注册生命周期把 `session.browser_profile` 写进 `registered_accounts.data.extra_json.browser_profile`
-- 字段数：74（含别名、TLS/Akamai 摘要、react key）
-- **脏字段**：`browser_os=macOS`（残留）、`webgl_renderer=Apple Metal`（与 Windows UA 矛盾）
+- 传输：Python `wreq`，支持到 Chrome154 → 152 是真实能力
+- 落库：注册生命周期把 `session.browser_profile`（74 字段）写进
+  `registered_accounts.data.extra_json.browser_profile`
+- 已知缺陷：见 §4（Windows/macOS 串值）
 
 ### 2.3 rust（`sentinel-rs`）
-
-- 生成：`DeviceFingerprint::generate_for_country(seed=device_id, country)`，**仅 Windows Chrome**
-  - UA：`Windows NT 10.0; Win64; x64 ... Chrome/146.0.0.0`
-  - platform：`Win32`；`sec-ch-ua-platform: "Windows"`；arch `x86`
-  - TLS：wreq 档位 `Chrome140/145/146/149`
+- 生成：`DeviceFingerprint::generate_for_country(seed=device_id, country)`，仅 Windows Chrome
+- 传输：`wreq 0.16.1 + wreq-util 0.2.0`，最高 Chrome149
 - 注册：**不回传**画像与 device_id（结果只有 email/password/AT/2FA/cookies）
-- 刷新：已支持回传 `browser_profile`（`python_profile()`，39 字段）
-- 落库的注册画像是 Python 占位会话（macOS），不是它真正用的 Windows
+- 刷新：已回传 `browser_profile`（`python_profile()`）
+- 当前落库的注册画像是 Python 占位会话（macOS），不是真实设备
 
-## 3. 字段格式比对
+## 3. 第一部分：原样存储（定稿）
 
-### 3.1 三份字段集合
+### 3.1 存什么
 
-| 分组 | Roxy | 协议（74） | rust（39） |
-|---|---|---|---|
-| 设备标识 | `profile_id` | `device_id`(账号级) | `device_id` |
-| 系统 | `os`、`osVersion` | `browser_os`(脏)、`browser_type` | `browser_os`、`device_os` |
-| UA / 版本 | 由 Profile 决定，不落本地 | `user_agent`、`chrome_major`、`chrome_full_version` | 同左 |
-| client hints | 无 | `sec_ch_ua*` 全套 | `sec_ch_ua*` 全套 |
-| navigator | 无 | `navigator_platform/vendor/languages` | 同左 |
-| 屏幕/硬件 | 无 | `screen_*`、`outer_*`、`viewport_*`、`dpr`、`cores`、`memory`、`heap` | 同左 |
-| WebGL | 无 | `webgl_*`（值错） | **缺失**（要按 OS 补默认） |
-| 语言/时区 | 无 | `timezone_*`、`navigator_language*` | 同左 |
-| 别名 | 无 | `lang`、`lang_full`、`languages`、`locale`、`timezone`、`screen`(str)、`viewport`(dict)、`ua_arch`、`ua_bitness`、`ua_model`、`ua_platform_version`、`ua_full_version_list`、`browser_version` | 无 |
-| TLS 传输 | 无 | `impersonate`、`fallback_impersonates`、`tls_fp`、`akamai_fp`、`client_hints_high_entropy` | `impersonate` |
-| 元信息 | 无 | `fingerprint_id`、`country_code` | 无 |
-| 请求级（禁止复用） | 无 | `react_listening_key`、`react_container_key`、`react_resources_key` | 无 |
+驱动返回什么就存什么，**原始 JSON 原样保存**：
 
-### 3.2 结论：不一致，但可归一
-
-差异分四类：
-
-1. **命名差异**：协议用 `lang/lang_full/screen/viewport/ua_*`，rust 用 `navigator_*` / `sec_ch_ua_*`
-2. **缺失**：rust 没有 WebGL、没有 `tls_fp/akamai_fp`；Roxy 没有任何字段
-3. **脏值**：协议的 `browser_os`、`webgl_renderer` 与 UA 矛盾
-4. **请求级**：`react_*` 每次会话都变，必须排除
-
-处理方式：**canonical 字段 + 每个驱动一个 adapter**。
-
-### 3.3 字段模型（定稿）：canonical + raw
-
-存储分两层，职责不同：
-
-- **canonical（约 50 个）**：复用的唯一依据，必须完整、自洽
-- **raw（原始字典）**：驱动原生结构，只读追溯（含别名、诊断字段），不参与回放
-- **明确不存**：`react_listening_key`、`react_container_key`、`react_resources_key`（页面级随机）
-
-canonical 字段清单：
-
-- 标识：`device_id`
-- 引擎：`browser_family`、`browser_type`、`browser_os`、`chrome_major`、`chrome_full_version`
-- HTTP：`user_agent`、`accept_language`、`sec_ch_ua`、`sec_ch_ua_platform`、
-  `sec_ch_ua_platform_version`、`sec_ch_ua_arch`、`sec_ch_ua_bitness`、`sec_ch_ua_model`、
-  `sec_ch_ua_full_version_list`、`sec_ch_ua_mobile`、`send_client_hints`
-- navigator：`navigator_platform`、`navigator_vendor`、`user_agent_data_platform`、
-  `navigator_language`、`navigator_languages`、`max_touch_points`、`is_mobile`
-- 屏幕/硬件：`screen_width/height`、`screen_avail_*`、`outer_*`、`viewport_*`、`color_depth`、
-  `device_pixel_ratio`、`hardware_concurrency`、`device_memory`、`js_heap_size_limit`、
-  `webgl_vendor`、`webgl_renderer`
-- 语言/时区：`timezone_iana`、`timezone_name`、`timezone_offset_minutes`、`locale_profile`
-- 传输：`impersonate`、`fallback_impersonates`
-- 元信息：`country_code`
-
-### 3.4 adapter 规则（定稿）
-
-**协议 adapter（重点：空值回填）**
-
-实测 120 个协议账号，规范名字段全为空，真值在上游别名里：
-
-| canonical | 协议里的真值来源 |
+| 驱动 | 存储内容 |
 |---|---|
-| `sec_ch_ua_arch` | `ua_arch`（`x86`） |
-| `sec_ch_ua_bitness` | `ua_bitness`（`64`） |
-| `sec_ch_ua_model` | `ua_model`（`""`） |
-| `sec_ch_ua_platform_version` | `ua_platform_version`（`15.0.0`） |
-| `sec_ch_ua_full_version_list` | `ua_full_version_list` |
-| `screen_width/height` | `screen`（字符串 `1366x768`） |
-| `viewport_width/height` | `viewport`（对象 `{width,height}`） |
-| `navigator_language` | `lang` / `locale` |
-| `navigator_languages` | `languages` |
-| `accept_language` | `lang_full` |
-| `timezone_iana` | `timezone` |
+| protocol_oss_2 | `session.browser_profile` 全量 74 字段 |
+| sentinel_rs | 内核回传的画像结构（原样；待内核支持回传） |
+| roxy | `profile_id` + `list_v2` 返回字段 |
 
-规则：**canonical 为空时用别名回填；两者都有值但冲突时以别名（上游实际发送值）为准**。
-空 client hints 比不发更假，这一步不能省。
+### 3.2 只加元数据（不改原数据）
 
-**OS 一致性修正**：以 UA 判定 OS，重写 `browser_os`、`navigator_platform`、
-`sec_ch_ua_platform`、`user_agent_data_platform`、`sec_ch_ua_arch`；`webgl_*` 按 OS 给默认
-（Windows → D3D11 ANGLE，macOS → Apple Metal）。版本字段一律不动。
+- `driver`：`sentinel_rs` / `protocol_oss_2` / `roxy`
+- `source`：`registration`（后续有 `refresh_at` / `password_reset` 等）
+- `trust`：`trusted` / `placeholder`
+- `device_id`：从原数据读取
+- `family`、`os`：从 UA 读取，仅用于查询（不写回画像）
 
-**rust adapter**：字段已是 canonical 命名，直接映射；缺 `webgl_*` 时按 OS 补默认；
-回传时同时给 canonical 与 raw（rust 内部字段：`browser_version`、`emulation`、`lang`、
-`locale`、`lang_full`、`has_touch`、`viewport_w/h`、`timezone`、`fingerprint_id`、`country_code`）。
+### 3.3 表结构
 
-**Roxy adapter**：只写接口能拿到的字段（`profile_id`、`os`、`osVersion`、窗口名、时间），
-其余标 `unavailable`；代理凭据不存。
-
-## 4. 存储设计
-
-### 4.1 表 `account_device_profiles`（已建，需加列）
+`account_device_profiles`（已建，需补列）：
 
 | 列 | 说明 |
 |---|---|
-| `account_id` PK | 外键到 `registered_accounts`，级联删除 |
-| `normalized_email` | 与当前账号邮箱强绑定，换绑即失效 |
-| `encrypted_payload` | 加密 JSON：`{device_id, canonical, raw, browser_ref}` |
-| `source` | `registration` / `refresh_at` / `refresh_at_rust` / `password_reset` / `password_setup` / `backfill` |
-| `trust` | `trusted` / `placeholder` / `unusable`（新增列） |
-| `last_used_at` / `updated_at` | 观测用 |
+| `account_id` PK | 外键，级联删除 |
+| `normalized_email` | 与当前邮箱强绑定，换绑即失效 |
+| `encrypted_payload` | 加密的原始画像 JSON |
+| `driver` | 新增 |
+| `source` | 已有 |
+| `trust` | 新增 |
+| `device_id`、`family`、`os` | 新增，可检索 |
+| `last_used_at`、`updated_at` | 观测 |
 
-### 4.2 读取优先级
+### 3.4 写入点与侵入性
 
-```
-设备表 trusted → 账号 data.extra_json.browser_profile（规范化后可用才用）
-              → 设备表 placeholder（仅记录，不复用）
-              → 无画像（现场生成）
-```
-
-### 4.3 写入时机
-
-| 场景 | 写什么 | trust |
+| 驱动 | 是否需要改注册链路 | 说明 |
 |---|---|---|
-| 协议注册成功 | 上游真实画像（74 → canonical + raw） | trusted |
-| rust 注册成功 | rust 回传的 canonical + raw（需新增回传） | trusted |
-| rust 刷新成功 | rust 实际画像 | trusted |
-| 协议 v2/v3 刷新成功 | 会话画像 | trusted |
-| 改密/补密码成功 | 本次会话画像 | trusted |
-| 历史回填：协议号 | 归一后的注册画像 | trusted |
-| 历史回填：rust 号 | Python 占位 macOS 画像 | placeholder（不复用） |
-| 浏览器注册 | `profile_id` 等接口字段 | trusted（字段不全） |
+| protocol_oss_2 | 否 | 画像已在 `session.browser_profile`，落库后多写一行 |
+| roxy | 否 | 读绑定与 `list_v2`，多写一行 |
+| sentinel_rs | **是（最小）** | 需内核在结果 JSON 里增加画像字段；只加输出，不改注册流程 |
 
-失败一律只记日志，不阻断主流程。
+> 约束：老板暂不希望改注册链路。因此第一部分可先落 **协议 + 浏览器**；
+> rust 回传作为独立小改动，等批准后再做。
 
-## 5. 三步实施
+### 3.5 验收
 
-### 第一步：注册画像写入 + 格式归一（本文档范围，定稿）
+1. 注册成功后设备行存在
+2. 原始画像可解密、可完整还原（与源字段逐项相等）
+3. `device_id` 与账号记录一致
+4. 写失败只记日志，不影响注册结果
 
-1. 设备表加 `trust` 列；payload 改为 `{device_id, canonical, raw, browser_ref}`
-2. 实现 canonical 定义与三个 adapter（protocol / rust / roxy），含空值回填与 OS 一致性修正
-3. 注册写入点：
-   - 协议：落库后从 `session.browser_profile` 归一写入（数据现成）
-   - rust：内核回传 `device_id` + canonical + raw（第一步唯一代码缺口）
-   - 浏览器：写接口字段 + `profile_id`
-4. 校验标准：设备行存在、`trust=trusted`、`browser_os` 与 UA 一致、`webgl` 与 OS 一致、
-   `sec_ch_ua_arch` 等非空、无 `react_*`
-5. 上游生成器补 WebGL / `browser_os` 单独立项，不与本步混做
+### 3.6 明确不做
 
-### 第二步：复用
+- 不定义 canonical 字段
+- 不推导、不补值、不修正脏值
+- 不统一命名
+- 不存 `react_*` 请求级 key（会话级随机，存了也不能用；如需排查可临时记录，不落长期表）
 
-1. rust 支持"按画像回放"（`--device-profile` 文件）
-2. Python 侧读取优先级 + 临时文件传递
-3. TLS 档位：按画像 `impersonate`，不支持时按 `fallback_impersonates` 顺序挑
-4. 开关 `ACCOUNT_DEVICE_PROFILE_REPLAY_ENABLED`
+## 4. 已知缺陷：协议注册画像 Windows/macOS 串值（必修，独立立项）
 
-### 第三步：回填 + 观测 + 对照实验
+### 4.1 证据（账号 10570）
 
-1. 全量回填（协议 trusted / rust placeholder）
-2. 日志：`device/os/tls/trust/source`
-3. A/B：过期号各 20 个，复用 vs 新生成，比较成功率与 `sensitive_action_cooldown` 率
+```
+user_agent          = Mozilla/5.0 (Windows NT 10.0; Win64; x64) ... Chrome/152
+navigator_platform  = Win32
+sec-ch-ua-platform  = "Windows"
+browser_os          = macOS                    ← 矛盾
+webgl_renderer      = ANGLE (Apple, ... Apple M2)  ← 矛盾
+```
 
-## 6. 待定问题
+另：`sec_ch_ua_arch/bitness/model/platform_version/full_version_list` 全部为空字符串，
+真值在 `ua_arch/ua_bitness/ua_model/ua_platform_version/ua_full_version_list` 里
+（抽样 120 个协议账号，120 个都是这样）。
 
-1. **rust 传输栈升级**：`wreq-util 0.2.0` 只到 Chrome149，协议画像常是 152。
-   要么升级 rust 到 `wreq 6 + wreq-util 3`（有编译风险），要么接受"UA 152 + TLS 149"。
-2. **Safari 家族**：目前 0 个真实 Safari 画像；是否支持回放 Safari（rust 当前不支持）。
-3. **Roxy 画像细节**：接口不返回 UA/屏幕，只能存基本信息；是否需要额外手段补齐。
-4. **上游生成器补 WebGL**：单独立项，需重新验证注册成功率。
+### 4.2 成因
+
+1. 协议注册开始时 Python 先建本地会话，默认 macOS Chrome（`browser_os=macOS`、`webgl=Apple`）
+2. 上游生成 Windows Chrome 指纹后执行 `session.browser_profile.update(fingerprint)`
+3. 合并只覆盖上游存在的键：
+   - 上游没有 `browser_os` → 保留 macOS
+   - 上游没有 `webgl_*` → 保留 Apple
+   - 上游的 `sec_ch_ua_arch` 等为空字符串 → 覆盖成空
+
+### 4.3 影响
+
+- `browser_os`：不发给 OpenAI，只是内部标签 → 不影响风控，但会误导排查与后续复用判断
+- `webgl_renderer`：**会进入 sentinel token 的 JS 环境** → Windows UA 报 Apple GPU，
+  属于真实的不一致
+- `sec-ch-ua-*` 为空：若将来原样回放，会发出空 client hints，比不发更假
+
+### 4.4 修复方案
+
+- **A（先做，零链路风险）**：入库归一。写设备表时以 UA 判定 OS，重写
+  `browser_os`、`webgl_*`，并用 `ua_*` 回填空的 `sec_ch_ua_*`。只影响存储副本，
+  不改注册请求、不改 `session.browser_profile`
+- **B（后做，需验证）**：修上游生成器，给 chrome 画像补 WebGL，并让合并覆盖
+  `browser_os` 与空 client hints。会改变未来注册实际发送的 sentinel 内容，
+  必须单独验证注册成功率
+
+> 说明：A 修的是"记录准确"，B 修的是"请求本身"。当前 5,241 个历史号带着该组合
+> 注册成功，说明服务端暂未因此拦截；B 不应与第一部分混做。
+
+## 5. 第二部分：回放（待讨论，占位）
+
+- rust 需支持"按画像回放"（`--device-profile` 文件），当前只能生成 Windows Chrome
+- 传输档位差异：protocol wreq 152 / rust wreq-util 149 / curl_cffi 146
+- family 差异：chrome-windows 与 safari-macos / safari-ios 的必填与必空规则不同
+- canonical 与推导规则等"有具体调用方"时再定
+
+## 6. 第三步：回填 + 观测 + 对照实验（待讨论）
+
+- 历史回填：协议号 trusted；rust 号 placeholder（不复用）
+- 日志：`driver/device/os/tls/trust/source`
+- A/B：过期号各 20 个，复用 vs 新生成，比较成功率与冷却率
+- 开关：`ACCOUNT_DEVICE_PROFILE_REPLAY_ENABLED`
+
+## 7. 待定问题
+
+1. rust 回传需要动注册链路输出字段，何时批准
+2. rust 传输栈是否升级（149 → 152）
+3. 是否支持 Safari 家族回放
+4. 上游生成器修 webgl/OS 的排期与验证方式
