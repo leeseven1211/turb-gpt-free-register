@@ -208,15 +208,14 @@ def run_protocol_password_reset(
         note("password_reset", "已进入密码重置页面")
         # 记住这次改密实际使用的设备（Python 协议画像），下次刷新/改密可原样复用。
         try:
-            from core.kernels.protocol.local.refresh_at.v3 import _cookie_payload
+            from core.accounts.liveness.protocol import v3 as _v3
 
-            protocol_sessions.save_session(
-                int(account.get("id") or 0), email,
-                _cookie_payload(session, {"user": {"id": account.get("user_id") or ""},
-                                          "account": {"id": account.get("chatgpt_account_id") or ""}}),
-            )
+            payload = _v3._cookie_payload(session, {"user": {"id": account.get("user_id") or ""},
+                                                  "account": {"id": account.get("chatgpt_account_id") or ""}})
+
+            protocol_sessions.save_session(int(account.get("id") or 0), email, payload)
         except Exception:
-            logger.warning("[改密] 设备画像缓存保存失败", exc_info=False)
+            logger.warning("[改密] 设备画像缓存保存失败", exc_info=True)
 
         from config import email as email_cfg
 
