@@ -296,6 +296,7 @@ _DEFAULTS: dict[str, Any] = {
     "REGISTER_EMAIL": "",
     "REGISTER_NAME": "",
     "OTP_MAX_WAIT": 240,
+    "OTP_MAX_ATTEMPTS": 1,
     "OTP_POLL_INTERVAL": 3,
     "EMAIL_SOURCE": "outlook,generic_api,mailnest",
     "EMAIL_DERIVATION_ENABLED": False,
@@ -1060,6 +1061,11 @@ _FIELD_DEFINITIONS = [
     {
         "key": "REGISTER_NAME", "file": "register.py", "type": "str", "group": "注册主链路",
         "label": "显示名称", "help": "留空则自动生成英文名",
+    },
+    {
+        "key": "OTP_MAX_ATTEMPTS", "file": "email.py", "type": "int", "group": "邮箱 / OTP",
+        "label": "验证码等待次数",
+        "help": "同一次注册/续跑最多等待几轮验证码；每轮等待 OTP_MAX_WAIT 秒，超时后重发再等。默认 1 表示只等一次、不重发。",
     },
     {
         "key": "OTP_MAX_WAIT", "file": "email.py", "type": "int", "group": "邮箱 / OTP",
@@ -2015,6 +2021,7 @@ _RANGES: dict[str, tuple[int | float | None, int | float | None]] = {
     "ROXY_CREATE_INTERVAL": (0, 3600),
     "ROXY_CODEX_CALLBACK_TIMEOUT": (1, 86400),
     "OTP_MAX_WAIT": (1, 86400),
+    "OTP_MAX_ATTEMPTS": (1, 10),
     "OTP_POLL_INTERVAL": (1, 3600),
     "EMAIL_DERIVATION_MAX_CHILDREN": (1, 10000),
     "EMAIL_DERIVATION_TAG_LENGTH": (4, 24),
