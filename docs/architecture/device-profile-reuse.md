@@ -163,7 +163,13 @@ webgl_renderer      = ANGLE (Apple, ... Apple M2)  ← 矛盾
 - **每个内核只回放自己的画像**，不做跨内核回放（后续再议）
 - 每个账号的 `replay_kernel` 固定，不动态切换
 
-### 5.2 硬约束（实测）
+### 5.2 已定方向：改密内核与注册驱动对齐
+
+- `protocol_oss_2` 注册的号：改密走协议引擎的 **wreq 传输**（TLS 152 可原样）
+- `sentinel_rs` 注册的号：改密走 **rust 内核**（当前 Rust 没有改密流程，需新增）
+- 不再用"改密固定走 curl_cffi 146"的默认路径
+
+### 5.3 硬约束（实测）
 
 - 协议注册画像：UA/TLS 均为 Chrome152，只有 Python wreq 能跑（支持到 154）
 - rust 注册画像：TLS ≤149，但**注册未回传**，目前没有真实画像可回放
@@ -172,10 +178,12 @@ webgl_renderer      = ANGLE (Apple, ... Apple M2)  ← 矛盾
 结论：即使"只用自己内核"，协议号改密要 L2 一致，也必须让改密走 wreq 传输；
 否则只能 L1 近似（UA 152 + TLS 146）。
 
-### 5.3 待定
+### 5.4 待定
 
-- 改密是否改用 wreq 传输（达成 L2），或先接受 146 近似（L1）
-- rust 号暂无真实画像，是否等注册回传后再纳入
+- 协议号改密接入 wreq 的工作量与排期（需覆盖 Cookie / sentinel / 重定向 / OTP）
+- rust 号：Rust 目前无改密流程；且注册指纹种子来自环境/随机（`SENTINEL_FP_SEED`），
+  未记录、不可还原，只能从首次刷新（seed=device_id）起固定，不能还原注册那套
+- rust 号是否等"注册回传画像/种子"后再纳入（需改注册链路，暂不允许）
 - family 差异（chrome-windows / safari-macos / safari-ios）在回放时的必填必空规则
 
 ## 6. 第三步：回填 + 观测 + 对照实验（待讨论）
