@@ -1,13 +1,13 @@
-import { B as e, C as t, F as n, G as r, H as i, K as a, L as o, Q as s, S as c, X as l, _ as u, d, dt as f, et as p, ft as m, g as h, h as g, j as _, k as v, l as y, lt as b, m as x, n as S, s as C, st as w, v as T, x as E } from "./_plugin-vue_export-helper-BSZsFlS8.js";
+import { B as e, C as t, F as n, G as r, H as i, K as a, L as o, Q as s, S as c, X as l, _ as u, d, dt as f, et as p, ft as m, g as h, h as g, j as _, k as v, l as y, lt as b, m as x, n as S, s as C, st as w, v as T, x as E } from "./_plugin-vue_export-helper-CBsH_ZoE.js";
 import { n as D, r as O, t as k } from "./client-B5R_MNgP.js";
 import { a as A, i as j, r as M, t as N } from "./bulkMutations-3wwPI3-H.js";
-import { a as ee, c as P, i as F, n as I, o as te, r as L, s as ne, t as re } from "./ListFilterSummary-C8E03t1K.js";
-import { t as R } from "./ListResult-vTCwrpvd.js";
-import { t as z } from "./ListPagination-DkDYBtdx.js";
+import { a as ee, c as P, i as F, n as I, o as te, r as L, s as ne, t as re } from "./ListFilterSummary-C1Al5Lxz.js";
+import { t as R } from "./ListResult-QC9hZL-_.js";
+import { t as z } from "./ListPagination-CSFkV2Gz.js";
 import { n as ie, t as B } from "./time-DOD6oyhP.js";
-import { n as ae, t as V } from "./ColumnResizer-CeJz-bAa.js";
-import { t as oe } from "./ListToolbar-DqocWBBC.js";
-import { t as se } from "./useNativeDialog-DWisXYg9.js";
+import { n as ae, t as V } from "./ColumnResizer-DnqXkWpl.js";
+import { t as oe } from "./ListToolbar-ChntcbFd.js";
+import { t as se } from "./useNativeDialog-BgHdu813.js";
 import { r as ce } from "./taskIds-BlchWwUp.js";
 // src/features/email/presentation.ts
 var H = {
@@ -975,7 +975,7 @@ var Te = ["aria-busy"], Ee = { class: "em-heading" }, De = ["disabled"], Oe = {
 			"aria-busy": t.loading
 		}, [
 			g("div", Ee, [a[5] ||= g("div", null, [g("h2", null, "本地邮箱库存"), g("p", null, "仅从本地库存领取邮箱，用完后请从 Butler 或其他来源手动导入。")], -1), g("button", {
-				class: "em-button",
+				class: "em-button ui-refresh-button",
 				disabled: t.loading,
 				onClick: a[0] ||= (e) => s("refresh")
 			}, m(t.loading ? "刷新中…" : "刷新资源"), 9, De)]),

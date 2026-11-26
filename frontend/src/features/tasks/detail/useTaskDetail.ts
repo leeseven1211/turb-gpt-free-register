@@ -42,6 +42,14 @@ export function useTaskDetail(api: DetailApi = tasksApi, onTerminal: () => void 
   let eventRequest = 0;
   let logRequest = 0;
   let refreshRequest = 0;
+  let eventReadPending = false;
+  let logReadPending = false;
+  let eventReadSilent = false;
+  let logReadSilent = false;
+  let pendingEvents: Promise<void> | null = null;
+  let pendingLogs: Promise<void> | null = null;
+  let eventsLoadedRun: TaskId | null = null;
+  let logsLoadedRun: TaskId | null = null;
   let pendingRefresh: Promise<void> | null = null;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let controller = new AbortController();
@@ -53,6 +61,9 @@ export function useTaskDetail(api: DetailApi = tasksApi, onTerminal: () => void 
     controller.abort();
     controller = new AbortController();
     pendingRefresh = null;
+    eventReadPending = logReadPending = false;
+    eventReadSilent = logReadSilent = false;
+    pendingEvents = pendingLogs = null;
     loading.value = eventsLoading.value = logsLoading.value = false;
     stopTimer();
   }
@@ -65,6 +76,10 @@ export function useTaskDetail(api: DetailApi = tasksApi, onTerminal: () => void 
   function clearRun() {
     eventRequest += 1;
     logRequest += 1;
+    eventReadPending = logReadPending = false;
+    eventReadSilent = logReadSilent = false;
+    pendingEvents = pendingLogs = null;
+    eventsLoadedRun = logsLoadedRun = null;
     eventsLoading.value = logsLoading.value = false;
     progress.value = null;
     progressError.value = eventsError.value = logsError.value = '';
@@ -76,9 +91,13 @@ export function useTaskDetail(api: DetailApi = tasksApi, onTerminal: () => void 
     logsAvailable.value = true;
   }
 
-  async function loadEvents(mode: ReadMode = 'incremental') {
+  function loadEvents(mode: ReadMode = 'incremental', silent = false): Promise<void> | undefined {
     if (!canRead() || !runId.value || !taskId.value) return;
-    if (mode === 'incremental' && eventsLoading.value) return;
+    if (mode === 'incremental' && eventReadPending) {
+      if (!eventReadSilent) return;
+      if (!silent) eventsLoading.value = true;
+      return pendingEvents || Promise.resolve();
+    }
     if (mode === 'incremental' && eventsMode.value === 'start' && eventsMore.value) return;
     if (mode === 'next' && !eventsMore.value) return;
     const version = generation;
@@ -86,29 +105,46 @@ export function useTaskDetail(api: DetailApi = tasksApi, onTerminal: () => void 
     const first = mode === 'tail' || mode === 'start' || eventCursor.value === null;
     const query = { limit: 500, ...(mode === 'start' ? { after_id: 0 }
       : mode !== 'tail' && eventCursor.value !== null ? { after_id: eventCursor.value } : {}) };
-    eventsLoading.value = true;
-    try {
-      const result = await api.events(taskId.value, runId.value, query, controller.signal);
-      if (!current(version) || request !== eventRequest) return;
-      events.value = first ? result.items : mergeEvents(events.value, result.items);
-      eventCursor.value = result.next_after_id;
-      if (mode === 'tail' || mode === 'start') eventsMode.value = mode;
-      // 最近页的 has_more 指向更早历史，不能拿 forward cursor 继续翻它。
-      if (first && eventsMode.value === 'tail') {
-        eventsEarlier.value = result.has_more;
-        eventsMore.value = false;
-      } else {
-        eventsMore.value = result.has_more;
-        if (eventsMode.value === 'start') eventsEarlier.value = false;
+    eventReadPending = true;
+    eventReadSilent = silent;
+    if (!silent) eventsLoading.value = true;
+    pendingEvents = (async () => {
+      try {
+        const result = await api.events(taskId.value!, runId.value!, query, controller.signal);
+        if (!current(version) || request !== eventRequest) return;
+        events.value = first ? result.items : mergeEvents(events.value, result.items);
+        eventCursor.value = result.next_after_id;
+        eventsLoadedRun = runId.value;
+        if (mode === 'tail' || mode === 'start') eventsMode.value = mode;
+        // 最近页的 has_more 指向更早历史，不能拿 forward cursor 继续翻它。
+        if (first && eventsMode.value === 'tail') {
+          eventsEarlier.value = result.has_more;
+          eventsMore.value = false;
+        } else {
+          eventsMore.value = result.has_more;
+          if (eventsMode.value === 'start') eventsEarlier.value = false;
+        }
+        eventsError.value = '';
+      } catch (cause) { if (current(version) && request === eventRequest) eventsError.value = message(cause); }
+      finally {
+        if (current(version) && request === eventRequest) {
+          eventReadPending = false;
+          eventReadSilent = false;
+          pendingEvents = null;
+          eventsLoading.value = false;
+        }
       }
-      eventsError.value = '';
-    } catch (cause) { if (current(version) && request === eventRequest) eventsError.value = message(cause); }
-    finally { if (current(version) && request === eventRequest) eventsLoading.value = false; }
+    })();
+    return pendingEvents;
   }
 
-  async function loadLogs(mode: ReadMode = 'incremental') {
+  function loadLogs(mode: ReadMode = 'incremental', silent = false): Promise<void> | undefined {
     if (!canRead() || !runId.value || !taskId.value) return;
-    if (mode === 'incremental' && logsLoading.value) return;
+    if (mode === 'incremental' && logReadPending) {
+      if (!logReadSilent) return;
+      if (!silent) logsLoading.value = true;
+      return pendingLogs || Promise.resolve();
+    }
     if (mode === 'incremental' && logsMode.value === 'start' && logsMore.value) return;
     if (mode === 'next' && !logsMore.value) return;
     const version = generation;
@@ -116,20 +152,33 @@ export function useTaskDetail(api: DetailApi = tasksApi, onTerminal: () => void 
     const first = mode === 'tail' || mode === 'start' || logCursor.value === null;
     const query = { limit: 500, ...(mode === 'start' ? { cursor: 0 }
       : mode !== 'tail' && logCursor.value !== null ? { cursor: logCursor.value } : {}) };
-    logsLoading.value = true;
-    try {
-      const result = await api.logs(taskId.value, runId.value, query, controller.signal);
-      if (!current(version) || request !== logRequest) return;
-      logs.value = first ? result.items : [...logs.value, ...result.items];
-      logCursor.value = result.next_cursor;
-      if (mode === 'tail' || mode === 'start') logsMode.value = mode;
-      logsMore.value = result.has_more;
-      // 文件尾读不返回起始字节，提供明确的从头入口而不猜是否还有早期行。
-      logsEarlier.value = logsMode.value === 'tail' && result.available;
-      logsAvailable.value = result.available;
-      logsError.value = '';
-    } catch (cause) { if (current(version) && request === logRequest) logsError.value = message(cause); }
-    finally { if (current(version) && request === logRequest) logsLoading.value = false; }
+    logReadPending = true;
+    logReadSilent = silent;
+    if (!silent) logsLoading.value = true;
+    pendingLogs = (async () => {
+      try {
+        const result = await api.logs(taskId.value!, runId.value!, query, controller.signal);
+        if (!current(version) || request !== logRequest) return;
+        logs.value = first ? result.items : [...logs.value, ...result.items];
+        logCursor.value = result.next_cursor;
+        logsLoadedRun = runId.value;
+        if (mode === 'tail' || mode === 'start') logsMode.value = mode;
+        logsMore.value = result.has_more;
+        // 文件尾读不返回起始字节，提供明确的从头入口而不猜是否还有早期行。
+        logsEarlier.value = logsMode.value === 'tail' && result.available;
+        logsAvailable.value = result.available;
+        logsError.value = '';
+      } catch (cause) { if (current(version) && request === logRequest) logsError.value = message(cause); }
+      finally {
+        if (current(version) && request === logRequest) {
+          logReadPending = false;
+          logReadSilent = false;
+          pendingLogs = null;
+          logsLoading.value = false;
+        }
+      }
+    })();
+    return pendingLogs;
   }
 
   async function refreshProgress(version: number) {
@@ -146,17 +195,17 @@ export function useTaskDetail(api: DetailApi = tasksApi, onTerminal: () => void 
   function requestRefresh(automatic: boolean) {
     if (!canRead() || !taskId.value) return Promise.resolve();
     // 自动轮询保留界面状态；手动刷新可等待同一请求并显示加载反馈。
-    if (!automatic) loading.value = true;
+    if (!automatic || !task.value) loading.value = true;
     if (pendingRefresh) return pendingRefresh;
     const version = generation;
     const request = ++refreshRequest;
-    pendingRefresh = readDetail(version, request).finally(() => {
+    pendingRefresh = readDetail(version, request, automatic).finally(() => {
       if (current(version) && request === refreshRequest) { pendingRefresh = null; loading.value = false; schedule(); }
     });
     return pendingRefresh;
   }
 
-  async function readDetail(version: number, request: number) {
+  async function readDetail(version: number, request: number, automatic: boolean) {
     if (!taskId.value) return;
     stopTimer();
     try {
@@ -175,7 +224,10 @@ export function useTaskDetail(api: DetailApi = tasksApi, onTerminal: () => void 
       if (next !== runId.value) { clearRun(); runId.value = next; }
       error.value = '';
       if (runId.value) {
-        await Promise.allSettled([refreshProgress(version), loadEvents(), ...(tab.value === 'logs' ? [loadLogs()] : [])]);
+        const eventsSilent = automatic && sameTaskId(eventsLoadedRun, runId.value);
+        const logsSilent = automatic && sameTaskId(logsLoadedRun, runId.value);
+        await Promise.allSettled([refreshProgress(version), loadEvents('incremental', eventsSilent),
+          ...(tab.value === 'logs' ? [loadLogs('incremental', logsSilent)] : [])]);
       }
       if (!current(version)) return;
       if (!isActive(result.task) && !terminalNotified) { terminalNotified = true; onTerminal(); }
@@ -213,7 +265,7 @@ export function useTaskDetail(api: DetailApi = tasksApi, onTerminal: () => void 
     if (visible.value === value) return;
     visible.value = value;
     if (!value) invalidate();
-    else if (opened.value) void refresh();
+    else if (opened.value) void requestRefresh(true);
   }
   onScopeDispose(close);
   return { opened, taskId, runId, task, runs, selectedRun, progress, events, logs, tab, stepFilter,

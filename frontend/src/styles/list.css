@@ -325,6 +325,13 @@
 
 .ui-button:disabled { cursor: default; }
 
+/* 刷新文案切换时预留相同宽度，避免工具栏在临界宽度下反复换行。 */
+button.ui-refresh-button {
+  box-sizing: border-box;
+  min-width: 96px;
+  flex-shrink: 0;
+}
+
 /* Text actions inside rows and toolbars. */
 .ui-link {
   display: inline-flex;

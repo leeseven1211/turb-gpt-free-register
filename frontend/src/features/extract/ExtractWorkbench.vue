@@ -54,7 +54,7 @@ function setVisible(v:boolean){visible.value=v;work.setVisible(v);if(!v){openFil
     </div>
    </div>
    <div class="extract-toolbar-actions">
-    <button type="button" class="ui-button" @click="refresh">刷新</button>
+    <button type="button" class="ui-button ui-refresh-button" @click="refresh">刷新</button>
     <button type="button" class="ui-button" @click="work.exportRows(true)">导出当前筛选</button>
     <button type="button" class="ui-button ui-button--primary" @click="openCreate">新建批次</button>
    </div>

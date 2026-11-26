@@ -136,7 +136,7 @@ def _bound_reference(data: dict, *, expected_email: str, conn=None, for_update: 
     return reference
 
 
-def _commit_upload(context, data: dict) -> str:
+def _commit_upload(context, data: dict, result: dict) -> str:
     """在短事务中锁定原 ID/代际，合并两个计数并读回，避免标记同名新凭证。"""
     fence = context.execution_fence if context.account_id else None
     with records.transaction() as conn, conn.cursor() as cur:
@@ -150,6 +150,9 @@ def _commit_upload(context, data: dict) -> str:
         changes = {"exported_count": int(reference.get("exported_count") or 0) + 1,
                    "sub2_uploaded_count": int(reference.get("sub2_uploaded_count") or 0) + 1,
                    "exported_at": now, "sub2_uploaded_at": now, "sub2_sync_error": None, "updated_at": now}
+        remote_id = result.get("sub2api_account_id")
+        if type(remote_id) is int and remote_id > 0:
+            changes.update(sub2api_account_id=remote_id, sub2api_backend_identity=data["backend_identity"])
         if not records.patch_row(records.CODEX_CREDENTIALS, int(reference["id"]), changes, conn=conn):
             raise ManualUploadError("sub2api_manual_local_writeback_failed", "原凭证上传状态未写回", stage="local_writeback")
         confirmed = _bound_reference(data, expected_email=context.email, conn=conn)
@@ -185,7 +188,7 @@ def _handle(context):
                                            detail={"remote_result_confirmed": True})
             stage = "local_writeback"
             context.checkpoint()
-            filename = _commit_upload(context, data)
+            filename = _commit_upload(context, data, result)
             context.remote_request_receipt(outcome="confirmed", receipt_state="confirmed", detail={
                 "remote_result_confirmed": True, "local_business_writeback_confirmed": True,
                 "local_readback_confirmed": True,

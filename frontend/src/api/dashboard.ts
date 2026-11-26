@@ -6,6 +6,7 @@ export interface DashboardApi {
  dashboard(signal?:AbortSignal):Promise<any>;
  capabilities(signal?:AbortSignal):Promise<any>;
  extractSummary?(signal?:AbortSignal):Promise<any>;
+ registrationDaily?(dateFrom?:string,dateTo?:string,signal?:AbortSignal):Promise<any>;
 }
 
 async function waitForSharedCapabilities(pending:Promise<unknown>, signal?:AbortSignal):Promise<unknown> {
@@ -31,6 +32,13 @@ export function createDashboardApi(
  return {
   dashboard:(signal)=>get('/api/dashboard',signal),
   extractSummary:(signal)=>get('/api/extract-workbench/summary',signal),
+  registrationDaily:(dateFrom,dateTo,signal)=>{
+   const params=new URLSearchParams();
+   if(dateFrom)params.set('date_from',dateFrom);
+   if(dateTo)params.set('date_to',dateTo);
+   const suffix=params.toString()?`?${params.toString()}`:'';
+   return get(`/api/dashboard/registration-daily${suffix}`,signal);
+  },
   async capabilities(signal){
    const pending = pendingCapabilities?.();
    if (!pending) return get('/api/capabilities', signal);

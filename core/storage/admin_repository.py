@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import datetime
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -15,7 +16,7 @@ from psycopg.rows import dict_row
 
 from core.storage import postgres as postgres_store, records as record_store
 from core.storage.task_query_context import MISSING_SCHEMA_ERRORS, readonly_task_query
-from core.accounts.search import REGISTRATION_DRIVERS, parse_account_search
+from core.accounts.search import REGISTRATION_DRIVERS, parse_account_search, parse_registration_date_range
 from core.operations.presentation import public_result_status, public_result_status_sql
 
 
@@ -49,14 +50,14 @@ def _text(value: Any) -> str:
 
 
 _SUB2API_ID_SQL = """
-CASE
+COALESCE(NULLIF(BTRIM(CASE
     WHEN jsonb_typeof(a.data->'extra_json') = 'object'
         THEN (a.data->'extra_json')->>'sub2api_account_id'
     WHEN jsonb_typeof(a.data->'extra_json') = 'string'
          AND LEFT(BTRIM(a.data->>'extra_json'), 1) = '{'
         THEN ((a.data->>'extra_json')::jsonb)->>'sub2api_account_id'
     ELSE NULL
-END
+END), ''), NULLIF(BTRIM(c.data->>'sub2api_account_id'), ''))
 """
 
 # 沿用历史导出语义：下载、已确认上传或远端关联任一事实成立即计入。
@@ -435,6 +436,191 @@ def _promotion_dynamic_facet_sql(
     return sql, params
 
 
+def _registration_cohort_source_sql(*, date_range: tuple[str, str] | None = None) -> str:
+    """返回注册任务到账号的共享归属投影，不读取账号凭据 JSON。"""
+    jobs = _q(record_store.JOBS)
+    accounts = _q(record_store.ACCOUNTS)
+    attempts = postgres_store.qualified("registration_attempts")
+    local_offset = datetime.now().astimezone().utcoffset()
+    offset_seconds = int(local_offset.total_seconds()) if local_offset else 0
+    local_offset_sql = f"{offset_seconds} seconds"
+    timestamp_value = "NULLIF(BTRIM(j.created_at), '')"
+    created_at = f"""CASE
+        WHEN {timestamp_value} ~ '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}[T ](0[0-9]|1[0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]([.][0-9]{{1,6}})?([zZ]|[+-](0[0-9]|1[0-4]):?[0-5][0-9])?$'
+         AND pg_input_is_valid({timestamp_value}, 'timestamp with time zone')
+        THEN CASE WHEN {timestamp_value} ~ '([zZ]|[+-][0-9]{{2}}:?[0-9]{{2}})$'
+            THEN {timestamp_value}::timestamptz
+            ELSE ({timestamp_value}::timestamp AT TIME ZONE INTERVAL '{local_offset_sql}') END
+        ELSE NULL
+    END"""
+    date_predicates = [
+        "LOWER(COALESCE(NULLIF(BTRIM(j.job_type), ''), 'registration')) IN "
+        "('registration', 'registration_resume')",
+    ]
+    if date_range is not None:
+        date_predicates.extend((
+            f"(({created_at}) AT TIME ZONE 'Asia/Shanghai')::date >= %s::date",
+            f"(({created_at}) AT TIME ZONE 'Asia/Shanghai')::date <= %s::date",
+        ))
+    base_where = " AND ".join(date_predicates)
+    return f"""
+        WITH base AS MATERIALIZED (
+            SELECT j.id AS job_id, j.status,
+                   COALESCE(NULLIF(j.data->>'requested_status', ''),
+                            NULLIF(j.data #>> '{{result_summary,requested_status}}', '')) AS requested_status,
+                   j.batch_id, j.email AS job_email,
+                   j.account_id AS job_account_id, j.attempt_id, j.root_job_id,
+                   j.job_email_source AS job_email_source,
+                   j.job_config_password_enabled, j.job_config_plan_check_enabled,
+                   j.job_config_twofa_enabled, j.job_config_codex_enabled,
+                   ({created_at} AT TIME ZONE 'Asia/Shanghai')::date AS task_date,
+                   root.id AS root_id, root.attempt_id AS root_attempt_id,
+                   root.email AS root_email, root.job_email_source AS root_email_source,
+                   root.root_job_id AS root_root_job_id,
+                   root.account_id AS root_account_id,
+                   att.id AS attempt_row_id, att.email_snapshot AS attempt_email_snapshot,
+                   att.email AS attempt_email, att.email_source AS attempt_email_source,
+                   att.root_job_id AS attempt_root_job_id,
+                   att.source_root_job_id AS attempt_source_root_job_id,
+                   att.account_id AS attempt_account_id
+              FROM {jobs} j
+              LEFT JOIN {jobs} root
+                ON root.id = COALESCE(j.root_job_id, j.id)
+              LEFT JOIN {attempts} att ON att.id = j.attempt_id
+             WHERE {base_where}
+        ), verified AS MATERIALIZED (
+            SELECT base.*,
+                   CASE WHEN base.attempt_id IS NULL THEN TRUE ELSE (
+                       base.attempt_row_id = base.attempt_id
+                       AND base.root_id = COALESCE(base.root_job_id, base.job_id)
+                       AND base.root_attempt_id = base.attempt_id
+                       AND (base.attempt_root_job_id IS NOT NULL
+                            OR base.attempt_source_root_job_id IS NOT NULL)
+                       AND (base.attempt_root_job_id IS NULL
+                            OR base.attempt_root_job_id = base.root_id)
+                       AND (base.attempt_source_root_job_id IS NULL
+                            OR base.attempt_source_root_job_id = base.root_id)
+                       AND COALESCE(base.root_root_job_id, base.root_id) = base.root_id
+                       AND LOWER(BTRIM(COALESCE(base.attempt_email_snapshot, ''))) =
+                           LOWER(BTRIM(COALESCE(
+                               NULLIF(base.root_email, ''),
+                               NULLIF(base.attempt_email_snapshot, ''),
+                               base.attempt_email,
+                               ''
+                           )))
+                       AND (
+                           LOWER(BTRIM(COALESCE(base.job_email, ''))) =
+                               LOWER(BTRIM(COALESCE(
+                                   NULLIF(base.root_email, ''),
+                                   NULLIF(base.attempt_email_snapshot, ''),
+                                   base.attempt_email,
+                                   ''
+                               )))
+                           OR (
+                               base.job_id = base.root_id
+                               AND NULLIF(BTRIM(COALESCE(base.job_email, '')), '') IS NULL
+                           )
+                       )
+                       AND LOWER(BTRIM(COALESCE(base.attempt_email, ''))) IN (
+                           '',
+                           LOWER(BTRIM(COALESCE(
+                               NULLIF(base.root_email, ''),
+                               NULLIF(base.attempt_email_snapshot, ''),
+                               base.attempt_email,
+                               ''
+                           )))
+                       )
+                       AND (
+                           NULLIF(BTRIM(COALESCE(base.root_email, '')), '') IS NOT NULL
+                           OR (
+                               NULLIF(BTRIM(COALESCE(base.root_email_source, '')), '') IS NOT NULL
+                               AND BTRIM(COALESCE(base.job_email_source, '')) = BTRIM(base.root_email_source)
+                               AND (
+                                   NULLIF(BTRIM(COALESCE(base.attempt_email_source, '')), '') IS NULL
+                                   OR BTRIM(base.attempt_email_source) = BTRIM(base.root_email_source)
+                               )
+                           )
+                       )
+                       AND NOT (
+                           base.job_account_id IS NOT NULL
+                           AND base.root_account_id IS NOT NULL
+                           AND base.job_account_id <> base.root_account_id
+                       )
+                       AND NOT (
+                           base.job_account_id IS NOT NULL
+                           AND base.attempt_account_id IS NOT NULL
+                           AND base.job_account_id <> base.attempt_account_id
+                       )
+                       AND NOT (
+                           base.root_account_id IS NOT NULL
+                           AND base.attempt_account_id IS NOT NULL
+                           AND base.root_account_id <> base.attempt_account_id
+                       )
+                   ) END AS identity_valid,
+                   CASE WHEN base.attempt_id IS NULL THEN base.job_account_id
+                        ELSE COALESCE(base.job_account_id, base.root_account_id, base.attempt_account_id)
+                   END AS explicit_account_id,
+                   LOWER(BTRIM(CASE WHEN base.attempt_id IS NULL THEN base.job_email
+                                    ELSE COALESCE(NULLIF(base.root_email, ''), base.attempt_email_snapshot, base.attempt_email)
+                               END)) AS identity_email
+              FROM base
+        )
+        SELECT verified.job_id, verified.status, verified.requested_status, verified.task_date,
+               verified.job_account_id,
+               verified.job_config_password_enabled, verified.job_config_plan_check_enabled,
+               verified.job_config_twofa_enabled, verified.job_config_codex_enabled,
+               CASE
+                   WHEN verified.identity_valid IS NOT TRUE THEN NULL
+                   WHEN verified.explicit_account_id IS NOT NULL
+                        AND explicit_account.id = verified.explicit_account_id
+                        AND (
+                            LOWER(BTRIM(COALESCE(explicit_account.email, ''))) = verified.identity_email
+                            OR (
+                                verified.attempt_id IS NULL
+                                AND NULLIF(verified.identity_email, '') IS NULL
+                            )
+                        )
+                        THEN verified.explicit_account_id
+                   WHEN verified.explicit_account_id IS NOT NULL THEN NULL
+                   WHEN verified.attempt_id IS NOT NULL THEN NULL
+                   WHEN NULLIF(verified.identity_email, '') IS NULL THEN NULL
+                   WHEN NULLIF(BTRIM(COALESCE(verified.batch_id, '')), '') IS NOT NULL
+                        AND EXISTS (
+                            SELECT 1
+                              FROM {jobs} duplicate
+                             WHERE duplicate.batch_id = verified.batch_id
+                               AND LOWER(BTRIM(COALESCE(duplicate.email, ''))) = verified.identity_email
+                               AND duplicate.id <> verified.job_id
+                        ) THEN NULL
+                   ELSE matched_email.id
+               END AS account_id
+          FROM verified
+          LEFT JOIN {accounts} explicit_account
+            ON explicit_account.id = verified.explicit_account_id
+          LEFT JOIN LATERAL (
+              SELECT matched.id
+                FROM {accounts} matched
+               WHERE verified.identity_valid IS TRUE
+                 AND verified.explicit_account_id IS NULL
+                 AND verified.attempt_id IS NULL
+                 AND NULLIF(verified.identity_email, '') IS NOT NULL
+                 AND (
+                     NULLIF(BTRIM(COALESCE(verified.batch_id, '')), '') IS NULL
+                     OR NOT EXISTS (
+                         SELECT 1
+                           FROM {jobs} duplicate
+                          WHERE duplicate.batch_id = verified.batch_id
+                            AND LOWER(BTRIM(COALESCE(duplicate.email, ''))) = verified.identity_email
+                            AND duplicate.id <> verified.job_id
+                     )
+                 )
+                 AND LOWER(BTRIM(COALESCE(matched.email, ''))) = verified.identity_email
+               ORDER BY matched.id DESC
+               LIMIT 1
+          ) matched_email ON TRUE
+    """
+
+
 def _compile_account_predicates(
     archived: str,
     plan: str,
@@ -461,6 +647,17 @@ def _compile_account_predicates(
         elif term.field == "id":
             where.append("CAST(a.id AS TEXT) = %s")
             params.append(term.value)
+        elif term.field == "registration_date":
+            start, end = parse_registration_date_range(term.value)
+            cohort_source = _registration_cohort_source_sql(date_range=(start, end))
+            where.append(
+                f"""EXISTS (
+                    SELECT 1
+                      FROM ({cohort_source}) registration_cohort
+                     WHERE registration_cohort.account_id = a.id
+                )"""
+            )
+            params.extend((start, end))
         else:
             # 只搜索列表可安全展示的固定字段；不要把整段 JSONB 或凭证纳入 ILIKE。
             columns = {

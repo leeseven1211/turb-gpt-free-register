@@ -1,11 +1,15 @@
 # -*- coding: utf-8 -*-
 from core.storage import records as rs
+from core.storage import registration
 from tests.support_pg import PostgresTestCase
 from webui.app import create_app
 
 
 class AccountSearchApiTests(PostgresTestCase):
     def setUp(self):
+        rs.reset_ready()
+        rs.init()
+        registration.init()
         self.client = create_app(auth_code="test-auth").test_client()
         self.headers = {"X-Auth-Code": "test-auth"}
 
@@ -110,3 +114,23 @@ class AccountSearchApiTests(PostgresTestCase):
         response = self.client.get("/api/accounts", query_string={"q": "协议/jp"}, headers=self.headers)
         self.assertEqual(response.status_code, 200)
         self.assertIsInstance(response.get_json(), list)
+
+    def test_registration_task_date_search_uses_task_created_at_cohort(self):
+        account_id = rs.insert_row(rs.ACCOUNTS, {"email": "registration-date@example.test"})
+        rs.insert_row(rs.JOBS, {
+            "job_uuid": "registration-date-search",
+            "email": "registration-date@example.test",
+            "account_id": account_id,
+            "job_type": "registration",
+            "created_at": "2026-11-25T16:30:00+00:00",
+        })
+        response = self.client.get(
+            "/api/accounts",
+            query_string={"paged": "1", "q": "注册任务日期:2026-11-26..2026-11-26"},
+            headers=self.headers,
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["total"], 1)
+        self.assertEqual(payload["items"][0]["id"], account_id)
+        self.assertEqual(payload["search_terms"][0]["label"], "注册任务日期")

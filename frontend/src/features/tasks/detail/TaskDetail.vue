@@ -149,7 +149,7 @@ defineExpose({ open, close, setVisible });
         <span class="tc-detail-target" :title="String(target)" tabindex="0">{{ target }}</span>
         <div v-if="runSummary" class="tc-detail-status" :class="`tc-detail-status--${statusTone(runSummary.status)}`"><strong>{{ label('status', runSummary.status) }}</strong><span>耗时 {{ formatDuration(runSummary.duration_ms) }}</span></div>
         <label v-if="task" class="tc-detail-run"><span>运行</span><select :value="runId || ''" aria-label="选择执行实例" :disabled="runs.length < 2 && (!runId || !!selectedRun)" @change="selectRun"><option v-if="runId && !selectedRun" :value="runId" disabled>运行 #{{ runId }} 不可用</option><option v-else-if="!runs.length" value="">暂无运行</option><option v-for="run in runs" :key="run.id" :value="run.id">第 {{ run.run_no || '—' }} 次 · {{ label('status', run.status) }}</option></select></label>
-        <div class="tc-detail-header-actions"><button type="button" :disabled="loading" @click="detail.refresh">{{ loading ? '刷新中…' : '刷新' }}</button><button type="button" autofocus aria-label="关闭任务详情" @click="close">关闭</button></div>
+        <div class="tc-detail-header-actions"><button type="button" class="ui-refresh-button" :disabled="loading" @click="detail.refresh">{{ loading ? '刷新中…' : '刷新' }}</button><button type="button" autofocus aria-label="关闭任务详情" @click="close">关闭</button></div>
       </header>
       <div v-if="error" class="tc-detail-error" role="alert">读取任务失败：{{ error }}<span v-if="task">。保留上次已读取的记录。</span><button type="button" :disabled="loading" @click="detail.refresh">重试</button></div>
       <div v-if="loading && !task" class="tc-detail-empty" role="status">正在读取任务详情…</div>

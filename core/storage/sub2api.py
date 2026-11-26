@@ -69,7 +69,36 @@ def init():
             cur.execute(f"""CREATE TABLE IF NOT EXISTS {postgres.qualified("sub2api_monitor_repairs")} (
                 backend TEXT NOT NULL, account_id BIGINT NOT NULL, data JSONB NOT NULL DEFAULT '{{}}',
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT now(), PRIMARY KEY(backend,account_id))""")
+            _backfill_credential_account_ids(cur)
         _READY.add(key)
+
+
+def _backfill_credential_account_ids(cur):
+    """仅从唯一且成功的历史目标补齐关联，不增加上传次数或改变同步状态。"""
+    credentials = postgres.qualified("codex_credentials")
+    cur.execute("SELECT to_regclass(%s)", (credentials,))
+    if cur.fetchone()[0] is None:
+        return
+    cur.execute(f"""
+        WITH targets AS (
+            SELECT credential_id, MIN(remote_account_id) AS remote_id,
+                   MIN(backend) AS backend, MIN(LOWER(BTRIM(email))) AS email
+            FROM {_table()}
+            WHERE status <> 'superseded' AND remote_account_id > 0 AND credential_id IS NOT NULL
+            GROUP BY credential_id
+            HAVING COUNT(DISTINCT (backend, remote_account_id)) = 1
+               AND COUNT(DISTINCT LOWER(BTRIM(email))) = 1
+               AND BOOL_OR(status = 'success')
+               AND BOOL_AND(COALESCE(error_code, '') <> 'sub2api_account_missing')
+        )
+        UPDATE {credentials} c
+        SET data = c.data || jsonb_build_object(
+            'sub2api_account_id', t.remote_id, 'sub2api_backend_identity', t.backend)
+        FROM targets t
+        WHERE c.id = t.credential_id
+          AND LOWER(BTRIM(c.email)) = t.email AND t.email <> '' AND t.backend <> ''
+          AND NULLIF(BTRIM(c.data->>'sub2api_account_id'), '') IS NULL
+    """)
 
 
 def credential_generation(auth_json):
@@ -714,15 +743,19 @@ def _confirm_sync(
         count_now = False
     if confirmed is None:
         return False
+    changes = {
+        "sub2api_account_id": remote_account_id,
+        "sub2api_backend_identity": backend,
+    }
     if count_now:
-        records.patch_row(
-            records.CODEX_CREDENTIALS, credential_id,
+        changes.update(
             {
                 "sub2_uploaded_count": int(credential.get("sub2_uploaded_count") or 0) + 1,
                 "sub2_uploaded_at": datetime.now(timezone.utc).isoformat(), "sub2_sync_error": None,
-            },
-            conn=conn,
+            }
         )
+    if confirmed["status"] == "success":
+        records.patch_row(records.CODEX_CREDENTIALS, credential_id, changes, conn=conn)
 
     if old_job is None:
         return True

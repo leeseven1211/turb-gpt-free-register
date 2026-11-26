@@ -81,6 +81,33 @@ class CodexJoinSemanticsTests(PostgresTestCase):
                 self.assertEqual((result["page"], result["page_size"], result["offset"], result["limit"]),
                                  (2, 3, 3, 3))
 
+    def test_credential_receipt_id_is_visible_and_searchable_without_imported_account(self):
+        self.credential("receipt.json", "receipt@example.test", sub2api_account_id=321)
+        for filters in ({}, {"sub2api_id": "321"}, {"q": "321"}, {"status": "exported"}):
+            with self.subTest(filters=filters):
+                result = self.listing(**filters)
+                self.assertEqual(1, result["total"])
+                self.assertEqual(321, result["accounts"][0]["sub2api_account_id"])
+                self.assertTrue(result["accounts"][0]["exported"])
+                self.assertEqual({"total": 1, "exported": 1, "pending": 0}, result["summary"])
+        self.assertEqual(0, self.listing(status="unexported")["total"])
+
+    def test_receipt_id_keeps_distinct_imported_account_targets(self):
+        self.account("receipt@example.test", {"sub2api_account_id": 123})
+        self.account(" RECEIPT@example.test ", {"sub2api_account_id": 456})
+        self.credential("receipt.json", "receipt@example.test", sub2api_account_id=321)
+        self.assertEqual({123, 456}, {row["sub2api_account_id"] for row in self.listing()["accounts"]})
+        self.assertEqual(1, self.listing(sub2api_id="123")["total"])
+        self.assertEqual(1, self.listing(sub2api_id="456")["total"])
+
+    def test_receipt_id_fills_empty_import_metadata(self):
+        for index, value in enumerate((None, "", "   ")):
+            with self.subTest(value=value):
+                self.account(f"empty-{index}@example.test", {"sub2api_account_id": value})
+                self.credential(f"empty-{index}.json", f"empty-{index}@example.test", sub2api_account_id=321)
+        result = self.listing(sub2api_id="321")
+        self.assertEqual(3, result["total"])
+
     def test_null_blank_and_padded_facets_keep_distinct_raw_groups_after_trim(self):
         for ordinal, (plan, oauth) in enumerate((
             (None, None), ("", ""), (" ", " "), (" PLUS ", " VALID "),

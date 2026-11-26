@@ -13,7 +13,7 @@ export function useTaskList() {
   let requestId = 0, controller: AbortController | null = null;
   let timer: ReturnType<typeof setTimeout> | undefined, debounce: ReturnType<typeof setTimeout> | undefined;
   let queuedRefresh = 0;
-  let metadataAt = 0, metadataFilters = '', revision = '';
+  let metadataAt = 0, metadataFilters = '', revision = '', renderedSignature = '';
   let facetsVisible = false;
   const textFilters = new Set<keyof TaskFilters>(['task_id', 'target', 'batch', 'result']);
   let normalizedDelay: number | undefined;
@@ -21,20 +21,20 @@ export function useTaskList() {
   const facetsNeedRefresh = (signature = filterSignature()) =>
     facetsVisible && (metadataFilters !== signature || Date.now() - metadataAt >= 30000);
 
-  function queueRefresh(delay = 0) {
+  function queueRefresh(delay = 0, background = false) {
     clearTimeout(debounce);
     const version = ++queuedRefresh;
     const load = () => {
-      if (version === queuedRefresh && visible.value && !document.hidden) void refresh();
+      if (version === queuedRefresh && visible.value && !document.hidden) void refresh({background});
     };
     if (delay) debounce = setTimeout(load, delay);
     else void nextTick(load);
   }
   const schedule = () => {
     clearTimeout(timer);
-    if (visible.value && !document.hidden) timer = setTimeout(() => void refresh(), 5000);
+    if (visible.value && !document.hidden) timer = setTimeout(() => void refresh({background: true}), 5000);
   };
-  async function refresh(options: {metadata?: boolean} = {}) {
+  async function refresh(options: {metadata?: boolean; background?: boolean} = {}) {
     clearTimeout(timer);
     clearTimeout(debounce);
     ++queuedRefresh;
@@ -45,7 +45,8 @@ export function useTaskList() {
     const id = ++requestId;
     controller?.abort();
     controller = new AbortController();
-    loading.value = true;
+    // 后台同步沿用当前范围的内容和空状态，主动读取仍保留加载反馈。
+    loading.value = !options.background || renderedSignature !== signature;
     try {
       const result = await tasksApi.list({...query, include_facets: metadata ? 1 : 0, include_batches: 0}, controller.signal);
       if (id !== requestId) return;
@@ -60,6 +61,7 @@ export function useTaskList() {
       }
       if (result.facets) facets.value = result.facets;
       if (metadata) { metadataAt = Date.now(); metadataFilters = activeFilters; }
+      renderedSignature = signature;
       error.value = '';
     } catch (cause) {
       if (id === requestId && !isAbort(cause)) error.value = cause instanceof Error ? cause.message : '任务列表加载失败';
@@ -67,7 +69,7 @@ export function useTaskList() {
       if (id === requestId) {
         loading.value = false;
         controller = null;
-        if (!metadata && facetsNeedRefresh()) queueRefresh();
+        if (!metadata && facetsNeedRefresh()) queueRefresh(0, true);
         else schedule();
       }
     }
@@ -77,13 +79,13 @@ export function useTaskList() {
     visible.value = value;
     clearTimeout(timer);
     clearTimeout(debounce);
-    if (value && !document.hidden) queueRefresh();
+    if (value && !document.hidden) queueRefresh(0, true);
     else { ++queuedRefresh; controller?.abort(); ++requestId; loading.value = false; }
   }
   function setFacetsVisible(value: boolean) {
     if (value === facetsVisible) return;
     facetsVisible = value;
-    if (!loading.value && facetsNeedRefresh() && visible.value && !document.hidden) queueRefresh();
+    if (!controller && facetsNeedRefresh() && visible.value && !document.hidden) queueRefresh(0, true);
   }
   function applyFilters(value: Partial<TaskFilters>, replace = true) {
     Object.assign(filters, replace ? {...emptyFilters(), ...value} : value);
@@ -116,7 +118,7 @@ export function useTaskList() {
   const visibilityChanged = () => {
     clearTimeout(timer);
     if (document.hidden) { ++queuedRefresh; clearTimeout(debounce); controller?.abort(); ++requestId; loading.value = false; }
-    else if (visible.value) queueRefresh();
+    else if (visible.value) queueRefresh(0, true);
   };
   document.addEventListener('visibilitychange', visibilityChanged);
   onScopeDispose(() => {

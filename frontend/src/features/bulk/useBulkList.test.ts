@@ -248,6 +248,50 @@ describe('批次列表读取与游标归属', () => {
     expect(h.list.items.value[0]?.id).toBe('41');
   });
 
+  it('已成功加载范围的后台轮询保留数据且不显示列表忙碌态', async () => {
+    const h = fixture();
+    await flushPromises();
+    let resolve!: (value: BulkPageData) => void;
+    h.request.mockImplementationOnce(
+      () =>
+        new Promise((done) => {
+          resolve = done as typeof resolve;
+        }),
+    );
+    const poll = h.list.refresh(true);
+    expect(h.list.items.value[0]?.id).toBe('9007199254740993');
+    expect(h.list.loading.value).toBe(false);
+    const signal = h.request.mock.calls.at(-1)![1]?.signal;
+    const samePoll = h.list.refresh(true);
+    const manual = h.list.refresh(false);
+    expect(h.list.loading.value).toBe(true);
+    expect(h.request).toHaveBeenCalledTimes(2);
+    expect(signal?.aborted).toBe(false);
+    resolve(page('42'));
+    await Promise.all([poll, samePoll, manual]);
+    expect(h.list.items.value[0]?.id).toBe('42');
+  });
+
+  it('范围切换后尚无数据时的首次读取仍显示列表忙碌态', async () => {
+    const h = fixture();
+    await flushPromises();
+    let resolve!: (value: BulkPageData) => void;
+    h.request.mockImplementationOnce(
+      () =>
+        new Promise((done) => {
+          resolve = done as typeof resolve;
+        }),
+    );
+    h.navigation.value = { ...h.navigation.value, cursor: 'new-range' };
+    await nextTick();
+    expect(h.list.items.value).toEqual([]);
+    expect(h.list.loading.value).toBe(true);
+    resolve(page('43'));
+    await flushPromises();
+    expect(h.list.loading.value).toBe(false);
+    expect(h.list.items.value[0]?.id).toBe('43');
+  });
+
   it('隐藏中止请求并忽略晚到响应，恢复可见只由Shell显式刷新', async () => {
     const h = fixture();
     await flushPromises();

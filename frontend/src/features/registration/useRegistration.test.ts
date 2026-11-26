@@ -19,6 +19,73 @@ function apiFixture():RegistrationApi{
   };
 }
 describe('registration owner lifecycle',()=>{
+  it('keeps the first jobs read loading until its response arrives',async()=>{
+    const api=apiFixture();let resolve!: (value:any)=>void;
+    vi.mocked(api.jobs).mockImplementationOnce(()=>new Promise(done=>{resolve=done;}));
+    const owner=makeOwner({api,visible:false,view:'tasks'});
+    owner.setVisible(true);
+    expect(owner.state.loading).toBe(true);
+    resolve({items:[],total:0});
+    await Promise.resolve();await Promise.resolve();
+    expect(owner.state.loading).toBe(false);
+    expect(owner.state.jobs).toEqual([]);
+    owner.setVisible(false);
+  });
+  it('keeps an automatic refresh error visible until a later refresh succeeds',async()=>{
+    const api=apiFixture(),owner=makeOwner({api,visible:false,view:'tasks'});
+    owner.setVisible(true);
+    await Promise.resolve();await Promise.resolve();
+    owner.state.error='上一次读取失败';
+    let reject!: (reason:Error)=>void;
+    vi.mocked(api.jobs).mockImplementationOnce(()=>new Promise((_,fail)=>{reject=fail;}));
+    const failed=owner.load({automatic:true});
+    expect(owner.state.error).toBe('上一次读取失败');
+    reject(new Error('本次读取仍失败'));await failed;
+    expect(owner.state.error).toBe('本次读取仍失败');
+    vi.mocked(api.jobs).mockResolvedValueOnce({items:[{id:'9007199254740993'}],total:1});
+    await owner.load({automatic:true});
+    expect(owner.state.error).toBe('');
+    owner.setVisible(false);
+  });
+  it('恢复同一列表范围时保持旧数据和错误提示稳定',async()=>{
+    const api=apiFixture(),owner=makeOwner({api,visible:false,view:'tasks'});
+    owner.setVisible(true);
+    await Promise.resolve();await Promise.resolve();
+    owner.state.error='上一次读取失败';
+    owner.setVisible(false);
+    let resolve!: (value:{items:any[];total:number})=>void;
+    vi.mocked(api.jobs).mockImplementationOnce(()=>new Promise(done=>{resolve=done;}));
+    owner.setVisible(true);
+    expect(owner.state.loading).toBe(false);
+    expect(owner.state.jobs).toEqual([{id:'9007199254740993'}]);
+    expect(owner.state.error).toBe('上一次读取失败');
+    resolve({items:[{id:'9007199254740993'}],total:1});
+    await Promise.resolve();await Promise.resolve();
+    expect(owner.state.error).toBe('');
+    owner.setVisible(false);
+  });
+  it('首次读取和切换列表范围时仍显示加载状态',async()=>{
+    const api=apiFixture(),owner=makeOwner({api,visible:false,view:'tasks'});
+    let firstResolve!: (value:{items:any[];total:number})=>void;
+    vi.mocked(api.jobs).mockImplementationOnce(()=>new Promise(done=>{firstResolve=done;}));
+    owner.setVisible(true);
+    expect(owner.state.loading).toBe(true);
+    firstResolve({items:[{id:'9007199254740993'}],total:1});
+    await Promise.resolve();await Promise.resolve();
+    let nextResolve!: (value:{progress_batch:{batch_id:string;items:any[]}})=>void;
+    vi.mocked(api.jobs).mockImplementationOnce(()=>new Promise(done=>{nextResolve=done;}));
+    owner.setView('launch');
+    expect(owner.state.loading).toBe(true);
+    nextResolve({progress_batch:{batch_id:'batch-1',items:[]}});
+    await Promise.resolve();await Promise.resolve();
+    let launchResolve!: (value:{progress_batch:{batch_id:string;items:any[]}})=>void;
+    vi.mocked(api.jobs).mockImplementationOnce(()=>new Promise(done=>{launchResolve=done;}));
+    owner.setView('tasks');
+    expect(owner.state.loading).toBe(true);
+    launchResolve({progress_batch:{batch_id:'batch-1',items:[]}});
+    await Promise.resolve();await Promise.resolve();
+    owner.setVisible(false);
+  });
   it('does not read while hidden and ignores a late response after hiding',async()=>{
     const api=apiFixture();let resolve!: (value:any)=>void;
     vi.mocked(api.jobs).mockImplementationOnce(()=>new Promise(done=>{resolve=done;}));
@@ -148,5 +215,68 @@ describe('registration owner lifecycle',()=>{
     expect(openTask).toHaveBeenCalledWith('9007199254740993','9007199254740995','email_otp');
     expect(owner.state.detail.id).toBeNull();
     owner.setVisible(false);
+  });
+  it('does not show a loading row while polling an expanded running log',async()=>{
+    vi.useFakeTimers();
+    try{
+      const api=apiFixture(),owner=makeOwner({api,visible:false,view:'tasks'});
+      owner.setVisible(true);
+      await vi.advanceTimersByTimeAsync(0);
+      vi.mocked(api.log).mockResolvedValueOnce({job:{id:'9007199254740993',status:'running'},log:'初始日志'});
+      vi.mocked(api.debug).mockResolvedValue({enabled:true});
+      owner.openLog('9007199254740993');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(owner.state.detail.loading).toBe(false);
+      let resolve!: (value:{job:{id:string;status:string};log:string})=>void;
+      vi.mocked(api.log).mockImplementationOnce(()=>new Promise(done=>{resolve=done;}));
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(owner.state.detail.loading).toBe(false);
+      resolve({job:{id:'9007199254740993',status:'running'},log:'更新日志'});
+      await vi.advanceTimersByTimeAsync(0);
+      expect(owner.state.detail.loading).toBe(false);
+      owner.setVisible(false);
+    }finally{vi.useRealTimers();}
+  });
+  it('首次日志失败的自动重试保留反馈，成功后可见性恢复静默',async()=>{
+    vi.useFakeTimers();
+    let hidden=false;
+    Object.defineProperty(document,'hidden',{configurable:true,get:()=>hidden});
+    try{
+      const api=apiFixture(),owner=makeOwner({api,visible:false,view:'tasks'});
+      owner.setVisible(true);
+      await vi.advanceTimersByTimeAsync(0);
+      let reject!: (reason:Error)=>void;
+      vi.mocked(api.log).mockImplementationOnce(()=>new Promise((_,fail)=>{reject=fail;}));
+      vi.mocked(api.debug).mockResolvedValue({enabled:true});
+      owner.openLog('9007199254740993');
+      expect(owner.state.detail.loading).toBe(true);
+      reject(new Error('日志暂不可用'));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(owner.state.detail.loading).toBe(false);
+      expect(owner.state.detail.error).toBe('日志暂不可用');
+      let retryResolve!: (value:{job:{id:string;status:string};log:string})=>void;
+      vi.mocked(api.log).mockImplementationOnce(()=>new Promise(done=>{retryResolve=done;}));
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(owner.state.detail.loading).toBe(true);
+      expect(owner.state.detail.error).toBe('日志暂不可用');
+      retryResolve({job:{id:'9007199254740993',status:'running'},log:'恢复后的日志'});
+      await vi.advanceTimersByTimeAsync(0);
+      expect(owner.state.detail.loading).toBe(false);
+      expect(owner.state.detail.error).toBe('');
+      hidden=true;document.dispatchEvent(new Event('visibilitychange'));
+      await vi.advanceTimersByTimeAsync(0);
+      let visibleResolve!: (value:{job:{id:string;status:string};log:string})=>void;
+      vi.mocked(api.log).mockImplementationOnce(()=>new Promise(done=>{visibleResolve=done;}));
+      hidden=false;document.dispatchEvent(new Event('visibilitychange'));
+      expect(owner.state.detail.loading).toBe(false);
+      visibleResolve({job:{id:'9007199254740993',status:'running'},log:'可见性恢复后的日志'});
+      await vi.advanceTimersByTimeAsync(0);
+      expect(owner.state.detail.loading).toBe(false);
+      owner.setVisible(false);
+    }finally{
+      hidden=false;
+      Object.defineProperty(document,'hidden',{configurable:true,value:false});
+      vi.useRealTimers();
+    }
   });
 });

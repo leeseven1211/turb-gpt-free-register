@@ -3224,6 +3224,7 @@ def _codex_public_row(row: dict) -> dict:
         "sub2_uploaded_at": row.get("sub2_uploaded_at"),
         "sub2_uploaded_count": int(row.get("sub2_uploaded_count") or 0),
         "sub2_sync_error": row.get("sub2_sync_error"),
+        "sub2api_account_id": row.get("sub2api_account_id"),
         "sub2api_status": row.get("sub2api_status"),
         "sub2api_http_status": row.get("sub2api_http_status"),
         "oauth_refresh_attempted_at": row.get("oauth_refresh_attempted_at"),
@@ -3370,12 +3371,17 @@ def mark_codex_exported(filename: str) -> dict:
     return _increment_codex_state(filename, counter="exported_count", timestamp="exported_at")
 
 
-def mark_codex_sub2_uploaded(filename: str) -> dict:
+def mark_codex_sub2_uploaded(
+    filename: str, *, sub2api_account_id: int | None = None, backend_identity: str = "",
+) -> dict:
+    extra = {"sub2_sync_error": None}
+    if type(sub2api_account_id) is int and sub2api_account_id > 0 and backend_identity:
+        extra.update(sub2api_account_id=sub2api_account_id, sub2api_backend_identity=backend_identity)
     return _increment_codex_state(
         filename,
         counter="sub2_uploaded_count",
         timestamp="sub2_uploaded_at",
-        extra={"sub2_sync_error": None},
+        extra=extra,
     )
 
 

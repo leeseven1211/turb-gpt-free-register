@@ -128,6 +128,39 @@ class Sub2ApiUploadAndEnableTests(unittest.TestCase):
         self.assertTrue(result["enabled"])
 
     @patch("core.integrations.sub2api.client.requests.post")
+    def test_manual_import_returns_unique_account_id_without_enabling(self, post):
+        post.return_value = self.imported()
+
+        result = sub2api_client.upload_configured_codex_oauth_credential(self.auth)
+
+        self.assertTrue(result["uploaded"])
+        self.assertEqual(result["sub2api_account_id"], 41)
+        self.assertEqual(post.call_count, 1)
+        self.assertEqual(post.call_args.args[0], "https://sub2.example/api/v1/admin/accounts/import/codex-session")
+
+    @patch("core.integrations.sub2api.client.requests.post")
+    def test_manual_import_does_not_guess_id_from_legacy_skipped_or_ambiguous_receipts(self, post):
+        for data in (
+            {"total": 1, "created": 1, "updated": 0, "failed": 0},
+            {"total": 1, "created": 0, "updated": 0, "failed": 0, "skipped": 1,
+             "items": [{"index": 1, "action": "skipped", "account_id": 41}]},
+            {"total": 1, "created": 0, "updated": 1, "failed": 0,
+             "items": [
+                 {"index": 1, "action": "updated", "account_id": 41},
+                 {"index": 1, "action": "updated", "account_id": 42},
+             ]},
+        ):
+            with self.subTest(data=data):
+                post.reset_mock()
+                post.return_value = self.response(data)
+
+                result = sub2api_client.upload_configured_codex_oauth_credential(self.auth)
+
+                self.assertTrue(result["uploaded"])
+                self.assertNotIn("sub2api_account_id", result)
+                self.assertEqual(post.call_count, 1)
+
+    @patch("core.integrations.sub2api.client.requests.post")
     def test_config_hot_reload_cannot_mix_upload_and_recovery_servers(self, post):
         post.side_effect = [self.imported(), self.response({"id": 41}), self.response({"id": 41})]
 

@@ -39,6 +39,7 @@ describe('任务详情组件交互', () => {
       await wrapper.vm.open(1); await flushPromises();
       const header = document.querySelector('.tc-detail-header')!;
       const refresh = header.querySelector<HTMLButtonElement>('.tc-detail-header-actions button')!;
+      expect(refresh.classList.contains('ui-refresh-button')).toBe(true);
       const selector = header.querySelector('select')!;
       const firstEvent = document.querySelector('.tc-event')!;
       let resolve!: (value: Awaited<ReturnType<typeof tasksApi.detail>>) => void;

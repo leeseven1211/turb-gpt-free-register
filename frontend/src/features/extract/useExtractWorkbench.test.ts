@@ -12,6 +12,172 @@ describe('extract read ownership',()=>{
  it('drops old lists and hidden-page replies; retains independent batch and config caches',async()=>{
   const api=apiStub(),m=createExtractWorkbench({api,visible:true});await m.load();const first=deferred<any>(),next=deferred<any>();vi.mocked(api.tasks).mockReturnValueOnce(first.promise).mockReturnValueOnce(next.promise);m.state.query.query='old';const a=m.load();m.state.query.query='new';const b=m.load();next.resolve({items:[{task_id:'9007199254740993'}],total:1,page:1,counts:{}});await b;first.resolve({items:[{task_id:1}],total:1,page:1,counts:{}});await a;expect(m.state.items[0]?.task_id).toBe('9007199254740993');expect(api.config).toHaveBeenCalledTimes(1);expect(api.batches).toHaveBeenCalledTimes(1);await m.load({force:true});expect(api.config).toHaveBeenCalledTimes(2);expect(api.batches).toHaveBeenCalledTimes(2);const late=deferred<any>();vi.mocked(api.tasks).mockReturnValueOnce(late.promise);const pending=m.load();m.setVisible(false);late.resolve({items:[{task_id:8}],total:1,page:1,counts:{}});await pending;expect(m.state.items).not.toEqual([{task_id:8}]);m.destroy();
  });
+ it('静默轮询保持旧列表与选中项，失败后展示原因并允许退避重试',async()=>{
+  vi.useFakeTimers();
+  const api=apiStub(),pending=deferred<any>(),retry=deferred<any>();
+  vi.mocked(api.config).mockResolvedValue({providers:[],poll:{active_seconds:3,idle_seconds:5,backoff_max_seconds:12}});
+  vi.mocked(api.tasks)
+   .mockResolvedValueOnce({items:[{task_id:'1'}],total:1,page:1,counts:{processing:1}})
+   .mockReturnValueOnce(pending.promise)
+   .mockReturnValueOnce(retry.promise)
+   .mockResolvedValue({items:[{task_id:'1'}],total:1,page:1,counts:{processing:1}});
+  const m=createExtractWorkbench({api,visible:true});
+  await m.load();
+  m.state.selected.add('1');
+  const oldItems=m.state.items;
+  await vi.advanceTimersByTimeAsync(3000);
+  expect(api.tasks).toHaveBeenCalledTimes(2);
+  expect(m.state.loading).toBe(false);
+  expect(m.state.items).toBe(oldItems);
+  expect(m.state.selected.has('1')).toBe(true);
+  pending.reject(new Error('轮询离线'));
+  await vi.advanceTimersByTimeAsync(0);
+  expect(m.state.items).toBe(oldItems);
+  expect(m.state.selected.has('1')).toBe(true);
+  expect(m.state.error).toBe('轮询离线');
+  await vi.advanceTimersByTimeAsync(5000);
+  expect(api.tasks).toHaveBeenCalledTimes(3);
+  expect(m.state.error).toBe('轮询离线');
+  expect(m.state.loading).toBe(false);
+  retry.resolve({items:[{task_id:'1'}],total:1,page:1,counts:{processing:1}});
+  await vi.advanceTimersByTimeAsync(0);
+  expect(m.state.error).toBe('');
+  expect(m.state.loading).toBe(false);
+  expect(m.state.selected.has('1')).toBe(true);
+  m.destroy();
+ });
+ it('首载失败的退避重试仍展示加载反馈',async()=>{
+  vi.useFakeTimers();
+  const api=apiStub(),retry=deferred<any>();
+  vi.mocked(api.config).mockResolvedValue({providers:[],poll:{idle_seconds:5,backoff_max_seconds:12}});
+  vi.mocked(api.tasks).mockRejectedValueOnce(new Error('首载离线')).mockReturnValueOnce(retry.promise);
+  const m=createExtractWorkbench({api,visible:true});
+  await m.load();
+  expect(m.state.error).toBe('首载离线');
+  await vi.advanceTimersByTimeAsync(5000);
+  expect(api.tasks).toHaveBeenCalledTimes(2);
+  expect(m.state.loading).toBe(true);
+  expect(m.state.error).toBe('首载离线');
+  retry.reject(new Error('仍然离线'));
+  await vi.advanceTimersByTimeAsync(0);
+  m.destroy();
+ });
+ it('首载任务和批次都失败时恢复可见仍保留批次错误',async()=>{
+  const api=apiStub(),resume=deferred<any>(),batchResume=deferred<any>();
+  vi.mocked(api.config).mockResolvedValue({providers:[]});
+  vi.mocked(api.tasks).mockRejectedValueOnce(new Error('任务首载失败')).mockReturnValueOnce(resume.promise);
+  vi.mocked(api.batches).mockRejectedValueOnce(new Error('批次首载失败')).mockReturnValueOnce(batchResume.promise);
+  const m=createExtractWorkbench({api,visible:true});
+  await m.load();
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(m.state.error).toBe('任务首载失败');
+  expect(m.state.auxErrors.batches).toBe('批次首载失败');
+  Object.defineProperty(document,'hidden',{configurable:true,value:true});
+  document.dispatchEvent(new Event('visibilitychange'));
+  Object.defineProperty(document,'hidden',{configurable:true,value:false});
+  document.dispatchEvent(new Event('visibilitychange'));
+  await Promise.resolve();
+  expect(api.tasks).toHaveBeenCalledTimes(2);
+  expect(api.batches).toHaveBeenCalledTimes(2);
+  expect(m.state.error).toBe('任务首载失败');
+  expect(m.state.auxErrors.batches).toBe('批次首载失败');
+  resume.resolve({items:[],total:0,page:1,counts:{}});
+  batchResume.resolve({items:[],total:0,page:1});
+  await resume.promise;
+  await batchResume.promise;
+  m.destroy();
+ });
+ it('恢复可见范围时同一成功查询保持静默并保留旧列表',async()=>{
+  vi.useFakeTimers();
+  const api=apiStub(),resume=deferred<any>(),batchRefresh=deferred<any>();
+  vi.mocked(api.config).mockResolvedValue({providers:[]});
+  vi.mocked(api.batches)
+   .mockResolvedValueOnce({items:[{batch_id:1,title:'已有批次'}],total:1,page:1})
+   .mockReturnValueOnce(batchRefresh.promise);
+  vi.mocked(api.tasks).mockResolvedValueOnce({items:[{task_id:'1'}],total:1,page:1,counts:{processing:1}}).mockReturnValueOnce(resume.promise);
+  const m=createExtractWorkbench({api,visible:true});
+  await m.load();
+  await Promise.resolve();
+  await Promise.resolve();
+  const oldItems=m.state.items;
+  const oldBatches=m.state.batches;
+  vi.setSystemTime(Date.now()+30001);
+  Object.defineProperty(document,'hidden',{configurable:true,value:true});
+  document.dispatchEvent(new Event('visibilitychange'));
+  Object.defineProperty(document,'hidden',{configurable:true,value:false});
+  document.dispatchEvent(new Event('visibilitychange'));
+  await Promise.resolve();
+  expect(api.tasks).toHaveBeenCalledTimes(2);
+  expect(api.batches).toHaveBeenCalledTimes(2);
+  expect(m.state.loading).toBe(false);
+  expect(m.state.items).toBe(oldItems);
+  expect(m.state.batchLoading).toBe(false);
+  expect(m.state.batches).toBe(oldBatches);
+  resume.resolve({items:[{task_id:'1'}],total:1,page:1,counts:{processing:1}});
+  batchRefresh.resolve({items:[],total:0,page:1});
+  await resume.promise;
+  await batchRefresh.promise;
+  m.destroy();
+ });
+ it('静默刷新已成功批次页时保留列表分页与错误，成功空批次后才清错',async()=>{
+  vi.useFakeTimers();
+  const api=apiStub(),refresh=deferred<any>();
+  vi.mocked(api.config).mockResolvedValue({providers:[],poll:{active_seconds:60}});
+  vi.mocked(api.batches)
+   .mockResolvedValueOnce({items:[{batch_id:1,title:'已有批次'}],total:25,page:1})
+   .mockReturnValueOnce(refresh.promise);
+  const m=createExtractWorkbench({api,visible:true});
+  await m.load();
+  await Promise.resolve();
+  await Promise.resolve();
+  const oldBatches=m.state.batches;
+  m.state.auxErrors.batches='上一次批次读取失败';
+  vi.setSystemTime(Date.now()+30001);
+  const pending=m.load({quiet:true});
+  await Promise.resolve();
+  expect(api.batches).toHaveBeenCalledTimes(2);
+  expect(m.state.batchLoading).toBe(false);
+  expect(m.state.batches).toBe(oldBatches);
+  expect(m.state.batchTotal).toBe(25);
+  expect(m.state.auxErrors.batches).toBe('上一次批次读取失败');
+  refresh.resolve({items:[],total:0,page:1});
+  await pending;
+  await refresh.promise;
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(m.state.batchLoading).toBe(false);
+  expect(m.state.batches).toEqual([]);
+  expect(m.state.batchTotal).toBe(0);
+  expect(m.state.auxErrors.batches).toBe('');
+  m.destroy();
+ });
+ it('静默批次请求挂起时手动同页重试提升反馈并共享请求',async()=>{
+  vi.useFakeTimers();
+  const api=apiStub(),refresh=deferred<any>();
+  vi.mocked(api.config).mockResolvedValue({providers:[]});
+  vi.mocked(api.batches)
+   .mockResolvedValueOnce({items:[{batch_id:1,title:'已有批次'}],total:25,page:1})
+   .mockReturnValueOnce(refresh.promise);
+  const m=createExtractWorkbench({api,visible:true});
+  await m.load();
+  await Promise.resolve();
+  await Promise.resolve();
+  vi.setSystemTime(Date.now()+30001);
+  const background=m.load({quiet:true});
+  await Promise.resolve();
+  expect(api.batches).toHaveBeenCalledTimes(2);
+  expect(m.state.batchLoading).toBe(false);
+  const manual=m.loadBatchPage(1);
+  await Promise.resolve();
+  expect(m.state.batchLoading).toBe(true);
+  expect(m.state.auxErrors.batches).toBe('');
+  refresh.reject(new Error('批次读取失败'));
+  await Promise.all([background,manual]);
+  expect(m.state.batchLoading).toBe(false);
+  expect(m.state.auxErrors.batches).toBe('批次读取失败');
+  m.destroy();
+ });
  it('batch switching clears task filters without discarding the batch navigation cache',async()=>{
   const api=apiStub(),m=createExtractWorkbench({api,visible:true});await m.load();m.state.query.status='failed';m.state.query.page=4;await m.switchBatch('9007199254740993');expect(m.state.query.page).toBe(1);expect(m.state.query.status).toBe('');expect(api.batches).toHaveBeenCalledTimes(1);expect(api.tasks).toHaveBeenLastCalledWith(expect.objectContaining({batch:'9007199254740993',page:1}),expect.any(AbortSignal));m.destroy();
  });

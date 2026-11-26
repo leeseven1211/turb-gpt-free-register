@@ -102,6 +102,64 @@ class Sub2ApiConfirmationStoreTests(PostgresTestCase):
         self.assertEqual(("success", "complete", 1544), (rows[0]["status"], rows[0]["stage"], rows[0]["remote_account_id"]))
         credential = records.get_row(records.CODEX_CREDENTIALS, self.credential_id)
         self.assertEqual(1, credential["sub2_uploaded_count"])
+        self.assertEqual(1544, credential.get("sub2api_account_id"))
+        self.assertEqual(self.backend, credential.get("sub2api_backend_identity"))
+
+    def test_initialization_backfills_only_unambiguous_historical_success_without_counting_upload(self):
+        old = self._queue(1544)
+        self._set_job(old["id"], status="success", stage="complete")
+        with patch.object(store, "_READY", set()):
+            store.init()
+            store.init()
+        credential = records.get_row(records.CODEX_CREDENTIALS, self.credential_id)
+        self.assertEqual(1544, credential.get("sub2api_account_id"))
+        self.assertEqual(self.backend, credential.get("sub2api_backend_identity"))
+        self.assertEqual(0, int(credential.get("sub2_uploaded_count") or 0))
+
+    def test_initialization_does_not_guess_ambiguous_or_missing_historical_target(self):
+        first = self._queue(1544)
+        self._set_job(first["id"], status="success", stage="complete")
+        second = self._queue(1555)
+        self._set_job(second["id"], status="success", stage="complete")
+        with patch.object(store, "_READY", set()):
+            store.init()
+        self.assertIsNone(records.get_row(records.CODEX_CREDENTIALS, self.credential_id).get("sub2api_account_id"))
+        self._set_job(first["id"], status="superseded")
+        self._set_job(second["id"], status="pending", error_code="sub2api_account_missing")
+        with patch.object(store, "_READY", set()):
+            store.init()
+        self.assertIsNone(records.get_row(records.CODEX_CREDENTIALS, self.credential_id).get("sub2api_account_id"))
+
+    def test_initialization_ignores_superseded_target_and_preserves_newer_receipt(self):
+        first = self._queue(1534)
+        self._set_job(first["id"], status="superseded")
+        second = self._queue(1544)
+        self._set_job(second["id"], status="success", stage="complete")
+        with patch.object(store, "_READY", set()):
+            store.init()
+        self.assertEqual(1544, records.get_row(records.CODEX_CREDENTIALS, self.credential_id).get("sub2api_account_id"))
+        records.patch_row(records.CODEX_CREDENTIALS, self.credential_id, {"sub2api_account_id": 1600})
+        with patch.object(store, "_READY", set()):
+            store.init()
+        self.assertEqual(1600, records.get_row(records.CODEX_CREDENTIALS, self.credential_id).get("sub2api_account_id"))
+
+    def test_initialization_does_not_backfill_other_backend_or_mismatched_identity(self):
+        first = self._queue(1544)
+        self._set_job(first["id"], status="success")
+        second = store.queue(
+            self.filename, backend="other-backend", generation=self.generation,
+            account_id=self.local_account_id, email=self.email, credential_id=self.credential_id,
+            remote_account_ids=[1544],
+        )[0]
+        self._set_job(second["id"], status="success")
+        with patch.object(store, "_READY", set()):
+            store.init()
+        self.assertIsNone(records.get_row(records.CODEX_CREDENTIALS, self.credential_id).get("sub2api_account_id"))
+        self._set_job(second["id"], status="superseded")
+        self._set_job(first["id"], email="different@example.test")
+        with patch.object(store, "_READY", set()):
+            store.init()
+        self.assertIsNone(records.get_row(records.CODEX_CREDENTIALS, self.credential_id).get("sub2api_account_id"))
 
     def test_confirm_replacement_supersedes_old_job_and_closes_repair(self):
         old = self._queue(1534)
@@ -227,6 +285,7 @@ class Sub2ApiConfirmationStoreTests(PostgresTestCase):
         )
         credential = records.get_row(records.CODEX_CREDENTIALS, self.credential_id)
         self.assertEqual(2, credential["sub2_uploaded_count"])
+        self.assertIsNone(credential.get("sub2api_account_id"))
         self.assertEqual(
             "sub2api_account_missing: 目标账号已不存在",
             credential["sub2_sync_error"],

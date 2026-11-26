@@ -331,7 +331,10 @@ def _handle(context):
                 stage="complete",
                 remote_account_id=result.get("sub2api_account_id"),
                 fence=context.execution_fence,
-                write_metadata=lambda: codex.mark_codex_sub2_uploaded(row["filename"]),
+                write_metadata=lambda: codex.mark_codex_sub2_uploaded(
+                    row["filename"], sub2api_account_id=result.get("sub2api_account_id"),
+                    backend_identity=row["backend"],
+                ),
             )
             if callable(report):
                 report(stage="sub2api_sync", state="success", message="Sub2API 凭证同步与调度启用已确认")

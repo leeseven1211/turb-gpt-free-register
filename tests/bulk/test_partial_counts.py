@@ -168,7 +168,8 @@ class PartialCountsTests(PostgresTestCase):
         self.assertEqual({"success": 1, "partial_success": 1, "failed": 1, "cancelled": 1}, result["items"][0]["counts"])
         self.assertEqual(batch["id"], result["items"][0]["id"])
         self.assertEqual({"total_batches": 1, "active_batches": 0, "paused_batches": 0,
-                          "ended_batches": 1, "failed_targets": 1}, result["summary"])
+                          "ended_batches": 1, "success_targets": 1, "partial_success_targets": 1,
+                          "failed_targets": 1}, result["summary"])
 
     def test_source_evidence_runs_only_for_filtered_candidates(self):
         self.make_batch(["success"], name="modern-only")
@@ -210,7 +211,7 @@ class PartialCountsTests(PostgresTestCase):
 
     def test_mixed_history_list_has_constant_queries_and_full_filtered_summary(self):
         selected = [self.legacy_batch()[0] for _ in range(6)]
-        modern, _ = self.make_batch(["failed", "failed"])
+        modern, _ = self.make_batch(["success", "partial_success", "failed", "failed", "cancelled"])
         self.legacy_batch(name="excluded")
         self.legacy_batch(operation="token_refresh")
         self.legacy_batch(paused=True)
@@ -219,9 +220,12 @@ class PartialCountsTests(PostgresTestCase):
             mixed = bulk.list_batches(q="selected", operation_key="plan_check", control_state="ended", limit=50)
         self.assertEqual([modern["id"], *[batch["id"] for batch in reversed(selected)]],
                          [row["id"] for row in mixed["items"]])
-        self.assertEqual({"failed": 2}, mixed["items"][0]["counts"])
+        self.assertEqual({"success": 1, "partial_success": 1, "failed": 2, "cancelled": 1},
+                         mixed["items"][0]["counts"])
         self.assertTrue(all(row["counts"] == {"failed": 1, "partial_success": 1} for row in mixed["items"][1:]))
-        self.assertEqual(8, mixed["summary"]["failed_targets"])
+        self.assertEqual({"total_batches": 7, "active_batches": 0, "paused_batches": 0,
+                          "ended_batches": 7, "success_targets": 1, "partial_success_targets": 7,
+                          "failed_targets": 8}, mixed["summary"])
         self.assertLessEqual(len(mixed_queries), 5)
         for limit in (1, 3, 50):
             with self.subTest(limit=limit):
@@ -233,7 +237,8 @@ class PartialCountsTests(PostgresTestCase):
                 self.assertEqual(expected_ids[:limit], [row["id"] for row in result["items"]])
                 self.assertTrue(all(row["counts"] == {"failed": 1, "partial_success": 1} for row in result["items"]))
                 self.assertEqual({"total_batches": 7, "active_batches": 0, "paused_batches": 0,
-                                  "ended_batches": 7, "failed_targets": 8}, result["summary"])
+                                  "ended_batches": 7, "success_targets": 1, "partial_success_targets": 7,
+                                  "failed_targets": 8}, result["summary"])
                 self.assertEqual({"has_more": limit < 5,
                                   "next_cursor": expected_ids[limit - 1] if limit < 5 else None}, result["page"])
                 self.assertLessEqual(len(queries), 5, f"历史列表 SQL 次数应为常数，实际 {len(queries)}")

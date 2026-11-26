@@ -1,5 +1,6 @@
 import {flushPromises,mount} from '@vue/test-utils';
 import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
+import {nextTick} from 'vue';
 import DashboardPage from './DashboardPage.vue';
 import {createDashboardApi} from '../../api/dashboard';
 import {DASHBOARD_POLL_MS} from './useDashboard';
@@ -104,6 +105,76 @@ describe('dashboard Vue owner',()=>{
   resolve(sample);await Promise.all([first,second]);await flushPromises();
   read.mockResolvedValue(sample);await vi.advanceTimersByTimeAsync(DASHBOARD_POLL_MS);await flushPromises();expect(read).toHaveBeenCalledTimes(2);
   (wrapper.vm as any).setVisible(false);await vi.advanceTimersByTimeAsync(DASHBOARD_POLL_MS*2);expect(read).toHaveBeenCalledTimes(2);
+ });
+
+ it('首次和手动刷新期间显示加载态，后台轮询期间保留按钮可操作',async()=>{
+  let resolve!: (value:any)=>void;
+  const read=vi.fn(()=>new Promise<any>(done=>{resolve=done;}));
+  const wrapper=mount(DashboardPage,{attachTo:document.body,props:{
+   api:{dashboard:read,capabilities:async()=>({}),extractSummary:async()=>extractSample},
+   deps:{visible:true},
+  }});wrappers.push(wrapper);
+  await nextTick();
+  const button=wrapper.get('button.ui-refresh-button');
+  expect(button.attributes('disabled')).toBeDefined();
+  expect(button.text()).toContain('刷新中');
+  resolve(sample);await flushPromises();
+  expect(button.attributes('disabled')).toBeUndefined();
+  expect(button.text()).toBe('刷新');
+
+  let pollResolve!: (value:any)=>void;
+  read.mockImplementation(()=>new Promise<any>(done=>{pollResolve=done;}));
+  await vi.advanceTimersByTimeAsync(DASHBOARD_POLL_MS);
+  expect(button.attributes('disabled')).toBeUndefined();
+  expect(button.text()).toBe('刷新');
+  expect(wrapper.get('[data-overview-card="accounts"]').text()).toContain('10');
+  pollResolve(sample);await flushPromises();
+
+  let manualResolve!: (value:any)=>void;
+  read.mockImplementation(()=>new Promise<any>(done=>{manualResolve=done;}));
+  const manual=wrapper.get('button.ui-refresh-button').trigger('click');
+  await Promise.resolve();
+  expect(button.attributes('disabled')).toBeDefined();
+  expect(button.text()).toContain('刷新中');
+  manualResolve(sample);await manual;await flushPromises();
+ });
+
+ it('已加载总览在恢复可见时静默刷新并保留旧数据',async()=>{
+  const read=vi.fn(async()=>sample);
+  const wrapper=mount(DashboardPage,{attachTo:document.body,props:{
+   api:{dashboard:read,capabilities:async()=>({}),extractSummary:async()=>extractSample},
+   deps:{visible:true},
+  }});wrappers.push(wrapper);
+  await flushPromises();
+  const button=wrapper.get('button.ui-refresh-button');
+  await (wrapper.vm as any).setVisible(false);
+  let resolve!: (value:any)=>void;
+  read.mockImplementation(()=>new Promise<any>(done=>{resolve=done;}));
+  await (wrapper.vm as any).setVisible(true);
+  await nextTick();
+  expect(button.attributes('disabled')).toBeUndefined();
+  expect(button.text()).toBe('刷新');
+  expect(wrapper.get('[data-overview-card="accounts"]').text()).toContain('10');
+  resolve(sample);await flushPromises();
+ });
+
+ it('首次加载失败后后台重试显示加载态并保留旧错误直到成功',async()=>{
+  const read=vi.fn()
+   .mockRejectedValueOnce(new Error('首次读取失败'))
+   .mockImplementationOnce(()=>new Promise<any>(done=>{resolve=done;}));
+  let resolve!: (value:any)=>void;
+  const wrapper=mount(DashboardPage,{attachTo:document.body,props:{
+   api:{dashboard:read,capabilities:async()=>({}),extractSummary:async()=>extractSample},
+   deps:{visible:true},
+  }});wrappers.push(wrapper);
+  await flushPromises();
+  expect(wrapper.get('.ov-error').text()).toContain('首次读取失败');
+  await vi.advanceTimersByTimeAsync(DASHBOARD_POLL_MS);
+  await nextTick();
+  expect(wrapper.get('button.ui-refresh-button').attributes('disabled')).toBeDefined();
+  expect(wrapper.get('.ov-error').text()).toContain('首次读取失败');
+  resolve(sample);await flushPromises();
+  expect(wrapper.find('.ov-error').exists()).toBe(false);
  });
 
  it('discards pending reads and callbacks after unmount',async()=>{

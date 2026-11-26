@@ -191,10 +191,6 @@
   font-weight: 550;
 }
 
-.tc-detail-header-actions > button:first-child {
-  min-width: 6em;
-}
-
 .tc-detail-run {
   display: flex;
   align-items: center;

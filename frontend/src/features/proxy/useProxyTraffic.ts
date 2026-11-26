@@ -62,17 +62,17 @@ export function useProxyTraffic(deps: ProxyTrafficDeps = {}) {
     if (canRead())
       timer = setTimeout(() => {
         timer = undefined;
-        void load();
+        void load(null, true);
       }, 30000);
   }
-  function queue(target: ProxyRecordView | null = null, delay = 0) {
+  function queue(target: ProxyRecordView | null = null, delay = 0, silent = false) {
     if (!target) fullRefreshPending = true;
     invalidate();
     const ticket = scheduled;
     if (!canRead()) return;
     const run = () => {
       debounce = undefined;
-      if (ticket === scheduled && canRead()) void load(target);
+      if (ticket === scheduled && canRead()) void load(target, silent);
     };
     if (delay) debounce = setTimeout(run, delay);
     else void nextTick(run);
@@ -108,7 +108,8 @@ export function useProxyTraffic(deps: ProxyTrafficDeps = {}) {
       aggregate: value.result.aggregate,
     });
   }
-  async function load(target: ProxyRecordView | null = null): Promise<void> {
+  const loaded = ref(false);
+  async function load(target: ProxyRecordView | null = null, silent = false): Promise<void> {
     if (!canRead()) return;
     const full = !target || !summary.value || fullRefreshPending,
       readInventory = full || pool.value === null,
@@ -118,13 +119,17 @@ export function useProxyTraffic(deps: ProxyTrafficDeps = {}) {
         ProxyQuery
       >;
     const key = JSON.stringify([full, queries]);
-    if (running?.key === key) return running.promise;
+    const quiet = silent && loaded.value;
+    if (running?.key === key) {
+      if (!quiet) loading.value = true;
+      return running.promise;
+    }
     invalidate();
     if (full) fullRefreshPending = true;
     const ticket = generation,
       readController = new AbortController();
     controller = readController;
-    loading.value = true;
+    if (!quiet) loading.value = true;
     const task = (async () => {
       try {
         const inventory = readInventory
@@ -154,16 +159,20 @@ export function useProxyTraffic(deps: ProxyTrafficDeps = {}) {
         }
         if (readInventory) pool.value = inventoryResult;
         error.value = '';
+        loaded.value = true;
         deps.onReady?.();
       } catch (cause) {
         if (ticket !== generation || !canRead() || isAbort(cause)) return;
-        names.forEach((name) => {
-          pages[name].items = [];
-          pages[name].total = 0;
-        });
-        if (full) {
-          summary.value = null;
-          pool.value = null;
+        if (!quiet) {
+          names.forEach((name) => {
+            pages[name].items = [];
+            pages[name].total = 0;
+          });
+          if (full) {
+            summary.value = null;
+            pool.value = null;
+          }
+          loaded.value = false;
         }
         error.value = cause instanceof Error ? cause.message : String(cause);
       } finally {
@@ -187,7 +196,7 @@ export function useProxyTraffic(deps: ProxyTrafficDeps = {}) {
   function setVisible(value: boolean) {
     if (disposed || visible.value === value) return;
     visible.value = value;
-    if (value) queue();
+    if (value) queue(null, 0, true);
     else {
       invalidate();
       openFilter.value = null;
@@ -214,6 +223,7 @@ export function useProxyTraffic(deps: ProxyTrafficDeps = {}) {
     changed.forEach((key) => {
       filters[key] = patch[key]!;
     });
+    loaded.value = false;
     views.forEach((name) => {
       pages[name].page = 1;
       pendingScroll.add(name);
@@ -222,6 +232,7 @@ export function useProxyTraffic(deps: ProxyTrafficDeps = {}) {
   }
   function setState(name: ProxyRecordView, value: string) {
     if (disposed || pages[name].state === value) return;
+    loaded.value = false;
     pages[name].state = value;
     pages[name].page = 1;
     pendingScroll.add(name);
@@ -232,18 +243,21 @@ export function useProxyTraffic(deps: ProxyTrafficDeps = {}) {
     const state = pages[name],
       next = Math.min(Math.max(1, Math.ceil(state.total / state.size)), Math.max(1, Math.floor(value)));
     if (next === state.page) return;
+    loaded.value = false;
     state.page = next;
     pendingScroll.add(name);
     queue(name);
   }
   function setSize(name: ProxyRecordView, value: number) {
     if (disposed || ![20, 50, 100].includes(value) || pages[name].size === value) return;
+    loaded.value = false;
     pages[name].size = value;
     pages[name].page = 1;
     pendingScroll.add(name);
     queue(name);
   }
   function resetFilters() {
+    loaded.value = false;
     Object.assign(filters, { window: 'all', purpose: 'all', search: '' });
     views.forEach((name) => {
       pages[name].state = 'all';
@@ -267,7 +281,7 @@ export function useProxyTraffic(deps: ProxyTrafficDeps = {}) {
       invalidate();
       openFilter.value = null;
       closeDetail({ restoreFocus: false });
-    } else if (visible.value) queue();
+    } else if (visible.value) queue(null, 0, true);
   }
   document.addEventListener('visibilitychange', visibilityChanged);
   function dispose() {
