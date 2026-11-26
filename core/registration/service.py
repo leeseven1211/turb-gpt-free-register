@@ -3814,6 +3814,22 @@ def _resume_driver_unsupported(job: dict) -> bool:
     return driver == "sentinel_rs"
 
 
+def _attempt_has_saved_password(attempt: dict | None) -> bool:
+    """只读取原 Attempt 是否存有密码，不返回或记录密码本身。"""
+    attempt = attempt or {}
+    attempt_id = attempt.get("id")
+    email = str(attempt.get("email") or attempt.get("email_snapshot") or "").strip()
+    if not attempt_id or not email:
+        return False
+    try:
+        from core.storage import registration
+
+        context = registration.get_private_resume_context(int(attempt_id), email=email) or {}
+    except Exception:
+        return False
+    return bool(str(context.get("password") or "").strip())
+
+
 def _build_retry_info(
     job: dict,
     *,
@@ -4490,6 +4506,15 @@ def retry_job(
         # Rust 内核没有续跑入口：复用已保存密码，交给支持原身份续跑的协议内核。
         retry_snapshot["registration_driver"] = "protocol_oss_2"
         logger.info("[Job %s] 续跑驱动自动切换：sentinel_rs -> protocol_oss_2", job_id)
+    if (
+        action == "registration"
+        and retry_snapshot.get("registration_driver") == "sentinel_rs"
+        and _attempt_has_saved_password(attempt)
+    ):
+        # Rust 内核没有续跑入口：带已保存密码的重跑必须在准入前就切到协议内核，
+        # 否则并发许可类型与所选驱动不一致，会秒失败。
+        retry_snapshot["registration_driver"] = "protocol_oss_2"
+        logger.info("[Job %s] 带已保存密码重跑，驱动自动切换：sentinel_rs -> protocol_oss_2", job_id)
     if retry_country is not None:
         retry_snapshot["proxy_country"] = retry_country
         retry_snapshot["retry_proxy_country_override"] = retry_country

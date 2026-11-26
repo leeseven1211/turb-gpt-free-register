@@ -412,6 +412,17 @@ def run_sentinel_rs_registration(
     from core.auth.protocol.session import BrowserSession
     from core.registration.protocol_oss_2.lifecycle import run_protocol_oss_2_lifecycle
 
+    if str(existing_password or "").strip():
+        # 防御：绕过 dispatcher 直接调用时，也不能把带原密码的任务交给无续跑入口的内核。
+        from core.registration.protocol_oss_2 import run_protocol_oss_2_registration
+
+        logger.info("Rust 内核无续跑入口，带原密码注册改走 protocol_oss_2")
+        return run_protocol_oss_2_registration(
+            email=email, name=name, birthday=birthday, proxy=proxy, otp_code=otp_code,
+            existing_password=existing_password, existing_totp_secret=existing_totp_secret,
+            profile_id=profile_id, registration_options=registration_options,
+            email_source=email_source,
+        )
     options = dict(registration_options or {})
     options.update(registration_driver="sentinel_rs", password_enabled=True, password_mode="password")
     return run_protocol_oss_2_lifecycle(
