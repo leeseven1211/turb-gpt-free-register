@@ -1,7 +1,7 @@
 // Vue 页面负责状态、草稿、提交和轮询；此适配层负责加载、导航及加载失败后的只读展示。
 window.BulkTasks = (() => {
   if (window.BulkTasks?.isVueOwner) return window.BulkTasks;
-  let instance = null, loading = null, visible = false, generation = 0, drainingAccounts = null, fallback = null;
+  let instance = null, loading = null, visible = false, generation = 0, drainingAccounts = null, fallback = null, fallbackReport = null;
   let navigation = {tab:'bulk',view:'list'}, pendingAccounts = null;
   const clone = value => JSON.parse(JSON.stringify(value));
   function normalize(raw = {}) {
@@ -31,7 +31,15 @@ window.BulkTasks = (() => {
   function fallbackButton(text, action, value = '') {
     return node('button',text,{type:'button',class:'jobs-tb-btn','data-bulk-fallback-action':action,'data-value':value});
   }
+  function closeFallbackReport(restoreFocus = true) {
+    const owner = fallbackReport;if (!owner) return;
+    fallbackReport = null;owner.controller.abort();
+    if (owner.dialog.open) owner.dialog.close();
+    owner.dialog.remove();
+    if (restoreFocus && isVisible() && owner.opener?.isConnected && !owner.opener.disabled) owner.opener.focus({preventScroll:true});
+  }
   function clearFallback() {
+    closeFallbackReport(false);
     if (!fallback) return;
     fallback.controller?.abort();fallback.root.removeEventListener('click',fallback.click);fallback = null;
   }
@@ -86,6 +94,53 @@ window.BulkTasks = (() => {
     walk(metrics);
     const content=`<div class="bulk-business-groups">${[...groups].map(([name,rows])=>`<section class="bulk-business-group"><h4>${escape(name)} · ${name==='国家查询项'?'项':'账号数'}</h4><dl class="bulk-business-metrics">${rows.map(([title,value])=>`<div><dt>${escape(title)}</dt><dd>${value}</dd></div>`).join('')}</dl></section>`).join('')}</div>`;
     return groups.size?(expanded?content:`<details class="bulk-business-details"><summary>功能统计<span>展开查看</span></summary>${content}</details>`):'';
+  }
+  async function showFallbackReport(batchId, opener) {
+    const fallbackOwner = fallback;
+    if (!fallbackOwner || !isVisible() || !/^[1-9]\d*$/.test(batchId || '')) return;
+    closeFallbackReport(false);
+    const controller = new AbortController(), nav = JSON.stringify(navigation);
+    const dialog = node('dialog',null,{class:'bulk-fallback-report-dialog','data-bulk-report-dialog':'','aria-labelledby':'bulk-fallback-report-title'});
+    const styles = node('style',`
+      .bulk-fallback-report-dialog{position:fixed;inset:24px;flex-direction:column;width:calc(100% - 48px);max-width:1280px;height:min(900px,calc(100dvh - 48px));max-height:calc(100dvh - 48px);margin:auto;padding:0;overflow:hidden;border:1px solid var(--ui-color-border-strong);border-radius:var(--ui-radius-lg);background:var(--ui-color-surface-subtle);color:var(--ui-color-text);font-family:var(--ui-font-sans);box-shadow:var(--ui-shadow-lg);box-sizing:border-box}
+      .bulk-fallback-report-dialog[open]{display:flex}.bulk-fallback-report-dialog::backdrop{background:color-mix(in srgb,var(--ui-color-text) 38%,transparent)}
+      .bulk-fallback-report-heading{display:flex;align-items:center;justify-content:space-between;flex:none;gap:16px;padding:16px 20px;border-bottom:1px solid var(--ui-color-border);background:var(--ui-color-surface)}
+      .bulk-fallback-report-heading h2{margin:0;font-size:18px;overflow-wrap:anywhere}.bulk-fallback-report-body{flex:1;min-height:0;overflow:auto;padding:16px;overscroll-behavior:contain}
+      @media(max-width:680px){.bulk-fallback-report-dialog{inset:8px;width:calc(100% - 16px);height:calc(100dvh - 16px);max-height:calc(100dvh - 16px)}.bulk-fallback-report-heading{padding:12px}.bulk-fallback-report-body{padding:10px}}
+    `);
+    const heading = node('header',null,{class:'bulk-fallback-report-heading'});
+    const title = node('h2',`批次 #${batchId} 报告`,{id:'bulk-fallback-report-title'});
+    const close = node('button','关闭报告',{type:'button',class:'jobs-tb-btn','data-bulk-report-close':''});
+    const content = node('section','正在读取报告…',{class:'bulk-fallback-report-body','data-bulk-plan-report':'',tabindex:'-1',role:'region','aria-label':'批次报告','aria-busy':'true'});
+    heading.append(title,close);dialog.append(styles,heading,content);
+    const owner = {dialog,controller,opener};fallbackReport = owner;
+    const current = () => fallbackReport === owner && fallback === fallbackOwner && !controller.signal.aborted && isVisible() && JSON.stringify(navigation) === nav;
+    close.addEventListener('click',() => closeFallbackReport());
+    dialog.addEventListener('cancel',event => {event.preventDefault();closeFallbackReport();});
+    dialog.addEventListener('close',() => {if (fallbackReport === owner) closeFallbackReport();});
+    dialog.addEventListener('click',event => {
+      if (event.target !== dialog) return;
+      const rect = dialog.getBoundingClientRect();
+      if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) closeFallbackReport();
+    });
+    document.body.append(dialog);dialog.showModal();close.focus({preventScroll:true});
+    try {
+      const query = new URLSearchParams({view:'current'});
+      const detail = await fallbackRequest(`/batches/${batchId}?${query}`,controller.signal);
+      if (!current()) return;
+      title.textContent = `${detail.name || detail.title || `批次 #${batchId}`} · 报告`;
+      const operation = detail.operation?.key || detail.operation_key || detail.action_key;
+      if (!Object.hasOwn(operationNames,operation)) {content.textContent = '此操作暂无报告。';return;}
+      const data = await fallbackRequest(`/batches/${batchId}/report?${query}`,controller.signal);
+      if (!current()) return;
+      if (!window.BulkPlanReport) throw new Error('报告组件未加载，请重试加载');
+      content.innerHTML = window.BulkPlanReport.render(data,fallbackBusinessMarkup(data.business_summary || {},true));
+      content.focus({preventScroll:true});
+    } catch (error) {
+      if (current()) {content.textContent = `读取报告失败：${error.message || error}`;content.setAttribute('role','alert');}
+    } finally {
+      if (current()) content.setAttribute('aria-busy','false');
+    }
   }
   async function refreshFallback() {
     const owner = fallback;
@@ -149,7 +204,7 @@ window.BulkTasks = (() => {
       if (action === 'refresh') {status.setAttribute('role','status');void refreshFallback();}
       else if (action === 'load') void activate();
       else if (action === 'list') void navigate('list');
-      else if (action === 'report') void navigate('detail',{batch_id:button.dataset.value},true);
+      else if (action === 'report') void showFallbackReport(button.dataset.value,button);
       else if (action === 'first' || action === 'next') void navigate('list',{...navigation,cursor:action === 'first' ? '' : button.dataset.value});
     }};
     fallback = owner;root.addEventListener('click',owner.click);await refreshFallback();
@@ -201,12 +256,13 @@ window.BulkTasks = (() => {
     const api = await loading;await drainAccounts(api);return api;
   }
   async function activate() {
+    closeFallbackReport(false);
     visible = true;syncSidebar();
     try {const api = await ensure();if (isVisible()) await api.activate();else api.setVisible(false);}
     catch (error) {report(error);}
   }
   function navigationState() {return instance ? instance.navigationState() : {...navigation};}
-  function restoreNavigation(raw) {generation++;pendingAccounts = null;navigation = normalize(raw);instance?.restoreNavigation(navigation);syncSidebar();}
+  function restoreNavigation(raw) {closeFallbackReport(false);generation++;pendingAccounts = null;navigation = normalize(raw);instance?.restoreNavigation(navigation);syncSidebar();}
   async function navigate(view,extra = {},focusReport = false) {
     restoreNavigation({tab:'bulk',view,...extra});const ticket = generation;visible = true;
     activateTab('bulk',true,'none');recordNavigationHistory('push');
@@ -223,6 +279,7 @@ window.BulkTasks = (() => {
     const captured = snapshot || owner?.getAccountSelectionSnapshot();
     if (!captured) {showToast('账号范围未就绪，请返回账号页重试');return;}
     if (selected && !captured.ids?.length) {showToast('请先选择账号');return;}
+    closeFallbackReport(false);
     generation++;
     pendingAccounts = {selected,operationKey,snapshot:clone(captured),generation};
     navigation = {tab:'bulk',view:'create'};visible = true;syncSidebar();
@@ -230,10 +287,11 @@ window.BulkTasks = (() => {
     try {await ensure();} catch (error) {report(error);}
   }
   document.querySelectorAll('[data-bulk-nav]').forEach(button => button.addEventListener('click',() => void navigate(button.dataset.bulkNav)));
+  document.addEventListener('visibilitychange',() => {if (!isVisible()) closeFallbackReport(false);});
   return {
     isVueOwner:true,
     activate,navigationState,restoreNavigation,navigate,fromAccounts,
-    setVisible(value) {const next = Boolean(value);if (!next && visible) {generation++;pendingAccounts = null;fallback?.controller?.abort();}visible = next;instance?.setVisible(isVisible());},
+    setVisible(value) {const next = Boolean(value);if (!next) closeFallbackReport(false);if (!next && visible) {generation++;pendingAccounts = null;fallback?.controller?.abort();}visible = next;instance?.setVisible(isVisible());},
     async request(path,options) {return (await ensure()).request(path,options);},
     async intent(scope,path,body) {return (await ensure()).intent(scope,path,body);},
     async restoreSelectionRequest(body,result) {return (await ensure()).restoreSelectionRequest(body,result);},

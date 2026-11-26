@@ -8,11 +8,13 @@ import {bulkId,type BulkDraft,type BulkIntentClient,type BulkIntentRecord,type B
 import type {AccountQuerySpec} from '../accounts/queryAdapter';
 const props=defineProps<{deps:BulkPageDependencies;initialNavigation?:BulkNavigation}>();
 const navigation=shallowRef(normalizeBulkNavigation(props.initialNavigation));
+const reportNavigation=shallowRef<BulkNavigation|null>(null);
+const detailNavigation=computed(()=>reportNavigation.value??navigation.value);
 const listNavigation=shallowRef<BulkNavigation>(navigation.value.view==='list'?{...navigation.value}:{tab:'bulk',view:'list'});
 const active=ref(false),hostVisible=ref(false),error=ref(''),notice=ref(''),recovering=ref(false),pendingRevision=ref(0);
 const seed=shallowRef<BulkDraft|null>(null);
 const list=ref<InstanceType<typeof BulkList>|null>(null),create=ref<InstanceType<typeof BulkCreate>|null>(null),detail=ref<InstanceType<typeof BulkDetail>|null>(null);
-let disposed=false,navigationEpoch=0,visibilityEpoch=0,lastVisible=false,timer:ReturnType<typeof setTimeout>|undefined,refreshing:Promise<void>|null=null,refreshKey='',focusReport=false;
+let disposed=false,navigationEpoch=0,visibilityEpoch=0,lastVisible=false,timer:ReturnType<typeof setTimeout>|undefined,refreshing:Promise<void>|null=null,refreshKey='';
 const visible=computed(()=>active.value&&hostVisible.value);
 const callbacks:BulkSliceCallbacks={...props.deps.callbacks,navigate:(view,extra,focus)=>{void navigate(view,extra,focus);},updateNavigation:extra=>{void updateNavigation(extra);},
  notify:message=>{notice.value=message;pendingRevision.value++;props.deps.callbacks.notify(message);},
@@ -26,24 +28,26 @@ const listDeps={api:props.deps.api,callbacks};
 const createDeps={...props.deps,intents,callbacks};
 const detailDeps={api:props.deps.api,intents,callbacks,now:props.deps.now};
 const pending=computed(()=>{pendingRevision.value;try{return props.deps.intents.pending();}catch{return[];}});
-const delay=computed(()=>!visible.value?0:navigation.value.view==='list'?7000:navigation.value.view==='create'?(create.value?.needsRefresh?2000:0):(detail.value?.needsRefresh?2000:0));
+const delay=computed(()=>!visible.value?0:reportNavigation.value&&detail.value?.needsRefresh?2000:navigation.value.view==='list'?7000:navigation.value.view==='create'?(create.value?.needsRefresh?2000:0):(detail.value?.needsRefresh?2000:0));
 const title=computed(()=>navigation.value.view==='detail'?detail.value?.batchName||'批次详情':navigation.value.view==='create'?'新建批次':'批量任务');
 type AccountSnapshot={ids:readonly (string|number)[];query:AccountQuerySpec;name?:string};
 function syncVisibility(){
  hostVisible.value=!document.hidden&&(props.deps.isVisible?.()??true);
+ if(!visible.value)reportNavigation.value=null;
  if(lastVisible!==visible.value){visibilityEpoch++;lastVisible=visible.value;}
  list.value?.setVisible(visible.value&&navigation.value.view==='list');
  create.value?.setVisible(visible.value&&navigation.value.view==='create');
- detail.value?.setVisible(visible.value&&navigation.value.view==='detail');
+ detail.value?.setVisible(visible.value&&(navigation.value.view==='detail'||!!reportNavigation.value));
 }
 function schedule(){clearTimeout(timer);timer=undefined;if(disposed||!delay.value)return;timer=setTimeout(()=>{timer=undefined;syncVisibility();if(visible.value)void refresh(false);},delay.value);}
 async function refresh(force=true):Promise<void>{
  await nextTick();if(disposed)return;syncVisibility();if(!visible.value)return;
- const key=JSON.stringify([navigation.value,visibilityEpoch]);if(refreshing&&refreshKey===key)return refreshing;
+ const key=JSON.stringify([navigation.value,reportNavigation.value,visibilityEpoch]);if(refreshing&&refreshKey===key)return refreshing;
  const task=(async()=>{try{
   if(navigation.value.view==='list')await list.value?.refresh(!force);
   else if(navigation.value.view==='create')await create.value?.refresh(force);
-  else{await detail.value?.refresh(force);if(focusReport){focusReport=false;await detail.value?.showReport();}}
+  else await detail.value?.refresh(force);
+  if(reportNavigation.value)await detail.value?.refresh(force);
  }finally{pendingRevision.value++;}})();
  refreshing=task;refreshKey=key;
  try{await task;}finally{if(refreshing===task){refreshing=null;refreshKey='';}schedule();}
@@ -59,14 +63,24 @@ function restoreNavigation(value:Partial<BulkNavigation>){
  if(navigation.value.view==='list')listNavigation.value={...navigation.value};
  navigationEpoch++;navigation.value=normalizeBulkNavigation(value);
  if(navigation.value.view==='list')listNavigation.value={...navigation.value};
- error.value='';notice.value='';focusReport=false;
+ error.value='';notice.value='';reportNavigation.value=null;
 }
 async function navigate(view:BulkNavigation['view'],extra:Partial<BulkNavigation>={},report=false){
- restoreNavigation({tab:'bulk',view,...extra});focusReport=report;active.value=true;
+ if(report&&view==='detail'){
+  const ticket=++navigationEpoch;
+  reportNavigation.value=normalizeBulkNavigation({tab:'bulk',view,...extra});error.value='';active.value=true;
+  await nextTick();syncVisibility();await detail.value?.refresh(false);
+  if(disposed||ticket!==navigationEpoch||!visible.value||!reportNavigation.value)return;
+  if(detail.value?.error){error.value=detail.value.error;closeListReport();return;}
+  await detail.value?.showReport();schedule();return;
+ }
+ restoreNavigation({tab:'bulk',view,...extra});active.value=true;
  props.deps.onNavigation(navigationState(),'push');await refresh(false);
 }
+function closeListReport(){if(!reportNavigation.value)return;navigationEpoch++;reportNavigation.value=null;syncVisibility();schedule();}
 async function closeDetail(){await navigate('list',listNavigation.value);}
 async function updateNavigation(extra:Partial<BulkNavigation>){
+ closeListReport();
  navigationEpoch++;
  navigation.value=normalizeBulkNavigation({...navigation.value,...extra});
  props.deps.onNavigation(navigationState(),Object.keys(extra).every(key=>key==='cursor')?'replace':'push');await nextTick();schedule();
@@ -114,7 +128,7 @@ defineExpose({activate,setVisible,refresh,showReport,navigationState,restoreNavi
   <div data-bulk-content>
    <BulkList v-show="navigation.view==='list'" ref="list" :navigation="navigation" :deps="listDeps"/>
    <BulkCreate v-show="navigation.view==='create'" ref="create" :navigation="navigation" :deps="createDeps" :seed="seed" :visible="visible&&navigation.view==='create'"/>
-   <BulkDetail v-show="navigation.view==='detail'" ref="detail" :navigation="navigation" :deps="detailDeps" :visible="visible&&navigation.view==='detail'"/>
+   <BulkDetail v-show="navigation.view==='detail'" ref="detail" :navigation="detailNavigation" :deps="detailDeps" :visible="visible&&(navigation.view==='detail'||!!reportNavigation)" @report-close="closeListReport"/>
   </div>
  </div>
 </template>

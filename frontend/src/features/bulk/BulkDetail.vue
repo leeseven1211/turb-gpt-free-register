@@ -11,6 +11,7 @@ import BulkReportView from './BulkReportView.vue';
 import BulkTargets from './BulkTargets.vue';
 import BulkBusinessStats from './BulkBusinessStats.vue';
 const props=withDefaults(defineProps<{navigation:BulkNavigation;deps:BulkDetailDependencies;visible?:boolean}>(),{visible:undefined});
+const emit=defineEmits<{reportClose:[]}>();
 const state=useBulkDetail(()=>props.navigation,props.deps,props.visible??props.navigation.view==='detail');
 const {navigation,detail,targets,report,reportOpen,rounds,roundsCursor,selected,pendingRound,loading,targetsLoading,reportLoading,roundsLoading,writing,error,targetError,reportError,actionError,confirmation,counts,ended,paused,hasReport,hasPrevious,nextCursor}=state;
 const batchName=computed(()=>detail.value?.name||detail.value?.title||'批次详情');
@@ -32,15 +33,16 @@ async function retry(checked:boolean,event:Event){rememberTrigger(event);await s
 async function control(action:string,event:Event){rememberTrigger(event);await state.control(action);}
 function restoreFocus(event:Event) {event.preventDefault();const trigger=confirmationTrigger;confirmationTrigger=null;void nextTick(()=>{if(trigger?.isConnected&&!trigger.hasAttribute('disabled')&&!trigger.closest('[hidden],[inert]')){let node:HTMLElement|null=trigger;while(node){if(getComputedStyle(node).display==='none'||getComputedStyle(node).visibility==='hidden')return;node=node.parentElement;}trigger.focus({preventScroll:true});}});}
 function showReport(){return state.openReport();}
+async function closeReport(){state.closeReport();await nextTick();emit('reportClose');}
 function reportBackdropClick(event:MouseEvent){
   const dialog=reportDialog.value;if(!dialog||event.target!==dialog)return;
   const rect=dialog.getBoundingClientRect();
-  if(event.clientX<rect.left||event.clientX>rect.right||event.clientY<rect.top||event.clientY>rect.bottom)state.closeReport();
+  if(event.clientX<rect.left||event.clientX>rect.right||event.clientY<rect.top||event.clientY>rect.bottom)closeReport();
 }
 function setVisible(visible:boolean){ownerVisible.value=visible;state.setVisible(visible);if(!visible){targetTable.value?.close();confirmationTrigger=null;}}
 watch(()=>props.visible,value=>{if(value!==undefined)setVisible(value);},{flush:'sync'});
 watch(()=>[navigation.value.batch_id,navigation.value.round_id,navigation.value.result_state,navigation.value.view],()=>{targetTable.value?.close();confirmationTrigger=null;});
-defineExpose({batchName,refresh:state.refresh,showReport,setVisible,needsRefresh:state.needsPolling});
+defineExpose({batchName,error,refresh:state.refresh,showReport,setVisible,needsRefresh:state.needsPolling});
 </script>
 <template>
   <div class="bulk-detail-owner" :aria-busy="loading">
@@ -100,10 +102,10 @@ defineExpose({batchName,refresh:state.refresh,showReport,setVisible,needsRefresh
       <CursorPagination :has-previous="hasPrevious" :next-cursor="nextCursor" :item-count="targets?.items.length||0" :has-cursor="!!navigation.cursor" :busy="targetsLoading" label="账号明细分页" @next="state.next" @previous="state.previous" @first="state.first"/>
     </section>
     <Teleport to="body">
-      <dialog ref="reportDialog" class="bulk-page bulk-report-dialog" data-bulk-report-dialog aria-labelledby="bulkReportDialogTitle" aria-describedby="bulkReportDialogDescription" @cancel.prevent="state.closeReport" @click="reportBackdropClick">
+      <dialog ref="reportDialog" class="bulk-page bulk-report-dialog" data-bulk-report-dialog aria-labelledby="bulkReportDialogTitle" aria-describedby="bulkReportDialogDescription" @cancel.prevent="closeReport" @click="reportBackdropClick">
         <header class="bulk-report-dialog-heading">
           <div><h2 id="bulkReportDialogTitle">{{operationLabel(operationKey(detail))}}报告</h2><p id="bulkReportDialogDescription">{{batchName}} · 批次 #{{navigation.batch_id}} · {{navigation.round_id?'所选轮次':'当前结果'}}</p></div>
-          <div class="bulk-actions"><button type="button" class="jobs-tb-btn" data-bulk-report-close aria-label="关闭批次报告" @click="state.closeReport">关闭 <span aria-hidden="true">×</span></button><button type="button" class="jobs-tb-btn" :disabled="reportLoading" data-bulk-action="report-refresh" @click="state.refreshReport(true)">刷新报告</button></div>
+          <div class="bulk-actions"><button type="button" class="jobs-tb-btn" data-bulk-report-close aria-label="关闭批次报告" @click="closeReport">关闭 <span aria-hidden="true">×</span></button><button type="button" class="jobs-tb-btn" :disabled="reportLoading" data-bulk-action="report-refresh" @click="state.refreshReport(true)">刷新报告</button></div>
         </header>
         <section v-if="reportOpen" data-bulk-plan-report class="bulk-report-dialog-body" role="region" aria-label="批次报告" :aria-busy="reportLoading">
           <BulkReportView :operation-key="operationKey(detail)" :report="report" :error="reportError?'读取报告失败：'+reportError:''" :format-date-time="deps.callbacks.formatDateTime" :on-retry="()=>state.refreshReport(true)" :loading="reportLoading"/>

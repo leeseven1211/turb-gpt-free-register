@@ -139,34 +139,59 @@ it('查看批次在页面内展示，返回列表后恢复原筛选和分页',as
  expect(h.wrapper.vm.navigationState()).toEqual({tab:'bulk',view:'list',q:'套餐',state:'ended',cursor:'list.page.2'});
  expect(h.wrapper.get('[aria-label="批次列表"]').isVisible()).toBe(true);
 });
-it('列表查看报告打开报告浮窗，关闭后仍展示普通批次详情',async()=>{
- const h=fixture();await h.wrapper.vm.activate();await flushPromises();
+it('列表查看报告只打开浮窗，关闭后保留原列表筛选和分页',async()=>{
+ const h=fixture({q:'套餐',state:'ended',cursor:'list.page.2'});await h.wrapper.vm.activate();await flushPromises();
+ const navigation={tab:'bulk',view:'list',q:'套餐',state:'ended',cursor:'list.page.2'};
  await h.wrapper.get('[data-bulk-report]').trigger('click');await flushPromises();
  const dialog=document.querySelector<HTMLDialogElement>('[data-bulk-report-dialog][open]');
  expect(dialog).not.toBeNull();expect(dialog?.textContent).toContain('查套餐');
  expect(dialog?.textContent).not.toContain('账号明细');
- expect(h.wrapper.get('.bulk-detail-owner').isVisible()).toBe(true);
+ expect(h.wrapper.get('.bulk-detail-owner').isVisible()).toBe(false);
+ expect(h.wrapper.vm.navigationState()).toEqual(navigation);
+ expect(h.deps.onNavigation).not.toHaveBeenCalled();
  dialog!.querySelector<HTMLButtonElement>('[data-bulk-report-close]')!.click();await flushPromises();
  expect(document.querySelector('dialog[open]')).toBeNull();
- expect(h.wrapper.vm.navigationState()).toMatchObject({view:'detail',batch_id:'9007199254740993'});
- expect(h.wrapper.get('.bulk-results-card').isVisible()).toBe(true);
+ expect(h.wrapper.vm.navigationState()).toEqual(navigation);
+ expect(h.wrapper.get('[aria-label="批次列表"]').isVisible()).toBe(true);
+ expect(h.wrapper.get('.bulk-results-card').isVisible()).toBe(false);
+ expect(h.deps.onNavigation).not.toHaveBeenCalled();
 });
-it('隐藏批量任务时报告浮窗关闭并停止读取，返回时恢复原范围',async()=>{
- const h=fixture({view:'detail',batch_id:'9007199254740993'});
- await h.wrapper.vm.activate();await h.wrapper.vm.showReport();await flushPromises();
+it('报告加载期间改变列表筛选会取消报告读取，不再轮询隐藏详情',async()=>{
+ const h=fixture({q:'套餐'});await h.wrapper.vm.activate();await flushPromises();
+ let release!:(value:unknown)=>void;
+ let signal:AbortSignal|undefined;
+ h.request.mockImplementationOnce((_path,options)=>{signal=options?.signal as AbortSignal;return new Promise(resolve=>{release=resolve;});});
+ await h.wrapper.get('[data-bulk-report]').trigger('click');await flushPromises();
+ await h.wrapper.get('.bl-toolbar .list-filter-chip').trigger('click');await flushPromises();
+ expect(signal?.aborted).toBe(true);
+ release({id:'9007199254740993',operation_key:'plan_check',control:{state:'active'},summary:{},rounds_head:[]});
+ await flushPromises();
+ const reads=h.request.mock.calls.filter(([path])=>path.startsWith('/batches/')).length;
+ await vi.advanceTimersByTimeAsync(14000);await flushPromises();
+ expect(h.request.mock.calls.filter(([path])=>path.startsWith('/batches/'))).toHaveLength(reads);
+ expect(document.querySelector('dialog[open]')).toBeNull();
+ expect(h.wrapper.vm.navigationState()).toEqual({tab:'bulk',view:'list'});
+});
+it.each(['list','detail'] as const)('隐藏批量任务时关闭 %s 报告并停止读取，返回时恢复原范围',async view=>{
+ const h=fixture(view==='detail'?{view,batch_id:'9007199254740993'}:{view,q:'套餐'});
+ await h.wrapper.vm.activate();
+ if(view==='detail')await h.wrapper.vm.showReport();else await h.wrapper.get('[data-bulk-report]').trigger('click');
+ await flushPromises();
  expect(document.querySelector('[data-bulk-report-dialog][open]')).not.toBeNull();
  h.wrapper.vm.setVisible(false);await flushPromises();
  expect(document.querySelector('dialog[open]')).toBeNull();
  const reads=h.request.mock.calls.length;await vi.advanceTimersByTimeAsync(14000);
- expect(h.request).toHaveBeenCalledTimes(reads);expect(h.wrapper.vm.navigationState().view).toBe('detail');
+ expect(h.request).toHaveBeenCalledTimes(reads);expect(h.wrapper.vm.navigationState().view).toBe(view);
  await h.wrapper.vm.activate();await flushPromises();
- expect(h.wrapper.get('.bulk-detail-owner').text()).toContain('账号明细');
+ expect(h.wrapper.get(view==='detail'?'.bulk-detail-owner':'[aria-label="批次列表"]').isVisible()).toBe(true);
+ if(view==='list')expect(h.wrapper.vm.navigationState().q).toBe('套餐');
 });
 it('查看报告时详情读取失败会保留页面错误，不打开空白浮窗',async()=>{
  const h=fixture();await h.wrapper.vm.activate();await flushPromises();
  h.request.mockRejectedValueOnce(new Error('批次详情读取失败'));
  await h.wrapper.get('[data-bulk-report]').trigger('click');await flushPromises();
- expect(h.wrapper.get('.bulk-detail-owner [role="alert"]').text()).toContain('批次详情读取失败');
+ expect(h.wrapper.get('[data-bulk-error]').text()).toContain('批次详情读取失败');
+ expect(h.wrapper.get('[aria-label="批次列表"]').isVisible()).toBe(true);
  expect(document.querySelector('dialog[open]')).toBeNull();
  expect(h.request.mock.calls.some(([path])=>path.includes('/report?'))).toBe(false);
 });
