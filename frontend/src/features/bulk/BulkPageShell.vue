@@ -34,6 +34,7 @@ const delay=computed(()=>!visible.value?0:navigation.value.view==='list'?7000:na
 const title=computed(()=>navigation.value.view==='create'?'新建批次':'批量任务');
 const dialogOpen=computed(()=>visible.value&&navigation.value.view==='detail');
 useNativeDialog(batchDialog,()=>dialogOpen.value,()=>visible.value&&navigation.value.view==='list');
+type AccountSnapshot={ids:readonly (string|number)[];query:AccountQuerySpec;name?:string};
 function syncVisibility(){
  hostVisible.value=!document.hidden&&(props.deps.isVisible?.()??true);
  if(lastVisible!==visible.value){visibilityEpoch++;lastVisible=visible.value;}
@@ -81,16 +82,16 @@ async function updateNavigation(extra:Partial<BulkNavigation>){
  navigation.value=normalizeBulkNavigation({...navigation.value,...extra});
  props.deps.onNavigation(navigationState(),Object.keys(extra).every(key=>key==='cursor')?'replace':'push');await nextTick();schedule();
 }
-async function openDraft(query:AccountQuerySpec,source:BulkRecord|null,operationKey='plan_check'){
+async function openDraft(query:AccountQuerySpec,source:BulkRecord|null,operationKey='plan_check',name=''){
  const frozen=JSON.parse(JSON.stringify({query,source})) as {query:AccountQuerySpec;source:BulkRecord|null};
- seed.value={name:'',operation_key:operationKey,query:props.deps.adapter.normalize({...frozen.query,limit:null}),source:frozen.source,parameters:{},max_concurrency:3};
+ seed.value={name:String(name||''),operation_key:operationKey,query:props.deps.adapter.normalize({...frozen.query,limit:null}),source:frozen.source,parameters:{},max_concurrency:3};
  await navigate('create');
 }
-async function fromAccounts(selected=false,operationKey='plan_check',snapshot?:{ids:readonly (string|number)[];query:AccountQuerySpec}){
+async function fromAccounts(selected=false,operationKey='plan_check',snapshot?:AccountSnapshot){
  if(!snapshot){callbacks.notify('账号范围未就绪，请返回账号页重试');return;}
  const ids=selected?snapshot.ids.map(value=>bulkId(typeof value==='number'&&Number.isSafeInteger(value)?String(value):value)):[];
  if(selected&&!ids.length){callbacks.notify('请先选择账号');return;}
- await openDraft(snapshot.query,selected?{kind:'ids',entity:'account',ids}:null,operationKey);
+ await openDraft(snapshot.query,selected?{kind:'ids',entity:'account',ids}:null,operationKey,snapshot.name);
 }
 async function newBatch(){await openDraft(props.deps.adapter.normalize(),null);}
 async function restoreSelectionRequest(body:BulkRecord,result:BulkRecord){await nextTick();create.value?.restoreSelectionRequest(body,result);}

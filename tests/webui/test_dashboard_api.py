@@ -12,6 +12,7 @@ import pyotp
 from flask import Flask
 from core import db
 from core.storage import records as record_store
+from core.storage.task_query_context import readonly_task_query
 from webui.app import create_app
 from webui.routes.dashboard import create_dashboard_blueprint
 from tests.support_pg import PostgresTestCase
@@ -285,6 +286,54 @@ class DashboardApiTests(PostgresTestCase):
         self.app = create_app(auth_code="test-auth")
         self.client = self.app.test_client()
         self.headers = {"X-Auth-Code": "test-auth"}
+
+    @patch("webui.routes.dashboard.registration_analytics.init_registration_schema")
+    @patch("webui.routes.dashboard.registration_analytics.registration_daily_analytics")
+    def test_registration_daily_route_passes_date_range_and_is_read_only(self, aggregate, init_schema):
+        aggregate.return_value = {
+            "ok": True,
+            "timezone": "Asia/Shanghai",
+            "date_from": "2026-11-20",
+            "date_to": "2026-11-26",
+            "updated_at": "2026-11-26T12:00:00+08:00",
+            "rows": [],
+            "summary": {"total": 0, "accounts_total": 0, "unpromoted_count": 0, "query": {}},
+        }
+        aggregate.side_effect = lambda **kwargs: (
+            self.assertTrue(readonly_task_query()),
+            aggregate.return_value,
+        )[1]
+        response = self.client.get(
+            "/api/dashboard/registration-daily",
+            query_string={"date_from": "2026-11-20", "date_to": "2026-11-26"},
+            headers=self.headers,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["timezone"], "Asia/Shanghai")
+        aggregate.assert_called_once_with(date_from="2026-11-20", date_to="2026-11-26")
+        init_schema.assert_not_called()
+
+    def test_registration_daily_route_returns_stable_chinese_error(self):
+        response = self.client.get(
+            "/api/dashboard/registration-daily",
+            query_string={"date_from": "2026-11-27", "date_to": "2026-11-26"},
+            headers=self.headers,
+        )
+        self.assertEqual(response.status_code, 400)
+        payload = response.get_json()
+        self.assertEqual(payload["error_code"], "date_range_reversed")
+        self.assertTrue(payload["message"])
+
+    @patch(
+        "webui.routes.dashboard.registration_analytics.registration_daily_analytics",
+        side_effect=RuntimeError("数据库暂时不可用"),
+    )
+    def test_registration_daily_route_returns_controlled_storage_error(self, _aggregate):
+        response = self.client.get("/api/dashboard/registration-daily", headers=self.headers)
+        self.assertEqual(response.status_code, 503)
+        payload = response.get_json()
+        self.assertEqual(payload["error_code"], "registration_daily_unavailable")
+        self.assertTrue(payload["message"])
 
     def _page_source(self, response, assets=()):
         source = response.get_data(as_text=True)

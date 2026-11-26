@@ -4108,19 +4108,19 @@ var oo = ["data-bulk-view"], so = { class: "bulk-page-heading" }, co = { "data-b
 				...e
 			}), r.deps.onNavigation(ge(), Object.keys(e).every((e) => e === "cursor") ? "replace" : "push"), await t(), de();
 		}
-		async function xe(e, t, n = "plan_check") {
-			let i = JSON.parse(JSON.stringify({
+		async function xe(e, t, n = "plan_check", i = "") {
+			let a = JSON.parse(JSON.stringify({
 				query: e,
 				source: t
 			}));
 			E.value = {
-				name: "",
+				name: String(i || ""),
 				operation_key: n,
 				query: r.deps.adapter.normalize({
-					...i.query,
+					...a.query,
 					limit: null
 				}),
-				source: i.source,
+				source: a.source,
 				parameters: {},
 				max_concurrency: 3
 			}, await Y("create");
@@ -4135,7 +4135,7 @@ var oo = ["data-bulk-view"], so = { class: "bulk-page-heading" }, co = { "data-b
 				kind: "ids",
 				entity: "account",
 				ids: r
-			} : null, t);
+			} : null, t, n.name);
 		}
 		async function Ce() {
 			await xe(r.deps.adapter.normalize(), null);
@@ -4296,7 +4296,7 @@ var oo = ["data-bulk-view"], so = { class: "bulk-page-heading" }, co = { "data-b
 			])
 		], 8, oo));
 	}
-}), [["__scopeId", "data-v-b32fb451"]]), ko = "turb_bulk_intent:", Ao = /* @__PURE__ */ new Set([
+}), [["__scopeId", "data-v-0e1e777c"]]), ko = "turb_bulk_intent:", Ao = /* @__PURE__ */ new Set([
 	400,
 	403,
 	404,

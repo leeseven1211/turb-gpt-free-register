@@ -52,9 +52,30 @@ it('account scope is frozen, old limit removed and selected bigint IDs remain st
  const snapshot={ids:['9007199254740993'],query};
  await h.wrapper.vm.fromAccounts(true,'plan_check',snapshot);query.filters.email='changed';snapshot.ids.push('2');await flushPromises();
  const saved=JSON.parse(sessionStorage.getItem('turb_bulk_draft_v1')!);
- expect(saved.query.limit).toBeNull();expect(saved.query.filters.email).toBe('first');expect(saved.source.ids).toEqual(['9007199254740993']);
+ expect(saved.name).toBe('');expect(saved.query.limit).toBeNull();expect(saved.query.filters.email).toBe('first');expect(saved.source.ids).toEqual(['9007199254740993']);
  expect(h.wrapper.vm.navigationState()).toEqual({tab:'bulk',view:'create'});
  expect(h.deps.onNavigation).toHaveBeenLastCalledWith({tab:'bulk',view:'create'},'push');
+});
+it('daily registration snapshot keeps its name and query while only opening the create page',async()=>{
+ const h=fixture();
+ const query=h.deps.adapter.normalize({
+  q:'注册任务日期:2026-11-26..2026-11-26',
+  archived:'0',
+  filters:{promotion:['none']},
+ });
+ const snapshot={ids:[],query,name:'2026-11-26 无优惠账号查套餐'} as unknown as {ids:readonly (string|number)[];query:typeof query};
+ await h.wrapper.vm.fromAccounts(false,'plan_check',snapshot);
+ await flushPromises();
+ const saved=JSON.parse(sessionStorage.getItem('turb_bulk_draft_v1')!);
+ expect(saved).toMatchObject({
+  name:'2026-11-26 无优惠账号查套餐',
+  operation_key:'plan_check',
+  query:{q:'注册任务日期:2026-11-26..2026-11-26',archived:'0',filters:{promotion:['none']}},
+  source:null,
+  max_concurrency:3,
+ });
+ expect(h.request.mock.calls.some(([,options])=>options?.method==='POST')).toBe(false);
+ expect(h.wrapper.vm.navigationState()).toEqual({tab:'bulk',view:'create'});
 });
 it('global receipt recovery replays the saved request once then opens the accepted batch',async()=>{
  const h=fixture();await h.wrapper.vm.activate();const original={name:'accepted',selection_id:'14'};

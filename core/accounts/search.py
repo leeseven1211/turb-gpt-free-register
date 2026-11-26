@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 
 
 class AccountSearchError(ValueError):
@@ -44,10 +45,12 @@ _FIELD_ALIASES = {
     **dict.fromkeys(("来源", "source"), "source"),
     **dict.fromkeys(("备注", "note"), "note"),
     **dict.fromkeys(("id", "编号"), "id"),
+    **dict.fromkeys(("注册任务日期", "任务日期", "registration_date", "registration_task_date"), "registration_date"),
 }
 _FIELD_LABELS = {
     "method": "注册方式", "region": "注册出口", "email": "邮箱",
-    "name": "姓名", "source": "来源", "note": "备注", "id": "ID", "text": "关键词",
+    "name": "姓名", "source": "来源", "note": "备注", "id": "ID",
+    "registration_date": "注册任务日期", "text": "关键词",
 }
 _COUNTRY_CODES = frozenset("""
 AD AE AF AG AI AL AM AO AQ AR AS AT AU AW AX AZ BA BB BD BE BF BG BH BI BJ BL
@@ -149,6 +152,24 @@ def _country(value: str) -> str | None:
     return _COUNTRY_ALIASES.get(value) or (value if value in _COUNTRY_CODES else None)
 
 
+def parse_registration_date_range(value: str) -> tuple[str, str]:
+    """解析账号归属所使用的注册任务北京时间日期范围。"""
+    raw = str(value or "").strip()
+    parts = raw.split("..")
+    if len(parts) != 2 or any(len(item) != 10 for item in parts):
+        raise AccountSearchError("注册任务日期必须使用 YYYY-MM-DD..YYYY-MM-DD。")
+    try:
+        start = date.fromisoformat(parts[0])
+        end = date.fromisoformat(parts[1])
+    except ValueError:
+        raise AccountSearchError("注册任务日期必须使用 YYYY-MM-DD..YYYY-MM-DD。") from None
+    if start > end:
+        raise AccountSearchError("注册任务日期开始不能晚于结束。")
+    if (end - start).days + 1 > 366:
+        raise AccountSearchError("注册任务日期范围不能超过 366 天。")
+    return start.isoformat(), end.isoformat()
+
+
 def parse_account_search(query: str) -> list[AccountSearchTerm]:
     query = str(query or "").strip()
     if len(query) > 1000:
@@ -181,6 +202,9 @@ def parse_account_search(query: str) -> list[AccountSearchTerm]:
             value = value.lstrip("#")
             if not value.isascii() or not value.isdecimal():
                 raise AccountSearchError("账号 ID 必须是数字，例如「ID:123」。")
+        elif field == "registration_date":
+            start, end = parse_registration_date_range(value)
+            value = f"{start}..{end}"
         terms.append(AccountSearchTerm(field=field, value=value, raw=raw))
     return terms
 
