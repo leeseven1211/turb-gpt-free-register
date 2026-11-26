@@ -73,10 +73,13 @@ export function useBulkList(source: () => BulkNavigation, deps: BulkListDependen
 
   function refresh(poll = false, canRender?: () => boolean): Promise<void> {
     if (disposed || !visible.value || source().view !== 'list') return Promise.resolve();
-    if (pending) return pending;
+    if (pending) {
+      if (!poll) loading.value = true;
+      return pending;
+    }
     const request = new AbortController();
     controller = request;
-    loading.value = true;
+    loading.value = !poll || !page.value;
     const read = async () => {
       try {
         const response = await deps.api.request(`/batches?${queryFor(navigation.value)}`, {

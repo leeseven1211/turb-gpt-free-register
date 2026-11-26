@@ -90,6 +90,120 @@ describe('single proxy read owner', () => {
     await vi.advanceTimersByTimeAsync(60000);
     expect(h.requests).toHaveLength(6);
   });
+  it('后台轮询未完成时保留列表和空状态，且不显示加载态', async () => {
+    const h = setup();
+    h.owner.setVisible(true);
+    await settle();
+    const previous = h.owner.pages.current.items.slice();
+    const pending = deferred<ReturnType<typeof page>>();
+    h.setRead(() => pending.promise);
+    await vi.advanceTimersByTimeAsync(30000);
+    await settle();
+    expect(h.owner.loading.value).toBe(false);
+    expect(h.owner.pages.current.items).toEqual(previous);
+    pending.resolve(page([], 0));
+    await settle();
+  });
+  it('后台刷新失败后保留旧列表并在下一轮继续重试', async () => {
+    const h = setup();
+    h.owner.setVisible(true);
+    await settle();
+    const previous = h.owner.pages.current.items.slice();
+    h.setRead(() => Promise.reject(new Error('后台读取失败')));
+    await vi.advanceTimersByTimeAsync(30000);
+    await settle();
+    expect(h.owner.loading.value).toBe(false);
+    expect(h.owner.pages.current.items).toEqual(previous);
+    expect(h.owner.error.value).toBe('后台读取失败');
+
+    h.setRead((view) => Promise.resolve(page([{ id: 7, lease_id: view }])));
+    await vi.advanceTimersByTimeAsync(30000);
+    await settle();
+    expect(h.owner.pages.current.items[0]?.id).toBe(7);
+  });
+  it('已加载列表在恢复可见时静默刷新并保留旧快照', async () => {
+    const h = setup();
+    h.owner.setVisible(true);
+    await settle();
+    const previous = h.owner.pages.current.items.slice();
+    const pending = deferred<ReturnType<typeof page>>();
+    h.setRead(() => pending.promise);
+    h.owner.setVisible(false);
+    h.owner.setVisible(true);
+    await settle();
+    expect(h.owner.loading.value).toBe(false);
+    expect(h.owner.pages.current.items).toEqual(previous);
+    pending.resolve(page([], 0));
+    await settle();
+  });
+  it('隐藏期间切换查询范围后恢复可见仍显示新范围的首次加载态', async () => {
+    const h = setup();
+    h.owner.setVisible(true);
+    await settle();
+    const pending = deferred<ReturnType<typeof page>>();
+    h.setRead(() => pending.promise);
+    h.owner.setVisible(false);
+    h.owner.updateFilters({ window: '7d' });
+    h.owner.setVisible(true);
+    await settle();
+    expect(h.owner.loading.value).toBe(true);
+    pending.resolve(page([], 0));
+    await settle();
+  });
+  it('首次读取失败后后台重试显示加载态并保留旧错误', async () => {
+    const h = setup();
+    h.setRead(() => Promise.reject(new Error('首次读取失败')));
+    h.owner.setVisible(true);
+    await settle();
+    expect(h.owner.loading.value).toBe(false);
+    expect(h.owner.error.value).toBe('首次读取失败');
+
+    const pending = deferred<ReturnType<typeof page>>();
+    h.setRead(() => pending.promise);
+    await vi.advanceTimersByTimeAsync(30000);
+    await settle();
+    expect(h.owner.loading.value).toBe(true);
+    expect(h.owner.error.value).toBe('首次读取失败');
+    pending.resolve(page([], 0));
+    await settle();
+  });
+  it('查询变更失败后后台重试显示加载态而不误用旧范围', async () => {
+    const h = setup();
+    h.owner.setVisible(true);
+    await settle();
+    h.setRead(() => Promise.reject(new Error('新范围读取失败')));
+    h.owner.updateFilters({ window: '7d' });
+    await settle();
+    expect(h.owner.loading.value).toBe(false);
+    expect(h.owner.error.value).toBe('新范围读取失败');
+
+    const pending = deferred<ReturnType<typeof page>>();
+    h.setRead(() => pending.promise);
+    await vi.advanceTimersByTimeAsync(30000);
+    await settle();
+    expect(h.owner.loading.value).toBe(true);
+    pending.resolve(page([], 0));
+    await settle();
+  });
+  it('隐藏后恢复的新范围读取失败时清除旧范围列表', async () => {
+    const h = setup();
+    h.owner.setVisible(true);
+    await settle();
+    expect(h.owner.pages.current.items[0]?.lease_id).toBe('current');
+
+    h.owner.updateFilters({ window: '7d' });
+    h.owner.setVisible(false);
+    h.setRead(() => Promise.reject(new Error('新范围恢复失败')));
+    h.owner.setVisible(true);
+    await settle();
+
+    expect(h.owner.pages.current.items).toEqual([]);
+    expect(h.owner.pages.history.items).toEqual([]);
+    expect(h.owner.pages.traffic.items).toEqual([]);
+    expect(h.owner.summary.value).toBeNull();
+    expect(h.owner.pool.value).toBeNull();
+    expect(h.owner.error.value).toBe('新范围恢复失败');
+  });
   it('an initial targeted update still initializes all lists and global facets', async () => {
     const h = setup(),
       old = deferred<ReturnType<typeof page>>();

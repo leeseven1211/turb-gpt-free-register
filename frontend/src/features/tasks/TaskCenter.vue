@@ -151,7 +151,7 @@ defineExpose({open, refresh, closeDetail, setVisible});
           <button v-if="activeFilters.length" type="button" class="ui-link" @click="list.applyFilters({})">清除全部筛选</button>
           <span class="tc-timezone" :title="timezone">时间按 {{ timezone }} 显示</span>
           <button type="button" class="ui-link" @click="table?.resetColumns()">恢复列宽</button>
-          <button id="btnRefreshTasksV2" type="button" class="ui-button" :disabled="loading" @click="list.refresh()">{{ loading ? '刷新中…' : '刷新' }}</button>
+          <button id="btnRefreshTasksV2" type="button" class="ui-button ui-refresh-button" :disabled="loading" @click="list.refresh()">{{ loading ? '刷新中…' : '刷新' }}</button>
         </template>
       </ListToolbar>
       <div v-if="notice || actionError || (error && items.length)" class="ui-list-feedback tc-feedback" :class="{'is-error': actionError || error}" :role="actionError || error ? 'alert' : 'status'">{{ actionError || error || notice }}<button v-if="error" type="button" class="ui-link" @click="list.refresh()">重试</button><details v-if="skipped.length"><summary>查看跳过原因</summary><ul><li v-for="item in skipped" :key="item.id">#{{ item.id }}：{{ item.message }}</li></ul></details></div>

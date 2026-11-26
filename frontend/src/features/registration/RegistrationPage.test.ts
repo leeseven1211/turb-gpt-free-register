@@ -4,11 +4,14 @@ import RegistrationPage from './RegistrationPage.vue';
 import RegistrationProgress from './RegistrationProgress.vue';
 import type {JobProgressResponse, RegistrationApi, RegistrationJob} from '../../api/registration';
 const wrappers:ReturnType<typeof mount>[]=[];
-function setup(){
+function setup(initialJobs: {items?: RegistrationJob[]; total?: number} = {
+ items:[{id:'9007199254740993',email:'long-address@example.test',email_source:'outlook',status:'failed',error_message:'raw diagnostic details that must remain available only in expansion'}],
+ total:125,
+}){
  const api:RegistrationApi={
   metadata:vi.fn(async()=>({sources:[{value:'outlook',label:'Outlook',enabled:true}],registration_drivers:[],capabilities:{features:{register:{enabled:true}}}})),
   summary:vi.fn(async()=>({accounts:0})),
-  jobs:vi.fn(async()=>({items:[{id:'9007199254740993',email:'long-address@example.test',email_source:'outlook',status:'failed',error_message:'raw diagnostic details that must remain available only in expansion'}],total:125})),
+  jobs:vi.fn(async()=>initialJobs),
   progress:vi.fn(async(id)=>({ok:true,job:{id,progress:{main_steps:[]}}})),
   create:vi.fn(async()=>({})),action:vi.fn(async()=>({})),log:vi.fn(async()=>({})),debug:vi.fn(async()=>({})),diagnostics:vi.fn(async()=>({})),compare:vi.fn(async()=>({})),
  };
@@ -270,6 +273,40 @@ describe('registration list standards',()=>{
   expect(wrapper.get('.registration-launch').text()).toContain('邮箱来源服务暂不可用');
   expect(wrapper.get('.registration-launch').text()).not.toContain('正在读取邮箱来源');
   expect(wrapper.get('[data-registration-source-retry]').text()).toContain('重试');
+ });
+ it('keeps existing rows and pagination usable during a silent automatic refresh',async()=>{
+  const {wrapper,api}=setup();await flushPromises();
+  let resolve!: (value:{items:RegistrationJob[];total:number})=>void;
+  vi.mocked(api.jobs).mockImplementationOnce(()=>new Promise(done=>{resolve=done;}));
+  const pending=(wrapper.vm as unknown as {load(options?:{automatic?:boolean}):Promise<void>}).load({automatic:true});
+  await flushPromises();
+  expect(wrapper.find('tbody .ui-table__state-row').exists()).toBe(false);
+  expect(wrapper.get('nav[aria-label="注册任务分页"]').attributes('aria-busy')).toBe('false');
+  expect(wrapper.get('[aria-label="跳转页码"]').attributes('disabled')).toBeUndefined();
+  expect(wrapper.get('.list-pagination__next').attributes('disabled')).toBeUndefined();
+  resolve({items:[{id:'9007199254740993',status:'failed'}],total:125});await pending;
+ });
+ it('keeps the empty state stable during a silent automatic refresh',async()=>{
+  const {wrapper,api}=setup({items:[],total:0});await flushPromises();
+  expect(wrapper.find('tbody .ui-table__state-row').exists()).toBe(true);
+  let resolve!: (value:{items:RegistrationJob[];total:number})=>void;
+  vi.mocked(api.jobs).mockImplementationOnce(()=>new Promise(done=>{resolve=done;}));
+  const pending=(wrapper.vm as unknown as {load(options?:{automatic?:boolean}):Promise<void>}).load({automatic:true});
+  await flushPromises();
+  expect(wrapper.findAll('tbody .ui-table__state-row')).toHaveLength(1);
+  expect(wrapper.get('nav[aria-label="注册任务分页"]').attributes('aria-busy')).toBe('false');
+  resolve({items:[],total:0});await pending;
+  expect(wrapper.findAll('tbody .ui-table__state-row')).toHaveLength(1);
+ });
+ it('keeps manual loading busy without adding a second state row',async()=>{
+  const {wrapper,api}=setup();await flushPromises();
+  let resolve!: (value:{items:RegistrationJob[];total:number})=>void;
+  vi.mocked(api.jobs).mockImplementationOnce(()=>new Promise(done=>{resolve=done;}));
+  const pending=(wrapper.vm as unknown as {load():Promise<void>}).load();
+  await flushPromises();
+  expect(wrapper.find('tbody .ui-table__state-row').exists()).toBe(false);
+  expect(wrapper.get('nav[aria-label="注册任务分页"]').attributes('aria-busy')).toBe('true');
+  resolve({items:[{id:'9007199254740993',status:'failed'}],total:125});await pending;
  });
  it('restores legacy ratio widths, supports keyboard resizing and resets only registration widths',async()=>{
   localStorage.setItem('gpt_console_table_widths_jobs',JSON.stringify(Array(11).fill(1)));localStorage.setItem('gpt_console_table_total_jobs','2200');localStorage.setItem('gpt_console_table_total_accounts','1900');

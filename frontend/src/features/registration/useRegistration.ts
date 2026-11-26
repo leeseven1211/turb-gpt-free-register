@@ -34,7 +34,9 @@ export function useRegistration(deps:RegistrationDeps){
   });
   const notify=(text:string)=>deps.notify?.(text);
   let readVersion=0,refreshGeneration=0,summaryVersion=0,metaVersion=0,detailVersion=0;
+  let loadedScopeSignature='';
   let jobsTimer:number|undefined,summaryTimer:number|undefined,detailTimer:number|undefined;
+  let detailLoaded=false;
   let read:{version:number;signature:string;promise:Promise<void>;controller:AbortController}|undefined;
   let summaryRead:{version:number;promise:Promise<void>;controller:AbortController}|undefined;
   let metaRead:{version:number;promise:Promise<void>;controller:AbortController}|undefined;
@@ -77,7 +79,7 @@ export function useRegistration(deps:RegistrationDeps){
       if(next!==state.batchId){state.batchId=next;state.batch=null;}
     }
   }
-  function load(options:RegistrationLoadOptions={}):Promise<void>{
+  function load(options:RegistrationLoadOptions={},background=false):Promise<void>{
     mergeQuery(options);
     if(!active.value||(options.automatic&&!shouldPollJobs()))return Promise.resolve();
     const signature=JSON.stringify({view:state.view,batchId:state.batchId,...state.query});
@@ -86,7 +88,9 @@ export function useRegistration(deps:RegistrationDeps){
     const version=++readVersion,controller=new AbortController(),requestView=state.view;
     if(!options.automatic)refreshGeneration++;
     const generation=refreshGeneration;
-    state.loading=true;state.error='';
+    const silentRefresh=Boolean((options.automatic||background)&&loadedScopeSignature===signature);
+    state.loading=!silentRefresh;
+    if(!options.automatic&&!background)state.error='';
     const valid=()=>active.value&&version===readVersion&&requestView===state.view;
     const promise=(async()=>{
       try{
@@ -125,6 +129,8 @@ export function useRegistration(deps:RegistrationDeps){
             }
             state.jobs=result.items||[];
           }
+          state.error='';
+          loadedScopeSignature=JSON.stringify({view:requestView,batchId:state.batchId,...state.query});
           return;
         }
       }catch(error){if(valid()&&!isAbort(error))state.error=message(error);}
@@ -176,7 +182,7 @@ export function useRegistration(deps:RegistrationDeps){
   function startPageReads(refreshMeta=false){
     clearPageTimers();
     if(!active.value)return;
-    void ensureMeta(refreshMeta);void load({coalesce:true});void loadSummary();
+    void ensureMeta(refreshMeta);void load({coalesce:true},true);void loadSummary();
     jobsTimer=window.setInterval(()=>{void load({automatic:true});},5000);
     summaryTimer=window.setInterval(()=>{if(!summaryRead)void loadSummary();void ensureMeta(true);},10000);
   }
@@ -292,11 +298,13 @@ export function useRegistration(deps:RegistrationDeps){
     detailController=compareController=undefined;window.clearTimeout(detailTimer);detailTimer=undefined;
     state.detail.loading=false;state.detail.comparing=false;
   }
-  async function refreshDetail(){
+  async function refreshDetail(silent=detailLoaded,resetError=false){
     if(!detailActive())return;
     detailController?.abort();window.clearTimeout(detailTimer);
     const id=state.detail.id!,version=++detailVersion,controller=new AbortController();
-    detailController=controller;state.detail.loading=true;state.detail.error='';
+    detailController=controller;
+    if(!silent)state.detail.loading=true;
+    if(resetError)state.detail.error='';
     const valid=()=>detailValid(version,id);
     try{
       const result=await api.log(id,controller.signal);if(!valid())return;
@@ -305,6 +313,8 @@ export function useRegistration(deps:RegistrationDeps){
       state.detail.debug=debug?.enabled?debug:null;
       if(!debug?.enabled){const diagnostics=await api.diagnostics(id,controller.signal);if(!valid())return;state.detail.diagnostics=diagnostics;}
       else state.detail.diagnostics=null;
+      detailLoaded=true;
+      state.detail.error='';
     }catch(error){if(valid()&&!isAbort(error))state.detail.error=message(error);}
     finally{
       if(valid()){
@@ -316,10 +326,10 @@ export function useRegistration(deps:RegistrationDeps){
   function openLog(id:RegistrationId,stepId?:string|null){
     const exact=taskId(id),job=[...state.jobs,...(state.batch?.items||[])].find(row=>String(row.id)===String(exact));
     if(job?.operation_task_id&&deps.openTask){deps.openTask(job.operation_task_id,job.operation_run_id||null,stepId||null);return;}
-    invalidateDetail();state.detail={...emptyDetail(),id:exact};
-    void refreshDetail();
+    invalidateDetail();detailLoaded=false;state.detail={...emptyDetail(),id:exact};
+    void refreshDetail(false,true);
   }
-  function closeDetail(){invalidateDetail();state.detail=emptyDetail();}
+  function closeDetail(){invalidateDetail();detailLoaded=false;state.detail=emptyDetail();}
   async function compare(id:RegistrationId){
     const exact=taskId(id);
     if(!detailValid(detailVersion,exact))return null;

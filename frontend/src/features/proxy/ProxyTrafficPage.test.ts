@@ -45,6 +45,7 @@ afterEach(() => {
   wrappers.splice(0).forEach((w) => w.unmount());
   document.body.replaceChildren();
   localStorage.clear();
+  vi.useRealTimers();
 });
 describe('complete proxy Vue page', () => {
   it('retains inventory/country counts, supply reason, capacity warning and masked inventory', async () => {
@@ -130,6 +131,38 @@ describe('complete proxy Vue page', () => {
     await reload();
     await flushPromises();
     expect(pager.get('[aria-current="page"]').text()).toBe('2');
+  });
+  it('首次和手动刷新显示加载态，后台轮询保持刷新按钮可操作', async () => {
+    vi.useFakeTimers();
+    const { wrapper, api } = setup('records');
+    await flushPromises();
+    const button = wrapper.get('button.ui-refresh-button');
+    expect(button.attributes('disabled')).toBeUndefined();
+    expect(button.text()).toBe('刷新');
+
+    let resolve!: (value: ReturnType<typeof fixturePage>) => void;
+    const manualResult = new Promise<ReturnType<typeof fixturePage>>((done) => {
+      resolve = done;
+    });
+    api.page = vi.fn(() => manualResult);
+    const manual = (wrapper.vm as unknown as { load(): Promise<void> }).load();
+    await Promise.resolve();
+    expect(button.attributes('disabled')).toBeDefined();
+    expect(button.text()).toContain('刷新中');
+    resolve(fixturePage('current'));
+    await manual;
+    await flushPromises();
+
+    let pollResolve!: (value: ReturnType<typeof fixturePage>) => void;
+    const pollResult = new Promise<ReturnType<typeof fixturePage>>((done) => {
+      pollResolve = done;
+    });
+    api.page = vi.fn(() => pollResult);
+    await vi.advanceTimersByTimeAsync(30000);
+    expect(button.attributes('disabled')).toBeUndefined();
+    expect(button.text()).toBe('刷新');
+    pollResolve(fixturePage('current'));
+    await flushPromises();
   });
   it('renders all original records columns and plain task associations with global zero summary', async () => {
     const { wrapper, openTask } = setup('records');

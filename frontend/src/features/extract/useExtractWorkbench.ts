@@ -7,10 +7,11 @@ import {download,message,paymentUrl,selectedCsv} from './presentation';
 const blankQuery=():ExtractQuery=>({page:1,size:20,provider:'',mode:'',status:'',query:'',batch:''});
 const CACHE_MS=30000;
 interface Inflight<T>{promise:Promise<T>;version:number}
+const querySignature=(query:ExtractQuery)=>JSON.stringify(query);
 export function createExtractWorkbench(input:ExtractDeps={}){
  const api=input.api||createExtractApi(input);
  const state=reactive({query:blankQuery(),items:[] as ExtractTask[],total:0,counts:{} as Record<string,number>,batches:[] as ExtractBatch[],batchTotal:0,batchPage:1,batchLoading:false,batchDetail:null as ExtractBatch|null,config:null as ExtractConfig|null,summary:null as Record<string,number>|null,loading:false,error:'',auxErrors:{config:'',summary:'',batches:'',detail:''},visible:input.visible!==false,selected:new Set<string>(),cancellingBatch:'',bulkBusy:false,receipt:null as ExtractReceipt|null});
- let dead=false,life=0,listVersion=0,auxVersion=0,detailVersion=0,configAt=0,batchesAt=0,batchesPage=0,failures=0;
+ let dead=false,life=0,listVersion=0,auxVersion=0,detailVersion=0,configAt=0,batchesAt=0,batchesPage=0,batchLoadingVersion=0,failures=0,successfulQuerySignature='';
  let timer:ReturnType<typeof setTimeout>|undefined,configRead:Inflight<ExtractConfig>|undefined,summaryRead:Inflight<Record<string,number>>|undefined;
  let listController:AbortController|undefined;
  const batchReads=new Map<number,Inflight<Awaited<ReturnType<ExtractApi['batches']>>>>(),detailReads=new Map<string,Inflight<{item:ExtractBatch}>>();
@@ -30,17 +31,22 @@ export function createExtractWorkbench(input:ExtractDeps={}){
   configRead={version,promise};return promise;
  }
  function readSummary(epoch:number){if(summaryRead)return summaryRead.promise;const version=++auxVersion,c=controller();const promise=api.summary(c.signal).then(value=>{if(valid(epoch)){state.summary=value;state.auxErrors.summary='';}return value;}).catch(error=>{if(valid(epoch))state.auxErrors.summary=message(error);throw error;}).finally(()=>{controllers.delete(c);if(summaryRead?.version===version)summaryRead=undefined;});summaryRead={version,promise};return promise;}
- function readBatches(page:number,epoch:number){
+ function readBatches(page:number,epoch:number,quiet=false,background=false){
   const pending=batchReads.get(page);
-  if(pending)return pending.promise;
+  if(pending){
+   if(!quiet){state.batchLoading=true;batchLoadingVersion=pending.version;}
+   if(!background)state.auxErrors.batches='';
+   return pending.promise;
+  }
   const version=++auxVersion,c=controller();
-  state.batchLoading=true;
-  state.auxErrors.batches='';
+  if(!quiet){state.batchLoading=true;batchLoadingVersion=version;}
+  if(!background)state.auxErrors.batches='';
   const current=()=>valid(epoch)&&page===state.batchPage&&batchReads.get(page)?.version===version;
   const promise=api.batches(page,c.signal).then(value=>{
    if(current()){
     state.batches=value.items;
     state.batchTotal=value.total;
+    state.auxErrors.batches='';
     batchesPage=page;
     batchesAt=Date.now();
    }
@@ -50,7 +56,7 @@ export function createExtractWorkbench(input:ExtractDeps={}){
    throw error;
   }).finally(()=>{
    controllers.delete(c);
-   if(current())state.batchLoading=false;
+   if(current()&&batchLoadingVersion===version){state.batchLoading=false;batchLoadingVersion=0;}
    if(batchReads.get(page)?.version===version)batchReads.delete(page);
   });
   batchReads.set(page,{version,promise});
@@ -68,12 +74,13 @@ export function createExtractWorkbench(input:ExtractDeps={}){
   }
  }
  function readDetail(id:string,epoch:number){const pending=detailReads.get(id);if(pending)return pending.promise;const version=++auxVersion,c=controller();const promise=api.batch(id,c.signal).finally(()=>{controllers.delete(c);if(detailReads.get(id)?.version===version)detailReads.delete(id);});detailReads.set(id,{version,promise});return promise;}
- async function auxiliaries(options:ExtractLoadOptions,epoch:number){
+ async function auxiliaries(options:ExtractLoadOptions,epoch:number,displayQuiet=false,background=false){
   void readConfig(!!options.force,epoch).catch(()=>{});void readSummary(epoch).catch(()=>{});
   const page=state.batchPage,id=state.query.batch,version=++detailVersion;
   const refresh=!!options.force||batchesPage!==page||Date.now()-batchesAt>=CACHE_MS;
   try{
-   const rows=refresh?(await readBatches(page,epoch)).items:state.batches;
+   const quiet=displayQuiet&&batchesPage===page;
+   const rows=refresh?(await readBatches(page,epoch,quiet,background)).items:state.batches;
    if(!valid(epoch)||page!==state.batchPage||id!==state.query.batch||version!==detailVersion)return;
    if(!id){state.batchDetail=null;return;}
    const summary=!options.quiet||refresh?rows.find(row=>String(row.batch_id)===id):null;
@@ -81,10 +88,10 @@ export function createExtractWorkbench(input:ExtractDeps={}){
    if(valid(epoch)&&id===state.query.batch&&version===detailVersion){state.batchDetail=value;state.auxErrors.detail='';schedule(failures>0);}
   }catch(error){if(valid(epoch)&&id===state.query.batch&&page===state.batchPage)state.auxErrors.detail=message(error);}
  }
- async function load(options:ExtractLoadOptions={}){
-  if(!active())return;clearTimer();const version=++listVersion,epoch=life,query={...state.query};listController?.abort();const c=controller();listController=c;state.loading=true;state.error='';
-  void auxiliaries(options,epoch);
-  try{const result:ExtractList=await api.tasks(query,c.signal);if(!valid(epoch)||version!==listVersion)return;state.items=result.items;state.total=result.total;state.counts=result.counts||{};state.query.page=result.page;for(const id of [...state.selected])if(!result.items.some(item=>String(item.task_id)===id))state.selected.delete(id);failures=0;input.onReady?.();schedule();}
+ async function load(options:ExtractLoadOptions={},displayQuiet=false){
+  if(!active())return;clearTimer();const version=++listVersion,epoch=life,query={...state.query},signature=querySignature(query),background=options.quiet===true||displayQuiet,quiet=successfulQuerySignature===signature&&background,explicit=options.quiet!==true&&!displayQuiet;listController?.abort();const c=controller();listController=c;if(!quiet)state.loading=true;if(explicit)state.error='';
+  void auxiliaries(options,epoch,quiet,background);
+  try{const result:ExtractList=await api.tasks(query,c.signal);if(!valid(epoch)||version!==listVersion)return;state.items=result.items;state.total=result.total;state.counts=result.counts||{};state.query.page=result.page;successfulQuerySignature=querySignature({...query,page:result.page});for(const id of [...state.selected])if(!result.items.some(item=>String(item.task_id)===id))state.selected.delete(id);state.error='';failures=0;input.onReady?.();schedule();}
   catch(error){if(valid(epoch)&&version===listVersion){state.error=message(error);failures++;schedule(true);}}
   finally{controllers.delete(c);if(valid(epoch)&&version===listVersion)state.loading=false;}
  }
@@ -129,9 +136,9 @@ export function createExtractWorkbench(input:ExtractDeps={}){
   }catch(error){state.error=message(error);}finally{state.cancellingBatch='';}
  }
  async function exportRows(filtered=true){try{if(filtered){download(await api.export({...state.query}),'extract-workbench.csv');notify('已导出当前筛选结果（最多 5000 条）');return;}const rows=state.items.filter(item=>state.selected.has(String(item.task_id)));download(new Blob([selectedCsv(rows)],{type:'text/csv;charset=utf-8'}),'extract-workbench-selected.csv');}catch(error){state.error=message(error);}}
- function suspend(){life++;listVersion++;detailVersion++;clearTimer();controllers.forEach(c=>c.abort());controllers.clear();listController=undefined;configRead=undefined;summaryRead=undefined;batchReads.clear();detailReads.clear();state.batchPage=batchesPage||1;state.batchLoading=false;state.loading=false;}
- function setVisible(value:boolean){if(state.visible===value){if(value&&!state.loading)void load();return;}state.visible=value;if(value)void load();else suspend();}
- function onVisibility(){if(document.hidden)suspend();else if(state.visible)void load();}
+ function suspend(){life++;listVersion++;detailVersion++;clearTimer();controllers.forEach(c=>c.abort());controllers.clear();listController=undefined;configRead=undefined;summaryRead=undefined;batchReads.clear();detailReads.clear();batchLoadingVersion=0;state.batchPage=batchesPage||1;state.batchLoading=false;state.loading=false;}
+ function setVisible(value:boolean){if(state.visible===value){if(value&&!state.loading)void load({},true);return;}state.visible=value;if(value)void load({},true);else suspend();}
+ function onVisibility(){if(document.hidden)suspend();else if(state.visible)void load({},true);}
  document.addEventListener('visibilitychange',onVisibility);
  function destroy(){dead=true;suspend();document.removeEventListener('visibilitychange',onVisibility);}
  return{state,load,loadBatchPage,setVisible,switchBatch,bulkAction,cancelBatch,exportRows,destroy};

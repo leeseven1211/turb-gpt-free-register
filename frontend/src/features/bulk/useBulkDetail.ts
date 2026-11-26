@@ -21,13 +21,20 @@ export function useBulkDetail(getNavigation: () => BulkNavigation, deps: BulkDet
   let disposed = false, reportLoadedAt = 0, roundsStarted = false;
   let reportControlRevision: unknown;
   let detailPending:Promise<void>|null=null,detailPendingKey='';
+  let targetsPending:Promise<void>|null=null,targetsPendingKey='';
+  let reportPending:Promise<void>|null=null,reportPendingKey='';
   const requests = new Map<string, {generation: number; controller: AbortController}>();
   const scopeKey = () => `${navigation.value.batch_id || ''}:${navigation.value.round_id || ''}`;
   const targetKey = () => `${scopeKey()}:${navigation.value.result_state || ''}`;
   const navigationKey = () => `${targetKey()}:${navigation.value.cursor || ''}`;
   function begin(kind: string) {const old=requests.get(kind); old?.controller.abort();const request={generation:(old?.generation||0)+1,controller:new AbortController()}; requests.set(kind,request);return request;}
   function valid(kind: string, request: ReturnType<typeof begin>) {return !disposed && requests.get(kind) === request && !request.controller.signal.aborted;}
-  function abort(...kinds: string[]) {for(const kind of kinds) {requests.get(kind)?.controller.abort();requests.delete(kind);}if(kinds.includes('detail')){detailPending=null;detailPendingKey='';}}
+  function abort(...kinds: string[]) {
+    for(const kind of kinds) {requests.get(kind)?.controller.abort();requests.delete(kind);}
+    if(kinds.includes('detail')){detailPending=null;detailPendingKey='';}
+    if(kinds.includes('targets')){targetsPending=null;targetsPendingKey='';}
+    if(kinds.includes('report')){reportPending=null;reportPendingKey='';}
+  }
   function params() {const p=new URLSearchParams({view:navigation.value.round_id?'round':'current'});if(navigation.value.round_id)p.set('round_id',bulkId(navigation.value.round_id));return p;}
   function path(suffix='') {return `/batches/${bulkId(navigation.value.batch_id)}${suffix}`;}
   function message(cause: unknown) {return cause instanceof Error?cause.message:String(cause);}
@@ -51,37 +58,54 @@ export function useBulkDetail(getNavigation: () => BulkNavigation, deps: BulkDet
     if(action==='resume')return !paused.value;
     return object(detail.value.capabilities || object(detail.value.operation).capabilities)[action]===false;
   }
-  async function loadTargets() {
-    if(!visible.value || navigation.value.view!=='detail')return;
-    const request=begin('targets');targetsLoading.value=true;targetError.value='';
-    try {const p=params();p.set('page_size','50');if(navigation.value.cursor)p.set('cursor',navigation.value.cursor);if(navigation.value.result_state)p.set('state[]',navigation.value.result_state);
-      const data=await deps.api.request<BulkPageData>(`${path('/targets')}?${p}`,{signal:request.controller.signal});
-      if(valid('targets',request)){for(const row of data.items)targetId(row);targets.value=data;}
-    }catch(cause){if(valid('targets',request))targetError.value=message(cause);}finally{if(valid('targets',request))targetsLoading.value=false;}
+  function loadTargets(silent=false): Promise<void> {
+    if(!visible.value || navigation.value.view!=='detail')return Promise.resolve();
+    const key=navigationKey();
+    if(targetsPending&&targetsPendingKey===key){if(!silent)targetsLoading.value=true;return targetsPending;}
+    const request=begin('targets');targetsLoading.value=!silent||!targets.value;if(!silent)targetError.value='';
+    const pending=(async()=>{
+      try {const p=params();p.set('page_size','50');if(navigation.value.cursor)p.set('cursor',navigation.value.cursor);if(navigation.value.result_state)p.set('state[]',navigation.value.result_state);
+        const data=await deps.api.request<BulkPageData>(`${path('/targets')}?${p}`,{signal:request.controller.signal});
+        if(valid('targets',request)){targetError.value='';for(const row of data.items)targetId(row);targets.value=data;}
+      }catch(cause){if(valid('targets',request))targetError.value=message(cause);}finally{if(valid('targets',request))targetsLoading.value=false;}
+    })();
+    targetsPending=pending;targetsPendingKey=key;
+    return pending.finally(()=>{if(targetsPending===pending){targetsPending=null;targetsPendingKey='';}});
   }
-  async function refreshReport(force=false) {
-    if(!visible.value || navigation.value.view!=='detail' || !reportOpen.value || !hasReport.value || reportLoading.value)return;
+  function refreshReport(force=false,silent=!force&&!!report.value): Promise<void> {
+    if(!visible.value || navigation.value.view!=='detail' || !reportOpen.value || !hasReport.value)return Promise.resolve();
+    const key=scopeKey();
+    if(reportPending&&reportPendingKey===key){if(!silent)reportLoading.value=true;return reportPending;}
     const complete=ended.value || object(detail.value?.selected_round).state==='completed';
     const finalFresh=complete && report.value?.phase==='completed'
       && report.value.summary_revision===detail.value?.summary_revision && reportControlRevision===controlRevision.value;
-    if(!force && (finalFresh || !complete && (report.value || reportError.value) && deps.now()-reportLoadedAt<10000))return;
+    if(!force && (finalFresh || !complete && (report.value || reportError.value) && deps.now()-reportLoadedAt<10000))return Promise.resolve();
     const request=begin('report');
     const requestedRevision=controlRevision.value;
     const requestedSummary=detail.value?.summary_revision;
-    reportLoading.value=true;
+    reportLoading.value=!silent||!report.value;
     let refreshAgain=false;
-    try {
-      const data=await deps.api.request<BulkRecord>(`${path('/report')}?${params()}`,{signal:request.controller.signal});
-      if(!valid('report',request))return;
-      report.value=data;reportError.value='';reportControlRevision=requestedRevision;
-      const nowComplete=ended.value || object(detail.value?.selected_round).state==='completed';
-      refreshAgain=nowComplete && (requestedSummary!==detail.value?.summary_revision || requestedRevision!==controlRevision.value);
-    } catch(cause) {
-      if(valid('report',request))reportError.value=message(cause);
-    } finally {
-      if(valid('report',request)){reportLoading.value=false;reportLoadedAt=deps.now();}
-    }
-    if(refreshAgain)void refreshReport();
+    let pending!:Promise<void>,tracked!:Promise<void>;
+    pending=(async()=>{
+      try {
+        const data=await deps.api.request<BulkRecord>(`${path('/report')}?${params()}`,{signal:request.controller.signal});
+        if(!valid('report',request))return;
+        report.value=data;reportError.value='';reportControlRevision=requestedRevision;
+        const nowComplete=ended.value || object(detail.value?.selected_round).state==='completed';
+        refreshAgain=nowComplete && (requestedSummary!==detail.value?.summary_revision || requestedRevision!==controlRevision.value);
+      } catch(cause) {
+        if(valid('report',request))reportError.value=message(cause);
+      } finally {
+        if(valid('report',request)){reportLoading.value=false;reportLoadedAt=deps.now();}
+      }
+      if(refreshAgain){
+        if(reportPending===tracked){reportPending=null;reportPendingKey='';}
+        void refreshReport(false,true);
+      }
+    })();
+    tracked=pending.finally(()=>{if(reportPending===tracked){reportPending=null;reportPendingKey='';}});
+    reportPending=tracked;reportPendingKey=key;
+    return tracked;
   }
   function openReport() {
     reportOpen.value=true;
@@ -89,20 +113,22 @@ export function useBulkDetail(getNavigation: () => BulkNavigation, deps: BulkDet
   }
   function refresh(force=false):Promise<void> {
     if(disposed || !visible.value || navigation.value.view!=='detail' || !navigation.value.batch_id)return Promise.resolve();
-    if(detailPending&&detailPendingKey===scopeKey())return detailPending;
+    const showLoading=force||!detail.value;
+    if(detailPending&&detailPendingKey===scopeKey()){if(showLoading)loading.value=true;return detailPending;}
     detailPendingKey=scopeKey();
     const pending=readDetail(force).finally(()=>{if(detailPending===pending){detailPending=null;detailPendingKey='';}});
     detailPending=pending;return pending;
   }
   async function readDetail(force=false) {
     if(disposed || !visible.value || navigation.value.view!=='detail' || !navigation.value.batch_id)return;
-    const request=begin('detail');loading.value=true;error.value='';
+    const showLoading=force||!detail.value;
+    const request=begin('detail');loading.value=showLoading;if(force)error.value='';
     try {const data=await deps.api.request<BulkRecord>(`${path()}?${params()}`,{signal:request.controller.signal});if(!valid('detail',request))return;
-      const previousRevision=detail.value?.summary_revision;detail.value=data;mergeRounds(data.rounds_head);if(data.selected_round)mergeRounds([data.selected_round]);
+      error.value='';const previousRevision=detail.value?.summary_revision;detail.value=data;mergeRounds(data.rounds_head);if(data.selected_round)mergeRounds([data.selected_round]);
       if(!roundsStarted)roundsCursor.value=typeof data.rounds_next_cursor==='string'?data.rounds_next_cursor:null;
       if(pendingRound.value){const pending=rounds.value.find(round=>round.id===pendingRound.value);if(pending && pending.state!=='preparing'){pendingRound.value=null;deps.callbacks.notify(pending.completion_reason==='cancelled_before_freeze'?'重跑准备已取消，当前结果归属不变。':'重跑名单已固定，可以切换查看新轮次。');}}
-      void refreshReport(force);
-      if(force || !targets.value || previousRevision!==data.summary_revision)await loadTargets();
+      void refreshReport(force,!force&&!!report.value);
+      if(force || !targets.value || previousRevision!==data.summary_revision)await loadTargets(!force);
     }catch(cause){if(valid('detail',request))error.value=message(cause);}finally{if(valid('detail',request))loading.value=false;}
   }
   async function moreRounds() {
@@ -159,7 +185,7 @@ export function useBulkDetail(getNavigation: () => BulkNavigation, deps: BulkDet
     confirmation.value=null;actionError.value='';
     if(!old||current[0]!==old[0]){
       if(current[3]!==old?.[3])reportOpen.value=false;
-      abort('detail','targets','report','rounds');detail.value=null;targets.value=null;report.value=null;rounds.value=[];roundsCursor.value=null;roundsStarted=false;reportLoadedAt=0;reportControlRevision=undefined;reportError.value='';targetError.value='';loading.value=false;targetsLoading.value=false;reportLoading.value=false;roundsLoading.value=false;clearSelection();previousCursors.value=[];pendingRound.value=null;void refresh();
+      abort('detail','targets','report','rounds');detail.value=null;targets.value=null;report.value=null;rounds.value=[];roundsCursor.value=null;roundsStarted=false;reportLoadedAt=0;reportControlRevision=undefined;error.value='';reportError.value='';targetError.value='';loading.value=false;targetsLoading.value=false;reportLoading.value=false;roundsLoading.value=false;clearSelection();previousCursors.value=[];pendingRound.value=null;void refresh();
     }
     else {if(current[1]!==old[1]){clearSelection();previousCursors.value=[];}targets.value=null;void loadTargets();}
   },{immediate:true,flush:'sync'});

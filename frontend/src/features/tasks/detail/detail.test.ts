@@ -1,4 +1,5 @@
 import { effectScope } from 'vue';
+import { flushPromises } from '@vue/test-utils';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { EventsResponse, LogsResponse, OperationDetail, ProgressResponse, TaskId } from '../../../api/tasks';
 import { artifactUrl, failureMessage, matchesStep, mergeEvents, orderedEvents, stepDuration, visibleSteps, type Step } from './model';
@@ -165,6 +166,118 @@ describe('详情请求与生命周期', () => {
     await pending;
     expect(detail.eventsMode.value).toBe('start');
     expect(detail.events.value[0]?.id).toBe(500);
+  });
+  it('自动轮询已读取过当前运行的事件时保持读取反馈静默', async () => {
+    vi.useFakeTimers();
+    const { api, detail } = fixture();
+    api.detail.mockImplementation(async id => taskResponse(Number(id), 'running'));
+    await detail.open(1);
+    const pendingIncremental = deferred<EventsResponse>();
+    api.events.mockReturnValueOnce(pendingIncremental.promise);
+
+    await vi.advanceTimersByTimeAsync(2000);
+
+    expect(api.events).toHaveBeenCalledTimes(2);
+    expect(detail.eventsLoading.value).toBe(false);
+    pendingIncremental.resolve(eventsResponse(2));
+    await flushPromises();
+  });
+  it('自动轮询已读取过当前运行的日志时保持读取反馈静默', async () => {
+    vi.useFakeTimers();
+    const { api, detail } = fixture();
+    api.detail.mockImplementation(async id => taskResponse(Number(id), 'running'));
+    await detail.open(1);
+    await detail.selectTab('logs');
+    const pendingIncremental = deferred<LogsResponse>();
+    api.logs.mockReturnValueOnce(pendingIncremental.promise);
+
+    await vi.advanceTimersByTimeAsync(2000);
+
+    expect(api.logs).toHaveBeenCalledTimes(2);
+    expect(detail.logsLoading.value).toBe(false);
+    pendingIncremental.resolve(logsResponse(101));
+    await flushPromises();
+  });
+  it('静默事件读取在途时手动重试复用请求并显示反馈', async () => {
+    vi.useFakeTimers();
+    const { api, detail } = fixture();
+    api.detail.mockImplementation(async id => taskResponse(Number(id), 'running'));
+    await detail.open(1);
+    const pendingIncremental = deferred<EventsResponse>();
+    api.events.mockReturnValueOnce(pendingIncremental.promise);
+
+    await vi.advanceTimersByTimeAsync(2000);
+    const retry = detail.loadEvents();
+
+    expect(detail.eventsLoading.value).toBe(true);
+    expect(api.events).toHaveBeenCalledTimes(2);
+    pendingIncremental.resolve(eventsResponse(2));
+    await retry;
+    expect(detail.eventsLoading.value).toBe(false);
+  });
+  it('静默日志读取在途时手动重试复用请求并显示反馈', async () => {
+    vi.useFakeTimers();
+    const { api, detail } = fixture();
+    api.detail.mockImplementation(async id => taskResponse(Number(id), 'running'));
+    await detail.open(1);
+    await detail.selectTab('logs');
+    const pendingIncremental = deferred<LogsResponse>();
+    api.logs.mockReturnValueOnce(pendingIncremental.promise);
+
+    await vi.advanceTimersByTimeAsync(2000);
+    const retry = detail.loadLogs();
+
+    expect(detail.logsLoading.value).toBe(true);
+    expect(api.logs).toHaveBeenCalledTimes(2);
+    pendingIncremental.resolve(logsResponse(101));
+    await retry;
+    expect(detail.logsLoading.value).toBe(false);
+  });
+  it('恢复可见时已读取过当前运行的事件保持静默', async () => {
+    const { api, detail } = fixture();
+    api.detail.mockImplementation(async id => taskResponse(Number(id), 'running'));
+    await detail.open(1);
+    detail.setVisible(false);
+    const pendingRefresh = deferred<EventsResponse>();
+    api.events.mockReturnValueOnce(pendingRefresh.promise);
+
+    detail.setVisible(true);
+    await flushPromises();
+
+    expect(api.events).toHaveBeenCalledTimes(2);
+    expect(detail.eventsLoading.value).toBe(false);
+    pendingRefresh.resolve(eventsResponse(2));
+    await flushPromises();
+  });
+  it('恢复可见时尚无详情主体仍显示首次读取反馈', async () => {
+    const { api, detail } = fixture();
+    const firstDetail = deferred<OperationDetail>();
+    api.detail.mockReturnValueOnce(firstDetail.promise);
+    const opening = detail.open(1);
+    detail.setVisible(false);
+    const visibleDetail = deferred<OperationDetail>();
+    api.detail.mockReturnValueOnce(visibleDetail.promise);
+
+    detail.setVisible(true);
+
+    expect(detail.loading.value).toBe(true);
+    visibleDetail.resolve(taskResponse(1, 'running'));
+    await flushPromises();
+    firstDetail.resolve(taskResponse(1, 'running'));
+    await opening;
+  });
+  it('手动增量读取仍保留日志读取反馈', async () => {
+    const { api, detail } = fixture();
+    await detail.open(1);
+    await detail.selectTab('logs');
+    const pendingRetry = deferred<LogsResponse>();
+    api.logs.mockReturnValueOnce(pendingRetry.promise);
+
+    const pending = detail.loadLogs();
+    expect(detail.logsLoading.value).toBe(true);
+    pendingRetry.resolve(logsResponse(101));
+    await pending;
+    expect(detail.logsLoading.value).toBe(false);
   });
   it('进度读取失败保留上次完整快照，重试恢复后清除错误', async () => {
     const { api, detail } = fixture();

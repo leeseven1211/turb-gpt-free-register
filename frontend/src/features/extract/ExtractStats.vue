@@ -27,7 +27,7 @@ onMounted(()=>void stats.load());onBeforeUnmount(stats.destroy);defineExpose({lo
   <div class="es-controls">
    <div class="es-periods" role="group" aria-label="统计时间范围"><button v-for="days in [7,30,90]" :key="days" type="button" :data-extract-stats-days="days" :aria-pressed="state.days===days" @click="state.days=days;stats.load()">近 {{ days }} 天</button></div>
    <label>平台<select v-model="state.provider" data-extract-stats-provider @change="stats.load"><option value="">全部平台</option><option v-for="[id,label] in providers" :key="id" :value="id">{{ label }}</option></select></label>
-   <button type="button" data-extract-stats-refresh :disabled="state.loading" @click="stats.load">刷新</button>
+   <button type="button" class="ui-refresh-button" data-extract-stats-refresh :disabled="state.loading" @click="stats.load">刷新</button>
    <span class="es-updated" role="status">{{ state.loading?'正在汇总提链任务…':data?.generated_at?`更新于 ${time(data.generated_at)}`:'' }}</span>
   </div>
   <div v-if="state.error" class="es-notice" role="alert"><span>{{ state.data?'刷新失败，以下保留上次统计。':'未取得所选范围的统计。' }}{{ state.error }}</span><button type="button" data-extract-stats-retry @click="stats.load">重试</button></div>

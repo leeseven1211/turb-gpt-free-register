@@ -108,7 +108,7 @@ defineExpose({
    </div>
    <div class="ov-section-actions">
     <span class="ov-updated"><i aria-hidden="true"></i>{{updatedLabel}}</span>
-    <button type="button" class="ov-refresh" :disabled="loading" @click="owner.load">
+    <button type="button" class="ov-refresh ui-refresh-button" :disabled="loading" @click="owner.load()">
      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 6.7"/><path d="M20 4v7h-7"/></svg>
      {{loading?'刷新中':'刷新'}}
     </button>
@@ -117,7 +117,7 @@ defineExpose({
 
   <div v-if="error" class="ov-error" role="alert">
    <div><strong>总览加载失败</strong><span>{{error}}</span></div>
-   <button type="button" @click="owner.load">重试</button>
+   <button type="button" @click="owner.load()">重试</button>
   </div>
 
   <section v-if="alerts.length" class="ov-alerts" aria-label="需要关注">

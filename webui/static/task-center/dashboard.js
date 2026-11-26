@@ -1,4 +1,4 @@
-import { C as e, F as t, H as n, L as r, M as i, _ as a, b as o, d as s, dt as c, et as l, ft as u, h as d, j as f, lt as p, m, n as h, st as g, t as _, v, x as y } from "./_plugin-vue_export-helper-Btipf5Px.js";
+import { C as e, F as t, H as n, L as r, M as i, _ as a, b as o, d as s, dt as c, et as l, ft as u, h as d, j as f, lt as p, m, n as h, st as g, t as _, v, x as y } from "./_plugin-vue_export-helper-CBsH_ZoE.js";
 import { r as b, t as x } from "./client-B5R_MNgP.js";
 // src/features/dashboard/useDashboard.ts
 var S = 2e4, C = (e) => Number(e || 0);
@@ -25,44 +25,45 @@ function T(e) {
 	}[t.toLowerCase()] || t || "未配置";
 }
 function ee(e, t = {}) {
-	let r = l(null), a = l(null), o = l({}), s = l(!1), c = l(""), u = l(null), d = l(!!t.visible), p, h, g, _ = !1, v = 0;
-	function y(e) {
-		_ || d.value === !!e || (d.value = !!e, v++, h?.abort(), g = void 0, d.value ? (b(), x()) : (p && window.clearInterval(p), p = void 0, s.value = !1));
-	}
-	function b() {
-		p && window.clearInterval(p), p = window.setInterval(() => void x(), S);
+	let r = l(null), a = l(null), o = l({}), s = l(!1), c = l(""), u = l(null), d = l(!!t.visible), p = l(!1), h, g, _, v = !1, y = 0;
+	function b(e) {
+		v || d.value === !!e || (d.value = !!e, y++, g?.abort(), _ = void 0, d.value ? (x(), C(!0)) : (h && window.clearInterval(h), h = void 0, s.value = !1));
 	}
 	function x() {
-		if (_ || !d.value || document.hidden) return Promise.resolve();
-		if (g) return g;
-		let n = ++v;
-		h?.abort(), h = new AbortController(), s.value = !0, c.value = "";
-		let i = h.signal, l = (async () => {
+		h && window.clearInterval(h), h = window.setInterval(() => void C(!0), S);
+	}
+	function C(n = !1) {
+		if (v || !d.value || document.hidden) return Promise.resolve();
+		let i = n && p.value;
+		if (_) return i || (s.value = !0), _;
+		let l = ++y;
+		g?.abort(), g = new AbortController(), i || (s.value = !0), n || (c.value = "");
+		let f = g.signal, m = (async () => {
 			try {
-				let [s, c, l] = await Promise.allSettled([
-					e.dashboard(i),
-					e.capabilities(i),
-					e.extractSummary ? e.extractSummary(i) : Promise.resolve(null)
+				let [n, i, s] = await Promise.allSettled([
+					e.dashboard(f),
+					e.capabilities(f),
+					e.extractSummary ? e.extractSummary(f) : Promise.resolve(null)
 				]);
-				if (n !== v || !d.value || document.hidden) return;
-				if (s.status === "rejected") throw s.reason;
-				r.value = s.value, a.value = l.status === "fulfilled" ? w(l.value) : null, c.status === "fulfilled" && c.value != null && (o.value = c.value || {}, t.onCapabilities?.(o.value)), u.value = Date.now(), t.onReady?.();
+				if (l !== y || !d.value || document.hidden) return;
+				if (n.status === "rejected") throw n.reason;
+				r.value = n.value, a.value = s.status === "fulfilled" ? w(s.value) : null, i.status === "fulfilled" && i.value != null && (o.value = i.value || {}, t.onCapabilities?.(o.value)), p.value = !0, c.value = "", u.value = Date.now(), t.onReady?.();
 			} catch (e) {
-				n === v && !String(e?.name || "").includes("Abort") && (c.value = e?.message || "总览加载失败", t.notify?.(`总览加载失败：${c.value}`));
+				l === y && !String(e?.name || "").includes("Abort") && (c.value = e?.message || "总览加载失败", t.notify?.(`总览加载失败：${c.value}`));
 			} finally {
-				n === v && (s.value = !1, g = void 0);
+				l === y && (s.value = !1, _ = void 0);
 			}
 		})();
-		return g = l, l;
+		return _ = m, m;
 	}
-	let C = () => {
-		!document.hidden && d.value ? x() : (v++, h?.abort(), g = void 0, s.value = !1);
+	let T = () => {
+		!document.hidden && d.value ? C(!0) : (y++, g?.abort(), _ = void 0, s.value = !1);
 	};
 	return i(() => {
-		document.addEventListener("visibilitychange", C), d.value && (b(), x());
+		document.addEventListener("visibilitychange", T), d.value && (x(), C());
 	}), f(() => {
-		_ = !0, d.value = !1, v++, g = void 0, s.value = !1, document.removeEventListener("visibilitychange", C), h?.abort(), p && window.clearInterval(p), p = void 0;
-	}), n(() => t.visible, (e) => y(!!e)), {
+		v = !0, d.value = !1, y++, _ = void 0, s.value = !1, document.removeEventListener("visibilitychange", T), g?.abort(), h && window.clearInterval(h), h = void 0;
+	}), n(() => t.visible, (e) => b(!!e)), {
 		data: r,
 		extract: a,
 		caps: o,
@@ -71,8 +72,8 @@ function ee(e, t = {}) {
 		updatedAt: u,
 		visible: d,
 		hasData: m(() => !!r.value),
-		load: x,
-		setVisible: y
+		load: C,
+		setVisible: b
 	};
 }
 // src/features/dashboard/DashboardPage.vue?vue&type=script&setup=true&lang.ts
@@ -333,16 +334,16 @@ var te = { class: "ov-section-head" }, ne = { class: "ov-section-actions" }, re 
 		}), (e, n) => (t(), v("div", { class: p(["ov-page", { "is-mounted": E.value }]) }, [
 			d("div", te, [n[11] ||= d("div", { class: "ov-section-title" }, [d("h2", null, "服务脉搏"), d("p", null, "邮箱 · 账号 · Codex · 套餐 · 提炼 · 代理 · 任务")], -1), d("div", ne, [d("span", re, [n[9] ||= d("i", { "aria-hidden": "true" }, null, -1), y(u(Nt.value), 1)]), d("button", {
 				type: "button",
-				class: "ov-refresh",
+				class: "ov-refresh ui-refresh-button",
 				disabled: g(S),
-				onClick: n[0] ||= (...e) => g(h).load && g(h).load(...e)
+				onClick: n[0] ||= (e) => g(h).load()
 			}, [n[10] ||= d("svg", {
 				viewBox: "0 0 24 24",
 				"aria-hidden": "true"
 			}, [d("path", { d: "M20 11a8 8 0 1 0-2.3 6.7" }), d("path", { d: "M20 4v7h-7" })], -1), y(" " + u(g(S) ? "刷新中" : "刷新"), 1)], 8, ie)])]),
 			g(C) ? (t(), v("div", ae, [d("div", null, [n[12] ||= d("strong", null, "总览加载失败", -1), d("span", null, u(g(C)), 1)]), d("button", {
 				type: "button",
-				onClick: n[1] ||= (...e) => g(h).load && g(h).load(...e)
+				onClick: n[1] ||= (e) => g(h).load()
 			}, "重试")])) : a("", !0),
 			Q.value.length ? (t(), v("section", oe, [(t(!0), v(s, null, r(Q.value, (e) => (t(), v("article", {
 				key: e.text,
@@ -376,7 +377,7 @@ var te = { class: "ov-section-head" }, ne = { class: "ov-section-actions" }, re 
 				onClick: (t) => $(e.tab)
 			}, [d("span", de, [n[15] ||= d("i", { "aria-hidden": "true" }, null, -1), y(u(e.label), 1)]), d("span", fe, [d("strong", null, u(e.badge), 1)])], 10, ue))), 128))]), d("div", pe, [
 				d("article", me, [
-					d("header", he, [n[17] ||= o("<div class=\"ov-card-title\" data-v-d786becb><span class=\"ov-icon\" data-v-d786becb><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\" data-v-d786becb><rect x=\"3\" y=\"5\" width=\"18\" height=\"14\" rx=\"2\" data-v-d786becb></rect><path d=\"m3 7 9 6 9-6\" data-v-d786becb></path></svg></span><div data-v-d786becb><h3 data-v-d786becb>邮箱池</h3><p data-v-d786becb>本地库存与来源</p></div></div>", 1), d("button", {
+					d("header", he, [n[17] ||= o("<div class=\"ov-card-title\" data-v-d3fb31e7><span class=\"ov-icon\" data-v-d3fb31e7><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\" data-v-d3fb31e7><rect x=\"3\" y=\"5\" width=\"18\" height=\"14\" rx=\"2\" data-v-d3fb31e7></rect><path d=\"m3 7 9 6 9-6\" data-v-d3fb31e7></path></svg></span><div data-v-d3fb31e7><h3 data-v-d3fb31e7>邮箱池</h3><p data-v-d3fb31e7>本地库存与来源</p></div></div>", 1), d("button", {
 						type: "button",
 						class: "ov-link",
 						"data-overview-action": "email",
@@ -402,7 +403,7 @@ var te = { class: "ov-section-head" }, ne = { class: "ov-section-actions" }, re 
 					P.value ? (t(), v("p", xe, "另有 " + u(P.value) + " 个来源暂无库存 · 仅统计本地库存", 1)) : (t(), v("p", Se, "仅统计本地库存，用完后需手动导入"))
 				]),
 				d("article", Ce, [
-					d("header", we, [n[23] ||= o("<div class=\"ov-card-title\" data-v-d786becb><span class=\"ov-icon\" data-v-d786becb><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\" data-v-d786becb><path d=\"M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2\" data-v-d786becb></path><circle cx=\"9\" cy=\"7\" r=\"4\" data-v-d786becb></circle><path d=\"M22 21v-2a4 4 0 0 0-3-3.9\" data-v-d786becb></path></svg></span><div data-v-d786becb><h3 data-v-d786becb>账号</h3><p data-v-d786becb>账号资产</p></div></div>", 1), d("button", {
+					d("header", we, [n[23] ||= o("<div class=\"ov-card-title\" data-v-d3fb31e7><span class=\"ov-icon\" data-v-d3fb31e7><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\" data-v-d3fb31e7><path d=\"M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2\" data-v-d3fb31e7></path><circle cx=\"9\" cy=\"7\" r=\"4\" data-v-d3fb31e7></circle><path d=\"M22 21v-2a4 4 0 0 0-3-3.9\" data-v-d3fb31e7></path></svg></span><div data-v-d3fb31e7><h3 data-v-d3fb31e7>账号</h3><p data-v-d3fb31e7>账号资产</p></div></div>", 1), d("button", {
 						type: "button",
 						class: "ov-link",
 						"data-overview-action": "accounts",
@@ -428,7 +429,7 @@ var te = { class: "ov-section-head" }, ne = { class: "ov-section-actions" }, re 
 					])
 				]),
 				d("article", je, [
-					d("header", Me, [n[31] ||= o("<div class=\"ov-card-title\" data-v-d786becb><span class=\"ov-icon\" data-v-d786becb><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\" data-v-d786becb><rect x=\"3\" y=\"11\" width=\"18\" height=\"10\" rx=\"2\" data-v-d786becb></rect><path d=\"M7 11V7a5 5 0 0 1 10 0v4\" data-v-d786becb></path></svg></span><div data-v-d786becb><h3 data-v-d786becb>Codex</h3><p data-v-d786becb>授权凭证</p></div></div>", 1), d("button", {
+					d("header", Me, [n[31] ||= o("<div class=\"ov-card-title\" data-v-d3fb31e7><span class=\"ov-icon\" data-v-d3fb31e7><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\" data-v-d3fb31e7><rect x=\"3\" y=\"11\" width=\"18\" height=\"10\" rx=\"2\" data-v-d3fb31e7></rect><path d=\"M7 11V7a5 5 0 0 1 10 0v4\" data-v-d3fb31e7></path></svg></span><div data-v-d3fb31e7><h3 data-v-d3fb31e7>Codex</h3><p data-v-d3fb31e7>授权凭证</p></div></div>", 1), d("button", {
 						type: "button",
 						class: "ov-link",
 						"data-overview-action": "codex",
@@ -452,7 +453,7 @@ var te = { class: "ov-section-head" }, ne = { class: "ov-section-actions" }, re 
 					d("p", Re, "账号 Codex 就绪 " + u(D(A.value.codex_ready)) + " · 覆盖 " + u(k(A.value.codex_ready, A.value.active)) + "% 活跃账号", 1)
 				]),
 				d("article", ze, [
-					d("header", Be, [n[38] ||= o("<div class=\"ov-card-title\" data-v-d786becb><span class=\"ov-icon\" data-v-d786becb><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\" data-v-d786becb><path d=\"m12 3 1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9L12 3Z\" data-v-d786becb></path><path d=\"M19 15.5 20 18l2.5 1-2.5 1L19 22l-1-2-2.5-1 2.5-1 1-2.5Z\" data-v-d786becb></path></svg></span><div data-v-d786becb><h3 data-v-d786becb>提炼</h3><p data-v-d786becb>提链工作台</p></div></div>", 1), d("button", {
+					d("header", Be, [n[38] ||= o("<div class=\"ov-card-title\" data-v-d3fb31e7><span class=\"ov-icon\" data-v-d3fb31e7><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\" data-v-d3fb31e7><path d=\"m12 3 1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9L12 3Z\" data-v-d3fb31e7></path><path d=\"M19 15.5 20 18l2.5 1-2.5 1L19 22l-1-2-2.5-1 2.5-1 1-2.5Z\" data-v-d3fb31e7></path></svg></span><div data-v-d3fb31e7><h3 data-v-d3fb31e7>提炼</h3><p data-v-d3fb31e7>提链工作台</p></div></div>", 1), d("button", {
 						type: "button",
 						class: "ov-link",
 						"data-overview-action": "extract",
@@ -474,7 +475,7 @@ var te = { class: "ov-section-head" }, ne = { class: "ov-section-actions" }, re 
 					Z.value ? (t(), v("p", Ue, "今日还没有提炼任务，进入工作台即可发起。")) : a("", !0),
 					d("p", We, u(Z.value ? "提链工作台空闲" : `累计 ${D(Y.value.all)} 个提炼任务`), 1)
 				]),
-				d("article", Ge, [d("header", Ke, [n[44] ||= o("<div class=\"ov-card-title\" data-v-d786becb><span class=\"ov-icon\" data-v-d786becb><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\" data-v-d786becb><path d=\"M12 2 2 7l10 5 10-5-10-5Z\" data-v-d786becb></path><path d=\"m2 12 10 5 10-5\" data-v-d786becb></path><path d=\"m2 17 10 5 10-5\" data-v-d786becb></path></svg></span><div data-v-d786becb><h3 data-v-d786becb>套餐</h3><p data-v-d786becb>账号套餐分布</p></div></div>", 1), d("button", {
+				d("article", Ge, [d("header", Ke, [n[44] ||= o("<div class=\"ov-card-title\" data-v-d3fb31e7><span class=\"ov-icon\" data-v-d3fb31e7><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\" data-v-d3fb31e7><path d=\"M12 2 2 7l10 5 10-5-10-5Z\" data-v-d3fb31e7></path><path d=\"m2 12 10 5 10-5\" data-v-d3fb31e7></path><path d=\"m2 17 10 5 10-5\" data-v-d3fb31e7></path></svg></span><div data-v-d3fb31e7><h3 data-v-d3fb31e7>套餐</h3><p data-v-d3fb31e7>账号套餐分布</p></div></div>", 1), d("button", {
 					type: "button",
 					class: "ov-link",
 					"data-overview-action": "plans",
@@ -484,7 +485,7 @@ var te = { class: "ov-section-head" }, ne = { class: "ov-section-actions" }, re 
 					"aria-hidden": "true"
 				}, [d("path", { d: "m9 6 6 6-6 6" })], -1)]])]), z.value.length ? (t(), v(s, { key: 0 }, [d("div", qe, [d("strong", null, u(D(z.value.length)), 1), d("span", null, "种套餐 · " + u(D(B.value)) + " 个账号", 1)]), d("ul", Je, [(t(!0), v(s, null, r(z.value, (e) => (t(), v("li", { key: e.key }, [d("div", Ye, [d("span", null, u(e.label), 1), d("small", null, u(D(e.count)) + " · " + u(k(e.count, B.value)) + "%", 1)]), d("div", Xe, [d("i", { style: c({ width: Math.max(4, Math.round(e.count / Dt.value * 100)) + "%" }) }, null, 4)])]))), 128))])], 64)) : (t(), v("p", Ze, "还没有可用的套餐数据。"))]),
 				d("article", Qe, [
-					d("header", $e, [n[46] ||= o("<div class=\"ov-card-title\" data-v-d786becb><span class=\"ov-icon\" data-v-d786becb><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\" data-v-d786becb><circle cx=\"12\" cy=\"12\" r=\"9\" data-v-d786becb></circle><path d=\"M3 12h18\" data-v-d786becb></path><path d=\"M12 3c2.4 2.5 3.7 5.5 3.7 9s-1.3 6.5-3.7 9c-2.4-2.5-3.7-5.5-3.7-9S9.6 5.5 12 3Z\" data-v-d786becb></path></svg></span><div data-v-d786becb><h3 data-v-d786becb>代理</h3><p data-v-d786becb>网络出口</p></div></div>", 1), d("button", {
+					d("header", $e, [n[46] ||= o("<div class=\"ov-card-title\" data-v-d3fb31e7><span class=\"ov-icon\" data-v-d3fb31e7><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\" data-v-d3fb31e7><circle cx=\"12\" cy=\"12\" r=\"9\" data-v-d3fb31e7></circle><path d=\"M3 12h18\" data-v-d3fb31e7></path><path d=\"M12 3c2.4 2.5 3.7 5.5 3.7 9s-1.3 6.5-3.7 9c-2.4-2.5-3.7-5.5-3.7-9S9.6 5.5 12 3Z\" data-v-d3fb31e7></path></svg></span><div data-v-d3fb31e7><h3 data-v-d3fb31e7>代理</h3><p data-v-d3fb31e7>网络出口</p></div></div>", 1), d("button", {
 						type: "button",
 						class: "ov-link",
 						"data-overview-action": "proxy",
@@ -506,7 +507,7 @@ var te = { class: "ov-section-head" }, ne = { class: "ov-section-actions" }, re 
 					q.value.length ? (t(), v("p", it, [y(u(J.value ? "注册代理未启用，已有租约仍保留" : `代理平台 ${g(T)(K.value.platform)}`), 1), At.value ? (t(), v(s, { key: 0 }, [y(" · 另有 " + u(At.value) + " 个活跃出口", 1)], 64)) : a("", !0)])) : a("", !0)
 				]),
 				d("article", at, [
-					d("header", ot, [n[50] ||= o("<div class=\"ov-card-title\" data-v-d786becb><span class=\"ov-icon\" data-v-d786becb><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\" data-v-d786becb><path d=\"M9 5h11\" data-v-d786becb></path><path d=\"M9 12h11\" data-v-d786becb></path><path d=\"M9 19h11\" data-v-d786becb></path><circle cx=\"4\" cy=\"5\" r=\"1\" data-v-d786becb></circle><circle cx=\"4\" cy=\"12\" r=\"1\" data-v-d786becb></circle><circle cx=\"4\" cy=\"19\" r=\"1\" data-v-d786becb></circle></svg></span><div data-v-d786becb><h3 data-v-d786becb>任务</h3><p data-v-d786becb>注册流水线与队列</p></div></div>", 1), d("button", {
+					d("header", ot, [n[50] ||= o("<div class=\"ov-card-title\" data-v-d3fb31e7><span class=\"ov-icon\" data-v-d3fb31e7><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\" data-v-d3fb31e7><path d=\"M9 5h11\" data-v-d3fb31e7></path><path d=\"M9 12h11\" data-v-d3fb31e7></path><path d=\"M9 19h11\" data-v-d3fb31e7></path><circle cx=\"4\" cy=\"5\" r=\"1\" data-v-d3fb31e7></circle><circle cx=\"4\" cy=\"12\" r=\"1\" data-v-d3fb31e7></circle><circle cx=\"4\" cy=\"19\" r=\"1\" data-v-d3fb31e7></circle></svg></span><div data-v-d3fb31e7><h3 data-v-d3fb31e7>任务</h3><p data-v-d3fb31e7>注册流水线与队列</p></div></div>", 1), d("button", {
 						type: "button",
 						class: "ov-link",
 						"data-overview-action": "jobs",
@@ -543,7 +544,7 @@ var te = { class: "ov-section-head" }, ne = { class: "ov-section-actions" }, re 
 			])], 64)) : a("", !0)
 		], 2));
 	}
-}), [["__scopeId", "data-v-d786becb"]]);
+}), [["__scopeId", "data-v-d3fb31e7"]]);
 // src/api/dashboard.ts
 async function D(e, t) {
 	if (!t) return e;

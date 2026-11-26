@@ -31,24 +31,29 @@ export function useDashboard(api:DashboardApi,deps:DashboardDeps={}){
   const error=ref('');
   const updatedAt=ref<number|null>(null);
   const visible=ref(Boolean(deps.visible));
+  const loaded=ref(false);
   let timer:number|undefined,controller:AbortController|undefined,inflight:Promise<void>|undefined,disposed=false,epoch=0;
 
   function setVisible(value:boolean){
     if(disposed||visible.value===Boolean(value))return;
     visible.value=Boolean(value);epoch++;controller?.abort();inflight=undefined;
-    if(visible.value){schedule();void load();}
+    if(visible.value){schedule();void load(true);}
     else{if(timer)window.clearInterval(timer);timer=undefined;loading.value=false;}
   }
 
   function schedule(){
     if(timer)window.clearInterval(timer);
-    timer=window.setInterval(()=>void load(),DASHBOARD_POLL_MS);
+    timer=window.setInterval(()=>void load(true),DASHBOARD_POLL_MS);
   }
 
-  function load():Promise<void>{
+  function load(silent=false):Promise<void>{
     if(disposed||!visible.value||document.hidden)return Promise.resolve();
-    if(inflight)return inflight;
-    const current=++epoch;controller?.abort();controller=new AbortController();loading.value=true;error.value='';
+    const quiet=silent&&loaded.value;
+    if(inflight){
+      if(!quiet)loading.value=true;
+      return inflight;
+    }
+    const current=++epoch;controller?.abort();controller=new AbortController();if(!quiet)loading.value=true;if(!silent)error.value='';
     const signal=controller.signal;
     const pending=(async()=>{
       try{
@@ -65,6 +70,8 @@ export function useDashboard(api:DashboardApi,deps:DashboardDeps={}){
           caps.value=capabilityResult.value||{};
           deps.onCapabilities?.(caps.value);
         }
+        loaded.value=true;
+        error.value='';
         updatedAt.value=Date.now();
         deps.onReady?.();
       }catch(e:any){
@@ -80,7 +87,7 @@ export function useDashboard(api:DashboardApi,deps:DashboardDeps={}){
   }
 
   const onVisibility=()=>{
-    if(!document.hidden&&visible.value)void load();
+    if(!document.hidden&&visible.value)void load(true);
     else{epoch++;controller?.abort();inflight=undefined;loading.value=false;}
   };
 

@@ -13,7 +13,7 @@ function stateLabel(row:SourceCard){return row.kind==='local_pool'?'本地库存
 </script>
 <template>
  <section class="em-overview" aria-label="邮箱资源平台" :aria-busy="loading">
-  <div class="em-heading"><div><h2>本地邮箱库存</h2><p>仅从本地库存领取邮箱，用完后请从 Butler 或其他来源手动导入。</p></div><button class="em-button" :disabled="loading" @click="emit('refresh')">{{ loading?'刷新中…':'刷新资源' }}</button></div>
+  <div class="em-heading"><div><h2>本地邮箱库存</h2><p>仅从本地库存领取邮箱，用完后请从 Butler 或其他来源手动导入。</p></div><button class="em-button ui-refresh-button" :disabled="loading" @click="emit('refresh')">{{ loading?'刷新中…':'刷新资源' }}</button></div>
   <p v-if="error" class="em-error" role="alert">{{ error }} <button class="em-button" @click="emit('refresh')">重试</button></p>
   <div class="em-source-visibility"><span>{{ hiddenCount?'默认显示已启用服务和当前收码依赖':'当前没有未启用的邮箱服务' }}</span><button v-if="hiddenCount" class="em-button" :aria-expanded="expanded" @click="emit('expand')">{{ expanded?'隐藏未启用':`显示未启用（${hiddenCount}）` }}</button></div>
   <div class="em-source-cards">
