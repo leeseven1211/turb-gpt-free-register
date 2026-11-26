@@ -1068,11 +1068,11 @@ def _ensure_ui_query_columns(cur) -> None:
         (JOBS, _UI_QUERY_JOB_COLUMNS),
     ):
         table = _qualified(spec)
-        for col in columns:
-            cur.execute(
-                f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS "
-                f"{postgres_store.quote_identifier(col)} {spec.generated[col]}"
-            )
+        additions = ", ".join(
+            f"ADD COLUMN IF NOT EXISTS {postgres_store.quote_identifier(col)} {spec.generated[col]}"
+            for col in columns
+        )
+        cur.execute(f"ALTER TABLE {table} {additions}")
     idx_cols = ("archived", "account_registration_region", "id")
     idx = postgres_store.quote_identifier(f"idx_{ACCOUNTS.name}_{'_'.join(idx_cols)}")
     rendered = ", ".join(postgres_store.quote_identifier(c) for c in idx_cols)
