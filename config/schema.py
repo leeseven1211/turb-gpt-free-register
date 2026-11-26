@@ -1063,11 +1063,11 @@ _FIELD_DEFINITIONS = [
         "label": "显示名称", "help": "留空则自动生成英文名",
     },
     {
-        "key": "OTP_MAX_WAIT", "file": "email.py", "type": "int", "group": "通用配置",
+        "key": "OTP_MAX_WAIT", "file": "email.py", "type": "int", "group": "邮箱 / OTP",
         "label": "OTP 最长等待(秒)", "help": "单轮等待验证码邮件的最长秒数；所有注册/登录/刷新共用。超时后按“重发次数”重发再等。",
     },
     {
-        "key": "OTP_RESEND_COUNT", "file": "email.py", "type": "int", "group": "通用配置",
+        "key": "OTP_RESEND_COUNT", "file": "email.py", "type": "int", "group": "邮箱 / OTP",
         "label": "OTP 重发次数", "help": "一轮等待超时后重发验证码的次数；0 表示只等一次不重发。总等待时长≈(1+重发次数)×最长等待，需小于任务卡死阈值。",
     },
     {
