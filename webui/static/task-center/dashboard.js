@@ -314,7 +314,9 @@ var k = {
 		}
 		function Ie(e, t) {
 			let n = Fe(e.accounts_total);
-			return n && t >= 0 ? `${Math.round(t / n * 100)}%` : "—";
+			if (!n || n < 0 || t < 0) return "—";
+			let r = t / n * 100;
+			return r > 0 && r < .01 ? "<0.01%" : `${new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 2 }).format(r)}%`;
 		}
 		function Le(e, t) {
 			return `${t.label} ${Q(t.count)}个账号 · ${Ie(e, t.count)}（占当日账号）`;
@@ -501,7 +503,7 @@ var k = {
 			], 64)) : c("", !0)
 		]));
 	}
-}), [["__scopeId", "data-v-479adb83"]]), Se = { class: "ov-section-head" }, Ce = { class: "ov-section-actions" }, Z = { class: "ov-updated" }, we = ["disabled"], Te = {
+}), [["__scopeId", "data-v-ca170564"]]), Se = { class: "ov-section-head" }, Ce = { class: "ov-section-actions" }, Z = { class: "ov-updated" }, we = ["disabled"], Te = {
 	key: 0,
 	class: "ov-error",
 	role: "alert"

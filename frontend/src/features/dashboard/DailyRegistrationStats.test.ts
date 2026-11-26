@@ -132,6 +132,17 @@ describe('DailyRegistrationStats',()=>{
   expect(wrapper.text()).toContain('多项占比合计可超过100%');
  });
 
+ it('keeps small nonzero daily offer percentages visible in details and chart titles',async()=>{
+  const wrapper=mount(DailyRegistrationStats,{props:{state}});
+  wrappers.push(wrapper);
+  for(const [accounts,count,share] of [[999,1,'0.1%'],[999,26,'2.6%'],[67,4,'5.97%'],[100000,1,'<0.01%']] as const){
+   const offer={...offers[0]!,count};
+   await wrapper.setProps({state:{...state,data:{...state.data!,rows:[{...state.data!.rows![0]!,accounts_total:accounts,offers:[offer]}]}}});
+   expect(wrapper.get(`[data-daily-offer="${offer.key}"]`).text()).toContain(`${count} 个账号 · ${share}`);
+   expect(wrapper.get(`[data-daily-segment="${offer.key}"]`).attributes('title')).toBe(`${offer.label} ${count}个账号 · ${share}（占当日账号）`);
+  }
+ });
+
  it('keeps offer order and color consistent across dates with different offer sizes',()=>{
   const chartState={...state,data:{...state.data!,rows:[
    state.data!.rows![0]!,

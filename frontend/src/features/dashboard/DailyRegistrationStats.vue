@@ -103,7 +103,10 @@ function knownNumber(value:unknown):number|null{
 }
 function offerShare(row:DailyRegistrationRow|DailyRegistrationSummary,value:number):string{
  const total=knownNumber(row.accounts_total);
- return total&&value>=0?`${Math.round(value/total*100)}%`:'—';
+ if(!total||total<0||value<0)return '—';
+ const percentage=value/total*100;
+ if(percentage>0&&percentage<0.01)return '<0.01%';
+ return `${new Intl.NumberFormat('zh-CN',{maximumFractionDigits:2}).format(percentage)}%`;
 }
 function offerDetail(row:DailyRegistrationRow|DailyRegistrationSummary,offer:DailyPromotionOffer):string{
  return `${offer.label} ${display(offer.count)}个账号 · ${offerShare(row,offer.count)}（占当日账号）`;
