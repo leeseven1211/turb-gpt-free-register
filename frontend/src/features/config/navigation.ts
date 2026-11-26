@@ -264,7 +264,7 @@ export const overrides: [string,string][] = [
 ];
 const PROXY_PROVIDER_CONFIG_V2 = {'1024proxy':{prefix:'PROXY_1024_'},'711proxy':{prefix:'PROXY_711_'}};
 export function emailConfigSectionForKey(key: string): string[] {
-  if (['USE_EMAIL_SERVICE','REGISTER_EMAIL','OTP_MAX_WAIT','OTP_POLL_INTERVAL','EMAIL_SOURCE'].includes(key)) {
+  if (['USE_EMAIL_SERVICE','REGISTER_EMAIL','OTP_MAX_WAIT','OTP_RESEND_COUNT','OTP_POLL_INTERVAL','EMAIL_SOURCE'].includes(key)) {
     return ['通用邮箱 / OTP', '邮箱来源选择、OTP 等待参数、手动邮箱等通用设置'];
   }
   if (key.startsWith('EMAIL_BUTLER_')) return ['Email Butler', '已导入邮箱的租约连接与取码权限'];
