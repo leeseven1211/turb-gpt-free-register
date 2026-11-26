@@ -38,7 +38,7 @@ export function useDashboard(api:DashboardApi,deps:DashboardDeps={}){
   const updatedAt=ref<number|null>(null);
   const visible=ref(Boolean(deps.visible));
   const loaded=ref(false);
-  let timer:number|undefined,controller:AbortController|undefined,dailyController:AbortController|undefined,inflight:Promise<void>|undefined,dailyInflight:Promise<void>|undefined,dailyInflightKey='',disposed=false,epoch=0,dailyEpoch=0;
+  let timer:number|undefined,controller:AbortController|undefined,dailyController:AbortController|undefined,inflight:Promise<void>|undefined,dailyInflight:Promise<void>|undefined,dailyInflightKey='',corePending=false,disposed=false,epoch=0,dailyEpoch=0;
   let dailyQuery:{from?:string;to?:string}={};
 
   function loadDaily(dateFrom?:string,dateTo?:string):Promise<void>{
@@ -82,7 +82,7 @@ export function useDashboard(api:DashboardApi,deps:DashboardDeps={}){
 
   function setVisible(value:boolean){
     if(disposed||visible.value===Boolean(value))return;
-    visible.value=Boolean(value);epoch++;dailyEpoch++;controller?.abort();dailyController?.abort();inflight=undefined;dailyInflight=undefined;
+    visible.value=Boolean(value);epoch++;dailyEpoch++;controller?.abort();dailyController?.abort();inflight=undefined;dailyInflight=undefined;corePending=false;
     if(visible.value){schedule();void load(true);}
     else{if(timer)window.clearInterval(timer);timer=undefined;loading.value=false;dailyLoading.value=false;dailyInflightKey='';}
   }
@@ -96,46 +96,57 @@ export function useDashboard(api:DashboardApi,deps:DashboardDeps={}){
     if(disposed||!visible.value||document.hidden)return Promise.resolve();
     const quiet=silent&&loaded.value;
     if(inflight){
-      if(!quiet)loading.value=true;
+      if(!quiet&&corePending)loading.value=true;
       return inflight;
     }
     void loadDaily(dailyQuery.from,dailyQuery.to);
-    const current=++epoch;controller?.abort();controller=new AbortController();if(!quiet)loading.value=true;if(!silent)error.value='';
+    const current=++epoch;controller?.abort();controller=new AbortController();corePending=true;if(!quiet)loading.value=true;if(!silent)error.value='';
     const signal=controller.signal;
-    const pending=(async()=>{
+    const isCurrent=()=>current===epoch&&visible.value&&!document.hidden;
+    const core=(async()=>{
       try{
-        const [dashResult,capabilityResult,extractResult]=await Promise.allSettled([
-          api.dashboard(signal),
-          api.capabilities(signal),
-          api.extractSummary?api.extractSummary(signal):Promise.resolve(null),
-        ]);
-        if(current!==epoch||!visible.value||document.hidden)return;
-        if(dashResult.status==='rejected')throw dashResult.reason;
-        data.value=dashResult.value;
-        extract.value=extractResult.status==='fulfilled'?normalizeExtract(extractResult.value):null;
-        if(capabilityResult.status==='fulfilled'&&capabilityResult.value!=null){
-          caps.value=capabilityResult.value||{};
-          deps.onCapabilities?.(caps.value);
-        }
+        const result=await api.dashboard(signal);
+        if(!isCurrent())return;
+        data.value=result;
         loaded.value=true;
         error.value='';
         updatedAt.value=Date.now();
         deps.onReady?.();
       }catch(e:any){
-        if(current===epoch&&!String(e?.name||'').includes('Abort')){
+        if(isCurrent()&&!String(e?.name||'').includes('Abort')){
           error.value=e?.message||'总览加载失败';
           deps.notify?.(`总览加载失败：${error.value}`);
         }
       }finally{
-        if(current===epoch){loading.value=false;inflight=undefined;}
+        if(current===epoch){corePending=false;loading.value=false;}
       }
     })();
+    const capabilities=(async()=>{
+      try{
+        const result=await api.capabilities(signal);
+        if(!isCurrent()||result==null)return;
+        caps.value=result||{};
+        deps.onCapabilities?.(caps.value);
+      }catch{}
+    })();
+    const extractSummary=(async()=>{
+      try{
+        const result=await api.extractSummary?.(signal);
+        if(isCurrent())extract.value=normalizeExtract(result);
+      }catch{
+        if(isCurrent())extract.value=null;
+      }
+    })();
+    // Keep one refresh in flight while auxiliary reads finish; loading follows only the core read.
+    const pending=Promise.allSettled([core,capabilities,extractSummary]).then(()=>{
+      if(current===epoch)inflight=undefined;
+    });
     inflight=pending;return pending;
   }
 
   const onVisibility=()=>{
     if(!document.hidden&&visible.value)void load(true);
-    else{epoch++;dailyEpoch++;controller?.abort();dailyController?.abort();inflight=undefined;dailyInflight=undefined;dailyInflightKey='';loading.value=false;dailyLoading.value=false;}
+    else{epoch++;dailyEpoch++;controller?.abort();dailyController?.abort();inflight=undefined;dailyInflight=undefined;dailyInflightKey='';corePending=false;loading.value=false;dailyLoading.value=false;}
   };
 
   onMounted(()=>{
@@ -143,7 +154,7 @@ export function useDashboard(api:DashboardApi,deps:DashboardDeps={}){
     if(visible.value){schedule();void load();}
   });
   onBeforeUnmount(()=>{
-    disposed=true;visible.value=false;epoch++;dailyEpoch++;inflight=undefined;dailyInflight=undefined;dailyInflightKey='';loading.value=false;dailyLoading.value=false;
+    disposed=true;visible.value=false;epoch++;dailyEpoch++;inflight=undefined;dailyInflight=undefined;dailyInflightKey='';corePending=false;loading.value=false;dailyLoading.value=false;
     document.removeEventListener('visibilitychange',onVisibility);
     controller?.abort();
     dailyController?.abort();

@@ -112,10 +112,9 @@ def registration_daily_analytics(
     source = admin_repository._registration_cohort_source_sql(
         date_range=(start_text, end_text),
     )
-    jobs = admin_repository._q(record_store.JOBS)
     accounts = admin_repository._q(record_store.ACCOUNTS)
     compatible_display_status_sql = (
-        admin_repository._JOB_DISPLAY_STATUS
+        admin_repository._registration_completion_display_status_sql()
         .replace("j.account_id", "cohort.job_account_id")
         .replace("j.", "cohort.")
         .replace("a.", "account.")
@@ -127,8 +126,8 @@ def registration_daily_analytics(
         ELSE LOWER(BTRIM(COALESCE(cohort.status, '')))
     END"""
     status_sql = public_result_status_sql(
-        display_status_sql,
-        requested_status_expression="cohort.requested_status",
+        "displayed_jobs.display_status",
+        requested_status_expression="displayed_jobs.requested_status",
     )
     promo_kind_sql = admin_repository._ACCOUNT_PROMO_KIND.replace("a.", "scoped.")
     promotion_sql = admin_repository._account_facet_expressions()["promotion"].replace("a.", "unique_accounts.")
@@ -148,8 +147,9 @@ def registration_daily_analytics(
     # 不把任务或凭据 JSON 加载到 Python。
     sql = f"""
         WITH cohort AS MATERIALIZED ({source}),
-        scoped AS MATERIALIZED (
-            SELECT cohort.*, {status_sql} AS public_status,
+        {admin_repository._registration_completion_accounts_sql("cohort", successful_jobs_only=True)},
+        displayed_jobs AS MATERIALIZED (
+            SELECT cohort.*, {display_status_sql} AS display_status,
                    account.current_plan_type, account.plan_type,
                    account.plus_promo_kind, account.plus_discount_eligible,
                    account.plus_promo_eligible, account.plus_trial_eligible,
@@ -157,6 +157,10 @@ def registration_daily_analytics(
                    account.account_promotion_value, account.plan_check_status, account.archived
               FROM cohort
               LEFT JOIN {accounts} account ON account.id = cohort.account_id
+              LEFT JOIN completion_account_states account_setup ON account_setup.id = account.id
+        ),
+        scoped AS MATERIALIZED (
+            SELECT displayed_jobs.*, {status_sql} AS public_status FROM displayed_jobs
         ),
         task_daily AS (
             SELECT task_date, SUM(count) AS total,

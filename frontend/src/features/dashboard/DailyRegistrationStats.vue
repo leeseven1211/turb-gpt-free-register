@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import {computed,ref,watch} from 'vue';
+import {computed,ref,useId,watch} from 'vue';
 import type {DailyRegistrationRow,DailyRegistrationStatsState,DailyRegistrationSummary} from './contracts';
 import type {AccountQuerySpec} from '../accounts/queryAdapter';
 
@@ -13,6 +13,9 @@ const mode=ref<RangeMode>('7');
 const customFrom=ref('');
 const customTo=ref('');
 const customReady=ref(false);
+const chartView=ref<'status'|'plans'>('status');
+const selectedDate=ref('');
+const detailId=`daily-registration-detail-${useId()}`;
 
 const rows=computed(()=>Array.isArray(props.state.data?.rows)?props.state.data!.rows!:[]);
 const dataRange=computed(()=>({
@@ -28,7 +31,7 @@ const updatedLabel=computed(()=>props.state.updatedAt
 const errorLabel=computed(()=>props.state.error&&props.state.data&&props.state.scopeCurrent
  ? `${props.state.error}，当前成功范围仍可使用。`
  : props.state.error);
-const maxTotal=computed(()=>Math.max(1,...rows.value.map(row=>number(row.total))));
+const selectedRow=computed(()=>rows.value.find(row=>row.date===selectedDate.value));
 
 const planLabels:Record<string,string>={
  free:'Free',free_trial_eligible:'Free · 试用资格',free_half_price_eligible:'Free · 半价资格',
@@ -41,6 +44,87 @@ const statusLabels:Record<string,string>={
 const extraStatusLabels:Record<string,string>={
  interrupted:'执行中断',unsupported:'不支持',deactivated:'已停用',
 };
+type ChartSegment={key:string;label:string;value:number;color:string};
+const statusSeries=[
+ {key:'success',label:'成功',keys:['success'],color:'#249b72'},
+ {key:'partial_success',label:'部分成功',keys:['partial_success'],color:'#d39a27'},
+ {key:'failed',label:'失败',keys:['failed'],color:'#df5a67'},
+ {key:'active',label:'进行中',keys:['pending','queued','running','waiting','settling','stopping','cancelling'],color:'#4c86db'},
+ {key:'cancelled',label:'取消',keys:['cancelled','stopped'],color:'#98a2b3'},
+ {key:'interrupted',label:'执行中断',keys:['interrupted'],color:'#8b68c9'},
+ {key:'unsupported',label:'不支持',keys:['unsupported'],color:'#b29bd7'},
+ {key:'deactivated',label:'已停用',keys:['deactivated'],color:'#667085'},
+];
+const planColors:Record<string,string>={
+ free:'#a5adbb',free_trial_eligible:'#4f9f88',free_half_price_eligible:'#6aab9b',
+ free_discount_eligible:'#92bdb0',free_promo_unknown:'#baccc6',
+ plus:'#6564d8',pro:'#4c86db',team:'#249b72',go:'#d39a27',unknown:'#d0d5df',
+};
+const planOrder=Object.keys(planLabels);
+function comparePlanSeries(left:{key:string},right:{key:string}):number{
+ const leftIndex=planOrder.indexOf(left.key);
+ const rightIndex=planOrder.indexOf(right.key);
+ return (leftIndex<0?planOrder.length:leftIndex)-(rightIndex<0?planOrder.length:rightIndex)||left.key.localeCompare(right.key);
+}
+const chartRows=computed(()=>rows.value.map(row=>{
+ const unavailable=chartView.value==='status'?row.counts==null:row.plans==null;
+ const total=chartView.value==='status'?knownNumber(row.total):knownNumber(row.accounts_total);
+ let segments:ChartSegment[];
+ if(unavailable){
+  segments=[{key:'unavailable',label:chartView.value==='status'?'状态待查':'套餐待查',value:Math.max(0,total??0),color:'#b5bdcd'}];
+ }else if(chartView.value==='status'){
+  segments=statusSeries.map(series=>({...series,value:groupedCount(row,series.keys)??0}));
+  const knownTotal=segments.reduce((sum,segment)=>sum+segment.value,0);
+  if(total!==null&&total>knownTotal)segments.push({key:'other',label:'其他状态',value:total-knownTotal,color:'#b5bdcd'});
+ }else{
+  segments=(plans(row)??[]).map(plan=>({key:plan.key,label:plan.label,value:plan.count,color:planColors[plan.key]||'#8b8fa3'}))
+   .sort(comparePlanSeries);
+ }
+ const visibleSegments=segments.filter(segment=>segment.value>0);
+ return {row,total,unavailable,segments:visibleSegments,stackTotal:visibleSegments.reduce((sum,segment)=>sum+segment.value,0)};
+}));
+const axisStep=computed(()=>Math.max(1,Math.ceil(Math.max(0,...chartRows.value.map(item=>Math.max(item.total??0,item.stackTotal)))/4)));
+const axisMax=computed(()=>axisStep.value*4);
+const axisTicks=computed(()=>[4,3,2,1,0].map(value=>value*axisStep.value));
+const chartLegend=computed(()=>{
+ const series=new Map<string,ChartSegment>();
+ for(const item of chartRows.value)for(const segment of item.segments)if(!series.has(segment.key))series.set(segment.key,segment);
+ if(chartRows.value.some(item=>item.unavailable)&&!series.has('unavailable')){
+  series.set('unavailable',{key:'unavailable',label:chartView.value==='status'?'状态待查':'套餐待查',value:0,color:'#b5bdcd'});
+ }
+ if(chartView.value==='status'){
+  for(const item of statusSeries.slice(0,5))if(!series.has(item.key))series.set(item.key,{...item,value:0});
+  return [...series.values()].sort((left,right)=>{
+   const order=[...statusSeries.map(item=>item.key),'other','unavailable'];
+   return order.indexOf(left.key)-order.indexOf(right.key);
+  });
+ }
+ return [...series.values()].sort(comparePlanSeries);
+});
+
+function chartLabel(item:typeof chartRows.value[number]):string{
+ const unit=chartView.value==='status'?'任务总数':'账号总数';
+ const details=item.unavailable?[chartView.value==='status'?'状态待查':'套餐待查']:item.segments.map(segment=>`${segment.label} ${display(segment.value)}`);
+ return `${item.row.date}，${unit} ${display(item.total)}${details.length?`，${details.join('，')}`:''}，点击查看当日详情`;
+}
+function selectDate(date:string){
+ selectedDate.value=date;
+}
+function moveDate(event:KeyboardEvent,index:number){
+ let next=index;
+ if(event.key==='ArrowRight')next=Math.min(rows.value.length-1,index+1);
+ else if(event.key==='ArrowLeft')next=Math.max(0,index-1);
+ else if(event.key==='Home')next=0;
+ else if(event.key==='End')next=rows.value.length-1;
+ else return;
+ event.preventDefault();
+ const row=rows.value[next];
+ if(!row)return;
+ selectDate(row.date);
+ const buttons=(event.currentTarget as HTMLElement).parentElement?.querySelectorAll<HTMLButtonElement>('[data-daily-bar]');
+ buttons?.[next]?.focus({preventScroll:true});
+ buttons?.[next]?.scrollIntoView?.({block:'nearest',inline:'nearest'});
+}
 
 function number(value:unknown):number{
  const parsed=Number(value);
@@ -137,6 +221,9 @@ function applyCustom(){
  void props.state.load(customFrom.value,customTo.value);
 }
 
+watch(rows,value=>{
+ if(!value.some(row=>row.date===selectedDate.value))selectedDate.value=value[0]?.date||'';
+},{immediate:true});
 watch(()=>[props.state.data?.date_from,props.state.data?.date_to] as const,([from,to])=>{
  if(!customReady.value&&(from||to)){
   customFrom.value=from||'';
@@ -178,16 +265,43 @@ watch(()=>[props.state.data?.date_from,props.state.data?.date_to] as const,([fro
   </div>
   <div v-if="state.loading&&!state.data" class="daily-stats-loading" aria-live="polite">正在读取每日注册统计…</div>
   <template v-else-if="state.data">
-   <div class="daily-stats-chart" role="img" aria-label="每日注册任务数柱状图">
-    <div v-for="row in rows" :key="row.date" class="daily-bar-column" :title="`${row.date} · 总数 ${display(row.total)}`">
-     <span class="daily-bar-value">{{display(row.total)}}</span>
-     <i data-daily-bar :style="{height:`${Math.max(3,number(row.total)/maxTotal*100)}%`}" :aria-label="`${row.date} 总数 ${display(row.total)}`"></i>
-     <small>{{row.date.slice(5)}}</small>
+   <div v-if="rows.length" class="daily-chart">
+    <div class="daily-chart-heading">
+     <div class="daily-chart-switch" role="group" aria-label="每日统计图表内容">
+      <button type="button" data-daily-view="status" :aria-pressed="chartView==='status'" @click="chartView='status'">任务状态</button>
+      <button type="button" data-daily-view="plans" :aria-pressed="chartView==='plans'" @click="chartView='plans'">套餐分布</button>
+     </div>
+     <p>点选日期查看详情 · 方向键切换日期</p>
+    </div>
+    <div class="daily-chart-legend" data-daily-legend aria-label="图例">
+     <span v-for="item in chartLegend" :key="item.key"><i :class="{'is-unavailable':item.key==='unavailable'}" :style="{backgroundColor:item.color}" aria-hidden="true"></i>{{item.label}}</span>
+     <span v-if="!chartLegend.length">{{chartView==='plans'?'暂无套餐账号':'暂无任务'}}</span>
+    </div>
+    <div class="daily-stats-chart" role="group" :aria-label="chartView==='status'?'每日注册任务状态堆叠柱状图':'每日注册账号套餐堆叠柱状图'">
+     <div class="daily-chart-axis" data-daily-axis>
+      <span class="daily-axis-unit">{{chartView==='status'?'任务数':'账号数'}}</span>
+      <div class="daily-axis-ticks" aria-hidden="true"><span v-for="tick in axisTicks" :key="tick" data-daily-axis-tick>{{display(tick)}}</span></div>
+     </div>
+     <div class="daily-chart-scroll">
+      <div class="daily-chart-plot" :style="{gridTemplateColumns:`repeat(${rows.length},minmax(44px,1fr))`,minWidth:`${rows.length*48}px`}">
+       <div class="daily-chart-grid" aria-hidden="true"><i v-for="tick in axisTicks" :key="tick"></i></div>
+       <button v-for="(item,index) in chartRows" :key="item.row.date" type="button" class="daily-bar-column" :class="{selected:item.row.date===selectedDate}"
+        :data-daily-bar="item.row.date" :aria-label="chartLabel(item)" :title="chartLabel(item)" :aria-pressed="item.row.date===selectedDate" :aria-controls="detailId"
+        :tabindex="item.row.date===selectedDate?0:-1" @click="selectDate(item.row.date)" @focus="selectDate(item.row.date)" @keydown="moveDate($event,index)">
+        <span class="daily-bar-value" aria-hidden="true">{{display(item.total)}}</span>
+        <span class="daily-bar-stack" aria-hidden="true">
+         <span v-for="segment in item.segments" :key="segment.key" class="daily-bar-segment" :class="{'is-unavailable':segment.key==='unavailable'}"
+          :data-daily-segment="segment.key" :style="{height:`${segment.value/axisMax*100}%`,backgroundColor:segment.color}"></span>
+        </span>
+        <small aria-hidden="true">{{item.row.date.slice(5)}}</small>
+       </button>
+      </div>
+     </div>
     </div>
    </div>
 
-   <div v-if="rows.length" class="daily-stats-rows">
-    <article v-for="row in rows" :key="row.date" class="daily-stats-row" :data-daily-row="row.date">
+   <div v-if="selectedRow" :id="detailId" class="daily-selected-detail" aria-live="polite" aria-atomic="true">
+    <article v-for="row in [selectedRow]" :key="row.date" class="daily-stats-row" :data-daily-row="row.date">
      <div class="daily-row-heading">
       <div><strong>{{row.date}}</strong><span>总数 {{display(row.total)}}</span></div>
       <button type="button" data-daily-bulk :disabled="!canBatch(row)" @click="createBatch(row,`${row.date} 无优惠账号查套餐`)">
@@ -241,18 +355,44 @@ watch(()=>[props.state.data?.date_from,props.state.data?.date_to] as const,([fro
 .daily-stats-controls>button.active{border-color:#5b5ce2;background:#eef0ff;color:#4f51be;font-weight:650}
 .daily-stats-controls label{display:flex;align-items:center;gap:6px;color:#647086;font-size:11.5px}
 .daily-stats-controls input{padding:0 8px}
-.daily-stats-controls button:focus-visible,.daily-stats-controls input:focus-visible,.daily-stats-row button:focus-visible,.daily-stats-summary button:focus-visible,.daily-stats-error button:focus-visible{outline:2px solid #5b5ce2;outline-offset:2px}
+.daily-stats-controls button:focus-visible,.daily-stats-controls input:focus-visible,.daily-stats-row button:focus-visible,.daily-stats-summary button:focus-visible,.daily-stats-error button:focus-visible,.daily-chart-switch button:focus-visible{outline:2px solid #5b5ce2;outline-offset:2px}
 .daily-stats-error{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 11px;border:1px solid #efc2c7;border-radius:8px;background:#fff7f8;color:#9f2f39;font-size:12px}
 .daily-stats-error button{min-height:30px;padding:0 10px;border:1px solid #b03a44;border-radius:6px;background:#fff;color:#9f2f39;font:inherit;font-size:11.5px;font-weight:650;cursor:pointer}
 .daily-stats-error button:disabled{opacity:.5;cursor:default}
 .daily-stats-stale{padding:9px 11px;border:1px solid #f0cf9b;border-radius:8px;background:#fff9ed;color:#8a5a12;font-size:12px;line-height:1.5}
 .daily-stats-loading,.daily-stats-empty{padding:20px;border:1px dashed #dfe3eb;border-radius:9px;color:#647086;font-size:12px;text-align:center}
-.daily-stats-chart{display:flex;align-items:flex-end;gap:clamp(5px,1.2vw,12px);height:150px;min-width:0;padding:10px 6px 0;border-bottom:1px solid #e6e9f0;overflow-x:auto}
-.daily-bar-column{display:flex;flex:1 0 24px;flex-direction:column;align-items:center;justify-content:flex-end;gap:5px;height:100%;min-width:24px;color:#647086;font-size:10px}
-.daily-bar-column i{display:block;width:min(28px,80%);min-height:3px;border-radius:5px 5px 0 0;background:#5b5ce2}
-.daily-bar-column small{font-size:10px;font-variant-numeric:tabular-nums}
-.daily-bar-value{font-size:10px;font-variant-numeric:tabular-nums}
-.daily-stats-rows{display:flex;flex-direction:column;gap:10px}
+.daily-chart,.daily-selected-detail{min-width:0}
+.daily-chart{--daily-plot-height:164px;display:flex;flex-direction:column;gap:11px}
+.daily-chart-heading{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}
+.daily-chart-heading p{margin:0;color:#647086;font-size:11px;line-height:1.5}
+.daily-chart-switch{display:inline-flex;gap:3px;padding:3px;border:1px solid #e6e9f0;border-radius:8px;background:#f6f7fa}
+.daily-chart-switch button{min-height:31px;padding:0 13px;border:0;border-radius:5px;background:transparent;color:#647086;font:inherit;font-size:12px;cursor:pointer}
+.daily-chart-switch button[aria-pressed=true]{background:#fff;color:#4f51be;font-weight:650;box-shadow:0 1px 3px rgba(16,24,40,.1)}
+.daily-chart-legend{display:flex;flex-wrap:wrap;gap:6px 14px;color:#566175;font-size:11px;line-height:1.4}
+.daily-chart-legend>span{display:inline-flex;align-items:center;gap:5px}
+.daily-chart-legend i{display:inline-block;width:9px;height:9px;flex:none;border-radius:2px}
+.daily-stats-chart{display:grid;grid-template-columns:auto minmax(0,1fr);gap:9px;min-width:0}
+.daily-chart-axis{display:grid;grid-template-rows:22px var(--daily-plot-height) 28px;min-width:30px;color:#647086;font-size:10px;font-variant-numeric:tabular-nums}
+.daily-axis-unit{align-self:start;font-size:10px;white-space:nowrap}
+.daily-axis-ticks{display:flex;flex-direction:column;justify-content:space-between;align-items:flex-end;position:relative}
+.daily-axis-ticks span{line-height:1;transform:translateY(-50%)}
+.daily-axis-ticks span:last-child{transform:translateY(50%)}
+.daily-chart-scroll{min-width:0;overflow-x:auto;overscroll-behavior-x:contain;scrollbar-width:thin;padding-bottom:3px}
+.daily-chart-plot{position:relative;display:grid;gap:0}
+.daily-chart-grid{position:absolute;inset:22px 0 28px;display:flex;flex-direction:column;justify-content:space-between;pointer-events:none}
+.daily-chart-grid i{height:0;border-top:1px dashed #edf0f5}
+.daily-chart-grid i:last-child{border-top:1px solid #dfe3eb}
+.daily-bar-column{position:relative;display:grid;grid-template-rows:22px var(--daily-plot-height) 28px;justify-items:center;min-width:0;padding:0 3px;border:0;border-radius:6px;background:transparent;color:#647086;font:inherit;cursor:pointer;transition:background-color .12s ease}
+.daily-bar-column:hover{background:#f6f7fb}
+.daily-bar-column.selected{background:#eef0ff}
+.daily-bar-column:focus-visible{outline:2px solid #5b5ce2;outline-offset:-2px}
+.daily-bar-stack{display:flex;flex-direction:column-reverse;align-self:stretch;align-items:stretch;width:28px;max-width:80%}
+.daily-bar-segment{display:block;width:100%;flex:none}
+.daily-bar-segment:last-child{border-radius:4px 4px 0 0}
+.is-unavailable{background-image:repeating-linear-gradient(135deg,transparent,transparent 3px,rgba(255,255,255,.65) 3px,rgba(255,255,255,.65) 5px)}
+.daily-bar-column small{align-self:center;font-size:10px;line-height:1;font-variant-numeric:tabular-nums;white-space:nowrap}
+.daily-bar-column.selected small{color:#4f51be;font-weight:700}
+.daily-bar-value{align-self:start;max-width:100%;overflow:hidden;color:#566175;font-size:10px;line-height:1.4;font-variant-numeric:tabular-nums}
 .daily-stats-row{display:flex;flex-direction:column;gap:9px;min-width:0;padding:12px;border:1px solid #edf0f5;border-radius:9px;background:#fafbfd}
 .daily-row-heading{display:flex;align-items:center;justify-content:space-between;gap:8px}
 .daily-row-heading>div{display:flex;align-items:baseline;gap:8px;min-width:0}
@@ -270,7 +410,11 @@ watch(()=>[props.state.data?.date_from,props.state.data?.date_to] as const,([fro
 @media(max-width:620px){
  .daily-stats{padding:15px}
  .daily-stats-meta{width:100%}
- .daily-stats-chart{height:132px}
+ .daily-chart{--daily-plot-height:140px}
+ .daily-chart-heading p{width:100%;font-size:10.5px}
+ .daily-chart-switch button{min-height:36px}
+ .daily-stats-controls label{max-width:100%}
+ .daily-stats-controls input{min-width:0;max-width:100%}
  .daily-row-heading{align-items:flex-start;flex-direction:column}
  .daily-row-heading button,.daily-stats-summary button{width:100%}
 }

@@ -17,7 +17,7 @@ from psycopg.rows import dict_row
 from core.storage import postgres as postgres_store, records as record_store
 from core.storage.task_query_context import MISSING_SCHEMA_ERRORS, readonly_task_query
 from core.accounts.search import REGISTRATION_DRIVERS, parse_account_search, parse_registration_date_range
-from core.operations.presentation import public_result_status, public_result_status_sql
+from core.operations.presentation import UNCONFIRMED_RESULT_STATUSES, public_result_status, public_result_status_sql
 
 
 @dataclass(frozen=True)
@@ -478,8 +478,11 @@ def _registration_cohort_source_sql(*, date_range: tuple[str, str] | None = None
     return f"""
         WITH base AS MATERIALIZED (
             SELECT j.id AS job_id, j.status,
-                   COALESCE(NULLIF(j.data->>'requested_status', ''),
-                            NULLIF(j.data #>> '{{result_summary,requested_status}}', '')) AS requested_status,
+                   CASE WHEN LOWER(BTRIM(COALESCE(j.status, ''))) IN
+                        ({','.join(repr(value) for value in sorted(UNCONFIRMED_RESULT_STATUSES))})
+                        THEN COALESCE(NULLIF(j.data->>'requested_status', ''),
+                            NULLIF(j.data #>> '{{result_summary,requested_status}}', ''))
+                   END AS requested_status,
                    j.batch_id, j.email AS job_email,
                    j.account_id AS job_account_id, j.attempt_id, j.root_job_id,
                    j.job_email_source AS job_email_source,
@@ -1238,6 +1241,54 @@ _JOB_DISPLAY_STATUS = f"""CASE
            THEN 'success' ELSE 'partial_success' END
     ELSE COALESCE(j.status, '')
 END"""
+
+
+def _registration_completion_accounts_sql(job_source: str, *, successful_jobs_only: bool = False) -> str:
+    """按相关账号读取一次 2FA 待确认事实；跳过其余条件已不完整的账号。"""
+    accounts = _q(record_store.ACCOUNTS)
+    status_filter = (
+        "AND LOWER(BTRIM(COALESCE(j.status, ''))) IN ('success', 'partial_success')"
+        if successful_jobs_only else ""
+    )
+    return f"""
+        completion_account_ids AS MATERIALIZED (
+            SELECT DISTINCT a.id
+              FROM {job_source} j
+              JOIN {accounts} a ON a.id = j.account_id
+             WHERE j.job_account_id IS NOT NULL
+               {status_filter}
+               AND (NOT {_JOB_CODEX_REQUIRED} OR COALESCE(a.codex_status, '') = 'success')
+               AND (NOT {_JOB_PASSWORD_REQUIRED} OR {_JOB_PASSWORD_PRESENT})
+               AND (NOT {_JOB_PLAN_CHECK_REQUIRED} OR COALESCE(a.plan_check_status, '') = 'success')
+               AND {_JOB_TWOFA_REQUIRED} AND {_JOB_TOTP_PRESENT}
+        ),
+        completion_account_extra AS MATERIALIZED (
+            SELECT a.id, a.data->'extra_json' AS extra_json
+              FROM {accounts} a
+              JOIN completion_account_ids needed ON needed.id = a.id
+        ),
+        completion_account_states AS MATERIALIZED (
+            SELECT id, LOWER(COALESCE(
+                CASE
+                    WHEN jsonb_typeof(extra_json) = 'object'
+                        THEN extra_json->>'totp_setup_pending'
+                    WHEN jsonb_typeof(extra_json) = 'string'
+                         AND (extra_json #>> '{{}}') IS JSON OBJECT
+                        THEN (extra_json #>> '{{}}')::jsonb->>'totp_setup_pending'
+                    ELSE NULL
+                END, 'false'
+            )) IN ('true', '1', 'yes') AS totp_setup_pending
+              FROM completion_account_extra
+        )
+    """
+
+
+def _registration_completion_display_status_sql() -> str:
+    """总览使用窄投影；其他任务列表继续沿用自己的展示状态读取路径。"""
+    return _JOB_DISPLAY_STATUS.replace(
+        _ACCOUNT_TOTP_SETUP_PENDING, "COALESCE(account_setup.totp_setup_pending, FALSE)",
+    )
+
 
 # 批次进度行只需要表格/按钮用到的字段。progress_steps 单条可达 1 MB，
 # 不能把整段 data 原样搬进 Python 再丢掉。
@@ -2013,18 +2064,43 @@ def dashboard_aggregates(*, public_status: bool = False, include_email_status: b
             """
         )
         plans = {str(row["plan"]): int(row["count"]) for row in cur.fetchall()}
-        status_sql = public_result_status_sql(_JOB_DISPLAY_STATUS, "j.data") if public_status else _JOB_DISPLAY_STATUS
-        projected_jobs = (
-            f"SELECT {status_sql} AS status, j.created_at FROM {jobs} j "
-            f"LEFT JOIN {accounts} a ON a.id = j.account_id"
+        display_status_sql = _registration_completion_display_status_sql().replace("j.account_id", "j.job_account_id")
+        requested_status_sql = (
+            f"(SELECT original.data->>'requested_status' FROM {jobs} original WHERE original.id = p.job_id)"
         )
-        cur.execute(f"SELECT COALESCE(status, 'unknown') AS status, COUNT(*) AS count FROM ({projected_jobs}) p GROUP BY 1")
-        job_counts = {str(row["status"]): int(row["count"]) for row in cur.fetchall()}
+        status_sql = (
+            public_result_status_sql("p.display_status", requested_status_expression=requested_status_sql)
+            if public_status else "p.display_status"
+        )
         cur.execute(
-            f"SELECT COALESCE(status, 'unknown') AS status, COUNT(*) AS count FROM ({projected_jobs}) p "
-            "WHERE LEFT(created_at, 10) = TO_CHAR(CURRENT_DATE, 'YYYY-MM-DD') GROUP BY 1"
+            f"""WITH dashboard_jobs AS MATERIALIZED (
+                SELECT j.id AS job_id, j.status, j.created_at, j.account_id,
+                       j.account_id AS job_account_id,
+                       j.job_config_password_enabled, j.job_config_plan_check_enabled,
+                       j.job_config_twofa_enabled, j.job_config_codex_enabled
+                  FROM {jobs} j
+            ), {_registration_completion_accounts_sql("dashboard_jobs")},
+            displayed_jobs AS MATERIALIZED (
+                SELECT j.job_id, j.created_at, {display_status_sql} AS display_status
+                  FROM dashboard_jobs j
+                  LEFT JOIN {accounts} a ON a.id = j.account_id
+                  LEFT JOIN completion_account_states account_setup ON account_setup.id = a.id
+            ),
+            folded_jobs AS MATERIALIZED (
+                SELECT p.created_at, {status_sql} AS status FROM displayed_jobs p
+            )
+            SELECT COALESCE(status, 'unknown') AS status, COUNT(*) AS count,
+                   COUNT(*) FILTER (
+                       WHERE LEFT(created_at, 10) = TO_CHAR(CURRENT_DATE, 'YYYY-MM-DD')
+                   ) AS today_count
+              FROM folded_jobs GROUP BY 1"""
         )
-        today_counts = {str(row["status"]): int(row["count"]) for row in cur.fetchall()}
+        job_rows = cur.fetchall()
+        job_counts = {str(row["status"]): int(row["count"]) for row in job_rows}
+        today_counts = {
+            str(row["status"]): int(row["today_count"])
+            for row in job_rows if row["today_count"]
+        }
         if include_email_status:
             pool = _pool_union()
             cur.execute(f"SELECT source, COALESCE(status, 'available') AS status, COUNT(*) AS count FROM ({pool}) p GROUP BY source, status")

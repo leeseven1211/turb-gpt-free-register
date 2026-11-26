@@ -151,9 +151,11 @@ defineExpose({
      <span class="ov-pulse-badge"><strong>{{item.badge}}</strong></span>
     </button>
    </nav>
+  </template>
 
-   <DailyRegistrationStats :state="dailyState" :on-bulk-plan-create="props.deps.onBulkPlanCreate"/>
+  <DailyRegistrationStats :state="dailyState" :on-bulk-plan-create="props.deps.onBulkPlanCreate"/>
 
+  <template v-if="data">
    <div class="ov-grid">
     <article class="ov-card ov-card--email" data-overview-card="email" style="--accent:#1f9d75;--accent-soft:#e7f6f0">
      <header class="ov-card-head">
