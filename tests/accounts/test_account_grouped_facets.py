@@ -164,6 +164,15 @@ class AccountGroupedFacetRoutingTests(unittest.TestCase):
                     self.assertIn("CROSS JOIN LATERAL (VALUES", sql)
                     self.assertNotIn("GROUP BY GROUPING SETS", sql)
 
+    def test_selected_promotion_match_is_projected_once_before_facet_fanout(self):
+        _, sql, helper_calls = self._capture(
+            filters={"promotion": "plus_50", "source": "outlook"},
+        )
+        self.assertEqual(helper_calls, 0)
+        self.assertEqual(sql.count("AS __promotion_matches"), 1)
+        self.assertEqual(sql.count("EXISTS (SELECT 1 FROM"), 1)
+        self.assertIn("OR b.__promotion_matches", sql)
+
     def test_search_without_facets_uses_separate_count_and_page(self):
         statements, _, helper_calls = self._capture(q="备注:fixture", include_facets=False)
         self.assertEqual(len(statements), 2)

@@ -361,6 +361,18 @@ def _account_facet_predicates(
     return predicates
 
 
+def _selected_promotion_match(
+    filters: dict[str, str], expressions: dict[str, str], account_ref: str,
+) -> tuple[str, list[Any]]:
+    """把已选优惠谓词提早投影，避免 VALUES fanout 重复执行 EXISTS。"""
+    for key, predicate, params in _account_facet_predicates(
+        "", filters, expressions, account_ref=account_ref,
+    ):
+        if key == "promotion":
+            return predicate, params
+    return "TRUE", []
+
+
 def _promotion_dynamic_facet_sql(
     *,
     selected_values: list[str],
@@ -749,9 +761,17 @@ def account_query_facets(spec: dict) -> dict:
         account_ref="b.__account_id",
     )
     for key, predicate, values in predicate_specs:
-        predicates.append(f"(f.facet = %s OR ({predicate}))")
-        params.extend((key, *values))
+        if key == "promotion":
+            predicates.append("(f.facet = %s OR b.__promotion_matches)")
+            params.append(key)
+        else:
+            predicates.append(f"(f.facet = %s OR ({predicate}))")
+            params.extend((key, *values))
+    promotion_match, promotion_params = _selected_promotion_match(
+        filters, expressions, "a.id",
+    )
     columns = ", ".join(f"{expression} AS {key}" for key, expression in expressions.items())
+    columns += f", ({promotion_match}) AS __promotion_matches"
     columns += ", a.id AS __account_id"
     facet_values = ", ".join(f"('{key}',b.{key})" for key in expressions)
     dynamic_predicates = [
@@ -780,7 +800,7 @@ def account_query_facets(spec: dict) -> dict:
             SELECT f.facet,f.value,COUNT(*) AS count,{static_columns} FROM base b
             CROSS JOIN LATERAL (VALUES {facet_values}) AS f(facet,value)
             WHERE {' AND '.join(predicates)} GROUP BY f.facet,f.value
-            {dynamic_sql}""", (*params, *dynamic_offer_params))
+            {dynamic_sql}""", (*promotion_params, *params, *dynamic_offer_params))
         return _facet_dict(cur.fetchall())
 
 
@@ -890,6 +910,10 @@ def _list_account_facet_query(
     else:
         expressions = _account_facet_expressions()
         facet_columns = ", ".join(f"{expression} AS {key}" for key, expression in expressions.items())
+        promotion_match, promotion_params = _selected_promotion_match(
+            request.filters, expressions, "a.id",
+        )
+        facet_columns += f", ({promotion_match}) AS __promotion_matches"
         facet_columns += ", a.id AS __account_id"
         latest_column = ""
         if share_search_scope:
@@ -904,8 +928,12 @@ def _list_account_facet_query(
             account_ref="b.__account_id",
         )
         for key, predicate, values in predicate_specs:
-            facet_where.append(f"(f.facet = %s OR ({predicate}))")
-            facet_params.extend((key, *values))
+            if key == "promotion":
+                facet_where.append("(f.facet = %s OR b.__promotion_matches)")
+                facet_params.append(key)
+            else:
+                facet_where.append(f"(f.facet = %s OR ({predicate}))")
+                facet_params.extend((key, *values))
         dynamic_predicates = [
             predicate for key, predicate, _values in predicate_specs if key != "promotion"
         ]
@@ -923,6 +951,7 @@ def _list_account_facet_query(
             other_params=dynamic_params,
             include_latest=share_search_scope,
         )
+        facet_params[:0] = promotion_params
         facet_params.extend(dynamic_offer_params)
         # 旧写法用 9 段 UNION ALL 重复扫描账号表，生产数据里的 extra_json 较大时，
         # facets 一项就要约 200 ms。这里先物化一次轻量投影，再展开各个维度聚合；
