@@ -167,12 +167,14 @@ def _handle(context):
         remote_completed = False
         try:
             context.checkpoint()
+            context.report(stage="preflight", state="running", message="正在校验本地 Codex 凭证与 Sub2API 配置")
             reference = _bound_reference(data, expected_email=context.email)
             auth, filename = reference["content"], str(reference["filename"])
             if client.configured_backend_identity() != data.get("backend_identity"):
                 raise ManualUploadError("sub2api_backend_changed", "Sub2API 后端已变化，原上传目标保留；请恢复原后端或重新提交", stage="configuration")
+            context.report(stage="preflight", state="success", message="Sub2API 手动上传预检通过")
             stage = "upload"
-            context.report(stage=stage, message="开始手动上传 Codex OAuth 凭证", detail={"mode": "manual_upload"})
+            context.report(stage="sub2api_sync", state="running", message="开始手动上传 Codex OAuth 凭证", detail={"mode": "manual_upload"})
             context.remote_request_started("sub2api_manual_upload", detail={"backend_identity": data.get("backend_identity")})
             remote_started = True
             result = client.upload_configured_codex_oauth_credential(
@@ -188,6 +190,7 @@ def _handle(context):
                 "remote_result_confirmed": True, "local_business_writeback_confirmed": True,
                 "local_readback_confirmed": True,
             })
+            context.report(stage="sub2api_sync", state="success", message="手动上传 Sub2API 已完成")
             summary = {"ok": True, "uploaded": True, "filename": filename, "mode": "manual_upload",
                        "status_code": result.get("status_code"), "sub2api_account_id": result.get("sub2api_account_id")}
             return task_gateway.OperationResult.success(summary, message="手动上传 Sub2API 已完成")
@@ -200,8 +203,11 @@ def _handle(context):
             if remote_started:
                 if not remote_completed and code in {"sub2api_auth_rejected", "sub2api_upload_rejected"}:
                     context.remote_request_receipt(outcome="rejected", receipt_state="rejected", detail={"error_code": code})
+                    context.report(stage="sub2api_sync", state="failed", message=str(exc), detail={"error_code": code})
                 else:
                     return task_gateway.OperationResult.request_unknown(str(exc), summary)
+            else:
+                context.report(stage="sub2api_sync" if stage != "read_credential" else "preflight", state="failed", message=str(exc), detail={"error_code": code})
             return task_gateway.OperationResult.failed(str(exc), summary)
         except Exception as exc:
             code = "sub2api_manual_local_writeback_failed" if remote_completed else "sub2api_manual_execution_failed"
@@ -211,4 +217,5 @@ def _handle(context):
                        "uploaded": remote_completed}
             if remote_started:
                 return task_gateway.OperationResult.request_unknown(message, summary)
+            context.report(stage="sub2api_sync" if stage != "read_credential" else "preflight", state="failed", message=message, detail={"error_code": code})
             return task_gateway.OperationResult.failed(message, summary)

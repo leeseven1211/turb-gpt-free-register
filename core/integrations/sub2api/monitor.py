@@ -360,12 +360,21 @@ def register_handler() -> None:
 
 def _handle_scan(context):
     context.checkpoint()
+    report = getattr(context, "report", None)
     data = context.run.get("data") or {}
+    if callable(report):
+        report(stage="preflight", state="success", message="Sub2API 巡检配置预检通过")
+        report(stage="sub2api_scan", state="running", message="正在扫描 Sub2API 异常账号与修复状态")
     result = _run_once(force=bool(data.get("force")), continuation_only=bool(data.get("continuation_only")))
     reasons = result.get("reasons") or {}
     if any(reasons.get(code) for code in ("backend_not_configured", "local_state_unavailable", "remote_scan_failed")):
+        if callable(report):
+            report(stage="sub2api_scan", state="failed", message="Sub2API 异常扫描未完成")
         return task_gateway.OperationResult.failed("Sub2API 异常扫描未完成", result)
     message = "Sub2API 待续修复已推进" if result.get("continuation_only") else "Sub2API 异常扫描完成，修复任务分别入队"
+    if callable(report):
+        report(stage="sub2api_scan", state="success", message="Sub2API 异常账号扫描完成")
+        report(stage="sub2api_repair", state="success", message=message)
     return task_gateway.OperationResult.success(result, message=message)
 
 

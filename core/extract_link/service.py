@@ -1246,6 +1246,7 @@ def _ensure_extract_token(
         "email": email,
         "trigger": "extract_preflight",
         "force_refresh": False,
+        "parent_step_id": "access_token",
     }
     if operation_context is not None:
         live_kwargs["operation_context"] = operation_context
@@ -1286,6 +1287,7 @@ def _ensure_extract_token(
         "email": email,
         "trigger": "token_refresh_extract_preflight",
         "force_refresh": True,
+        "parent_step_id": "refresh_token",
     }
     if operation_context is not None:
         refresh_kwargs["operation_context"] = operation_context
@@ -3277,6 +3279,7 @@ def _payment_aftercare(context, account_id: int, email: str, *, config_snapshot=
         force_refresh=False,
         operation_context=context,
         config_snapshot=config_snapshot,
+        parent_step_id="access_token",
     )
     result = checked.get("result") if isinstance(checked, dict) and isinstance(checked.get("result"), dict) else {}
     if result.get("ok"):
@@ -3295,6 +3298,7 @@ def _payment_aftercare(context, account_id: int, email: str, *, config_snapshot=
         force_refresh=True,
         operation_context=context,
         config_snapshot=config_snapshot,
+        parent_step_id="refresh_token",
     )
     refresh_result = refreshed.get("result") if isinstance(refreshed, dict) and isinstance(refreshed.get("result"), dict) else {}
     if not refresh_result.get("ok"):

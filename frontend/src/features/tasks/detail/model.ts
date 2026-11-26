@@ -43,6 +43,11 @@ export function matchesStep(item: TaskEvent | TaskLog, filter: string | null, st
   if (eventId === filter || selected && strings(selected.event_ids).includes(eventId)) return true;
   const raw = [text(item.raw_stage || detail.raw_stage), ...strings(item.raw_stages || detail.raw_stages)];
   const stages = [stage, stageLabel, ...raw].filter(Boolean);
+  if (stages.includes('nested_live_check')) {
+    const fallback = steps.find(step => stepId(step) === 'refresh_token')
+      || steps.find(step => stepId(step) === 'access_token');
+    if (fallback && (stepId(fallback) === filter || selected && stepId(fallback) === stepId(selected))) return true;
+  }
   const matches = steps.filter(step => stages.some(value => step.raw_stages?.includes(value)));
   // 复用 raw stage（如 dispatch）且没有明确主步骤时保留未关联状态。
   if (selected && matches.length > 1) return false;

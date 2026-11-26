@@ -1,4 +1,4 @@
-import {progressLabel, stepLabel, stepState, type Step} from './model';
+import {progressLabel, stepId, stepLabel, stepState, type Step} from './model';
 
 /** 阶段排序由服务端的实际记录决定；位置相邻不代表串行或并行。 */
 export const phaseSteps = (steps?: Step[]): Step[] => (steps || []).filter(step =>
@@ -7,10 +7,16 @@ export const phaseSteps = (steps?: Step[]): Step[] => (steps || []).filter(step 
 export function phaseState(step: Step): string {
   const execution = step.execution;
   if (execution?.condition?.state === 'not_met') return '条件未满足';
+  const state = stepState(step);
+  if (state === 'not_executed') {
+    return execution?.dependency_state === 'waiting' && execution.waits_for?.length
+      ? '未执行 · 等待子任务'
+      : '未执行';
+  }
   if (execution?.dependency_state === 'blocked') return execution.waits_for?.length ? '子任务未完成' : '前置阶段失败';
   if (execution?.dependency_state === 'waiting') return execution.waits_for?.length ? '等待子任务' : '等待前置阶段';
   if (execution?.retry?.state === 'recovered') return '重试已恢复';
-  return progressLabel(stepState(step));
+  return progressLabel(state);
 }
 
 export function phaseMarkers(step: Step): string[] {
@@ -53,7 +59,10 @@ export function phaseRelations(step: Step, siblings: Step[] = []): {label: strin
 export function phaseDependencyTags(step: Step, siblings: Step[] = []): string[] {
   const tags: string[] = [];
   if (step.depends_on?.length) {
-    tags.push('前置：' + step.depends_on.map(id => siblings.find(s => s.id === id)?.label || id).join('、'));
+    tags.push('前置：' + step.depends_on.map(id => {
+      const related = siblings.find(s => stepId(s) === id);
+      return related ? stepLabel(related) : id;
+    }).join('、'));
   }
   const waitsFor = step.execution?.waits_for;
   if (waitsFor?.length) {

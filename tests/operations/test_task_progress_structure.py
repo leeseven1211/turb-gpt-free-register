@@ -72,6 +72,9 @@ def test_child_dispatch_success_remains_waiting_and_does_not_claim_parallelism()
     assert dispatch["execution"]["dependency_state"] == "waiting"
     assert dispatch["execution"]["waits_for"][0]["task_id"] == 30
     assert step(value, "set_password")["execution"]["dependency_state"] == "waiting"
+    assert step(value, "set_password")["display_status"] == "not_executed"
+    assert step(value, "set_password")["reason"] == "等待关联子任务完成后继续执行"
+    assert step(value, "codex_dispatch")["display_status"] == "not_executed"
     assert step(value, "result")["execution"]["dependency_state"] == "waiting"
     assert value["outcome"]["child_tasks"][0]["task_id"] == 30
     assert value["structure"]["parallelism"] == "unknown"

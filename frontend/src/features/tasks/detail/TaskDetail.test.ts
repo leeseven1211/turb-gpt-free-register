@@ -315,4 +315,37 @@ describe('任务进度证据', () => {
     expect(data.outcome.status).toBe('running');
     wrapper.unmount();
   });
+  it('事件时间线通过 event_ids 与内联查活回退关联主步骤，不再显示未关联步骤', async () => {
+    vi.mocked(tasksApi.detail).mockResolvedValue({ ok: true, task: { id: 9, task_type: 'sentinel_maintenance_check', status: 'running',
+      last_run_id: 90, runs: [{ id: 90, status: 'running', run_no: 1 }] } });
+    vi.mocked(tasksApi.progress).mockResolvedValue({ ok: true, progress: { task_id: 9, run_id: 90, revision: '1',
+      main_steps: [
+        { id: 'refresh_token', label: '刷新 AT', state: 'running', raw_stages: ['refresh_token'] },
+        { id: 'sentinel_check', label: '检查 Sentinel 资源', state: 'success', raw_stages: [], event_ids: ['102'] },
+      ],
+      outcome: { status: 'running' } } });
+    vi.mocked(tasksApi.events).mockResolvedValue({ ok: true, items: [
+      { id: 101, stage: 'nested_live_check', message: '内联触发查活与刷新' },
+      { id: 102, stage: 'reconcile', message: '完成结果核验' },
+    ], next_after_id: 102, has_more: false });
+    const wrapper = mount(TaskDetail, { attachTo: document.body });
+    try {
+      await wrapper.vm.open(9); await flushPromises();
+      expect(document.querySelector('.tc-detail-header h2')?.textContent).toContain('Sentinel 维护检查');
+      const events = [...document.querySelectorAll('#tc-detail-panel-events .tc-event')];
+      expect(events).toHaveLength(2);
+      expect(events[0]?.querySelector('.tc-event-stage')?.textContent).toBe('内联查活与刷新');
+      expect(events[0]?.querySelector('.tc-event-step')?.textContent).toBe('刷新 AT');
+      expect(events[1]?.querySelector('.tc-event-stage')?.textContent).toBe('结果核验');
+      expect(events[1]?.querySelector('.tc-event-step')?.textContent).toBe('检查 Sentinel 资源');
+    } finally { wrapper.unmount(); }
+  });
+  it('内联刷新子阶段失败不被外层 preflight 分类覆盖，保留主步骤与子阶段中文定位', () => {
+    const data = progress({ step_id: 'refresh_token', label: '刷新 Token', stage: 'login_password',
+      message: 'Protocol v2 认证未完成', error_info: { stage: 'preflight', summary: '密码提交后未取得有效响应或下一步页面' } });
+    const wrapper = mount(TaskProgress, { props: { progress: data, filter: null, active: true, context: '1:10' } });
+    expect(wrapper.find('.tc-task-failure summary').text()).toContain('失败位置：刷新 Token · 账号密码');
+    expect(wrapper.find('.tc-task-failure summary').text()).not.toContain('失败位置：配置预检');
+    wrapper.unmount();
+  });
 });

@@ -115,10 +115,18 @@ def _captured_proxy_source(purpose: str) -> str | None:
 class _ReporterAdapter:
     """Keep the old worker vocabulary while routing native events to ``ctx``."""
 
-    def __init__(self, task_id: int | None, context=None, *, finish_operation: bool = True):
+    def __init__(
+        self,
+        task_id: int | None,
+        context=None,
+        *,
+        finish_operation: bool = True,
+        parent_step_id: str | None = None,
+    ):
         self._legacy = TaskReporter(task_id) if context is None else None
         self._context = context
         self._finish_operation = bool(finish_operation)
+        self._parent_step_id = str(parent_step_id or "").strip() or None
 
     def start(self, message: str = "开始执行") -> None:
         if self._context is None:
@@ -127,6 +135,16 @@ class _ReporterAdapter:
             self._native_report("preflight", state="running", message=message)
 
     def _native_report(self, stage: str, **event):
+        if self._parent_step_id:
+            from core.operations.stages import normalize_stage
+
+            detail = dict(event.get("detail") or {})
+            detail.setdefault("main_step_id", self._parent_step_id)
+            normalized_child = normalize_stage(stage)
+            if normalized_child and normalized_child != self._parent_step_id:
+                detail.setdefault("child_step_id", normalized_child)
+            detail.setdefault("raw_stage", stage)
+            event = {**event, "detail": detail}
         task_run_log.set_current_stage(
             stage, task_id=getattr(self._context, "task_id", None),
             run_id=getattr(self._context, "run_id", None),
@@ -185,8 +203,19 @@ class _ReporterAdapter:
         )
 
 
-def _reporter(task_id: int | None, context=None, *, finish_operation: bool = True):
-    return _ReporterAdapter(task_id, context, finish_operation=finish_operation)
+def _reporter(
+    task_id: int | None,
+    context=None,
+    *,
+    finish_operation: bool = True,
+    parent_step_id: str | None = None,
+):
+    return _ReporterAdapter(
+        task_id,
+        context,
+        finish_operation=finish_operation,
+        parent_step_id=parent_step_id,
+    )
 
 
 def _checkpoint(context, message: str = "用户手动停止维护任务") -> None:
@@ -983,6 +1012,7 @@ def _run_live_check(
     on_authenticated=None,
     result_writer=None,
     completion_auth: bool = False,
+    parent_step_id: str | None = None,
 ) -> dict:
     def save_result(account_id, result):
         return result_writer(result) if callable(result_writer) else db.update_account_liveness(account_id, result)
@@ -1010,7 +1040,12 @@ def _run_live_check(
     account_route = None
     result = None
     route: dict = {}
-    reporter = _reporter(task_id, operation_context, finish_operation=finish_operation)
+    reporter = _reporter(
+        task_id,
+        operation_context,
+        finish_operation=finish_operation,
+        parent_step_id=parent_step_id,
+    )
     refresh_boundary: dict | None = None
     preflight_open = True
     network_open = False
@@ -2508,6 +2543,7 @@ def run_account_live_check_inline(
     on_authenticated=None,
     result_writer=None,
     allow_missing_token: bool = False,
+    parent_step_id: str | None = None,
 ) -> dict:
     """Synchronously run the preflight inside its parent durable operation.
 
@@ -2586,6 +2622,7 @@ def run_account_live_check_inline(
             operation_context=operation_context,
             finish_operation=not native_inline,
             config_snapshot=config_snapshot,
+            parent_step_id=parent_step_id,
             **({"on_authenticated": on_authenticated} if callable(on_authenticated) else {}),
             **({"result_writer": result_writer} if callable(result_writer) else {}),
         )

@@ -97,7 +97,10 @@ def _handle_check(context):
     # The persisted key is an identity, never an instruction to open a path.
     service = (get_service() if process.get_runtime_context() is not None
                else _SERVICE_INSTANCES.get(key) or get_service())
+    report = getattr(context, "report", None)
     if _cache_key(service) != key:
+        if callable(report):
+            report(stage="preflight", state="failed", message="维护缓存配置已变化")
         return task_gateway.OperationResult.failed("维护缓存配置已变化，请重新发起检查", {"error_code": "maintenance_cache_changed"})
     context.checkpoint()
     with service._mutex:
@@ -121,13 +124,20 @@ def _handle_check(context):
             lease.close()
             with service._mutex:
                 service._running = False
+    if callable(report):
+        report(stage="preflight", state="success", message="Sentinel 维护检查预检通过")
+        report(stage="sentinel_check", state="running", message="正在检查并校验 Sentinel 资源")
     result = service._run_check(lease)
     # This result belongs to the completed check. The durable Run is settled
     # by the gateway after returning, so a status query here sees itself active.
     with service._mutex:
         summary = service._summary(running=False)
     if result.status == "failed":
+        if callable(report):
+            report(stage="sentinel_check", state="failed", message="Sentinel 候选检查未完成")
         return task_gateway.OperationResult.failed("Sentinel 候选检查未完成", summary)
+    if callable(report):
+        report(stage="sentinel_check", state="success", message="Sentinel 候选检查完成")
     return task_gateway.OperationResult.success(summary, message="Sentinel 候选检查完成")
 
 

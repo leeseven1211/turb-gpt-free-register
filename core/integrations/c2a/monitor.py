@@ -629,13 +629,18 @@ def _scan(backend: str, *, force: bool = False, continuation_only: bool = False,
         if client.configured_backend_identity() != backend:
             _note(summary, "c2a_backend_changed")
             return dict(summary, ok=False, error_code="c2a_backend_changed", stage="c2a_scan", batch_refs=[])
+        if context and callable(getattr(context, "report", None)):
+            if not summary["ok"]:
+                context.report(stage="c2a_scan", state="failed", message="读取 C2A 异常账号失败")
+            else:
+                context.report(stage="c2a_scan", state="success", message="已读取 C2A 异常账号列表")
         accounts = store.account_material([row["account_id"] for row in active], by_email.keys())
         matched = defaultdict(list)
         for account in accounts:
             matched[_email(account["email"])].append(account)
         by_id = {account["id"]: account for account in accounts}
-        if context:
-            context.report(stage="c2a_repair", message="正在推进已受理修复并汇总新异常")
+        if context and callable(getattr(context, "report", None)):
+            context.report(stage="c2a_repair", state="running", message="正在推进已受理修复并汇总新异常")
         now = time.time()
         limit = _limit()
         discovered = _discover(by_email, matched, repairs, summary, now, force=force)
@@ -677,23 +682,44 @@ def _handle_scan(context):
     context.checkpoint()
     data = context.run.get("data") or {}
     backend = str(data.get("backend_identity") or "")
+    report = getattr(context, "report", None)
+    active_stage = "preflight"
+    repair_started = False
     try:
+        if callable(report):
+            report(stage="preflight", state="running", message="正在校验 C2A 巡检配置")
         if not backend or client.configured_backend_identity() != backend:
+            if callable(report):
+                report(stage="preflight", state="failed", message="C2A 巡检目标已变化")
             return task_gateway.OperationResult.failed("C2A 巡检目标已变化", {"error_code": "c2a_backend_changed"})
-        context.report(stage="c2a_scan", message="正在读取 C2A 账号和巡检进度")
+        if callable(report):
+            report(stage="preflight", state="success", message="C2A 巡检配置预检通过")
+        active_stage = "c2a_scan"
+        if callable(report):
+            report(stage="c2a_scan", state="running", message="正在读取 C2A 账号和巡检进度")
         result = _scan(backend, force=bool(data.get("force")), continuation_only=bool(data.get("continuation_only")),
                        context=context)
+        repair_started = "accounts" in result and result.get("error_code") not in {"c2a_scan_in_progress", "c2a_backend_changed"}
     except (task_gateway.OperationCancelled, task_gateway.OperationLeaseLost):
         raise
     except Exception as exc:
         code = _code(getattr(exc, "code", None), "c2a_scan_storage_unavailable")
         logger.warning("C2A 巡检无法继续：分类=%s 异常=%s", code, type(exc).__name__)
+        if callable(report):
+            report(stage=active_stage, state="failed", message="C2A 巡检执行异常")
         result = {"ok": False, "error_code": code, "stage": "c2a_scan", "error_class": type(exc).__name__}
     # 原因码作为值写入，避免任务摘要脱敏规则把含 token、OTP 等字样的键移除。
     if "reasons" in result:
         result["reasons"] = [{"code": code, "count": count} for code, count in result["reasons"].most_common()]
     if not result["ok"]:
+        if callable(report):
+            if repair_started and result.get("stage") != "c2a_scan":
+                report(stage="c2a_repair", state="failed", message="C2A 修复调度未完成")
+            elif not repair_started:
+                report(stage="c2a_scan", state="failed", message="C2A 异常巡检未完成")
         return task_gateway.OperationResult.failed("C2A 异常巡检未完成，请查看分类和任务回执", result)
+    if callable(report):
+        report(stage="c2a_repair", state="success", message="C2A 修复调度与状态汇总已完成")
     return task_gateway.OperationResult.success(result, message="C2A 异常巡检完成，修复结果在各任务回执更新")
 
 

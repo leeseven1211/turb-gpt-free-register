@@ -17,6 +17,8 @@ from core.operations.stages import REGISTRATION_AUTH_STAGES, STAGES, flow_for, i
 
 
 _CHILD_LABELS = {
+    "preflight": "刷新前预检", "network": "分配刷新网络",
+    "nested_live_check": "内联查活收尾",
     "login": "打开并提交登录邮箱", "login_password": "账号密码",
     "login_mfa": "登录 MFA", "email_otp": "验证邮箱验证码",
     "mfa_challenge": "验证 TOTP MFA", "session_token": "确认登录会话",
@@ -230,6 +232,17 @@ def _append_unique(values: list[Any], value: Any) -> None:
         values.append(value)
 
 
+def _update_first_started(node: dict[str, Any], candidate: str | None) -> None:
+    """跨多实例保留某步骤最早观测到的开始时间，避免重试实例把前序步骤排到后面。"""
+    if not candidate:
+        return
+    candidate_time = _time_value(candidate)
+    previous = node.get("_first_started_at")
+    previous_time = _time_value(previous)
+    if previous is None or (candidate_time is not None and (previous_time is None or candidate_time < previous_time)):
+        node["_first_started_at"] = candidate
+
+
 def _record(item: dict[str, Any], event: dict[str, Any], state: str, *, raw: str, child_id: str | None, order: int) -> dict[str, Any]:
     detail = _event_detail(event)
     event_id = _event_id(event)
@@ -246,6 +259,8 @@ def _record(item: dict[str, Any], event: dict[str, Any], state: str, *, raw: str
         attempt["started_at"] = str(detail["started_at"])
     if observed and detail.get("completed_at") is not None:
         attempt["completed_at"] = str(detail["completed_at"])
+    if detail.get("partial_success") is True:
+        attempt["partial_success"] = True
     for key in ("duration_ms", "wait_reason", "error_code", "state_before", "state_after", "transition_id", "child_task_id", "child_run_id", "child_task_type", "failure_stage", "failure_event_id", "failure_message", "route_attempt_no", "step_instance_id", "execution_id", "parallel_group", "country"):
         if key == "duration_ms" and not observed:
             continue
@@ -274,6 +289,8 @@ def _record(item: dict[str, Any], event: dict[str, Any], state: str, *, raw: str
         previous_time, candidate_time = _time_value(target.get("started_at")), _time_value(candidate_start)
         if previous_time is None or (candidate_time is not None and candidate_time < previous_time):
             target["started_at"] = candidate_start
+    if observed:
+        _update_first_started(target, target.get("started_at"))
     if observed and detail.get("completed_at"):
         target["completed_at"] = str(detail["completed_at"])
     if observed and detail.get("duration_ms") is not None:
@@ -300,6 +317,8 @@ def _record(item: dict[str, Any], event: dict[str, Any], state: str, *, raw: str
             item_start = _time_value(item.get("started_at"))
             if not item.get("started_at") or (target_start is not None and item_start is not None and target_start < item_start):
                 item["started_at"] = target["started_at"]
+            if observed:
+                _update_first_started(item, item.get("started_at"))
         if target.get("completed_at"):
             target_end = _time_value(target["completed_at"])
             item_end = _time_value(item.get("completed_at"))
@@ -591,14 +610,41 @@ def _current(steps: list[dict[str, Any]], activity: list[dict[str, Any]], run_st
     if item is None:
         return None
     child = next((value for value in item.get("children", []) if value["id"] == latest.get("child_step_id")), None)
-    return {"step_id": item["id"], "child_step_id": child["id"] if child else None, "child_label": child["label"] if child else None, "label": child["label"] if child else item["label"], "raw_stage": latest.get("raw_stage"), "event_id": latest.get("event_id"), "state": latest.get("state"), "evidence": latest.get("evidence")}
+    current: dict[str, Any] = {
+        "step_id": item["id"],
+        "child_step_id": child["id"] if child else None,
+        "child_label": child["label"] if child else None,
+        "label": child["label"] if child else item["label"],
+        "raw_stage": latest.get("raw_stage"),
+        "event_id": latest.get("event_id"),
+        "state": latest.get("state"),
+        "evidence": latest.get("evidence"),
+    }
+    if (
+        latest.get("state") in {"success", "skipped"}
+        and not any(step.get("state") == "running" for step in steps if step["id"] != "result")
+    ):
+        current_index = next((idx for idx, step in enumerate(steps) if step["id"] == item["id"]), -1)
+        next_item = next(
+            (
+                step for step in steps[current_index + 1 :]
+                if step["id"] != "result"
+                and step.get("state") == "pending"
+                and step.get("display_status") not in {"skipped", "not_executed"}
+            ),
+            None,
+        )
+        if next_item is not None:
+            current["next_step_id"] = next_item["id"]
+            current["next_label"] = next_item["label"]
+    return current
 
 
 def _unrecovered_failures(attempts: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """保留未恢复的失败；协议回退成功可以关闭同一业务操作的失败。"""
     candidates = []
     for attempt in attempts:
-        if attempt.get("state") != "failed" or attempt.get("evidence") not in {"explicit", "unconfirmed"}:
+        if attempt.get("state") != "failed" or attempt.get("evidence") not in {"explicit", "unconfirmed", "legacy"}:
             continue
         confirming = {
             "set_twofa": {"twofa", "twofa_result", "set_twofa", "twofa_remote_confirm"},
@@ -694,6 +740,25 @@ def _failure(task_type: str, run: dict[str, Any], attempts: list[dict[str, Any]]
     candidates = _unrecovered_failures(attempts)
     explicit_failure = bool(candidates)
     chosen = candidates[-1] if candidates else None
+    if (
+        chosen is not None
+        and (
+            (chosen.get("child_step_id") is None and normalize_stage(chosen.get("raw_stage")) == chosen.get("main_step_id"))
+            or normalize_stage(chosen.get("raw_stage")) == "nested_live_check"
+        )
+    ):
+        # 外层步骤或内联查活收尾闭合事件紧跟在具体子步骤失败之后时，保留更精确的子阶段定位。
+        concrete_child = next(
+            (
+                value for value in reversed(candidates)
+                if value.get("main_step_id") == chosen.get("main_step_id")
+                and value.get("child_step_id") is not None
+                and normalize_stage(value.get("raw_stage")) not in {chosen.get("main_step_id"), "nested_live_check"}
+            ),
+            None,
+        )
+        if concrete_child is not None:
+            chosen = concrete_child
     status = str(run.get("status") or "").strip().lower()
     summary = run.get("result_summary") or {}
     data = run.get("data") if isinstance(run.get("data"), dict) else {}
@@ -781,10 +846,25 @@ def _failure(task_type: str, run: dict[str, Any], attempts: list[dict[str, Any]]
                 error_info = classify_task_error(classification_error, stage=chosen.get("raw_stage"), task_type=task_type, error_code=error_code, result_summary=summary, task_status=status)
     except (ImportError, TypeError):
         error_info = None
-    stable_step = chosen.get("main_step_id") if chosen.get("child_task_type") else resolve_step(task_type, chosen.get("raw_stage"), run=run) or chosen.get("main_step_id") or "result"
-    stable_label = chosen.get("label")
+    explicit_step = str(chosen.get("main_step_id") or "").strip()
+    stable_step = (
+        explicit_step
+        if chosen.get("child_task_type")
+        else resolve_step(
+            task_type,
+            chosen.get("raw_stage"),
+            {"main_step_id": explicit_step} if explicit_step else None,
+            run=run,
+        )
+        or explicit_step
+        or "result"
+    )
+    stable_label = chosen.get("label") if not explicit_step or stable_step == explicit_step else None
     if not stable_label:
-        stable_label = next((item.get("label") for item in flow_for(task_type, run) if item.get("id") == stable_step), None)
+        stable_label = (
+            next((item.get("label") for item in flow_for(task_type, run) if item.get("id") == stable_step), None)
+            or chosen.get("label")
+        )
     return {"step_id": stable_step, "stage": chosen.get("raw_stage"), "label": stable_label or chosen.get("raw_stage"), "event_id": chosen.get("event_id"), "evidence": evidence, "message": message or "", "error_info": error_info, "reconcile_required": reconcile, "child_task_id": chosen.get("child_task_id"), "child_run_id": chosen.get("child_run_id")}
 
 
@@ -793,7 +873,11 @@ def _ordered_steps(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
     body = [value for value in steps if value["id"] != "result"]
     observed = [value for value in body if value.get("observed_order") is not None]
     planned = [value for value in body if value.get("observed_order") is None]
-    observed.sort(key=lambda value: (_time_value(value.get("started_at")) is None, _time_value(value.get("started_at")) or 0, value["observed_order"]))
+    observed.sort(key=lambda value: (
+        _time_value(value.get("_first_started_at") or value.get("started_at")) is None,
+        _time_value(value.get("_first_started_at") or value.get("started_at")) or 0,
+        value["observed_order"],
+    ))
     for index, value in enumerate(observed, 1):
         value["observed_order"] = index
     # 实际执行顺序只由观测决定；缺少记录的模板节点仍放回计划位置，
@@ -919,37 +1003,116 @@ def _remote_boundary_step(task_type: str, event: dict[str, Any], steps: list[dic
 
 
 def _close_terminal_steps(
-    steps: list[dict[str, Any]], *, run: dict[str, Any], attempts: list[dict[str, Any]],
+    steps: list[dict[str, Any]], *, task_type: str = "", run: dict[str, Any], attempts: list[dict[str, Any]],
     template_order: dict[str, int], recorded_steps: set[str], unmapped_activity: bool,
-    task_lifecycle_observed: bool,
+    remote_or_resource_observed: bool = False, task_lifecycle_observed: bool,
 ) -> None:
-    """终态只关闭界面活动态，分别说明未执行与记录缺口。
-
-    仅根据模板声明的依赖和显式失败确认本地阶段未进入；这个判定
-    不确认远端请求结果，也不能用模板顺序替代实际开始记录。
-    """
+    """终态只关闭界面活动态，按真实执行位置分别收敛未执行与记录缺口。"""
     status = str(run.get("status") or "").lower()
     reconcile = status in {"attention_required", "request_unknown", "unknown", "manual_reconcile", "password_confirmation_pending"}
     closed = status in {"success", "partial_success", "failed", "stopped", "cancelled", "canceled", "interrupted", "deactivated", "unsupported"} or reconcile
+    summary = run.get("result_summary") if isinstance(run.get("result_summary"), dict) else {}
+    awaiting_steps = summary.get("awaiting_steps") or []
+    observed_template_ids = {
+        step_id for step_id in recorded_steps if step_id in template_order and step_id != "result"
+    } | {
+        item["id"] for item in steps
+        if item["id"] in template_order and item["id"] != "result"
+        and (item.get("started_at") or item.get("observed_order") is not None)
+    }
+    max_observed_template_pos = max((template_order[step_id] for step_id in observed_template_ids), default=-1)
     if not closed:
+        if status == "waiting" and task_type == "account_completion" and awaiting_steps and max_observed_template_pos >= 0:
+            for item in steps:
+                step_id = item["id"]
+                if step_id == "result":
+                    continue
+                position = template_order.get(step_id)
+                if (
+                    item.get("evidence") == "unobserved"
+                    and not item.get("started_at")
+                    and step_id not in recorded_steps
+                    and position is not None
+                    and position > max_observed_template_pos
+                ):
+                    _state(item, "pending" if item.get("state") != "skipped" else "skipped",
+                           display="not_executed", reason="等待关联子任务完成后继续执行")
         return
-    failures = [value for value in _unrecovered_failures(attempts)
-                if value.get("evidence") == "explicit" and not value.get("child_task_id")
-                and value.get("main_step_id") in template_order]
-    blocked_by = {value["main_step_id"]: value for value in failures}
-    if status not in {"success", "partial_success"} and not unmapped_activity:
+    business_attempts = [value for value in attempts if value.get("main_step_id") != "result"]
+    business_recorded = {value for value in recorded_steps if value != "result"}
+    no_business_started = (
+        not business_attempts
+        and not business_recorded
+        and not unmapped_activity
+        and not remote_or_resource_observed
+        and not task_lifecycle_observed
+    )
+    cancel_before_start = no_business_started and status in {"cancelled", "canceled", "stopped"}
+    never_started = cancel_before_start or (
+        no_business_started and "started_at" in run and run.get("started_at") is None
+    )
+    cancel_status = status in {"cancelled", "canceled", "stopped", "interrupted"}
+    blocked_by: dict[str, dict[str, Any]] = {}
+    if status not in {"success", "partial_success"} and business_attempts:
+        failures = [
+            value for value in _unrecovered_failures(attempts)
+            if value.get("evidence") in {"explicit", "legacy"} and not value.get("child_task_id")
+            and value.get("main_step_id") in template_order
+        ]
+        for value in failures:
+            blocked_by[value["main_step_id"]] = {
+                "step_id": value["main_step_id"],
+                "label": value.get("label") or value.get("raw_stage"),
+                "failed": True,
+            }
+        for item in steps:
+            step_id = item["id"]
+            if step_id == "result" or step_id not in template_order or step_id in blocked_by:
+                continue
+            execution = item.get("execution") or {}
+            if item.get("state") == "failed":
+                blocked_by[step_id] = {
+                    "step_id": step_id,
+                    "label": item.get("label") or step_id,
+                    "failed": True,
+                }
+            elif item.get("state") == "running" or (item.get("state") == "pending" and item.get("evidence") == "unconfirmed"):
+                blocked_by[step_id] = {
+                    "step_id": step_id,
+                    "label": item.get("label") or step_id,
+                    "failed": False,
+                }
+            elif execution.get("kind") == "child_task" and execution.get("dependency_state") in {"blocked", "waiting"}:
+                blocked_by[step_id] = {
+                    "step_id": step_id,
+                    "label": item.get("label") or step_id,
+                    "failed": execution.get("dependency_state") == "blocked",
+                }
         for _ in range(len(steps)):
             previous = len(blocked_by)
             for item in steps:
                 if item["id"] in recorded_steps or item.get("started_at"):
                     continue
-                failure = next((blocked_by[key] for key in item.get("depends_on", []) if key in blocked_by), None)
-                if failure:
-                    blocked_by[item["id"]] = failure
+                blocker = next((blocked_by[key] for key in item.get("depends_on", []) if key in blocked_by), None)
+                if blocker:
+                    blocked_by[item["id"]] = blocker
             if len(blocked_by) == previous:
                 break
-    never_started = "started_at" in run and run.get("started_at") is None and not attempts and not recorded_steps and not unmapped_activity and not task_lifecycle_observed
-    cancel_status = status in {"cancelled", "canceled", "stopped", "interrupted"}
+    downstream_halted = (
+        status not in {"success", "partial_success"}
+        and bool(business_attempts)
+        and not unmapped_activity
+        and max_observed_template_pos >= 0
+        and (
+            cancel_status
+            or any(template_order.get(step_id, -1) >= max_observed_template_pos for step_id in blocked_by)
+        )
+    )
+    tail_blocker = max(
+        (value for step_id, value in blocked_by.items() if step_id in observed_template_ids),
+        key=lambda value: template_order.get(value["step_id"], -1),
+        default=None,
+    )
     unresolved_display = status if reconcile else "interrupted" if cancel_status else "unconfirmed"
     for item in steps:
         step_id = item["id"]
@@ -970,10 +1133,42 @@ def _close_terminal_steps(
             )
             for value in attempts
         )
-        failure = blocked_by.get(step_id)
-        blocked = failure is not None and step_id not in recorded_steps and not item.get("started_at") and status not in {"success", "partial_success"}
-        if item.get("evidence") == "not_executed" or never_started or blocked:
-            reason = "本次执行未开始" if never_started else f"因“{failure.get('label') or failure['raw_stage']}”失败，未进入该阶段" if blocked else item.get("reason") or item.get("message") or "本次未执行该阶段"
+        unentered = step_id not in recorded_steps and not item.get("started_at")
+        blocker = blocked_by.get(step_id)
+        blocked = blocker is not None and unentered and status not in {"success", "partial_success"}
+        awaiting_downstream = (
+            status == "partial_success"
+            and task_type == "account_completion"
+            and bool(awaiting_steps)
+            and item.get("evidence") == "unobserved"
+            and unentered
+            and position is not None
+            and max_observed_template_pos >= 0
+            and position > max_observed_template_pos
+        )
+        halted_downstream = (
+            downstream_halted
+            and item.get("evidence") == "unobserved"
+            and unentered
+            and position is not None
+            and position > max_observed_template_pos
+        )
+        if item.get("evidence") == "not_executed" or never_started or awaiting_downstream or blocked or halted_downstream:
+            if never_started:
+                reason = "任务在开始执行前已取消" if cancel_before_start else "本次执行未开始"
+            elif awaiting_downstream:
+                reason = "等待关联子任务完成后继续执行"
+            elif blocked:
+                reason = f"因“{blocker['label']}”{'失败' if blocker.get('failed') else '未完成'}，未进入该阶段"
+            elif halted_downstream:
+                if tail_blocker is not None:
+                    reason = f"因“{tail_blocker['label']}”{'失败' if tail_blocker.get('failed') else '未完成'}，未进入该阶段"
+                elif cancel_status:
+                    reason = "任务已停止，未进入该阶段"
+                else:
+                    reason = "前序阶段未完成，本次未执行该阶段"
+            else:
+                reason = item.get("reason") or item.get("message") or "本次未执行该阶段"
             _state(item, "pending" if item.get("state") != "skipped" else "skipped", display="not_executed", reason=reason)
         elif (
             step_id == "plan_check"
@@ -1292,6 +1487,504 @@ def _correct_historical_mfa_events(task_type: str, run: dict[str, Any], events: 
     return corrected
 
 
+_PLAN_INLINE_REFRESH_STAGES = frozenset({
+    "preflight", "network", "authenticate", "browser", "page", "login",
+    "login_password", "login_mfa", "email_otp", "mfa_challenge", "token",
+    "nested_live_check", "remote_request", "reconcile",
+})
+_EXTRACT_INLINE_LIVENESS_STAGES = frozenset({
+    "network", "authenticate", "browser", "page", "login", "login_password",
+    "login_mfa", "email_otp", "mfa_challenge", "token", "nested_live_check",
+})
+_EXTRACT_REFRESH_AUTH_STAGES = frozenset({
+    "authenticate", "browser", "page", "login", "login_password",
+    "login_mfa", "email_otp", "mfa_challenge", "token",
+})
+
+
+def _normalize_inline_liveness_events(task_key: str, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """把历史内联查活/刷新事件归入对应父步骤，避免污染主流程或生成未知卡片。"""
+    has_explicit_events = any("legacy_index" not in event and _event_state(event) is not None for event in events)
+    if task_key == "plan_check":
+        has_inline_refresh = any(
+            (_raw_stage(event) == "refresh_token" or _event_detail(event).get("main_step_id") == "refresh_token")
+            and "legacy_index" not in event
+            for event in events
+        )
+        refresh_failed = any(
+            (_raw_stage(event) == "refresh_token" or _event_detail(event).get("main_step_id") == "refresh_token")
+            and _event_state(event) == "failed"
+            for event in events
+        )
+        plan_started = any(
+            "legacy_index" not in event
+            and _raw_stage(event) == "plan_check"
+            and (
+                _event_state(event) in {"running", "success"}
+                or event.get("event_type") == "promotion.query.recorded"
+            )
+            for event in events
+        ) or (
+            not has_explicit_events
+            and any(_raw_stage(event) == "plan_check" and _event_state(event) in {"running", "success"} for event in events)
+        )
+        explicit_outer_network = False
+        scan_refresh_open = False
+        for event in events:
+            if "legacy_index" in event:
+                continue
+            raw = _raw_stage(event)
+            state = _event_state(event)
+            detail = _event_detail(event)
+            explicit_main = str(detail.get("main_step_id") or detail.get("step_id") or "").strip()
+            if raw == "refresh_token" and explicit_main in {"", "refresh_token"} and not detail.get("child_step_id"):
+                if state == "running":
+                    scan_refresh_open = True
+                elif state in {"success", "failed", "skipped"}:
+                    scan_refresh_open = False
+                continue
+            if raw == "network" and not scan_refresh_open and explicit_main in {"", "network"} and state is not None:
+                explicit_outer_network = True
+        refresh_open = False
+        normalized: list[dict[str, Any]] = []
+        for event in events:
+            raw = _raw_stage(event)
+            state = _event_state(event)
+            detail = _event_detail(event)
+            explicit_main = str(detail.get("main_step_id") or detail.get("step_id") or "").strip()
+            if "legacy_index" in event and has_explicit_events:
+                if refresh_failed and not plan_started and raw == "plan_check":
+                    continue
+                if has_inline_refresh and raw in _PLAN_INLINE_REFRESH_STAGES and raw != "preflight" and not (
+                    raw == "network" and explicit_outer_network
+                ):
+                    continue
+            if raw == "refresh_token" and explicit_main in {"", "refresh_token"} and not detail.get("child_step_id"):
+                if state == "running":
+                    refresh_open = True
+                elif state in {"success", "failed", "skipped"}:
+                    refresh_open = False
+                normalized.append(event)
+                continue
+            if refresh_failed and not plan_started and raw == "plan_check" and not explicit_main and state in {"failed", None}:
+                # 预刷新失败后未发起任何套餐请求时，忽略历史兜底写入的 0ms plan_check 失败事件。
+                continue
+            if refresh_open and not explicit_main and raw in _PLAN_INLINE_REFRESH_STAGES:
+                next_detail = dict(detail)
+                next_detail["main_step_id"] = "refresh_token"
+                if state is not None and not next_detail.get("child_step_id") and not next_detail.get("child_id"):
+                    next_detail["child_step_id"] = "session_token" if raw == "token" else raw
+                normalized.append({**event, "detail": next_detail})
+                continue
+            normalized.append(event)
+        return normalized
+
+    if task_key == "extract_link":
+        has_refresh = any(
+            _raw_stage(event) == "refresh_token"
+            or _event_detail(event).get("main_step_id") == "refresh_token"
+            or _raw_stage(event) in _EXTRACT_REFRESH_AUTH_STAGES
+            for event in events
+        )
+        inline_token_failed = any(
+            "legacy_index" not in event
+            and _event_state(event) == "failed"
+            and (
+                _raw_stage(event) in (_EXTRACT_REFRESH_AUTH_STAGES | {"access_token", "refresh_token"})
+                or _event_detail(event).get("main_step_id") in {"access_token", "refresh_token"}
+            )
+            for event in events
+        )
+        refresh_phase = False
+        extraction_started = False
+        outer_preflight_open = False
+        outer_preflight_closed = False
+        normalized = []
+
+        def close_outer_preflight(anchor: dict[str, Any]) -> None:
+            nonlocal outer_preflight_closed
+            if not outer_preflight_open or outer_preflight_closed:
+                return
+            outer_preflight_closed = True
+            ts = _event_time(anchor)
+            close_detail: dict[str, Any] = {"step_state": "success", "raw_stage": "preflight"}
+            if ts:
+                close_detail["completed_at"] = ts
+            normalized.append({
+                "id": None,
+                "run_id": _event_run_id(anchor),
+                "stage": "preflight",
+                "event_type": "stage.success",
+                "created_at": ts,
+                "message": "提链前置配置检查通过",
+                "detail": close_detail,
+            })
+
+        for event in events:
+            raw = _raw_stage(event)
+            state = _event_state(event)
+            detail = _event_detail(event)
+            explicit_main = str(detail.get("main_step_id") or detail.get("step_id") or "").strip()
+            if "legacy_index" in event and has_explicit_events and raw in (_EXTRACT_INLINE_LIVENESS_STAGES | {"preflight"}):
+                continue
+            if raw in {"extract_link", "extraction"}:
+                close_outer_preflight(event)
+                extraction_started = True
+                normalized.append(event)
+                continue
+            if extraction_started or explicit_main:
+                normalized.append(event)
+                continue
+            if raw == "refresh_token" or raw in _EXTRACT_REFRESH_AUTH_STAGES:
+                close_outer_preflight(event)
+                refresh_phase = True
+            if raw == "access_token":
+                close_outer_preflight(event)
+                normalized.append(event)
+                if state in {"failed", "success", "skipped"} and has_refresh:
+                    refresh_phase = True
+                continue
+            if raw == "preflight":
+                msg = str(event.get("message") or "")
+                is_inline_preflight = (
+                    "force_refresh" in detail
+                    or "live_check_driver" in detail
+                    or "protocol_version" in detail
+                    or msg.startswith(("开始验证账号", "开始刷新账号", "查活配置预检"))
+                )
+                if is_inline_preflight:
+                    close_outer_preflight(event)
+                    target_main = "refresh_token" if refresh_phase else "access_token"
+                    next_detail = dict(detail)
+                    next_detail["main_step_id"] = target_main
+                    if state is not None and not next_detail.get("child_step_id") and not next_detail.get("child_id"):
+                        next_detail["child_step_id"] = "preflight"
+                    normalized.append({**event, "detail": next_detail})
+                    continue
+                if state == "failed" and inline_token_failed:
+                    close_outer_preflight(event)
+                    target_main = "refresh_token" if (refresh_phase or has_refresh) else "access_token"
+                    next_detail = dict(detail)
+                    next_detail["main_step_id"] = target_main
+                    next_detail["raw_stage"] = target_main
+                    normalized.append({**event, "stage": target_main, "detail": next_detail})
+                    continue
+                if state == "running":
+                    outer_preflight_open = True
+                elif state in {"success", "failed", "skipped"}:
+                    outer_preflight_closed = True
+                normalized.append(event)
+                continue
+            if raw in _EXTRACT_INLINE_LIVENESS_STAGES:
+                close_outer_preflight(event)
+                target_main = "refresh_token" if (refresh_phase or raw in _EXTRACT_REFRESH_AUTH_STAGES) else "access_token"
+                next_detail = dict(detail)
+                next_detail["main_step_id"] = target_main
+                if state is not None and not next_detail.get("child_step_id") and not next_detail.get("child_id"):
+                    next_detail["child_step_id"] = "session_token" if raw == "token" else raw
+                normalized.append({**event, "detail": next_detail})
+                continue
+            normalized.append(event)
+        return normalized
+
+    if task_key == "token_refresh":
+        auth_failed = any(
+            _raw_stage(event) in {"authenticate", "browser", "page", "login", "login_password", "login_mfa", "email_otp", "mfa_challenge"}
+            and _event_state(event) == "failed"
+            for event in events
+        )
+        refresh_entered = any(_raw_stage(event) == "refresh_token" and _event_state(event) is not None for event in events)
+        token_started = any(_raw_stage(event) == "token" and _event_state(event) in {"running", "success"} for event in events)
+        if auth_failed and not refresh_entered and not token_started:
+            return [
+                event for event in events
+                if not (
+                    _raw_stage(event) == "token"
+                    and _event_state(event) == "failed"
+                    and ("未取得并保存有效 AT" in str(event.get("message") or "") or "legacy_index" in event)
+                )
+            ]
+
+    return events
+
+
+def _synthesize_c2a_note_events(task_key: str, run: dict[str, Any], events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """为仅记录 note 事件的历史 C2A 任务推导阶段起止事实。"""
+    if task_key not in {"c2a_scan", "c2a_session_reimport"}:
+        return events
+    if any(_event_state(event) is not None for event in events):
+        return events
+    template_stages = ("c2a_scan", "c2a_repair") if task_key == "c2a_scan" else ("c2a_resolve", "c2a_safety", "c2a_update")
+    valid_stages = {"preflight", *template_stages}
+    note_events = [
+        event for event in events
+        if str(event.get("event_type") or "").startswith("note.") and _raw_stage(event) in valid_stages
+    ]
+    if not note_events:
+        return events
+    status = str(run.get("status") or "").strip().lower()
+    summary = run.get("result_summary") if isinstance(run.get("result_summary"), dict) else {}
+    fail_stage = normalize_stage(summary.get("stage") or summary.get("failure_stage") or run.get("failure_stage") or "") if status == "failed" else ""
+    noted_order: list[str] = []
+    by_stage: dict[str, list[dict[str, Any]]] = {}
+    for event in note_events:
+        raw = _raw_stage(event)
+        if raw not in by_stage:
+            noted_order.append(raw)
+        by_stage.setdefault(raw, []).append(event)
+    business_stages = [stage for stage in noted_order if stage != "preflight"]
+    first_time = _event_time(note_events[0])
+    run_start = str(run["started_at"]) if run.get("started_at") else first_time
+    run_end = str(run["completed_at"]) if run.get("completed_at") else _event_time(note_events[-1])
+    synthesized: list[dict[str, Any]] = []
+    if business_stages or "preflight" in by_stage:
+        preflight_notes = by_stage.get("preflight") or []
+        preflight_failed = not business_stages and status == "failed"
+        preflight_end = _event_time(by_stage[business_stages[0]][0]) if business_stages else (run_end or first_time)
+        preflight_detail: dict[str, Any] = {"step_state": "failed" if preflight_failed else "success", "evidence": "legacy"}
+        if run_start:
+            preflight_detail["started_at"] = run_start
+        if preflight_end:
+            preflight_detail["completed_at"] = preflight_end
+        synthesized.append({
+            "id": _event_id(preflight_notes[0]) if preflight_notes else None,
+            "run_id": _event_run_id(note_events[0]),
+            "stage": "preflight",
+            "event_type": "legacy.progress",
+            "created_at": preflight_end or run_start,
+            "message": (preflight_notes[-1].get("message") if preflight_notes else "预检通过"),
+            "detail": preflight_detail,
+        })
+    trailing_fail = status == "failed" and fail_stage in template_stages and fail_stage not in business_stages
+    repair_reason_failed = any(
+        isinstance(reason, dict) and ("refresh" in str(reason.get("code") or "") or "repair" in str(reason.get("code") or ""))
+        for reason in (summary.get("reasons") or [])
+    )
+    for idx, stage_name in enumerate(business_stages):
+        stage_notes = by_stage[stage_name]
+        first_note, last_note = stage_notes[0], stage_notes[-1]
+        start_time = _event_time(first_note)
+        start_detail: dict[str, Any] = {"step_state": "running", "evidence": "legacy"}
+        if start_time:
+            start_detail["started_at"] = start_time
+        synthesized.append({
+            **first_note,
+            "stage": stage_name,
+            "event_type": "legacy.progress",
+            "created_at": start_time,
+            "detail": {**_event_detail(first_note), **start_detail},
+        })
+        has_next = idx < len(business_stages) - 1
+        next_start = _event_time(by_stage[business_stages[idx + 1]][0]) if has_next else (run_end if trailing_fail else None)
+        is_failed_stage = status == "failed" and (
+            fail_stage == stage_name
+            or (stage_name == "c2a_repair" and repair_reason_failed)
+            or (not has_next and fail_stage not in valid_stages)
+        )
+        if is_failed_stage or has_next or trailing_fail or status in {"success", "partial_success", "failed"}:
+            end_state = "failed" if is_failed_stage else "success"
+            end_time = next_start if (has_next or trailing_fail) else (run_end or _event_time(last_note))
+            end_detail: dict[str, Any] = {"step_state": end_state, "evidence": "legacy"}
+            if start_time:
+                end_detail["started_at"] = start_time
+            if end_time:
+                end_detail["completed_at"] = end_time
+            if is_failed_stage and summary.get("error_code"):
+                end_detail["error_code"] = summary["error_code"]
+            synthesized.append({
+                **last_note,
+                "stage": stage_name,
+                "event_type": "legacy.progress",
+                "created_at": end_time,
+                "message": (run.get("error_message") or run.get("message") or last_note.get("message")) if is_failed_stage else last_note.get("message"),
+                "detail": {**_event_detail(last_note), **end_detail},
+            })
+    if trailing_fail:
+        synthesized.append({
+            "id": None,
+            "run_id": _event_run_id(note_events[-1]),
+            "stage": fail_stage,
+            "event_type": "legacy.progress",
+            "created_at": run_end,
+            "message": run.get("error_message") or run.get("message") or "阶段执行失败",
+            "detail": {
+                "step_state": "failed",
+                "evidence": "legacy",
+                **({"started_at": run_end, "completed_at": run_end} if run_end else {}),
+                **({"error_code": summary["error_code"]} if summary.get("error_code") else {}),
+            },
+        })
+    return synthesized
+
+
+_SUMMARY_FALLBACK_TASKS = frozenset({
+    "sub2api_scan", "sub2api_sync", "sub2api_manual_upload",
+    "bulk_terminate", "task_terminate_bulk", "bulk_mutation",
+    "sentinel_maintenance_check", "account_inspection", "account_inspection_batch",
+})
+
+
+def _synthesize_summary_only_events(task_key: str, run: dict[str, Any], events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """为未写 stage 事件的后台/历史控制任务从执行回执只读推导阶段状态。"""
+    if task_key not in _SUMMARY_FALLBACK_TASKS:
+        return events
+    if any(_event_state(event) is not None for event in events):
+        return events
+    status = str(run.get("status") or "").strip().lower()
+    summary = run.get("result_summary") if isinstance(run.get("result_summary"), dict) else {}
+    run_running_event = next((event for event in events if str(event.get("event_type") or "") == "run.running"), None)
+    started = (
+        bool(run.get("started_at"))
+        or run_running_event is not None
+        or bool(summary)
+        or status in {"running", "stopping", "cancelling", "settling", "success", "partial_success"}
+    )
+    if not started or status in {"", "queued"}:
+        return events
+    if status in {"cancelled", "canceled"} and not run.get("started_at") and run_running_event is None:
+        return events
+    run_ref = next((_event_run_id(event) for event in events if _event_run_id(event) is not None), None)
+    start_ts = str(run["started_at"]) if run.get("started_at") else (_event_time(run_running_event) if run_running_event else None)
+    terminal_event = next((event for event in reversed(events) if str(event.get("event_type") or "").startswith("run.") and str(event.get("event_type") or "") not in {"run.queued", "run.running"}), None)
+    end_ts = str(run["completed_at"]) if run.get("completed_at") else (_event_time(terminal_event) if terminal_event else start_ts)
+    active = status in _ACTIVE_PROGRESS_STATUSES
+    err_msg = _safe_message(run.get("error_message") or run.get("message")) or "阶段执行失败"
+    ok_msg = _safe_message(run.get("message")) or "阶段执行完成"
+    synthesized: list[dict[str, Any]] = []
+
+    def emit(stage_name: str, state_name: str, msg: str, *, started_at: str | None = start_ts, completed_at: str | None = None, extra: dict[str, Any] | None = None) -> None:
+        detail: dict[str, Any] = {"step_state": state_name, "evidence": "legacy"}
+        if started_at:
+            detail["started_at"] = started_at
+        if completed_at:
+            detail["completed_at"] = completed_at
+        if state_name == "failed" and summary.get("error_code"):
+            detail["error_code"] = summary["error_code"]
+        if extra:
+            detail.update(extra)
+        synthesized.append({
+            "id": None,
+            "run_id": run_ref,
+            "stage": stage_name,
+            "event_type": "legacy.progress",
+            "created_at": completed_at or started_at,
+            "message": msg,
+            "detail": detail,
+        })
+
+    if task_key in {"bulk_terminate", "task_terminate_bulk", "bulk_mutation"}:
+        stage_name = "bulk_mutation" if task_key == "bulk_mutation" else "bulk_terminate"
+        if active:
+            emit(stage_name, "running", "正在执行批量命令")
+        elif status in {"cancelled", "canceled", "stopped", "interrupted"}:
+            emit(stage_name, "running", "批量命令执行中断")
+        else:
+            emit(stage_name, "failed" if status == "failed" else "success", err_msg if status == "failed" else ok_msg,
+                 completed_at=end_ts, extra={"partial_success": True} if status == "partial_success" else None)
+        return [*events, *synthesized]
+
+    if task_key == "sub2api_scan":
+        preflight_failed = status == "failed" and summary.get("enabled") is False
+        emit("preflight", "failed" if preflight_failed else "success", err_msg if preflight_failed else "Sub2API 巡检配置预检通过",
+             completed_at=end_ts if preflight_failed else start_ts)
+        if not preflight_failed:
+            if active:
+                emit("sub2api_scan", "running", "正在扫描 Sub2API 异常账号")
+            elif status in {"cancelled", "canceled", "stopped", "interrupted"}:
+                emit("sub2api_scan", "running", "Sub2API 巡检已停止")
+            else:
+                scan_failed = status == "failed" and "processed" not in summary
+                emit("sub2api_scan", "failed" if scan_failed else "success",
+                     err_msg if scan_failed else "已完成 Sub2API 异常账号扫描", completed_at=end_ts if scan_failed else start_ts)
+                if not scan_failed:
+                    emit("sub2api_repair", "failed" if status == "failed" else "success",
+                         err_msg if status == "failed" else ok_msg, completed_at=end_ts,
+                         extra={"partial_success": True} if status == "partial_success" else None)
+        return [*events, *synthesized]
+
+    if task_key in {"sub2api_sync", "sub2api_manual_upload"}:
+        error_code = str(summary.get("error_code") or "")
+        preflight_failed = status == "failed" and error_code in {"sub2api_disabled", "sub2api_not_configured"}
+        emit("preflight", "failed" if preflight_failed else "success",
+             err_msg if preflight_failed else "Sub2API 同步预检通过",
+             completed_at=end_ts if preflight_failed else start_ts)
+        if not preflight_failed:
+            if active or status in {"cancelled", "canceled", "stopped", "interrupted"}:
+                emit("sub2api_sync", "running", "正在同步 Sub2API 凭证")
+            else:
+                emit("sub2api_sync", "failed" if status == "failed" else "success",
+                     err_msg if status == "failed" else ok_msg, completed_at=end_ts,
+                     extra={"partial_success": True} if status == "partial_success" else None)
+        return [*events, *synthesized]
+
+    work_stage = "sentinel_check" if task_key == "sentinel_maintenance_check" else "dispatch"
+    emit("preflight", "success", "配置预检通过", completed_at=start_ts)
+    if active or status in {"cancelled", "canceled", "stopped", "interrupted"}:
+        emit(work_stage, "running", "正在执行阶段任务")
+    else:
+        emit(work_stage, "failed" if status == "failed" else "success",
+             err_msg if status == "failed" else ok_msg, completed_at=end_ts,
+             extra={"partial_success": True} if status == "partial_success" else None)
+    return [*events, *synthesized]
+
+
+def _carry_forward_registration_route_events(
+    task_key: str,
+    selected_route: int,
+    run_events: list[dict[str, Any]],
+    selected_events: list[dict[str, Any]],
+    steps: list[dict[str, Any]],
+    step_resolutions: dict[tuple[str, str], str | None],
+) -> list[dict[str, Any]]:
+    """多线路注册在同一次 Run 内复用前序线路已完成的邮箱与浏览器事件。"""
+    if task_key not in {"registration", "registration_resume"}:
+        return selected_events
+    prior_events = [
+        event for event in run_events
+        if (_event_route_attempt_no(event) or 0) > 0 and (_event_route_attempt_no(event) or 0) < selected_route
+    ]
+    if not prior_events:
+        return selected_events
+    selected_stage_steps = {
+        _raw_to_main(task_key, _raw_stage(event), _event_detail(event), steps, step_resolutions)
+        for event in selected_events
+        if _event_state(event) is not None
+    }
+    candidates = ["email"]
+    if "authenticate" in selected_stage_steps and _find_step(steps, "browser") is not None:
+        candidates.append("browser")
+    carried: list[dict[str, Any]] = []
+    for target_step in candidates:
+        if target_step in selected_stage_steps or _find_step(steps, target_step) is None:
+            continue
+        by_route: dict[int, list[dict[str, Any]]] = {}
+        for event in prior_events:
+            state = _event_state(event)
+            if state is None:
+                continue
+            resolved = _raw_to_main(task_key, _raw_stage(event), _event_detail(event), steps, step_resolutions)
+            if resolved == target_step:
+                by_route.setdefault(int(_event_route_attempt_no(event)), []).append(event)
+        for route_no in sorted(by_route, reverse=True):
+            route_step_events = by_route[route_no]
+            if _event_state(route_step_events[-1]) == "success":
+                carried.extend(
+                    event for event in route_step_events
+                    if _event_state(event) in {"running", "success"}
+                )
+                break
+    return [*carried, *selected_events] if carried else selected_events
+
+
+def _strip_private_keys(steps: Iterable[dict[str, Any]]) -> None:
+    for item in steps:
+        for key in [name for name in item if name.startswith("_")]:
+            item.pop(key, None)
+        for child in item.get("children") or []:
+            for key in [name for name in child if name.startswith("_")]:
+                child.pop(key, None)
+
+
 def _plan_country_failures(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """按当前 Run 的最后一次逐国回执投影固定错误分类。"""
     from core.accounts.plans.errors import country_failures_from_events
@@ -1351,6 +2044,7 @@ def build_progress_snapshot(
     # 已知其他 Run 的事件是历史事实，但不属于当前快照；不把它们伪装成
     # 当前线路，也不从它们推断成功或失败。
     source_events = run_filtered
+    all_run_events = list(source_events)
     route_numbers = _route_numbers(source_events, run_value)
     selected_route = _selected_route_attempt_no(source_events, run_value)
     explicit_routes = {_event_route_attempt_no(value) for value in source_events if _event_route_attempt_no(value) is not None}
@@ -1363,12 +2057,26 @@ def build_progress_snapshot(
             elif route_no is None:
                 unknown_events.append({**value, "unknown_reason": "事件缺少线路归属"})
             # 其他已知线路保留给下方 routes 历史视图。
+        if _include_routes:
+            filtered_routes = _carry_forward_registration_route_events(
+                task_key, selected_route, source_events, filtered_routes, steps, step_resolutions,
+            )
         source_events = filtered_routes
     source_events = _correct_historical_mfa_events(task_key, run_value, source_events)
-    recorded_steps = {str(value.get("step_id") or value.get("main_step_id"))
-                      for value in _child_tasks(run_value.get("result_summary") or {})
-                      if value.get("step_id") or value.get("main_step_id")}
+    source_events = _normalize_inline_liveness_events(task_key, source_events)
+    source_events = _synthesize_c2a_note_events(task_key, run_value, source_events)
+    source_events = _synthesize_summary_only_events(task_key, run_value, source_events)
+    recorded_steps: set[str] = set()
+    for value in _child_tasks(run_value.get("result_summary") or {}):
+        step_ref = value.get("step_id") or value.get("main_step_id") or (
+            _child_dispatch_step(value.get("task_type"))
+            if task_key == "account_completion" and (value.get("task_id") or value.get("run_id"))
+            else None
+        )
+        if step_ref:
+            recorded_steps.add(str(step_ref))
     unmapped_activity = False
+    remote_or_resource_observed = False
     for event in source_events:
         if not isinstance(event, dict):
             continue
@@ -1400,16 +2108,25 @@ def build_progress_snapshot(
             boundary_step = _find_step(steps, boundary_id)
             _append_unique(boundary_step["event_ids"], _event_id(event))
             _append_unique(boundary_step["raw_stages"], _original_stage(event))
-        if recorded_id and detail.get("evidence") not in {"not_executed", "unobserved"}:
-            recorded_steps.add(recorded_id)
-        elif recorded_id is None and detail.get("evidence") not in {"not_executed", "unobserved"} and (
-            state is not None or str(event.get("event_type") or "").startswith(("resource.", "remote.", "note."))
+        elif state is None and recorded_id and str(detail.get("main_step_id") or "") == recorded_id:
+            scoped_step = _find_step(steps, recorded_id)
+            if scoped_step is not None:
+                _append_unique(scoped_step["event_ids"], _event_id(event))
+        if recorded_id and detail.get("evidence") not in {"not_executed", "unobserved"} and not (
+            state is None and detail.get("cancelled") is True
         ):
-            # 未能关联的新阶段或远端事件可能属于条件分支，不能推断其余步骤未进入。
-            unmapped_activity = True
+            recorded_steps.add(recorded_id)
+        elif recorded_id is None and detail.get("evidence") not in {"not_executed", "unobserved"}:
+            if state is not None:
+                # 仅未映射的显式阶段状态迁移视为动态分支活动，note/resource/remote 不阻断阻塞收敛。
+                unmapped_activity = True
+            elif str(event.get("event_type") or "").startswith(("resource.", "remote.")):
+                remote_or_resource_observed = True
         if state is None:
             continue
-        if _event_id(event) or any(key in detail for key in ("step_id", "main_step_id", "child_step_id", "instance_id")):
+        if detail.get("evidence") != "legacy" and (
+            _event_id(event) or any(key in detail for key in ("step_id", "main_step_id", "child_step_id", "instance_id"))
+        ):
             explicit = True
         main_id = recorded_id
         if main_id is None:
@@ -1431,9 +2148,34 @@ def build_progress_snapshot(
         attempts.append(record)
         activity.append(record)
         order += 1
+    if _include_routes and selected_route and selected_route > 1 and task_key in {"registration", "registration_resume"}:
+        for shared_step_id in ("network", "email", "browser"):
+            shared_step = _find_step(steps, shared_step_id)
+            if shared_step is None or shared_step.get("observed_order") is None:
+                continue
+            for prior_event in all_run_events:
+                if "legacy_index" in prior_event or (_event_route_attempt_no(prior_event) or 0) <= 0:
+                    continue
+                if _event_state(prior_event) not in {"running", "success"}:
+                    continue
+                if _raw_to_main(task_key, _raw_stage(prior_event), _event_detail(prior_event), steps, step_resolutions) == shared_step_id:
+                    _update_first_started(shared_step, _event_order_time(prior_event))
+                    break
     if task_key == "plan_check":
         # 自动刷新是按需分支；未实际进入时不展示一张永久“未执行”的刷新卡片。
         steps = [item for item in steps if item["id"] != "refresh_token" or item.get("observed_order") is not None]
+        refresh_step = _find_step(steps, "refresh_token")
+        network_step = _find_step(steps, "network")
+        if (
+            refresh_step is not None
+            and network_step is not None
+            and "network" not in recorded_steps
+            and not network_step.get("started_at")
+        ):
+            # 预检发现本地 AT 缺失或过期时，刷新发生在套餐查询申请网络之前。
+            steps.remove(refresh_step)
+            steps.insert(steps.index(network_step), refresh_step)
+        template_order = {item["id"]: index for index, item in enumerate(steps) if item.get("group") != "unknown"}
     _project_step_instances(steps, attempts)
     selected_instances = _project_current_instances(steps) if any(
         item.get("step_instances") or any(child.get("step_instances") for child in item.get("children", []))
@@ -1458,12 +2200,23 @@ def build_progress_snapshot(
                     child["display_status"] = "recovered"
                     child["reason"] = "此前尝试失败，后续重试已恢复；原失败记录保留"
     outcome = _result(ordered, run_value, observations)
+    structure = _project_execution(ordered, task_key, run_value, attempts)
     _close_terminal_steps(
-        ordered, run=run_value, attempts=attempts, template_order=template_order,
+        ordered, task_type=task_key, run=run_value, attempts=attempts, template_order=template_order,
         recorded_steps=recorded_steps, unmapped_activity=unmapped_activity,
+        remote_or_resource_observed=remote_or_resource_observed,
         task_lifecycle_observed=any(item.get("observed_order") is not None for item in task_lifecycle.values()),
     )
     _skip_disabled_registration_steps(ordered, task_key, run_value, recorded_steps)
+    if task_key in {"plan_check", "sub2api_scan", "sub2api_sync", "sub2api_manual_upload", "bulk_mutation", "bulk_terminate", "task_terminate_bulk"}:
+        for partial_step in ordered:
+            if partial_step["id"] in {"result", "preflight", "network"} or partial_step.get("state") != "success":
+                continue
+            if any(attempt.get("partial_success") is True for attempt in partial_step.get("attempts") or []) or (
+                partial_step["id"] in {"plan_check", "sub2api_repair", "sub2api_sync", "bulk_mutation", "bulk_terminate"}
+                and str(run_value.get("status") or "").strip().lower() == "partial_success"
+            ):
+                partial_step["display_status"] = "partial_success"
     source = "explicit" if explicit else "legacy_derived" if activity or task_lifecycle else "insufficient_evidence"
     failure = _failure(task_key, run_value, current_attempts, current_activity, source_events)
     if task_key == "plan_check" and str(run_value.get("status") or "").lower() in {"failed", "partial_success"}:
@@ -1508,12 +2261,20 @@ def build_progress_snapshot(
                                "reconcile_required": bool((failure or {}).get("reconcile_required")),
                                "child_task_id": None, "child_run_id": None}
         if failure and (failure.get("error_info") or {}).get("auto_refresh_at_failed"):
+            observed_stage = (
+                failure.get("stage")
+                if failure.get("step_id") == "refresh_token"
+                and failure.get("evidence") == "explicit"
+                and normalize_stage(failure.get("stage")) not in {"", "refresh_token", "plan_check", "nested_live_check"}
+                else None
+            )
             failure.update(step_id="refresh_token", label="刷新 AT",
-                           stage=failure["error_info"].get("stage") or "refresh_token",
+                           stage=observed_stage or failure["error_info"].get("stage") or "refresh_token",
                            message=failure["error_info"]["summary"])
     current = _current(ordered, current_activity, str(run_value.get("status") or ""))
     debug_pause = _project_debug_pause(ordered, run_value, current)
-    structure = _project_execution(ordered, task_key, run_value, attempts)
+    _strip_private_keys(ordered)
+    _strip_private_keys(task_lifecycle.values())
     if not _include_routes:
         # 线路条目只使用步骤和失败信息，修订号由外层快照生成。
         return {"main_steps": ordered, "failure": failure}

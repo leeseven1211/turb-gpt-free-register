@@ -40,6 +40,10 @@ export const labels: Record<string, Record<string, string>> = {
     codex_retry:'Codex 补跑', codex_token_refresh:'Codex Token 刷新', sub2api_sync:'sub2api 凭据同步',
     live_check:'查活', token_refresh:'AT 刷新', plan_check:'查套餐', deactivation_mail:'查封号邮件', extract_link:'提炼',
     bulk_mutation:'批量数据操作', task_terminate_bulk:'批量终止任务',
+    account_inspection:'账号巡检', account_inspection_batch:'巡检批次',
+    sub2api_manual_upload:'Sub2API 手动上传', sub2api_scan:'Sub2API 异常扫描',
+    c2a_session_reimport:'C2A 重新导入', c2a_scan:'C2A 异常巡检',
+    sentinel_maintenance_check:'Sentinel 维护检查',
   },
   trigger: {
     manual:'手动', manual_bulk:'手动批量', manual_retry:'失败重跑', scheduled:'定时',
@@ -63,12 +67,19 @@ export const labels: Record<string, Record<string, string>> = {
     phone_check:'检查手机验证', phone_acquire:'申请接码号码', phone_otp:'短信验证', consent:'确认授权',
     callback:'接收 OAuth 回调', credential_confirm:'确认远端凭证', credential_persist:'保存凭证', c2a_safety:'确认 C2A 安全策略', c2a_resolve:'定位 C2A 账号', c2a_update:'更新 C2A AT', cancelling:'正在停止',
     c2a_scan:'读取 C2A 异常账号', c2a_repair:'调度 C2A 修复',
+    sub2api_scan:'扫描 Sub2API 异常账号', sub2api_repair:'调度 Sub2API 修复', sub2api_sync:'上传并启用 Sub2API',
+    bulk_mutation:'执行批量变更', bulk_terminate:'执行批量终止', sentinel_check:'检查 Sentinel 资源',
+    nested_live_check:'内联查活与刷新', remote_request:'远端请求', reconcile:'结果核验',
     twofa:'设置 2FA', plan:'套餐信息', plan_check:'查询套餐', plan_request:'请求套餐', refresh_token:'刷新 Token',
     mailbox_scan:'扫描邮件', extract_link:'提炼', extraction:'平台提链', remote_sync:'原单状态查询', payment:'支付处理', login_mfa:'TOTP 验证', complete:'完成', interrupted:'执行中断', event:'事件',
   },
   run_count: {'0':'0 次', '1':'1 次', '2':'2 次', '3':'3 次', '4+':'4 次及以上'},
 };
-Object.assign(labels.task_type, {account_inspection: '账号巡检', account_inspection_batch: '巡检批次', sub2api_manual_upload: 'Sub2API 手动上传', sub2api_scan: 'Sub2API 异常扫描', c2a_session_reimport: 'C2A 重新导入', c2a_scan: 'C2A 异常巡检'});
+// 兼容历史或子项别名映射，同时保持已登记主任务类型键集合与列表短摘要契约一致。
+Object.defineProperties(labels.task_type, {
+  bulk_terminate: {value: '批量任务终止', configurable: true},
+  account_inspection_item: {value: '账号巡检项', configurable: true},
+});
 
 export function label(group: string, value: unknown): string {
   const key = String(value || '');

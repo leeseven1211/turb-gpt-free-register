@@ -165,7 +165,11 @@ class _ReporterAdapter:
         if not self._finish_operation:
             self.stage(
                 "plan_check", "success" if status in {"success", "partial_success"} else "failed",
-                message, detail={"status": status, **dict(kwargs.get("result_summary") or {})},
+                message, detail={
+                    "status": status,
+                    **({"partial_success": True} if status == "partial_success" else {}),
+                    **dict(kwargs.get("result_summary") or {}),
+                },
             )
             return
         if self._context is None:
@@ -446,6 +450,7 @@ def _run_country_plan_checks(
     )
     countries = list(progress["countries"])
     attempts = progress["max_attempts"]
+    any_plan_queried = False
     if at_recovery is not None and at_recovery.needs_refresh(access_token):
         refreshed = at_recovery.refresh(access_token, reason="token_missing" if not access_token else "token_local_expired")
         if refreshed:
@@ -523,6 +528,7 @@ def _run_country_plan_checks(
                     raise ValueError(f"请求 {country} 出口，实际检测为 {actual_country or '未知'}，未执行该国查询；请使用支持指定国家的代理来源")
                 reporter.resource("resource.acquired", message=f"已领取 {country} 查询线路", detail={**route_info, "country": country})
                 reporter.stage("network", "success", f"{country} 查询线路已就绪")
+                any_plan_queried = True
                 reporter.stage("plan_check", "running", f"正在查询 {country} 套餐优惠")
                 _checkpoint(operation_context)
                 _wait_for_rate_slot(config_snapshot, deadline_at=progress["deadline_at"],
@@ -619,9 +625,15 @@ def _run_country_plan_checks(
     if result["failed_countries"]:
         message += "；失败国家：" + "、".join(result["failed_countries"])
     message += _checkout_message(result)
-    reporter.stage("plan_check", "success" if result["ok"] else "failed", message)
     task_status = ("partial_success" if result["ok"] and (result["plan_check_partial"] or _checkout_summary(result)["checkout_failed_count"])
                    else "success" if result["ok"] else "failed")
+    if any_plan_queried:
+        reporter.stage(
+            "plan_check",
+            "success" if result["ok"] else "failed",
+            message,
+            **({"detail": {"partial_success": True}} if task_status == "partial_success" else {}),
+        )
     reporter.finish(status=task_status, message=message,
                     error=result.get("error"), result_summary=_plan_result_summary(result), validation_method="access_token")
     return result
@@ -842,6 +854,10 @@ def _run_plan_check(
         if db.update_account_plan_check(acc_id=account_id, result=result):
             _reconcile_extract_payment_after_plan(account_id, result, trigger=trigger)
         _log_plan_result(email, trigger, result)
+        task_status = (
+            "partial_success" if result.get("ok") and _checkout_summary(result)["checkout_failed_count"]
+            else "success" if result.get("ok") else "failed"
+        )
         reporter.stage(
             "plan_check", "success" if result.get("ok") else "failed",
             "套餐查询成功" if result.get("ok") else "套餐查询失败",
@@ -851,11 +867,11 @@ def _run_plan_check(
                 "current_plan_type": result.get("current_plan_type"),
                 "plus_promo_kind": result.get("plus_promo_kind"),
                 "account_promotions": result.get("account_promotions"),
+                **({"partial_success": True} if task_status == "partial_success" else {}),
             },
         )
         reporter.finish(
-            status=("partial_success" if result.get("ok") and _checkout_summary(result)["checkout_failed_count"]
-                    else "success" if result.get("ok") else "failed"),
+            status=task_status,
             message=("套餐查询成功" + _checkout_message(result)) if result.get("ok") else "套餐查询失败",
             error=result.get("error") if not result.get("ok") else None,
             result_summary=_plan_result_summary(result),

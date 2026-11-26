@@ -13,12 +13,28 @@ const primaryFailure = computed(() => {
   return countryFailures.value.length && !failure.error_info?.auto_refresh_at_failed
     ? `${countryFailures.value.length} 个国家查询失败，展开查看具体原因` : failureMessage(failure);
 });
+const ignoredStages = ['unknown', 'complete', 'result', 'event', 'queued'];
 const failureLocation = computed(() => {
   const failure = props.failure;
   if (!failure) return '';
-  const stage = failure.error_info?.stage?.replace(/_result$/, '');
-  return stage && !['unknown', 'complete', 'result', 'event', 'queued'].includes(stage) && stage !== failure.stage
-    ? label('stage', stage) : [failure.label || failure.step_id || '阶段记录缺失', failure.stage].filter(Boolean).join(' · ');
+  const rawStage = failure.stage?.replace(/_result$/, '');
+  const classifiedStage = failure.error_info?.stage?.replace(/_result$/, '');
+  const autoRefreshFailed = failure.error_info?.auto_refresh_at_failed === true;
+  const coarseClassified = classifiedStage === 'preflight' && !!failure.step_id && failure.step_id !== 'preflight';
+  if (!autoRefreshFailed && !coarseClassified && classifiedStage && !ignoredStages.includes(classifiedStage) && classifiedStage !== rawStage) {
+    return label('stage', classifiedStage);
+  }
+  const mainLabel = failure.label
+    ? (label('stage', failure.label) || failure.label)
+    : (failure.step_id ? label('stage', failure.step_id) : '阶段记录缺失');
+  const candidateSubStage = autoRefreshFailed
+    ? (rawStage && !ignoredStages.includes(rawStage) && rawStage !== 'refresh_token' ? rawStage : classifiedStage)
+    : rawStage;
+  const subLabel = candidateSubStage && !ignoredStages.includes(candidateSubStage)
+    && !(autoRefreshFailed && ['refresh_token', 'plan_check', 'plan_request', 'extract_link', 'extraction'].includes(candidateSubStage))
+    ? label('stage', candidateSubStage)
+    : '';
+  return subLabel && subLabel !== mainLabel ? `${mainLabel} · ${subLabel}` : mainLabel;
 });
 const executionSummary = computed(() => hasExecutionError.value ? errorText(props.execution?.error_info, props.execution?.error_message) : '');
 const sameFailure = computed(() => {

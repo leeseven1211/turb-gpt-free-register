@@ -348,12 +348,14 @@
 }
 
 .tc-step--running,
+.tc-step--waiting,
 .tc-step--queued {
   background: linear-gradient(180deg, #eef2ff 0%, #e0e7ff 100%);
   border-color: #a5b4fc;
 }
 
 .tc-step--running .tc-step-select strong,
+.tc-step--waiting .tc-step-select strong,
 .tc-step--queued .tc-step-select strong {
   color: #3730a3;
 }
@@ -363,6 +365,11 @@
   background: #5b5ce2;
   box-shadow: 0 0 0 3px rgba(91, 92, 226, 0.2);
   animation: tcStepPulse 1.8s ease-in-out infinite;
+}
+
+.tc-step--waiting .tc-step-dot {
+  background: #6366f1;
+  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.16);
 }
 
 .tc-step--stopped,
@@ -399,23 +406,38 @@
   background: #f59e0b;
 }
 
-.tc-step--skipped,
-.tc-step--pending,
-.tc-step--not_executed {
+.tc-step--not_executed,
+.tc-step--pending {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+}
+
+.tc-step--not_executed .tc-step-select strong,
+.tc-step--pending .tc-step-select strong {
+  color: #64748b;
+}
+
+.tc-step--not_executed .tc-step-meta,
+.tc-step--pending .tc-step-meta {
+  color: #94a3b8;
+}
+
+.tc-step--not_executed .tc-step-dot,
+.tc-step--pending .tc-step-dot {
+  background: #94a3b8;
+}
+
+.tc-step--skipped {
   background: #f1f5f9;
   border: 1px dashed #cbd5e1;
 }
 
-.tc-step--skipped .tc-step-select strong,
-.tc-step--pending .tc-step-select strong,
-.tc-step--not_executed .tc-step-select strong {
-  color: #475569;
+.tc-step--skipped .tc-step-select strong {
+  color: #64748b;
 }
 
-.tc-step--skipped .tc-step-dot,
-.tc-step--pending .tc-step-dot,
-.tc-step--not_executed .tc-step-dot {
-  background: #94a3b8;
+.tc-step--skipped .tc-step-dot {
+  background: #cbd5e1;
 }
 
 /* 选中态：仅叠加品牌色外发光环，不覆盖语义底色 */
@@ -530,70 +552,6 @@
   background: rgba(255, 255, 255, 0.52);
   border-color: rgba(15, 23, 42, 0.08);
   color: var(--ui-color-text);
-}
-
-/* Codex 补跑模式适配 */
-.tc-progress-track--codex .tc-step {
-  max-width: none;
-}
-
-.tc-progress-track--codex .tc-step-select {
-  grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: auto auto;
-  align-items: start;
-  gap: 6px;
-  padding: 9px 10px;
-}
-
-.tc-progress-track--codex .tc-step-select strong {
-  font-size: 13px;
-  white-space: normal;
-  overflow-wrap: anywhere;
-}
-
-.tc-progress-track--codex .tc-step-meta {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 4px 6px;
-  overflow: visible;
-}
-
-.tc-progress-track--codex .tc-step-status {
-  display: inline-flex;
-  align-items: center;
-  font-size: 11.5px;
-  font-weight: 650;
-  padding: 2px 8px;
-  border-radius: 999px;
-  border: 1px solid #cbd5e1;
-  background: rgba(255, 255, 255, 0.78);
-  color: #475569;
-  line-height: 1.3;
-}
-
-.tc-progress-track--codex .tc-step-status.tc-badge--success {
-  background: rgba(16, 185, 129, 0.14);
-  border-color: #6ee7b7;
-  color: #065f46;
-}
-
-.tc-progress-track--codex .tc-step-status.tc-badge--danger {
-  background: rgba(239, 68, 68, 0.14);
-  border-color: #fca5a5;
-  color: #991b1b;
-}
-
-.tc-progress-track--codex .tc-step-status.tc-badge--active {
-  background: rgba(91, 92, 226, 0.14);
-  border-color: #a5b4fc;
-  color: #3730a3;
-}
-
-.tc-progress-track--codex .tc-step-status.tc-badge--warning {
-  background: rgba(245, 158, 11, 0.14);
-  border-color: #fcd34d;
-  color: #92400e;
 }
 
 /* 折叠依赖与执行记录面板 ------------------------------------------------- */
@@ -1337,8 +1295,7 @@
 
 @media (max-width: 860px) {
   .tc-progress-track,
-  .tc-progress-track[data-step-count="2"],
-  .tc-progress-track--codex {
+  .tc-progress-track[data-step-count="2"] {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -1458,8 +1415,7 @@
 @media (max-width: 560px) {
   .tc-progress-track,
   .tc-progress-track[data-step-count="1"],
-  .tc-progress-track[data-step-count="2"],
-  .tc-progress-track--codex {
+  .tc-progress-track[data-step-count="2"] {
     grid-template-columns: minmax(0, 1fr);
   }
 }

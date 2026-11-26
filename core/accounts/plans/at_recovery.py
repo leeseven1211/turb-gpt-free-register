@@ -52,6 +52,7 @@ class PlanAtRecovery:
                 account_id=self.account_id, email=self.email, trigger="plan_check_auto_refresh",
                 force_refresh=True, allow_missing_token=True, operation_context=self.context,
                 config_snapshot=self.config_snapshot, result_writer=write_result,
+                parent_step_id="refresh_token",
             )
             result = queued.get("result") or {"ok": False, "error": queued.get("error") or "AT 刷新未执行"}
         except (OperationCancelled, OperationLeaseLost):

@@ -261,9 +261,15 @@ def enqueue_due():
 
 def _handle(context):
     data = context.run.get("data") or {}
+    report = getattr(context, "report", None)
     with context.lease(resource_family=RESOURCE_FAMILY, scope_kind="final"):
+        if callable(report):
+            report(stage="preflight", state="running", message="正在核验 Sub2API 同步任务与本地凭证")
         row = store.begin(int(data["sync_job_id"]), generation=str(data["generation"]), run_id=context.run_id)
         if row is None:
+            if callable(report):
+                report(stage="preflight", state="success", message="旧代际补传已由新凭证接续")
+                report(stage="sub2api_sync", state="skipped", message="旧代际补传无需执行")
             return task_gateway.OperationResult.success({"superseded": True}, message="旧代际补传已由新凭证接续")
         generation = row["generation"]
 
@@ -291,9 +297,14 @@ def _handle(context):
                 )
                 raise _Superseded()
 
+        sync_started = False
         try:
             checkpoint()
             auth = _checked_reference(row)["content"]
+            if callable(report):
+                report(stage="preflight", state="success", message="Sub2API 凭证与后端校验通过")
+                report(stage="sub2api_sync", state="running", message="正在上传并启用 Sub2API 凭证")
+            sync_started = True
             if row["remote_account_id"]:
                 result = client.update_and_enable_configured_account(
                     auth, int(row["remote_account_id"]), checkpoint=checkpoint, expected_backend=row["backend"]
@@ -322,11 +333,17 @@ def _handle(context):
                 fence=context.execution_fence,
                 write_metadata=lambda: codex.mark_codex_sub2_uploaded(row["filename"]),
             )
+            if callable(report):
+                report(stage="sub2api_sync", state="success", message="Sub2API 凭证同步与调度启用已确认")
             return task_gateway.OperationResult.success(
                 {"synced": saved, "sub2api_account_id": result.get("sub2api_account_id")},
                 message="Sub2API 凭证同步与调度启用已确认",
             )
         except _Superseded:
+            if callable(report):
+                report(stage="sub2api_sync" if sync_started else "preflight", state="success", message="凭证代际已更新，等待新代际补传")
+                if not sync_started:
+                    report(stage="sub2api_sync", state="skipped", message="等待新代际补传")
             return task_gateway.OperationResult.success({"superseded": True}, message="凭证代际已更新，等待新代际补传")
         except OperationCancelled:
             store.cancel(row["id"], generation=generation, run_id=context.run_id, execution_id=context.execution_id)
@@ -334,6 +351,8 @@ def _handle(context):
         except task_gateway.OperationLeaseLost:
             raise
         except _Blocked as exc:
+            if callable(report):
+                report(stage="sub2api_sync" if sync_started else "preflight", state="failed", message=str(exc), detail={"error_code": exc.code})
             return _blocked_result(context, row, exc)
         except Exception as exc:
             known = isinstance(exc, client.Sub2ApiSyncError)
@@ -344,6 +363,8 @@ def _handle(context):
                 try:
                     replacement = _reconcile_missing_target(context, row, auth)
                     if replacement:
+                        if callable(report):
+                            report(stage="sub2api_sync", state="success", message="已与同身份的健康 Sub2API 账号对账")
                         return task_gateway.OperationResult.success(
                             {"superseded": True, "previous_sub2api_account_id": row["remote_account_id"],
                              "reconciled": True, "replacement_sub2api_account_id": replacement.account_id,
@@ -361,6 +382,8 @@ def _handle(context):
                 except (task_gateway.OperationLeaseLost, _Superseded):
                     raise
                 except _Blocked as blocked:
+                    if callable(report):
+                        report(stage="sub2api_sync" if sync_started else "preflight", state="failed", message=str(blocked), detail={"error_code": blocked.code})
                     return _blocked_result(context, row, blocked)
                 except client.Sub2ApiSyncError as reconcile_error:
                     # 候选核验失败不改变原目标事实，保留本次 404 分类及原重试入口。
@@ -379,6 +402,8 @@ def _handle(context):
                     row["filename"] = credential["filename"]
                 latest = credential["content"]
             except _Blocked as blocked:
+                if callable(report):
+                    report(stage="sub2api_sync" if sync_started else "preflight", state="failed", message=str(blocked), detail={"error_code": blocked.code})
                 return _blocked_result(context, row, blocked)
             if credential_generation(latest) != generation:
                 _queue(
@@ -387,6 +412,8 @@ def _handle(context):
                     trigger="generation_changed",
                     backend=row["backend"],
                 )
+                if callable(report):
+                    report(stage="sub2api_sync" if sync_started else "preflight", state="success", message="旧补传失败已由新凭证代际接续")
                 return task_gateway.OperationResult.success(
                     {"superseded": True}, message="旧补传失败已由新凭证代际接续"
                 )
@@ -403,6 +430,8 @@ def _handle(context):
                 fence=context.execution_fence,
                 write_metadata=lambda: codex.mark_codex_sub2_sync_error(row["filename"], f"{code}: {error}"),
             )
+            if callable(report):
+                report(stage="sub2api_sync" if sync_started else "preflight", state="failed", message=error, detail={"error_code": code})
             return task_gateway.OperationResult.failed(
                 error, {"retry_pending": saved, "stage": stage, "error_code": code}
             )

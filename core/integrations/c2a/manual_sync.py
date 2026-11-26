@@ -375,15 +375,18 @@ def _handle(context):
     with context.lease(resource_family=RESOURCE_FAMILY, scope_kind="final"):
         try:
             context.checkpoint()
+            context.report(stage="preflight", state="running", message="正在校验本地账号与 C2A 配置")
             backend = str(data.get("backend_identity") or "")
             if not backend:
                 raise C2AReimportError("c2a_config_invalid", "原任务缺少 C2A 目标摘要，未发起远端更新")
             if client.configured_backend_identity() != backend:
                 raise C2AReimportError("c2a_backend_changed", "C2A 目标已变化，原任务未更新远端账号")
             access_token, _claims = _read_current_account(context)
+            context.report(stage="preflight", state="success", message="C2A 预检通过")
             stage = "c2a_resolve"
             context.report(
                 stage=stage,
+                state="running",
                 message="正在核对原 C2A 管理 ID 与账号 AT" if targeted else "正在按邮箱定位唯一 C2A 账号",
                 detail={"mode": mode},
             )
@@ -397,24 +400,31 @@ def _handle(context):
                 access_token = current_token
                 confirmed = _confirm_target_state(context, remote_account, local_claims, resolve_attempts)
                 if confirmed is not None:
+                    context.report(stage="c2a_resolve", state="success", message="C2A 原目标已保存有效 AT")
+                    context.report(stage="c2a_safety", state="skipped", message="远端无需覆盖写入，跳过安全策略检查")
+                    context.report(stage="c2a_update", state="skipped", message="远端无需覆盖写入，跳过 AT 更新")
                     return confirmed
             else:
                 remote_account, resolve_attempts = _find_unique_account(context, context.email, backend)
                 action = "update" if remote_account is not None else "create"
                 # 重新读取当前 AT，避免查询期间身份变化或 AT 被替换。
                 access_token, _claims = _read_current_account(context)
+            context.report(stage="c2a_resolve", state="success", message="C2A 目标账号定位完成")
             # 尽量把兼容模式的 C2A 策略读取贴近写入边界。旧版 C2A 没有把
             # settings revision 与更新请求绑定的接口，仍需由部署侧保持策略稳定。
             stage = "c2a_safety"
             context.report(
                 stage=stage,
+                state="running",
                 message="正在确认 C2A 自动清理策略已关闭",
                 detail={"mode": mode, "resolve_attempts": resolve_attempts},
             )
             safe_mutation_policy, safety_attempts = _verify_safe_mutation_policy(context, backend)
+            context.report(stage="c2a_safety", state="success", message="C2A 安全策略已确认")
             stage = "c2a_update"
             context.report(
                 stage=stage,
+                state="running",
                 message="正在原位更新 C2A 账号 AT" if remote_account is not None else "正在新建 C2A 账号并导入 AT",
                 detail={"mode": mode, "action": action, "resolve_attempts": resolve_attempts},
             )
@@ -496,6 +506,7 @@ def _handle(context):
                 "create_attempts": create_attempts,
             }
             message = "C2A 账号已新建并导入本地 AT" if summary["created"] else "C2A AT 已从本地重新导入"
+            context.report(stage="c2a_update", state="success", message=message)
             return task_gateway.OperationResult.success(summary, message=message)
         except (OperationCancelled, task_gateway.OperationLeaseLost):
             raise
@@ -509,6 +520,7 @@ def _handle(context):
                 "get_account_access_token": "c2a_resolve",
                 "update_account": "c2a_update", "create_account": "c2a_update",
             }.get(error_stage, error_stage)
+            reported_stage = error_stage if error_stage in {"preflight", "c2a_resolve", "c2a_safety", "c2a_update"} else stage
             summary = {
                 "ok": False,
                 "mode": mode,
@@ -522,10 +534,12 @@ def _handle(context):
             if remote_started:
                 if not remote_completed and (code in _NOT_SUBMITTED_CODES or code in _REJECTED_REMOTE_CODES):
                     _record_known_non_write_receipt(context, code)
+                    context.report(stage=reported_stage, state="failed", message=str(exc), detail={"error_code": code})
                     return task_gateway.OperationResult.failed(str(exc), summary)
                 if not remote_completed:
                     _record_unknown_write_receipt(context, code)
                 return task_gateway.OperationResult.request_unknown(str(exc), summary)
+            context.report(stage=reported_stage, state="failed", message=str(exc), detail={"error_code": code})
             return task_gateway.OperationResult.failed(str(exc), summary)
         except Exception as exc:
             code = "c2a_manual_execution_failed"
@@ -543,4 +557,5 @@ def _handle(context):
             }
             if remote_started:
                 return task_gateway.OperationResult.request_unknown(message, summary)
+            context.report(stage=stage, state="failed", message=message, detail={"error_code": code})
             return task_gateway.OperationResult.failed(message, summary)

@@ -627,7 +627,7 @@ def test_account_setup_lifecycle_does_not_start_password_or_mask_login_failure()
         password = _step(snapshot, "set_password")
         assert password["started_at"] is None
         assert password["observed_order"] is None
-        assert password["display_status"] == "record_incomplete"
+        assert password["display_status"] == "not_executed"
         assert _step(snapshot, "authenticate")["started_at"] == "2026-10-16T06:02:16Z"
         assert snapshot["failure"]["step_id"] == "authenticate"
         assert snapshot["failure"]["event_id"] == "login-failed"
@@ -1646,11 +1646,11 @@ def test_child_submission_evidence_blocks_unexecuted_inference():
     assert _step(snapshot, 'token')['display_status'] == 'record_incomplete'
 
 
-def test_unknown_failures_and_undeclared_branches_do_not_block_by_template_order():
+def test_unknown_failures_do_not_block_by_template_order_while_failed_business_steps_do():
     unknown = build_progress_snapshot(1, 2, 'token_refresh', _run('failed'), [_event(1, 'new_driver_stage', 'failed')])
     assert _step(unknown, 'refresh_token')['display_status'] == 'record_incomplete'
     branch = build_progress_snapshot(1, 2, 'password_setup', _run('failed'), [_event(1, 'network', 'failed')])
-    assert _step(branch, 'set_password')['display_status'] == 'record_incomplete'
+    assert _step(branch, 'set_password')['display_status'] == 'not_executed'
 
 
 def test_multiple_dependencies_only_block_on_unrecovered_failed_prerequisite(monkeypatch):
@@ -1715,14 +1715,19 @@ def test_missing_run_start_does_not_overwrite_resource_or_remote_activity_eviden
         assert snapshot['failure'] is None
 
 
-def test_unmapped_remote_or_dynamic_stage_activity_prevents_unexecuted_inference():
+def test_unmapped_remote_or_dynamic_stage_activity_prevents_never_started_but_keeps_depends_on_blocking():
     for event in (_event(2, 'future_driver_step', 'running'), _event(2, 'event', message='远端请求已发出')):
         if event['stage'] == 'event':
             event['event_type'] = 'remote.request_started'
         snapshot = build_progress_snapshot(1, 2, 'token_refresh', _run('request_unknown'), [_event(1, 'email_otp', 'failed'), event])
-        assert _step(snapshot, 'refresh_token')['display_status'] == 'record_incomplete'
+        assert _step(snapshot, 'refresh_token')['display_status'] == 'not_executed'
         cancelled = build_progress_snapshot(1, 2, 'token_refresh', _run('cancelled', started_at=None), [event])
         assert _step(cancelled, 'refresh_token')['display_status'] != 'not_executed'
+    dynamic_only = build_progress_snapshot(1, 2, 'password_setup', _run('request_unknown'), [
+        _event(1, 'network', 'failed'),
+        _event(2, 'future_driver_step', 'running'),
+    ])
+    assert _step(dynamic_only, 'set_password')['display_status'] in {'record_incomplete', 'not_executed'}
 
 
 def test_real_token_refresh_boundary_events_bind_to_started_authentication():
@@ -1758,8 +1763,9 @@ def test_remote_boundary_without_matching_action_or_auth_context_stays_conservat
         remote = _event(2, raw, detail={'action': action})
         remote['event_type'] = 'remote.request_started'
         snapshot = build_progress_snapshot(1, 2, 'token_refresh', _run('attention_required'), [*context, remote, _event(3, 'email_otp', 'failed')])
-        assert _step(snapshot, 'refresh_token')['display_status'] == 'record_incomplete'
-        assert _step(snapshot, 'token')['display_status'] == 'record_incomplete'
+        assert '2' not in _step(snapshot, 'authenticate')['event_ids']
+        assert _step(snapshot, 'refresh_token')['display_status'] == 'not_executed'
+        assert _step(snapshot, 'token')['display_status'] == 'not_executed'
 
 
 def test_explicit_remote_trigger_stage_can_associate_without_text_inference():
@@ -1779,3 +1785,281 @@ def test_sentinel_rs_registration_flow_does_not_show_browser_step():
     assert "authenticate" in steps
     protocol_steps = [step["id"] for step in flow_for("registration", {"data": {"config_snapshot": {"registration_driver": "protocol_oss_2"}}})]
     assert "browser" in protocol_steps
+
+
+def test_plan_check_pre_refresh_failure_scopes_inline_liveness_and_marks_downstream_unexecuted():
+    events = [
+        _event(1, "preflight", "success", message="套餐查询预检通过", created_at="2026-11-20T10:00:00Z"),
+        _event(2, "refresh_token", "running", message="套餐查询发现 AT 不可用，开始自动刷新", created_at="2026-11-20T10:00:01Z"),
+        _event(3, "preflight", "success", message="查活预检完成", created_at="2026-11-20T10:00:02Z"),
+        _event(4, "network", "running", message="正在分配查活线路", created_at="2026-11-20T10:00:03Z"),
+        {**_event(5, "network", message="已分配查活线路", created_at="2026-11-20T10:00:04Z"), "event_type": "resource.acquired"},
+        _event(6, "network", "success", message="查活线路已就绪", created_at="2026-11-20T10:00:05Z"),
+        _event(7, "login_password", "success", message="密码校验通过", created_at="2026-11-20T10:00:08Z"),
+        _event(8, "email_otp", "failed", message="等待验证码超时", created_at="2026-11-20T10:01:08Z",
+               detail={"error_code": "email_otp_no_mail"}),
+        _event(9, "nested_live_check", "failed", message="内联查活未完成", created_at="2026-11-20T10:01:09Z"),
+        _event(10, "refresh_token", "failed", message="套餐自动刷新 AT 失败", created_at="2026-11-20T10:01:10Z"),
+        _event(11, "plan_check", "failed", message="套餐查询失败", created_at="2026-11-20T10:01:10Z",
+               detail={"duration_ms": 0}),
+    ]
+    run = _run("failed", error_message="自动刷新 AT 失败：未收到登录验证码邮件", result_summary={
+        "auto_refresh_at": {
+            "attempted": True, "ok": False, "status": "failed",
+            "cause_code": "email_otp_no_mail", "error": "未收到登录验证码邮件",
+        },
+    })
+    snapshot = build_progress_snapshot(479524, 9001, "plan_check", run, events)
+    assert [step["id"] for step in snapshot["main_steps"]] == [
+        "preflight", "refresh_token", "network", "plan_check", "result",
+    ]
+    refresh = _step(snapshot, "refresh_token")
+    child_by_id = {child["id"]: child for child in refresh["children"]}
+    assert {"preflight", "network", "login_password", "email_otp", "nested_live_check"} <= set(child_by_id)
+    assert child_by_id["preflight"]["label"] == "刷新前预检"
+    assert child_by_id["network"]["label"] == "分配刷新网络"
+    assert child_by_id["nested_live_check"]["label"] == "内联查活收尾"
+    for unentered_id in ("network", "plan_check"):
+        step = _step(snapshot, unentered_id)
+        assert step["state"] == "pending"
+        assert step["display_status"] == "not_executed"
+        assert step["started_at"] is None
+        assert step["duration_ms"] is None
+    assert snapshot["failure"]["step_id"] == "refresh_token"
+    assert snapshot["failure"]["stage"] == "email_otp"
+
+
+def test_plan_check_partial_success_sets_step_display_status_and_keeps_first_network_order():
+    events = [
+        _event(1, "preflight", "success", detail={"started_at": "2026-11-20T10:00:00Z", "completed_at": "2026-11-20T10:00:01Z"}),
+        _event(2, "network", "success", detail={
+            "step_instance_id": "net-1", "started_at": "2026-11-20T10:00:02Z", "completed_at": "2026-11-20T10:00:03Z",
+        }),
+        _event(3, "plan_check", "running", detail={
+            "step_instance_id": "plan-1", "started_at": "2026-11-20T10:00:04Z",
+        }),
+        _event(4, "refresh_token", "running", detail={"started_at": "2026-11-20T10:00:06Z"}),
+        _event(5, "refresh_token", "success", detail={
+            "started_at": "2026-11-20T10:00:06Z", "completed_at": "2026-11-20T10:00:10Z",
+        }),
+        _event(6, "network", "success", detail={
+            "step_instance_id": "net-2", "started_at": "2026-11-20T10:00:12Z", "completed_at": "2026-11-20T10:00:13Z",
+        }),
+        _event(7, "plan_check", "success", message="国家查询完成：1/2 成功", detail={
+            "step_instance_id": "plan-2", "started_at": "2026-11-20T10:00:14Z",
+            "completed_at": "2026-11-20T10:00:16Z", "partial_success": True,
+        }),
+    ]
+    snapshot = build_progress_snapshot(472307, 9002, "plan_check", _run("partial_success"), events)
+    assert [step["id"] for step in snapshot["main_steps"]] == [
+        "preflight", "network", "plan_check", "refresh_token", "result",
+    ]
+    plan_step = _step(snapshot, "plan_check")
+    assert plan_step["state"] == "success"
+    assert plan_step["display_status"] == "partial_success"
+    assert all(not any(key.startswith("_") for key in step) for step in snapshot["main_steps"])
+
+
+def test_historical_c2a_note_only_runs_derive_clean_stage_states():
+    scan_ok = build_progress_snapshot(
+        479604, 9003, "c2a_scan",
+        _run("success", started_at="2026-11-20T11:00:00Z", completed_at="2026-11-20T11:00:15Z"),
+        [
+            _event(1, "c2a_scan", message="正在读取 C2A 账号和巡检进度", created_at="2026-11-20T11:00:01Z"),
+            _event(2, "c2a_repair", message="正在推进已受理修复并汇总新异常", created_at="2026-11-20T11:00:05Z"),
+        ],
+    )
+    assert scan_ok["source"] == "legacy_derived"
+    for step_id in ("preflight", "c2a_scan", "c2a_repair"):
+        assert _step(scan_ok, step_id)["display_status"] == "success"
+
+    scan_fail = build_progress_snapshot(
+        480181, 9004, "c2a_scan",
+        _run("failed", started_at="2026-11-20T11:05:00Z", completed_at="2026-11-20T11:05:04Z",
+             error_message="C2A 异常巡检未完成", result_summary={"ok": False, "stage": "c2a_scan", "error_code": "c2a_scan_in_progress"}),
+        [_event(1, "c2a_scan", message="正在读取 C2A 账号和巡检进度", created_at="2026-11-20T11:05:01Z")],
+    )
+    assert _step(scan_fail, "preflight")["display_status"] == "success"
+    assert _step(scan_fail, "c2a_scan")["display_status"] == "failed"
+    assert _step(scan_fail, "c2a_repair")["display_status"] == "not_executed"
+
+    reimport_fail = build_progress_snapshot(
+        473242, 9005, "c2a_session_reimport",
+        _run("failed", started_at="2026-11-20T11:10:00Z", completed_at="2026-11-20T11:10:12Z",
+             error_message="C2A 管理接口拒绝更新", result_summary={"stage": "c2a_update", "error_code": "c2a_update_rejected"}),
+        [
+            _event(1, "c2a_resolve", message="正在定位远端账号", created_at="2026-11-20T11:10:02Z"),
+            _event(2, "c2a_safety", message="正在确认安全策略", created_at="2026-11-20T11:10:06Z"),
+        ],
+    )
+    assert _step(reimport_fail, "preflight")["display_status"] == "success"
+    assert _step(reimport_fail, "c2a_resolve")["display_status"] == "success"
+    assert _step(reimport_fail, "c2a_safety")["display_status"] == "success"
+    assert _step(reimport_fail, "c2a_update")["display_status"] == "failed"
+
+
+def test_cancelled_before_business_stage_and_stopped_mid_authentication_mark_unexecuted():
+    cancelled = build_progress_snapshot(
+        476707, 9006, "plan_check",
+        _run("cancelled", started_at="2026-11-20T12:00:00Z"),
+        [_event(1, "cancelling", "running", message="收到取消请求")],
+    )
+    for step_id in ("preflight", "network", "plan_check"):
+        step = _step(cancelled, step_id)
+        assert step["display_status"] == "not_executed"
+        assert step["reason"] == "任务在开始执行前已取消"
+
+    stopped = build_progress_snapshot(
+        474418, 9007, "registration",
+        _run("stopped", started_at="2026-11-20T12:05:00Z"),
+        [
+            _event(1, "network", "success", created_at="2026-11-20T12:05:01Z"),
+            _event(2, "email", "success", created_at="2026-11-20T12:05:02Z"),
+            _event(3, "browser", "success", created_at="2026-11-20T12:05:04Z"),
+            _event(4, "email_otp", "running", message="等待邮箱验证码", created_at="2026-11-20T12:05:10Z"),
+        ],
+    )
+    assert _step(stopped, "authenticate")["display_status"] == "interrupted"
+    for step_id in ("profile", "token", "codex", "set_twofa", "plan_check"):
+        assert _step(stopped, step_id)["display_status"] == "not_executed"
+
+
+def test_multi_route_registration_preserves_reused_email_and_marks_downstream_unexecuted():
+    events = [
+        {**_event(1, "network", "success", detail={
+            "route_attempt_no": 1, "started_at": "2026-11-20T13:00:00Z", "completed_at": "2026-11-20T13:00:02Z",
+        }), "run_id": 2},
+        {**_event(2, "email", "running", detail={
+            "route_attempt_no": 1, "started_at": "2026-11-20T13:00:02Z",
+        }), "run_id": 2},
+        {**_event(3, "email", "success", detail={
+            "route_attempt_no": 1, "started_at": "2026-11-20T13:00:02Z", "completed_at": "2026-11-20T13:00:04Z",
+        }), "run_id": 2},
+        {**_event(4, "browser", "success", detail={
+            "route_attempt_no": 1, "started_at": "2026-11-20T13:00:04Z", "completed_at": "2026-11-20T13:00:06Z",
+        }), "run_id": 2},
+        {**_event(5, "page", "failed", message="线路 1 页面超时", detail={
+            "route_attempt_no": 1, "started_at": "2026-11-20T13:00:06Z", "completed_at": "2026-11-20T13:00:20Z",
+        }), "run_id": 2},
+        {**_event(6, "network", "success", detail={
+            "route_attempt_no": 2, "started_at": "2026-11-20T13:00:22Z", "completed_at": "2026-11-20T13:00:24Z",
+        }), "run_id": 2},
+        {**_event(7, "page", "success", detail={
+            "route_attempt_no": 2, "started_at": "2026-11-20T13:00:25Z", "completed_at": "2026-11-20T13:00:28Z",
+        }), "run_id": 2},
+        {**_event(8, "email_otp", "failed", message="线路 2 验证码超时", detail={
+            "route_attempt_no": 2, "started_at": "2026-11-20T13:00:29Z", "completed_at": "2026-11-20T13:01:29Z",
+        }), "run_id": 2},
+    ]
+    snapshot = build_progress_snapshot(478308, 2, "registration", _run("failed", route_attempt_no=2), events)
+    assert _step(snapshot, "email")["display_status"] == "success"
+    assert _step(snapshot, "email")["event_ids"] == ["2", "3"]
+    assert _step(snapshot, "browser")["display_status"] == "success"
+    assert _step(snapshot, "authenticate")["display_status"] == "failed"
+    assert "5" not in _step(snapshot, "authenticate")["event_ids"]
+    for step_id in ("profile", "token", "codex", "set_twofa", "plan_check"):
+        assert _step(snapshot, step_id)["display_status"] == "not_executed"
+
+
+def test_extract_link_scopes_inline_liveness_and_active_current_exposes_next_step():
+    extract_events = [
+        _event(1, "preflight", "success", created_at="2026-11-20T14:00:00Z"),
+        _event(2, "network", "success", created_at="2026-11-20T14:00:01Z"),
+        _event(3, "access_token", "failed", message="AT 已过期", created_at="2026-11-20T14:00:02Z"),
+        _event(4, "network", "success", created_at="2026-11-20T14:00:03Z"),
+        _event(5, "login_password", "success", created_at="2026-11-20T14:00:05Z"),
+        _event(6, "email_otp", "success", created_at="2026-11-20T14:00:08Z"),
+        _event(7, "refresh_token", "success", created_at="2026-11-20T14:00:09Z"),
+        _event(8, "token", "success", created_at="2026-11-20T14:00:10Z"),
+    ]
+    snapshot = build_progress_snapshot(422120, 9008, "extract_link", _run("running"), extract_events)
+    assert not any(step["id"].startswith("unknown:") for step in snapshot["main_steps"])
+    assert [child["id"] for child in _step(snapshot, "access_token")["children"]] == ["network"]
+    assert {"network", "login_password", "email_otp", "session_token"} <= {
+        child["id"] for child in _step(snapshot, "refresh_token")["children"]
+    }
+    assert snapshot["current"]["step_id"] == "refresh_token"
+    assert snapshot["current"]["state"] == "success"
+    assert snapshot["current"]["next_step_id"] == "extract_link"
+    assert snapshot["current"]["next_label"] == "提炼"
+
+
+def test_plan_check_prerefresh_failure_ignores_legacy_progress_steps_and_token_refresh_skips_unentered_token():
+    plan_events = [
+        _event(1, "preflight", "running", created_at="2026-11-25T18:07:48Z"),
+        _event(2, "preflight", "success", created_at="2026-11-25T18:07:48Z"),
+        _event(3, "refresh_token", "running", created_at="2026-11-25T18:07:49Z"),
+        _event(4, "network", "running", created_at="2026-11-25T18:07:50Z"),
+        _event(5, "network", "success", created_at="2026-11-25T18:07:51Z"),
+        _event(6, "email_otp", "failed", message="邮箱验证码未完成", created_at="2026-11-25T18:11:47Z"),
+        _event(7, "refresh_token", "failed", message="套餐自动刷新 AT 失败", created_at="2026-11-25T18:11:48Z"),
+        _event(8, "plan_check", "failed", message="国家查询完成：0/1 成功；失败国家：IN", created_at="2026-11-25T18:11:48Z"),
+    ]
+    legacy_steps = {
+        "preflight": {"state": "success"},
+        "refresh_token": {"state": "failed"},
+        "network": {"state": "success"},
+        "plan_check": {"state": "failed"},
+    }
+    plan_snap = build_progress_snapshot(
+        479524, 482008, "plan_check",
+        _run("failed", progress_steps=legacy_steps, result_summary={
+            "auto_refresh_at": {"attempted": True, "ok": False, "error": "email_otp_failed"},
+            "country_failures": [{"country": "IN", "code": "at_refresh_failed", "summary": "自动刷新 AT 失败，未发起本轮套餐请求"}],
+        }),
+        plan_events,
+    )
+    assert [s["id"] for s in plan_snap["main_steps"]] == ["preflight", "refresh_token", "network", "plan_check", "result"]
+    assert _step(plan_snap, "network")["display_status"] == "not_executed"
+    assert _step(plan_snap, "plan_check")["display_status"] == "not_executed"
+    assert plan_snap["failure"]["step_id"] == "refresh_token"
+    assert plan_snap["failure"]["stage"] == "email_otp"
+
+    refresh_events = [
+        _event(1, "preflight", "success", created_at="2026-11-25T10:41:00Z"),
+        _event(2, "network", "success", created_at="2026-11-25T10:41:02Z"),
+        _event(3, "login", "running", created_at="2026-11-25T10:41:05Z"),
+        _event(4, "token", "failed", message="本次未取得并保存有效 AT", created_at="2026-11-25T10:43:08Z"),
+        _event(5, "authenticate", "failed", message="Roxy 浏览器登录未完成", created_at="2026-11-25T10:43:08Z"),
+    ]
+    refresh_snap = build_progress_snapshot(476548, 479032, "token_refresh", _run("failed"), refresh_events)
+    assert _step(refresh_snap, "authenticate")["display_status"] == "failed"
+    assert _step(refresh_snap, "refresh_token")["display_status"] == "not_executed"
+    assert _step(refresh_snap, "token")["display_status"] == "not_executed"
+
+
+def test_extract_link_outer_preflight_wrapper_failure_and_summary_only_background_tasks():
+    extract_events = [
+        _event(1, "preflight", "running", message="正在检查账号与 AT", created_at="2026-11-25T09:00:00Z"),
+        _event(2, "preflight", "success", message="查活配置预检通过", detail={"force_refresh": False}, created_at="2026-11-25T09:00:01Z"),
+        _event(3, "access_token", "failed", message="AT 在线验证未通过", created_at="2026-11-25T09:00:02Z"),
+        _event(4, "refresh_token", "running", message="AT 已确认失效，正在刷新", created_at="2026-11-25T09:00:03Z"),
+        _event(5, "preflight", "success", message="查活配置预检通过", detail={"force_refresh": True}, created_at="2026-11-25T09:00:04Z"),
+        _event(6, "login_password", "failed", message="Protocol v2 认证未完成", created_at="2026-11-25T09:00:10Z"),
+        _event(7, "preflight", "failed", message="提链前预检失败：AT 刷新结果待确认", created_at="2026-11-25T09:00:11Z"),
+    ]
+    extract_snap = build_progress_snapshot(422120, 424535, "extract_link", _run("failed"), extract_events)
+    assert _step(extract_snap, "preflight")["display_status"] == "success"
+    assert _step(extract_snap, "access_token")["display_status"] == "failed"
+    assert _step(extract_snap, "refresh_token")["display_status"] == "failed"
+    assert _step(extract_snap, "extract_link")["display_status"] == "not_executed"
+    assert extract_snap["failure"]["step_id"] == "refresh_token"
+    assert extract_snap["failure"]["label"] == "刷新 Token"
+    assert extract_snap["failure"]["stage"] == "login_password"
+
+    sub2_scan = build_progress_snapshot(
+        478234, 480718, "sub2api_scan",
+        _run("success", started_at="2026-11-25T12:00:00Z", completed_at="2026-11-25T12:00:03Z",
+             result_summary={"enabled": True, "processed": 7}),
+        [],
+    )
+    assert [s["display_status"] for s in sub2_scan["main_steps"]] == ["success", "success", "success", "success"]
+
+    bulk_term = build_progress_snapshot(
+        480999, 483000, "task_terminate_bulk",
+        _run("partial_success", started_at="2026-11-25T12:05:00Z", completed_at="2026-11-25T12:05:02Z",
+             result_summary={"updated_count": 3, "failed_count": 1}),
+        [],
+    )
+    assert _step(bulk_term, "bulk_terminate")["display_status"] == "partial_success"
+    assert _step(bulk_term, "result")["display_status"] == "partial_success"

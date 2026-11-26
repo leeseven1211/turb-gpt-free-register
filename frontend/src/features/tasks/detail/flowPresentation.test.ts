@@ -32,13 +32,17 @@ describe('阶段与依赖展示', () => {
     const childCondition = { ...disabled, execution: execution({ ...disabled.execution, kind: 'child_task' }) };
     expect(phaseSteps([childCondition])).toEqual([childCondition]);
   });
-  it('区分等待子任务、前置失败与依赖满足', () => {
+  it('区分等待子任务、未执行、前置失败与依赖满足', () => {
     const child = step({ execution: execution({ kind: 'child_task', dependency_state: 'waiting', waits_for: [{ task_id: 2, status: 'running', evidence: 'child_summary' }] }) });
     expect(phaseState(child)).toBe('等待子任务');
+    const waitingUnexecuted = step({ state: 'not_executed', execution: execution({ kind: 'child_task', dependency_state: 'waiting', waits_for: [{ task_id: 2, status: 'running', evidence: 'child_summary' }] }) });
+    expect(phaseState(waitingUnexecuted)).toBe('未执行 · 等待子任务');
     const failedChild = step({ state: 'success', execution: execution({ kind: 'child_task', dependency_state: 'blocked', waits_for: [{ task_id: 2, status: 'failed', evidence: 'child_summary' }] }) });
     expect(phaseState(failedChild)).toBe('子任务未完成');
     expect(phaseRelations(failedChild)).toContainEqual({ label: '依赖状态', value: '子任务未成功完成' });
-    expect(phaseState(step({ state: 'not_executed', execution: execution({ dependency_state: 'blocked' }) }))).toBe('前置阶段失败');
+    const blockedDownstream = step({ state: 'not_executed', execution: execution({ dependency_state: 'blocked' }) });
+    expect(phaseState(blockedDownstream)).toBe('未执行');
+    expect(phaseRelations(blockedDownstream)).toContainEqual({ label: '依赖状态', value: '前置阶段失败' });
     const ready = step({ depends_on: ['preflight'], execution: execution({ dependency_state: 'satisfied' }) });
     expect(phaseState(ready)).toBe('已完成');
     expect(phaseRelations(ready, [step({ id: 'preflight', label: '配置预检' })])).toContainEqual({ label: '依赖阶段', value: '配置预检' });
@@ -76,24 +80,91 @@ describe('阶段与依赖展示', () => {
     expect(wrapper.emitted('filter')?.[1]).toEqual([null]);
     wrapper.unmount();
   });
-  it('Codex 补跑主栏展示有记录的四种状态，模板占位留在折叠详情', () => {
+  it('Codex 补跑与其他任务类型统一渲染语义阶段卡片，包含未执行与记录不完整阶段', () => {
     const wrapper = mount(TaskProgress, { props: {
       taskType: 'codex_retry', filter: null, active: true, context: '1:10',
-      progress: { task_id: 1, run_id: 10, revision: '1', outcome: { status: 'running' }, main_steps: [
-        step({ id: 'callback', observed_order: 1 }),
-        step({ id: 'phone_verify', state: 'skipped', observed_order: 2 }),
-        step({ id: 'sync', state: 'failed', observed_order: 3 }),
-        step({ id: 'credential', state: 'running', observed_order: 4 }),
+      progress: { task_id: 1, run_id: 10, revision: '1', source: 'explicit', outcome: { status: 'failed' }, main_steps: [
+        step({ id: 'callback', label: '接收 OAuth 回调', observed_order: 1 }),
+        step({ id: 'phone_verify', label: '短信验证', state: 'skipped', observed_order: 2 }),
+        step({ id: 'sync', label: '上传并启用 Sub2API', state: 'failed', observed_order: 3 }),
+        step({ id: 'credential', label: '确认远端凭证', state: 'running', observed_order: 4 }),
         step({ id: 'consent', label: '确认授权', state: 'pending', display_status: 'record_incomplete', evidence: 'unobserved', event_ids: ['99'] }),
+        step({ id: 'persist', label: '保存凭证', state: 'not_executed', depends_on: ['sync'], execution: execution({ dependency_state: 'blocked' }) }),
       ] },
     } });
-    const statuses = wrapper.findAll('.tc-step-status');
-    expect(statuses.map(item => item.text())).toEqual(['已完成', '已跳过', '失败', '执行中']);
-    expect(statuses.map(item => item.classes().find(name => name.startsWith('tc-badge--')) || '')).toEqual(
-      ['tc-badge--success', '', 'tc-badge--danger', 'tc-badge--active'],
-    );
-    expect(wrapper.get('.tc-progress-track').text()).not.toContain('确认授权');
-    expect(wrapper.get('.tc-flow-relations').text()).toContain('确认授权');
+    expect(wrapper.find('.tc-progress-track--codex').exists()).toBe(false);
+    expect(wrapper.find('.tc-step-status').exists()).toBe(false);
+    expect(wrapper.get('.tc-progress-heading small').text()).toBe('按实际执行顺序与依赖排列');
+    const cards = wrapper.findAll('.tc-step');
+    expect(cards).toHaveLength(5);
+    expect(cards.every(card => card.find('.tc-step-dot').exists())).toBe(true);
+    expect(cards.map(card => card.classes().find(name => name.startsWith('tc-step--')) || '')).toEqual([
+      'tc-step--success', 'tc-step--failed', 'tc-step--running', 'tc-step--record_incomplete', 'tc-step--not_executed',
+    ]);
+    expect(cards.map(card => card.get('.tc-step-meta').text())).toEqual([
+      '已完成', '失败', '执行中', '记录不完整', '未执行',
+    ]);
+    expect(wrapper.get('.tc-progress-track').text()).toContain('确认授权');
+    expect(wrapper.get('.tc-progress-track').text()).toContain('保存凭证');
+    expect(wrapper.get('.tc-progress-track').text()).toContain('前置：上传并启用 Sub2API');
+    expect(wrapper.get('.tc-progress-track').text()).not.toContain('短信验证');
+    expect(wrapper.get('.tc-flow-relations').text()).toContain('6 个阶段');
+    expect(wrapper.get('.tc-flow-relations').text()).toContain('短信验证');
+    wrapper.unmount();
+  });
+  it('当前阶段刚完成时衔接提示下一阶段，并按来源区分右上角副标题', async () => {
+    const wrapper = mount(TaskProgress, { props: {
+      filter: null, active: true, context: '1:10',
+      progress: {
+        task_id: 1, run_id: 10, revision: '1', source: 'explicit', outcome: { status: 'running' },
+        current: { step_id: 'browser', label: '启动浏览器', state: 'success', next_label: '登录验证' },
+        main_steps: [step({ id: 'browser', label: '启动浏览器', state: 'success' })],
+      },
+    } });
+    expect(wrapper.get('.tc-progress-heading strong').text()).toBe('当前：已完成启动浏览器 · 正在进入登录验证');
+    expect(wrapper.get('.tc-progress-heading small').text()).toBe('按实际执行顺序与依赖排列');
+    await wrapper.setProps({
+      progress: {
+        task_id: 1, run_id: 10, revision: '2', source: 'insufficient_evidence', outcome: { status: 'running' },
+        current: { step_id: 'phone_check', label: '检查手机验证', state: 'skipped' },
+        main_steps: [],
+      },
+    });
+    expect(wrapper.get('.tc-progress-heading strong').text()).toBe('当前：已完成检查手机验证 · 正在进入下一阶段');
+    expect(wrapper.get('.tc-progress-heading small').text()).toBe('无细分阶段记录');
+    await wrapper.setProps({
+      progress: {
+        task_id: 1, run_id: 10, revision: '3', source: 'legacy_derived', outcome: { status: 'success' },
+        main_steps: [],
+      },
+    });
+    expect(wrapper.get('.tc-progress-heading small').text()).toBe('历史记录还原');
+    wrapper.unmount();
+  });
+  it('失败摘要将英文子阶段翻译为中文、去除重复阶段名并保留自动刷新 AT 主步骤', async () => {
+    const wrapper = mount(TaskFailure, { props: {
+      failure: { step_id: 'refresh_token', label: '刷新 AT', stage: 'email_otp', message: '验证码超时' },
+    } });
+    expect(wrapper.get('summary strong').text()).toBe('失败位置：刷新 AT · 邮箱验证');
+    await wrapper.setProps({
+      failure: { step_id: 'refresh_token', label: '刷新 AT', stage: 'login_password', message: '密码被拒' },
+    });
+    expect(wrapper.get('summary strong').text()).toBe('失败位置：刷新 AT · 账号密码');
+    await wrapper.setProps({
+      failure: { step_id: 'plan_check', label: '查询套餐', stage: 'plan_check', message: '查询失败' },
+    });
+    expect(wrapper.get('summary strong').text()).toBe('失败位置：查询套餐');
+    await wrapper.setProps({
+      failure: { step_id: 'preflight', label: 'preflight', stage: 'preflight', message: '预检失败' },
+    });
+    expect(wrapper.get('summary strong').text()).toBe('失败位置：配置预检');
+    await wrapper.setProps({
+      failure: {
+        step_id: 'refresh_token', label: '刷新 AT', stage: 'email_otp', message: '自动刷新 AT 失败：验证码超时',
+        error_info: { stage: 'plan_check', summary: '自动刷新 AT 失败：验证码超时', auto_refresh_at_failed: true },
+      },
+    });
+    expect(wrapper.get('summary strong').text()).toBe('失败位置：刷新 AT · 邮箱验证');
     wrapper.unmount();
   });
   it('共用泛化分类但原文不同的失败保留两个原因与原始证据', () => {

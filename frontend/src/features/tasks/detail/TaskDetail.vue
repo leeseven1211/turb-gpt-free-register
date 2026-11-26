@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { admissionText, formatDateTime, formatDuration, label, statusTone } from '../presentation';
-import { artifactUrl, eventState, matchesStep, meaningfulDetail, object, orderedEvents, progressLabel, stepId, stepLabel, text, type DetailTab, type TaskEvent } from './model';
+import { artifactUrl, eventState, matchesStep, meaningfulDetail, object, orderedEvents, progressLabel, stepId, stepLabel, strings, text, type DetailTab, type TaskEvent } from './model';
 import {sameTaskId,type TaskId} from '../../../api/taskIds';
 import { useTaskDetail } from './useTaskDetail';
 import TaskProgress from './TaskProgress.vue';
@@ -47,7 +47,24 @@ function eventAssociation(event: TaskEvent): string {
   const detailFields = object(event.detail);
   const mainStep = text(event.main_step_id || detailFields.main_step_id);
   const rawStage = text(event.raw_stage || detailFields.raw_stage || event.stage);
-  const associated = steps.value.filter(step => mainStep ? step.id === mainStep : step.raw_stages?.includes(rawStage));
+  let associated = steps.value.filter(step => mainStep ? stepId(step) === mainStep : step.raw_stages?.includes(rawStage));
+  if (associated.length !== 1) {
+    const eid = text(event.event_id || event.id);
+    if (eid) {
+      const byEventId = steps.value.filter(step => strings(step.event_ids).includes(eid));
+      if (byEventId.length === 1) associated = byEventId;
+    }
+  }
+  if (associated.length !== 1 && (rawStage === 'nested_live_check'
+      || ((rawStage === 'remote_request' || rawStage === 'reconcile') && text(detailFields.action) === 'token_refresh'))) {
+    const fallback = steps.value.find(step => stepId(step) === 'refresh_token')
+      || steps.value.find(step => stepId(step) === 'access_token')
+      || steps.value.find(step => stepId(step) === 'authenticate');
+    if (fallback) return stepLabel(fallback);
+  }
+  if (associated.length !== 1 && (rawStage === 'queued' || text(event.event_type).startsWith('run.'))) {
+    return '运行状态';
+  }
   return associated.length === 1 ? stepLabel(associated[0]!) : '未关联步骤';
 }
 function finishClose() {

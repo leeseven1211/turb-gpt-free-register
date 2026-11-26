@@ -91,6 +91,8 @@ STAGES: dict[str, dict[str, str]] = {
     "credential_confirm": {"label": "确认远端凭证", "group": "codex"},
     "credential_persist": {"label": "保存凭证", "group": "codex"},
     "sub2api_sync": {"label": "上传并启用 Sub2API", "group": "codex"},
+    "sub2api_scan": {"label": "扫描 Sub2API 异常账号", "group": "codex"},
+    "sub2api_repair": {"label": "调度 Sub2API 修复", "group": "codex"},
     "c2a_scan": {"label": "读取 C2A 异常账号", "group": "account"},
     "c2a_repair": {"label": "调度 C2A 修复", "group": "account"},
     "c2a_safety": {"label": "确认 C2A 安全策略", "group": "codex"},
@@ -121,6 +123,12 @@ STAGES: dict[str, dict[str, str]] = {
     "writeback": {"label": "保存换绑结果", "group": "account"},
     "extract_link": {"label": "提炼", "group": "account"},
     "mailbox_scan": {"label": "扫描邮件", "group": "account"},
+    "bulk_mutation": {"label": "执行批量变更", "group": "system"},
+    "bulk_terminate": {"label": "执行批量终止", "group": "system"},
+    "sentinel_check": {"label": "检查 Sentinel 资源", "group": "system"},
+    "nested_live_check": {"label": "内联查活与刷新", "group": "account"},
+    "remote_request": {"label": "远端请求", "group": "system"},
+    "reconcile": {"label": "结果核验", "group": "system"},
     "complete": {"label": "完成", "group": "system"},
     "interrupted": {"label": "执行中断", "group": "system"},
 }
@@ -172,33 +180,67 @@ def _s(step_id: str, *raw: str, depends_on: tuple[str, ...] = ()) -> dict[str, A
 # 列表覆盖 operation 层当前发出的全部任务类型，包括此前缺失的两个 change 变体。
 TASK_TEMPLATES: _FLOW = {
     "registration": _flow(
-        _s("network"), _s("email"), _s("browser"), _s("authenticate", *REGISTRATION_AUTH_STAGES),
-        _s("profile"), _s("token"), _s("codex", "codex", "oauth"), _s("set_twofa", "twofa", "twofa_result"), _s("plan_check"),
+        _s("network"), _s("email"), _s("browser", depends_on=("network",)),
+        _s("authenticate", *REGISTRATION_AUTH_STAGES, depends_on=("network", "email")),
+        _s("profile", depends_on=("authenticate",)), _s("token", depends_on=("authenticate",)),
+        _s("codex", "codex", "oauth", depends_on=("token",)),
+        _s("set_twofa", "twofa", "twofa_result", depends_on=("token",)),
+        _s("plan_check", depends_on=("token",)),
     ),
     "registration_resume": _flow(
-        _s("network"), _step("email", "复用账号邮箱", "resource", "email"), _s("browser"), _s("authenticate", *REGISTRATION_AUTH_STAGES), _s("profile"), _s("token"),
-        _s("codex", "codex", "oauth"), _s("set_twofa", "twofa", "twofa_result"), _s("plan_check"),
+        _s("network"), _step("email", "复用账号邮箱", "resource", "email"),
+        _s("browser", depends_on=("network",)),
+        _s("authenticate", *REGISTRATION_AUTH_STAGES, depends_on=("network", "email")),
+        _s("profile", depends_on=("authenticate",)), _s("token", depends_on=("authenticate",)),
+        _s("codex", "codex", "oauth", depends_on=("token",)),
+        _s("set_twofa", "twofa", "twofa_result", depends_on=("token",)),
+        _s("plan_check", depends_on=("token",)),
     ),
     "codex_retry": _flow(
-        _s("preflight"), _s("network"), _s("browser"), _s("auth_url"),
-        _s("authenticate", "login", "login_password", "login_mfa", "email_otp", "mfa_challenge"),
-        _s("workspace"), _s("phone_verify", "phone_check", "phone_acquire", "phone_otp"),
-        _s("consent"), _s("callback"), _s("credential", "credential_confirm", "credential_persist"),
-        _s("sub2api_sync"),
+        _s("preflight"), _s("network", depends_on=("preflight",)),
+        _s("browser", depends_on=("network",)), _s("auth_url", depends_on=("network",)),
+        _s("authenticate", "login", "login_password", "login_mfa", "email_otp", "mfa_challenge", depends_on=("auth_url",)),
+        _s("workspace", depends_on=("authenticate",)),
+        _s("phone_verify", "phone_check", "phone_acquire", "phone_otp", depends_on=("authenticate",)),
+        _s("consent", depends_on=("authenticate",)), _s("callback", depends_on=("authenticate",)),
+        _s("credential", "credential_confirm", "credential_persist", depends_on=("callback",)),
+        _s("sub2api_sync", depends_on=("credential",)),
     ),
-    "twofa_retry": _flow(_s("network"), _s("browser"), _s("authenticate", "login", "login_password", "email_otp", "mfa_challenge"), _s("set_twofa", "twofa", "twofa_result"), _s("plan_check")),
-    "account_setup_retry": _flow(_s("network"), _s("plan_check"), _s("browser"), _s("authenticate", "login", "email_otp", "mfa_challenge"), _s("set_password", "login_password", "password_reset", "password_reset_otp", "password_checkpoint"), _s("set_twofa", "twofa", "twofa_result")),
-    "password_setup": _flow(_s("network"), _s("browser"), _s("authenticate", "login", "email_otp", "mfa_challenge"), _s("set_password", "login_password", "password_reset", "password_reset_otp", "password_checkpoint")),
-    "password_change": _flow(_s("network"), _s("browser"), _s("authenticate", "login", "email_otp", "mfa_challenge"), _s("set_password", "login_password", "password_reset", "password_reset_otp", "password_checkpoint")),
-    "twofa_setup": _flow(_s("network"), _s("set_twofa", "twofa", "twofa_result")),
-    "twofa_change": _flow(_s("network"), _s("browser"), _s("authenticate", "login", "email_otp", "mfa_challenge"), _s("set_twofa", "twofa", "twofa_result")),
+    "twofa_retry": _flow(
+        _s("network"), _s("browser", depends_on=("network",)),
+        _s("authenticate", "login", "login_password", "email_otp", "mfa_challenge", depends_on=("network",)),
+        _s("set_twofa", "twofa", "twofa_result", depends_on=("authenticate",)),
+        _s("plan_check", depends_on=("set_twofa",)),
+    ),
+    "account_setup_retry": _flow(
+        _s("network"), _s("plan_check", depends_on=("network",)), _s("browser", depends_on=("network",)),
+        _s("authenticate", "login", "email_otp", "mfa_challenge", depends_on=("network",)),
+        _s("set_password", "login_password", "password_reset", "password_reset_otp", "password_checkpoint", depends_on=("authenticate",)),
+        _s("set_twofa", "twofa", "twofa_result", depends_on=("authenticate",)),
+    ),
+    "password_setup": _flow(
+        _s("network"), _s("browser", depends_on=("network",)),
+        _s("authenticate", "login", "email_otp", "mfa_challenge", depends_on=("network",)),
+        _s("set_password", "login_password", "password_reset", "password_reset_otp", "password_checkpoint", depends_on=("authenticate",)),
+    ),
+    "password_change": _flow(
+        _s("network"), _s("browser", depends_on=("network",)),
+        _s("authenticate", "login", "email_otp", "mfa_challenge", depends_on=("network",)),
+        _s("set_password", "login_password", "password_reset", "password_reset_otp", "password_checkpoint", depends_on=("authenticate",)),
+    ),
+    "twofa_setup": _flow(_s("network"), _s("set_twofa", "twofa", "twofa_result", depends_on=("network",))),
+    "twofa_change": _flow(
+        _s("network"), _s("browser", depends_on=("network",)),
+        _s("authenticate", "login", "email_otp", "mfa_challenge", depends_on=("network",)),
+        _s("set_twofa", "twofa", "twofa_result", depends_on=("authenticate",)),
+    ),
     "account_completion": _flow(
         _s("plan"), _s("refresh_dispatch", "refresh_token", "dispatch"), _s("account_setup_dispatch", "account_setup"), _s("network"), _s("plan_check"), _s("browser"),
         _s("authenticate", "login", "login_password", "email_otp", "mfa_challenge"), _s("set_password", "password_reset", "password_checkpoint"),
         _s("set_twofa", "twofa", "twofa_result"), _s("codex_dispatch", "codex", "oauth", "dispatch"),
     ),
     # 依赖只说明明确失败后哪些本地步骤无法进入，不强制按模板顺序运行。
-    # 注册、补全和配置分支含条件或独立子任务，保持无依赖推断。
+    # 补全子任务分支各自独立调度，保持无依赖推断。
     "live_check": _flow(_s("preflight"), _s("network", depends_on=("preflight",)), _s("access_token", depends_on=("network",))),
     "token_refresh": _flow(
         _s("preflight"), _s("network", depends_on=("preflight",)),
@@ -211,16 +253,42 @@ TASK_TEMPLATES: _FLOW = {
         _s("preflight"), _s("c2a_scan", depends_on=("preflight",)), _s("c2a_repair", depends_on=("c2a_scan",)),
     ),
     "c2a_session_reimport": _flow(_s("preflight"), _s("c2a_resolve", depends_on=("preflight",)), _s("c2a_safety", depends_on=("c2a_resolve",)), _s("c2a_update", depends_on=("c2a_safety",))),
+    "sub2api_scan": _flow(
+        _s("preflight"), _s("sub2api_scan", depends_on=("preflight",)), _s("sub2api_repair", depends_on=("sub2api_scan",)),
+    ),
+    "sub2api_sync": _flow(_s("preflight"), _s("sub2api_sync", depends_on=("preflight",))),
+    "sub2api_manual_upload": _flow(_s("preflight"), _s("sub2api_sync", depends_on=("preflight",))),
+    "bulk_mutation": _flow(_s("bulk_mutation")),
+    "bulk_terminate": _flow(_s("bulk_terminate")),
+    "task_terminate_bulk": _flow(_s("bulk_terminate")),
+    "account_inspection": _flow(_s("preflight"), _s("dispatch", depends_on=("preflight",))),
+    "account_inspection_batch": _flow(_s("preflight"), _s("dispatch", depends_on=("preflight",))),
+    "account_inspection_item": _flow(
+        _s("preflight"), _s("network", depends_on=("preflight",)),
+        _s("authenticate", "browser", "page", "login", "login_password", "login_mfa", "email_otp",
+           "mfa_challenge", depends_on=("network",)),
+        _s("token", depends_on=("authenticate",)), _s("plan_check", depends_on=("token",)),
+    ),
+    "sentinel_maintenance_check": _flow(_s("preflight"), _s("sentinel_check", depends_on=("preflight",))),
     "plan_check": _flow(
         _s("preflight"), _s("network", depends_on=("preflight",)),
         _step("refresh_token", "刷新 AT", "account", "refresh_token", "authenticate", "login", "login_password",
-              "login_mfa", "email_otp", "mfa_challenge", "reauth", "token", "browser", "page",
-              depends_on=("network",)),
+              "login_mfa", "email_otp", "mfa_challenge", "reauth", "token", "browser", "page", "nested_live_check",
+              depends_on=("preflight",)),
         _s("plan_check", depends_on=("network",)),
     ),
-    "deactivation_mail": _flow(_s("preflight"), _s("mailbox_scan")),
-    "extract_link": _flow(_s("preflight"), _s("access_token"), _s("refresh_token"), _s("extract_link", "extract_link", "extraction")),
-    "email_change": _flow(_s("email"), _s("network"), _s("login_password", "login_password", "reauth", "recent_login"), _s("email_otp", "email_otp", "new_email_otp"), _s("submit_email", "submit_email", "change_email", "change_email_begin", "change_email_verify", "writeback")),
+    "deactivation_mail": _flow(_s("preflight"), _s("mailbox_scan", depends_on=("preflight",))),
+    "extract_link": _flow(
+        _s("preflight"), _s("access_token", depends_on=("preflight",)),
+        _s("refresh_token", "refresh_token", "nested_live_check", depends_on=("preflight",)),
+        _s("extract_link", "extract_link", "extraction", depends_on=("preflight",)),
+    ),
+    "email_change": _flow(
+        _s("email"), _s("network", depends_on=("email",)),
+        _s("submit_email", "submit_email", "change_email", "change_email_begin", "change_email_verify", "writeback", depends_on=("network",)),
+        _s("login_password", "login_password", "reauth", "recent_login", depends_on=("submit_email",)),
+        _s("email_otp", "email_otp", "new_email_otp", depends_on=("submit_email",)),
+    ),
 }
 
 # 公开兼容视图仍保留 raw stage 元组，供只需要旧诊断词汇的调用方使用；
@@ -449,6 +517,12 @@ def resolve_step(task_type: Any, stage: Any, detail: dict[str, Any] | None = Non
             return "account_setup_dispatch"
         if "set_twofa" in known:
             return "set_twofa"
+    if raw == "nested_live_check":
+        for candidate in ("refresh_token", "token", "access_token"):
+            if candidate in known:
+                return candidate
+    if raw == "refresh_token" and "token" in known:
+        return "token"
     if raw in {"login", "login_password", "login_mfa", "email_otp", "mfa_challenge", "password_reset", "password_reset_otp", "token"}:
         for candidate in ("authenticate", "login_password", "set_password"):
             if candidate in known:
