@@ -157,63 +157,101 @@ webgl_renderer      = ANGLE (Apple, ... Apple M2)  ← 矛盾
 > 说明：A 修的是"记录准确"，B 修的是"请求本身"。当前 5,241 个历史号带着该组合
 > 注册成功，说明服务端暂未因此拦截；B 不应与第一部分混做。
 
-## 5. 第二部分：回放（范围已定，细节待讨论）
+## 5. 第二步：指纹重放（定稿）
 
-### 5.1 已定范围
+### 5.1 定义与范围
 
-- 目标等级：**L2**（UA/client hints/OS/屏幕/语言/TLS 档位都要与上次一致）
-- **只用于改密**，不用于刷新、不用于注册
-- **每个内核只回放自己的画像**，不做跨内核回放（后续再议）
-- 每个账号的 `replay_kernel` 固定，不动态切换
-- **内核 = 注册时的内核，不可跨内核回放（定稿规则）**：
-  ```
-  内核 ∈ 能运行该画像的内核集合        # 能力筛选（保护）
-  且 内核 == 该账号的注册驱动          # 最终决定（唯一）
-  否则失败，不降级、不换内核
-  ```
-  - 协议注册（`protocol_oss_2`）→ 协议内核（Python wreq）
-  - rust 注册（`sentinel_rs`）→ rust 内核
-  - 理由：只有产出画像的内核才能发出同一套 TLS 指纹；UA/CH 可照抄，TLS 栈实现不能
-  - 将来某内核能逐字节等价复现另一内核的 TLS 栈时，才允许交叉重放
+- 重放 = **用注册内核 + 注册画像，重建一个会话**；不执行任何业务操作、不发业务请求
+- 目标等级 **L2**：UA、client hints、OS、屏幕/硬件、语言/时区、TLS 档位全部与上次一致
+- 只服务**改密**（刷新 AT、注册不在此范围）
+- 每个账号的 `replay_kernel` 由注册驱动决定并固定，不动态切换
 
-### 5.3 版本与“指纹会变”的处理
+### 5.2 内核选择规则（定稿）
 
-指纹不是一成不变的，生成规则和内核版本都会演进。规则：
+```
+内核 ∈ 能运行该画像的内核集合        # 能力筛选（保护）
+且 内核 == 该账号的注册驱动          # 最终决定（唯一）
+否则失败，不降级、不换内核
+```
 
-1. **每条画像记录产出它的内核版本**（`kernel_version`）和生成规则版本（`generator_version`）
-2. **重放要求三个一致**：内核一致、内核版本一致、参数一致
-3. **内核升级后**：
-   - 先跑 probe：同一批画像在新旧版本下对比实际请求头与 TLS 档位
-   - 若 TLS 行为变化：旧账号标记 `kernel_version_mismatch`，默认**不重放**（避免“以为复现了其实变了”）
-   - 需要继续用时，走一次性迁移：用旧版本内核重放，或重新生成并接受设备变化
-4. **优化生成规则**（改指纹算法）：
-   - 新注册用新规则（`generator_version` 递增）
-   - 老账号保留原画像，不用新规则重算
-   - 否则等于把老设备“改”了一台
-5. **可选增强**：离线计算每个档位的 JA3/JA4 摘要并入库，升级后直接比对，比只看版本号更硬
+- `protocol_oss_2` → 协议内核（Python `wreq`）
+- `sentinel_rs` → rust 内核
+- 理由：只有产出画像的内核才能发出同一套 TLS 指纹；UA/CH 可照抄，TLS 栈实现不能
+- 例外：将来某内核能逐字节等价复现另一内核的 TLS 栈，才允许交叉
 
-### 5.2 已定方向：改密内核与注册驱动对齐
+### 5.3 重放的五层
 
-- `protocol_oss_2` 注册的号：改密走协议引擎的 **wreq 传输**（TLS 152 可原样）
-- `sentinel_rs` 注册的号：改密走 **rust 内核**（当前 Rust 没有改密流程，需新增）
-- 不再用"改密固定走 curl_cffi 146"的默认路径
+| 层 | 注入内容 | 来源 |
+|---|---|---|
+| TLS | `impersonate`（如 `chrome152`）→ wreq emulation | 画像 |
+| HTTP 默认头 | `User-Agent`、`accept-language`、全套 `sec-ch-ua*` | 画像 |
+| Cookie | `oai-did=device_id` + 未过期历史 Cookie | 画像 + 会话缓存 |
+| sentinel 环境 | 屏幕/dpr/cores/memory/WebGL/时区/语言/platform | 画像 |
+| 语言/时区 | `navigator_language(s)`、`accept_language`、`timezone_iana` | 画像（与头同源） |
 
-### 5.3 硬约束（实测）
+### 5.4 重放前的画像整理（内存内，不回写）
 
-- 协议注册画像：UA/TLS 均为 Chrome152，只有 Python wreq 能跑（支持到 154）
-- rust 注册画像：TLS ≤149，但**注册未回传**，目前没有真实画像可回放
-- 改密现跑在 Python v3 + curl_cffi，**TLS 上限 146**
+存储保持原样，重放时整理成自洽副本：
 
-结论：即使"只用自己内核"，协议号改密要 L2 一致，也必须让改密走 wreq 传输；
-否则只能 L1 近似（UA 152 + TLS 146）。
+1. 以 UA 判定 OS，重写 `browser_os`、`navigator_platform`、`sec_ch_ua_platform`、`user_agent_data_platform`
+2. `sec_ch_ua_arch/bitness/model/platform_version/full_version_list` 为空时用 `ua_*` 回填
+3. `screen_width/height` 缺失时从 `screen`（`"1366x768"`）解析
+4. `viewport_width/height` 缺失时从 `viewport` 对象取
+5. `navigator_language` ← `lang`，`accept_language` ← `lang_full`
+6. `webgl` 与 OS 不符时按 OS 修正（Windows → D3D11 ANGLE）
+7. **版本号一律不动**
 
-### 5.4 待定
+### 5.5 会话接口（第三步使用）
 
-- 协议号改密接入 wreq 的工作量与排期（需覆盖 Cookie / sentinel / 重定向 / OTP）
-- rust 号：Rust 目前无改密流程；且注册指纹种子来自环境/随机（`SENTINEL_FP_SEED`），
-  未记录、不可还原，只能从首次刷新（seed=device_id）起固定，不能还原注册那套
-- rust 号是否等"注册回传画像/种子"后再纳入（需改注册链路，暂不允许）
-- family 差异（chrome-windows / safari-macos / safari-ios）在回放时的必填必空规则
+```
+session = open_replayed_session(account, proxy, cookies=None)
+session.get / post / cookies / headers
+session.browser_profile   # 供 sentinel 使用
+session.device_id
+```
+
+### 5.6 probe 验收（不联网）
+
+1. 用画像建会话
+2. 读取实际配置：TLS 档位、UA、全部 `sec-ch-ua*`、语言、时区
+3. 与存储画像逐项对比
+4. 输出差异清单；**差异必须为 0**
+
+### 5.7 失败策略
+
+- 缺关键字段（`user_agent` / `impersonate` / `device_id`）→ 失败
+- 档位在内核中不存在 → 失败
+- 内核版本与画像记录不一致 → `kernel_version_mismatch`，默认不重放
+- 一律不静默降级（降级比失败更危险：看着像复用，其实换了设备）
+
+### 5.8 版本与指纹演进
+
+1. 每条画像记录 `kernel_version`、`generator_version`、`emulation`
+2. 重放要求三个一致：内核一致、内核版本一致、参数一致
+3. 内核升级：先 probe 对比新旧版本；TLS 行为变化则旧账号默认不重放，需要时走一次性迁移
+4. 生成规则优化：新注册用新规则（`generator_version` +1）；老账号保留原画像，不用新规则重算
+5. 可选：离线计算档位 JA3/JA4 摘要入库，升级后直接比对
+
+### 5.9 组件位置与测试
+
+```
+core/accounts/device_replay/
+  normalize.py   画像整理（5.4 的 7 条）
+  session.py     内核分派 + 五层注入
+  probe.py       差异对比
+  errors.py      错误分类
+```
+
+- 单测：整理规则、档位映射、不支持时报错
+- probe：3 个真实画像差异为 0
+- 负例：非法 `impersonate` 必须报错
+
+### 5.10 已知限制
+
+- rust 注册画像未回传，当前无法重放 rust 号（需注册链路上报，暂不允许）
+- rust 注册种子为环境/随机，不可还原；只能从首次刷新（seed=device_id）起固定
+- Safari 家族：协议支持，rust 不支持；当前库内 0 条 Safari 画像
+- curl_cffi（146）不参与本方案，仅作历史参考
 
 ## 6. 第三步：回填 + 观测 + 对照实验（待讨论）
 
