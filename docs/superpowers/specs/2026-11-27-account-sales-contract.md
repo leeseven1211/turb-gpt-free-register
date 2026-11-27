@@ -23,7 +23,8 @@ get_items(item_ids: list[int], *, private=False, conn=None) -> list[dict]
 list_items(*, page=1, page_size=20, status="", shop_id=None, source_id="", q="") -> dict
 patch_item(item_id: int, changes: dict, *, event: str = "", conn=None) -> dict
 freeze_listing(item_id: int, *, shop_id: int, product_id: int,
-               fingerprint: str, delivery_ciphertext: str, conn=None) -> dict
+               fingerprint: str, delivery_ciphertext: str,
+               binding: dict | None = None, historical=False, conn=None) -> dict
 confirm_inventory(item_id: int, *, shop_id: int, product_id: int,
                   external_inventory_id: str, sold=False, order_ref="",
                   order_amount=None, currency="CNY", paid_at=None,
@@ -41,9 +42,11 @@ list_events(item_id: int) -> list[dict]
 
 条目公开结构：`id/source_id/account_id/email/plan/status/shop_id/product_id/shop_name/product_name/external_inventory_id/order_ref/order_amount/currency/channel/price/sold_at/paid_at/note/listed_at/archived/archive_pending/sync_status/error_code/error_message/created_at/updated_at`。`status` 默认 `for_sale`，`sync_status` 默认 `idle`。
 
-条目私有字段：`fingerprint/delivery_ciphertext`，仅 `private=True` 返回。公开投影禁止包含这两字段。
+条目私有字段：`fingerprint/delivery_ciphertext/listing_binding/archive_owner_id`，仅 `private=True` 返回。公开投影禁止包含这些字段。`listing_binding` 独立保存最初商户 ID、外部商品 ID 和 `goods_key`，不依赖统一任务的历史保留期。
 
 `freeze_listing` 原子锁定当前条目，仅允许待售或同一原目标的重跑；相同指纹被其他条目占用时抛固定分类的 `SalesError`。在售或已售条目不能改派不同店铺/商品。已售不能再次外部上架。每条冻结之后有 `sync_status=pending`。
+
+可信历史匹配可使用 `historical=True` 首次关联尚无外部归属的人工销售条目，不触发外部导入或反转原销售事实。人工误标仅在没有外部库存、订单及付款事实时可撤销。用户取消上架将未确认意图置为 `paused`，周期恢复不补导，手动重跑恢复原材料和原目标。若暂停前已在途导入成功，后续只读同步仍保存实际库存及其原归档义务。
 
 `confirm_inventory` 在同事务保存外部映射、销售状态、首次上架时间和 `archive_pending=true`，不直接操作原账号。已售不得被旧库存快照降为已上架；退款作为单独事实不恢复待售。
 

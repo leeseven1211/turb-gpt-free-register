@@ -15,7 +15,7 @@ test('registration tasks compatibility route retains its view through hash norma
   localStorage:{setItem:(...args)=>calls.push(['saved',...args])},$:()=>null,
   closePageDialogsForNavigation:()=>calls.push(['close']),closeMobileSidebar(){},updateNavigationBackButton(){},
   recordNavigationHistory(){},ACTIVE_TAB:'register',SHOW_ARCHIVED_ACCOUNTS:false,
-  activateTab:tab=>calls.push(['tab',tab]),RegistrationPage:{setView:view=>calls.push(['view',view])}};
+  activateTab:tab=>calls.push(['tab',tab,nodes.get(`tab-${tab}`)?.dataset.moduleView])};
  context.window=context;
  const code=[
   "const NAV_ALLOWED_TABS=['register','overview','bulk'];",
@@ -34,6 +34,6 @@ test('registration tasks compatibility route retains its view through hash norma
  assert.equal(restored.view,'tasks');
  context.applyNavigationState(restored);
  assert.equal(nodes.get('tab-register').dataset.moduleView,'tasks');
- assert.deepEqual(calls.filter(call=>call[0]==='view'),[['view','tasks']]);
- assert.deepEqual(calls.filter(call=>call[0]==='tab'),[['tab','register']]);
+ // 外壳先写目标子视图再激活，页面 owner 从激活阶段接收该值。
+ assert.deepEqual(calls.filter(call=>call[0]==='tab'),[['tab','register','tasks']]);
 });

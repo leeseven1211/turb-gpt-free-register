@@ -34,8 +34,14 @@ class PageAssetTemplateTests(unittest.TestCase):
         parser.feed(response.get_data(as_text=True))
         paths = {urlsplit(url).path for url in parser.urls}
         for page in ("accounts", "codex", "config", "dashboard", "email", "extract",
-                     "proxy", "registration", "bulk", "task-center"):
+                     "proxy", "registration", "sales", "bulk", "task-center"):
             self.assertIn(f"/static/task-center/{page}.js", paths)
+        for path in sorted(paths):
+            if path.startswith("/static/task-center/"):
+                self.assertTrue(
+                    (Path(app.static_folder) / path.removeprefix("/static/")).is_file(),
+                    path,
+                )
         self.assertIn("/static/task-center/task-center.css", paths)
         self.assertIn("/static/js/pages/proxy/traffic.js", paths)
         self.assertIn("/static/js/shared/common.js", paths)

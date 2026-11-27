@@ -1696,6 +1696,24 @@ function invokeAccountAction(action, suppliedContext, trigger = null) {
   const separator = action.indexOf(':');
   const name = separator < 0 ? action : action.slice(0, separator);
   const value = separator < 0 ? '' : action.slice(separator + 1);
+  if (name === 'addSelectedAccountsToSales') {
+    if (!ids.length) { showToast('请先选择账号'); return; }
+    return api('/api/sales/items/add', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({source_id: 'local', account_ids: ids}),
+    }).then(result => {
+      if (result.ok !== true || !Array.isArray(result.items)) throw new Error(result.error || '加入贩卖区的回执无效');
+      const added = Number(result.success_count || 0);
+      const failed = Number(result.failed_count || 0);
+      const detail = result.items.find(item => item.status === 'failed');
+      showToast(failed
+        ? `已加入 ${added} 个，失败 ${failed} 个${detail?.message ? `：${detail.message}` : ''}`
+        : `已加入 ${added} 个账号，可在贩卖区查看`);
+      setModuleView('accounts', 'sales');
+      return window.SalesPage?.refresh();
+    });
+  }
   if (name === 'bulk-from-account-filters' || name === 'bulk-from-selected-accounts') return BulkTasks.fromAccounts(name === 'bulk-from-selected-accounts', 'plan_check', {ids:[...context.accountIds],query:context.querySnapshot});
   if (name === 'openAccountInspectionHistory') return window.AccountsPage.openInspectionHistory(trigger);
   const bulk = {

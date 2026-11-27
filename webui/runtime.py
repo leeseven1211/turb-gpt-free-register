@@ -483,8 +483,10 @@ def start_runtime(runtime_logger: logging.Logger | None = None) -> bool:
         operation_task_store.init()
         from core.storage import c2a as c2a_storage
         from core.storage.operations import bulk
+        from core.sales import store as sales_store
         bulk.init()
         c2a_storage.init()
+        sales_store.init()
         _start_legacy_settlement()
         reconciliation.recover_before_handlers(active_logger)
         try:
@@ -499,12 +501,14 @@ def start_runtime(runtime_logger: logging.Logger | None = None) -> bool:
         from core.integrations.sub2api import monitor as sub2api_monitor
         from core.integrations.sub2api import manual_upload
         from core.integrations.c2a import manual_sync as c2a_manual_sync, monitor as c2a_monitor
+        from core.sales.runtime import register_handler as register_sales_handler, start_periodic_sync as start_sales_sync
 
         sentinel.register_handler()
         sub2api_monitor.register_handler()
         manual_upload.register_handler()
         c2a_manual_sync.register_handler()
         c2a_monitor.register_handler()
+        register_sales_handler()
         reconciliation.recover_before_dispatchers(active_logger)
         operation_task_store.start_projection_worker()
         from core.registration import service as registration_service
@@ -532,6 +536,7 @@ def start_runtime(runtime_logger: logging.Logger | None = None) -> bool:
         start_periodic_sync()
         start_periodic_monitor()
         c2a_monitor.start_periodic_monitor()
+        start_sales_sync()
         from core.accounts.auth_context_cleanup import start_periodic_cleanup
         from core.operations.retention import start_periodic_cleanup as start_task_center_retention
 
@@ -560,6 +565,8 @@ def stop_runtime(timeout: float = 60.0) -> bool:
             from core.integrations.c2a import monitor as c2a_monitor
 
             c2a_monitor.stop_periodic_monitor(timeout=min(1.0, max(0.0, timeout)))
+            from core.sales.runtime import stop_periodic_sync as stop_sales_sync
+            stop_sales_sync(timeout=min(1.0, max(0.0, timeout)))
         # Idle failed startup may relinquish only the carrier this entrypoint
         # created. Other legacy components have no proven shutdown here.
         _stop_legacy_settlement_if_idle(timeout=min(1.0, max(0.0, timeout)))

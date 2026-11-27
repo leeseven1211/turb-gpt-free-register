@@ -6,10 +6,22 @@
 
 - 人工维护的短语与结构化规则：[`core/operations/error_labels.py`](../../core/operations/error_labels.py)。
 - 前端生成目录：[`frontend/src/generated/task-error-labels.json`](../../frontend/src/generated/task-error-labels.json)。
-- 原有错误分类器：[`core/operations/errors.py`](../../core/operations/errors.py)，本次不更改其诊断规则。
+- 统一错误分类器：[`core/operations/errors.py`](../../core/operations/errors.py)，按任务与已登记原因码生成诊断投影。
 - 覆盖测试：[`tests/operations/test_task_error_labels.py`](../../tests/operations/test_task_error_labels.py)。
 
 已逐项整理现有错误分类器、套餐错误分类器和浏览器刷新错误目录中登记的 **500 个静态码**。目录还覆盖注册、认证、取码、授权回调等动态网络原因、HTTP 状态和回执缺失码。此覆盖范围来自代码登记项，不代表重新扫描了线上历史任务或修正了原始记录。
+
+## 销售领域错误
+
+销售执行端的 `SalesError.code` 在 [`core/operations/errors.py`](../../core/operations/errors.py) 的
+`SALES_ERROR_DETAILS` 中集中登记。统一投影保留原销售码作为 `cause_code` 和 `error_code`，
+只增加安全的展示码、中文摘要和短语，不改变销售任务的执行、重试或归档行为。
+
+当前 `core/sales/*.py` 和销售路由中的所有字面量销售错误码都有专属短语。未登记的销售码
+仍保留在 `error_code` 和 `original_error_code` 中，但不会根据 `sales_`、`shop_`、
+`source_`、`listing_` 或 `product_` 前缀猜测具体原因；新增码应补充
+`SALES_ERROR_DETAILS` 和 `CAUSE_CODE_LABELS`，以获得具体诊断。
+其中 `listing_intent_active` 表示已有尚未确认的上架意图，短语为“上架意图待确认”。
 
 ## 分类口径
 
