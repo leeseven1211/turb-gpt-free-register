@@ -379,6 +379,35 @@ prepared → submitted → confirmed
 
 待办：若后续要确认设置页是否有其他改密入口，需用真实浏览器（Roxy）抓一次请求。
 
+### 6.13 邮箱查活门禁（定稿）
+
+改密必须接码，因此邮箱可用性是硬前置。新增门禁 `email_health`，第一版只接入改密，
+后续再扩展到注册续跑、换绑邮箱等。
+
+**检查三层**
+
+| 层 | 内容 | 失败判定 |
+|---|---|---|
+| 账号标记 | `email_invalid`、`email_source` 是否存在 | 任一不满足 → 失败 |
+| 资源有效期 | `generic_api` 的领取记录 `expires_at`；`email_butler` 的租约/凭据有效期 | 过期/无效 → 失败 |
+| 实际可读 | 轻量读一次取码接口（不等待新邮件） | 非 200 / 无法解析 / 超时 → 失败 |
+
+**两个适配器一起做**
+- `generic_api`（9,548 个账号）：`get_account_context` + `require_usable` + 轻量读 `code_url`
+- `email_butler`（959 个账号）：租约有效性 + 其轻量接口
+
+**结果与缓存**
+- 写回账号：`extra_json.email_health = {ok, reason, checked_at, source}`
+- 成功缓存 10 分钟，失败缓存 1 小时
+
+**门禁语义**
+- 失败 → 任务直接终止，错误码 `email_unusable`，不可重试
+- 不做“先跑一半再发现邮箱不行”的浪费
+
+**接入顺序**
+1. 改密（第一版唯一接入点）
+2. 注册续跑、换绑邮箱等（后续）
+
 ### 6.11 后续（原第三步尾巴）
 
 - 历史回填：协议号 trusted；rust 号 placeholder（不复用）
