@@ -125,7 +125,7 @@ def workbench_analytics(*, days: int = 7, provider_id: str | None = None, now: d
         SELECT p.*, (p.task_created_at AT TIME ZONE 'Asia/Shanghai')::date AS task_date,
             CASE WHEN p.task_status='success' THEN EXTRACT(EPOCH FROM (r.completed_at-r.started_at)) END AS duration_seconds,
             CASE WHEN {conditions['failed']} THEN COALESCE(NULLIF(r.result_summary->>'cause_code',''),
-                NULLIF(job.public_state->'summary'->>'failure_code',''),
+                NULLIF(job.job_summary_failure_code,''),
                 NULLIF(r.error_code,''), '') END AS stored_failure_code,
             CASE WHEN {conditions['failed']} THEN COALESCE(r.error_message,'') END AS error_text
         FROM projected p

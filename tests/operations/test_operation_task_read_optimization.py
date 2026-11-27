@@ -348,8 +348,11 @@ class OperationTaskReadOptimizationTests(PostgresTestCase):
 
         def trace(cursor, statement, params=None, **kwargs):
             result = execute(cursor, statement, params, **kwargs)
-            if [column.name for column in cursor.description or ()] == ["facet", "value", "count"]:
-                queries.append((statement, params))
+            columns = [column.name for column in cursor.description or ()]
+            if columns == ["facet", "value", "count"] or (
+                "__facet" in columns and "__value" in columns and "__count" in columns
+            ):
+                queries.append((statement, list(params or ())))
             return result
 
         with patch.object(psycopg.Cursor, "execute", trace):
@@ -359,6 +362,7 @@ class OperationTaskReadOptimizationTests(PostgresTestCase):
                     operation_task_store.list_tasks(**{name: value})
                     self.assertEqual(1, len(queries))
                     statement = queries[0][0]
+                    self.assertEqual(1, statement.count("facet_current_runs AS MATERIALIZED"))
                     self.assertEqual(1, statement.count("facet_candidates AS MATERIALIZED"))
                     self.assertEqual(1, statement.count("CROSS JOIN LATERAL"))
                     self.assertIn("FROM facet_groups candidate CROSS JOIN LATERAL", statement)
@@ -382,13 +386,13 @@ class OperationTaskReadOptimizationTests(PostgresTestCase):
                 "native_operations", 17, *["%search%"] * 10, "%23%", *["%target%"] * 4,
                 *["%batch%"] * 3, "2026-09-01", "2026-10-01", *["%result%"] * 3,
             ]
+            expected_facet_params = [
+                value for facet in facets for name, value in expected_groups if name != facet
+            ] + shared_params
             self.assertEqual(len(facets), statement.count(" AS matches_"))
             for facet in facets:
                 self.assertIn(f"('{facet}',candidate.value_{facet},candidate.count_{facet})", statement)
-            self.assertEqual(
-                [value for facet in facets for name, value in expected_groups if name != facet] + shared_params,
-                params,
-            )
+            self.assertEqual(expected_facet_params, params[-len(expected_facet_params):])
             operation_task_store.list_tasks(include_facets=False, **filters)
             self.assertEqual([], queries)
 

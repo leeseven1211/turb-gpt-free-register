@@ -355,7 +355,7 @@ def batch_task_counts(batch_ids: list[int], *, public_status: bool = False) -> d
     mode_sql = "COALESCE(NULLIF(task.task_mode, ''), 'extract_only')"
     paid_mode_sql = f"{mode_sql} IN ('auto_payment', 'manual_payment')"
     provider_id_sql = "COALESCE(NULLIF(task.task_provider_id, ''), NULLIF(job.provider_id, ''), 'legacy')"
-    raw_payment_sql = "LOWER(COALESCE(NULLIF(job.public_state->>'payment_state', ''), NULLIF(run.result_summary->>'payment_status', ''), 'not_started'))"
+    raw_payment_sql = "LOWER(COALESCE(NULLIF(job.job_public_payment_state, ''), NULLIF(run.run_extract_payment_status, ''), 'not_started'))"
     payment_sql = f"CASE WHEN {mode_sql}='extract_only' THEN 'not_started' ELSE {raw_payment_sql} END"
     payment_progress_sql = _workbench_payment_processing_sql("job.public_state->'summary'")
     payment_processing_sql = (
@@ -371,33 +371,32 @@ def batch_task_counts(batch_ids: list[int], *, public_status: bool = False) -> d
             f"""WITH filtered_tasks AS MATERIALIZED (
                 SELECT task.id, task.batch_id, task.account_id, task.email_snapshot,
                     task.last_run_id, task.created_at, task.status,
-                    task.data->>'provider_id' AS task_provider_id,
-                    task.data->>'mode' AS task_mode,
-                    COALESCE(task.data->>'payment_source', 'native') AS task_payment_source
+                    task.task_extract_provider_id AS task_provider_id,
+                    task.task_extract_mode AS task_mode,
+                    task.task_extract_payment_source AS task_payment_source
                 FROM {operation._table('operation_tasks')} task
                 WHERE task.task_type='extract_link' AND task.batch_id=ANY(%s)
-                  AND LOWER(COALESCE(task.data->>'deleted_by_user', '')) <> 'true'
+                  AND task.task_deleted_by_user IS FALSE
             ), raw AS (
                 SELECT task.id AS task_id, task.batch_id, task.account_id, task.email_snapshot,
                     task.created_at AS task_created_at,
                     task.task_payment_source,
                     CASE WHEN {paid_mode_sql} AND task.task_payment_source='xxsyun'
-                        THEN job.public_state->'summary'->>'payment_submitted_at' END AS raw_payment_submitted_at,
+                        THEN job.job_payment_submitted_at END AS raw_payment_submitted_at,
                     LOWER(COALESCE(NULLIF(run.status, ''), NULLIF(task.status, ''), 'queued')) AS task_status,
                     {provider_id_sql} AS provider_id,
                     {mode_sql} AS mode,
                     COALESCE(job.provider_id IN ('huanguang', 'legacy')
-                        AND job.public_state->'summary'->'local_reconcile_halted'='true'::jsonb, FALSE) AS local_reconcile_halted,
-                    CASE WHEN job.provider_id='huanguang' AND job.public_state->'summary'->'extraction_ever_succeeded'='true'::jsonb
-                        THEN 'succeeded' ELSE LOWER(COALESCE(NULLIF(job.public_state->>'extraction_state', ''),
-                            NULLIF(run.result_summary->>'extraction_status', ''), '')) END AS extraction,
+                        AND job.job_local_reconcile_halted, FALSE) AS local_reconcile_halted,
+                    CASE WHEN job.provider_id='huanguang' AND job.job_extraction_ever_succeeded
+                        THEN 'succeeded' ELSE LOWER(COALESCE(NULLIF(job.job_public_extraction_state, ''),
+                            NULLIF(run.run_extract_extraction_status, ''), '')) END AS extraction,
                     {payment_sql} AS payment,
                     {payment_processing_sql} AS payment_processing,
-                    LOWER(COALESCE(NULLIF(job.public_state->>'plus_status', ''),
-                        NULLIF(run.result_summary->>'plus_status', ''), 'unknown')) AS plus,
-                    CASE WHEN {provider_id_sql}='legacy' AND NULLIF(job.public_state->>'extraction_state', '') IS NULL
-                        THEN COALESCE((run.result_summary->>'has_link')::boolean, FALSE)
-                            OR COALESCE(run.result_summary->>'remote_job_id', '') <> ''
+                    LOWER(COALESCE(NULLIF(job.job_public_plus_status, ''),
+                        NULLIF(run.run_extract_plus_status, ''), 'unknown')) AS plus,
+                    CASE WHEN {provider_id_sql}='legacy' AND NULLIF(job.job_public_extraction_state, '') IS NULL
+                        THEN COALESCE(run.run_extract_legacy_succeeded, FALSE)
                         ELSE FALSE END AS legacy_succeeded
                 FROM filtered_tasks task
                 LEFT JOIN {operation._table('operation_runs')} run ON run.id=task.last_run_id

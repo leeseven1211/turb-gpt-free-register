@@ -13,7 +13,7 @@ _LOCK = threading.RLock()
 _READY_KEY = ""
 _FORCE_SCHEMA_CHECK = False
 # 修改统一任务表、索引或结算域结构时递增版本。
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 _SCHEMA_MIGRATIONS = "operation_schema_migrations"
 
 
@@ -450,6 +450,116 @@ def _apply_operation_schema(cur) -> None:
     from core.storage.operations import settlements
 
     settlements.initialize_schema(cur)
+    _apply_v2_read_projections(cur)
+
+
+def _apply_v2_read_projections(cur) -> None:
+    """补齐任务中心与提链工作台热读路径的窄生成列与覆盖索引，避免全表解压 JSONB。"""
+    tasks_table = _common._table("operation_tasks")
+    runs_table = _common._table("operation_runs")
+    provider_jobs_table = _common._table("extract_link_provider_jobs")
+    cur.execute(
+        f"""
+        ALTER TABLE {tasks_table}
+            ADD COLUMN IF NOT EXISTS task_deleted_by_user BOOLEAN GENERATED ALWAYS AS (
+                LOWER(COALESCE(data->>'deleted_by_user', 'false')) = 'true'
+            ) STORED,
+            ADD COLUMN IF NOT EXISTS task_extract_provider_id TEXT GENERATED ALWAYS AS (
+                data->>'provider_id'
+            ) STORED,
+            ADD COLUMN IF NOT EXISTS task_extract_mode TEXT GENERATED ALWAYS AS (
+                data->>'mode'
+            ) STORED,
+            ADD COLUMN IF NOT EXISTS task_extract_payment_source TEXT GENERATED ALWAYS AS (
+                COALESCE(data->>'payment_source', 'native')
+            ) STORED
+        """
+    )
+    cur.execute(
+        f"""
+        ALTER TABLE {runs_table}
+            ADD COLUMN IF NOT EXISTS run_source_bigint BIGINT GENERATED ALWAYS AS (
+                CASE WHEN source_system IN ('registration_jobs', 'account_action_tasks')
+                      AND source_id ~ '^-?(0|[1-9][0-9]{{0,18}})$'
+                      AND source_id::numeric BETWEEN -9223372036854775808 AND 9223372036854775807
+                     THEN source_id::bigint END
+            ) STORED,
+            ADD COLUMN IF NOT EXISTS run_requested_status TEXT GENERATED ALWAYS AS (
+                LOWER(BTRIM(COALESCE(result_summary->>'requested_status', '')))
+            ) STORED,
+            ADD COLUMN IF NOT EXISTS run_extract_extraction_status TEXT GENERATED ALWAYS AS (
+                COALESCE(result_summary->>'extraction_status', '')
+            ) STORED,
+            ADD COLUMN IF NOT EXISTS run_extract_payment_status TEXT GENERATED ALWAYS AS (
+                COALESCE(result_summary->>'payment_status', '')
+            ) STORED,
+            ADD COLUMN IF NOT EXISTS run_extract_plus_status TEXT GENERATED ALWAYS AS (
+                COALESCE(result_summary->>'plus_status', '')
+            ) STORED,
+            ADD COLUMN IF NOT EXISTS run_extract_legacy_succeeded BOOLEAN GENERATED ALWAYS AS (
+                COALESCE(result_summary->'has_link' NOT IN
+                    ('null'::jsonb, 'false'::jsonb, '0'::jsonb, '""'::jsonb, '[]'::jsonb, '{{}}'::jsonb), FALSE)
+                OR COALESCE(result_summary->>'remote_job_id', '') <> ''
+            ) STORED
+        """
+    )
+    cur.execute(
+        f"""
+        ALTER TABLE {provider_jobs_table}
+            ADD COLUMN IF NOT EXISTS job_public_extraction_state TEXT GENERATED ALWAYS AS (
+                COALESCE(public_state->>'extraction_state', '')
+            ) STORED,
+            ADD COLUMN IF NOT EXISTS job_public_payment_state TEXT GENERATED ALWAYS AS (
+                COALESCE(public_state->>'payment_state', '')
+            ) STORED,
+            ADD COLUMN IF NOT EXISTS job_public_plus_status TEXT GENERATED ALWAYS AS (
+                COALESCE(public_state->>'plus_status', '')
+            ) STORED,
+            ADD COLUMN IF NOT EXISTS job_local_reconcile_halted BOOLEAN GENERATED ALWAYS AS (
+                COALESCE(public_state->'summary'->'local_reconcile_halted' = 'true'::jsonb, FALSE)
+            ) STORED,
+            ADD COLUMN IF NOT EXISTS job_extraction_ever_succeeded BOOLEAN GENERATED ALWAYS AS (
+                COALESCE(public_state->'summary'->'extraction_ever_succeeded' = 'true'::jsonb, FALSE)
+            ) STORED,
+            ADD COLUMN IF NOT EXISTS job_payment_submitted_at TEXT GENERATED ALWAYS AS (
+                public_state->'summary'->>'payment_submitted_at'
+            ) STORED,
+            ADD COLUMN IF NOT EXISTS job_summary_failure_code TEXT GENERATED ALWAYS AS (
+                COALESCE(public_state->'summary'->>'failure_code', '')
+            ) STORED
+        """
+    )
+    v2_indexes = (
+        f"CREATE INDEX IF NOT EXISTS {_common._quote('idx_operation_tasks_visible_id')} "
+        f"ON {tasks_table} (id DESC) WHERE task_deleted_by_user IS FALSE",
+        f"CREATE INDEX IF NOT EXISTS {_common._quote('idx_operation_tasks_visible_ordinary_created')} "
+        f"ON {tasks_table} (created_at DESC, id DESC) "
+        "WHERE task_deleted_by_user IS FALSE "
+        "AND source_system NOT IN ('registration_jobs','registration_chains','account_action_tasks')",
+        f"CREATE INDEX IF NOT EXISTS {_common._quote('idx_operation_tasks_visible_facets')} "
+        f"ON {tasks_table} (id) INCLUDE (task_type, status, target_status, current_stage, source_system, created_at) "
+        "WHERE task_deleted_by_user IS FALSE",
+        f"CREATE INDEX IF NOT EXISTS {_common._quote('idx_operation_tasks_extract_visible')} "
+        f"ON {tasks_table} (created_at DESC, id DESC) "
+        "INCLUDE (batch_id, account_id, last_run_id, status, "
+        "task_extract_provider_id, task_extract_mode, task_extract_payment_source) "
+        "WHERE task_type = 'extract_link' AND task_deleted_by_user IS FALSE",
+        f"CREATE INDEX IF NOT EXISTS {_common._quote('idx_operation_runs_task_current_cover')} "
+        f"ON {runs_table} (task_id, run_no DESC, id DESC) "
+        "INCLUDE (source_system, status, progress_stage, run_source_bigint, run_requested_status)",
+        f"CREATE INDEX IF NOT EXISTS {_common._quote('idx_operation_runs_extract_cover')} "
+        f"ON {runs_table} (id) INCLUDE (status, created_at, started_at, completed_at, "
+        "run_requested_status, run_extract_extraction_status, run_extract_payment_status, "
+        "run_extract_plus_status, run_extract_legacy_succeeded)",
+        f"CREATE INDEX IF NOT EXISTS {_common._quote('idx_extract_provider_jobs_workbench_cover')} "
+        f"ON {provider_jobs_table} (run_id) INCLUDE (provider_id, job_public_extraction_state, "
+        "job_public_payment_state, job_public_plus_status, job_local_reconcile_halted, "
+        "job_extraction_ever_succeeded, job_payment_submitted_at, job_summary_failure_code)",
+    )
+    for sql in v2_indexes:
+        cur.execute(sql)
+    for table in (tasks_table, runs_table, provider_jobs_table):
+        cur.execute(f"ANALYZE {table}")
 
 
 def _backfill_account_states(cur) -> None:

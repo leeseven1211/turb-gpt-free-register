@@ -102,10 +102,9 @@ def _rows_by_date(start: date, end: date) -> list[dict]:
 
 
 def _account_promotions_sql() -> str:
-    """先过滤入库日期，仅按集合聚合轻量优惠，并仅在需要时回读最小快照字段。"""
+    """按账号入库日覆盖索引过滤，常规账号不再回表解压 plan_last_success_result_json。"""
     accounts = admin_repository._q(record_store.ACCOUNTS)
     offers = admin_repository._promotion_table()
-    created_date = account_created_date_sql("a")
     promotion = admin_repository._account_facet_expressions()["promotion"]
     narrow_snapshot_sql = """CASE
         WHEN snapshot_row.snap IS NULL THEN NULL::jsonb
@@ -124,13 +123,13 @@ def _account_promotions_sql() -> str:
     END"""
     return f"""
         WITH account_cohort AS MATERIALIZED (
-            SELECT a.id, ({created_date}) AS account_date,
+            SELECT a.id, a.account_created_date AS account_date,
                    COALESCE(NULLIF(LOWER(BTRIM(a.current_plan_type)), ''),
                             NULLIF(LOWER(BTRIM(a.plan_type)), ''), 'unknown') AS plan,
                    (a.archived IS FALSE AND ({promotion}) = 'none') AS unpromoted,
-                   (a.account_has_plan_snapshot IS TRUE) AS has_plan_snapshot
+                   COALESCE(a.account_snapshot_presence, 'unknown') AS snapshot_presence
               FROM {accounts} a
-             WHERE ({created_date}) >= %s::date AND ({created_date}) <= %s::date
+             WHERE a.account_created_date >= %s::date AND a.account_created_date <= %s::date
         ), cohort_offers AS MATERIALIZED (
             SELECT grouped.account_id,
                    jsonb_agg(jsonb_build_object(
@@ -154,6 +153,7 @@ def _account_promotions_sql() -> str:
              GROUP BY grouped.account_id
         )
         SELECT member.account_date::text AS day, member.plan, member.unpromoted,
+               member.snapshot_presence,
                COALESCE(fresh.offers, '[]'::jsonb) AS offers,
                {narrow_snapshot_sql} AS promotion_snapshot
           FROM account_cohort member
@@ -162,7 +162,7 @@ def _account_promotions_sql() -> str:
               SELECT a.data->'plan_last_success_result_json' AS snap
                 FROM {accounts} a
                WHERE fresh.offers IS NULL
-                 AND member.has_plan_snapshot IS TRUE
+                 AND member.snapshot_presence = 'eligible'
                  AND a.id = member.id
                OFFSET 0
           ) snapshot_row ON TRUE
@@ -232,14 +232,20 @@ def registration_daily_analytics(
                     day = item["day"]
                     offers = item.get("offers") or []
                     snapshot = item.get("promotion_snapshot")
-                    if not offers:
+                    if not offers and snapshot is not None:
                         if isinstance(snapshot, str):
                             try:
                                 snapshot = json.loads(snapshot)
                             except (ValueError, RecursionError):
                                 snapshot = None
                         offers = _snapshot_offers(snapshot)
-                    presence = "eligible" if offers else promotion_presence_from_snapshot(snapshot)
+                    if offers:
+                        presence = "eligible"
+                    elif snapshot is not None:
+                        presence = promotion_presence_from_snapshot(snapshot)
+                    else:
+                        raw_presence = str(item.get("snapshot_presence") or "unknown")
+                        presence = raw_presence if raw_presence in {"eligible", "none", "unknown"} else "unknown"
                     _add_account(by_date[day], item, presence, offers, day_offers[day])
                     _add_account(summary, item, presence, offers, summary_offers)
     for row in rows:

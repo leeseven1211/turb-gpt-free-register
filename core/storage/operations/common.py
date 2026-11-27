@@ -222,11 +222,34 @@ def _decode(value: Any) -> Any:
         return value
 
 
+_INTERNAL_GENERATED_COLUMNS = (
+    "task_deleted_by_user",
+    "task_extract_provider_id",
+    "task_extract_mode",
+    "task_extract_payment_source",
+    "run_source_bigint",
+    "run_requested_status",
+    "run_extract_extraction_status",
+    "run_extract_payment_status",
+    "run_extract_plus_status",
+    "run_extract_legacy_succeeded",
+    "job_public_extraction_state",
+    "job_public_payment_state",
+    "job_public_plus_status",
+    "job_local_reconcile_halted",
+    "job_extraction_ever_succeeded",
+    "job_payment_submitted_at",
+    "job_summary_failure_code",
+)
+
+
 def _row(row: dict | None) -> dict | None:
     if row is None:
         return None
     result = dict(row)
     result.pop("private_context", None)
+    for key in _INTERNAL_GENERATED_COLUMNS:
+        result.pop(key, None)
     for key in ("next_actions", "progress_steps", "result_summary", "detail", "data"):
         if key in result:
             result[key] = _decode(result[key])
@@ -610,9 +633,14 @@ def _compatibility_source_bigint_sql(run_alias: str, source_system: str) -> str:
 
 def _compatibility_run_joins_sql(
     *, run_alias: str = "rr", completion_overlay_alias: str | None = None,
+    use_source_bigint_col: bool = False,
 ) -> str:
-    registration_id_sql = _compatibility_source_bigint_sql(run_alias, "registration_jobs")
-    account_task_id_sql = _compatibility_source_bigint_sql(run_alias, "account_action_tasks")
+    if use_source_bigint_col:
+        registration_id_sql = f"CASE WHEN {run_alias}.source_system='registration_jobs' THEN {run_alias}.run_source_bigint END"
+        account_task_id_sql = f"CASE WHEN {run_alias}.source_system='account_action_tasks' THEN {run_alias}.run_source_bigint END"
+    else:
+        registration_id_sql = _compatibility_source_bigint_sql(run_alias, "registration_jobs")
+        account_task_id_sql = _compatibility_source_bigint_sql(run_alias, "account_action_tasks")
     overlay_join = (
         f" {_completion_handoff_runs_join_sql(run_alias=run_alias, alias=completion_overlay_alias)}"
         if completion_overlay_alias else ""

@@ -707,13 +707,24 @@ def _compile_account_predicates(
             where.append(f"{expression} ILIKE %s")
             literal = term.value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
             params.append(f"%{literal}%")
-    created_date = f"({account_created_date_sql()})::text" if date_from or date_to else ""
     if date_from:
-        where.append(f"{created_date} >= %s")
-        params.append(date_from[:10])
+        raw_from = date_from[:10]
+        try:
+            datetime.strptime(raw_from, "%Y-%m-%d")
+        except ValueError:
+            where.append("a.account_created_date::text >= %s")
+        else:
+            where.append("a.account_created_date >= %s::date")
+        params.append(raw_from)
     if date_to:
-        where.append(f"{created_date} <= %s")
-        params.append(date_to[:10])
+        raw_to = date_to[:10]
+        try:
+            datetime.strptime(raw_to, "%Y-%m-%d")
+        except ValueError:
+            where.append("a.account_created_date::text <= %s")
+        else:
+            where.append("a.account_created_date <= %s::date")
+        params.append(raw_to)
 
     value = _text(filters.get("id"))
     if value:
