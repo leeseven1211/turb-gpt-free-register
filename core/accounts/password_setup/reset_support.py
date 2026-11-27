@@ -8,8 +8,12 @@ from __future__ import annotations
 import re
 import secrets
 import string
+import posixpath
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import parse_qsl, unquote, urlencode, urlsplit, urlunsplit
+
+from core.codex.auth_page import CodexAuthPageSession, _ENTRY_PATH, _trusted_url
 
 
 _PASSWORD_LENGTH = 14
@@ -39,6 +43,30 @@ _COOLDOWN_DETAIL_KEYS = frozenset({
     "cooldownAction", "cooldown_action", "unlockAt", "unlock_at",
     "retryAfter", "retry_after", "cooldownUntil", "cooldown_until",
 })
+
+
+class PasswordResetAuthPageSession(CodexAuthPageSession):
+    """改密页面会话：沿用认证页面上下文并补齐可信页面导航参数。"""
+
+    def _navigation_url(self, url: str) -> str:
+        auth_page = str(getattr(self, "_auth_page", "") or "")
+        if not auth_page:
+            return url
+        parsed = _trusted_url(url)
+        if parsed is None:
+            return url
+        path = posixpath.normpath("/" + unquote(parsed.path).lstrip("/"))
+        if "\\" in path or _ENTRY_PATH.match(path):
+            return url
+        pairs = parse_qsl(parsed.query, keep_blank_values=True)
+        if any(key == "auth_page" for key, _ in pairs):
+            return url
+        pairs.append(("auth_page", auth_page))
+        return urlunsplit(parsed._replace(query=urlencode(pairs, doseq=True)))
+
+    def get(self, url, headers=None, **kwargs):
+        """可信页面缺少上下文时传播当前 auth_page，再交给通用适配器观察响应。"""
+        return super().get(self._navigation_url(url), headers=headers, **kwargs)
 
 
 class ProtocolPasswordResetError(RuntimeError):

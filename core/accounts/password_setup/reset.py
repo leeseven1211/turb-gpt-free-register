@@ -34,6 +34,7 @@ from core.accounts.password_setup.reset_completion import (
     validate_password_session as _validate_reset_auth,
 )
 from core.accounts.password_setup.reset_support import (
+    PasswordResetAuthPageSession,
     ProtocolPasswordResetError,
     check_reset_mailbox as _check_reset_mailbox,
     check_reset_response,
@@ -198,7 +199,10 @@ def _refresh_before_reset(
 def _send_reset_otp(session: BrowserSession, *, report=None, check=None) -> None:
     headers = session.get_auth_headers(referer=_RESET_PAGE)
     response = session.post(_SEND_OTP, headers=headers, data="{}", allow_redirects=False)
-    check_reset_response(response, stage="send_otp")
+    payload = check_reset_response(response, stage="send_otp")
+    observe = getattr(session, "observe_payload", None)
+    if callable(observe):
+        observe(payload)
 
 
 def _wait_reset_otp(email: str, after_ts: float, *, check=None) -> str:
@@ -516,6 +520,7 @@ def run_protocol_password_reset(
             session, authorize = _network_preflight_with_retry(
                 email, proxy, proxy_supplier=proxy_supplier,
             )
+        session = PasswordResetAuthPageSession(session)
         if cached.get("cookies"):
             from core.accounts.liveness.protocol.v3 import _restore_cookies
 
@@ -527,6 +532,7 @@ def run_protocol_password_reset(
             allow_redirects=True,
         )
         authorize_landing = str(getattr(authorize_response, "url", "") or "")
+        initial_authorize_path = urlparse(authorize_landing).path
         parsed_authorize = urlparse(authorize_landing)
         if (parsed_authorize.hostname == "auth.openai.com"
                 and parsed_authorize.path.rstrip("/") == "/email-verification"):
@@ -541,10 +547,12 @@ def run_protocol_password_reset(
         note(
             "password_reset", "已请求密码重置页面",
             authorize_status=getattr(authorize_response, "status_code", None),
-            authorize_path=urlparse(authorize_landing).path,
+            authorize_path=initial_authorize_path,
+            password_entry_path=urlparse(authorize_landing).path,
             reset_status=getattr(reset_response, "status_code", None),
             reset_path=urlparse(str(getattr(reset_response, "url", "") or "")).path,
             restored_login_cookies=_has_login_cookies(cached),
+            auth_page_present=bool(session._auth_page),
         )
         # 本轮已选中的设备交给后续重新认证，旧认证 Cookie 不作为新会话保存。
         if getattr(session, "device_id", None) and isinstance(getattr(session, "browser_profile", None), dict):
@@ -583,6 +591,7 @@ def run_protocol_password_reset(
         response = session.post(_OTP_VALIDATE, headers=headers,
                                 data=json.dumps({"code": otp_code}), allow_redirects=False)
         payload = check_reset_response(response, stage="validate_otp")
+        session.observe_payload(payload)
         continue_url = password_protocol._continuation(payload)
         if continue_url:
             from core.accounts.credentials import get_account_totp_secret_candidate
