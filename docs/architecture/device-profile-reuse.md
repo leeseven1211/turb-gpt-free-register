@@ -202,3 +202,57 @@ webgl_renderer      = ANGLE (Apple, ... Apple M2)  ← 矛盾
 2. rust 传输栈是否升级（149 → 152）
 3. 是否支持 Safari 家族回放
 4. 上游生成器修 webgl/OS 的排期与验证方式
+
+## 8. 改密设计（协议 + rust，两条都要）
+
+> 本节是"改密"整体设计，实施顺序可以先协议、后 rust，但设计覆盖两者。
+
+### 8.1 共同原则
+
+- 内核由注册驱动决定：`protocol_oss_2` → protocol；`sentinel_rs` → rust
+- 先重放画像，再执行操作；重放不联网、不发请求
+- 只走"未登录的忘记密码"路线（若验证不可行，再退回登录后改密）
+- 密码候选由 Python 生成并先写 checkpoint（prepared），提交成功后确认（confirmed）
+- OTP 由 Python 侧统一取码，内核负责"发码/验码/等码"
+
+### 8.2 协议改密（P1）
+
+- 传输：Python `wreq 0.13`，`impersonate` 取画像值（152）
+- 会话：新建 `WreqProtocolSession`（requests 兼容），注入五层（TLS/头/Cookie/sentinel 环境/语言时区）
+- 流程：GET /reset-password → POST send-otp → 取码 → POST validate → GET continue_url
+  → sentinel(flow=password_reset) → POST /password/reset
+- 位置：`core/accounts/password_reset/`（新目录，不改旧实现）
+
+### 8.3 rust 改密（P2）
+
+- Rust 新增 `reset-password` 流程（现无此能力）
+- 输入：`--device-profile <file>`、email、新密码候选、proxy、OTP 通道
+- 步骤与协议一致（同一组 auth.openai.com 端点），sentinel 用 `password_reset` flow
+- 画像来源：优先设备表 trusted（rust 刷新时写入）；无画像时用 `seed=device_id` 派生
+- OTP 交互：Rust 阻塞等待 Python 写入一行验证码（与注册的 OTP 等待/重发口径一致）
+- 输出：JSON（ok/status/error/device_id/profile_source），供 Python 确认 checkpoint
+
+### 8.4 职责划分
+
+| 事项 | Python | 内核（protocol/rust） |
+|---|---|---|
+| 选账号、取画像 | ✅ | — |
+| 画像整理/自洽 | ✅ | — |
+| 建会话（TLS/头/Cookie） | 协议：✅ / rust：传文件 | ✅ |
+| 发码、验码、提交密码 | 协议：✅ | rust：✅ |
+| 取邮箱验证码 | ✅ | — |
+| 生成密码候选 + checkpoint | ✅ | — |
+| 结果分类与落库 | ✅ | — |
+
+### 8.5 分阶段
+
+- P1：协议改密（wreq）+ probe
+- P2：rust 改密（新流程 + 画像注入 + OTP 通道）+ probe
+- P3：观测（device/os/tls/trust/source）、开关、对照实验
+
+### 8.6 两条链路的验收
+
+1. probe 差异为 0
+2. 单账号真实改密成功
+3. 不出现 `sensitive_action_cooldown`
+4. 失败可重试且不产生脏密码（checkpoint 未确认）
