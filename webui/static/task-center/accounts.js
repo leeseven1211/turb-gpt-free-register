@@ -1,9 +1,10 @@
-import { $ as e, A as t, C as n, F as r, G as i, H as a, K as o, L as s, M as c, N as l, P as u, R as d, S as f, X as p, Z as m, _ as h, a as g, c as _, d as v, dt as y, et as b, f as x, ft as S, g as C, h as w, j as T, k as E, l as D, lt as O, m as k, n as A, nt as j, o as M, s as N, st as P, t as F, tt as I, v as L, x as R } from "./_plugin-vue_export-helper-BSZsFlS8.js";
-import { a as z, c as B, i as V, n as H, o as U, r as W, s as G, t as K } from "./ListFilterSummary-C7d1AuNG.js";
-import { t as q } from "./ListPagination-DkDYBtdx.js";
-import { a as ee, i as J, n as Y, o as te, r as ne, s as re, t as ie } from "./queryAdapter-DOc4xJ_Q.js";
-import { n as ae, t as oe } from "./ColumnResizer-C9MIqUB3.js";
-import { t as X } from "./errorLabels-Co3XCR-i.js";
+import { $ as e, A as t, C as n, F as r, G as i, H as a, K as o, L as s, M as c, N as l, P as u, R as d, S as f, X as p, Z as m, _ as h, a as g, c as _, d as v, dt as y, et as b, f as x, ft as S, g as C, h as w, j as T, k as E, l as D, lt as O, m as k, n as A, nt as j, o as M, s as N, st as P, t as F, tt as I, v as L, x as R } from "./_plugin-vue_export-helper-CBsH_ZoE.js";
+import { a as z, i as B, n as V, o as H, r as U, s as W, t as G } from "./ListFilterSummary-BjcCEzgL.js";
+import { t as K } from "./ListPagination-CSFkV2Gz.js";
+import { a as q, i as J, n as Y, o as X, r as ee, s as te, t as ne } from "./queryAdapter-DOc4xJ_Q.js";
+import { n as re, t as ie } from "./ColumnResizer-XOclQup1.js";
+import { t as ae } from "./TableState-CxHYH8ID.js";
+import { t as oe } from "./errorLabels-BfdVjKfW.js";
 import { n as se, r as ce, t as le } from "./client-B5R_MNgP.js";
 import { a as ue, n as de } from "./taskIds-BlchWwUp.js";
 import { a as fe, i as pe, t as me } from "./bulkMutations-3wwPI3-H.js";
@@ -332,6 +333,15 @@ var he = Object.freeze([
 		className: "jobs-tb-btn",
 		title: "仅清除选中账号的本地邮箱失效标记，邮箱可用性仍需确认",
 		selection: !0
+	}),
+	Object.freeze({
+		id: "btnAddSelectedAccountsToSales",
+		label: "加入贩卖区",
+		section: "账号",
+		action: "addSelectedAccountsToSales",
+		className: "jobs-tb-btn",
+		title: "把选中的账号加入贩卖区待售列表，不改变账号当前归档状态",
+		selection: !0
 	})
 ]), _e = Object.freeze([
 	"btnCopySelectedTokensV2",
@@ -476,7 +486,7 @@ var he = Object.freeze([
 		"clear"
 	],
 	setup(e, { emit: t }) {
-		let n = e, a = t, c = b("id"), l = k(() => n.column || Y.find((e) => e.key === c.value) || Y[0]), u = k(() => n.column ? ne(n.query, n.column) : Y.some((e) => ne(n.query, e))), d = k(() => ee(n.query, n.label, n.facets).find((e) => e.key === l.value.key)?.label || ""), f = k(() => J(n.query, n.facets, l.value, n.label)), p = k(() => te(n.query, l.value.key)), m = k(() => l.value.kind === "date-range" ? ["date_from", "date_to"] : [l.value.key]);
+		let n = e, a = t, c = b("id"), l = k(() => n.column || Y.find((e) => e.key === c.value) || Y[0]), u = k(() => n.column ? ee(n.query, n.column) : Y.some((e) => ee(n.query, e))), d = k(() => q(n.query, n.label, n.facets).find((e) => e.key === l.value.key)?.label || ""), f = k(() => J(n.query, n.facets, l.value, n.label)), p = k(() => X(n.query, l.value.key)), m = k(() => l.value.kind === "date-range" ? ["date_from", "date_to"] : [l.value.key]);
 		function y(e, t) {
 			let n = new Set(p.value);
 			t ? n.add(e) : n.delete(e), a("change", l.value.key, [...n]);
@@ -484,7 +494,7 @@ var he = Object.freeze([
 		function x() {
 			a("clear", l.value.key), a("update:open", !1);
 		}
-		return (t, n) => (r(), C(V, {
+		return (t, n) => (r(), C(U, {
 			label: e.column?.label || "账号",
 			"trigger-label": e.column ? void 0 : "筛选",
 			active: u.value,
@@ -529,7 +539,7 @@ var he = Object.freeze([
 				}, [R(S(l.value.kind === "date-range" ? i ? "截止日期" : "开始日期" : l.value.label), 1), w("input", {
 					type: l.value.kind === "date-range" ? "date" : "text",
 					inputmode: l.value.key === "id" ? "numeric" : void 0,
-					value: P(re)(e.query, t),
+					value: P(te)(e.query, t),
 					placeholder: l.value.placeholder,
 					autocomplete: "off",
 					onInput: (e) => a("change", t, e.target.value),
@@ -676,7 +686,7 @@ var he = Object.freeze([
 	108
 ], Ve = Be.map((e) => e / Be.reduce((e, t) => e + t, 0) * 1500);
 function He(e) {
-	let t = (e, t = "") => `<div class="account-cell-lines"><div class="account-cell-line">${e}</div>${t ? `<div class="account-cell-line account-cell-line--sub">${t}</div>` : ""}</div>`, n = (e) => Array.from(e).length <= 10 ? e : X();
+	let t = (e, t = "") => `<div class="account-cell-lines"><div class="account-cell-line">${e}</div>${t ? `<div class="account-cell-line account-cell-line--sub">${t}</div>` : ""}</div>`, n = (e) => Array.from(e).length <= 10 ? e : oe();
 	function r(t) {
 		let r = document.createElement("template");
 		r.innerHTML = e.cells.account_status(t);
@@ -849,7 +859,7 @@ var Ge = ["aria-busy"], Ke = ["data-stale"], qe = [
 		"rendered"
 	],
 	setup(e, { expose: t, emit: n }) {
-		let o = e, l = n, { widths: d, total: p, resize: m, resizeWithKeyboard: g, resetColumns: _ } = ae({
+		let o = e, l = n, { widths: d, total: p, resize: m, resizeWithKeyboard: g, resetColumns: _ } = re({
 			defaults: Ve,
 			storageKey: "gpt_console_table_widths_accounts",
 			totalStorageKey: "gpt_console_table_total_accounts",
@@ -965,7 +975,7 @@ var Ge = ["aria-busy"], Ke = ["data-stale"], qe = [
 				"label",
 				"open",
 				"onUpdate:open"
-			])) : (r(), L(v, { key: 2 }, [R(S(t.label), 1)], 64)), i ? (r(), C(oe, {
+			])) : (r(), L(v, { key: 2 }, [R(S(t.label), 1)], 64)), i ? (r(), C(ie, {
 				key: 3,
 				label: t.label,
 				onStart: (e) => P(m)(i, e),
@@ -990,7 +1000,7 @@ var Ge = ["aria-busy"], Ke = ["data-stale"], qe = [
 					disabled: e.stale,
 					onChange: (e) => l("select", t.id, e.target.checked)
 				}, null, 40, Ze)]),
-				w("td", Qe, [f(W, { text: `#${t.id}` }, null, 8, ["text"])]),
+				w("td", Qe, [f(V, { text: `#${t.id}` }, null, 8, ["text"])]),
 				w("td", $e, [
 					w("button", {
 						type: "button",
@@ -1005,8 +1015,8 @@ var Ge = ["aria-busy"], Ke = ["data-stale"], qe = [
 					w("div", rt, [w("span", it, S(t.row.user_name || "-"), 1), w("span", { innerHTML: e.presentation.emailInvalidBadge(t.row) }, null, 8, at)]),
 					w("div", ot, S(t.mobile), 1)
 				]),
-				w("td", st, [f(W, { text: t.row.email_source || "-" }, null, 8, ["text"])]),
-				w("td", ct, [f(W, { text: e.presentation.registrationDriverLabel(t.row.registration_driver) }, null, 8, ["text"])]),
+				w("td", st, [f(V, { text: t.row.email_source || "-" }, null, 8, ["text"])]),
+				w("td", ct, [f(V, { text: e.presentation.registrationDriverLabel(t.row.registration_driver) }, null, 8, ["text"])]),
 				(r(!0), L(v, null, s(P(ze).filter((e) => e.cell), (e) => (r(), L("td", {
 					key: e.key,
 					class: O(e.className),
@@ -1020,12 +1030,12 @@ var Ge = ["aria-busy"], Ke = ["data-stale"], qe = [
 					class: "acc-v2-detail",
 					disabled: e.stale,
 					"data-account-detail-id": t.id
-				}, "详情", 8, pt), f(P(B), {
+				}, "详情", 8, pt), f(P(W), {
 					open: e.visible && !e.stale && E.value === t.id,
 					modal: !1,
 					"onUpdate:open": (e) => E.value = e ? t.id : null
 				}, {
-					default: i(() => [f(P(z), { "as-child": "" }, {
+					default: i(() => [f(P(B), { "as-child": "" }, {
 						default: i(() => [w("button", {
 							type: "button",
 							class: "acc-v2-more-btn",
@@ -1033,8 +1043,8 @@ var Ge = ["aria-busy"], Ke = ["data-stale"], qe = [
 							"aria-label": "更多账号操作"
 						}, "更多", 8, mt)]),
 						_: 1
-					}), f(P(U), null, {
-						default: i(() => [f(P(G), {
+					}), f(P(z), null, {
+						default: i(() => [f(P(H), {
 							class: "ac-row-menu accounts-table-v2",
 							"data-account-menu": t.id,
 							side: "bottom",
@@ -1054,7 +1064,7 @@ var Ge = ["aria-busy"], Ke = ["data-stale"], qe = [
 					}, 1024)]),
 					_: 2
 				}, 1032, ["open", "onUpdate:open"])])])
-			], 10, Ye))), 128)), j.value.length ? h("", !0) : (r(), C(H, {
+			], 10, Ye))), 128)), j.value.length ? h("", !0) : (r(), C(ae, {
 				key: 0,
 				class: "ac-empty",
 				colspan: 16,
@@ -1117,26 +1127,26 @@ function wt(n, r) {
 		paged: "1",
 		page: u.value,
 		page_size: d.value
-	}).toString()), T = k(() => S.value !== w.value), E = k(() => a.value.length > 0 && a.value.every((e) => y.value.has(String(e.id)))), D = k(() => !E.value && a.value.some((e) => y.value.has(String(e.id)))), O = 0, A = 0, M = 0, N = 0, P = !1, F = !1, I, L, R, z, B, V = "", H, U, W = /* @__PURE__ */ new Map(), G = /* @__PURE__ */ new Map(), K = () => typeof document > "u" || !document.hidden, q = () => !P && h.value && K(), ee = (e, t) => e === O && t === w.value && q();
-	function J(e) {
+	}).toString()), T = k(() => S.value !== w.value), E = k(() => a.value.length > 0 && a.value.every((e) => y.value.has(String(e.id)))), D = k(() => !E.value && a.value.some((e) => y.value.has(String(e.id)))), O = 0, A = 0, M = 0, N = 0, P = !1, F = !1, I, L, R, z, B, V = "", H, U, W = /* @__PURE__ */ new Map(), G = /* @__PURE__ */ new Map(), K = () => typeof document > "u" || !document.hidden, q = () => !P && h.value && K(), J = (e, t) => e === O && t === w.value && q();
+	function Y(e) {
 		return [...G.values()].some((t) => t === e);
 	}
-	function Y() {
+	function X() {
 		let e = /* @__PURE__ */ new Set([...a.value.map((e) => String(e.id)), ...G.values()]);
 		for (let [t, n] of W) e.has(t) || (n.request?.controller.abort(), W.delete(t));
 	}
-	function te() {
+	function ee() {
 		for (let e of W.values()) e.request?.controller.abort(), e.request = void 0, ++e.version;
 	}
-	function ne() {
+	function te() {
 		++O, ++A, I?.abort(), L?.abort(), I = L = void 0, clearTimeout(R), clearTimeout(B), R = B = void 0, f.value = p.value = !1;
 	}
-	function re() {
+	function ne() {
 		clearTimeout(R), R = void 0, q() && H !== i.value.q && (R = setTimeout(() => {
 			ue();
 		}, 5e3));
 	}
-	function ie(e) {
+	function re(e) {
 		let t = Z(e);
 		for (let e of vt) {
 			let n = e === "plan" ? i.value.plan : i.value.filters[e];
@@ -1149,7 +1159,7 @@ function wt(n, r) {
 		}
 		return t;
 	}
-	function ae(e) {
+	function ie(e) {
 		a.value = Z(e);
 		for (let e of a.value) {
 			let t = String(e.id), n = W.get(t);
@@ -1159,17 +1169,17 @@ function wt(n, r) {
 				details: Ct(e)
 			});
 		}
-		Y();
+		X();
 	}
-	async function oe(e) {
-		if (ne(), !q()) return;
+	async function ae(e) {
+		if (te(), !q()) return;
 		let t = O, c = new AbortController(), p = n.toLegacy(i.value).toString(), m = !e || U?.filter !== p || Date.now() - U.readAt >= _t;
 		m && (U = void 0), I = c, f.value = !0;
 		try {
 			for (let e = 0; e < 2; e++) {
 				let n = w.value, a = Z(i.value), f = u.value, h = d.value, v = m && !U, y = await r.list(a, f, h, c.signal, { includeFacets: v });
-				if (!ee(t, n)) return;
-				v && (o.value = ie(y.facets), U = {
+				if (!J(t, n)) return;
+				v && (o.value = re(y.facets), U = {
 					filter: p,
 					readAt: Date.now()
 				});
@@ -1179,18 +1189,18 @@ function wt(n, r) {
 					g.value = "列表范围已变化，请刷新后重试";
 					return;
 				}
-				ae(y.items), l.value = y.total, s.value = Z(y.search_terms), S.value = n, V = "", g.value = "", _.value = !1, H = void 0;
+				ie(y.items), l.value = y.total, s.value = Z(y.search_terms), S.value = n, V = "", g.value = "", _.value = !1, H = void 0;
 				return;
 			}
 		} catch (e) {
 			if (t !== O || !q() || se(e)) return;
-			g.value = e instanceof Error ? e.message : "加载账号失败", e instanceof le && e.code === "account_search_invalid" && (H = i.value.q, _.value = !0, U = void 0, a.value = [], l.value = 0, s.value = [], o.value = {}, Y());
+			g.value = e instanceof Error ? e.message : "加载账号失败", e instanceof le && e.code === "account_search_invalid" && (H = i.value.q, _.value = !0, U = void 0, a.value = [], l.value = 0, s.value = [], o.value = {}, X());
 		} finally {
-			t === O && (f.value = !1, I = void 0, re());
+			t === O && (f.value = !1, I = void 0, ne());
 		}
 	}
-	function X() {
-		return oe(!1);
+	function oe() {
+		return ae(!1);
 	}
 	function ce(e, t, n) {
 		let r = Z(e);
@@ -1221,17 +1231,17 @@ function wt(n, r) {
 	}
 	async function ue() {
 		if (clearTimeout(R), R = void 0, !q() || f.value || p.value || T.value || H === i.value.q) {
-			re();
+			ne();
 			return;
 		}
 		let e = O, t = w.value, n = new AbortController();
 		L = n, p.value = !0;
 		try {
 			let o = await r.statuses(Z(i.value), u.value, d.value, n.signal);
-			if (!ee(e, t)) return;
+			if (!J(e, t)) return;
 			let s = new Map(a.value.map((e) => [String(e.id), e]));
 			if (o.total !== l.value || o.items.length !== a.value.length || o.items.some((e, t) => String(e.id) !== String(a.value[t]?.id)) || new Set(o.items.map((e) => e.id)).size !== o.items.length) {
-				await X();
+				await oe();
 				return;
 			}
 			if (c.value = Z(o.queue), V === o.revision) return;
@@ -1239,17 +1249,17 @@ function wt(n, r) {
 			a.value = o.items.map((e) => {
 				let t = s.get(String(e.id));
 				return (f(t.plan_check_status) && !f(e.plan_check_status) || f(t.extract_link_status) && !f(e.extract_link_status)) && (p = !0), ce(t, e, o.status_fields);
-			}), V = o.revision, p && await X();
+			}), V = o.revision, p && await oe();
 		} catch (n) {
-			ee(e, t) && n instanceof le && n.code === "account_search_invalid" && (H = i.value.q, _.value = !0, g.value = n instanceof Error ? n.message : "筛选语法无效", U = void 0, a.value = [], l.value = 0, o.value = {}, s.value = [], Y());
+			J(e, t) && n instanceof le && n.code === "account_search_invalid" && (H = i.value.q, _.value = !0, g.value = n instanceof Error ? n.message : "筛选语法无效", U = void 0, a.value = [], l.value = 0, o.value = {}, s.value = [], X());
 		} finally {
-			e === O && (p.value = !1, L = void 0, re());
+			e === O && (p.value = !1, L = void 0, ne());
 		}
 	}
 	function de(e = 0, n = !1) {
-		if (ne(), !q()) return;
+		if (te(), !q()) return;
 		let r = A, i = () => {
-			r === A && q() && oe(n);
+			r === A && q() && ae(n);
 		};
 		e ? B = setTimeout(i, e) : t(i);
 	}
@@ -1354,7 +1364,7 @@ function wt(n, r) {
 		return t ? bt(t) : void 0;
 	}
 	async function Me(e) {
-		q() && J(e) || St();
+		q() && Y(e) || St();
 		let t = W.get(e);
 		if (t || St(), t.details) return bt({
 			accountId: e,
@@ -1363,7 +1373,7 @@ function wt(n, r) {
 		});
 		if (t.request) return t.request.promise;
 		let n = new AbortController(), i = t.version, o = r.planDetails(e, n.signal).then(async (n) => {
-			q() && J(e) || St();
+			q() && Y(e) || St();
 			let r = W.get(e);
 			return r || St(), r !== t || r.version !== i ? Me(e) : (r.details = Z(n.item), a.value = a.value.map((t) => String(t.id) === e ? {
 				...t,
@@ -1374,12 +1384,12 @@ function wt(n, r) {
 				item: r.details
 			}));
 		}, (n) => {
-			q() && J(e) || St();
+			q() && Y(e) || St();
 			let r = W.get(e);
 			if (r && (r !== t || r.version !== i)) return Me(e);
 			throw n;
 		}).finally(() => {
-			t.request?.promise === o && (t.request = void 0), Y();
+			t.request?.promise === o && (t.request = void 0), X();
 		});
 		return t.request = {
 			version: i,
@@ -1408,23 +1418,23 @@ function wt(n, r) {
 			loadPlanDetails: Ne,
 			release() {
 				if (G.delete(n)) {
-					if (!J(t)) {
+					if (!Y(t)) {
 						let e = W.get(t);
 						e?.request && (e.request.controller.abort(), e.request = void 0, ++e.version);
 					}
-					Y();
+					X();
 				}
 			}
 		};
 	}
 	function Fe(e) {
-		P || e === h.value || (h.value = e, e ? de() : (ne(), te(), G.clear(), Y()));
+		P || e === h.value || (h.value = e, e ? de() : (te(), ee(), G.clear(), X()));
 	}
 	function Ie() {
-		K() ? h.value && de() : (ne(), te());
+		K() ? h.value && de() : (te(), ee());
 	}
 	return typeof document < "u" && document.addEventListener("visibilitychange", Ie), m(() => {
-		P = !0, ne(), clearTimeout(z), te(), G.clear(), W.clear(), typeof document < "u" && document.removeEventListener("visibilitychange", Ie);
+		P = !0, te(), clearTimeout(z), ee(), G.clear(), W.clear(), typeof document < "u" && document.removeEventListener("visibilitychange", Ie);
 	}), {
 		query: e(i),
 		items: e(a),
@@ -1448,7 +1458,7 @@ function wt(n, r) {
 		stale: T,
 		pageSelected: E,
 		pageIndeterminate: D,
-		refresh: X,
+		refresh: oe,
 		pollStatuses: ue,
 		setVisible: Fe,
 		setPage: ve,
@@ -1504,16 +1514,16 @@ var Tt = {
 		callbacks: {}
 	},
 	setup(e, { expose: t }) {
-		let n = e, i = wt(n.adapter, n.api), { query: s, items: c, facets: l, searchTerms: u, total: p, page: m, size: g, pages: v, selected: y, loading: x, error: C, visible: E, invalidSearch: O, draftSearch: A, stale: j, pageSelected: M, pageIndeterminate: F } = i, I = b(), R = b(), z = b(null), B = b(typeof document > "u" || !document.hidden), V = b(""), H = /* @__PURE__ */ new Set(), U = Y.find((e) => e.key === "email_status"), W = k(() => [...ee(s.value, n.presentation.facetLabel, l.value), ...u.value.map((e, t) => ({
+		let n = e, i = wt(n.adapter, n.api), { query: s, items: c, facets: l, searchTerms: u, total: p, page: m, size: g, pages: v, selected: y, loading: x, error: C, visible: E, invalidSearch: O, draftSearch: A, stale: j, pageSelected: M, pageIndeterminate: F } = i, I = b(), R = b(), z = b(null), B = b(typeof document > "u" || !document.hidden), V = b(""), H = /* @__PURE__ */ new Set(), U = Y.find((e) => e.key === "email_status"), W = k(() => [...q(s.value, n.presentation.facetLabel, l.value), ...u.value.map((e, t) => ({
 			key: `search:${t}`,
 			label: `${e.label}：${e.display_value}`,
 			title: `高级搜索 · 同时满足：${e.label}：${e.display_value}`,
 			removeLabel: `移除${e.label}：${e.display_value}`
 		}))]);
-		function G(e, t) {
+		function J(e, t) {
 			e === "plan" ? i.updateQuery({ plan: [...t] }) : e === "date_from" || e === "date_to" ? i.updateQuery({ [e]: String(t) }) : e === "id" || e === "email" ? i.updateFilters({ [e]: String(t) }, 250) : i.updateFilters({ [e]: [...t] });
 		}
-		function J(e) {
+		function X(e) {
 			if (e.startsWith("search:")) {
 				let t = u.value[Number(e.slice(7))];
 				t && i.removeSearchTerm({ ...t }), R.value?.focus();
@@ -1527,12 +1537,12 @@ var Tt = {
 				return;
 			}
 			let t = Y.find((t) => t.key === e);
-			t && G(t.key, t.kind === "text" ? "" : []);
+			t && J(t.key, t.kind === "text" ? "" : []);
 		}
-		function te(e) {
+		function ee(e) {
 			V.value = e instanceof Error ? e.message : "账号操作暂不可用", n.callbacks.notify?.(V.value);
 		}
-		async function ne(e, t, r) {
+		async function te(e, t, r) {
 			if (j.value || !E.value || !B.value) return;
 			let a = JSON.stringify([t, e]);
 			if (!H.has(a)) {
@@ -1544,37 +1554,37 @@ var Tt = {
 					});
 					await n.callbacks.invoke(e, a, r);
 				} catch (e) {
-					te(e);
+					ee(e);
 				} finally {
 					H.delete(a);
 				}
 			}
 		}
-		function re(e, t) {
+		function ne(e, t) {
 			if (j.value || !E.value || !B.value) return;
 			V.value = "";
 			let r = i.getRowSnapshot(e);
 			if (!r) {
-				te(/* @__PURE__ */ Error("账号详情暂不可用，请先刷新列表"));
+				ee(/* @__PURE__ */ Error("账号详情暂不可用，请先刷新列表"));
 				return;
 			}
 			let a;
 			try {
 				a = i.openPlanDetailsConsumer(e), n.callbacks.openDetail(e, r, a, t);
 			} catch (e) {
-				a?.release(), te(e);
+				a?.release(), ee(e);
 			}
 		}
-		function ie(e) {
+		function re(e) {
 			e || (z.value = null, n.callbacks.closeConsumers?.(!1)), i.setVisible(e);
 		}
-		function ae(e) {
+		function ie(e) {
 			z.value = null, i.setArchived(e);
 		}
-		function oe() {
+		function ae() {
 			i.clearSearch(), R.value?.focus();
 		}
-		function X() {
+		function oe() {
 			I.value?.resetColumns();
 		}
 		a([
@@ -1607,16 +1617,16 @@ var Tt = {
 		}), t({
 			refresh: i.refresh,
 			pollStatuses: i.pollStatuses,
-			setVisible: ie,
-			setArchived: ae,
-			openDetail: re,
+			setVisible: re,
+			setArchived: ie,
+			openDetail: ne,
 			setPage: i.setPage,
 			setSize: i.setSize,
 			closeMoreMenus: () => I.value?.closeMenu(),
 			updateQuery: i.updateQuery,
 			updateFilters: i.updateFilters,
 			resetFilters: i.resetFilters,
-			resetColumns: X,
+			resetColumns: oe,
 			getAccountSelectionSnapshot: i.getAccountSelectionSnapshot,
 			getActionContext: i.getActionContext,
 			getRowSnapshot: i.getRowSnapshot,
@@ -1625,9 +1635,9 @@ var Tt = {
 			clearSelection: i.clearSelection
 		}), (t, n) => o((r(), L("section", Tt, [
 			w("div", Et, [
-				W.value.length ? (r(), L("div", Dt, [f(K, {
+				W.value.length ? (r(), L("div", Dt, [f(G, {
 					items: W.value,
-					onRemove: J
+					onRemove: X
 				}, null, 8, ["items"])])) : h("", !0),
 				d(t.$slots, "actions"),
 				w("div", Ot, [
@@ -1637,8 +1647,8 @@ var Tt = {
 						label: e.presentation.facetLabel,
 						open: B.value && z.value === "all",
 						"onUpdate:open": n[0] ||= (e) => z.value = e ? "all" : null,
-						onChange: G,
-						onClear: J
+						onChange: J,
+						onClear: X
 					}, null, 8, [
 						"query",
 						"facets",
@@ -1652,8 +1662,8 @@ var Tt = {
 						label: e.presentation.facetLabel,
 						open: B.value && z.value === "email_status",
 						"onUpdate:open": n[1] ||= (e) => z.value = e ? "email_status" : null,
-						onChange: G,
-						onClear: J
+						onChange: J,
+						onClear: X
 					}, null, 8, [
 						"column",
 						"query",
@@ -1677,7 +1687,7 @@ var Tt = {
 							autocomplete: "off",
 							"aria-describedby": "accountAdvancedSearchHintV2 accountAdvancedSearchErrorV2",
 							"aria-invalid": P(O) || void 0,
-							onKeydown: _(D(oe, ["prevent"]), ["esc"]),
+							onKeydown: _(D(ae, ["prevent"]), ["esc"]),
 							onInput: n[2] ||= (e) => P(i).setSearchDraft(e.target.value),
 							onCompositionstart: n[3] ||= (...e) => P(i).compositionStart && P(i).compositionStart(...e),
 							onCompositionend: n[4] ||= (e) => P(i).compositionEnd(e.target.value)
@@ -1687,7 +1697,7 @@ var Tt = {
 							type: "button",
 							"aria-label": "清空高级搜索",
 							title: "清空高级搜索",
-							onClick: oe
+							onClick: ae
 						}, "×")) : h("", !0)
 					], 32),
 					n[12] ||= w("span", {
@@ -1706,7 +1716,7 @@ var Tt = {
 						type: "button",
 						class: "ac-link",
 						title: "恢复账号列表默认列宽",
-						onClick: X
+						onClick: oe
 					}, "恢复列宽"),
 					w("button", {
 						id: "btnRefreshAccountsV2",
@@ -1741,12 +1751,12 @@ var Tt = {
 				"page-indeterminate": P(F),
 				"open-filter": z.value,
 				"onUpdate:openFilter": n[9] ||= (e) => z.value = e,
-				onFilter: G,
-				onClearFilter: J,
+				onFilter: J,
+				onClearFilter: X,
 				onSelect: P(i).toggle,
 				onSelectPage: P(i).togglePage,
-				onAction: ne,
-				onDetail: re,
+				onAction: te,
+				onDetail: ne,
 				onRetry: P(i).refresh,
 				onRendered: n[10] ||= (t) => e.callbacks.afterRender?.(t)
 			}, null, 8, [
@@ -1767,7 +1777,7 @@ var Tt = {
 				"onSelectPage",
 				"onRetry"
 			]),
-			f(q, {
+			f(K, {
 				compact: "",
 				page: P(m),
 				size: P(g),
@@ -2052,19 +2062,19 @@ function Zt(e) {
 			O || e.notify(`停止巡检失败：${Jt(t)}`);
 		}
 	}
-	function ee(e) {
+	function J(e) {
 		e && e !== "start" || (n.value = !1), e && e !== "history" || (r.value = !1, ++E, A?.abort()), e && e !== "failures" || (i.value = !1, ++D, M?.abort());
 	}
-	function J() {
+	function Y() {
 		N !== void 0 && (clearInterval(N), N = void 0), !O && P() && (r.value || i.value) && (N = setInterval(() => {
 			r.value && U(), i.value && K();
 		}, 5e3));
 	}
-	function Y() {
-		P() || (++E, ++D, A?.abort(), M?.abort()), J();
+	function X() {
+		P() || (++E, ++D, A?.abort(), M?.abort()), Y();
 	}
-	return a([r, i], J, { flush: "sync" }), typeof document < "u" && document.addEventListener("visibilitychange", Y), m(() => {
-		O = !0, ee(), J(), typeof document < "u" && document.removeEventListener("visibilitychange", Y);
+	return a([r, i], Y, { flush: "sync" }), typeof document < "u" && document.addEventListener("visibilitychange", X), m(() => {
+		O = !0, J(), Y(), typeof document < "u" && document.removeEventListener("visibilitychange", X);
 	}), {
 		startOpen: n,
 		historyOpen: r,
@@ -2091,7 +2101,7 @@ function Zt(e) {
 		submit: B,
 		openHistory: V,
 		openFailures: W,
-		close: ee,
+		close: J,
 		changeHistoryPage: H,
 		changeFailuresPage: G,
 		refreshHistory: U,
@@ -2127,55 +2137,55 @@ var Qt = ["data-archived"], $t = { class: "modal-header" }, en = { id: "accountI
 			start: B,
 			history: V,
 			failures: H
-		}, ee = {
+		}, J = {
 			start: l,
 			history: u,
 			failures: d
-		}, J = !1;
-		function Y(e, t) {
-			ee[e].value || G.set(e, t ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null));
+		}, Y = !1;
+		function X(e, t) {
+			J[e].value || G.set(e, t ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null));
 		}
-		function te(e, t) {
-			Y("start", t), c.openStart(e), se("start");
+		function ee(e, t) {
+			X("start", t), c.openStart(e), se("start");
 		}
-		function ne(e) {
-			Y("history", e), c.openHistory(), se("history");
+		function te(e) {
+			X("history", e), c.openHistory(), se("history");
 		}
-		function re(e, t) {
-			Y("failures", t), c.openFailures(e), se("failures");
+		function ne(e, t) {
+			X("failures", t), c.openFailures(e), se("failures");
 		}
-		function ie(e) {
+		function re(e) {
 			c.close(e);
 			let t = G.get(e);
-			if (G.delete(e), J) return;
+			if (G.delete(e), Y) return;
 			let n = V.value?.open ? V.value.querySelector("button:not([disabled])") : i.deps.fallbackFocus?.();
 			(t?.isConnected ? t : n)?.focus({ preventScroll: !0 });
 		}
+		function ie(e) {
+			K[e] ? --K[e] : q[e].value?.open || re(e);
+		}
 		function ae(e) {
-			K[e] ? --K[e] : q[e].value?.open || ie(e);
+			let t = q[e].value;
+			t?.open && (++K[e], t.close(), re(e));
 		}
 		function oe(e) {
-			let t = q[e].value;
-			t?.open && (++K[e], t.close(), ie(e));
-		}
-		function X(e) {
 			c.close(e);
 			for (let t of [
 				"failures",
 				"history",
 				"start"
-			]) e && e !== t || oe(t);
+			]) e && e !== t || ae(t);
 		}
 		async function se(e) {
 			await t();
-			let n = q[e].value, r = ee[e].value;
-			n && !J && (r && !n.open ? (G.has(e) || G.set(e, document.activeElement instanceof HTMLElement ? document.activeElement : null), n.showModal()) : !r && n.open && oe(e));
+			let n = q[e].value, r = J[e].value;
+			n && !Y && (r && !n.open ? (G.has(e) || G.set(e, document.activeElement instanceof HTMLElement ? document.activeElement : null), n.showModal()) : !r && n.open && ae(e));
 		}
 		for (let e of [
 			"start",
 			"history",
 			"failures"
-		]) a(ee[e], () => se(e), { flush: "post" });
+		]) a(J[e], () => se(e), { flush: "post" });
 		a(y, () => {
 			if (U.value) {
 				U.value.scrollTop = 0;
@@ -2190,20 +2200,20 @@ var Qt = ["data-archived"], $t = { class: "modal-header" }, en = { id: "accountI
 			}
 		});
 		function ce(e) {
-			X("history"), i.deps.openTask(Number(e.task_id));
+			oe("history"), i.deps.openTask(Number(e.task_id));
 		}
 		function le(e) {
 			return Number(e.live_failed_count || 0) + Number(e.deactivated_skipped_count || 0);
 		}
 		return T(() => {
-			J = !0;
+			Y = !0;
 			for (let e of Object.values(q)) e.value?.open && e.value.close();
 			G.clear();
 		}), n({
-			openStart: te,
-			openHistory: ne,
-			openFailures: re,
-			close: X,
+			openStart: ee,
+			openHistory: te,
+			openFailures: ne,
+			close: oe,
 			refreshHistory: c.refreshHistory,
 			refreshFailures: c.refreshFailures,
 			changeHistoryPage: c.changeHistoryPage,
@@ -2217,12 +2227,12 @@ var Qt = ["data-archived"], $t = { class: "modal-header" }, en = { id: "accountI
 				id: "accountInspectionStart",
 				"aria-labelledby": "accountInspectionStartTitle",
 				"data-archived": P(f),
-				onClose: n[3] ||= (e) => ae("start")
+				onClose: n[3] ||= (e) => ie("start")
 			}, [w("div", $t, [n[14] ||= w("h2", { id: "accountInspectionStartTitle" }, "启动账号巡检", -1), w("button", {
 				type: "button",
 				class: "jobs-tb-btn",
 				"aria-label": "关闭启动巡检",
-				onClick: n[0] ||= (e) => X("start")
+				onClick: n[0] ||= (e) => oe("start")
 			}, "关闭")]), w("form", { onSubmit: n[2] ||= D((...e) => P(c).submit && P(c).submit(...e), ["prevent"]) }, [
 				w("p", en, "本次范围：" + S(P(Gt)(P(f))), 1),
 				n[15] ||= w("p", null, "该归档范围内全部账号，不限当前页，不受勾选、搜索或其他筛选条件影响。", -1),
@@ -2252,7 +2262,7 @@ var Qt = ["data-archived"], $t = { class: "modal-header" }, en = { id: "accountI
 				class: "proxy-traffic-detail-dialog ac-inspection",
 				id: "accountInspectionHistory",
 				"aria-labelledby": "accountInspectionHistoryTitle",
-				onClose: n[8] ||= (e) => ae("history")
+				onClose: n[8] ||= (e) => ie("history")
 			}, [
 				w("div", rn, [
 					n[19] ||= w("h2", { id: "accountInspectionHistoryTitle" }, "账号巡检历史", -1),
@@ -2264,7 +2274,7 @@ var Qt = ["data-archived"], $t = { class: "modal-header" }, en = { id: "accountI
 					w("button", {
 						type: "button",
 						class: "jobs-tb-btn",
-						onClick: n[5] ||= (e) => X("history")
+						onClick: n[5] ||= (e) => oe("history")
 					}, "关闭")
 				]),
 				n[20] ||= w("p", null, "每 5 秒刷新。进度包含跳过；完成表示本轮处理结束，查活和套餐结果分别统计。", -1),
@@ -2301,7 +2311,7 @@ var Qt = ["data-archived"], $t = { class: "modal-header" }, en = { id: "accountI
 					w("td", null, [R(S(Number(t.live_success_count)) + " / " + S(Number(t.live_failed_count)), 1), le(t) ? (r(), L("div", un, [w("button", {
 						type: "button",
 						class: "jobs-tb-btn",
-						onClick: (e) => re(Number(t.id), e.currentTarget)
+						onClick: (e) => ne(Number(t.id), e.currentTarget)
 					}, "失败详情 " + S(le(t)), 9, dn)])) : h("", !0)]),
 					w("td", null, S(Number(t.plan_success_count)) + " / " + S(Number(t.plan_failed_count)), 1),
 					w("td", null, [t.status === "running" ? (r(), L("button", {
@@ -2335,7 +2345,7 @@ var Qt = ["data-archived"], $t = { class: "modal-header" }, en = { id: "accountI
 				class: "proxy-traffic-detail-dialog ac-inspection",
 				id: "accountInspectionFailures",
 				"aria-labelledby": "accountInspectionFailuresTitle",
-				onClose: n[13] ||= (e) => ae("failures")
+				onClose: n[13] ||= (e) => ie("failures")
 			}, [
 				w("div", vn, [
 					w("h2", yn, S(P(C) ? `巡检 #${P(C)} · 失败详情` : "巡检失败详情"), 1),
@@ -2347,7 +2357,7 @@ var Qt = ["data-archived"], $t = { class: "modal-header" }, en = { id: "accountI
 					w("button", {
 						type: "button",
 						class: "jobs-tb-btn",
-						onClick: n[10] ||= (e) => X("failures")
+						onClick: n[10] ||= (e) => oe("failures")
 					}, "关闭")
 				]),
 				n[21] ||= w("p", null, "保留本轮原始执行快照，后续重跑或删除账号不会改写；含已废跳过，套餐单独失败不计为查活失败。", -1),
@@ -4477,7 +4487,7 @@ function Zi(e) {
 }
 // src/accounts.ts
 function Qi(e, t) {
-	let n = ie(t.query), r = Zi({
+	let n = ne(t.query), r = Zi({
 		document,
 		origin: window.location.origin,
 		urls: URL,

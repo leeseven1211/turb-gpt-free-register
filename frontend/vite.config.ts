@@ -13,6 +13,7 @@ export default defineConfig({
         'task-center': fileURLToPath(new URL('./src/main.ts', import.meta.url)),
         codex: fileURLToPath(new URL('./src/codex.ts', import.meta.url)),
         accounts: fileURLToPath(new URL('./src/accounts.ts', import.meta.url)),
+        sales: fileURLToPath(new URL('./src/sales.ts', import.meta.url)),
         bulk: fileURLToPath(new URL('./src/bulk.ts', import.meta.url)),
         config: fileURLToPath(new URL('./src/config.ts', import.meta.url)),
         email: fileURLToPath(new URL('./src/email.ts', import.meta.url)),

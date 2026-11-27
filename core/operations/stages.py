@@ -129,6 +129,9 @@ STAGES: dict[str, dict[str, str]] = {
     "nested_live_check": {"label": "内联查活与刷新", "group": "account"},
     "remote_request": {"label": "远端请求", "group": "system"},
     "reconcile": {"label": "结果核验", "group": "system"},
+    "sales_sync": {"label": "同步店铺库存与订单", "group": "sales"},
+    "sales_listing": {"label": "核对与上架账号", "group": "sales"},
+    "sales_archive": {"label": "归档来源账号", "group": "sales"},
     "complete": {"label": "完成", "group": "system"},
     "interrupted": {"label": "执行中断", "group": "system"},
 }
@@ -270,6 +273,11 @@ TASK_TEMPLATES: _FLOW = {
         _s("token", depends_on=("authenticate",)), _s("plan_check", depends_on=("token",)),
     ),
     "sentinel_maintenance_check": _flow(_s("preflight"), _s("sentinel_check", depends_on=("preflight",))),
+    "sales_sync": _flow(
+        _s("preflight"), _s("sales_sync", depends_on=("preflight",)),
+        _s("sales_listing", depends_on=("preflight",)),
+        _s("sales_archive", depends_on=("preflight",)),
+    ),
     "plan_check": _flow(
         _s("preflight"), _s("network", depends_on=("preflight",)),
         _step("refresh_token", "刷新 AT", "account", "refresh_token", "authenticate", "login", "login_password",

@@ -278,7 +278,7 @@ class RuntimeCompositionTests(unittest.TestCase):
             "account_completion", "registration_resume", "account_inspection", "live_check", "token_refresh",
             "plan_check", "deactivation_mail", "extract_link", "email_change", "codex_retry",
             "codex_token_refresh", "sentinel_maintenance_check", "sub2api_scan", "sub2api_manual_upload",
-            "c2a_session_reimport", "c2a_scan",
+            "c2a_session_reimport", "c2a_scan", "sales_sync",
         )
         calls = []
         def resolve(name):

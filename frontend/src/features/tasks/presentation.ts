@@ -44,6 +44,7 @@ export const labels: Record<string, Record<string, string>> = {
     sub2api_manual_upload:'Sub2API 手动上传', sub2api_scan:'Sub2API 异常扫描',
     c2a_session_reimport:'C2A 重新导入', c2a_scan:'C2A 异常巡检',
     sentinel_maintenance_check:'Sentinel 维护检查',
+    sales_sync:'店铺销售联动',
   },
   trigger: {
     manual:'手动', manual_bulk:'手动批量', manual_retry:'失败重跑', scheduled:'定时',
@@ -69,6 +70,7 @@ export const labels: Record<string, Record<string, string>> = {
     c2a_scan:'读取 C2A 异常账号', c2a_repair:'调度 C2A 修复',
     sub2api_scan:'扫描 Sub2API 异常账号', sub2api_repair:'调度 Sub2API 修复', sub2api_sync:'上传并启用 Sub2API',
     bulk_mutation:'执行批量变更', bulk_terminate:'执行批量终止', sentinel_check:'检查 Sentinel 资源',
+    sales_sync:'同步店铺库存与订单', sales_listing:'核对与上架账号', sales_archive:'归档来源账号',
     nested_live_check:'内联查活与刷新', remote_request:'远端请求', reconcile:'结果核验',
     twofa:'设置 2FA', plan:'套餐信息', plan_check:'查询套餐', plan_request:'请求套餐', refresh_token:'刷新 Token',
     mailbox_scan:'扫描邮件', extract_link:'提炼', extraction:'平台提链', remote_sync:'原单状态查询', payment:'支付处理', login_mfa:'TOTP 验证', complete:'完成', interrupted:'执行中断', event:'事件',

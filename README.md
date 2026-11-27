@@ -124,6 +124,22 @@ PostgreSQL 保留修复阶段、原目标、任务引用、AT 摘要和重试时
 
 巡检间隔、同账号冷却和每轮上限分别由 `SUB2API_MONITOR_INTERVAL_SECONDS`、`SUB2API_MONITOR_COOLDOWN_SECONDS`、`SUB2API_MONITOR_MAX_PER_CYCLE` 控制。同步使用现有持久任务、账号租约和任务中心，重启后恢复待办，不保存 Token 副本。sub2api 配置页可查看状态或立即巡检；手动巡检只使用已保存配置，已提交的刷新、授权和多目标同步会继续到明确结果，不开启新的周期扫描。用户取消、Codex 凭证归档或凭据删除会停止对应补传，恢复后可手动再次排队。分组查询接口为 `GET /api/sub2api/groups`，使用已保存的连接配置；自动化接口为 `GET /api/sub2api/automation`、`POST /api/sub2api/automation/check`，均沿用 WebUI 鉴权。
 
+### 账号贩卖区与店铺联动
+
+「账号 → 贩卖区」统一管理待售、已上架和已售出账号，支持跨页选择及来源、店铺筛选。活跃和归档账号均可从账号列表批量加入待售，加入时保留原归档状态。线下成交可手动标记，变更保留条目历史。
+
+第一版支持链动小铺，可建立多个店铺实例；每个店铺分别配置地址、Token 环境变量名、执行端和同步周期。新增平台通过适配器扩展，其他小铺不会与当前店铺共用商品、库存或订单标识。接入步骤：
+
+1. 在执行销售任务的部署 `.env` 中填写商户 Token，例如 `SALES_LIANDONG_TOKEN`。在贩卖区「店铺与来源」保存其变量名，并点击「检查连接」绑定商户身份、读取商品。
+2. `SALES_EXECUTOR_ID` 表示当前销售执行端，默认 `local`；店铺的执行端须与之相同。该值变更需要重启。一个销售中心使用一个数据库，不支持本地、Oracle 两套独立数据库同时接管同一店铺。
+3. 使用其他部署的账号时，添加稳定的来源 ID（例如 `oracle`）、控制台地址和授权码环境变量名（例如 `SALES_ORACLE_AUTH_CODE`）。销售记录以「来源 ID＋账号 ID」定位；相同数字 ID 不代表同一账号。
+4. 选择待售条目和店铺商品提交上架任务。交付材料为 `邮箱----密码----2FA密钥` 三段，必须完整；任务不上传 AT、RT 或 Session。新上架先保存加密材料和固定目标，按外部库存回读结果确认，随后归档该账号所属来源。
+5. 启用店铺后，后台按配置周期提交库存及订单同步任务，也可「立即同步」。历史同步先核对全部启用来源与完整交付资料，仅建立销售映射；需要归档旧库存时，明确选择后「标记已上架」。
+
+上架和同步复用统一任务中心，受全局上限与 `SALES_SYNC_WORKERS`（默认 1）限制。同一店铺串行执行，中断或响应丢失后按原目标回读并继续缺失项。来源归档失败保留归档待办，已确认的外部上架事实保留。付款与发货分别核验，订单包含实际交付卡密才判定售出；退款记录事实，不自动把已交付账号重新上架。第一版不执行退款或商户 Token 自动续期。
+
+设计与接口边界见[贩卖区设计](docs/superpowers/specs/2026-11-27-account-sales-design.md)和[协作契约](docs/superpowers/specs/2026-11-27-account-sales-contract.md)。
+
 ### WebUI
 
 - 默认进入平台总览，一屏查看账号、套餐、邮箱资源、注册任务、Codex 凭证、代理模式和当前脱敏租约。
@@ -250,6 +266,7 @@ macOS 如果本机环境变量仍指向旧版 `openssl@1.1`，安装新版 `cryp
 | `EXTRACT_LINK_WORKERS` | 提链及同 Run 支付阶段 | 3 |
 | `EMAIL_IMPORT_WORKERS` | 实际远端交接调用；批量 25 地址算一份执行，兼容并行调用分别计数 | 1 |
 | `SUB2API_SCAN_WORKERS` / `MAINTENANCE_CHECK_WORKERS` | Sub2API 独立扫描 / Sentinel 检查与 C2A 巡检 | 各 1 |
+| `SALES_SYNC_WORKERS` | 店铺库存、上架与来源归档 | 1 |
 
 执行须同时满足全局、类型、批次、平台及账号/邮箱资源约束。类型上限不预留配额，合计可以超过全局；类型值大于全局时允许保存，页面提示当前实际仍受全局限制。一般上限均为不小于 1 的整数；0 不表示暂停、无限制或继承，暂停使用现有任务控制。较大数值不预先创建等量线程。
 
@@ -1432,6 +1449,7 @@ Roxy 的密码与当前邮箱验证码表单会先核验控件、输入值和按
 | `config/flow_trigger.py` | 注册成功后触发 Flow |
 | `config/browser.py` | 协议模式浏览器指纹 |
 | `config/openai_protocol.py` | OpenAI OAuth/Sentinel 参数 |
+| `config/sales.py` | 贩卖区销售执行端身份；商户和来源凭据通过 `.env` 变量引用 |
 
 WebUI 配置页保存后会调用热加载；Roxy、Codex、邮箱、代理、人工节奏等常用项可立即生效。
 
@@ -1448,6 +1466,7 @@ WebUI 配置页保存后会调用热加载；Roxy、Codex、邮箱、代理、�
 | PostgreSQL `registered_accounts` | 注册成功账号、access token，以及单独保存的完整 `chatgpt_session`（恢复用，不进入普通列表/导出） |
 | PostgreSQL `codex_credentials` / `codex_callback_receipts` | Codex OAuth 凭证、导出/同步状态，以及单独保存的 CPA/sub2 callback 回执 |
 | PostgreSQL `account_action_batches/account_action_tasks/account_action_events` | 账号操作任务实例及脱敏阶段事件 |
+| PostgreSQL `sales_sources/sales_shops/sales_products/sales_items/sales_item_events` | 来源、店铺、商品、销售映射、加密上架快照和变更事件；执行记录复用统一任务 |
 | `logs/` | WebUI、注册任务、查活和 Codex 补跑日志 |
 | `logs/run/` | 诊断产物、运行状态、迁移备份和浏览器公共资源缓存 |
 

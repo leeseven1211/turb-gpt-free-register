@@ -82,6 +82,7 @@ class WebUIRuntimeTests(unittest.TestCase):
     def test_start_runtime_recovers_and_starts_periodic_workers_once(self):
         with ExitStack() as stack:
             start_settlement = stack.enter_context(patch.object(runtime, "_start_legacy_settlement"))
+            init_sales_storage = stack.enter_context(patch("core.sales.store.init"))
             start_sub2api_sync = stack.enter_context(patch("core.integrations.sub2api.jobs.start_periodic_sync"))
             start_sub2api_monitor = stack.enter_context(patch("core.integrations.sub2api.monitor.start_periodic_monitor"))
             init_c2a_storage = stack.enter_context(patch("core.storage.c2a.init"))
@@ -117,6 +118,8 @@ class WebUIRuntimeTests(unittest.TestCase):
                 patch.object(runtime.account_task_store, "start_dispatcher")
             )
             register_handlers = stack.enter_context(patch.object(runtime, "_register_runtime_handlers"))
+            register_sales_handler = stack.enter_context(patch("core.sales.runtime.register_handler"))
+            start_sales_sync = stack.enter_context(patch("core.sales.runtime.start_periodic_sync"))
             resume_extract = stack.enter_context(patch("core.extract_link.service.resume_known_remote_jobs", return_value=0))
             cleanup_roxy = stack.enter_context(
                 patch("core.browser.roxy.client.cleanup_orphaned_profiles", return_value={"found": 0})
@@ -177,6 +180,7 @@ class WebUIRuntimeTests(unittest.TestCase):
 
         for mock in (
             start_settlement,
+            init_sales_storage,
             start_sub2api_sync,
             start_sub2api_monitor,
             init_c2a_storage,
@@ -191,6 +195,8 @@ class WebUIRuntimeTests(unittest.TestCase):
             repair_compatibility,
             start_dispatcher,
             register_handlers,
+            register_sales_handler,
+            start_sales_sync,
             cleanup_roxy,
             start_sms,
             recover_plans,

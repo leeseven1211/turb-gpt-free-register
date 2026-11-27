@@ -1,13 +1,14 @@
-import { C as e, F as t, G as n, H as r, K as i, L as a, M as o, Q as s, S as c, _ as l, a as u, c as d, d as f, dt as p, et as m, ft as h, g, h as _, i as v, j as y, l as b, lt as x, m as S, n as C, o as w, s as T, st as E, t as D, v as O, w as ee, x as k } from "./_plugin-vue_export-helper-BSZsFlS8.js";
-import { i as A, n as j, r as M, t as te } from "./ListFilterSummary-C7d1AuNG.js";
-import { n as ne, t as re } from "./ColumnResizer-C9MIqUB3.js";
-import { t as ie } from "./ListResult-DyZgA5Vb.js";
+import { C as e, F as t, G as n, H as r, K as i, L as a, M as o, Q as s, S as c, _ as l, a as u, c as d, d as f, dt as p, et as m, ft as h, g, h as _, i as v, j as y, l as b, lt as x, m as S, n as C, o as w, s as T, st as E, t as D, v as O, w as ee, x as k } from "./_plugin-vue_export-helper-CBsH_ZoE.js";
+import { n as A, r as j, t as M } from "./ListFilterSummary-BjcCEzgL.js";
+import { n as te, t as ne } from "./ColumnResizer-XOclQup1.js";
+import { t as re } from "./TableState-CxHYH8ID.js";
+import { t as ie } from "./ListResult-EwR5MPFZ.js";
 import { n as N, r as ae } from "./client-B5R_MNgP.js";
-import { t as oe } from "./errorLabels-Co3XCR-i.js";
+import { t as oe } from "./errorLabels-BfdVjKfW.js";
 import { n as P, t as F } from "./time-DOD6oyhP.js";
-import { A as se, C as I, _ as L, a as R, b as z, g as ce, i as B, m as V, n as H, o as U, t as W, v as G, x as K, y as q } from "./StepEvidence-BMpneWSv.js";
-import { t as J } from "./useNativeDialog-DWisXYg9.js";
-import { t as le } from "./ListPagination-DkDYBtdx.js";
+import { A as se, C as I, _ as L, a as R, b as z, g as ce, i as B, m as V, n as H, o as U, t as W, v as G, x as K, y as q } from "./StepEvidence-CAwqnQhX.js";
+import { t as J } from "./useNativeDialog-BgHdu813.js";
+import { t as le } from "./ListPagination-CSFkV2Gz.js";
 import { a as Y, r as ue } from "./taskIds-BlchWwUp.js";
 // src/features/registration/RegistrationFilters.vue?vue&type=script&setup=true&lang.ts
 var de = { class: "registration-filter-fields" }, fe = { key: 0 }, X = ["value"], pe = ["value", "aria-label"], me = ["value"], he = ["value"], Z = ["value"], ge = [
@@ -62,7 +63,7 @@ var de = { class: "registration-filter-fields" }, fe = { key: 0 }, X = ["value"]
 		function C(e) {
 			c("change", v.value, e);
 		}
-		return (r, s) => (t(), g(A, {
+		return (r, s) => (t(), g(j, {
 			label: e.column ? o[e.column] : "注册任务",
 			"trigger-label": e.column ? o[e.column] : "筛选",
 			active: e.column ? !!e.values[e.column] : Object.values(e.values).some(Boolean),
@@ -1281,7 +1282,7 @@ var mn = ["data-view"], hn = { class: "registration-launch" }, gn = {
 	__name: "RegistrationPage",
 	props: { deps: {} },
 	setup(e, { expose: s }) {
-		let d = e, y = pn(d.deps), { state: C } = y, D = ne({
+		let d = e, y = pn(d.deps), { state: C } = y, D = te({
 			defaults: [
 				38,
 				100,
@@ -1303,7 +1304,7 @@ var mn = ["data-view"], hn = { class: "registration-launch" }, gn = {
 		function ee() {
 			D.resetColumns(), d.deps.notify?.("已恢复默认列宽");
 		}
-		let A = [
+		let j = [
 			{ label: "选择" },
 			{
 				label: "ID",
@@ -1723,7 +1724,7 @@ var mn = ["data-view"], hn = { class: "registration-launch" }, gn = {
 				_("div", En, [_("div", Dn, [
 					_("span", On, "共 " + h(E(C).total.toLocaleString()) + " 条任务", 1),
 					q.value.size ? (t(), O("span", kn, "已选 " + h(q.value.size) + " 项", 1)) : l("", !0),
-					c(te, {
+					c(M, {
 						items: he.value,
 						onRemove: r[8] ||= (e) => Z(e, "")
 					}, null, 8, ["items"])
@@ -1789,7 +1790,7 @@ var mn = ["data-view"], hn = { class: "registration-launch" }, gn = {
 						key: n,
 						style: p({ width: `${e}px` })
 					}, null, 4))), 128))]),
-					_("thead", null, [_("tr", null, [(t(), O(f, null, a(A, (e, n) => _("th", {
+					_("thead", null, [_("tr", null, [(t(), O(f, null, a(j, (e, n) => _("th", {
 						key: e.label,
 						class: x({ "ui-col-check": n === 0 })
 					}, [n === 0 ? (t(), O("input", {
@@ -1811,7 +1812,7 @@ var mn = ["data-view"], hn = { class: "registration-launch" }, gn = {
 						"sources",
 						"open",
 						"onUpdate:open"
-					])) : (t(), O("span", Ln, h(e.label), 1)), n < A.length - 1 ? (t(), g(re, {
+					])) : (t(), O("span", Ln, h(e.label), 1)), n < j.length - 1 ? (t(), g(ne, {
 						key: 3,
 						label: e.label,
 						onStart: (e) => E(D).resize(n, e),
@@ -1821,7 +1822,7 @@ var mn = ["data-view"], hn = { class: "registration-launch" }, gn = {
 						"onStart",
 						"onNudge"
 					])) : l("", !0)], 2)), 64))])]),
-					_("tbody", null, [fe.value.length ? l("", !0) : (t(), g(j, {
+					_("tbody", null, [fe.value.length ? l("", !0) : (t(), g(re, {
 						key: 0,
 						colspan: 11,
 						loading: E(C).loading,
@@ -1838,17 +1839,17 @@ var mn = ["data-view"], hn = { class: "registration-launch" }, gn = {
 							disabled: ["running", "stopping"].includes(String(e.status)),
 							onChange: (t) => Ve(e.id, t)
 						}, null, 40, zn)]),
-						_("td", null, [c(M, {
+						_("td", null, [c(A, {
 							text: `#${e.id}`,
 							secondary: e.parent_job_id ? `↳ #${e.parent_job_id}` : void 0
 						}, null, 8, ["text", "secondary"])]),
-						_("td", Bn, [c(M, {
+						_("td", Bn, [c(A, {
 							text: String(e.email || "—"),
 							title: e.email ? String(e.email) : void 0
 						}, null, 8, ["text", "title"])]),
-						_("td", null, [c(M, { text: Ae(e.email_source) }, null, 8, ["text"])]),
-						_("td", null, [c(M, { text: ke(e.registration_driver) }, null, 8, ["text"])]),
-						_("td", null, [c(M, {
+						_("td", null, [c(A, { text: Ae(e.email_source) }, null, 8, ["text"])]),
+						_("td", null, [c(A, { text: ke(e.registration_driver) }, null, 8, ["text"])]),
+						_("td", null, [c(A, {
 							text: He(e),
 							secondary: String(e.proxy_status || "")
 						}, null, 8, ["text", "secondary"])]),
@@ -1856,7 +1857,7 @@ var mn = ["data-view"], hn = { class: "registration-launch" }, gn = {
 							class: x(["ui-badge registration-status-badge", `ui-badge--${Me(e)}`]),
 							title: je(e.debug_state === "paused" ? "debug_paused" : e.display_status || e.status)
 						}, h(je(e.debug_state === "paused" ? "debug_paused" : e.display_status || e.status)), 11, Vn)]),
-						_("td", null, [c(M, {
+						_("td", null, [c(A, {
 							class: "ui-time",
 							text: E(F)(e.started_at).text,
 							secondary: E(F)(e.started_at).secondary,
@@ -1866,7 +1867,7 @@ var mn = ["data-view"], hn = { class: "registration-launch" }, gn = {
 							"secondary",
 							"title"
 						])]),
-						_("td", null, [c(M, {
+						_("td", null, [c(A, {
 							class: "ui-time",
 							text: E(F)(e.completed_at).text,
 							secondary: E(F)(e.completed_at).secondary,
@@ -1885,7 +1886,7 @@ var mn = ["data-view"], hn = { class: "registration-launch" }, gn = {
 						}, {
 							details: n(() => [_("p", null, h(e.error_message || ge(e)), 1), e.error_info ? (t(), O("p", Hn, h(e.error_info), 1)) : l("", !0)]),
 							_: 2
-						}, 1032, ["label", "title"])) : (t(), g(M, {
+						}, 1032, ["label", "title"])) : (t(), g(A, {
 							key: 1,
 							text: "—"
 						}))]),

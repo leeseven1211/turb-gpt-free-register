@@ -20,6 +20,7 @@ class ComponentSpec:
 COMPONENTS = (
     ComponentSpec("registration_storage", "initializer", "core.storage.registration:init"),
     ComponentSpec("operation_storage", "initializer", "core.operation_task_store:init"),
+    ComponentSpec("sales_storage", "initializer", "core.sales.store:init"),
     ComponentSpec("settlement", "service", "core.operations.settlement:start_runtime",
                   stop_target="core.operations.settlement:stop_runtime"),
     ComponentSpec("bulk_storage", "initializer", "core.storage.operations.bulk:init"),
@@ -36,6 +37,7 @@ COMPONENTS = (
     ComponentSpec("sub2api_upload_handler", "handlers", "core.integrations.sub2api.manual_upload:register_handler"),
     ComponentSpec("c2a_sync_handler", "handlers", "core.integrations.c2a.manual_sync:register_handler"),
     ComponentSpec("c2a_monitor_handler", "handlers", "core.integrations.c2a.monitor:register_handler"),
+    ComponentSpec("sales_handler", "handlers", "core.sales.runtime:register_handler"),
     ComponentSpec("verify_handlers", "check", "core.operations.task_gateway:registered_dispatch_types"),
     ComponentSpec("recover_before_dispatchers", "recovery", "core.operations.reconciliation:recover_before_dispatchers", with_logger=True),
     ComponentSpec("projection_worker", "service", "core.operation_task_store:start_projection_worker"),
@@ -59,6 +61,8 @@ COMPONENTS = (
     ComponentSpec("sub2api_sync", "service", "core.integrations.sub2api.jobs:start_periodic_sync"),
     ComponentSpec("sub2api_monitor", "service", "core.integrations.sub2api.monitor:start_periodic_monitor"),
     ComponentSpec("c2a_monitor", "service", "core.integrations.c2a.monitor:start_periodic_monitor"),
+    ComponentSpec("sales_sync", "service", "core.sales.runtime:start_periodic_sync",
+                  stop_target="core.sales.runtime:stop_periodic_sync"),
     ComponentSpec("auth_context_cleanup", "service", "core.accounts.auth_context_cleanup:start_periodic_cleanup"),
     ComponentSpec("task_retention", "service", "core.operations.retention:start_periodic_cleanup"),
     ComponentSpec("registration_proxy_backfill", "service",
@@ -79,5 +83,5 @@ REQUIRED_DISPATCH_TYPES = frozenset({
     "account_completion", "registration_resume", "account_inspection", "live_check", "token_refresh",
     "plan_check", "deactivation_mail", "extract_link", "email_change", "codex_retry",
     "codex_token_refresh", "sentinel_maintenance_check", "sub2api_scan", "sub2api_manual_upload",
-    "c2a_session_reimport", "c2a_scan",
+    "c2a_session_reimport", "c2a_scan", "sales_sync",
 })

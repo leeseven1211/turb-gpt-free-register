@@ -1,11 +1,12 @@
-import { C as e, F as t, G as n, H as r, K as i, L as a, M as o, Q as s, R as c, S as l, _ as u, a as d, b as f, c as p, d as m, dt as h, et as g, ft as _, g as v, h as y, j as b, l as x, lt as S, m as C, n as w, o as T, s as E, st as D, t as O, v as k, x as A } from "./_plugin-vue_export-helper-BSZsFlS8.js";
+import { C as e, F as t, G as n, H as r, K as i, L as a, M as o, Q as s, R as c, S as l, _ as u, a as d, b as f, c as p, d as m, dt as h, et as g, ft as _, g as v, h as y, j as b, l as x, lt as S, m as C, n as w, o as T, s as E, st as D, t as O, v as k, x as A } from "./_plugin-vue_export-helper-CBsH_ZoE.js";
 import { r as j, t as M } from "./client-B5R_MNgP.js";
 import { a as N, i as P, r as F } from "./taskIds-BlchWwUp.js";
 import { a as I, n as L, t as ee } from "./bulkMutations-3wwPI3-H.js";
-import { t as te } from "./useNativeDialog-DWisXYg9.js";
-import { t as ne } from "./ListPagination-DkDYBtdx.js";
-import { i as R, n as re, r as z, t as ie } from "./ListFilterSummary-C7d1AuNG.js";
-import { t as ae } from "./ListResult-DyZgA5Vb.js";
+import { t as te } from "./useNativeDialog-BgHdu813.js";
+import { t as ne } from "./ListPagination-CSFkV2Gz.js";
+import { n as R, r as z, t as re } from "./ListFilterSummary-BjcCEzgL.js";
+import { t as ie } from "./TableState-CxHYH8ID.js";
+import { t as ae } from "./ListResult-EwR5MPFZ.js";
 // src/api/extract.ts
 var B = "/api/extract-workbench";
 function V(e) {
@@ -649,24 +650,24 @@ function Ne(e = {}) {
 			n.error = X(e);
 		}
 	}
-	function re() {
+	function z() {
 		i++, a++, c++, E(), x.forEach((e) => e.abort()), x.clear(), v = void 0, g = void 0, _ = void 0, y.clear(), b.clear(), f = 0, n.batchPage = d || 1, n.batchLoading = !1, n.loading = !1;
 	}
-	function z(e) {
-		n.visible === e ? e && !n.loading && I({}, !0) : (n.visible = e, e ? I({}, !0) : re());
+	function re(e) {
+		n.visible === e ? e && !n.loading && I({}, !0) : (n.visible = e, e ? I({}, !0) : z());
 	}
 	function ie() {
-		document.hidden ? re() : n.visible && I({}, !0);
+		document.hidden ? z() : n.visible && I({}, !0);
 	}
 	document.addEventListener("visibilitychange", ie);
 	function ae() {
-		r = !0, re(), document.removeEventListener("visibilitychange", ie);
+		r = !0, z(), document.removeEventListener("visibilitychange", ie);
 	}
 	return {
 		state: n,
 		load: I,
 		loadBatchPage: M,
-		setVisible: z,
+		setVisible: re,
 		switchBatch: L,
 		bulkAction: te,
 		cancelBatch: ne,
@@ -1097,7 +1098,7 @@ var Ie = { class: "extract-filter-fields" }, Le = {
 				label: e.title || `批次 #${e.batch_id}`
 			}))
 		] : []);
-		return (r, s) => (t(), v(R, {
+		return (r, s) => (t(), v(z, {
 			label: e.column ? o[e.column] : "提链任务",
 			"trigger-label": e.column ? o[e.column] : "筛选",
 			active: e.column ? !!e.values[e.column] : Object.values(e.values).some(Boolean),
@@ -1248,7 +1249,7 @@ var Ie = { class: "extract-filter-fields" }, Le = {
 	setup(e, { expose: s }) {
 		let c = e.deps || {}, p = Ne(c), w = Pe(c, () => p.load({ force: !0 })), E = Fe(c, () => p.load({ force: !0 })), O = g(c.visible !== !1), j = g(!1), M = g(), N = g(), P = g(), F = p.state.query, I = C(() => p.state.selected);
 		C(() => Math.max(1, Math.ceil(p.state.total / F.size)));
-		let L = C(() => p.state.config?.providers || w.state.config?.providers || []), ee = g(), R = 0, B = C(() => p.state.items.length > 0 && p.state.items.every((e) => I.value.has(String(e.task_id))));
+		let L = C(() => p.state.config?.providers || w.state.config?.providers || []), ee = g(), z = 0, B = C(() => p.state.items.length > 0 && p.state.items.every((e) => I.value.has(String(e.task_id))));
 		te(M, () => j.value, () => O.value), te(N, () => !!E.state.drawer, () => O.value), te(P, () => !!E.state.payment.open, () => O.value);
 		let V = g(null), H = C(() => ({
 			query: F.query,
@@ -1382,12 +1383,12 @@ var Ie = { class: "extract-filter-fields" }, Le = {
 			ee.value && (ee.value.scrollTop = 0, ee.value.scrollLeft = 0);
 		}
 		async function An(e = {}) {
-			let t = e.quiet ? R : ++R;
-			await p.load(e), !e.quiet && t === R && O.value && !p.state.error && kn();
+			let t = e.quiet ? z : ++z;
+			await p.load(e), !e.quiet && t === z && O.value && !p.state.error && kn();
 		}
 		async function jn(e) {
-			let t = ++R;
-			await p.switchBatch(e), t === R && O.value && !p.state.error && kn();
+			let t = ++z;
+			await p.switchBatch(e), t === z && O.value && !p.state.error && kn();
 		}
 		function Mn(e, t, n) {
 			if (e.target !== t || !t) return;
@@ -1484,7 +1485,7 @@ var Ie = { class: "extract-filter-fields" }, Le = {
 							onClick: r[4] ||= (e) => D(p).bulkAction("clear")
 						}, "清除选择")
 					])) : u("", !0),
-					l(ie, {
+					l(re, {
 						items: se.value,
 						onRemove: r[5] ||= (e) => U(e, "")
 					}, null, 8, ["items"])
@@ -1648,11 +1649,11 @@ var Ie = { class: "extract-filter-fields" }, Le = {
 							checked: I.value.has(String(e.task_id)),
 							onChange: (t) => Fn(String(e.task_id))
 						}, null, 40, gt)]),
-						y("td", null, [l(z, {
+						y("td", null, [l(R, {
 							text: e.email || "账号未记录",
 							secondary: `#${e.task_id}`
 						}, null, 8, ["text", "secondary"])]),
-						y("td", null, [l(z, {
+						y("td", null, [l(R, {
 							text: D(G)(e.provider_id),
 							secondary: e.link_type || void 0,
 							title: `${D(G)(e.provider_id)}${e.link_type ? " · " + e.link_type : ""}`
@@ -1667,11 +1668,11 @@ var Ie = { class: "extract-filter-fields" }, Le = {
 							"secondary",
 							"title"
 						])]),
-						y("td", null, [l(z, {
+						y("td", null, [l(R, {
 							text: D(de)(e.mode),
 							secondary: D(ve)(e) || void 0
 						}, null, 8, ["text", "secondary"])]),
-						y("td", null, [l(z, {
+						y("td", null, [l(R, {
 							text: D(W)(e.preflight_status, "未开始"),
 							tone: Ge(e.preflight_status)
 						}, null, 8, ["text", "tone"])]),
@@ -1694,15 +1695,15 @@ var Ie = { class: "extract-filter-fields" }, Le = {
 							"tone",
 							"title"
 						])]),
-						y("td", null, [l(z, {
+						y("td", null, [l(R, {
 							text: D(W)(e.payment_phase || e.payment_status, "—"),
 							tone: wn(e.payment_phase || e.payment_status)
 						}, null, 8, ["text", "tone"])]),
-						y("td", null, [l(z, {
+						y("td", null, [l(R, {
 							text: D(W)(e.plus_state || e.plus_status, "未核验"),
 							tone: Tn(e.plus_state || e.plus_status)
 						}, null, 8, ["text", "tone"])]),
-						y("td", null, [l(z, {
+						y("td", null, [l(R, {
 							class: "ui-time extract-time-cell",
 							text: Dn(e.updated_at || e.created_at).text,
 							secondary: Dn(e.updated_at || e.created_at).secondary,
@@ -1722,7 +1723,7 @@ var Ie = { class: "extract-filter-fields" }, Le = {
 							disabled: !(e.has_payment_entry || e.has_payment_link || e.has_qr),
 							onClick: (t) => He(e.task_id)
 						}, "支付入口", 8, wt)])])
-					], 2))), 128)), D(p).state.items.length ? u("", !0) : (t(), v(re, {
+					], 2))), 128)), D(p).state.items.length ? u("", !0) : (t(), v(ie, {
 						key: 0,
 						colspan: 10,
 						loading: D(p).state.loading,

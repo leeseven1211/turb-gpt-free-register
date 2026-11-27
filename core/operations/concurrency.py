@@ -62,6 +62,7 @@ _DEFINITIONS = (
     ("email_import", "邮箱导入", "EMAIL_IMPORT_WORKERS", 1),
     ("sub2api_scan", "Sub2API 异常扫描", "SUB2API_SCAN_WORKERS", 1),
     ("maintenance_check", "维护检查", "MAINTENANCE_CHECK_WORKERS", 1),
+    ("sales_sync", "店铺销售联动", "SALES_SYNC_WORKERS", 1),
 )
 POLICIES = {row[0]: AdmissionClass(*row) for row in _DEFINITIONS}
 # 旧补全 handler 仍包含真实业务，必须按多步骤账号配置计数。

@@ -91,6 +91,7 @@
       <div class="sidebar-subnav" data-module-subnav="accounts" aria-label="账号资产子菜单">
         <button type="button" class="is-active" data-view="active">活跃账号</button>
         <button type="button" data-view="archived">归档账号</button>
+        <button type="button" data-view="sales">贩卖区</button>
       </div>
     </div>
     <div class="sidebar-module" data-sidebar-module="codex">
@@ -232,6 +233,11 @@
            data-module-url="{{ url_for('static', filename='task-center/accounts.js', v=asset_version) }}"
            data-style-url="{{ url_for('static', filename='task-center/task-center.css', v=asset_version) }}"></div>
     </section>
+    <section id="salesPanel" class="hidden" aria-label="账号贩卖区">
+      <div id="sales-root"
+           data-module-url="{{ url_for('static', filename='task-center/sales.js', v=asset_version) }}"
+           data-style-url="{{ url_for('static', filename='task-center/task-center.css', v=asset_version) }}"></div>
+    </section>
     <div id="accountDetailHost"></div>
     <div id="accountC2aConfirmHost"></div>
     <style>
@@ -319,6 +325,7 @@
 <script src="{{ url_for('static', filename='js/shared/account-filters.js', v=asset_version) }}"></script>
 <script src="{{ url_for('static', filename='js/pages/accounts/page.js', v=asset_version) }}"></script>
 <script src="{{ url_for('static', filename='js/pages/accounts/bridge.js', v=asset_version) }}"></script>
+<script src="{{ url_for('static', filename='js/pages/sales.js', v=asset_version) }}"></script>
 <script src="{{ url_for('static', filename='js/pages/operations/page.js', v=asset_version) }}"></script>
 <script src="{{ url_for('static', filename='js/pages/accounts/email-change.js', v=asset_version) }}"></script>
 <script src="{{ url_for('static', filename='js/pages/accounts/inspection.js', v=asset_version) }}"></script>

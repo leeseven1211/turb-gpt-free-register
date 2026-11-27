@@ -21,6 +21,7 @@ NATIVE_TYPES = {
     "email_change", "account_inspection", "account_inspection_batch", "codex_retry",
     "codex_token_refresh", "sentinel_maintenance_check", "sub2api_scan",
     "sub2api_sync", "sub2api_manual_upload", "c2a_session_reimport", "c2a_scan",
+    "sales_sync",
 }
 
 
@@ -159,7 +160,7 @@ class WebActionCatalogTests(unittest.TestCase):
                                    cwd=ROOT, env=env, capture_output=True, text=True, timeout=45)
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
         result = json.loads(completed.stdout.strip().splitlines()[-1])
-        self.assertEqual(result, {"ok": True, "task_types": 23, "route_actions": 18, "worker_catalog": True})
+        self.assertEqual(result, {"ok": True, "task_types": 24, "route_actions": 18, "worker_catalog": True})
 
 
 if __name__ == "__main__":

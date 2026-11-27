@@ -1,28 +1,29 @@
-import { A as e, C as t, F as n, G as r, H as i, K as a, L as o, Q as s, S as c, Z as l, _ as u, a as d, c as f, d as p, dt as m, et as h, ft as g, g as _, h as v, j as y, k as b, l as x, lt as S, m as C, n as w, nt as T, s as E, st as D, t as O, v as k, x as A, y as j } from "./_plugin-vue_export-helper-BSZsFlS8.js";
-import { i as M, n as N, r as P, t as ee } from "./ListFilterSummary-C7d1AuNG.js";
-import { t as F } from "./ListPagination-DkDYBtdx.js";
-import { t as I } from "./ListResult-DyZgA5Vb.js";
-import { n as L, t as R } from "./time-DOD6oyhP.js";
-import { n as z, t as B } from "./ColumnResizer-C9MIqUB3.js";
-import { n as V, r as H } from "./client-B5R_MNgP.js";
-import { r as te } from "./taskIds-BlchWwUp.js";
+import { A as e, C as t, F as n, G as r, H as i, K as a, L as o, Q as s, S as c, Z as l, _ as u, a as d, c as f, d as p, dt as m, et as h, ft as g, g as _, h as v, j as y, k as b, l as x, lt as S, m as C, n as w, nt as T, s as E, st as D, t as O, v as k, x as A, y as j } from "./_plugin-vue_export-helper-CBsH_ZoE.js";
+import { n as M, r as N, t as P } from "./ListFilterSummary-BjcCEzgL.js";
+import { t as F } from "./ListPagination-CSFkV2Gz.js";
+import { t as I } from "./TableState-CxHYH8ID.js";
+import { t as L } from "./ListResult-EwR5MPFZ.js";
+import { n as R, t as z } from "./time-DOD6oyhP.js";
+import { n as B, t as V } from "./ColumnResizer-XOclQup1.js";
+import { n as H, r as U } from "./client-B5R_MNgP.js";
+import { r as ee } from "./taskIds-BlchWwUp.js";
 // src/features/proxy/presentation.ts
-function U(e, t = "—") {
+function W(e, t = "—") {
 	return e == null || e === "" ? t : typeof e == "string" || typeof e == "number" ? String(e) : t;
 }
-function W(e) {
+function G(e) {
 	return e && typeof e == "object" && !Array.isArray(e) ? e : {};
 }
-function G(e) {
+function K(e) {
 	return Array.isArray(e) ? e.filter((e) => e && typeof e == "object" && !Array.isArray(e)) : [];
 }
-function K(e) {
+function q(e) {
 	if (e == null || e === "") return null;
 	let t = Number(e);
 	return Number.isFinite(t) && t >= 0 ? t : null;
 }
-function q(e) {
-	let t = K(e);
+function J(e) {
+	let t = q(e);
 	if (t == null) return "—";
 	if (t < 1024) return `${t} B`;
 	let n = [
@@ -34,7 +35,7 @@ function q(e) {
 	for (; r >= 1024 && i < n.length - 1;) r /= 1024, i++;
 	return `${r >= 100 ? r.toFixed(0) : r >= 10 ? r.toFixed(1) : r.toFixed(2)} ${n[i]}`;
 }
-var ne = {
+var Y = {
 	pending: "待验证",
 	fetching: "提取中",
 	checking: "复检中",
@@ -58,10 +59,10 @@ var ne = {
 	running: "运行中",
 	available: "可观测"
 };
-function J(e) {
-	let t = U(e, "");
+function X(e) {
+	let t = W(e, "");
 	return {
-		label: ne[t] || "未知状态",
+		label: Y[t] || "未知状态",
 		title: t || "未提供状态",
 		tone: ["failed", "quarantine"].includes(t) ? "danger" : [
 			"leased",
@@ -76,7 +77,7 @@ function J(e) {
 		].includes(t) ? "success" : "neutral"
 	};
 }
-var Y = {
+var te = {
 	supply_unavailable: {
 		label: "补货暂不可用",
 		evidence: "补货暂不可用"
@@ -98,8 +99,8 @@ var Y = {
 		evidence: "健康检查失败"
 	}
 };
-function X(e) {
-	let t = U(e, ""), n = Y[t];
+function Z(e) {
+	let t = W(e, ""), n = te[t];
 	return n ? {
 		...n,
 		evidence: `${n.evidence}（${t}）`
@@ -108,10 +109,10 @@ function X(e) {
 		evidence: t
 	};
 }
-function Z(e, t) {
+function ne(e, t) {
 	let n = e.registration_job_id != null && e.registration_job_id !== "";
 	if ((e.operation_task_id == null || e.operation_task_id === "") && !n) return "未关联任务";
-	let r = U(e.operation_task_type, n ? "registration" : "");
+	let r = W(e.operation_task_type, n ? "registration" : "");
 	return r ? t?.("task_type", r) || {
 		registration: "注册",
 		plan_check: "查套餐",
@@ -124,21 +125,21 @@ function re(e, t = !1) {
 		["任务", e.operation_task_id],
 		["运行", e.operation_run_id],
 		...t ? [["注册 job", e.registration_job_id]] : []
-	].filter(([, e]) => e != null && e !== "").map(([e, t]) => `${e} #${U(t)}`).join(" · ") || "—";
+	].filter(([, e]) => e != null && e !== "").map(([e, t]) => `${e} #${W(t)}`).join(" · ") || "—";
 }
 function ie(e, t) {
 	return {
-		text: Z(e, t),
+		text: ne(e, t),
 		secondary: re(e, e.operation_task_id == null || e.operation_task_id === ""),
-		title: [Z(e, t), re(e, !0)].join(" · ")
+		title: [ne(e, t), re(e, !0)].join(" · ")
 	};
 }
 function ae(e) {
-	if (e.availability !== "available" || K(e.total_bytes) == null) return {
+	if (e.availability !== "available" || q(e.total_bytes) == null) return {
 		text: "未采集",
 		title: "未采集"
 	};
-	let t = `${q(e.upload_bytes)} / ${q(e.download_bytes)} / ${q(e.total_bytes)}`, n = e.source === "protocol_http" && (K(e.byte_unknown_count) || 0) > 0;
+	let t = `${J(e.upload_bytes)} / ${J(e.download_bytes)} / ${J(e.total_bytes)}`, n = e.source === "protocol_http" && (q(e.byte_unknown_count) || 0) > 0;
 	return {
 		text: t,
 		secondary: n ? "部分字节未知" : void 0,
@@ -146,7 +147,7 @@ function ae(e) {
 	};
 }
 function oe(e) {
-	let t = W(e);
+	let t = G(e);
 	return [
 		"1xx",
 		"2xx",
@@ -163,14 +164,14 @@ function se(e, t, n) {
 	let r = [], i = (e, t) => {
 		t != null && t !== "" && r.push({
 			label: e,
-			value: U(t)
+			value: W(t)
 		});
-	}, a = (e) => e ? L(e) : null;
+	}, a = (e) => e ? R(e) : null;
 	if (e === "history") return [
 		["租约 ID", t.lease_id],
 		["线路来源", t.provider],
 		["出口 IP", t.exit_ip],
-		["状态", ne[U(t.state)] || t.state],
+		["状态", Y[W(t.state)] || t.state],
 		["账号", t.account_id],
 		["用途", t.purpose],
 		["任务", t.operation_task_id],
@@ -184,44 +185,44 @@ function se(e, t, n) {
 	[
 		["来源", t.source],
 		["字节口径", t.source === "protocol_http" ? "HTTP 传输正文；不含请求/响应头、TLS、隧道或代理商账单" : "浏览器可观测字节；不等同代理商账单"],
-		["总请求耗时", t.duration_ms == null ? null : `${U(t.duration_ms)} 毫秒`],
+		["总请求耗时", t.duration_ms == null ? null : `${W(t.duration_ms)} 毫秒`],
 		["状态族", oe(t.status_families)],
 		["重定向次数", t.redirect_count],
-		["解压后响应正文", t.decoded_response_bytes == null ? null : q(t.decoded_response_bytes)],
+		["解压后响应正文", t.decoded_response_bytes == null ? null : J(t.decoded_response_bytes)],
 		["字节未知请求数", t.byte_unknown_count],
 		["注册 Attempt", t.registration_attempt_id],
 		["注册 Run", t.registration_run_id],
 		["方法", t.method],
-		["上传流量", q(t.upload_bytes)],
-		["下载流量", q(t.download_bytes)],
-		["总流量", q(t.total_bytes)],
+		["上传流量", J(t.upload_bytes)],
+		["下载流量", J(t.download_bytes)],
+		["总流量", J(t.total_bytes)],
 		["请求数", t.request_count],
 		["失败数", t.failed_count],
 		["未完成数", t.unfinished_count],
 		["未知数", t.unknown_count],
 		["线路租约", t.proxy_lease_id],
 		["账号", t.account_id],
-		["任务类型", Z(t, n)],
+		["任务类型", ne(t, n)],
 		["注册 job", t.registration_job_id],
 		["任务", t.operation_task_id],
 		["运行", t.operation_run_id],
 		["开始时间", a(t.started_at)],
 		["完成时间", a(t.ended_at)]
 	].forEach(([e, t]) => i(String(e), t));
-	let o = W(t.proxy_transport);
+	let o = G(t.proxy_transport);
 	if (o.available) {
-		i("代理隧道传输", q(o.total_bytes)), i("隧道口径", "含 TLS、启动和后台请求；与页面字节重叠，不相加；不含 TCP/IP 开销、缓存匿名填充和代理商账单"), i("连接前已拦截", `${K(o.blocked_connection_count) ?? 0} 次；没有估算节省字节`);
-		for (let e of G(o.destinations).slice(0, 50)) i(`目标 ${U(e.host)}:${U(e.port)}`, `${q(e.total_bytes)} · 连接 ${U(e.connection_count)} · 失败 ${U(e.failed_connection_count)} · 拦截 ${U(e.blocked_connection_count)} · 重试 ${U(e.connect_retry_count)} · 恢复 ${U(e.recovered_connection_count)}`);
+		i("代理隧道传输", J(o.total_bytes)), i("隧道口径", "含 TLS、启动和后台请求；与页面字节重叠，不相加；不含 TCP/IP 开销、缓存匿名填充和代理商账单"), i("连接前已拦截", `${q(o.blocked_connection_count) ?? 0} 次；没有估算节省字节`);
+		for (let e of K(o.destinations).slice(0, 50)) i(`目标 ${W(e.host)}:${W(e.port)}`, `${J(e.total_bytes)} · 连接 ${W(e.connection_count)} · 失败 ${W(e.failed_connection_count)} · 拦截 ${W(e.blocked_connection_count)} · 重试 ${W(e.connect_retry_count)} · 恢复 ${W(e.recovered_connection_count)}`);
 	}
-	let s = G(t.resource_details);
+	let s = K(t.resource_details);
 	if (s.length) {
 		i("资源明细", `页面可观测口径；以下显示前 ${Math.min(50, s.length)} 项，完整有界明细见任务日志`);
-		for (let e of s.slice(0, 50)) i(U(e.url), `${U(e.resource_type)} · ${q(e.total_bytes)}`);
+		for (let e of s.slice(0, 50)) i(W(e.url), `${W(e.resource_type)} · ${J(e.total_bytes)}`);
 	}
-	let c = W(t.js_coverage);
+	let c = G(t.js_coverage);
 	if (c.enabled) {
-		i("JS 覆盖率", `target ${U(c.target_count)} · 已采集 ${U(c.collected_target_count)} · 不支持/失败 ${U(c.unsupported_target_count)}；未观察到执行不能证明资源可安全拦截`);
-		for (let e of G(c.scripts).slice(0, 50)) i(U(e.url), `函数 ${U(e.function_count)} · 观察到执行 ${U(e.executed_function_count)}`);
+		i("JS 覆盖率", `target ${W(c.target_count)} · 已采集 ${W(c.collected_target_count)} · 不支持/失败 ${W(c.unsupported_target_count)}；未观察到执行不能证明资源可安全拦截`);
+		for (let e of K(c.scripts).slice(0, 50)) i(W(e.url), `函数 ${W(e.function_count)} · 观察到执行 ${W(e.executed_function_count)}`);
 	}
 	return r;
 }
@@ -268,7 +269,7 @@ var ce = {
 			"leased",
 			"shared",
 			"rotation_wait"
-		].reduce((e, t) => e + (K(a.value[t]) ?? 0), 0)} / ${t.pool?.policy.max_size || "—"}`), w = [
+		].reduce((e, t) => e + (q(a.value[t]) ?? 0), 0)} / ${t.pool?.policy.max_size || "—"}`), w = [
 			[
 				"poolReady",
 				"ready",
@@ -302,7 +303,7 @@ var ce = {
 			["shared", "共享使用"],
 			["rotation_wait", "等待轮换"],
 			["quarantine", "故障隔离"]
-		], E = (e) => K(e) ?? "—";
+		], E = (e) => q(e) ?? "—";
 		return (t, i) => (n(), k("div", ce, [v("div", le, [v("div", null, [i[2] ||= v("span", null, "代理池容量", -1), v("strong", ue, g(e.pool ? S.value : "—"), 1)]), (n(), k(p, null, o(w, ([t, n, r]) => v("div", { key: t }, [v("span", null, g(r), 1), v("strong", { "data-proxy-summary": t }, g(e.pool ? a.value[n] || 0 : "—"), 9, de)])), 64))]), v("section", fe, [
 			v("header", pe, [i[3] ||= v("h3", null, "代理池库存", -1), e.pool ? (n(), k("span", me, [
 				A("快照包含最近 " + g(l.value.length) + " 条库存 · 最小可用 " + g(e.pool.policy.min_ready || 0) + " · 本进程等待 " + g(e.pool.waiting_local || 0) + " / 维护线程 " + g(e.pool.workers_local || 0), 1),
@@ -313,19 +314,19 @@ var ce = {
 				key: String(e.provider) + ":" + String(e.region) + ":" + t,
 				class: "pt-country-card"
 			}, [
-				c(P, {
-					text: D(U)(e.region || e.country, "未标注"),
-					secondary: D(U)(e.provider, "未标注")
+				c(M, {
+					text: D(W)(e.region || e.country, "未标注"),
+					secondary: D(W)(e.provider, "未标注")
 				}, null, 8, ["text", "secondary"]),
-				v("p", null, g(T.map(([t, n]) => `${n} ${E(D(W)(e.counts)[t])}`).join(" · ")), 1),
+				v("p", null, g(T.map(([t, n]) => `${n} ${E(D(G)(e.counts)[t])}`).join(" · ")), 1),
 				v("small", null, "等待 " + g(E(e.waiting_local)) + " · 目标 " + g(E(e.target_ready)), 1),
-				e.last_supply_error ? (n(), _(I, {
+				e.last_supply_error ? (n(), _(L, {
 					key: 0,
-					label: D(X)(e.last_supply_error).label,
-					title: D(X)(e.last_supply_error).evidence,
+					label: D(Z)(e.last_supply_error).label,
+					title: D(Z)(e.last_supply_error).evidence,
 					tone: "warning"
 				}, {
-					details: r(() => [A(g(D(X)(e.last_supply_error).evidence), 1)]),
+					details: r(() => [A(g(D(Z)(e.last_supply_error).evidence), 1)]),
 					_: 2
 				}, 1032, ["label", "title"])) : u("", !0),
 				e.last_supply_error && Number(e.retry_after_seconds) ? (n(), k("small", ve, g(e.retry_after_seconds) + " 秒后补货", 1)) : u("", !0)
@@ -348,40 +349,40 @@ var ce = {
 				key: e,
 				scope: "col"
 			}, g(e), 1)), 64))])]), v("tbody", null, [(n(!0), k(p, null, o(x.value, (e, t) => (n(), k("tr", { key: String(e.resource_id || b.value + t) }, [
-				v("td", null, [c(P, { text: D(U)(e.resource_id) }, null, 8, ["text"])]),
-				v("td", null, [c(I, {
-					label: D(J)(e.state).label,
-					title: D(J)(e.state).title,
-					tone: D(J)(e.state).tone
+				v("td", null, [c(M, { text: D(W)(e.resource_id) }, null, 8, ["text"])]),
+				v("td", null, [c(L, {
+					label: D(X)(e.state).label,
+					title: D(X)(e.state).title,
+					tone: D(X)(e.state).tone
 				}, null, 8, [
 					"label",
 					"title",
 					"tone"
 				])]),
-				v("td", null, [c(P, {
-					text: D(U)(e.provider),
-					secondary: D(U)(e.region)
+				v("td", null, [c(M, {
+					text: D(W)(e.provider),
+					secondary: D(W)(e.region)
 				}, null, 8, ["text", "secondary"])]),
-				v("td", null, [c(P, { text: D(U)(e.endpoint) }, null, 8, ["text"])]),
-				v("td", null, [c(P, { text: D(U)(e.exit_ip) }, null, 8, ["text"])]),
-				v("td", null, [c(P, {
-					text: `校验 ${D(L)(e.checked_at)}`,
-					secondary: `到期 ${D(L)(e.expires_at)}`
+				v("td", null, [c(M, { text: D(W)(e.endpoint) }, null, 8, ["text"])]),
+				v("td", null, [c(M, { text: D(W)(e.exit_ip) }, null, 8, ["text"])]),
+				v("td", null, [c(M, {
+					text: `校验 ${D(R)(e.checked_at)}`,
+					secondary: `到期 ${D(R)(e.expires_at)}`
 				}, null, 8, ["text", "secondary"])]),
-				v("td", null, [c(I, {
-					label: D(X)(e.last_error_code).label,
-					title: D(X)(e.last_error_code).evidence,
+				v("td", null, [c(L, {
+					label: D(Z)(e.last_error_code).label,
+					title: D(Z)(e.last_error_code).evidence,
 					tone: e.last_error_code ? "warning" : "neutral"
 				}, j({ _: 2 }, [e.last_error_code ? {
 					name: "details",
-					fn: r(() => [A(g(D(X)(e.last_error_code).evidence), 1)]),
+					fn: r(() => [A(g(D(Z)(e.last_error_code).evidence), 1)]),
 					key: "0"
 				} : void 0]), 1032, [
 					"label",
 					"title",
 					"tone"
 				])])
-			]))), 128)), l.value.length ? u("", !0) : (n(), _(N, {
+			]))), 128)), l.value.length ? u("", !0) : (n(), _(I, {
 				key: 0,
 				colspan: 7,
 				loading: e.loading && !e.pool,
@@ -446,7 +447,7 @@ function Ce(e, t, n, r) {
 		label: e === "state" ? "全部状态" : "全部用途"
 	}, ...a.map((t) => ({
 		value: t,
-		label: e === "state" ? J(t).label : t
+		label: e === "state" ? X(t).label : t
 	}))];
 }
 function we(e, t) {
@@ -465,7 +466,7 @@ function we(e, t) {
 		current: "当前状态",
 		history: "历史状态",
 		traffic: "采集状态"
-	}[e], J(t[e]).label);
+	}[e], X(t[e]).label);
 	return n;
 }
 // src/features/proxy/ProxyFilters.vue?vue&type=script&setup=true&lang.ts
@@ -501,7 +502,7 @@ var Te = { class: "pt-filter-fields" }, Ee = {
 		function S(e) {
 			s("change", m.value, e), m.value !== "search" && s("update:open", !1);
 		}
-		return (t, i) => (n(), _(M, {
+		return (t, i) => (n(), _(N, {
 			label: e.column ? D(Q)[e.column] : "代理记录",
 			"trigger-label": e.triggerLabel || (e.column ? D(Q)[e.column] : "筛选"),
 			active: b.value,
@@ -612,7 +613,7 @@ var Te = { class: "pt-filter-fields" }, Ee = {
 			current: "proxyCurrent",
 			history: "proxyHistory",
 			traffic: "proxyTraffic"
-		}[s.view], y = z({
+		}[s.view], y = B({
 			defaults: d[s.view],
 			storageKey: "gpt_console_table_widths_" + f,
 			totalStorageKey: "gpt_console_table_total_" + f,
@@ -669,11 +670,11 @@ var Te = { class: "pt-filter-fields" }, Ee = {
 			traffic: "请求流量"
 		})[s.view]);
 		function E(e) {
-			let t = L(e.acquired_at), n = e[s.view === "history" ? "released_at" : "expires_at"];
+			let t = R(e.acquired_at), n = e[s.view === "history" ? "released_at" : "expires_at"];
 			return {
 				text: t,
-				secondary: n ? `至 ${L(n)}` : "进行中",
-				title: `${t} · ${n ? L(n) : "进行中"}`
+				secondary: n ? `至 ${R(n)}` : "进行中",
+				title: `${t} · ${n ? R(n) : "进行中"}`
 			};
 		}
 		function O(e, t) {
@@ -719,7 +720,7 @@ var Te = { class: "pt-filter-fields" }, Ee = {
 				"summary",
 				"open",
 				"onUpdate:open"
-			])) : (n(), k("span", Le, g(e.label), 1)), i < w.value.length - 1 ? (n(), _(B, {
+			])) : (n(), k("span", Le, g(e.label), 1)), i < w.value.length - 1 ? (n(), _(V, {
 				key: 2,
 				label: e.label,
 				onStart: (e) => D(y).resize(i, e),
@@ -730,29 +731,29 @@ var Te = { class: "pt-filter-fields" }, Ee = {
 				"onNudge"
 			])) : u("", !0)]))), 128))])]),
 			v("tbody", null, [(n(!0), k(p, null, o(t.items, (e, r) => (n(), k("tr", { key: `${t.view}:${e.id ?? r}` }, [t.view === "traffic" ? (n(), k(p, { key: 0 }, [
-				v("td", null, [c(P, { text: D(U)(e.source) }, null, 8, ["text"])]),
-				v("td", null, [c(P, { text: D(U)(e.method) }, null, 8, ["text"])]),
-				v("td", null, [c(I, {
+				v("td", null, [c(M, { text: D(W)(e.source) }, null, 8, ["text"])]),
+				v("td", null, [c(M, { text: D(W)(e.method) }, null, 8, ["text"])]),
+				v("td", null, [c(L, {
 					label: D(ae)(e).text === "未采集" ? "未采集" : "可观测",
-					title: D(U)(e.availability),
+					title: D(W)(e.availability),
 					tone: D(ae)(e).text === "未采集" ? "neutral" : "success"
 				}, null, 8, [
 					"label",
 					"title",
 					"tone"
 				])]),
-				v("td", null, [c(P, b({ ref_for: !0 }, D(ae)(e)), null, 16)]),
-				v("td", null, [c(P, {
+				v("td", null, [c(M, b({ ref_for: !0 }, D(ae)(e)), null, 16)]),
+				v("td", null, [c(M, {
 					text: [
 						e.request_count,
 						e.failed_count,
 						e.unfinished_count,
 						e.unknown_count
-					].map((e) => D(K)(e) ?? "—").join(" / "),
+					].map((e) => D(q)(e) ?? "—").join(" / "),
 					title: "请求 / 失败 / 未完成 / 未知"
 				}, null, 8, ["text"])]),
-				v("td", null, [c(P, b({ ref_for: !0 }, D(ie)(e, t.facetLabel)), null, 16)]),
-				v("td", null, [c(P, b({ ref_for: !0 }, D(R)(e.started_at), { title: D(L)(e.started_at) }), null, 16, ["title"])]),
+				v("td", null, [c(M, b({ ref_for: !0 }, D(ie)(e, t.facetLabel)), null, 16)]),
+				v("td", null, [c(M, b({ ref_for: !0 }, D(z)(e.started_at), { title: D(R)(e.started_at) }), null, 16, ["title"])]),
 				v("td", null, [e.id == null ? (n(), k("span", ze, "—")) : (n(), k("button", {
 					key: 0,
 					type: "button",
@@ -762,24 +763,24 @@ var Te = { class: "pt-filter-fields" }, Ee = {
 					onClick: (t) => O(e, t)
 				}, " 详情", 8, Re))])
 			], 64)) : (n(), k(p, { key: 1 }, [
-				v("td", null, [c(P, {
-					text: D(U)(e.lease_id, "未提供租约 ID"),
-					secondary: D(U)(e.provider)
+				v("td", null, [c(M, {
+					text: D(W)(e.lease_id, "未提供租约 ID"),
+					secondary: D(W)(e.provider)
 				}, null, 8, ["text", "secondary"])]),
-				v("td", null, [c(P, { text: D(U)(e.exit_ip) }, null, 8, ["text"])]),
-				v("td", null, [c(I, {
-					label: D(J)(e.state).label,
-					title: D(J)(e.state).title,
-					tone: D(J)(e.state).tone
+				v("td", null, [c(M, { text: D(W)(e.exit_ip) }, null, 8, ["text"])]),
+				v("td", null, [c(L, {
+					label: D(X)(e.state).label,
+					title: D(X)(e.state).title,
+					tone: D(X)(e.state).tone
 				}, null, 8, [
 					"label",
 					"title",
 					"tone"
 				])]),
-				v("td", null, [c(P, { text: D(U)(e.account_id) }, null, 8, ["text"])]),
-				v("td", null, [c(P, { text: D(U)(e.purpose) }, null, 8, ["text"])]),
-				v("td", null, [c(P, { text: D(re)(e, t.view === "history") }, null, 8, ["text"])]),
-				t.view === "current" ? (n(), k(p, { key: 0 }, [v("td", null, [c(P, { text: D(U)(e.route_attempt_no) }, null, 8, ["text"])]), v("td", null, [c(P, b({ ref_for: !0 }, E(e)), null, 16)])], 64)) : (n(), k(p, { key: 1 }, [v("td", null, [c(P, b({ ref_for: !0 }, E(e)), null, 16)]), v("td", null, [e.id == null ? (n(), k("span", Ve, "—")) : (n(), k("button", {
+				v("td", null, [c(M, { text: D(W)(e.account_id) }, null, 8, ["text"])]),
+				v("td", null, [c(M, { text: D(W)(e.purpose) }, null, 8, ["text"])]),
+				v("td", null, [c(M, { text: D(re)(e, t.view === "history") }, null, 8, ["text"])]),
+				t.view === "current" ? (n(), k(p, { key: 0 }, [v("td", null, [c(M, { text: D(W)(e.route_attempt_no) }, null, 8, ["text"])]), v("td", null, [c(M, b({ ref_for: !0 }, E(e)), null, 16)])], 64)) : (n(), k(p, { key: 1 }, [v("td", null, [c(M, b({ ref_for: !0 }, E(e)), null, 16)]), v("td", null, [e.id == null ? (n(), k("span", Ve, "—")) : (n(), k("button", {
 					key: 0,
 					type: "button",
 					class: "ui-link",
@@ -787,7 +788,7 @@ var Te = { class: "pt-filter-fields" }, Ee = {
 					"aria-label": "查看线路历史详情",
 					onClick: (t) => O(e, t)
 				}, " 详情", 8, Be))])], 64))
-			], 64))]))), 128)), t.items.length ? u("", !0) : (n(), _(N, {
+			], 64))]))), 128)), t.items.length ? u("", !0) : (n(), _(I, {
 				key: 0,
 				colspan: 8,
 				loading: t.loading,
@@ -874,23 +875,23 @@ function Ye() {
 				state: t.state,
 				search: t.search.trim()
 			});
-			return Je(e, await H(qe[e] + "?" + r, { signal: n }, te));
+			return Je(e, await U(qe[e] + "?" + r, { signal: n }, ee));
 		},
 		async summary(e) {
-			let t = await H("/api/proxy-traffic/summary", { signal: e });
+			let t = await U("/api/proxy-traffic/summary", { signal: e });
 			if (t?.ok !== !0 || !Number.isFinite(Number(t.total_bytes)) || !Number.isFinite(Number(t.today_bytes))) throw Error("流量统计接口响应无效");
 			return t;
 		},
 		async pool(e) {
 			try {
-				let t = await H("/api/proxy-pool", { signal: e });
+				let t = await U("/api/proxy-pool", { signal: e });
 				return t?.ok === !0 && t.policy && t.counts && typeof t.counts == "object" ? {
 					...t,
 					items: Array.isArray(t.items) ? t.items : [],
 					country_pools: Array.isArray(t.country_pools) ? t.country_pools : []
 				} : null;
 			} catch (e) {
-				if (V(e)) throw e;
+				if (H(e)) throw e;
 				return null;
 			}
 		}
@@ -928,7 +929,7 @@ function Ze(t = {}) {
 	}
 	function N() {
 		clearTimeout(D), j() && (D = setTimeout(() => {
-			D = void 0, R(null, !0);
+			D = void 0, z(null, !0);
 		}, 3e4));
 	}
 	function P(t = null, n = 0, r = !1) {
@@ -936,11 +937,11 @@ function Ze(t = {}) {
 		let i = x;
 		if (!j()) return;
 		let a = () => {
-			E = void 0, i === x && j() && R(t, r);
+			E = void 0, i === x && j() && z(t, r);
 		};
 		n ? E = setTimeout(a, n) : e(a);
 	}
-	function ee(e) {
+	function F(e) {
 		let t = c[e];
 		return {
 			page: t.page,
@@ -951,7 +952,7 @@ function Ze(t = {}) {
 			search: o.search
 		};
 	}
-	async function F(e, t, r) {
+	async function I(e, t, r) {
 		let i = await n.page(e, t, r), a = t.page;
 		if (r.aborted) throw new DOMException("Aborted", "AbortError");
 		return i.total === 0 ? {
@@ -965,7 +966,7 @@ function Ze(t = {}) {
 			page: a
 		});
 	}
-	function I(e, t) {
+	function L(e, t) {
 		Object.assign(c[e], {
 			items: t.result.items,
 			total: t.result.total,
@@ -973,10 +974,10 @@ function Ze(t = {}) {
 			aggregate: t.result.aggregate
 		});
 	}
-	let L = h(!1);
-	async function R(e = null, r = !1) {
+	let R = h(!1);
+	async function z(e = null, r = !1) {
 		if (!j()) return;
-		let i = !e || !u.value || k, a = i || d.value === null, o = i ? $ : $.filter((t) => t === e || A.has(t)), s = Object.fromEntries(o.map((e) => [e, ee(e)])), l = JSON.stringify([i, s]), f = r && L.value;
+		let i = !e || !u.value || k, a = i || d.value === null, o = i ? $ : $.filter((t) => t === e || A.has(t)), s = Object.fromEntries(o.map((e) => [e, F(e)])), l = JSON.stringify([i, s]), f = r && R.value;
 		if (O?.key === l) return f || (p.value = !0), O.promise;
 		M(), i && (k = !0);
 		let h = b, g = new AbortController();
@@ -984,25 +985,25 @@ function Ze(t = {}) {
 		let v = (async () => {
 			try {
 				let e = a ? n.pool(g.signal).catch((e) => {
-					if (V(e)) throw e;
+					if (H(e)) throw e;
 					return null;
 				}) : null, [r, c, l] = await Promise.all([
 					Promise.all(o.map(async (e) => ({
 						name: e,
-						...await F(e, s[e], g.signal)
+						...await I(e, s[e], g.signal)
 					}))),
 					i ? n.summary(g.signal) : null,
 					e
 				]);
 				if (h !== b || !j()) return;
 				r.forEach((e) => {
-					I(e.name, e), A.delete(e.name) && _[e.name]++;
-				}), i && (c && (u.value = c), k = !1), a && (d.value = l), m.value = "", L.value = !0, t.onReady?.();
+					L(e.name, e), A.delete(e.name) && _[e.name]++;
+				}), i && (c && (u.value = c), k = !1), a && (d.value = l), m.value = "", R.value = !0, t.onReady?.();
 			} catch (e) {
-				if (h !== b || !j() || V(e)) return;
+				if (h !== b || !j() || H(e)) return;
 				f || (o.forEach((e) => {
 					c[e].items = [], c[e].total = 0;
-				}), i && (u.value = null, d.value = null), L.value = !1), m.value = e instanceof Error ? e.message : String(e);
+				}), i && (u.value = null, d.value = null), R.value = !1), m.value = e instanceof Error ? e.message : String(e);
 			} finally {
 				h === b && (p.value = !1, w = null, O = null, N());
 			}
@@ -1012,44 +1013,44 @@ function Ze(t = {}) {
 			promise: v
 		}, v;
 	}
-	function z(t = {}) {
+	function B(t = {}) {
 		let n = f.value?.opener;
 		f.value = null, t.restoreFocus !== !1 && n?.isConnected && e(() => n.focus({ preventScroll: !0 }));
 	}
-	function B(e) {
-		S || r.value === e || (r.value = e, e ? P(null, 0, !0) : (M(), g.value = null, z({ restoreFocus: !1 })));
-	}
-	function H(e) {
-		!S && ["pool", "records"].includes(e) && i.value !== e && (i.value = e, g.value = null, z({ restoreFocus: !1 }));
-	}
-	function te(e) {
-		!S && $.includes(e) && a.value !== e && (a.value = e, g.value = null, z({ restoreFocus: !1 }));
+	function V(e) {
+		S || r.value === e || (r.value = e, e ? P(null, 0, !0) : (M(), g.value = null, B({ restoreFocus: !1 })));
 	}
 	function U(e) {
+		!S && ["pool", "records"].includes(e) && i.value !== e && (i.value = e, g.value = null, B({ restoreFocus: !1 }));
+	}
+	function ee(e) {
+		!S && $.includes(e) && a.value !== e && (a.value = e, g.value = null, B({ restoreFocus: !1 }));
+	}
+	function W(e) {
 		let t = Object.keys(e).filter((t) => e[t] !== void 0 && e[t] !== o[t]);
 		t.length && !S && (t.forEach((t) => {
 			o[t] = e[t];
-		}), L.value = !1, $.forEach((e) => {
+		}), R.value = !1, $.forEach((e) => {
 			c[e].page = 1, A.add(e);
 		}), P(null, t.every((e) => e === "search") ? 260 : 0));
 	}
-	function W(e, t) {
-		S || c[e].state === t || (L.value = !1, c[e].state = t, c[e].page = 1, A.add(e), P(e));
-	}
 	function G(e, t) {
-		if (S || !Number.isFinite(t)) return;
-		let n = c[e], r = Math.min(Math.max(1, Math.ceil(n.total / n.size)), Math.max(1, Math.floor(t)));
-		r !== n.page && (L.value = !1, n.page = r, A.add(e), P(e));
+		S || c[e].state === t || (R.value = !1, c[e].state = t, c[e].page = 1, A.add(e), P(e));
 	}
 	function K(e, t) {
+		if (S || !Number.isFinite(t)) return;
+		let n = c[e], r = Math.min(Math.max(1, Math.ceil(n.total / n.size)), Math.max(1, Math.floor(t)));
+		r !== n.page && (R.value = !1, n.page = r, A.add(e), P(e));
+	}
+	function q(e, t) {
 		!S && [
 			20,
 			50,
 			100
-		].includes(t) && c[e].size !== t && (L.value = !1, c[e].size = t, c[e].page = 1, A.add(e), P(e));
+		].includes(t) && c[e].size !== t && (R.value = !1, c[e].size = t, c[e].page = 1, A.add(e), P(e));
 	}
-	function q() {
-		L.value = !1, Object.assign(o, {
+	function J() {
+		R.value = !1, Object.assign(o, {
 			window: "all",
 			purpose: "all",
 			search: ""
@@ -1057,24 +1058,24 @@ function Ze(t = {}) {
 			c[e].state = "all", c[e].page = 1, A.add(e);
 		}), P();
 	}
-	function ne(e) {
-		e.startsWith("state:") ? W(e.slice(6), "all") : e === "search" ? U({ search: "" }) : (e === "window" || e === "purpose") && U({ [e]: "all" });
+	function Y(e) {
+		e.startsWith("state:") ? G(e.slice(6), "all") : e === "search" ? W({ search: "" }) : (e === "window" || e === "purpose") && W({ [e]: "all" });
 	}
-	function J(e, t, n = null) {
+	function X(e, t, n = null) {
 		!S && j() && (f.value = {
 			view: e,
 			row: JSON.parse(JSON.stringify(t)),
 			opener: n
 		});
 	}
-	function Y() {
-		v.value = !document.hidden, document.hidden ? (M(), g.value = null, z({ restoreFocus: !1 })) : r.value && P(null, 0, !0);
+	function te() {
+		v.value = !document.hidden, document.hidden ? (M(), g.value = null, B({ restoreFocus: !1 })) : r.value && P(null, 0, !0);
 	}
-	document.addEventListener("visibilitychange", Y);
-	function X() {
-		S || (S = !0, M(), z({ restoreFocus: !1 }), document.removeEventListener("visibilitychange", Y));
+	document.addEventListener("visibilitychange", te);
+	function Z() {
+		S || (S = !0, M(), B({ restoreFocus: !1 }), document.removeEventListener("visibilitychange", te));
 	}
-	return l(X), t.visible && B(!0), {
+	return l(Z), t.visible && V(!0), {
 		visible: r,
 		active: y,
 		documentVisible: v,
@@ -1089,19 +1090,19 @@ function Ze(t = {}) {
 		error: m,
 		openFilter: g,
 		scrollRevision: _,
-		load: R,
-		setVisible: B,
-		setView: H,
-		setRecordView: te,
-		updateFilters: U,
-		setState: W,
-		setPage: G,
-		setSize: K,
-		resetFilters: q,
-		removeFilter: ne,
-		openDetail: J,
-		closeDetail: z,
-		dispose: X
+		load: z,
+		setVisible: V,
+		setView: U,
+		setRecordView: ee,
+		updateFilters: W,
+		setState: G,
+		setPage: K,
+		setSize: q,
+		resetFilters: J,
+		removeFilter: Y,
+		openDetail: X,
+		closeDetail: B,
+		dispose: Z
 	};
 }
 // src/features/proxy/ProxyTrafficPage.vue?vue&type=script&setup=true&lang.ts
@@ -1144,14 +1145,14 @@ var Qe = {
 			current: f.current.state,
 			history: f.history.state,
 			traffic: f.traffic.state
-		})), P = C(() => f[l.value]);
-		function I(e, t, n) {
+		})), I = C(() => f[l.value]);
+		function L(e, t, n) {
 			t === "state" ? i.setState(e, n) : i.updateFilters({ [t]: n });
 		}
-		function L() {
+		function R() {
 			O.value[l.value]?.resetColumns(), r.deps.notify?.("已恢复默认列宽");
 		}
-		function R(e) {
+		function z(e) {
 			if (![
 				"ArrowLeft",
 				"ArrowRight",
@@ -1173,8 +1174,8 @@ var Qe = {
 				loading: D(b)
 			}, null, 8, ["pool", "loading"]), [[E, D(s) === "pool"]]),
 			a(v("div", $e, [v("div", et, [
-				v("div", null, [r[7] ||= v("span", null, "累计可观测流量", -1), v("strong", tt, g(D(m) ? D(q)(D(m).total_bytes) : "—"), 1)]),
-				v("div", null, [r[8] ||= v("span", null, "今日可观测流量", -1), v("strong", nt, g(D(m) ? D(q)(D(m).today_bytes) : "—"), 1)]),
+				v("div", null, [r[7] ||= v("span", null, "累计可观测流量", -1), v("strong", tt, g(D(m) ? D(J)(D(m).total_bytes) : "—"), 1)]),
+				v("div", null, [r[8] ||= v("span", null, "今日可观测流量", -1), v("strong", nt, g(D(m) ? D(J)(D(m).today_bytes) : "—"), 1)]),
 				v("div", null, [r[9] ||= v("span", null, "今日请求记录", -1), v("strong", rt, g(D(m) ? D(m).today_request_count ?? D(m).today_browser_count ?? "—" : "—"), 1)]),
 				v("div", null, [r[10] ||= v("span", null, "今日新建线路", -1), v("strong", it, g(D(m)?.today_route_count ?? "—"), 1)])
 			]), v("div", at, [v("div", ot, [
@@ -1182,7 +1183,7 @@ var Qe = {
 					class: "pt-view-tabs",
 					role: "tablist",
 					"aria-label": "代理与流量视图",
-					onKeydown: R
+					onKeydown: z
 				}, [(n(), k(p, null, o(j, (e) => v("button", {
 					key: e,
 					type: "button",
@@ -1194,7 +1195,7 @@ var Qe = {
 					class: S({ "is-active": D(l) === e }),
 					onClick: (t) => D(i).setRecordView(e)
 				}, [A(g(M[e]) + " ", 1), v("span", null, g(D(x) ? "—" : D(f)[e].total), 1)], 10, st)), 64))], 32),
-				v("div", ct, [v("span", lt, g(D(x) ? "数据暂不可用" : `${P.value.total.toLocaleString()} 条记录`), 1), c(ee, {
+				v("div", ct, [v("span", lt, g(D(x) ? "数据暂不可用" : `${I.value.total.toLocaleString()} 条记录`), 1), c(P, {
 					items: N.value,
 					onRemove: D(i).removeFilter
 				}, null, 8, ["items", "onRemove"])]),
@@ -1202,10 +1203,10 @@ var Qe = {
 					v("span", dt, [c(Ne, {
 						view: D(l),
 						filters: D(d),
-						state: P.value.state,
+						state: I.value.state,
 						summary: D(m),
 						open: D(w) && D(T) === "all",
-						onChange: r[0] ||= (e, t) => I(D(l), e, t),
+						onChange: r[0] ||= (e, t) => L(D(l), e, t),
 						"onUpdate:open": r[1] ||= (e) => T.value = e ? "all" : null
 					}, null, 8, [
 						"view",
@@ -1224,7 +1225,7 @@ var Qe = {
 						type: "button",
 						class: "ui-link",
 						"aria-label": "恢复当前列表列宽",
-						onClick: L
+						onClick: R
 					}, "恢复列宽"),
 					v("button", {
 						type: "button",
@@ -1257,7 +1258,7 @@ var Qe = {
 				"open-filter": D(T),
 				"scroll-revision": D(i).scrollRevision[t],
 				"facet-label": e.deps.facetLabel,
-				onFilter: (e, n) => I(t, e, n),
+				onFilter: (e, n) => L(t, e, n),
 				"onUpdate:openFilter": r[4] ||= (e) => T.value = e,
 				onDetail: D(i).openDetail,
 				onRetry: r[5] ||= (e) => D(i).load()

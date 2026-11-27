@@ -1318,6 +1318,7 @@ function closePageDialogsForNavigation() {
   window.DashboardPage?.closeDialogs?.();
   window.RegistrationPage?.closeDetail?.();
   window.ExtractWorkbenchPage?.closeDialogs?.();
+  window.SalesPage?.closeDialogs?.();
   window.EmailPage?.closeDialogs();
   window.ProxyTraffic?.closeDetail({restoreFocus:false});
   window.TaskCenter?.closeDetail();
@@ -1389,10 +1390,16 @@ function activateTab(tab, persist=true, historyMode=persist ? 'push' : 'none') {
   window.TaskCenter?.setVisible(tab === 'tasks');
   if (tab === 'accounts') {
     const view = $('#tab-accounts')?.dataset.moduleView || 'active';
-    if (window.AccountsPage) window.AccountsPage.setArchived(view === 'archived');
-    else ensureViewLoaded(`accounts:${view}`, loadAccounts);
+    if (view !== 'sales') {
+      if (window.AccountsPage) window.AccountsPage.setArchived(view === 'archived');
+      else ensureViewLoaded(`accounts:${view}`, loadAccounts);
+    }
   }
-  window.AccountsPage?.setVisible(tab === 'accounts');
+  const salesVisible = tab === 'accounts' && $('#tab-accounts')?.dataset.moduleView === 'sales';
+  $('#salesPanel')?.classList.toggle('hidden', !salesVisible);
+  $('#accountsPanelV2')?.classList.toggle('hidden', salesVisible);
+  window.SalesPage?.setVisible(salesVisible);
+  window.AccountsPage?.setVisible(tab === 'accounts' && !salesVisible);
   if (tab === 'codex') {
     const archived = $('#tab-codex')?.dataset.moduleView === 'archived';
     window.CodexCredentials?.setArchived(archived);
@@ -1422,6 +1429,7 @@ const MODULE_VIEW_META = {
   accounts: {
     active: '查询、筛选和批量维护活跃账号',
     archived: '集中查看和恢复已归档账号',
+    sales: '管理待售账号、店铺库存与销售记录',
   },
   codex: {
     active: '查询、导出和批量维护未归档的 Codex 授权凭证',
@@ -1449,8 +1457,14 @@ function setModuleView(module, view, persist=true, historyMode='push') {
   });
   if ($('#topbarDescription')) $('#topbarDescription').textContent = MODULE_VIEW_META[module][view];
   if (module === 'accounts' && view === 'tasks') ensureViewLoaded('account-tasks', loadAccountTasks);
-  else if (module === 'accounts' && SHOW_ARCHIVED_ACCOUNTS !== (view === 'archived')) applyAccountsArchivedFilter(view === 'archived');
-  if (module === 'accounts') window.AccountsPage?.setVisible(ACTIVE_TAB === 'accounts' && view !== 'tasks');
+  else if (module === 'accounts' && view !== 'sales' && SHOW_ARCHIVED_ACCOUNTS !== (view === 'archived')) applyAccountsArchivedFilter(view === 'archived');
+  if (module === 'accounts') {
+    const salesVisible = ACTIVE_TAB === 'accounts' && view === 'sales';
+    $('#salesPanel')?.classList.toggle('hidden', !salesVisible);
+    $('#accountsPanelV2')?.classList.toggle('hidden', view === 'sales');
+    window.SalesPage?.setVisible(salesVisible);
+    window.AccountsPage?.setVisible(ACTIVE_TAB === 'accounts' && view !== 'tasks' && view !== 'sales');
+  }
   if (module === 'register') {
     window.RegistrationPage?.setView(view === 'tasks' ? 'tasks' : 'launch');
     if (!window.RegistrationPage) refreshJobs({coalesce: true});
