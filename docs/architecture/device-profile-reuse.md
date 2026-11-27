@@ -353,6 +353,32 @@ prepared → submitted → confirmed
 - `send-otp` 未登录是否可用；body 是否需要邮箱
 - `reset` 是否强制 sentinel；`continue_url` 是否为必走跳转
 
+### 6.12 端点探测结论（2026-11-27，实测）
+
+用一个有效会话（`hobbies39`，`/api/auth/session` 200 且有 AT）先导航到 `/reset-password`，
+再对候选端点发 GET，看 405（路由存在、方法不符）还是 404（路由不存在）：
+
+| 端点 | 结果 | 含义 |
+|---|---|---|
+| `POST /api/accounts/password/reset` | 405 on GET | 存在，仅 POST |
+| `/api/accounts/password/change` | 404 | 不存在 |
+| `/api/accounts/password/update` | 404 | 不存在 |
+| `/api/accounts/password/set` | 404 | 不存在 |
+| `/api/accounts/password` | 404 | 不存在 |
+| `/api/accounts/password/change/send-otp` | 404 | 不存在 |
+| `/api/accounts/password/current` | 404 | 不存在 |
+
+前端 JS 中 `password_change` 仅作为“敏感操作冷却”类别出现（与 `password_reset`、
+`change_email` 并列），未发现对应端点。
+
+结论：
+1. **改密必须接码**，当前唯一确认路径是 `send-otp → validate → reset`
+2. **邮箱失效即无法改密**（在已知端点下成立）
+3. “登录后用旧密码直改”不成立，取消该候选方案
+4. 邮箱有效性成为硬前置：`email_invalid` 或取码失败直接判不可改
+
+待办：若后续要确认设置页是否有其他改密入口，需用真实浏览器（Roxy）抓一次请求。
+
 ### 6.11 后续（原第三步尾巴）
 
 - 历史回填：协议号 trusted；rust 号 placeholder（不复用）
