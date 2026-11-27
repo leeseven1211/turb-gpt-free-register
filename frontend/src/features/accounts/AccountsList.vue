@@ -57,6 +57,7 @@ function detail(id:string,trigger:HTMLElement|null){
 }
 function setVisible(value:boolean){if(!value){openFilter.value=null;props.callbacks.closeConsumers?.(false);}list.setVisible(value);}
 function setArchived(value:boolean){openFilter.value=null;list.setArchived(value);}
+function setViewScope(view:'active'|'team'|'archived'){openFilter.value=null;list.setViewScope(view);}
 function clearSearch(){list.clearSearch();search.value?.focus();}
 function resetColumns(){table.value?.resetColumns();}
 watch([list.selected,list.selectedEmails,total,page,size,query,loading,visible],()=>props.callbacks.onStateChange?.(Object.freeze({
@@ -66,7 +67,7 @@ watch([list.selected,list.selectedEmails,total,page,size,query,loading,visible],
 const visibilityChanged=()=>{documentVisible.value=!document.hidden;if(document.hidden){openFilter.value=null;props.callbacks.closeConsumers?.();}};
 if(typeof document!=='undefined')document.addEventListener('visibilitychange',visibilityChanged);
 onBeforeUnmount(()=>{if(typeof document!=='undefined')document.removeEventListener('visibilitychange',visibilityChanged);props.callbacks.closeConsumers?.();});
-defineExpose({refresh:list.refresh,pollStatuses:list.pollStatuses,setVisible,setArchived,openDetail:detail,setPage:list.setPage,setSize:list.setSize,
+defineExpose({refresh:list.refresh,pollStatuses:list.pollStatuses,setVisible,setArchived,setViewScope,openDetail:detail,setPage:list.setPage,setSize:list.setSize,
   closeMoreMenus:()=>table.value?.closeMenu(),
   updateQuery:list.updateQuery,updateFilters:list.updateFilters,resetFilters:list.resetFilters,resetColumns,
   getAccountSelectionSnapshot:list.getAccountSelectionSnapshot,getActionContext:list.getActionContext,getRowSnapshot:list.getRowSnapshot,
@@ -74,6 +75,7 @@ defineExpose({refresh:list.refresh,pollStatuses:list.pollStatuses,setVisible,set
 </script>
 <template>
   <section v-show="visible" class="ac-root" aria-label="账号列表">
+    <slot name="banner"/>
     <div class="ac-toolbar">
       <div v-if="chips.length" class="ac-toolbar-main"><ListFilterSummary :items="chips" @remove="clearFilter"/></div>
       <slot name="actions"/>

@@ -27,6 +27,22 @@ function displayHtml(value:string):string {
   return holder.innerHTML;
 }
 const rows=computed(()=>(props.stale&&props.loading?[]:props.items).map(row=>({row,id:String(row.id),cells:Object.fromEntries(accountColumns.filter(column=>column.cell).map(column=>[column.cell!,displayHtml(props.presentation.cell(column.cell!,row))])),menu:props.presentation.menu(row),mobile:props.presentation.mobileSummary(row),tone:props.presentation.rowTone(row)})));
+type TeamMembershipItem=NonNullable<AccountViewRow['team_memberships']>[number];
+const teamRoleLabels:Record<string,string>={owner:'所有者',admin:'管理员',member:'成员'};
+const teamStateLabels:Record<string,string>={invited:'待接受',joining:'入组中'};
+function teamMembershipText(m:DeepReadonly<TeamMembershipItem>){
+  const name=m.display_name||m.workspace_name||m.workspace_id||`#${m.team_id}`;
+  const role=teamRoleLabels[String(m.role||'').toLowerCase()]||'';
+  const state=teamStateLabels[String(m.membership_state||'').toLowerCase()]||'';
+  const meta=[role,state].filter(Boolean).join('·');
+  return meta?`${name} · ${meta}`:name;
+}
+function teamMembershipTitle(m:DeepReadonly<TeamMembershipItem>){
+  const name=m.display_name||m.workspace_name||m.workspace_id||`#${m.team_id}`;
+  const role=teamRoleLabels[String(m.role||'').toLowerCase()]||m.role||'待核验';
+  const state={joined:'已加入',invited:'待接受',joining:'入组中'}[String(m.membership_state||'').toLowerCase()]||m.membership_state||'未知';
+  return `${name} · 角色：${role} · 状态：${state} · Team #${m.team_id}`;
+}
 const filterFor=(key:string)=>accountFilters.find(column=>column.key===key)!;
 function handleRowClick(event:MouseEvent,row:AccountRenderRow){
   if(props.stale||!props.visible){event.preventDefault();event.stopPropagation();return;}
@@ -64,7 +80,7 @@ defineExpose({resetColumns,closeMenu});
       <tbody id="accountsBodyV2"><tr v-for="entry in rows" :key="entry.id" :data-account-row="entry.id" :class="{'ac-row-selected':selected.has(entry.id)}" @click="handleRowClick($event,entry.row)">
         <td class="col-check"><input type="checkbox" class="account-row-check" :data-account-id="entry.id" :aria-label="`选择账号 ${entry.row.email||entry.id}`" :checked="selected.has(entry.id)" :disabled="stale" @change="emit('select',entry.id,($event.target as HTMLInputElement).checked)"></td>
         <td class="col-id"><ListCell :text="`#${entry.id}`"/></td>
-        <td class="col-email"><button type="button" class="acc-v2-email-link account-cell-line" :disabled="stale" :data-account-detail-id="entry.id" title="查看账号详情"><span class="acc-mobile-dot" :class="`is-${entry.tone}`" aria-hidden="true"></span><span class="acc-v2-email">{{ entry.row.email }}<span v-if="entry.row.archived" class="pill status-used" title="该账号已归档">归档</span></span></button><div class="acc-v2-sub account-cell-line account-cell-line--sub account-email-meta"><span class="account-email-name">{{ entry.row.user_name||'-' }}</span><span v-html="presentation.emailInvalidBadge(entry.row)"></span></div><div class="acc-mobile-meta">{{ entry.mobile }}</div></td>
+        <td class="col-email"><button type="button" class="acc-v2-email-link account-cell-line" :disabled="stale" :data-account-detail-id="entry.id" title="查看账号详情"><span class="acc-mobile-dot" :class="`is-${entry.tone}`" aria-hidden="true"></span><span class="acc-v2-email" style="flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis">{{ entry.row.email }}</span><span v-if="entry.row.archived" class="pill status-used" style="flex:none" title="该账号已归档">归档</span></button><div class="acc-v2-sub account-cell-line account-cell-line--sub account-email-meta"><span v-if="!entry.row.team_memberships?.length" class="account-email-name">{{ entry.row.user_name||'-' }}</span><span v-html="presentation.emailInvalidBadge(entry.row)"></span><span v-if="entry.row.team_memberships?.length" class="acc-team-membership-badges"><span v-if="entry.row.team_memberships.length > 1" class="acc-team-pill acc-team-pill--conflict" title="该账号在本地同时关联了多个 Team 工作区">归属冲突</span><span v-for="m in entry.row.team_memberships" :key="String(m.team_id)" class="acc-team-pill" :title="teamMembershipTitle(m)">{{ teamMembershipText(m) }}</span></span></div><div class="acc-mobile-meta">{{ entry.mobile }}</div></td>
         <td class="col-source"><ListCell :text="entry.row.email_source||'-'"/></td>
         <td class="col-registration-driver"><ListCell :text="presentation.registrationDriverLabel(entry.row.registration_driver)"/></td>
         <td v-for="column in accountColumns.filter(column=>column.cell)" :key="column.key" :class="column.className" :data-label="column.label"><div class="ac-legacy-cell" v-html="entry.cells[column.cell!]"></div></td>

@@ -9,6 +9,7 @@ import {ACCOUNT_TOOLBAR_BUTTONS,type AccountToolbarCapabilities} from './account
 import type {AccountViewRow} from './useAccounts';
 import type {AccountActionContext} from './useAccounts';
 import type {AccountActionDispatcher} from './actions';
+import {teamsApi} from '../../api/teams';
 import AccountsList from './AccountsList.vue';
 import AccountDetail from './AccountDetail.vue';
 import Inspection from './Inspection.vue';
@@ -40,7 +41,51 @@ const toolbar=ref<InstanceType<typeof AccountsToolbar>>();
 const registrationReceipt=ref<InstanceType<typeof RegistrationRetryReceipt>>();
 const toolbarSnapshot=shallowRef<AccountsLegacyState>(),capabilities=shallowRef(props.initialCapabilities),pendingVersion=ref(0);
 const busyLabels=shallowRef<Readonly<Record<string,string>>>({});
+const targetTeam=ref<{team_id:string;effective_name:string}|null>(null);
+const submittingTeamSelection=ref(false);
 function owner(){if(!list.value)throw new Error('账号列表正在加载，请稍后重试');return list.value;}
+async function submitSelectedToTargetTeam(){
+  if(!targetTeam.value||submittingTeamSelection.value)return;
+  const context=owner().getActionContext();
+  if(!context.accountIds.length){props.callbacks.notify?.('请先选择账号');return;}
+  const teamId=targetTeam.value.team_id;
+  const teamsPage=(window as unknown as {TeamsPage?:{openJoinFromAccounts?:(payload:unknown)=>Promise<void>|void}}).TeamsPage;
+  if(!teamsPage?.openJoinFromAccounts){props.callbacks.notify?.('Team 管理模块尚未就绪，请稍后重试');return;}
+  targetTeam.value=null;
+  await teamsPage.openJoinFromAccounts({mode:'explicit',accountIds:[...context.accountIds],expectedEmails:{...context.expectedEmails},targetTeamId:teamId});
+}
+async function submitFilteredToTargetTeam(){
+  if(!targetTeam.value||(toolbarSnapshot.value?.total||0)<1||submittingTeamSelection.value)return;
+  const teamsPage=(window as unknown as {TeamsPage?:{openJoinFromAccounts?:(payload:unknown)=>Promise<void>|void}}).TeamsPage;
+  if(!teamsPage?.openJoinFromAccounts){props.callbacks.notify?.('Team 管理模块尚未就绪，请稍后重试');return;}
+  submittingTeamSelection.value=true;
+  try{
+    const context=owner().getActionContext();
+    const frozen=await teamsApi.freezeAccountSelection(context.querySnapshot);
+    const teamId=targetTeam.value.team_id;
+    targetTeam.value=null;
+    await teamsPage.openJoinFromAccounts({mode:'selection',selectionId:frozen.selection_id,selectionRevision:frozen.selection_revision,selectedCount:frozen.matched_count,targetTeamId:teamId});
+  }catch(cause){
+    props.callbacks.notify?.(cause instanceof Error?cause.message:'固定筛选名单失败，请稍后重试');
+  }finally{
+    submittingTeamSelection.value=false;
+  }
+}
+function exitTeamCandidateMode(){
+  const teamId=targetTeam.value?.team_id;
+  targetTeam.value=null;
+  if(teamId){
+    (window as unknown as {TeamsPage?:{navigate?:(nav:unknown)=>void}}).TeamsPage?.navigate?.({view:'detail',team_id:teamId,section:'members'});
+  }
+}
+function openTeamJoin(context:AccountActionContext){
+  if(!context.accountIds.length){props.callbacks.notify?.('请先选择账号');return;}
+  const teamId=targetTeam.value?.team_id||null;
+  if(teamId)targetTeam.value=null;
+  const teamsPage=(window as unknown as {TeamsPage?:{openJoinFromAccounts?:(payload:unknown)=>Promise<void>|void}}).TeamsPage;
+  if(!teamsPage?.openJoinFromAccounts){props.callbacks.notify?.('Team 管理模块尚未就绪，请稍后重试');return;}
+  void teamsPage.openJoinFromAccounts({mode:'explicit',accountIds:[...context.accountIds],expectedEmails:{...context.expectedEmails},targetTeamId:teamId});
+}
 const toolbarState=computed(()=>{
   void pendingVersion.value;
   const context=list.value?.getActionContext();
@@ -63,6 +108,10 @@ const detailCallbacks={notify:(message:string)=>props.callbacks.notify?.(message
 onBeforeUnmount(()=>props.actions.dispose());
 defineExpose({
   setVisible:(value:boolean)=>{props.actions.setVisible(value);owner().setVisible(value);},setArchived:(value:boolean)=>owner().setArchived(value),
+  setAccountView:(view:'active'|'team'|'archived')=>owner().setViewScope(view),
+  enterTeamCandidateMode:(team:{team_id:string;effective_name:string})=>{targetTeam.value={team_id:String(team.team_id),effective_name:String(team.effective_name||'')};},
+  clearTeamCandidateMode:()=>{targetTeam.value=null;},
+  openTeamJoin,
   refresh:()=>owner().refresh(),pollStatuses:()=>owner().pollStatuses(),
   getAccountSelectionSnapshot:(...args:Parameters<InstanceType<typeof AccountsList>['getAccountSelectionSnapshot']>)=>owner().getAccountSelectionSnapshot(...args),
   getActionContext:(...args:Parameters<InstanceType<typeof AccountsList>['getActionContext']>)=>owner().getActionContext(...args),
@@ -103,6 +152,24 @@ defineExpose({
 </script>
 <template>
   <AccountsList ref="list" :adapter="adapter" :api="api" :presentation="presentation" :callbacks="callbacks">
+    <template #banner>
+      <div v-if="targetTeam && toolbarSnapshot?.visible" class="ac-team-target-banner" role="region" aria-label="Team 候选选人">
+        <div class="ac-team-target-banner__info">
+          <span>正在为工作区【<strong>{{ targetTeam.effective_name || `#${targetTeam.team_id}` }}</strong>】挑选候选账号 · 当前已勾选 <strong>{{ toolbarState.selectedCount }}</strong> 个</span>
+        </div>
+        <div class="ac-team-target-banner__actions">
+          <button type="button" class="ac-button" :disabled="toolbarState.selectedCount < 1 || submittingTeamSelection" @click="submitSelectedToTargetTeam">
+            已选账号下一步 ({{ toolbarState.selectedCount }})
+          </button>
+          <button type="button" class="ac-button" :disabled="(toolbarSnapshot?.total || 0) < 1 || submittingTeamSelection" @click="submitFilteredToTargetTeam">
+            {{ submittingTeamSelection ? '正在固定名单…' : `按当前筛选结果全量加入 (${toolbarSnapshot?.total || 0})` }}
+          </button>
+          <button type="button" class="ac-link" :disabled="submittingTeamSelection" @click="exitTeamCandidateMode">
+            退出选人并返回 Team
+          </button>
+        </div>
+      </div>
+    </template>
     <template #actions>
       <AccountsToolbar ref="toolbar" :state="toolbarState" :capabilities="capabilities" :get-context="()=>owner().getActionContext()" :invoke="invoke" :notify="callbacks.notify"/>
     </template>

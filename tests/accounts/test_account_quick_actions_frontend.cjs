@@ -20,8 +20,8 @@ test('无使用记录时恰好展示五个默认操作，C2A 留在批量操作�
   assert.deepEqual(view.ids(), defaults);
   assert.equal(view.get('accountsMoreActionsV2').contains(view.get(c2aId)), true);
   const rendered = Array.from(view.get('accountsToolbarV2').querySelectorAll('button')).map(node => node.id);
-  assert.equal(rendered.length, 39);
-  assert.equal(new Set(rendered.filter(Boolean)).size, 34);
+  assert.equal(rendered.length, 40);
+  assert.equal(new Set(rendered.filter(Boolean)).size, 35);
   assert.deepEqual(Array.from(view.get('accountsMoreActionsV2').querySelectorAll('button')).map(button => button.id), ACCOUNT_TOOLBAR_BUTTONS.map(item => item.id));
 });
 
@@ -41,7 +41,7 @@ test('点击入口保持固定快捷顺序且不读写历史使用次数', async
   assert.deepEqual(view.ids(), defaults);
   assert.equal(more.contains(view.get(defaults[4])), true);
   assert.equal(more.contains(button), true);
-  assert.equal(view.get('accountsToolbarV2').querySelectorAll('button').length, 39);
+  assert.equal(view.get('accountsToolbarV2').querySelectorAll('button').length, 40);
   assert.equal(view.get(c2aId),button);
   view.close();
   assert.deepEqual((await setup({saved:JSON.stringify({[c2aId]:9})})).ids(), defaults);
@@ -79,7 +79,7 @@ test('页面级动作也按次数进入五个快捷位置，保留单一节点�
   assert.match(template,/id="accounts-list-root"/);
   assert.equal(toolbar.contains(view.document.getElementById('accounts-list-root')),false);
   const history=view.get('btnAccountInspectionHistory');await view.click(history.id);await view.flush();
-  assert.deepEqual(view.ids(),defaults);assert.equal(view.shortcut(history.id),null);assert.equal(history.disabled,false);assert.equal(toolbar.querySelectorAll('button').length,39);
+  assert.deepEqual(view.ids(),defaults);assert.equal(view.shortcut(history.id),null);assert.equal(history.disabled,false);assert.equal(toolbar.querySelectorAll('button').length,40);
   assert.equal(view.calls.length,1);assert.equal(view.calls[0][0],'openAccountInspectionHistory');assert.equal(view.calls[0][1],view.context);assert.equal(view.calls[0][2],history);
   assert.equal(view.storage.writes.length,0);
 });

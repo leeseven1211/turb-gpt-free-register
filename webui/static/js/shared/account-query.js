@@ -23,7 +23,9 @@ window.AccountQuery = (() => {
       filters[field.key] = field.key === 'id' ? String(value || '').trim() : values(value);
     }
     filters.email = String(raw.filters?.email ?? raw.email ?? '').trim();
+    const teamScope = String(raw.team_scope || '').trim() || 'all';
     return {schema_version: 1, entity: 'account', archived: String(raw.archived || '0'),
+      team_scope: teamScope,
       q: String(raw.q || '').trim(),
       date_from: String(raw.date_from || ''), date_to: String(raw.date_to || ''),
       plan: values(raw.plan), filters, order: [{field: 'id', direction: 'desc'}],
@@ -37,6 +39,7 @@ window.AccountQuery = (() => {
     const params = new URLSearchParams();
     Object.entries(paging).forEach(([key, value]) => params.set(key, String(value)));
     for (const key of ['archived', 'q', 'date_from', 'date_to']) params.set(key, query[key]);
+    if (query.team_scope && query.team_scope !== 'all') params.set('team_scope', query.team_scope);
     params.set('email', query.filters.email);
     params.set('plan', query.plan.join(','));
     fields.forEach(({key}) => params.set(key, Array.isArray(query.filters[key]) ? query.filters[key].join(',') : query.filters[key]));

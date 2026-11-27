@@ -4,6 +4,8 @@ window.AccountsPage = (() => {
   let loading = null;
   let visible = false;
   let archived = false;
+  let accountView = 'active';
+  let pendingTargetTeam = null;
   const actionButtons = {downloadSelectedCpa:'btnDownloadSelectedCpaV2',downloadSelectedAccountSessions:'btnDownloadSelectedSessionsV2',
     checkSelectedPlans:'btnCheckSelectedPlansV2',checkSelectedLive:'btnCheckSelectedLiveV2',refreshSelectedToken:'btnRefreshSelectedTokenV2',
     checkSelectedDeactivationMail:'btnCheckSelectedDeactivationMailV2',extractSelectedLinks:'btnExtractSelectedLinksV2',
@@ -115,7 +117,13 @@ window.AccountsPage = (() => {
         },
       });
       bindAccountsHoverTooltips();
-      instance.setArchived(archived);
+      if (typeof instance.setAccountView === 'function') instance.setAccountView(accountView);
+      else instance.setArchived(archived);
+      if (pendingTargetTeam && typeof instance.enterTeamCandidateMode === 'function') {
+        const target = pendingTargetTeam;
+        pendingTargetTeam = null;
+        instance.enterTeamCandidateMode(target);
+      }
       instance.setVisible(visible);
       return instance;
     })().catch(error => {
@@ -141,7 +149,41 @@ window.AccountsPage = (() => {
       if (instance) { instance.setVisible(visible); return; }
       if (visible) { try { await ensure(); } catch (error) { report(error); } }
     },
-    setArchived(value) { archived = Boolean(value); instance?.setArchived(archived); },
+    setArchived(value) {
+      archived = Boolean(value);
+      accountView = archived ? 'archived' : (accountView === 'team' ? 'team' : 'active');
+      if (instance) {
+        if (typeof instance.setAccountView === 'function') instance.setAccountView(accountView);
+        else instance.setArchived(archived);
+      }
+    },
+    setAccountView(view) {
+      accountView = ['active', 'team', 'archived'].includes(view) ? view : 'active';
+      archived = accountView === 'archived';
+      if (instance) {
+        if (typeof instance.setAccountView === 'function') instance.setAccountView(accountView);
+        else instance.setArchived(archived);
+      }
+    },
+    enterTeamCandidateMode(team) {
+      if (!team || !team.team_id) return;
+      const normalized = { team_id: String(team.team_id), effective_name: String(team.effective_name || '') };
+      accountView = 'active';
+      archived = false;
+      if (typeof setModuleView === 'function') setModuleView('accounts', 'active', true, 'none');
+      if (instance && typeof instance.enterTeamCandidateMode === 'function') {
+        pendingTargetTeam = null;
+        instance.enterTeamCandidateMode(normalized);
+      } else {
+        pendingTargetTeam = normalized;
+      }
+      if (typeof activateTab === 'function') activateTab('accounts');
+    },
+    clearTeamCandidateMode() {
+      pendingTargetTeam = null;
+      instance?.clearTeamCandidateMode?.();
+    },
+    openTeamJoin: context => owner().openTeamJoin(context),
     async refresh() {
       try {
         if (instance) await instance.refresh();

@@ -32,6 +32,7 @@ export const ACCOUNT_TOOLBAR_BUTTONS:readonly Readonly<AccountToolbarButton>[]=O
   Object.freeze({id:'btnReimportSelectedC2aV2',label:'同步C2A',section:'服务',action:'reimportSelectedC2a',className:'jobs-tb-btn',title:'批量同步选中账号的本地当前 AT 到 C2A，唯一同邮箱时覆盖，未找到时新建账号',selection:true,feature:'c2a_sync'}),
   Object.freeze({id:'btnUploadSelectedCodexSub2V2',label:'传sub2',section:'服务',action:'uploadSelectedCodexSub2',className:'jobs-tb-btn',title:'把选中账号已通过的 Codex OAuth 凭证上传到 sub2api',selection:true,feature:'sub2_upload'}),
   Object.freeze({id:'btnDownloadSelectedCpaV2',label:'导CPA',section:'服务',action:'downloadSelectedCpa',className:'jobs-tb-btn',title:'从 CPA auth-files 下载选中账号的 Codex JSON，并打包为 ZIP',selection:true,feature:'cpa_download'}),
+  Object.freeze({id:'btnJoinTeamSelectedV2',label:'加入Team',section:'服务',action:'joinSelectedAccountsToTeam',className:'jobs-tb-btn',title:'将选中的账号批量加入指定 Team 工作区（进入预览与席位确认）',selection:true}),
 
   Object.freeze({id:'btnCopySelectedTokensV2',label:'复制AT',section:'账号',action:'copySelectedAccountTokens',className:'jobs-tb-btn',title:'复制选中账号的 AT，每个账号一行',selection:true}),
   Object.freeze({id:'btnCopySelectedLinesV2',label:'复制整行',section:'账号',action:'copySelectedAccountLines',className:'jobs-tb-btn',title:'复制选中账号的账号、密码和 2FA，每个账号一行',selection:true}),

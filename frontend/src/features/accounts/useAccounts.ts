@@ -269,7 +269,12 @@ export function useAccounts(adapter: AccountQueryAdapter, api: AccountsReadApi) 
     updateQuery({filters: {...copy(query.value.filters), ...copy(patch)}}, delay);
   }
   function setArchived(value: boolean) { updateQuery({archived: value ? 'only' : '0'}); }
-  function resetFilters() { commitQuery(adapter.normalize({archived: query.value.archived})); }
+  function setViewScope(view: 'active' | 'team' | 'archived') {
+    if (view === 'team') updateQuery({team_scope: 'team', archived: 'all'});
+    else if (view === 'archived') updateQuery({team_scope: 'all', archived: 'only'});
+    else updateQuery({team_scope: 'non_team', archived: '0'});
+  }
+  function resetFilters() { commitQuery(adapter.normalize({archived: query.value.archived, team_scope: query.value.team_scope})); }
   function setPage(value: number) {
     if (disposed || !Number.isFinite(value)) return;
     const next = Math.min(pages.value, Math.max(1, Math.floor(value)));
@@ -414,7 +419,7 @@ export function useAccounts(adapter: AccountQueryAdapter, api: AccountsReadApi) 
     selected: readonly(selected), selectedEmails: readonly(selectedEmails), loading: readonly(loading), polling: readonly(polling),
     visible: readonly(visible), error: readonly(error), invalidSearch: readonly(invalidSearch), draftSearch: readonly(draftSearch),
     renderedSignature: readonly(renderedSignature), signature, stale, pageSelected, pageIndeterminate,
-    refresh, pollStatuses, setVisible, setPage, setSize, setArchived, commitQuery, updateQuery, updateFilters, resetFilters,
+    refresh, pollStatuses, setVisible, setPage, setSize, setArchived, setViewScope, commitQuery, updateQuery, updateFilters, resetFilters,
     setSearchDraft, compositionStart, compositionEnd, submitSearch, clearSearch, removeSearchTerm,
     toggle, togglePage, clearSelection, removeAcknowledgedSelection, getAccountSelectionSnapshot, getActionContext,
     getRowSnapshot, openPlanDetailsConsumer, loadPlanDetails};

@@ -20,6 +20,7 @@ export default defineConfig({
         dashboard: fileURLToPath(new URL('./src/dashboard.ts', import.meta.url)),
         registration: fileURLToPath(new URL('./src/registration.ts', import.meta.url)),
         extract: fileURLToPath(new URL('./src/extract.ts', import.meta.url)),
+        teams: fileURLToPath(new URL('./src/teams.ts', import.meta.url)),
       },
       formats: ['es'],
       fileName: (_format, name) => `${name}.js`,

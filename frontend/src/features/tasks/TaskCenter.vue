@@ -32,10 +32,17 @@ watch(openFilter, key => {
   list.setFacetsVisible(key === 'mobile' || filterColumns.some(column => column.key === key && column.kind === 'select'));
 });
 const activeFilters = computed(() => filterColumns.filter(column => isFilterActive(column, filters)));
-const filterChips = computed(() => activeFilters.value.map(column => ({key: column.key,
-  label: `${column.label}：${filterSummary(column, filters, facets.value)}`,
-  removeLabel: `清除${column.label}筛选`,
-})));
+const hasTeamFilter = computed(() => Boolean(filters.team_id));
+const filterChips = computed(() => {
+  const chips = activeFilters.value.map(column => ({key: column.key as string,
+    label: `${column.label}：${filterSummary(column, filters, facets.value)}`,
+    removeLabel: `清除${column.label}筛选`,
+  }));
+  if (filters.team_id) {
+    chips.push({key: 'team_id', label: `Team：#${filters.team_id}`, removeLabel: '清除 Team 筛选'});
+  }
+  return chips;
+});
 const skipped = ref<{id: TaskId; message: string}[]>([]);
 const selectedRows = computed(() => items.value.filter(task => selected.value.has(task.id)));
 const counts = computed(() => Object.fromEntries((['retry', 'cancel', 'terminate', 'delete'] as TaskAction[])
@@ -61,8 +68,20 @@ function clearTargetSearch() {
   targetInput.value?.focus();
 }
 function removeFilter(key: string) {
+  if (key === 'team_id') {
+    updateFilters({...filters, team_id: ''});
+    return;
+  }
   const column = filterColumns.find(column => column.key === key);
   if (column) updateFilters(clearColumnFilter(column, filters));
+}
+function backToTeam() {
+  if (!filters.team_id) return;
+  (window as unknown as {TeamsPage?: {navigate?: (nav: unknown) => void}}).TeamsPage?.navigate?.({
+    view: 'detail',
+    team_id: filters.team_id,
+    section: 'invitations',
+  });
 }
 function openDetail(taskId: TaskId, runId?: TaskId | null, stepId?: string | null) { detail.value?.open(taskId, runId, stepId); }
 async function open(options: {filters?: Partial<TaskFilters>; taskId?: TaskId; runId?: TaskId | null; stepId?: string | null} = {}) {
@@ -137,7 +156,7 @@ defineExpose({open, refresh, closeDetail, setVisible});
 <template>
   <section v-show="visible" class="tc-root" aria-label="统一任务中心">
     <div class="ui-list tc-workspace">
-      <ListToolbar :filtered="activeFilters.length > 0">
+      <ListToolbar :filtered="activeFilters.length > 0 || hasTeamFilter">
         <span class="ui-list-count tc-count" role="status">{{ total.toLocaleString() }} 个任务</span>
         <div class="tc-target-search" role="search">
           <input ref="targetInput" type="search" :value="targetDraft" placeholder="搜索目标邮箱 / 账号..." aria-label="搜索任务目标" autocomplete="off" @input="onTargetInput(($event.target as HTMLInputElement).value)" @keydown.enter.prevent="commitTarget(targetDraft)" @keydown.esc.prevent="clearTargetSearch">
@@ -147,8 +166,9 @@ defineExpose({open, refresh, closeDetail, setVisible});
         <div v-if="selectedRows.length" class="tc-bulk-actions" role="group" aria-label="选中任务批量操作"><button v-for="kind in (['retry', 'cancel', 'terminate', 'delete'] as TaskAction[])" :key="kind" type="button" class="ui-button" :class="{'ui-button--danger': kind === 'delete' || kind === 'terminate'}" :disabled="busy || !counts[kind]" @click="bulk(kind)">{{ labels[kind] }}{{ counts[kind] ? `（${counts[kind]}）` : '' }}</button></div>
         <ListFilterSummary :items="filterChips" @remove="removeFilter"/>
         <template #actions>
+          <button v-if="filters.team_id" type="button" class="ui-button" @click="backToTeam">返回该 Team</button>
           <TaskFiltersMenu :model-value="filters" :facets="facets" :open="openFilter === 'mobile'" @update:model-value="updateFilters" @update:open="openFilter = $event ? 'mobile' : null"/>
-          <button v-if="activeFilters.length" type="button" class="ui-link" @click="list.applyFilters({})">清除全部筛选</button>
+          <button v-if="activeFilters.length || hasTeamFilter" type="button" class="ui-link" @click="list.applyFilters({})">清除全部筛选</button>
           <span class="tc-timezone" :title="timezone">时间按 {{ timezone }} 显示</span>
           <button type="button" class="ui-link" @click="table?.resetColumns()">恢复列宽</button>
           <button id="btnRefreshTasksV2" type="button" class="ui-button ui-refresh-button" :disabled="loading" @click="list.refresh()">{{ loading ? '刷新中…' : '刷新' }}</button>

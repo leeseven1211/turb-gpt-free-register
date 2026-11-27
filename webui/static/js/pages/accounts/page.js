@@ -1140,6 +1140,7 @@ function _accountsV2MoreMenu(r) {
         deactivated ? '' : `<button type="button" data-account-action="twofa_change" data-account-id="${esc(r.id)}">修改 2FA</button>`,
         deactivated ? '' : `<button type="button" data-account-action="complete" data-account-id="${esc(r.id)}">补全账号</button>`,
         deactivated ? '' : `<button type="button" data-account-email-change="${esc(r.id)}" title="协议自动领取新邮箱并换绑；不会启动浏览器">换绑邮箱</button>`,
+        deactivated ? '' : `<button type="button" data-account-join-team="${esc(r.id)}" title="将该账号加入指定 Team 工作区">加入 Team</button>`,
         registrationRetry,
       ],
     },
@@ -1184,6 +1185,28 @@ function _accountDetailAuthMethod(value) {
   };
   const key = String(value || '').toLowerCase();
   return labels[key] || value || '未记录';
+}
+function _accountTeamMembershipsMarkup(r) {
+  const list = Array.isArray(r.team_memberships) ? r.team_memberships.filter(Boolean) : [];
+  if (!list.length) return '';
+  const roleLabels = { owner: '所有者', admin: '管理员', member: '成员', unknown: '待核验' };
+  const stateLabels = { joined: '已加入', invited: '待接受', joining: '入组中', left: '已离开', removed: '已移除', unconfirmed: '待确认' };
+  const conflict = list.length > 1;
+  const items = list.map(item => {
+    const name = item.display_name || item.workspace_name || item.name || item.workspace_id || `#${item.team_id}`;
+    const roleKey = String(item.role || '').toLowerCase();
+    const stateKey = String(item.membership_state || '').toLowerCase();
+    const roleLabel = roleLabels[roleKey] || item.role || '待核验';
+    const stateLabel = stateLabels[stateKey] || item.membership_state || '未知';
+    const tone = stateKey === 'joined' ? 'success' : (stateKey === 'invited' || stateKey === 'joining' ? 'warning' : 'neutral');
+    const detail = [`Team #${item.team_id}`, item.workspace_id ? `工作区 ${item.workspace_id}` : ''].filter(Boolean).join(' · ');
+    return _accountDetailState(name, `${roleLabel} · ${stateLabel}`, tone, detail);
+  }).join('');
+  return `<div class="account-detail-section">
+    <div class="account-detail-section-title">所属 Team 工作区${conflict ? '（归属冲突）' : ''}</div>
+    ${conflict ? '<p class="account-detail-section-copy">检测到该账号在本地存在多条 Team 归属记录，请核对后再发起新的加入操作。</p>' : ''}
+    <div class="account-detail-grid">${items}</div>
+  </div>`;
 }
 function _accountDetailFingerprintMarkup(r) {
   const fingerprint = r.fingerprint_summary && typeof r.fingerprint_summary === 'object'
@@ -1298,6 +1321,7 @@ function _accountDetailMarkup(r) {
       ${_accountDetailState('归档状态', r.archived ? '已归档' : '活跃', r.archived ? 'neutral' : 'success')}
     </div>
   </div>
+  ${_accountTeamMembershipsMarkup(r)}
   ${_accountDetailFingerprintMarkup(r)}
   <div class="account-detail-section">
     <div class="account-detail-section-title">套餐与授权</div>
@@ -1717,7 +1741,12 @@ function invokeAccountAction(action, suppliedContext, trigger = null) {
   if (name === 'setAccountsEmailInvalid') return setAccountsEmailInvalid(null, value !== '0', trigger, context);
   if (name === 'openAccountInspectionStart') return openAccountInspectionStart(context, trigger);
   if (name === 'deleteDeactivatedAccounts') return deleteDeactivatedAccounts(context);
+  if (name === 'joinSelectedAccountsToTeam') {
+    if (!context.accountIds.length) { showToast('请先选择账号'); return; }
+    return window.AccountsPage?.openTeamJoin?.(context);
+  }
   if (!id) { showToast('请先选择账号'); return; }
+  if (name === 'account-join-team') return window.AccountsPage?.openTeamJoin?.(context);
   if (name === 'account-setup') return setupOneAccount(id, trigger, context);
   if (name === 'account-action') return runOneAccountAction(id, value, trigger, context);
   if (name === 'account-copy-secret') return copyOneAccountSecret(id, value, trigger, context);

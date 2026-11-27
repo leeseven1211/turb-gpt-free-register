@@ -1150,6 +1150,7 @@ const TAB_META = {
   overview: { title: '平台总览', description: '账号、邮箱、任务和网络资源运行状态' },
   register: { title: '注册中心', description: '发起批次并追踪自动化注册流程' },
   bulk: { title: '批量任务', description: '按筛选范围创建、暂停和追踪批量账号操作' },
+  teams: { title: 'Team 管理', description: '管理工作区成员、批量拉人与席位边界' },
   tasks: { title: '任务中心', description: '统一查看注册、恢复、Codex 补跑和账号操作的任务链路' },
   'extract-workbench': { title: '提链工作台', description: '管理提链、支付状态和 Plus 权益核验' },
   'extract-stats': { title: '提链统计', description: '查看提链产出、支付转化、平台表现和失败分布' },
@@ -1159,7 +1160,7 @@ const TAB_META = {
   'proxy-traffic': { title: '代理与流量', description: '查看持久化线路租约、线路历史和请求流量' },
   config: { title: '运行配置', description: '调整安全的运行参数与服务集成' },
 };
-const NAV_ALLOWED_TABS = ['overview','register','bulk','tasks','accounts','codex','outlook','proxy-traffic','config','extract-workbench','extract-stats'];
+const NAV_ALLOWED_TABS = ['overview','register','bulk','teams','tasks','accounts','codex','outlook','proxy-traffic','config','extract-workbench','extract-stats'];
 const NAV_HISTORY_KEY = 'gptConsoleNav';
 let ACTIVE_TAB = 'overview';
 let navigationHistoryBound = false;
@@ -1177,6 +1178,16 @@ function normalizeNavigationState(raw) {
     if (nav.view === 'detail' && !/^\d+$/.test(nav.batch_id || '')) return {tab, view:'list'};
     return nav;
   }
+  if (tab === 'teams') {
+    const view = raw?.view === 'detail' ? 'detail' : 'list';
+    if (view === 'detail') {
+      const teamId = typeof raw?.team_id === 'string' ? raw.team_id.trim() : '';
+      if (!/^[1-9]\d*$/.test(teamId)) return {tab, view:'list'};
+      const section = raw?.section === 'invitations' ? 'invitations' : 'members';
+      return {tab, view:'detail', team_id: teamId, section};
+    }
+    return {tab, view:'list'};
+  }
   const module = navigationModuleForTab(tab);
   const view = raw?.view;
   if (module && view && MODULE_VIEW_META[module]?.[view] !== undefined) return {tab, module, view};
@@ -1185,6 +1196,7 @@ function normalizeNavigationState(raw) {
 function currentNavigationState() {
   const tab = NAV_ALLOWED_TABS.includes(ACTIVE_TAB) ? ACTIVE_TAB : 'overview';
   if (tab === 'bulk' && window.BulkTasks) return normalizeNavigationState(BulkTasks.navigationState());
+  if (tab === 'teams' && window.TeamsPage) return normalizeNavigationState(window.TeamsPage.navigationState());
   const module = navigationModuleForTab(tab);
   const view = module ? document.getElementById(`tab-${module}`)?.dataset.moduleView : null;
   return normalizeNavigationState({tab, view});
@@ -1196,11 +1208,20 @@ function navigationHash(state) {
     const query = new URLSearchParams(params).toString();
     return `#bulk/${view}${query ? `?${query}` : ''}`;
   }
+  if (nav.tab === 'teams') {
+    if (nav.view === 'detail' && nav.team_id) {
+      const query = new URLSearchParams({team_id: nav.team_id, section: nav.section || 'members'}).toString();
+      return `#teams/detail?${query}`;
+    }
+    return '#teams';
+  }
   return `#${nav.tab}${nav.module && nav.view ? `/${encodeURIComponent(nav.view)}` : ''}`;
 }
 function parseNavigationHash(hash) {
   const bulk = String(hash || '').match(/^#bulk(?:\/(list|create|detail))?(?:\?(.*))?$/);
   if (bulk) return normalizeNavigationState({...Object.fromEntries(new URLSearchParams(bulk[2] || '')),tab:'bulk',view:bulk[1] || 'list'});
+  const teams = String(hash || '').match(/^#teams(?:\/(list|detail))?(?:\?(.*))?$/);
+  if (teams) return normalizeNavigationState({...Object.fromEntries(new URLSearchParams(teams[2] || '')),tab:'teams',view:teams[1] || 'list'});
   const parts = String(hash || '').replace(/^#/, '').split('/').filter(Boolean);
   if (!parts.length || !NAV_ALLOWED_TABS.includes(parts[0]) || parts.length > 2) return null;
   let view = '';
@@ -1213,6 +1234,7 @@ function parseNavigationHash(hash) {
 function historyNavigationState() {
   if (history.state?.[NAV_HISTORY_KEY]) {
     if (history.state.gptConsoleNavTab === 'bulk') return normalizeNavigationState(history.state.gptConsoleBulkNav || {tab:'bulk',view:'list'});
+    if (history.state.gptConsoleNavTab === 'teams') return normalizeNavigationState(history.state.gptConsoleTeamsNav || {tab:'teams',view:'list'});
     return normalizeNavigationState({tab: history.state.gptConsoleNavTab, view: history.state.gptConsoleNavView});
   }
   return parseNavigationHash(location.hash);
@@ -1239,6 +1261,7 @@ function recordNavigationHistory(mode = 'push') {
     gptConsoleNavTab: nav.tab,
     gptConsoleNavView: nav.view || '',
     gptConsoleBulkNav: nav.tab === 'bulk' ? nav : null,
+    gptConsoleTeamsNav: nav.tab === 'teams' ? nav : null,
     gptConsoleNavIndex: nextIndex,
   };
   history[mode === 'push' ? 'pushState' : 'replaceState'](nextState, '', hash);
@@ -1247,12 +1270,16 @@ function recordNavigationHistory(mode = 'push') {
 function applyNavigationState(raw) {
   const nav = normalizeNavigationState(raw);
   if (nav.tab === 'bulk' && window.BulkTasks) BulkTasks.restoreNavigation(nav);
+  if (nav.tab === 'teams' && window.TeamsPage) window.TeamsPage.restoreNavigation(nav);
   // 激活标签前先同步目标子视图与归档范围，避免历史恢复或直开 Hash 时先按旧视图发请求。
   if (nav.module && nav.view) {
     const tab = document.getElementById(`tab-${nav.module}`);
     if (tab && tab.dataset.moduleView !== nav.view && nav.tab === ACTIVE_TAB) closePageDialogsForNavigation();
     if (tab) tab.dataset.moduleView = nav.view;
-    if (nav.module === 'accounts') SHOW_ARCHIVED_ACCOUNTS = nav.view === 'archived';
+    if (nav.module === 'accounts') {
+      SHOW_ARCHIVED_ACCOUNTS = nav.view === 'archived';
+      window.AccountsPage?.setAccountView?.(nav.view);
+    }
     localStorage.setItem(`gpt_console_module_view_${nav.module}`, nav.view);
     document.querySelectorAll(`[data-module-subnav="${nav.module}"] [data-view]`).forEach(btn => {
       btn.classList.toggle('is-active', btn.dataset.view === nav.view);
@@ -1318,6 +1345,7 @@ function closePageDialogsForNavigation() {
   window.DashboardPage?.closeDialogs?.();
   window.RegistrationPage?.closeDetail?.();
   window.ExtractWorkbenchPage?.closeDialogs?.();
+  window.TeamsPage?.closeDialogs?.();
   window.EmailPage?.closeDialogs();
   window.ProxyTraffic?.closeDetail({restoreFocus:false});
   window.TaskCenter?.closeDetail();
@@ -1358,11 +1386,12 @@ function activateTab(tab, persist=true, historyMode=persist ? 'push' : 'none') {
   $$('.sidebar-module[data-sidebar-module]').forEach(item => {
     item.classList.toggle('is-open', item.dataset.sidebarModule === sidebarTab);
   });
-  const contentTabs = ['overview','register','bulk','accounts','codex','outlook','proxy-traffic','config','extract-workbench','extract-stats'];
+  const contentTabs = ['overview','register','bulk','teams','accounts','codex','outlook','proxy-traffic','config','extract-workbench','extract-stats'];
   const accountTab = $('#tab-accounts');
   if (tab === 'tasks' && accountTab) accountTab.dataset.moduleView = 'tasks';
   if (tab === 'accounts' && accountTab?.dataset.moduleView === 'tasks') {
-    accountTab.dataset.moduleView = SHOW_ARCHIVED_ACCOUNTS ? 'archived' : 'active';
+    const savedAccountsView = localStorage.getItem('gpt_console_module_view_accounts');
+    accountTab.dataset.moduleView = SHOW_ARCHIVED_ACCOUNTS ? 'archived' : (savedAccountsView === 'team' ? 'team' : 'active');
   }
   const contentTab = tab === 'tasks' ? 'accounts' : tab;
   contentTabs.forEach(t => $('#tab-'+t).classList.toggle('hidden', t !== contentTab));
@@ -1386,10 +1415,15 @@ function activateTab(tab, persist=true, historyMode=persist ? 'push' : 'none') {
   if (tab === 'overview' && !window.DashboardPage) ensureViewLoaded('overview', loadDashboard);
   if (tab === 'bulk' && window.BulkTasks) void BulkTasks.activate();
   window.BulkTasks?.setVisible(tab === 'bulk');
+  if (tab === 'teams' && window.TeamsPage) void window.TeamsPage.activate();
+  window.TeamsPage?.setVisible(tab === 'teams');
   window.TaskCenter?.setVisible(tab === 'tasks');
   if (tab === 'accounts') {
     const view = $('#tab-accounts')?.dataset.moduleView || 'active';
-    if (window.AccountsPage) window.AccountsPage.setArchived(view === 'archived');
+    if (window.AccountsPage) {
+      if (typeof window.AccountsPage.setAccountView === 'function') window.AccountsPage.setAccountView(view);
+      else window.AccountsPage.setArchived(view === 'archived');
+    }
     else ensureViewLoaded(`accounts:${view}`, loadAccounts);
   }
   window.AccountsPage?.setVisible(tab === 'accounts');
@@ -1421,6 +1455,7 @@ const MODULE_VIEW_META = {
   },
   accounts: {
     active: '查询、筛选和批量维护活跃账号',
+    team: '集中查看已归属本地 Team 工作区的账号与角色',
     archived: '集中查看和恢复已归档账号',
   },
   codex: {
@@ -1449,7 +1484,11 @@ function setModuleView(module, view, persist=true, historyMode='push') {
   });
   if ($('#topbarDescription')) $('#topbarDescription').textContent = MODULE_VIEW_META[module][view];
   if (module === 'accounts' && view === 'tasks') ensureViewLoaded('account-tasks', loadAccountTasks);
-  else if (module === 'accounts' && SHOW_ARCHIVED_ACCOUNTS !== (view === 'archived')) applyAccountsArchivedFilter(view === 'archived');
+  else if (module === 'accounts') {
+    SHOW_ARCHIVED_ACCOUNTS = view === 'archived';
+    if (typeof window.AccountsPage?.setAccountView === 'function') window.AccountsPage.setAccountView(view);
+    else if (typeof applyAccountsArchivedFilter === 'function') applyAccountsArchivedFilter(view === 'archived');
+  }
   if (module === 'accounts') window.AccountsPage?.setVisible(ACTIVE_TAB === 'accounts' && view !== 'tasks');
   if (module === 'register') {
     window.RegistrationPage?.setView(view === 'tasks' ? 'tasks' : 'launch');
@@ -1482,7 +1521,10 @@ $$('[data-module-subnav]').forEach(nav => nav.addEventListener('click', event =>
     // activation loads the old view and setModuleView immediately loads the
     // new view again, producing a visible waterfall on submenu clicks.
     tab.dataset.moduleView = btn.dataset.view;
-    if (module === 'accounts') SHOW_ARCHIVED_ACCOUNTS = btn.dataset.view === 'archived';
+    if (module === 'accounts') {
+      SHOW_ARCHIVED_ACCOUNTS = btn.dataset.view === 'archived';
+      window.AccountsPage?.setAccountView?.(btn.dataset.view);
+    }
     if (module === 'register') localStorage.setItem('gpt_console_module_view_register', btn.dataset.view);
     if (module === 'accounts') localStorage.setItem('gpt_console_module_view_accounts', btn.dataset.view);
     if (module === 'codex') localStorage.setItem('gpt_console_module_view_codex', btn.dataset.view);
@@ -1504,7 +1546,10 @@ function restoreModuleViewState() {
     document.querySelectorAll(`[data-module-subnav="${module}"] [data-view]`).forEach(btn => {
       btn.classList.toggle('is-active', btn.dataset.view === saved);
     });
-    if (module === 'accounts') SHOW_ARCHIVED_ACCOUNTS = saved === 'archived';
+    if (module === 'accounts') {
+      SHOW_ARCHIVED_ACCOUNTS = saved === 'archived';
+      window.AccountsPage?.setAccountView?.(saved);
+    }
     if (module === 'codex') window.CodexCredentials?.setArchived(saved === 'archived');
   });
 }

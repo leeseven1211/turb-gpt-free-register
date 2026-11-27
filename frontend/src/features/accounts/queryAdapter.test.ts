@@ -18,11 +18,24 @@ describe('AccountQuery 唯一适配', () => {
   it('空查询与规范化对象完整保留既有v1结构，不引入第二套缺省值', () => {
     const {adapter} = setup();
     expect(plain(adapter.normalize())).toEqual({
-      schema_version: 1, entity: 'account', archived: '0', q: '', date_from: '', date_to: '', plan: [],
+      schema_version: 1, entity: 'account', archived: '0', team_scope: 'all', q: '', date_from: '', date_to: '', plan: [],
       filters: {id: '', source: [], registration_driver: [], token: [], password: [], promotion: [],
         totp: [], risk: [], codex: [], account_status: [], email_status: [], email: ''},
       order: [{field: 'id', direction: 'desc'}], limit: null,
     });
+  });
+
+  it('team_scope 在 non_team / team 下精确往返，默认 all 时不污染旧列表参数', () => {
+    const {adapter, legacy} = setup();
+    for (const scope of ['non_team', 'team'] as const) {
+      const parsed = adapter.fromLegacy(`archived=0&team_scope=${scope}`);
+      expect(parsed.team_scope).toBe(scope);
+      const serialized = adapter.toLegacy(parsed, {paged: '1', page: 1, page_size: 10});
+      expect(serialized.get('team_scope')).toBe(scope);
+      expect(serialized.toString()).toBe(legacy.toLegacy(parsed, {paged: '1', page: 1, page_size: 10}).toString());
+    }
+    const defaultSerialized = adapter.toLegacy(adapter.normalize({team_scope: 'all'}));
+    expect(defaultSerialized.has('team_scope')).toBe(false);
   });
 
   it('完整旧参数往返保留文本逗号、大ID、全部枚举和稳定顺序', () => {

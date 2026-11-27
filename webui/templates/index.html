@@ -90,9 +90,14 @@
       </button>
       <div class="sidebar-subnav" data-module-subnav="accounts" aria-label="账号资产子菜单">
         <button type="button" class="is-active" data-view="active">活跃账号</button>
+        <button type="button" data-view="team">Team 账号</button>
         <button type="button" data-view="archived">归档账号</button>
       </div>
     </div>
+    <button type="button" data-tab="teams" class="sidebar-item">
+      <svg class="sidebar-item-icon" viewBox="0 0 24 24" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3L4 7v6c0 5 3.4 7.9 8 9 4.6-1.1 8-4 8-9V7l-8-4z"/><path d="M9 12l2 2 4-4"/></svg>
+      <span class="sidebar-item-label">Team 管理</span>
+    </button>
     <div class="sidebar-module" data-sidebar-module="codex">
       <button type="button" data-tab="codex" class="sidebar-item">
         <svg class="sidebar-item-icon" viewBox="0 0 24 24" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
@@ -270,6 +275,13 @@
     </div>
   </div>
 
+  <!-- ============ Team 管理 ============ -->
+  <section id="tab-teams" class="hidden" aria-label="Team 管理">
+    <div id="teams-page-root"
+         data-module-url="{{ url_for('static', filename='task-center/teams.js', v=asset_version) }}"
+         data-style-url="{{ url_for('static', filename='task-center/task-center.css', v=asset_version) }}"></div>
+  </section>
+
   <!-- ============ Codex 授权 ============ -->
   <div id="tab-codex" class="hidden" data-module-view="active">
     <h1 class="register-title">Codex 授权</h1>
@@ -330,4 +342,5 @@
 <script src="{{ url_for('static', filename='js/pages/proxy/traffic.js', v=asset_version) }}"></script>
 <script src="{{ url_for('static', filename='js/pages/bulk/report.js', v=asset_version) }}"></script>
 <script src="{{ url_for('static', filename='js/pages/bulk/page.js', v=asset_version) }}"></script>
+<script src="{{ url_for('static', filename='js/pages/teams/page.js', v=asset_version) }}"></script>
 <script src="{{ url_for('static', filename='js/bootstrap.js', v=asset_version) }}"></script>

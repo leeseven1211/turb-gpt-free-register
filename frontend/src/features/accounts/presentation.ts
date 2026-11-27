@@ -110,7 +110,7 @@ export function createAccountPresentation(legacy:LegacyAccountPresenters):Accoun
   };
 }
 const actionAttributes=[
-  'account-registration-retry','account-registration-task','account-email-change','account-totp-copy',
+  'account-registration-retry','account-registration-task','account-email-change','account-join-team','account-totp-copy',
   'account-copy-secret','account-setup','account-action','plan-check','deactivation-mail-check',
   'account-live-check','account-refresh-token','account-task-history','account-delete','account-archive',
   'account-restore','account-email-invalid','extract-link','qr-url','codex-stop','codex-reset-retrying','codex-retry','copy-id',

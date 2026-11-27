@@ -65,7 +65,7 @@ test('账号脚本按模板顺序初始化且关键事件只绑定一次', async
     assert.equal(toolbar.get(button.id).getAttribute('onclick'),null);
     await toolbar.click(button.id);
   }
-  assert.equal(toolbar.calls.length,34,'所有工具栏入口一次点击只调用一次边界');
+  assert.equal(toolbar.calls.length,35,'所有工具栏入口一次点击只调用一次边界');
   assert.deepEqual(toolbar.calls.map(([descriptor])=>descriptor),ACCOUNT_TOOLBAR_BUTTONS.map(button=>button.action));
   assert.deepEqual(toolbar.ids(),[
     'btnCopySelectedTokensV2','btnRefreshSelectedTokenV2','btnCopySelectedLinesV2',

@@ -21,13 +21,13 @@ export type ErrorInfo = components['schemas']['ErrorInfo'];
 export type TaskAction = 'retry' | 'cancel' | 'terminate' | 'delete';
 export interface TaskFilters {
   task_id: string; type: string; target: string; status: string; target_status: string;
-  batch: string; run_count: string; stage: string; created_from: string; created_to: string; result: string;
+  batch: string; run_count: string; stage: string; created_from: string; created_to: string; result: string; team_id: string;
 }
 export type TaskQuery = TaskFilters & {page: number; page_size: number; include_facets?: number; include_batches?: number};
 export type Facets = NonNullable<OperationList['facets']>;
 export function emptyFilters(): TaskFilters {
   return {task_id: '', type: '', target: '', status: '', target_status: '', batch: '', run_count: '',
-    stage: '', created_from: '', created_to: '', result: ''};
+    stage: '', created_from: '', created_to: '', result: '', team_id: ''};
 }
 function queryString(query: object): string {
   return new URLSearchParams(Object.entries(query).filter(([, value]) => value !== undefined && value !== '')
