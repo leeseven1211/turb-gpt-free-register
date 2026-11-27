@@ -253,10 +253,93 @@ core/accounts/device_replay/
 - Safari 家族：协议支持，rust 不支持；当前库内 0 条 Safari 画像
 - curl_cffi（146）不参与本方案，仅作历史参考
 
-## 6. 第三步：回填 + 观测 + 对照实验（待讨论）
+## 6. 第三步：执行操作（改密流程，详设）
+
+> 前提：第二步已产出"已重放"的会话；本节只讲拿到会话之后做什么。
+
+### 6.1 前置条件
+
+- 会话已就绪（内核 = 注册内核，画像已注入）
+- 新密码候选已生成并写入 `prepared` checkpoint
+- 邮箱可收码（generic_api 取码通道可用）
+- 账号未被标记冷却（`password_reset_cooldown` 未命中）
+
+### 6.2 流程选择
+
+- **U（默认）**：未登录的忘记密码
+- **L（兜底）**：登录后改密，仅当 U 被服务端拒绝（要求登录态）时启用
+- 选择结果写入任务日志，便于统计两条路径的成功率
+
+### 6.3 请求序列（U 流程）
+
+| 步骤 | 请求 | 关键内容 | 期望 | 失败处理 |
+|---|---|---|---|---|
+| 1 | `GET /reset-password` | 导航头、referer=log-in | 200，落 Cookie | 网络/CF 重试；403 记录 |
+| 2 | `POST /api/accounts/password/send-otp` | body 待验证（`{}` 或 `{"username": email}`） | 200 | 429 退避；403 冷却终止 |
+| 3 | 等验证码 | 邮箱取码 | 6 位码 | 超时按配置重发 |
+| 4 | `POST /api/accounts/email-otp/validate` | `{"code": "..."}` | 200 + `continue_url` | 400/401 码错误；403 冷却终止 |
+| 5 | `GET continue_url` | 导航头 | 200 | 失败重试一次 |
+| 6 | `POST sentinel/req` | flow=`password_reset` | token | 失败重试 |
+| 7 | `POST /api/accounts/password/reset` | `{"password": "..."}` + sentinel 头 | 200 | 403/400 分类；未知 → 对账 |
+
+### 6.4 OTP 策略
+
+- 发码后记录 `after_ts`，只接受之后到达的邮件
+- 等待窗口 = `OTP_MAX_WAIT`（统一配置），超时按 `OTP_RESEND_COUNT` 重发
+- 验码错误最多重试 2 次（避免把码试废），超过则终止
+- 冷却（`sensitive_action_cooldown`）→ 不重试，记录 `cooldownAction` 与解除时间
+
+### 6.5 密码与 checkpoint
+
+```
+prepared → submitted → confirmed
+```
+
+- `prepared`：候选已生成并落库（改密前）
+- `submitted`：`/password/reset` 返回 200
+- `confirmed`：用新密码在同会话重新登录验证成功
+- 任何失败都停在 `prepared`，不确认；重试沿用或重新生成候选
+
+### 6.6 错误分类
+
+| 错误码 | 含义 | 可重试 |
+|---|---|---|
+| `password_reset_cooldown` | 24h 敏感操作冷却 | 否（记录解除时间） |
+| `password_reset_rate_limited` | 429 限流 | 是（退避） |
+| `password_reset_otp_invalid` | 验证码错误 | 有限次 |
+| `password_reset_otp_timeout` | 未收到码 | 是（重发） |
+| `password_reset_session_required` | 需要登录态 | 切 L 流程 |
+| `password_reset_network` | 网络/CF | 是 |
+| `password_reset_unknown` | 响应异常/结果未知 | 不自动重试，标记对账 |
+
+### 6.7 并发与节流
+
+- 同一账号串行（复用现有账号租约）
+- 改密全局并发默认 1（敏感操作），可配置
+- 发码/验码按账号维度限速，避免触发限流
+
+### 6.8 观测
+
+日志字段：`driver`、`device`(尾号)、`os`、`tls`、`trust`、`source`、`step`、`http_status`、`error_code`、`cooldown_action`
+
+指标：成功率、冷却率、OTP 时延、各步骤失败分布
+
+### 6.9 验收
+
+1. 单账号 U 流程跑通（真发码、真改密、真重新登录验证）
+2. 连跑 5 个号，成功率 ≥ 预期且无冷却
+3. 失败用例：码错误、超时、429 都能正确分类且不留脏密码
+4. 日志能还原每一步实际请求的设备特征
+
+### 6.10 第 0 步待验证（决定 U 是否可行）
+
+- 未登录访问 `/reset-password` 是否 200
+- `send-otp` 未登录是否可用；body 是否需要邮箱
+- `reset` 是否强制 sentinel；`continue_url` 是否为必走跳转
+
+### 6.11 后续（原第三步尾巴）
 
 - 历史回填：协议号 trusted；rust 号 placeholder（不复用）
-- 日志：`driver/device/os/tls/trust/source`
 - A/B：过期号各 20 个，复用 vs 新生成，比较成功率与冷却率
 - 开关：`ACCOUNT_DEVICE_PROFILE_REPLAY_ENABLED`
 
@@ -280,6 +363,8 @@ core/accounts/device_replay/
 - OTP 由 Python 侧统一取码，内核负责"发码/验码/等码"
 
 ### 8.2 协议改密（P1）
+
+> 执行细节见 §6；此处只列实现要点。
 
 - 传输：Python `wreq 0.13`，`impersonate` 取画像值（152）
 - 会话：新建 `WreqProtocolSession`（requests 兼容），注入五层（TLS/头/Cookie/sentinel 环境/语言时区）
