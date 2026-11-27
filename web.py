@@ -174,12 +174,14 @@ def main() -> None:
         install(bootstrap, logger=logger)
 
         if bootstrap.mode == "web":
-            # 列表请求仅读取已部署的表，两类存储都在监听前准备好。
+            # 列表请求仅读取已部署的表，业务存储在监听前准备好。
             from core.operation_task_store import init as init_operation_storage
             from core.storage import registration
+            from core.sales import store as sales_store
 
             registration.init()
             init_operation_storage()
+            sales_store.init()
 
         app = create_app(auth_code=args.auth_code)
         start_runtime(logger)

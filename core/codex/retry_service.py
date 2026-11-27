@@ -1682,15 +1682,26 @@ def run_twofa_worker(
                 if force_password_reset:
                     from core.accounts.password_setup.reset import run_protocol_password_reset
 
+                    def check_password_reset():
+                        check_cancelled()
+                        try:
+                            check_stop_requested(email)
+                        except CodexRetryStopped as exc:
+                            raise OperationCancelled("用户停止改密任务") from exc
+
                     password_result = run_protocol_password_reset(
                         email, proxy=account_route.proxy_url, execution_fence=execution_fence,
-                        checkpoint=lambda: check_stop_requested(email),
+                        checkpoint=check_password_reset,
                         report=lambda **event: _report_account_setup_event(task_id, **event),
                         proxy_supplier=acquire_password_route,
                         refresh_before_reset=bool((execution_settings or {}).get(
                             "password_change_refresh_before_reset",
                             getattr(account_cfg, "ACCOUNT_PASSWORD_CHANGE_REFRESH_BEFORE_RESET", True),
                         )),
+                        **({"refresh_config_snapshot": {
+                            "refresh_driver": execution_settings.get("at_refresh_driver"),
+                            "refresh_protocol_version": execution_settings.get("protocol_version"),
+                        }} if execution_settings else {}),
                     )
                 else:
                     password_result = run_protocol_password_setup(

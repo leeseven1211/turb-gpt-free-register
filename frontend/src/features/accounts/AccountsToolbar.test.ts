@@ -32,12 +32,12 @@ const expectedActions=[
   ['btnRefreshSelectedTokenV2','refreshSelectedToken',true,'token_refresh'],['btnRetrySelectedCodexV2','retrySelectedCodex',true,'codex_retry'],['btnRetrySelectedRegistrationV2','retryAccountRegistration',true,undefined],['btnAddPasswordSelectedAccountsV2','addPasswordSelectedAccounts',true,'password_setup'],['btnCompleteSelectedAccountsV2','completeSelectedAccounts',true,undefined],['btnAddTwofaSelectedAccountsV2','addTwofaSelectedAccounts',true,undefined],['btnEmailChangeSelectedV2','openBulkEmailChangeForSelectedAccounts',true,undefined],['btnChangePasswordSelectedAccountsV2','changePasswordSelectedAccounts',true,'password_setup'],['btnChangeTwofaSelectedAccountsV2','changeTwofaSelectedAccounts',true,'twofa_change'],['btnExtractSelectedLinksV2','extractSelectedLinks',true,'extract_link'],
   ['btnAccountInspection','openAccountInspectionStart',false,undefined],['btnBulkFromAccountFilters','bulk-from-account-filters',false,undefined],['btnBulkFromSelectedAccounts','bulk-from-selected-accounts',false,undefined],['btnStopSelectedCodexV2','stopSelectedCodex',true,undefined],
   ['btnReimportSelectedC2aV2','reimportSelectedC2a',true,'c2a_sync'],['btnUploadSelectedCodexSub2V2','uploadSelectedCodexSub2',true,'sub2_upload'],['btnDownloadSelectedCpaV2','downloadSelectedCpa',true,'cpa_download'],['btnJoinTeamSelectedV2','joinSelectedAccountsToTeam',true,undefined],
-  ['btnCopySelectedTokensV2','copySelectedAccountTokens',true,undefined],['btnCopySelectedLinesV2','copySelectedAccountLines',true,undefined],['btnArchiveSelectedAccountsV2','archiveSelectedAccounts',true,undefined],['btnDeleteSelectedAccountsV2','deleteSelectedAccounts',true,undefined],['btnDownloadSelectedTxtV2','downloadSelectedAccountTxt',true,undefined],['btnCopySelectedEmailsV2','copySelectedAccountEmails',true,undefined],['btnDeleteDeactivatedAccounts','deleteDeactivatedAccounts',false,undefined],['btnCopySelectedPasswordsV2','copySelectedAccountPasswords',true,undefined],['btnCopySelectedTotpsV2','copySelectedAccountTotpSecrets',true,undefined],['btnCopySelectedExtractLinksV2','copySelectedAccountExtractLinks',true,undefined],['btnDownloadSelectedSessionsV2','downloadSelectedAccountSessions',true,undefined],['btnMarkSelectedEmailInvalidV2','setAccountsEmailInvalid:1',true,undefined],['btnClearSelectedEmailInvalidV2','setAccountsEmailInvalid:0',true,undefined],
+  ['btnCopySelectedTokensV2','copySelectedAccountTokens',true,undefined],['btnCopySelectedLinesV2','copySelectedAccountLines',true,undefined],['btnArchiveSelectedAccountsV2','archiveSelectedAccounts',true,undefined],['btnDeleteSelectedAccountsV2','deleteSelectedAccounts',true,undefined],['btnDownloadSelectedTxtV2','downloadSelectedAccountTxt',true,undefined],['btnCopySelectedEmailsV2','copySelectedAccountEmails',true,undefined],['btnDeleteDeactivatedAccounts','deleteDeactivatedAccounts',false,undefined],['btnCopySelectedPasswordsV2','copySelectedAccountPasswords',true,undefined],['btnCopySelectedTotpsV2','copySelectedAccountTotpSecrets',true,undefined],['btnCopySelectedExtractLinksV2','copySelectedAccountExtractLinks',true,undefined],['btnDownloadSelectedSessionsV2','downloadSelectedAccountSessions',true,undefined],['btnMarkSelectedEmailInvalidV2','setAccountsEmailInvalid:1',true,undefined],['btnClearSelectedEmailInvalidV2','setAccountsEmailInvalid:0',true,undefined],['btnAddSelectedAccountsToSales','addSelectedAccountsToSales',true,undefined],
 ] as const;
 
-it('菜单保留35个操作、五组固定顺序和快照组内顺序',async()=>{
+it('菜单保留36个操作、五组固定顺序和快照组内顺序',async()=>{
   const f=fixture();await f.flush();
-  expect(document.querySelectorAll('#accountsToolbarV2 button')).toHaveLength(40);
+  expect(document.querySelectorAll('#accountsToolbarV2 button')).toHaveLength(41);
   expect(quick()).toEqual(ACCOUNT_QUICK_ACTION_DEFAULTS);
   expect(Array.from(document.querySelectorAll('.toolbar-overflow-section-title')).map(node=>node.textContent)).toEqual(ACCOUNT_TOOLBAR_SECTIONS);
   expect(menuIds()).toEqual(ACCOUNT_TOOLBAR_SECTIONS.map(section=>ACCOUNT_TOOLBAR_BUTTONS.filter(item=>item.section===section).map(item=>item.id)));
@@ -47,7 +47,7 @@ it('菜单保留35个操作、五组固定顺序和快照组内顺序',async()=>
     '刷新AT','补Codex','重跑注册','补密码','补全账号','补2FA','换绑邮箱','修改密码','改2FA','提链',
     '启动巡检','筛选建批','已选建批','停Codex',
     '同步C2A','传sub2','导CPA','加入Team',
-    '复制AT','复制整行','归档选中','删除选中','下载TXT','复制邮箱','清理已废','复制密码','复制密钥','复制提链','下载会话','标记失效','解除失效',
+    '复制AT','复制整行','归档选中','删除选中','下载TXT','复制邮箱','清理已废','复制密码','复制密钥','复制提链','下载会话','标记失效','解除失效','加入贩卖区',
   ]);
   for(const item of ACCOUNT_TOOLBAR_BUTTONS){
     expect(document.querySelectorAll(`#${item.id}`)).toHaveLength(1);

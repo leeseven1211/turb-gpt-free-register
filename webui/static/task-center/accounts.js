@@ -1,10 +1,11 @@
 import { $ as e, A as t, C as n, F as r, G as i, H as a, K as o, L as s, M as c, N as l, P as u, R as d, S as f, X as p, Z as m, _ as h, a as g, c as _, d as v, dt as y, et as b, f as x, ft as S, g as C, h as w, j as T, k as E, l as D, lt as O, m as k, n as A, nt as j, o as M, s as N, st as P, t as F, tt as I, v as L, x as R } from "./_plugin-vue_export-helper-CBsH_ZoE.js";
 import { r as z } from "./teams-CDSePuqJ.js";
-import { a as B, c as V, i as H, n as U, o as W, r as G, s as K, t as q } from "./ListFilterSummary-BjRd_0Sf.js";
-import { t as ee } from "./ListPagination-CSFkV2Gz.js";
-import { a as J, i as Y, n as te, o as ne, r as re, s as ie, t as ae } from "./queryAdapter-DOc4xJ_Q.js";
-import { n as oe, t as se } from "./ColumnResizer-Djku_Vg5.js";
-import { t as ce } from "./errorLabels-BveI5qVU.js";
+import { a as B, i as V, n as H, o as U, r as W, s as G, t as K } from "./ListFilterSummary-BjcCEzgL.js";
+import { t as q } from "./ListPagination-CSFkV2Gz.js";
+import { a as ee, i as J, n as Y, o as te, r as ne, s as re, t as ie } from "./queryAdapter-DOc4xJ_Q.js";
+import { n as ae, t as oe } from "./ColumnResizer-XOclQup1.js";
+import { t as se } from "./TableState-CxHYH8ID.js";
+import { t as ce } from "./errorLabels-BMfDB1_c.js";
 import { n as le, r as X, t as ue } from "./client-B5R_MNgP.js";
 import { a as de, n as fe } from "./taskIds-BlchWwUp.js";
 import { a as pe, i as me, t as he } from "./bulkMutations-3wwPI3-H.js";
@@ -342,6 +343,15 @@ var ge = Object.freeze([
 		className: "jobs-tb-btn",
 		title: "仅清除选中账号的本地邮箱失效标记，邮箱可用性仍需确认",
 		selection: !0
+	}),
+	Object.freeze({
+		id: "btnAddSelectedAccountsToSales",
+		label: "加入贩卖区",
+		section: "账号",
+		action: "addSelectedAccountsToSales",
+		className: "jobs-tb-btn",
+		title: "把选中的账号加入贩卖区待售列表，不改变账号当前归档状态",
+		selection: !0
 	})
 ]), ve = Object.freeze([
 	"btnCopySelectedTokensV2",
@@ -486,7 +496,7 @@ var ge = Object.freeze([
 		"clear"
 	],
 	setup(e, { emit: t }) {
-		let n = e, a = t, c = b("id"), l = k(() => n.column || te.find((e) => e.key === c.value) || te[0]), u = k(() => n.column ? re(n.query, n.column) : te.some((e) => re(n.query, e))), d = k(() => J(n.query, n.label, n.facets).find((e) => e.key === l.value.key)?.label || ""), f = k(() => Y(n.query, n.facets, l.value, n.label)), p = k(() => ne(n.query, l.value.key)), m = k(() => l.value.kind === "date-range" ? ["date_from", "date_to"] : [l.value.key]);
+		let n = e, a = t, c = b("id"), l = k(() => n.column || Y.find((e) => e.key === c.value) || Y[0]), u = k(() => n.column ? ne(n.query, n.column) : Y.some((e) => ne(n.query, e))), d = k(() => ee(n.query, n.label, n.facets).find((e) => e.key === l.value.key)?.label || ""), f = k(() => J(n.query, n.facets, l.value, n.label)), p = k(() => te(n.query, l.value.key)), m = k(() => l.value.kind === "date-range" ? ["date_from", "date_to"] : [l.value.key]);
 		function y(e, t) {
 			let n = new Set(p.value);
 			t ? n.add(e) : n.delete(e), a("change", l.value.key, [...n]);
@@ -494,7 +504,7 @@ var ge = Object.freeze([
 		function x() {
 			a("clear", l.value.key), a("update:open", !1);
 		}
-		return (t, n) => (r(), C(H, {
+		return (t, n) => (r(), C(W, {
 			label: e.column?.label || "账号",
 			"trigger-label": e.column ? void 0 : "筛选",
 			active: u.value,
@@ -506,7 +516,7 @@ var ge = Object.freeze([
 				e.column ? h("", !0) : (r(), L("label", Oe, [n[5] ||= R("筛选列", -1), o(w("select", {
 					"onUpdate:modelValue": n[0] ||= (e) => c.value = e,
 					"aria-label": "选择账号筛选列"
-				}, [(r(!0), L(v, null, s(P(te), (e) => (r(), L("option", {
+				}, [(r(!0), L(v, null, s(P(Y), (e) => (r(), L("option", {
 					key: e.key,
 					value: e.key
 				}, S(e.label), 9, ke))), 128))], 512), [[g, c.value]])])),
@@ -539,7 +549,7 @@ var ge = Object.freeze([
 				}, [R(S(l.value.kind === "date-range" ? i ? "截止日期" : "开始日期" : l.value.label), 1), w("input", {
 					type: l.value.kind === "date-range" ? "date" : "text",
 					inputmode: l.value.key === "id" ? "numeric" : void 0,
-					value: P(ie)(e.query, t),
+					value: P(re)(e.query, t),
 					placeholder: l.value.placeholder,
 					autocomplete: "off",
 					onInput: (e) => a("change", t, e.target.value),
@@ -879,7 +889,7 @@ var Ke = ["aria-busy"], qe = ["data-stale"], Je = [
 		"rendered"
 	],
 	setup(e, { expose: t, emit: n }) {
-		let o = e, l = n, { widths: d, total: p, resize: m, resizeWithKeyboard: g, resetColumns: _ } = oe({
+		let o = e, l = n, { widths: d, total: p, resize: m, resizeWithKeyboard: g, resetColumns: _ } = ae({
 			defaults: He,
 			storageKey: "gpt_console_table_widths_accounts",
 			totalStorageKey: "gpt_console_table_total_accounts",
@@ -931,8 +941,8 @@ var Ke = ["aria-busy"], qe = ["data-stale"], Je = [
 				left: "已退出"
 			}[String(e.membership_state || "").toLowerCase()] || e.membership_state || "未知"} · Team #${e.team_id}`;
 		}
-		let z = (e) => te.find((t) => t.key === e);
-		function H(e, t) {
+		let z = (e) => Y.find((t) => t.key === e);
+		function W(e, t) {
 			if (o.stale || !o.visible) {
 				e.preventDefault(), e.stopPropagation();
 				return;
@@ -945,27 +955,27 @@ var Ke = ["aria-busy"], qe = ["data-stale"], Je = [
 			let i = Ge(e.target);
 			i ? (e.preventDefault(), e.stopPropagation(), E.value = null, l("action", i.action, String(t.id), i.trigger)) : window.matchMedia("(max-width:860px)").matches && !n?.closest("button,a,input,label,[role=\"dialog\"]") && l("detail", String(t.id), null);
 		}
-		function q() {
+		function K() {
 			E.value = null;
 		}
-		function ee(e) {
-			e.target instanceof Element && e.target.closest(".ac-row-menu") || q();
+		function q(e) {
+			e.target instanceof Element && e.target.closest(".ac-row-menu") || K();
 		}
 		return a(() => o.visible, (e) => {
-			e || q();
+			e || K();
 		}), a(() => o.stale, (e) => {
-			e && q();
+			e && K();
 		}), a(() => o.items, (e) => {
-			E.value && !e.some((e) => String(e.id) === E.value) && q();
+			E.value && !e.some((e) => String(e.id) === E.value) && K();
 		}), c(() => {
-			window.addEventListener("resize", q), window.addEventListener("scroll", ee, !0), x.value && l("rendered", x.value);
+			window.addEventListener("resize", K), window.addEventListener("scroll", q, !0), x.value && l("rendered", x.value);
 		}), u(() => {
 			x.value && l("rendered", x.value);
 		}), T(() => {
-			window.removeEventListener("resize", q), window.removeEventListener("scroll", ee, !0);
+			window.removeEventListener("resize", K), window.removeEventListener("scroll", q, !0);
 		}), t({
 			resetColumns: _,
-			closeMenu: q
+			closeMenu: K
 		}), (t, n) => (r(), L("div", {
 			ref_key: "root",
 			ref: x,
@@ -973,7 +983,7 @@ var Ke = ["aria-busy"], qe = ["data-stale"], Je = [
 			tabindex: "0",
 			"aria-label": "账号列表，可横向滚动",
 			"aria-busy": e.loading,
-			onScroll: q
+			onScroll: K
 		}, [w("table", {
 			class: "accounts-table-v2 ac-table",
 			style: y({ width: `${P(p)}px` }),
@@ -1014,7 +1024,7 @@ var Ke = ["aria-busy"], qe = ["data-stale"], Je = [
 				"label",
 				"open",
 				"onUpdate:open"
-			])) : (r(), L(v, { key: 2 }, [R(S(t.label), 1)], 64)), i ? (r(), C(se, {
+			])) : (r(), L(v, { key: 2 }, [R(S(t.label), 1)], 64)), i ? (r(), C(oe, {
 				key: 3,
 				label: t.label,
 				onStart: (e) => P(m)(i, e),
@@ -1028,7 +1038,7 @@ var Ke = ["aria-busy"], qe = ["data-stale"], Je = [
 				key: t.id,
 				"data-account-row": t.id,
 				class: O({ "ac-row-selected": e.selected.has(t.id) }),
-				onClick: (e) => H(e, t.row)
+				onClick: (e) => W(e, t.row)
 			}, [
 				w("td", Ze, [w("input", {
 					type: "checkbox",
@@ -1039,7 +1049,7 @@ var Ke = ["aria-busy"], qe = ["data-stale"], Je = [
 					disabled: e.stale,
 					onChange: (e) => l("select", t.id, e.target.checked)
 				}, null, 40, Qe)]),
-				w("td", $e, [f(G, { text: `#${t.id}` }, null, 8, ["text"])]),
+				w("td", $e, [f(H, { text: `#${t.id}` }, null, 8, ["text"])]),
 				w("td", et, [
 					w("button", {
 						type: "button",
@@ -1066,8 +1076,8 @@ var Ke = ["aria-busy"], qe = ["data-stale"], Je = [
 					]),
 					w("div", ut, S(t.mobile), 1)
 				]),
-				w("td", dt, [f(G, { text: t.row.email_source || "-" }, null, 8, ["text"])]),
-				w("td", ft, [f(G, { text: e.presentation.registrationDriverLabel(t.row.registration_driver) }, null, 8, ["text"])]),
+				w("td", dt, [f(H, { text: t.row.email_source || "-" }, null, 8, ["text"])]),
+				w("td", ft, [f(H, { text: e.presentation.registrationDriverLabel(t.row.registration_driver) }, null, 8, ["text"])]),
 				(r(!0), L(v, null, s(P(Be).filter((e) => e.cell), (e) => (r(), L("td", {
 					key: e.key,
 					class: O(e.className),
@@ -1081,12 +1091,12 @@ var Ke = ["aria-busy"], qe = ["data-stale"], Je = [
 					class: "acc-v2-detail",
 					disabled: e.stale,
 					"data-account-detail-id": t.id
-				}, "详情", 8, _t), f(P(V), {
+				}, "详情", 8, _t), f(P(G), {
 					open: e.visible && !e.stale && E.value === t.id,
 					modal: !1,
 					"onUpdate:open": (e) => E.value = e ? t.id : null
 				}, {
-					default: i(() => [f(P(B), { "as-child": "" }, {
+					default: i(() => [f(P(V), { "as-child": "" }, {
 						default: i(() => [w("button", {
 							type: "button",
 							class: "acc-v2-more-btn",
@@ -1094,8 +1104,8 @@ var Ke = ["aria-busy"], qe = ["data-stale"], Je = [
 							"aria-label": "更多账号操作"
 						}, "更多", 8, vt)]),
 						_: 1
-					}), f(P(W), null, {
-						default: i(() => [f(P(K), {
+					}), f(P(B), null, {
+						default: i(() => [f(P(U), {
 							class: "ac-row-menu accounts-table-v2",
 							"data-account-menu": t.id,
 							side: "bottom",
@@ -1106,7 +1116,7 @@ var Ke = ["aria-busy"], qe = ["data-stale"], Je = [
 						}, {
 							default: i(() => [w("div", {
 								class: "acc-v2-more-menu ac-menu-content",
-								onClick: (e) => H(e, t.row),
+								onClick: (e) => W(e, t.row),
 								innerHTML: t.menu
 							}, null, 8, yt)]),
 							_: 2
@@ -1115,7 +1125,7 @@ var Ke = ["aria-busy"], qe = ["data-stale"], Je = [
 					}, 1024)]),
 					_: 2
 				}, 1032, ["open", "onUpdate:open"])])])
-			], 10, Xe))), 128)), j.value.length ? h("", !0) : (r(), C(U, {
+			], 10, Xe))), 128)), j.value.length ? h("", !0) : (r(), C(se, {
 				key: 0,
 				class: "ac-empty",
 				colspan: 16,
@@ -1581,7 +1591,7 @@ var kt = {
 		callbacks: {}
 	},
 	setup(e, { expose: t }) {
-		let n = e, i = Ot(n.adapter, n.api), { query: s, items: c, facets: l, searchTerms: u, total: p, page: m, size: g, pages: v, selected: y, loading: x, error: C, visible: E, invalidSearch: O, draftSearch: A, stale: j, pageSelected: M, pageIndeterminate: F } = i, I = b(), R = b(), z = b(null), B = b(typeof document > "u" || !document.hidden), V = b(""), H = /* @__PURE__ */ new Set(), U = te.find((e) => e.key === "email_status"), W = k(() => [...J(s.value, n.presentation.facetLabel, l.value), ...u.value.map((e, t) => ({
+		let n = e, i = Ot(n.adapter, n.api), { query: s, items: c, facets: l, searchTerms: u, total: p, page: m, size: g, pages: v, selected: y, loading: x, error: C, visible: E, invalidSearch: O, draftSearch: A, stale: j, pageSelected: M, pageIndeterminate: F } = i, I = b(), R = b(), z = b(null), B = b(typeof document > "u" || !document.hidden), V = b(""), H = /* @__PURE__ */ new Set(), U = Y.find((e) => e.key === "email_status"), W = k(() => [...ee(s.value, n.presentation.facetLabel, l.value), ...u.value.map((e, t) => ({
 			key: `search:${t}`,
 			label: `${e.label}：${e.display_value}`,
 			title: `高级搜索 · 同时满足：${e.label}：${e.display_value}`,
@@ -1590,7 +1600,7 @@ var kt = {
 		function G(e, t) {
 			e === "plan" ? i.updateQuery({ plan: [...t] }) : e === "date_from" || e === "date_to" ? i.updateQuery({ [e]: String(t) }) : e === "id" || e === "email" ? i.updateFilters({ [e]: String(t) }, 250) : i.updateFilters({ [e]: [...t] });
 		}
-		function K(e) {
+		function J(e) {
 			if (e.startsWith("search:")) {
 				let t = u.value[Number(e.slice(7))];
 				t && i.removeSearchTerm({ ...t }), R.value?.focus();
@@ -1603,10 +1613,10 @@ var kt = {
 				});
 				return;
 			}
-			let t = te.find((t) => t.key === e);
+			let t = Y.find((t) => t.key === e);
 			t && G(t.key, t.kind === "text" ? "" : []);
 		}
-		function Y(e) {
+		function te(e) {
 			V.value = e instanceof Error ? e.message : "账号操作暂不可用", n.callbacks.notify?.(V.value);
 		}
 		async function ne(e, t, r) {
@@ -1621,7 +1631,7 @@ var kt = {
 					});
 					await n.callbacks.invoke(e, a, r);
 				} catch (e) {
-					Y(e);
+					te(e);
 				} finally {
 					H.delete(a);
 				}
@@ -1632,14 +1642,14 @@ var kt = {
 			V.value = "";
 			let r = i.getRowSnapshot(e);
 			if (!r) {
-				Y(/* @__PURE__ */ Error("账号详情暂不可用，请先刷新列表"));
+				te(/* @__PURE__ */ Error("账号详情暂不可用，请先刷新列表"));
 				return;
 			}
 			let a;
 			try {
 				a = i.openPlanDetailsConsumer(e), n.callbacks.openDetail(e, r, a, t);
 			} catch (e) {
-				a?.release(), Y(e);
+				a?.release(), te(e);
 			}
 		}
 		function ie(e) {
@@ -1707,9 +1717,9 @@ var kt = {
 		}), (t, n) => o((r(), L("section", kt, [
 			d(t.$slots, "banner"),
 			w("div", At, [
-				W.value.length ? (r(), L("div", jt, [f(q, {
+				W.value.length ? (r(), L("div", jt, [f(K, {
 					items: W.value,
-					onRemove: K
+					onRemove: J
 				}, null, 8, ["items"])])) : h("", !0),
 				d(t.$slots, "actions"),
 				w("div", Mt, [
@@ -1720,7 +1730,7 @@ var kt = {
 						open: B.value && z.value === "all",
 						"onUpdate:open": n[0] ||= (e) => z.value = e ? "all" : null,
 						onChange: G,
-						onClear: K
+						onClear: J
 					}, null, 8, [
 						"query",
 						"facets",
@@ -1735,7 +1745,7 @@ var kt = {
 						open: B.value && z.value === "email_status",
 						"onUpdate:open": n[1] ||= (e) => z.value = e ? "email_status" : null,
 						onChange: G,
-						onClear: K
+						onClear: J
 					}, null, 8, [
 						"column",
 						"query",
@@ -1824,7 +1834,7 @@ var kt = {
 				"open-filter": z.value,
 				"onUpdate:openFilter": n[9] ||= (e) => z.value = e,
 				onFilter: G,
-				onClearFilter: K,
+				onClearFilter: J,
 				onSelect: P(i).toggle,
 				onSelectPage: P(i).togglePage,
 				onAction: ne,
@@ -1849,7 +1859,7 @@ var kt = {
 				"onSelectPage",
 				"onRetry"
 			]),
-			f(ee, {
+			f(q, {
 				compact: "",
 				page: P(m),
 				size: P(g),
@@ -4671,7 +4681,7 @@ function oa(e) {
 }
 // src/accounts.ts
 function sa(e, t) {
-	let n = ae(t.query), r = oa({
+	let n = ie(t.query), r = oa({
 		document,
 		origin: window.location.origin,
 		urls: URL,

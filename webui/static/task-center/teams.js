@@ -1,12 +1,13 @@
 import { A as e, C as t, F as n, G as r, H as i, K as a, L as o, M as s, Q as c, S as l, Z as u, _ as d, c as f, d as p, dt as m, et as h, ft as g, g as _, h as v, j as ee, l as te, lt as y, m as b, n as x, nt as S, o as ne, s as C, st as w, v as T, x as E, y as D } from "./_plugin-vue_export-helper-CBsH_ZoE.js";
 import { a as O, i as k, n as A, o as j, t as M } from "./teams-CDSePuqJ.js";
 import { t as re } from "./useNativeDialog-BgHdu813.js";
-import { t as N } from "./errorLabels-BveI5qVU.js";
-import { n as P, t as F } from "./ColumnResizer-Djku_Vg5.js";
-import { i as I, n as L, t as R } from "./ListFilterSummary-BjRd_0Sf.js";
-import { t as ie } from "./ListPagination-CSFkV2Gz.js";
-import { t as z } from "./ListResult-kCKJbtYG.js";
-import { t as B } from "./ListToolbar-BlcEvGQq.js";
+import { t as N } from "./errorLabels-BMfDB1_c.js";
+import { n as P, t as F } from "./ColumnResizer-XOclQup1.js";
+import { r as I, t as L } from "./ListFilterSummary-BjcCEzgL.js";
+import { t as R } from "./ListPagination-CSFkV2Gz.js";
+import { t as ie } from "./ListResult-EwR5MPFZ.js";
+import { t as z } from "./ListToolbar-B8ViQxj1.js";
+import { t as B } from "./TableState-CxHYH8ID.js";
 // src/features/teams/statusLabels.ts
 var V = Object.freeze({
 	probe_expired: "核验结果已过期",
@@ -2016,7 +2017,7 @@ var er = {
 		}), ee(() => {
 			he += 1, clearTimeout(le), fe?.abort();
 		}), t({ refresh: () => Fe() }), (t, i) => (n(), T("section", er, [
-			l(B, { filtered: De.value }, {
+			l(z, { filtered: De.value }, {
 				actions: r(() => [
 					v("button", {
 						type: "button",
@@ -2066,7 +2067,7 @@ var er = {
 							onClick: Ae
 						}, " × ")) : d("", !0)
 					]),
-					l(R, {
+					l(L, {
 						items: Ee.value,
 						onRemove: Oe
 					}, null, 8, ["items"])
@@ -2228,7 +2229,7 @@ var er = {
 						class: "tm-cell-sub",
 						title: w(ve)(t).secondary
 					}, g(w(ve)(t).secondary), 9, Zr)])]),
-					v("td", Qr, [l(z, {
+					v("td", Qr, [l(ie, {
 						label: w(ye)(t).label,
 						secondary: w(ye)(t).secondary,
 						tone: w(ye)(t).tone,
@@ -2267,7 +2268,7 @@ var er = {
 						}, " 查看任务 ", 8, li)) : d("", !0),
 						!t.actions.continue.enabled && !t.actions.retry.enabled && !(t.actions.view_task.enabled && t.latest_execution.task_id) ? (n(), T("span", ui, " — ")) : d("", !0)
 					])])
-				], 2))), 128)), H.value.length ? d("", !0) : (n(), _(L, {
+				], 2))), 128)), H.value.length ? d("", !0) : (n(), _(B, {
 					key: 0,
 					colspan: 6,
 					loading: re.value,
@@ -2294,7 +2295,7 @@ var er = {
 					"text"
 				]))])
 			], 4)], 8, lr),
-			l(ie, {
+			l(R, {
 				page: A.page,
 				size: A.page_size,
 				total: U.value,
@@ -2402,7 +2403,7 @@ var er = {
 			role: "",
 			membership_state: "joined",
 			linked: "all"
-		}), D = h(""), O = h(null), k = h(!1), A = h(""), j = h([]), M = h(0), re = h({}), { widths: N, total: z, resize: V, resizeWithKeyboard: H } = P({
+		}), D = h(""), O = h(null), k = h(!1), A = h(""), j = h([]), M = h(0), re = h({}), { widths: N, total: ie, resize: V, resizeWithKeyboard: H } = P({
 			defaults: [
 				210,
 				140,
@@ -2518,7 +2519,7 @@ var er = {
 		}), ee(() => {
 			clearTimeout(U), W?.abort();
 		}), t({ refresh: () => Q() }), (t, i) => (n(), T("section", fi, [
-			l(B, { filtered: ce.value }, {
+			l(z, { filtered: ce.value }, {
 				actions: r(() => [v("button", {
 					type: "button",
 					class: "tm-btn ui-refresh-button",
@@ -2554,7 +2555,7 @@ var er = {
 							onClick: fe
 						}, " × ")) : d("", !0)
 					]),
-					l(R, {
+					l(L, {
 						items: se.value,
 						onRemove: le
 					}, null, 8, ["items"])
@@ -2568,7 +2569,7 @@ var er = {
 				"aria-busy": k.value
 			}, [v("table", {
 				class: "ui-table ui-table--sticky-end ui-table--cards",
-				style: m({ "--ui-table-width": `${w(z)}px` })
+				style: m({ "--ui-table-width": `${w(ie)}px` })
 			}, [
 				i[35] ||= v("caption", { class: "ui-sr-only" }, "工作区已同步成员列表", -1),
 				v("colgroup", null, [(n(!0), T(p, null, o(w(N), (e, t) => (n(), T("col", {
@@ -2748,7 +2749,7 @@ var er = {
 						}, " 查看任务 ", 8, ca)) : d("", !0),
 						!t.account && !t.latest_task?.task_id ? (n(), T("span", la, "—")) : d("", !0)
 					])])
-				]))), 128)), j.value.length ? d("", !0) : (n(), _(L, {
+				]))), 128)), j.value.length ? d("", !0) : (n(), _(B, {
 					key: 0,
 					colspan: 7,
 					loading: k.value,
@@ -2775,7 +2776,7 @@ var er = {
 					"text"
 				]))])
 			], 4)], 8, gi),
-			l(ie, {
+			l(R, {
 				page: C.page,
 				size: C.page_size,
 				total: M.value,
@@ -3990,7 +3991,7 @@ var er = {
 			q: "",
 			role: "",
 			last_sync_status: ""
-		}), k = h(""), A = h(null), j = h(!1), M = h(!1), re = h(""), N = h([]), z = h(0), V = h({}), H = h(/* @__PURE__ */ new Set()), W = h(/* @__PURE__ */ new Set()), G = h(null), { widths: q, total: ce, resize: J, resizeWithKeyboard: Y } = P({
+		}), k = h(""), A = h(null), j = h(!1), M = h(!1), re = h(""), N = h([]), ie = h(0), V = h({}), H = h(/* @__PURE__ */ new Set()), W = h(/* @__PURE__ */ new Set()), G = h(null), { widths: q, total: ce, resize: J, resizeWithKeyboard: Y } = P({
 			defaults: [
 				36,
 				194,
@@ -4096,7 +4097,7 @@ var er = {
 			try {
 				let e = await x.api.list(r, t.signal);
 				if (n !== ue) return;
-				N.value = e.items, z.value = e.total, e.facets && Object.keys(e.facets).length > 0 && (V.value = e.facets);
+				N.value = e.items, ie.value = e.total, e.facets && Object.keys(e.facets).length > 0 && (V.value = e.facets);
 			} catch (r) {
 				if (t.signal.aborted || n !== ue) return;
 				let i = r instanceof Error ? r.message : "加载 Team 工作区列表失败";
@@ -4179,7 +4180,7 @@ var er = {
 			ref: G,
 			class: "tm-root"
 		}, [v("section", $s, [
-			l(B, { filtered: ve.value }, {
+			l(z, { filtered: ve.value }, {
 				actions: r(() => [
 					v("button", {
 						type: "button",
@@ -4200,7 +4201,7 @@ var er = {
 					}, " 绑定已有 Team ")
 				]),
 				default: r(() => [
-					v("span", ec, [E(" 共 " + g(z.value.toLocaleString()) + " 个工作区 ", 1), H.value.size ? (n(), T("small", tc, "已选 " + g(H.value.size) + " 项", 1)) : d("", !0)]),
+					v("span", ec, [E(" 共 " + g(ie.value.toLocaleString()) + " 个工作区 ", 1), H.value.size ? (n(), T("small", tc, "已选 " + g(H.value.size) + " 项", 1)) : d("", !0)]),
 					v("div", nc, [
 						i[30] ||= v("svg", {
 							class: "tm-search-box__icon",
@@ -4228,7 +4229,7 @@ var er = {
 							onClick: we
 						}, " × ")) : d("", !0)
 					]),
-					l(R, {
+					l(L, {
 						items: _e.value,
 						onRemove: ye
 					}, null, 8, ["items"])
@@ -4457,7 +4458,7 @@ var er = {
 							}, " 更换管理母号 ", 8, hl)
 						])], 32)
 					])])
-				], 2))), 128)), N.value.length ? d("", !0) : (n(), _(L, {
+				], 2))), 128)), N.value.length ? d("", !0) : (n(), _(B, {
 					key: 0,
 					colspan: 9,
 					loading: j.value,
@@ -4489,10 +4490,10 @@ var er = {
 					"text"
 				]))])
 			], 4)], 8, sc),
-			l(ie, {
+			l(R, {
 				page: O.page,
 				size: O.page_size,
-				total: z.value,
+				total: ie.value,
 				busy: j.value,
 				label: "Team 工作区列表分页",
 				"onUpdate:page": De,

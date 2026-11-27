@@ -47,4 +47,5 @@ export const ACCOUNT_TOOLBAR_BUTTONS:readonly Readonly<AccountToolbarButton>[]=O
   Object.freeze({id:'btnDownloadSelectedSessionsV2',label:'下载会话',section:'账号',action:'downloadSelectedAccountSessions',className:'jobs-tb-btn',title:'把选中账号已保存的 Session 按每个账号一个 JSON 打包为 ZIP，缺失账号列入结果清单',selection:true}),
   Object.freeze({id:'btnMarkSelectedEmailInvalidV2',label:'标记失效',section:'账号',action:'setAccountsEmailInvalid:1',className:'jobs-tb-btn',title:'为选中账号标记邮箱失效，不修改 OpenAI 账号状态',selection:true}),
   Object.freeze({id:'btnClearSelectedEmailInvalidV2',label:'解除失效',section:'账号',action:'setAccountsEmailInvalid:0',className:'jobs-tb-btn',title:'仅清除选中账号的本地邮箱失效标记，邮箱可用性仍需确认',selection:true}),
+  Object.freeze({id:'btnAddSelectedAccountsToSales',label:'加入贩卖区',section:'账号',action:'addSelectedAccountsToSales',className:'jobs-tb-btn',title:'把选中的账号加入贩卖区待售列表，不改变账号当前归档状态',selection:true}),
 ]);

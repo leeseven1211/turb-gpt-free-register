@@ -179,9 +179,11 @@ CONCURRENCY_WORKER_DEFAULTS = {
     "EMAIL_IMPORT_WORKERS": 1,
     "SUB2API_SCAN_WORKERS": 1,
     "MAINTENANCE_CHECK_WORKERS": 1,
+    "SALES_SYNC_WORKERS": 1,
 }
 _DEFAULTS: dict[str, Any] = {
     **CONCURRENCY_WORKER_DEFAULTS,
+    "SALES_EXECUTOR_ID": "local",
     "CONCURRENCY_POLICY_REVISION": 1,
     "ACCOUNT_BATCH_WORKERS": 3,
     "EMAIL_BUTLER_RISK_SCAN_ENABLED": True,
@@ -585,8 +587,12 @@ _FIELD_DEFINITIONS = [
           ("EMAIL_IMPORT_WORKERS", "邮箱导入", "按实际远端交接调用计数；一次最多 25 地址的批量交接算一份执行，兼容并行调用分别计数。"),
           ("SUB2API_SCAN_WORKERS", "Sub2API 异常扫描", "独立远端扫描执行上限；扫描发现的修复任务另行排队。"),
           ("MAINTENANCE_CHECK_WORKERS", "维护检查", "Sentinel 检查与 C2A 巡检任务的共享执行上限。"),
+          ("SALES_SYNC_WORKERS", "店铺销售联动", "商品、库存和订单同步及批量上架的共享执行上限；同一店铺的变更串行处理。"),
       )),
     {"key": "CONCURRENCY_POLICY_REVISION", "file": "concurrency.py", "type": "int", "group": "并发控制", "label": "并发策略版本", "help": "完整保存迁移策略时一并落地；用于识别已确认的新策略，不代表历史全局并发。"},
+    {"key": "SALES_EXECUTOR_ID", "file": "sales.py", "type": "str", "group": "通用配置",
+     "label": "销售执行端名称", "help": "店铺绑定的执行端必须与此名称相同；本地默认 local，Oracle 可设 oracle。同一店铺只由一个销售中心执行。",
+     "restart": True},
     # ---- 通用配置 ----
     {
         "key": "ACCOUNT_BATCH_WORKERS", "file": "codex.py", "type": "int", "group": "通用配置",
@@ -2209,6 +2215,7 @@ LEGACY_ENV_OVERRIDE_TYPES: Mapping[str, str] = MappingProxyType({
 
 
 _RESTART_KEYS = frozenset({
+    "SALES_EXECUTOR_ID",
     "WEBUI_AUTH_CODE",
     "WEBUI_SESSION_SECRET",
     "C2A_API_KEY",

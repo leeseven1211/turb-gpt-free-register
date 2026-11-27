@@ -281,6 +281,7 @@ class RuntimeCompositionTests(unittest.TestCase):
             "c2a_session_reimport", "c2a_scan",
             "team_probe", "team_sync", "team_reverify", "team_join_request",
             "team_join", "team_invite", "team_accept", "team_outbox_drain",
+            "sales_sync",
         )
         calls = []
         def resolve(name):

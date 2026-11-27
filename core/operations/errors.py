@@ -73,6 +73,106 @@ class TaskErrorCode(str, Enum):
 ErrorCode = TaskErrorCode
 
 
+SALES_ERROR_DETAILS: dict[str, tuple[str, str]] = {
+    # 销售域只登记稳定的领域短语，不复制 SalesError 的长原文。
+    "external_inventory_conflict": ("SALES-INVENTORY-409", "外部库存冲突"),
+    "external_inventory_immutable": ("SALES-INVENTORY-002", "外部库存不可改"),
+    "historical_listing_invalid_status": ("SALES-HISTORY-001", "历史上架状态无效"),
+    "historical_listing_already_bound": ("SALES-HISTORY-002", "历史条目已有归属"),
+    "invalid_listing_binding": ("SALES-TARGET-400", "上架绑定无效"),
+    "invalid_source_id": ("SALES-SOURCE-001", "来源编号无效"),
+    "invalid_status": ("SALES-REQUEST-006", "销售状态无效"),
+    "listing_decryption_failed": ("SALES-MATERIAL-503", "交付材料解密失败"),
+    "listing_encryption_unavailable": ("SALES-MATERIAL-502", "交付材料加密失败"),
+    "listing_fingerprint_conflict": ("SALES-MATERIAL-409", "交付材料冲突"),
+    "listing_intent_changed": ("SALES-INTENT-409", "上架意图已变化"),
+    "listing_intent_active": ("SALES-INTENT-001", "上架意图待确认"),
+    "listing_intent_missing": ("SALES-INTENT-404", "上架意图缺失"),
+    "listing_inventory_conflict": ("SALES-INVENTORY-409", "库存已冲突"),
+    "listing_inventory_unconfirmed": ("SALES-INVENTORY-002", "库存未确认"),
+    "listing_binding_immutable": ("SALES-TARGET-003", "商品绑定不可改"),
+    "listing_material_changed": ("SALES-MATERIAL-409", "交付材料已变化"),
+    "listing_material_email_mismatch": ("SALES-MATERIAL-003", "交付邮箱不匹配"),
+    "listing_material_incomplete": ("SALES-MATERIAL-001", "交付资料不完整"),
+    "listing_material_immutable": ("SALES-MATERIAL-004", "交付材料不可改"),
+    "listing_material_unavailable": ("SALES-MATERIAL-002", "交付资料不可用"),
+    "listing_order_conflict": ("SALES-ORDER-409", "订单已冲突"),
+    "listing_state_conflict": ("SALES-STATE-409", "上架状态冲突"),
+    "listing_target_changed": ("SALES-TARGET-409", "上架目标已变化"),
+    "listing_target_immutable": ("SALES-TARGET-002", "上架目标不可改"),
+    "listing_target_unbound": ("SALES-TARGET-001", "上架目标未绑定"),
+    "product_not_found": ("SALES-PRODUCT-404", "商品不存在"),
+    "product_shop_mismatch": ("SALES-PRODUCT-409", "商品店铺不匹配"),
+    "sales_executor_disabled": ("SALES-EXECUTOR-403", "销售执行端未配置"),
+    "sales_invalid_base_url": ("SALES-CONFIG-001", "销售地址无效"),
+    "sales_invalid_body": ("SALES-REQUEST-007", "请求体无效"),
+    "sales_invalid_env_reference": ("SALES-CONFIG-002", "环境变量无效"),
+    "sales_invalid_field": ("SALES-FIELD-002", "销售字段无效"),
+    "sales_invalid_ids": ("SALES-REQUEST-001", "销售条目编号无效"),
+    "sales_invalid_price": ("SALES-REQUEST-002", "销售价格无效"),
+    "sales_invalid_query": ("SALES-REQUEST-008", "查询参数无效"),
+    "sales_invalid_request_key": ("SALES-REQUEST-003", "销售请求标识无效"),
+    "sales_invalid_sold_at": ("SALES-REQUEST-004", "售出时间无效"),
+    "sales_invalid_source_id": ("SALES-REQUEST-005", "来源编号无效"),
+    "sales_invalid_status": ("SALES-REQUEST-006", "销售状态无效"),
+    "sales_invalid_sync_interval": ("SALES-SHOP-INTERVAL", "同步周期无效"),
+    "sales_platform_unsupported": ("SALES-PLATFORM-001", "销售平台不支持"),
+    "sales_product_not_found": ("SALES-PRODUCT-405", "销售商品不存在"),
+    "sales_product_unavailable": ("SALES-PRODUCT-002", "销售商品不可用"),
+    "sales_request_conflict": ("SALES-REQUEST-409", "销售请求冲突"),
+    "sales_shop_not_found": ("SALES-SHOP-404", "销售店铺不存在"),
+    "sales_source_disabled": ("SALES-SOURCE-002", "账号来源已停用"),
+    "sales_source_not_found": ("SALES-SOURCE-404", "账号来源不存在"),
+    "sales_task_action_invalid": ("SALES-TASK-001", "销售任务操作无效"),
+    "sales_task_retry_failed": ("SALES-TASK-RETRY", "销售任务重试失败"),
+    "sales_task_submission_failed": ("SALES-TASK-503", "销售任务入队失败"),
+    "shop_auth_invalid": ("SALES-SHOP-AUTH", "店铺鉴权失败"),
+    "shop_config_busy": ("SALES-SHOP-BUSY", "店铺配置繁忙"),
+    "shop_configuration_changed": ("SALES-SHOP-409", "店铺配置已变化"),
+    "shop_executor_mismatch": ("SALES-SHOP-403", "店铺执行端不匹配"),
+    "shop_http_error": ("SALES-SHOP-HTTP", "店铺接口异常"),
+    "shop_identity_mismatch": ("SALES-SHOP-IDENTITY", "店铺身份不匹配"),
+    "shop_import_rejected": ("SALES-SHOP-IMPORT", "库存导入被拒"),
+    "shop_network_error": ("SALES-SHOP-NET", "店铺网络异常"),
+    "shop_protocol_error": ("SALES-SHOP-PROTOCOL", "店铺协议异常"),
+    "shop_response_incomplete": ("SALES-SHOP-RESPONSE", "店铺响应不完整"),
+    "shop_response_invalid": ("SALES-SHOP-INVALID", "店铺响应无效"),
+    "shop_timeout": ("SALES-SHOP-TIMEOUT", "店铺请求超时"),
+    "shop_url_invalid": ("SALES-SHOP-URL", "店铺地址无效"),
+    "shop_auth_missing": ("SALES-SHOP-AUTH-MISSING", "店铺鉴权未配置"),
+    "shop_not_found": ("SALES-SHOP-NOTFOUND", "店铺不存在"),
+    "sold_listing_immutable": ("SALES-LISTING-SOLD", "已售条目不可改"),
+    "sold_status_immutable": ("SALES-STATUS-SOLD", "已售状态不可改"),
+    "source_account_not_found": ("SALES-SOURCE-ACCOUNT", "来源账号不存在"),
+    "source_archive_failed": ("SALES-SOURCE-ARCHIVE", "来源账号归档失败"),
+    "source_archive_unconfirmed": ("SALES-SOURCE-UNCONFIRMED", "来源归档未确认"),
+    "source_auth_invalid": ("SALES-SOURCE-AUTH", "来源鉴权失败"),
+    "source_url_invalid": ("SALES-SOURCE-URL", "来源地址无效"),
+    "source_auth_missing": ("SALES-SOURCE-AUTH-MISSING", "来源鉴权未配置"),
+    "source_http_error": ("SALES-SOURCE-HTTP", "来源接口异常"),
+    "source_kind_invalid": ("SALES-SOURCE-KIND", "来源类型无效"),
+    "source_match_ambiguous": ("SALES-SOURCE-MATCH", "来源匹配不唯一"),
+    "source_match_not_found": ("SALES-SOURCE-MISSING", "来源账号未找到"),
+    "source_match_unavailable": ("SALES-SOURCE-UNAVAILABLE", "来源匹配不可用"),
+    "source_network_error": ("SALES-SOURCE-NET", "来源网络异常"),
+    "source_protocol_error": ("SALES-SOURCE-PROTOCOL", "来源协议异常"),
+    "source_response_incomplete": ("SALES-SOURCE-RESPONSE", "来源响应不完整"),
+    "source_response_invalid": ("SALES-SOURCE-INVALID", "来源响应无效"),
+    "source_timeout": ("SALES-SOURCE-TIMEOUT", "来源请求超时"),
+    "source_configuration_changed": ("SALES-SOURCE-409", "来源配置已变"),
+    "source_identity_immutable": ("SALES-SOURCE-IMMUTABLE", "来源身份不可改"),
+    "source_local_identity_invalid": ("SALES-SOURCE-LOCAL", "本地来源无效"),
+    "source_not_found": ("SALES-SOURCE-404", "来源不存在"),
+    "order_ref_conflict": ("SALES-ORDER-409", "订单号冲突"),
+    "sales_scheduler_storage_failed": ("SALES-SCHEDULER-STORAGE", "调度存储失败"),
+}
+
+_SALES_CONTEXT_ERROR_DETAILS = {
+    "invalid_field": ("SALES-FIELD-001", "销售字段无效"),
+    "item_not_found": ("SALES-ITEM-404", "销售条目不存在"),
+}
+
+
 def stable_error_code(value: Any, *, default: str = TaskErrorCode.UNKNOWN.value) -> str:
     """从异常、mapping 或结构化步骤结果读取安全错误码。"""
     if isinstance(value, Enum):
@@ -1224,6 +1324,7 @@ _CAUSE_DETAILS: dict[str, tuple[str, str]] = {
        if code not in _BUTLER_V2_SCOPED_CAUSES},
     **_OTP_PAGE_NETWORK_CAUSES,
     **_TEAM_CAUSE_DETAILS,
+    **SALES_ERROR_DETAILS,
     "local_email_inventory_empty": ("MAIL-LOCAL-STOCK-001", "本地邮箱库存为空"),
     "email_resource_expired": ("MAIL-RESOURCE-001", "原邮箱已超过有效期，请保留原身份并检查邮箱资源"),
     "email_resource_expiry_invalid": ("MAIL-RESOURCE-002", "邮箱有效期格式无效，需要明确带时区的绝对时间"),
@@ -1905,7 +2006,7 @@ def _auth_request_diagnostic_cause(diagnostics: dict[str, Any], *, code: str) ->
     return None
 
 
-def _specific_error_cause(summary: dict[str, Any]) -> dict[str, str] | None:
+def _specific_error_cause(summary: dict[str, Any], *, task_type: str = "") -> dict[str, str] | None:
     """从固定原因码和安全诊断选出主错误，不让远端回执状态盖住失败原因。"""
     diagnostic_sources = [value for key in ("auth_diagnostics", "cause_diagnostics")
                           if isinstance(value := summary.get(key), dict)]
@@ -1915,6 +2016,13 @@ def _specific_error_cause(summary: dict[str, Any]) -> dict[str, str] | None:
         setup_code = str(summary.get("error_code") or "").strip()
         if setup_code.startswith("password_setup_") and setup_code in _CAUSE_DETAILS:
             code = setup_code
+    task_key = str(task_type or "").strip().lower()
+    sales_details = SALES_ERROR_DETAILS
+    if task_key in {"sales_sync", "sales_listing"}:
+        sales_details = {**_SALES_CONTEXT_ERROR_DETAILS, **SALES_ERROR_DETAILS}
+    if code in sales_details:
+        display_code, cause_summary = sales_details[code]
+        return {"cause_code": code, "cause_display_code": display_code, "cause_summary": cause_summary}
     if code == "codex_phone_verification_failed":
         from core.codex.phone_errors import phone_failure_cause
 
@@ -2315,6 +2423,7 @@ def _cause_error_projection(
         ("user", "用户操作") if display_code.startswith("USR-")
         else ("configuration", "配置错误") if display_code.startswith("CFG-")
         else ("internal", "内部错误") if display_code.startswith("SYS-")
+        else ("external", "销售领域") if display_code.startswith("SALES-")
         else ("external", "网络 / 上游服务") if display_code.startswith("NET-")
         else ("external", "邮箱 / 验证码服务") if display_code.startswith("MAIL-")
         else ("workflow", "流程错误") if display_code.startswith("FLOW-") or cause["cause_code"].endswith("_receipt_missing")
@@ -2890,7 +2999,9 @@ def classify_task_error(
                 'remote_state_impact': 'unknown', 'next_action': 'manual_reconcile',
             })
         return recovery_projection
-    cause = _stored_specific_error_cause(raw, task_type, summary_data, error_code=error_code) or _specific_error_cause(summary_data)
+    cause = _stored_specific_error_cause(raw, task_type, summary_data, error_code=error_code) or _specific_error_cause(
+        summary_data, task_type=task_type,
+    )
     if str(task_type or "").strip().lower() in {"registration", "registration_resume"}:
         from core.registration.route_recovery import result_route_failure
 
@@ -2909,16 +3020,16 @@ def classify_task_error(
                 "cause_summary": f"{labels.get(route_failure.operation, '注册认证')}返回 HTTP 403，线路恢复未完成",
             }
     if cause is None and str(error_code or "").strip() in _CAUSE_DETAILS:
-        cause = _specific_error_cause({**summary_data, "cause_code": str(error_code).strip()})
+        cause = _specific_error_cause({**summary_data, "cause_code": str(error_code).strip()}, task_type=task_type)
     if cause and cause["cause_code"] == "email_otp_evidence_missing":
         # 阶段兜底只补充缺失信息；调用方保存的明确错误码始终优先。
         explicit_code = str(error_code or "").strip()
         if explicit_code in _CAUSE_DETAILS and explicit_code != "protocol_failure_evidence_missing":
-            cause = _specific_error_cause({"cause_code": explicit_code}) or cause
+            cause = _specific_error_cause({"cause_code": explicit_code}, task_type=task_type) or cause
     if cause is None and raw.strip() == "原密码尚未确认生效" and str(task_type or "").strip().lower() in {
         "registration", "registration_resume", "twofa_retry", "account_setup_retry",
     }:
-        cause = _specific_error_cause({"cause_code": "registration_password_unconfirmed"})
+        cause = _specific_error_cause({"cause_code": "registration_password_unconfirmed"}, task_type=task_type)
     if cause and cause["cause_code"].startswith("extract_order_"):
         stage = "remote_sync"
     auth_diagnostics = summary_data.get("auth_diagnostics")
@@ -2960,12 +3071,12 @@ def classify_task_error(
     if cause is None and (str(error_code).startswith(("roxy_", "email_derivation_", "email_resource_", "password_setup_", "sentinel_rs_"))
                           or str(error_code) in _BUTLER_RECIPIENT_CAUSES
                           or str(error_code) in _AT_CALLBACK_CAUSE_CODES):
-        cause = _specific_error_cause({"cause_code": error_code})
+        cause = _specific_error_cause({"cause_code": error_code}, task_type=task_type)
     if cause is None and str(task_type or "").strip().lower() == "extract_link" and (
         str(error_code or "").strip() == "extract_provider_failed" or raw == "平台提链失败"
     ):
         # 历史记录的明确平台失败仍可展示；恢复约束继续由已保存的回执状态决定。
-        cause = _specific_error_cause({"cause_code": "extract_provider_failed"})
+        cause = _specific_error_cause({"cause_code": "extract_provider_failed"}, task_type=task_type)
     if cause is None and raw:
         # 精确响应原因仍要求结构化证据，旧授权路由原文交给 HTTP 状态分类。
         candidate = min(
@@ -2974,23 +3085,23 @@ def classify_task_error(
             default=None,
         )
         if candidate is not None:
-            cause = _specific_error_cause({"cause_code": candidate})
+            cause = _specific_error_cause({"cause_code": candidate}, task_type=task_type)
     if (
         str(task_type or "").strip().lower() in {"token_refresh", "live_check"}
         and (cause is None or cause["cause_code"] == "roxy_login_failed")
         and ((cause or {}).get("cause_code") == "roxy_login_failed" or raw.startswith("Roxy "))
     ):
         # 只细化通用 Roxy 登录失败，明确原因码、HTTP 诊断和代理错误仍优先。
-        explicit_cause = _specific_error_cause({"cause_code": error_code})
+        explicit_cause = _specific_error_cause({"cause_code": error_code}, task_type=task_type)
         if explicit_cause and explicit_cause["cause_code"] != "roxy_login_failed":
             cause = explicit_cause
         elif str(error_code or "").strip() in {"", "roxy_login_failed", "request_unknown", "unknown.unclassified"}:
             if any(marker in raw for marker in ("ERR_TUNNEL_CONNECTION_FAILED", "ERR_PROXY_CONNECTION_FAILED")):
-                cause = _specific_error_cause({"cause_code": "roxy_proxy_tunnel_failed"})
+                cause = _specific_error_cause({"cause_code": "roxy_proxy_tunnel_failed"}, task_type=task_type)
             else:
                 login_cause = roxy_login_failure_code(raw)
                 if login_cause:
-                    cause = _specific_error_cause({"cause_code": login_cause})
+                    cause = _specific_error_cause({"cause_code": login_cause}, task_type=task_type)
     if cause is None:
         cause = _registration_browser_error_cause(raw, task_type=task_type)
     if cause is None:
@@ -3050,12 +3161,26 @@ def classify_task_error(
         if projection["code"] in _TEAM_RECEIPT_MISSING_CAUSES:
             # 回执未知需要重跑前核对，不永久阻断 Team 批量任务的人工重跑。
             projection.update(retryability="conditional", next_action="retry_with_reconcile")
+    sales_task_key = str(task_type or "").strip().lower()
+    stored_sales_code = str(summary_data.get("cause_code") or "").strip()
+    if (
+        sales_task_key in {"sales_sync", "sales_listing"}
+        and stored_sales_code
+        and stored_sales_code == str(error_code or "").strip()
+        and stored_sales_code not in SALES_ERROR_DETAILS
+        and stored_sales_code not in _SALES_CONTEXT_ERROR_DETAILS
+        and projection is not None
+    ):
+        # 未登记销售码只保留原始证据，不能被诊断兜底码替换或猜成具体销售原因。
+        projection["error_code"] = stored_sales_code
+        projection["original_error_code"] = stored_sales_code
     return projection
 
 
 __all__ = [
     "ErrorCode",
     "REGISTRATION_REQUEST_UNKNOWN_CAUSE_CODES",
+    "SALES_ERROR_DETAILS",
     "TaskErrorCode",
     "classify_task_error",
     "is_request_unknown",

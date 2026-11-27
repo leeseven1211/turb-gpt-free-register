@@ -79,6 +79,16 @@ _LEGACY_REGISTRATION_CHECKPOINT_MAP = {
 
 _SECRET_PARTS = ("password", "otp", "secret", "authorization", "cookie", "token")
 
+_SAFE_PASSWORD_RECEIPT_KEYS = frozenset({
+    "password_reset",
+    "password_confirmed",
+    "remote_password_confirmed",
+    "completion_pending",
+    "completed_recheck",
+    "credentials_saved",
+    "business_verified",
+})
+
 
 _JWT_RE = re.compile(r"\beyJ[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{8,}\b")
 
@@ -184,7 +194,14 @@ def _scrub(value: Any, depth: int = 0) -> Any:
         for raw_key, raw_value in list(value.items())[:120]:
             key = str(raw_key)[:100]
             lowered = key.lower()
-            if any(part in lowered for part in _SECRET_PARTS):
+            if lowered in _SAFE_PASSWORD_RECEIPT_KEYS:
+                if lowered == "password_reset":
+                    if str(raw_value).strip().lower() != "confirmed":
+                        continue
+                    raw_value = "confirmed"
+                elif not isinstance(raw_value, bool):
+                    continue
+            elif any(part in lowered for part in _SECRET_PARTS):
                 if key in account_task_store._SAFE_PASSWORD_POLICY_KEYS:
                     valid_driver = lowered.endswith("driver") and isinstance(raw_value, str) and raw_value in {"protocol", "roxy", "roxybrowser", "browser"}
                     valid_mode = lowered.endswith("proxy_mode") and isinstance(raw_value, str) and raw_value in {"direct", "registration", "pool"}
@@ -194,7 +211,7 @@ def _scrub(value: Any, depth: int = 0) -> Any:
                     raw_value = {k: v for k, v in raw_value.items() if k in {
                         "ok", "status", "message", "error", "error_code", "cause_code", "failure_stage",
                         "remote_receipt_state", "mutation_submitted", "action_dispatched", "reconcile_required",
-                        "browser_opened", "password_driver",
+                        "browser_opened", "password_driver", *_SAFE_PASSWORD_RECEIPT_KEYS,
                     }}
                 elif lowered != "password" or not isinstance(raw_value, bool):
                     continue

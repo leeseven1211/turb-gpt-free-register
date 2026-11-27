@@ -1276,7 +1276,7 @@ function applyNavigationState(raw) {
     const tab = document.getElementById(`tab-${nav.module}`);
     if (tab && tab.dataset.moduleView !== nav.view && nav.tab === ACTIVE_TAB) closePageDialogsForNavigation();
     if (tab) tab.dataset.moduleView = nav.view;
-    if (nav.module === 'accounts') {
+    if (nav.module === 'accounts' && nav.view !== 'sales') {
       SHOW_ARCHIVED_ACCOUNTS = nav.view === 'archived';
       window.AccountsPage?.setAccountView?.(nav.view);
     }
@@ -1346,6 +1346,7 @@ function closePageDialogsForNavigation() {
   window.RegistrationPage?.closeDetail?.();
   window.ExtractWorkbenchPage?.closeDialogs?.();
   window.TeamsPage?.closeDialogs?.();
+  window.SalesPage?.closeDialogs?.();
   window.EmailPage?.closeDialogs();
   window.ProxyTraffic?.closeDetail({restoreFocus:false});
   window.TaskCenter?.closeDetail();
@@ -1391,7 +1392,8 @@ function activateTab(tab, persist=true, historyMode=persist ? 'push' : 'none') {
   if (tab === 'tasks' && accountTab) accountTab.dataset.moduleView = 'tasks';
   if (tab === 'accounts' && accountTab?.dataset.moduleView === 'tasks') {
     const savedAccountsView = localStorage.getItem('gpt_console_module_view_accounts');
-    accountTab.dataset.moduleView = SHOW_ARCHIVED_ACCOUNTS ? 'archived' : (savedAccountsView === 'team' ? 'team' : 'active');
+    accountTab.dataset.moduleView = ['active', 'team', 'archived', 'sales'].includes(savedAccountsView)
+      ? savedAccountsView : SHOW_ARCHIVED_ACCOUNTS ? 'archived' : 'active';
   }
   const contentTab = tab === 'tasks' ? 'accounts' : tab;
   contentTabs.forEach(t => $('#tab-'+t).classList.toggle('hidden', t !== contentTab));
@@ -1420,13 +1422,19 @@ function activateTab(tab, persist=true, historyMode=persist ? 'push' : 'none') {
   window.TaskCenter?.setVisible(tab === 'tasks');
   if (tab === 'accounts') {
     const view = $('#tab-accounts')?.dataset.moduleView || 'active';
-    if (window.AccountsPage) {
-      if (typeof window.AccountsPage.setAccountView === 'function') window.AccountsPage.setAccountView(view);
-      else window.AccountsPage.setArchived(view === 'archived');
+    if (view !== 'sales') {
+      if (window.AccountsPage) {
+        if (typeof window.AccountsPage.setAccountView === 'function') window.AccountsPage.setAccountView(view);
+        else window.AccountsPage.setArchived(view === 'archived');
+      }
+      else ensureViewLoaded(`accounts:${view}`, loadAccounts);
     }
-    else ensureViewLoaded(`accounts:${view}`, loadAccounts);
   }
-  window.AccountsPage?.setVisible(tab === 'accounts');
+  const salesVisible = tab === 'accounts' && $('#tab-accounts')?.dataset.moduleView === 'sales';
+  $('#salesPanel')?.classList.toggle('hidden', !salesVisible);
+  $('#accountsPanelV2')?.classList.toggle('hidden', salesVisible);
+  window.SalesPage?.setVisible(salesVisible);
+  window.AccountsPage?.setVisible(tab === 'accounts' && !salesVisible);
   if (tab === 'codex') {
     const archived = $('#tab-codex')?.dataset.moduleView === 'archived';
     window.CodexCredentials?.setArchived(archived);
@@ -1457,6 +1465,7 @@ const MODULE_VIEW_META = {
     active: '查询、筛选和批量维护活跃账号',
     team: '集中查看已归属本地 Team 工作区的账号与角色',
     archived: '集中查看和恢复已归档账号',
+    sales: '管理待售账号、店铺库存与销售记录',
   },
   codex: {
     active: '查询、导出和批量维护未归档的 Codex 授权凭证',
@@ -1484,12 +1493,18 @@ function setModuleView(module, view, persist=true, historyMode='push') {
   });
   if ($('#topbarDescription')) $('#topbarDescription').textContent = MODULE_VIEW_META[module][view];
   if (module === 'accounts' && view === 'tasks') ensureViewLoaded('account-tasks', loadAccountTasks);
-  else if (module === 'accounts') {
+  else if (module === 'accounts' && view !== 'sales') {
     SHOW_ARCHIVED_ACCOUNTS = view === 'archived';
     if (typeof window.AccountsPage?.setAccountView === 'function') window.AccountsPage.setAccountView(view);
     else if (typeof applyAccountsArchivedFilter === 'function') applyAccountsArchivedFilter(view === 'archived');
   }
-  if (module === 'accounts') window.AccountsPage?.setVisible(ACTIVE_TAB === 'accounts' && view !== 'tasks');
+  if (module === 'accounts') {
+    const salesVisible = ACTIVE_TAB === 'accounts' && view === 'sales';
+    $('#salesPanel')?.classList.toggle('hidden', !salesVisible);
+    $('#accountsPanelV2')?.classList.toggle('hidden', view === 'sales');
+    window.SalesPage?.setVisible(salesVisible);
+    window.AccountsPage?.setVisible(ACTIVE_TAB === 'accounts' && view !== 'tasks' && view !== 'sales');
+  }
   if (module === 'register') {
     window.RegistrationPage?.setView(view === 'tasks' ? 'tasks' : 'launch');
     if (!window.RegistrationPage) refreshJobs({coalesce: true});
@@ -1521,7 +1536,7 @@ $$('[data-module-subnav]').forEach(nav => nav.addEventListener('click', event =>
     // activation loads the old view and setModuleView immediately loads the
     // new view again, producing a visible waterfall on submenu clicks.
     tab.dataset.moduleView = btn.dataset.view;
-    if (module === 'accounts') {
+    if (module === 'accounts' && btn.dataset.view !== 'sales') {
       SHOW_ARCHIVED_ACCOUNTS = btn.dataset.view === 'archived';
       window.AccountsPage?.setAccountView?.(btn.dataset.view);
     }
@@ -1546,7 +1561,7 @@ function restoreModuleViewState() {
     document.querySelectorAll(`[data-module-subnav="${module}"] [data-view]`).forEach(btn => {
       btn.classList.toggle('is-active', btn.dataset.view === saved);
     });
-    if (module === 'accounts') {
+    if (module === 'accounts' && saved !== 'sales') {
       SHOW_ARCHIVED_ACCOUNTS = saved === 'archived';
       window.AccountsPage?.setAccountView?.(saved);
     }

@@ -59,6 +59,7 @@ class EntrypointTests(unittest.TestCase):
               'core.runtime.http_server':mod('core.runtime.http_server',HttpServer=Server),
               'core.storage':mod('core.storage',postgres=SimpleNamespace(require_ready=lambda:events.append('db')),
                                  registration=SimpleNamespace(init=lambda:events.append('registration-storage'))),
+              'core.sales':mod('core.sales',store=SimpleNamespace(init=lambda:events.append('sales-storage'))),
               'core.operation_task_store':mod('core.operation_task_store',init=lambda:events.append('operation-storage')),
               'webui.app':mod('webui.app',create_app=lambda **_:object()),'webui.auth':mod('webui.auth',is_generated_code=lambda:False)}
             with patch.dict(sys.modules,modules),patch.object(sys,'argv',['web.py','--mode','web','--server','waitress']),patch.object(entry,'_acquire_single_instance',return_value=object()),patch.object(entry,'_release_single_instance',side_effect=lambda _:events.append('unlock')),patch.object(entry.signal,'signal'):
@@ -69,7 +70,9 @@ class EntrypointTests(unittest.TestCase):
             self.assertIn(('http-stop',20.0),events)
             self.assertLess(events.index('db'),events.index('operation-storage'))
             self.assertLess(events.index('db'),events.index('registration-storage'))
+            self.assertLess(events.index('db'),events.index('sales-storage'))
             self.assertLess(events.index('registration-storage'),events.index('http-start'))
+            self.assertLess(events.index('sales-storage'),events.index('http-start'))
             self.assertLess(events.index('operation-storage'),events.index('http-start'))
             if clean:self.assertLess(events.index(('http-stop',20.0)),events.index('runtime-stop'))
             else:self.assertNotIn('runtime-stop',events);self.assertNotIn('unlock',events)
@@ -146,6 +149,7 @@ class ShutdownDeadlineTests(unittest.TestCase):
                 write_exit_receipt=lambda **value: receipts.append(value)),
             'core.storage': mod('core.storage', postgres=SimpleNamespace(require_ready=lambda: None),
                                 registration=SimpleNamespace(init=lambda: None)),
+            'core.sales': mod('core.sales', store=SimpleNamespace(init=lambda: None)),
             'core.operation_task_store': mod('core.operation_task_store', init=lambda: None),
             'webui': mod('webui'), 'webui.app': mod('webui.app', create_app=lambda **_: object()),
             'webui.auth': mod('webui.auth', is_generated_code=lambda: False),

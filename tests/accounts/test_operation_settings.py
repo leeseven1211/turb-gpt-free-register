@@ -7,6 +7,18 @@ from webui import runtime
 
 
 class AccountOperationSettingsTests(TestCase):
+    def test_password_change_freezes_existing_refresh_driver_and_protocol_version(self):
+        from config import schema
+
+        snapshot = schema.ConfigSnapshot(
+            values={"ACCOUNT_AT_REFRESH_DRIVER": "rust", "OPENAI_PROTOCOL_VERSION": "v3"},
+            sources={}, revision=7,
+        )
+        with patch.object(operation_settings, "runtime_config_snapshot", return_value=snapshot):
+            _, _, settings = operation_settings.runtime_execution_settings({})
+        self.assertEqual("rust", settings["at_refresh_driver"])
+        self.assertEqual("v3", settings["protocol_version"])
+
     def test_legacy_snapshot_keeps_inputs_and_normalizes_execution_values(self):
         settings = {"password_enabled": "false", "twofa_enabled": "yes",
                     "password_driver": " PROTOCOL ", "codex_driver": " ROXY "}

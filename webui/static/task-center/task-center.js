@@ -1,17 +1,18 @@
 import { A as e, C as t, F as n, G as r, H as i, K as a, L as o, M as s, Q as c, S as l, V as u, X as d, Z as f, _ as p, a as m, c as h, d as g, dt as _, et as v, f as y, ft as b, g as x, h as S, j as C, k as w, l as T, lt as E, m as D, n as O, nt as k, s as A, st as j, v as M, x as N } from "./_plugin-vue_export-helper-CBsH_ZoE.js";
 import { n as P, r as F, t as I } from "./client-B5R_MNgP.js";
-import { a as L, i as ee, n as te, r as R } from "./taskIds-BlchWwUp.js";
-import { a as z, n as B, t as ne } from "./bulkMutations-3wwPI3-H.js";
-import { A as V, C as H, D as U, E as W, F as re, I as ie, M as G, N as ae, O as oe, P as K, S as se, T as q, _ as ce, a as le, b as J, c as ue, d as de, f as fe, g as pe, h as me, i as he, j as Y, k as X, l as ge, m as _e, n as ve, o as ye, p as be, r as xe, s as Se, t as Ce, u as we, v as Te, w as Ee, x as De, y as Oe } from "./StepEvidence-DBiy8lht.js";
-import { n as ke } from "./time-DOD6oyhP.js";
-import { i as Ae, n as je, r as Z, t as Me } from "./ListFilterSummary-BjRd_0Sf.js";
-import { n as Ne, t as Pe } from "./ColumnResizer-Djku_Vg5.js";
-import { t as Fe } from "./ListResult-kCKJbtYG.js";
-import { t as Ie } from "./errorLabels-BveI5qVU.js";
+import { a as L, i as R, n as ee, r as z } from "./taskIds-BlchWwUp.js";
+import { a as B, n as V, t as te } from "./bulkMutations-3wwPI3-H.js";
+import { A as H, C as U, D as W, E as G, F as ne, I as re, M as K, N as ie, O as ae, P as q, S as oe, T as J, _ as se, a as ce, b as Y, c as le, d as ue, f as de, g as fe, h as pe, i as me, j as X, k as Z, l as he, m as ge, n as _e, o as ve, p as ye, r as be, s as xe, t as Se, u as Ce, v as we, w as Te, x as Ee, y as De } from "./StepEvidence-CQEgOuWO.js";
+import { n as Oe } from "./time-DOD6oyhP.js";
+import { n as ke, r as Ae, t as je } from "./ListFilterSummary-BjcCEzgL.js";
+import { n as Me, t as Ne } from "./ColumnResizer-XOclQup1.js";
+import { t as Pe } from "./TableState-CxHYH8ID.js";
+import { t as Fe } from "./ListResult-EwR5MPFZ.js";
+import { t as Ie } from "./errorLabels-BMfDB1_c.js";
 import { t as Le } from "./ListPagination-CSFkV2Gz.js";
-import { t as Re } from "./ListToolbar-BlcEvGQq.js";
+import { t as Re } from "./ListToolbar-B8ViQxj1.js";
 // src/api/tasks.ts
-var ze = (e, t = {}) => F(e, t, R);
+var ze = (e, t = {}) => F(e, t, z);
 function Be() {
 	return {
 		task_id: "",
@@ -83,13 +84,13 @@ function Ue(e, t) {
 	return `${i}${i.length > 1 ? "," : ""}"task_ids":[${n.map((e) => String(L(e))).join(",")}]}`;
 }
 async function We(e, t = {}) {
-	let n = await z((t, n) => n?.method === "POST" ? B(t, {
+	let n = await B((t, n) => n?.method === "POST" ? V(t, {
 		...n,
 		body: Ue(t, {
 			action: "terminate",
 			task_ids: e
 		})
-	}) : B(t, n), "/api/operations/bulk", {
+	}) : V(t, n), "/api/operations/bulk", {
 		action: "terminate",
 		task_ids: e
 	}, t);
@@ -137,124 +138,124 @@ var Ge = {
 	})
 }, Ke = (e) => e instanceof Error ? e.message : "读取失败，请重试";
 function qe(e = Ge, t = () => {}) {
-	let n = v(!1), r = v(!0), i = v(null), a = v(null), o = k(null), s = k(null), c = k([]), l = k([]), u = v("events"), d = v(null), p = v(""), m = v(""), h = v(""), g = v(""), _ = v(!1), y = v(!1), b = v(!1), x = v(null), S = v(null), C = v("tail"), w = v("tail"), T = v(!1), E = v(!1), O = v(!1), A = v(!1), j = v(!0), M = D(() => o.value?.runs || []), N = D(() => M.value.find((e) => ee(e.id, a.value))), P = 0, F = 0, I = 0, R = 0, z = !1, B = !1, ne = !1, V = !1, H = null, U = null, W = null, re = null, ie = null, G, ae = new AbortController(), oe = !1;
-	function K() {
-		G !== void 0 && clearTimeout(G), G = void 0;
+	let n = v(!1), r = v(!0), i = v(null), a = v(null), o = k(null), s = k(null), c = k([]), l = k([]), u = v("events"), d = v(null), p = v(""), m = v(""), h = v(""), g = v(""), _ = v(!1), y = v(!1), b = v(!1), x = v(null), S = v(null), C = v("tail"), w = v("tail"), T = v(!1), E = v(!1), O = v(!1), A = v(!1), j = v(!0), M = D(() => o.value?.runs || []), N = D(() => M.value.find((e) => R(e.id, a.value))), P = 0, F = 0, I = 0, z = 0, B = !1, V = !1, te = !1, H = !1, U = null, W = null, G = null, ne = null, re = null, K, ie = new AbortController(), ae = !1;
+	function q() {
+		K !== void 0 && clearTimeout(K), K = void 0;
 	}
-	function se() {
-		P += 1, ae.abort(), ae = new AbortController(), ie = null, z = B = !1, ne = V = !1, H = U = null, _.value = y.value = b.value = !1, K();
+	function oe() {
+		P += 1, ie.abort(), ie = new AbortController(), re = null, B = V = !1, te = H = !1, U = W = null, _.value = y.value = b.value = !1, q();
 	}
-	let q = (e) => e === P && n.value, ce = () => n.value && r.value && !!i.value;
-	function le() {
-		K(), ce() && (!o.value || Y(o.value)) && (G = setTimeout(() => void me(!0), 2e3));
+	let J = (e) => e === P && n.value, se = () => n.value && r.value && !!i.value;
+	function ce() {
+		q(), se() && (!o.value || X(o.value)) && (K = setTimeout(() => void pe(!0), 2e3));
 	}
-	function J() {
-		F += 1, I += 1, z = B = !1, ne = V = !1, H = U = null, W = re = null, y.value = b.value = !1, s.value = null, m.value = h.value = g.value = "", c.value = [], l.value = [], x.value = S.value = null, T.value = E.value = O.value = A.value = !1, C.value = w.value = "tail", j.value = !0;
+	function Y() {
+		F += 1, I += 1, B = V = !1, te = H = !1, U = W = null, G = ne = null, y.value = b.value = !1, s.value = null, m.value = h.value = g.value = "", c.value = [], l.value = [], x.value = S.value = null, T.value = E.value = O.value = A.value = !1, C.value = w.value = "tail", j.value = !0;
 	}
-	function ue(t = "incremental", n = !1) {
-		if (!ce() || !a.value || !i.value) return;
-		if (t === "incremental" && z) return ne ? (n || (y.value = !0), H || Promise.resolve()) : void 0;
+	function le(t = "incremental", n = !1) {
+		if (!se() || !a.value || !i.value) return;
+		if (t === "incremental" && B) return te ? (n || (y.value = !0), U || Promise.resolve()) : void 0;
 		if (t === "incremental" && C.value === "start" && E.value || t === "next" && !E.value) return;
 		let r = P, o = ++F, s = t === "tail" || t === "start" || x.value === null, l = {
 			limit: 500,
 			...t === "start" ? { after_id: 0 } : t !== "tail" && x.value !== null ? { after_id: x.value } : {}
 		};
-		return z = !0, ne = n, n || (y.value = !0), H = (async () => {
+		return B = !0, te = n, n || (y.value = !0), U = (async () => {
 			try {
-				let n = await e.events(i.value, a.value, l, ae.signal);
-				if (!q(r) || o !== F) return;
-				c.value = s ? n.items : be(c.value, n.items), x.value = n.next_after_id, W = a.value, (t === "tail" || t === "start") && (C.value = t), s && C.value === "tail" ? (T.value = n.has_more, E.value = !1) : (E.value = n.has_more, C.value === "start" && (T.value = !1)), h.value = "";
+				let n = await e.events(i.value, a.value, l, ie.signal);
+				if (!J(r) || o !== F) return;
+				c.value = s ? n.items : ye(c.value, n.items), x.value = n.next_after_id, G = a.value, (t === "tail" || t === "start") && (C.value = t), s && C.value === "tail" ? (T.value = n.has_more, E.value = !1) : (E.value = n.has_more, C.value === "start" && (T.value = !1)), h.value = "";
 			} catch (e) {
-				q(r) && o === F && (h.value = Ke(e));
+				J(r) && o === F && (h.value = Ke(e));
 			} finally {
-				q(r) && o === F && (z = !1, ne = !1, H = null, y.value = !1);
+				J(r) && o === F && (B = !1, te = !1, U = null, y.value = !1);
 			}
-		})(), H;
+		})(), U;
 	}
-	function de(t = "incremental", n = !1) {
-		if (!ce() || !a.value || !i.value) return;
-		if (t === "incremental" && B) return V ? (n || (b.value = !0), U || Promise.resolve()) : void 0;
+	function ue(t = "incremental", n = !1) {
+		if (!se() || !a.value || !i.value) return;
+		if (t === "incremental" && V) return H ? (n || (b.value = !0), W || Promise.resolve()) : void 0;
 		if (t === "incremental" && w.value === "start" && A.value || t === "next" && !A.value) return;
 		let r = P, o = ++I, s = t === "tail" || t === "start" || S.value === null, c = {
 			limit: 500,
 			...t === "start" ? { cursor: 0 } : t !== "tail" && S.value !== null ? { cursor: S.value } : {}
 		};
-		return B = !0, V = n, n || (b.value = !0), U = (async () => {
+		return V = !0, H = n, n || (b.value = !0), W = (async () => {
 			try {
-				let n = await e.logs(i.value, a.value, c, ae.signal);
-				if (!q(r) || o !== I) return;
-				l.value = s ? n.items : [...l.value, ...n.items], S.value = n.next_cursor, re = a.value, (t === "tail" || t === "start") && (w.value = t), A.value = n.has_more, O.value = w.value === "tail" && n.available, j.value = n.available, g.value = "";
+				let n = await e.logs(i.value, a.value, c, ie.signal);
+				if (!J(r) || o !== I) return;
+				l.value = s ? n.items : [...l.value, ...n.items], S.value = n.next_cursor, ne = a.value, (t === "tail" || t === "start") && (w.value = t), A.value = n.has_more, O.value = w.value === "tail" && n.available, j.value = n.available, g.value = "";
 			} catch (e) {
-				q(r) && o === I && (g.value = Ke(e));
+				J(r) && o === I && (g.value = Ke(e));
 			} finally {
-				q(r) && o === I && (B = !1, V = !1, U = null, b.value = !1);
+				J(r) && o === I && (V = !1, H = !1, W = null, b.value = !1);
 			}
-		})(), U;
+		})(), W;
 	}
-	async function fe(t) {
+	async function de(t) {
 		if (i.value && a.value) try {
-			let n = await e.progress(i.value, a.value, ae.signal);
-			if (!q(t)) return;
+			let n = await e.progress(i.value, a.value, ie.signal);
+			if (!J(t)) return;
 			s.value = n.progress, m.value = "";
 		} catch (e) {
-			q(t) && (m.value = Ke(e));
+			J(t) && (m.value = Ke(e));
 		}
 	}
-	function pe() {
-		return me(!1);
+	function fe() {
+		return pe(!1);
 	}
-	function me(e) {
-		if (!ce() || !i.value) return Promise.resolve();
-		if (e && o.value || (_.value = !0), ie) return ie;
-		let t = P, n = ++R;
-		return ie = he(t, n, e).finally(() => {
-			q(t) && n === R && (ie = null, _.value = !1, le());
-		}), ie;
+	function pe(e) {
+		if (!se() || !i.value) return Promise.resolve();
+		if (e && o.value || (_.value = !0), re) return re;
+		let t = P, n = ++z;
+		return re = me(t, n, e).finally(() => {
+			J(t) && n === z && (re = null, _.value = !1, ce());
+		}), re;
 	}
-	async function he(n, r, s) {
+	async function me(n, r, s) {
 		if (i.value) {
-			K();
+			q();
 			try {
-				let c = await e.detail(i.value, ae.signal);
-				if (!q(n) || r !== R) return;
+				let c = await e.detail(i.value, ie.signal);
+				if (!J(n) || r !== z) return;
 				o.value = c.task;
 				let l = c.task.runs || [];
-				if (a.value && !l.some((e) => ee(e.id, a.value))) {
-					J(), p.value = `所选运行 #${a.value} 不存在或已不可用，请选择其他运行。`;
+				if (a.value && !l.some((e) => R(e.id, a.value))) {
+					Y(), p.value = `所选运行 #${a.value} 不存在或已不可用，请选择其他运行。`;
 					return;
 				}
-				let d = a.value || c.task.last_run_id || l.at(-1)?.id || null, f = l.some((e) => ee(e.id, d)) ? d : l.at(-1)?.id || null;
-				if (f !== a.value && (J(), a.value = f), p.value = "", a.value) {
-					let e = s && ee(W, a.value), t = s && ee(re, a.value);
+				let d = a.value || c.task.last_run_id || l.at(-1)?.id || null, f = l.some((e) => R(e.id, d)) ? d : l.at(-1)?.id || null;
+				if (f !== a.value && (Y(), a.value = f), p.value = "", a.value) {
+					let e = s && R(G, a.value), t = s && R(ne, a.value);
 					await Promise.allSettled([
-						fe(n),
-						ue("incremental", e),
-						...u.value === "logs" ? [de("incremental", t)] : []
+						de(n),
+						le("incremental", e),
+						...u.value === "logs" ? [ue("incremental", t)] : []
 					]);
 				}
-				if (!q(n)) return;
-				!Y(c.task) && !oe && (oe = !0, t());
+				if (!J(n)) return;
+				!X(c.task) && !ae && (ae = !0, t());
 			} catch (e) {
-				q(n) && (p.value = Ke(e));
+				J(n) && (p.value = Ke(e));
 			}
 		}
 	}
-	function X(e, t, r) {
-		return se(), n.value = !0, i.value = L(e), a.value = te(t), o.value = null, p.value = "", u.value = "events", d.value = r || null, oe = !1, J(), pe();
+	function Z(e, t, r) {
+		return oe(), n.value = !0, i.value = L(e), a.value = ee(t), o.value = null, p.value = "", u.value = "events", d.value = r || null, ae = !1, Y(), fe();
 	}
-	function ge() {
-		n.value = !1, se();
+	function he() {
+		n.value = !1, oe();
+	}
+	function ge(e) {
+		if (e = L(e), !R(e, a.value)) return oe(), a.value = e, d.value = null, Y(), fe();
 	}
 	function _e(e) {
-		if (e = L(e), !ee(e, a.value)) return se(), a.value = e, d.value = null, J(), pe();
+		if (u.value = e, e === "logs") return ue();
 	}
 	function ve(e) {
-		if (u.value = e, e === "logs") return de();
+		r.value !== e && (r.value = e, e ? n.value && pe(!0) : oe());
 	}
-	function ye(e) {
-		r.value !== e && (r.value = e, e ? n.value && me(!0) : se());
-	}
-	return f(ge), {
+	return f(he), {
 		opened: n,
 		taskId: i,
 		runId: a,
@@ -280,14 +281,14 @@ function qe(e = Ge, t = () => {}) {
 		logsEarlier: O,
 		logsMore: A,
 		logsAvailable: j,
-		open: X,
-		close: ge,
-		selectRun: _e,
-		selectTab: ve,
-		setVisible: ye,
-		refresh: pe,
-		loadEvents: ue,
-		loadLogs: de
+		open: Z,
+		close: he,
+		selectRun: ge,
+		selectTab: _e,
+		setVisible: ve,
+		refresh: fe,
+		loadEvents: le,
+		loadLogs: ue
 	};
 }
 // src/features/tasks/detail/TaskFailure.vue?vue&type=script&setup=true&lang.ts
@@ -305,9 +306,9 @@ var Je = {
 		status: {}
 	},
 	setup(e) {
-		let t = e, r = D(() => !!(t.execution?.error_message || t.execution?.error_info)), i = D(() => (t.failure?.country_failures || []).filter((e) => H(e.country).trim())), a = D(() => {
+		let t = e, r = D(() => !!(t.execution?.error_message || t.execution?.error_info)), i = D(() => (t.failure?.country_failures || []).filter((e) => U(e.country).trim())), a = D(() => {
 			let e = t.failure;
-			return e ? i.value.length && !e.error_info?.auto_refresh_at_failed ? `${i.value.length} 个国家查询失败，展开查看具体原因` : we(e) : "";
+			return e ? i.value.length && !e.error_info?.auto_refresh_at_failed ? `${i.value.length} 个国家查询失败，展开查看具体原因` : Ce(e) : "";
 		}), s = [
 			"unknown",
 			"complete",
@@ -318,18 +319,18 @@ var Je = {
 			let e = t.failure;
 			if (!e) return "";
 			let n = e.stage?.replace(/_result$/, ""), r = e.error_info?.stage?.replace(/_result$/, ""), i = e.error_info?.auto_refresh_at_failed === !0, a = r === "preflight" && !!e.step_id && e.step_id !== "preflight";
-			if (!i && !a && r && !s.includes(r) && r !== n) return G("stage", r);
-			let o = e.label ? G("stage", e.label) || e.label : e.step_id ? G("stage", e.step_id) : "阶段记录缺失", c = i ? n && !s.includes(n) && n !== "refresh_token" ? n : r : n, l = c && !s.includes(c) && !(i && [
+			if (!i && !a && r && !s.includes(r) && r !== n) return K("stage", r);
+			let o = e.label ? K("stage", e.label) || e.label : e.step_id ? K("stage", e.step_id) : "阶段记录缺失", c = i ? n && !s.includes(n) && n !== "refresh_token" ? n : r : n, l = c && !s.includes(c) && !(i && [
 				"refresh_token",
 				"plan_check",
 				"plan_request",
 				"extract_link",
 				"extraction"
-			].includes(c)) ? G("stage", c) : "";
+			].includes(c)) ? K("stage", c) : "";
 			return l && l !== o ? `${o} · ${l}` : o;
-		}), l = D(() => r.value ? oe(t.execution?.error_info, t.execution?.error_message) : ""), u = D(() => {
+		}), l = D(() => r.value ? ae(t.execution?.error_info, t.execution?.error_message) : ""), u = D(() => {
 			if (!t.failure || !r.value) return !1;
-			let e = (e) => H(e).replace(/\s+/g, " ").trim(), n = t.failure, i = n.error_info, a = t.execution?.error_info, o = e(n.message), s = e(t.execution?.error_message);
+			let e = (e) => U(e).replace(/\s+/g, " ").trim(), n = t.failure, i = n.error_info, a = t.execution?.error_info, o = e(n.message), s = e(t.execution?.error_message);
 			if (o && s && o !== s) return !1;
 			if (i?.cause_summary && a?.cause_summary) return e(i.cause_summary) === e(a.cause_summary);
 			if (o && s) return o === s;
@@ -344,14 +345,14 @@ var Je = {
 		}));
 		return (t, s) => e.failure || r.value ? (n(), M("details", Je, [
 			S("summary", null, [
-				e.failure ? (n(), M("strong", Ye, b(j(ge)(e.failure) ? "历史失败位置" : "失败位置") + "：" + b(c.value), 1)) : (n(), M("strong", Xe, "执行失败")),
+				e.failure ? (n(), M("strong", Ye, b(j(he)(e.failure) ? "历史失败位置" : "失败位置") + "：" + b(c.value), 1)) : (n(), M("strong", Xe, "执行失败")),
 				S("span", null, b(a.value || l.value), 1),
 				e.failure && r.value && !u.value ? (n(), M("span", Ze, "执行错误：" + b(l.value), 1)) : p("", !0),
 				e.execution?.error_info?.display_code ? (n(), M("small", Qe, b(e.execution.error_info.display_code), 1)) : p("", !0)
 			]),
 			i.value.length ? (n(), M("ul", $e, [(n(!0), M(g, null, o(i.value, (e, t) => (n(), M("li", { key: t }, b(e.country) + "：" + b(e.summary || "诊断记录不完整"), 1))), 128))])) : p("", !0),
 			e.failure?.event_id ? (n(), M("p", et, "关联事件 " + b(e.failure.event_id), 1)) : p("", !0),
-			e.failure?.reconcile_required || ["request_unknown", "attention_required"].includes(j(H)(e.status)) ? (n(), M("p", tt, "原请求证据已保留")) : p("", !0),
+			e.failure?.reconcile_required || ["request_unknown", "attention_required"].includes(j(U)(e.status)) ? (n(), M("p", tt, "原请求证据已保留")) : p("", !0),
 			S("pre", null, b(JSON.stringify(d.value, null, 2)), 1)
 		])) : p("", !0);
 	}
@@ -387,15 +388,15 @@ var Je = {
 	},
 	emits: ["filter", "child"],
 	setup(t, { emit: r }) {
-		let a = t, s = r, c = D(() => a.progress?.main_steps || []), u = D(() => ye(a.progress?.main_steps)), d = D(() => {
+		let a = t, s = r, c = D(() => a.progress?.main_steps || []), u = D(() => ve(a.progress?.main_steps)), d = D(() => {
 			let e = u.value.length;
 			return e <= 1 ? 1 : e === 2 ? 2 : e === 3 ? 3 : e === 4 ? 4 : e === 5 ? 5 : e === 6 ? 3 : e <= 8 ? 4 : 5;
-		}), f = v(null), m = D(() => c.value.find((e) => Oe(e) === f.value)), h = v(), y = null, w = D(() => ce(a.progress?.outcome?.child_tasks).flatMap((e) => {
+		}), f = v(null), m = D(() => c.value.find((e) => De(e) === f.value)), h = v(), y = null, w = D(() => se(a.progress?.outcome?.child_tasks).flatMap((e) => {
 			try {
 				return [{
 					...e,
 					task_id: L(e.task_id),
-					run_id: te(e.run_id),
+					run_id: ee(e.run_id),
 					task_type: e.task_type,
 					status: e.status
 				}];
@@ -403,37 +404,37 @@ var Je = {
 				return [];
 			}
 		})), O = D(() => {
-			let e = _e(a.progress?.debug_pause);
-			if (e.state === "paused") return `调试暂停 · 等待结束调试${e.paused_at ? ` · ${ke(H(e.paused_at))}` : ""}`;
+			let e = ge(a.progress?.debug_pause);
+			if (e.state === "paused") return `调试暂停 · 等待结束调试${e.paused_at ? ` · ${Oe(U(e.paused_at))}` : ""}`;
 			let t = a.progress?.current;
 			if (!t) return "执行阶段";
-			let n = t, r = H(n.label || n.step_id), i = H(n.state).toLowerCase();
+			let n = t, r = U(n.label || n.step_id), i = U(n.state).toLowerCase();
 			if (i === "success" || i === "skipped") {
-				let e = H(n.next_label);
+				let e = U(n.next_label);
 				return e ? `当前：已完成${r} · 正在进入${e}` : `当前：已完成${r} · 正在进入下一阶段`;
 			}
-			let o = H(n.child_label);
+			let o = U(n.child_label);
 			return `当前：${r || "执行中"}${o ? ` · ${o}` : ""}`;
 		}), k = D(() => a.progress?.source === "legacy_derived" ? "历史记录还原" : a.progress?.source === "insufficient_evidence" ? "无细分阶段记录" : "按实际执行顺序与依赖排列");
 		function A(e) {
 			return [
-				J(e),
-				le(e),
-				...he(e),
+				Y(e),
+				ce(e),
+				...me(e),
 				e.reason || e.message,
 				"点击筛选事件和日志"
 			].filter(Boolean).join(" · ");
 		}
 		function P(e) {
-			return Oe(e) === a.filter || !!(a.filter && e.raw_stages?.includes(a.filter));
+			return De(e) === a.filter || !!(a.filter && e.raw_stages?.includes(a.filter));
 		}
 		async function F(t) {
-			y = document.activeElement instanceof HTMLElement ? document.activeElement : null, f.value = Oe(t), await e(), h.value?.open || h.value?.showModal();
+			y = document.activeElement instanceof HTMLElement ? document.activeElement : null, f.value = De(t), await e(), h.value?.open || h.value?.showModal();
 		}
 		function I() {
 			h.value?.close(), f.value = null, y?.isConnected && y.focus({ preventScroll: !0 }), y = null;
 		}
-		function ee(e) {
+		function R(e) {
 			let t = h.value?.querySelector(".tc-step-dialog-body");
 			!t || e.ctrlKey || e.shiftKey || !e.deltaY || t.contains(e.target) || t.scrollHeight <= t.clientHeight || (e.preventDefault(), t.scrollTop += e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? t.clientHeight : 1));
 		}
@@ -446,10 +447,10 @@ var Je = {
 				style: _({ "--tc-step-cols": String(d.value) }),
 				"aria-label": "执行阶段，排列不代表固定顺序"
 			}, [(n(!0), M(g, null, o(u.value, (e) => (n(), M("li", {
-				key: j(Oe)(e),
+				key: j(De)(e),
 				class: E([
 					"tc-step",
-					`tc-step--${j(De)(e)}`,
+					`tc-step--${j(Ee)(e)}`,
 					{ "tc-step--selected": P(e) }
 				])
 			}, [S("button", {
@@ -457,26 +458,26 @@ var Je = {
 				class: "tc-step-select",
 				"aria-pressed": P(e),
 				title: A(e),
-				onClick: (t) => s("filter", P(e) ? null : j(Oe)(e))
+				onClick: (t) => s("filter", P(e) ? null : j(De)(e))
 			}, [
 				r[2] ||= S("span", {
 					class: "tc-step-dot",
 					"aria-hidden": "true"
 				}, null, -1),
-				S("strong", null, b(j(J)(e)), 1),
+				S("strong", null, b(j(Y)(e)), 1),
 				S("span", st, [
-					N(b(j(le)(e)), 1),
-					j(Te)(e) == null ? p("", !0) : (n(), M("small", ct, " · " + b(j(V)(j(Te)(e))), 1)),
-					(n(!0), M(g, null, o(j(he)(e), (e) => (n(), M("small", { key: e }, " · " + b(e), 1))), 128))
+					N(b(j(ce)(e)), 1),
+					j(we)(e) == null ? p("", !0) : (n(), M("small", ct, " · " + b(j(H)(j(we)(e))), 1)),
+					(n(!0), M(g, null, o(j(me)(e), (e) => (n(), M("small", { key: e }, " · " + b(e), 1))), 128))
 				]),
-				j(xe)(e, c.value).length ? (n(), M("span", lt, [(n(!0), M(g, null, o(j(xe)(e, c.value), (e) => (n(), M("em", {
+				j(be)(e, c.value).length ? (n(), M("span", lt, [(n(!0), M(g, null, o(j(be)(e, c.value), (e) => (n(), M("em", {
 					key: e,
 					class: "tc-step-dep-chip"
 				}, b(e), 1))), 128))])) : p("", !0)
 			], 8, ot), S("button", {
 				type: "button",
 				class: "tc-step-inspect",
-				"aria-label": `查看${j(J)(e)}的时间、阶段事件与子步骤`,
+				"aria-label": `查看${j(Y)(e)}的时间、阶段事件与子步骤`,
 				title: "查看阶段关系与证据",
 				"aria-haspopup": "dialog",
 				onClick: (t) => F(e)
@@ -497,9 +498,9 @@ var Je = {
 				"stroke-width": "1.5"
 			})], -1)]], 8, ut)], 2))), 128))], 12, at)) : (n(), M("p", dt, "此运行没有完整步骤快照，可继续查看事件、日志和诊断资源。")),
 			c.value.length ? (n(), M("details", ft, [S("summary", null, [r[4] ||= S("span", { class: "tc-flow-relations__title" }, "依赖与完整阶段记录", -1), S("span", pt, b(c.value.length) + " 个阶段", 1)]), S("div", mt, [S("p", ht, b(t.progress.structure?.parallelism === "explicit" ? "并行分组来自执行记录；依赖关系单独显示。" : "已记录的阶段按首次出现时间排列；未记录的并行关系不作推断。"), 1), S("div", gt, [(n(!0), M(g, null, o(c.value, (e) => (n(), M("div", {
-				key: j(Oe)(e),
+				key: j(De)(e),
 				class: "tc-flow-relation"
-			}, [S("div", _t, [S("strong", null, b(j(J)(e)), 1), S("span", vt, b(j(le)(e)), 1)]), l(ve, {
+			}, [S("div", _t, [S("strong", null, b(j(Y)(e)), 1), S("span", vt, b(j(ce)(e)), 1)]), l(_e, {
 				step: e,
 				siblings: c.value
 			}, null, 8, ["step", "siblings"])]))), 128))])])])) : p("", !0),
@@ -516,7 +517,7 @@ var Je = {
 				key: e.task_id,
 				type: "button",
 				onClick: (t) => s("child", e.task_id, e.run_id)
-			}, b(j(G)("task_type", j(H)(e.task_type))) + " #" + b(e.task_id) + " · " + b(j(pe)(e.status)), 9, bt))), 128))])) : p("", !0),
+			}, b(j(K)("task_type", j(U)(e.task_type))) + " #" + b(e.task_id) + " · " + b(j(fe)(e.status)), 9, bt))), 128))])) : p("", !0),
 			S("dialog", {
 				ref_key: "inspector",
 				ref: h,
@@ -524,15 +525,15 @@ var Je = {
 				"aria-labelledby": "tc-step-title",
 				onCancel: T(I, ["prevent"]),
 				onClose: r[0] ||= (e) => f.value = null,
-				onWheel: T(ee, ["stop"]),
+				onWheel: T(R, ["stop"]),
 				onClick: r[1] ||= (e) => {
 					e.target === h.value && I();
 				}
-			}, [S("header", null, [S("h3", xt, b(m.value ? j(J)(m.value) : "步骤详情"), 1), S("button", {
+			}, [S("header", null, [S("h3", xt, b(m.value ? j(Y)(m.value) : "步骤详情"), 1), S("button", {
 				type: "button",
 				autofocus: "",
 				onClick: I
-			}, "关闭")]), S("div", St, [m.value ? (n(), x(Ce, {
+			}, "关闭")]), S("div", St, [m.value ? (n(), x(Se, {
 				key: 0,
 				step: m.value,
 				siblings: c.value
@@ -635,7 +636,7 @@ var Je = {
 	__name: "TaskDetail",
 	emits: ["close", "refresh"],
 	setup(t, { expose: r, emit: c }) {
-		let u = c, d = qe(void 0, () => u("refresh")), { opened: f, taskId: m, runId: h, task: _, runs: w, selectedRun: O, progress: k, events: P, logs: F, tab: I, stepFilter: L, error: te, progressError: R, eventsError: z, logsError: B, loading: ne, eventsLoading: U, logsLoading: W, eventsMode: re, logsMode: ae, eventsEarlier: oe, eventsMore: K, logsEarlier: q, logsMore: ce, logsAvailable: le } = d, he = v(), Y = v(), X = v(0), ge = Intl.DateTimeFormat().resolvedOptions().timeZone, ve = [
+		let u = c, d = qe(void 0, () => u("refresh")), { opened: f, taskId: m, runId: h, task: _, runs: w, selectedRun: O, progress: k, events: P, logs: F, tab: I, stepFilter: L, error: ee, progressError: z, eventsError: B, logsError: V, loading: te, eventsLoading: W, logsLoading: G, eventsMode: ne, logsMode: ie, eventsEarlier: ae, eventsMore: q, logsEarlier: J, logsMore: se, logsAvailable: ce } = d, me = v(), X = v(), Z = v(0), he = Intl.DateTimeFormat().resolvedOptions().timeZone, _e = [
 			{
 				id: "events",
 				label: "事件时间线"
@@ -648,50 +649,50 @@ var Je = {
 				id: "artifacts",
 				label: "诊断资源"
 			}
-		], ye = D(() => k.value?.main_steps || []), be = D(() => ye.value.find((e) => Oe(e) === L.value || !!(L.value && e.raw_stages?.includes(L.value)))), xe = D(() => me(P.value.filter((e) => de(e, L.value, ye.value)))), Ce = D(() => F.value.filter((e) => de(e, L.value, ye.value, !0))), we = D(() => xe.value.map((e) => {
-			let t = ue(e), n = fe(e.detail);
+		], ve = D(() => k.value?.main_steps || []), ye = D(() => ve.value.find((e) => De(e) === L.value || !!(L.value && e.raw_stages?.includes(L.value)))), be = D(() => pe(P.value.filter((e) => ue(e, L.value, ve.value)))), Se = D(() => F.value.filter((e) => ue(e, L.value, ve.value, !0))), Ce = D(() => be.value.map((e) => {
+			let t = le(e), n = de(e.detail);
 			return {
 				event: e,
 				state: t,
-				timestamp: ke(e.created_at),
-				stageLabel: e.stage_label || G("stage", e.stage),
+				timestamp: Oe(e.created_at),
+				stageLabel: e.stage_label || K("stage", e.stage),
 				association: Fe(e),
-				stateLabel: t ? pe(t) : "记录",
+				stateLabel: t ? fe(t) : "记录",
 				detailJson: n ? JSON.stringify(n, null, 2) : null
 			};
-		})), Te = D(() => Ce.value.map((e) => {
-			let t = fe(e.fields);
+		})), we = D(() => Se.value.map((e) => {
+			let t = de(e.fields);
 			return {
 				item: e,
-				timestamp: e.ts ? ke(e.ts) : "时间缺失",
+				timestamp: e.ts ? Oe(e.ts) : "时间缺失",
 				detailJson: t ? JSON.stringify(t, null, 2) : null
 			};
-		})), De = D(() => h.value ? O.value : _.value), Ae = D(() => _.value?.email_snapshot || _.value?.email || (_.value?.account_id ? `账号 #${_.value.account_id}` : _.value?.target_id || "执行记录与诊断")), je = D(() => (_.value?.resources || []).filter((e) => !h.value || ee(e.run_id, h.value))), Z = D(() => O.value?.debug_artifacts), Me = D(() => _e(O.value?.debug_pause || k.value?.debug_pause)), Ne = null, Pe = !1;
+		})), Ee = D(() => h.value ? O.value : _.value), ke = D(() => _.value?.email_snapshot || _.value?.email || (_.value?.account_id ? `账号 #${_.value.account_id}` : _.value?.target_id || "执行记录与诊断")), Ae = D(() => (_.value?.resources || []).filter((e) => !h.value || R(e.run_id, h.value))), je = D(() => O.value?.debug_artifacts), Me = D(() => ge(O.value?.debug_pause || k.value?.debug_pause)), Ne = null, Pe = !1;
 		function Fe(e) {
-			let t = _e(e.detail), n = H(e.main_step_id || t.main_step_id), r = H(e.raw_stage || t.raw_stage || e.stage), i = ye.value.filter((e) => n ? Oe(e) === n : e.raw_stages?.includes(r));
+			let t = ge(e.detail), n = U(e.main_step_id || t.main_step_id), r = U(e.raw_stage || t.raw_stage || e.stage), i = ve.value.filter((e) => n ? De(e) === n : e.raw_stages?.includes(r));
 			if (i.length !== 1) {
-				let t = H(e.event_id || e.id);
+				let t = U(e.event_id || e.id);
 				if (t) {
-					let e = ye.value.filter((e) => se(e.event_ids).includes(t));
+					let e = ve.value.filter((e) => oe(e.event_ids).includes(t));
 					e.length === 1 && (i = e);
 				}
 			}
-			if (i.length !== 1 && (r === "nested_live_check" || (r === "remote_request" || r === "reconcile") && H(t.action) === "token_refresh")) {
-				let e = ye.value.find((e) => Oe(e) === "refresh_token") || ye.value.find((e) => Oe(e) === "access_token") || ye.value.find((e) => Oe(e) === "authenticate");
-				if (e) return J(e);
+			if (i.length !== 1 && (r === "nested_live_check" || (r === "remote_request" || r === "reconcile") && U(t.action) === "token_refresh")) {
+				let e = ve.value.find((e) => De(e) === "refresh_token") || ve.value.find((e) => De(e) === "access_token") || ve.value.find((e) => De(e) === "authenticate");
+				if (e) return Y(e);
 			}
-			return i.length !== 1 && (r === "queued" || H(e.event_type).startsWith("run.")) ? "运行状态" : i.length === 1 ? J(i[0]) : "未关联步骤";
+			return i.length !== 1 && (r === "queued" || U(e.event_type).startsWith("run.")) ? "运行状态" : i.length === 1 ? Y(i[0]) : "未关联步骤";
 		}
 		function Ie() {
 			f.value && (d.close(), Ne?.isConnected && Ne.focus({ preventScroll: !0 }), Ne = null, u("close"));
 		}
 		function Le() {
-			he.value?.close(), Ie();
+			me.value?.close(), Ie();
 		}
 		async function Re(t, n, r) {
-			f.value || (Ne = document.activeElement instanceof HTMLElement ? document.activeElement : null), X.value = 0, d.setVisible(!document.hidden);
+			f.value || (Ne = document.activeElement instanceof HTMLElement ? document.activeElement : null), Z.value = 0, d.setVisible(!document.hidden);
 			let i = d.open(t, n, r);
-			return await e(), !he.value?.open && f.value && he.value?.showModal(), i;
+			return await e(), !me.value?.open && f.value && me.value?.showModal(), i;
 		}
 		function ze(e) {
 			d.setVisible(e);
@@ -700,10 +701,10 @@ var Je = {
 			ze(!document.hidden);
 		}
 		function Ve(e) {
-			X.value = 0, d.selectRun(e.target.value);
+			Z.value = 0, d.selectRun(e.target.value);
 		}
 		async function He(t) {
-			X.value = 0, await d.selectTab(t), await e(), Y.value && (Y.value.scrollTop = 0);
+			Z.value = 0, await d.selectTab(t), await e(), X.value && (X.value.scrollTop = 0);
 		}
 		function Ue(e) {
 			if (![
@@ -712,36 +713,36 @@ var Je = {
 				"Home",
 				"End"
 			].includes(e.key)) return;
-			let t = ve.findIndex((e) => e.id === I.value), n = e.key === "Home" ? 0 : e.key === "End" ? ve.length - 1 : (t + (e.key === "ArrowRight" ? 1 : -1) + ve.length) % ve.length;
-			e.preventDefault(), He(ve[n].id), e.currentTarget.querySelector(`[data-detail-tab="${ve[n].id}"]`)?.focus();
+			let t = _e.findIndex((e) => e.id === I.value), n = e.key === "Home" ? 0 : e.key === "End" ? _e.length - 1 : (t + (e.key === "ArrowRight" ? 1 : -1) + _e.length) % _e.length;
+			e.preventDefault(), He(_e[n].id), e.currentTarget.querySelector(`[data-detail-tab="${_e[n].id}"]`)?.focus();
 		}
 		async function We(t) {
-			Pe = !0, I.value === "events" ? await d.loadEvents(t) : await d.loadLogs(t), await e(), Y.value && t !== "next" && (Y.value.scrollTop = t === "tail" ? Y.value.scrollHeight : 0), X.value = 0, Pe = !1;
+			Pe = !0, I.value === "events" ? await d.loadEvents(t) : await d.loadLogs(t), await e(), X.value && t !== "next" && (X.value.scrollTop = t === "tail" ? X.value.scrollHeight : 0), Z.value = 0, Pe = !1;
 		}
 		function Ge() {
-			Y.value && (Y.value.scrollTop = Y.value.scrollHeight), X.value = 0;
+			X.value && (X.value.scrollTop = X.value.scrollHeight), Z.value = 0;
 		}
 		function Ke(e) {
-			let t = Y.value;
-			he.value && he.value.scrollHeight > he.value.clientHeight + 1 || e.defaultPrevented || e.target instanceof Element && e.target.closest(".tc-step-dialog") || !t || e.ctrlKey || e.shiftKey || t.contains(e.target) || !e.deltaY || t.scrollHeight <= t.clientHeight || (e.preventDefault(), t.scrollTop += e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? t.clientHeight : 1));
+			let t = X.value;
+			me.value && me.value.scrollHeight > me.value.clientHeight + 1 || e.defaultPrevented || e.target instanceof Element && e.target.closest(".tc-step-dialog") || !t || e.ctrlKey || e.shiftKey || t.contains(e.target) || !e.deltaY || t.scrollHeight <= t.clientHeight || (e.preventDefault(), t.scrollTop += e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? t.clientHeight : 1));
 		}
 		return i([P, F], async ([t, n], [r, i]) => {
 			if (Pe) return;
-			let a = Y.value, o = !a || a.scrollTop + a.clientHeight >= a.scrollHeight - 40, s = I.value === "events" ? t.length - r.length : I.value === "logs" ? n.length - i.length : 0;
-			s <= 0 || (await e(), o ? Ge() : X.value += s);
+			let a = X.value, o = !a || a.scrollTop + a.clientHeight >= a.scrollHeight - 40, s = I.value === "events" ? t.length - r.length : I.value === "logs" ? n.length - i.length : 0;
+			s <= 0 || (await e(), o ? Ge() : Z.value += s);
 		}), i(L, () => {
-			X.value = 0, Y.value && (Y.value.scrollTop = 0);
+			Z.value = 0, X.value && (X.value.scrollTop = 0);
 		}), s(() => {
 			Be(), document.addEventListener("visibilitychange", Be);
 		}), C(() => {
-			document.removeEventListener("visibilitychange", Be), he.value?.close();
+			document.removeEventListener("visibilitychange", Be), me.value?.close();
 		}), r({
 			open: Re,
 			close: Le,
 			setVisible: ze
 		}), (e, t) => (n(), x(y, { to: "body" }, [S("dialog", {
 			ref_key: "dialog",
-			ref: he,
+			ref: me,
 			class: "tc-detail-dialog",
 			"aria-labelledby": "tc-detail-title",
 			onCancel: T(Le, ["prevent"]),
@@ -749,16 +750,16 @@ var Je = {
 			onWheel: Ke
 		}, [
 			S("header", wt, [
-				S("h2", Tt, [N("任务 #" + b(j(m)) + " ", 1), j(_) ? (n(), M("span", Et, b(j(G)("task_type", j(_).task_type)), 1)) : p("", !0)]),
+				S("h2", Tt, [N("任务 #" + b(j(m)) + " ", 1), j(_) ? (n(), M("span", Et, b(j(K)("task_type", j(_).task_type)), 1)) : p("", !0)]),
 				S("span", {
 					class: "tc-detail-target",
-					title: String(Ae.value),
+					title: String(ke.value),
 					tabindex: "0"
-				}, b(Ae.value), 9, Dt),
-				De.value ? (n(), M("div", {
+				}, b(ke.value), 9, Dt),
+				Ee.value ? (n(), M("div", {
 					key: 0,
-					class: E(["tc-detail-status", `tc-detail-status--${j(ie)(De.value.status)}`])
-				}, [S("strong", null, b(j(G)("status", De.value.status)), 1), S("span", null, "耗时 " + b(j(V)(De.value.duration_ms)), 1)], 2)) : p("", !0),
+					class: E(["tc-detail-status", `tc-detail-status--${j(re)(Ee.value.status)}`])
+				}, [S("strong", null, b(j(K)("status", Ee.value.status)), 1), S("span", null, "耗时 " + b(j(H)(Ee.value.duration_ms)), 1)], 2)) : p("", !0),
 				j(_) ? (n(), M("label", Ot, [t[10] ||= S("span", null, "运行", -1), S("select", {
 					value: j(h) || "",
 					"aria-label": "选择执行实例",
@@ -771,41 +772,41 @@ var Je = {
 				}, "运行 #" + b(j(h)) + " 不可用", 9, At)) : j(w).length ? p("", !0) : (n(), M("option", jt, "暂无运行")), (n(!0), M(g, null, o(j(w), (e) => (n(), M("option", {
 					key: e.id,
 					value: e.id
-				}, "第 " + b(e.run_no || "—") + " 次 · " + b(j(G)("status", e.status)), 9, Mt))), 128))], 40, kt)])) : p("", !0),
+				}, "第 " + b(e.run_no || "—") + " 次 · " + b(j(K)("status", e.status)), 9, Mt))), 128))], 40, kt)])) : p("", !0),
 				S("div", Nt, [S("button", {
 					type: "button",
 					class: "ui-refresh-button",
-					disabled: j(ne),
+					disabled: j(te),
 					onClick: t[0] ||= (...e) => j(d).refresh && j(d).refresh(...e)
-				}, b(j(ne) ? "刷新中…" : "刷新"), 9, Pt), S("button", {
+				}, b(j(te) ? "刷新中…" : "刷新"), 9, Pt), S("button", {
 					type: "button",
 					autofocus: "",
 					"aria-label": "关闭任务详情",
 					onClick: Le
 				}, "关闭")])
 			]),
-			j(te) ? (n(), M("div", Ft, [
-				N("读取任务失败：" + b(j(te)), 1),
+			j(ee) ? (n(), M("div", Ft, [
+				N("读取任务失败：" + b(j(ee)), 1),
 				j(_) ? (n(), M("span", It, "。保留上次已读取的记录。")) : p("", !0),
 				S("button", {
 					type: "button",
-					disabled: j(ne),
+					disabled: j(te),
 					onClick: t[1] ||= (...e) => j(d).refresh && j(d).refresh(...e)
 				}, "重试", 8, Lt)
 			])) : p("", !0),
-			j(ne) && !j(_) ? (n(), M("div", Rt, "正在读取任务详情…")) : p("", !0),
+			j(te) && !j(_) ? (n(), M("div", Rt, "正在读取任务详情…")) : p("", !0),
 			j(_) ? (n(), M(g, { key: 2 }, [
-				De.value?.status === "queued" ? (n(), M("p", zt, b(j(Ee)(De.value)), 1)) : p("", !0),
-				Me.value.state === "paused" ? (n(), M("p", Bt, [t[11] ||= N("调试暂停，等待结束调试。", -1), Me.value.hold_until ? (n(), M(g, { key: 0 }, [N("保留至 " + b(j(ke)(Me.value.hold_until)) + "。", 1)], 64)) : p("", !0)])) : p("", !0),
+				Ee.value?.status === "queued" ? (n(), M("p", zt, b(j(Te)(Ee.value)), 1)) : p("", !0),
+				Me.value.state === "paused" ? (n(), M("p", Bt, [t[11] ||= N("调试暂停，等待结束调试。", -1), Me.value.hold_until ? (n(), M(g, { key: 0 }, [N("保留至 " + b(j(Oe)(Me.value.hold_until)) + "。", 1)], 64)) : p("", !0)])) : p("", !0),
 				j(k) ? p("", !0) : (n(), x(nt, {
 					key: 2,
-					execution: De.value,
-					status: De.value?.status
+					execution: Ee.value,
+					status: Ee.value?.status
 				}, null, 8, ["execution", "status"])),
 				l(Ct, {
 					progress: j(k),
 					"task-type": j(_)?.task_type,
-					execution: De.value,
+					execution: Ee.value,
 					filter: j(L),
 					active: j(f),
 					context: `${j(m)}:${j(h)}`,
@@ -819,14 +820,14 @@ var Je = {
 					"active",
 					"context"
 				]),
-				j(R) ? (n(), M("p", Vt, [N("进度读取失败：" + b(j(R)), 1), j(k) ? (n(), M(g, { key: 0 }, [N("；保留上次快照")], 64)) : p("", !0)])) : p("", !0),
+				j(z) ? (n(), M("p", Vt, [N("进度读取失败：" + b(j(z)), 1), j(k) ? (n(), M(g, { key: 0 }, [N("；保留上次快照")], 64)) : p("", !0)])) : p("", !0),
 				S("div", Ht, [
 					S("div", {
 						class: "tc-detail-tabs",
 						role: "tablist",
 						"aria-label": "任务详情视图",
 						onKeydown: Ue
-					}, [(n(), M(g, null, o(ve, (e) => S("button", {
+					}, [(n(), M(g, null, o(_e, (e) => S("button", {
 						id: `tc-detail-tab-${e.id}`,
 						key: e.id,
 						type: "button",
@@ -837,37 +838,37 @@ var Je = {
 						tabindex: j(I) === e.id ? 0 : -1,
 						onClick: (t) => He(e.id)
 					}, b(e.label), 9, Ut)), 64))], 32),
-					S("div", { class: E(["tc-detail-filter", { "is-active": !!j(L) }]) }, [S("span", null, [t[12] ||= N("当前查看：", -1), S("strong", null, b(be.value ? j(J)(be.value) : j(L) || "全流程"), 1)]), j(L) ? (n(), M("button", {
+					S("div", { class: E(["tc-detail-filter", { "is-active": !!j(L) }]) }, [S("span", null, [t[12] ||= N("当前查看：", -1), S("strong", null, b(ye.value ? j(Y)(ye.value) : j(L) || "全流程"), 1)]), j(L) ? (n(), M("button", {
 						key: 0,
 						type: "button",
 						onClick: t[3] ||= (e) => L.value = null
 					}, "清除步骤筛选")) : p("", !0)], 2),
 					j(I) === "artifacts" ? p("", !0) : (n(), M("div", Wt, [S("button", {
 						type: "button",
-						"aria-pressed": (j(I) === "events" ? j(re) : j(ae)) === "start",
-						disabled: j(U) || j(W) || !j(h),
+						"aria-pressed": (j(I) === "events" ? j(ne) : j(ie)) === "start",
+						disabled: j(W) || j(G) || !j(h),
 						onClick: t[4] ||= (e) => We("start")
 					}, "从头加载", 8, Gt), S("button", {
 						type: "button",
-						"aria-pressed": (j(I) === "events" ? j(re) : j(ae)) === "tail",
-						disabled: j(U) || j(W) || !j(h),
+						"aria-pressed": (j(I) === "events" ? j(ne) : j(ie)) === "tail",
+						disabled: j(W) || j(G) || !j(h),
 						onClick: t[5] ||= (e) => We("tail")
 					}, "最近记录", 8, Kt)]))
 				]),
 				S("div", {
 					ref_key: "scroller",
-					ref: Y,
+					ref: X,
 					class: "tc-detail-content"
 				}, [
 					a(S("section", qt, [
-						j(z) ? (n(), M("p", Jt, [N("事件读取失败：" + b(j(z)), 1), S("button", {
+						j(B) ? (n(), M("p", Jt, [N("事件读取失败：" + b(j(B)), 1), S("button", {
 							type: "button",
-							disabled: j(U),
+							disabled: j(W),
 							onClick: t[6] ||= (e) => j(d).loadEvents()
 						}, "重试", 8, Yt)])) : p("", !0),
-						j(oe) ? (n(), M("p", Xt, "当前展示最近记录；更早历史可通过“从头加载”读取。")) : p("", !0),
-						xe.value.length ? p("", !0) : (n(), M("div", Zt, b(j(U) ? "正在读取事件…" : j(L) ? "当前步骤暂无关联事件" : "此运行暂无事件"), 1)),
-						(n(!0), M(g, null, o(we.value, (e) => (n(), M("article", {
+						j(ae) ? (n(), M("p", Xt, "当前展示最近记录；更早历史可通过“从头加载”读取。")) : p("", !0),
+						be.value.length ? p("", !0) : (n(), M("div", Zt, b(j(W) ? "正在读取事件…" : j(L) ? "当前步骤暂无关联事件" : "此运行暂无事件"), 1)),
+						(n(!0), M(g, null, o(Ce.value, (e) => (n(), M("article", {
 							key: e.event.id,
 							class: E(["tc-event", {
 								"tc-event--error": e.state === "failed",
@@ -899,23 +900,23 @@ var Je = {
 							S("p", null, b(e.event.message || "—"), 1),
 							e.detailJson ? (n(), M("details", an, [t[13] ||= S("summary", null, "技术详情", -1), S("pre", null, b(e.detailJson), 1)])) : p("", !0)
 						], 2))), 128)),
-						j(K) ? (n(), M("button", {
+						j(q) ? (n(), M("button", {
 							key: 3,
 							class: "tc-load-more",
 							type: "button",
-							disabled: j(U),
+							disabled: j(W),
 							onClick: t[7] ||= (e) => We("next")
-						}, b(j(U) ? "正在读取…" : "继续加载后续事件"), 9, on)) : p("", !0)
+						}, b(j(W) ? "正在读取…" : "继续加载后续事件"), 9, on)) : p("", !0)
 					], 512), [[A, j(I) === "events"]]),
 					a(S("section", sn, [
-						j(B) ? (n(), M("p", cn, [N("日志读取失败：" + b(j(B)), 1), S("button", {
+						j(V) ? (n(), M("p", cn, [N("日志读取失败：" + b(j(V)), 1), S("button", {
 							type: "button",
-							disabled: j(W),
+							disabled: j(G),
 							onClick: t[8] ||= (e) => j(d).loadLogs()
 						}, "重试", 8, ln)])) : p("", !0),
-						j(q) ? (n(), M("p", un, "正在查看文件尾部；“从头加载”将按顺序分页读取。")) : p("", !0),
-						Ce.value.length ? p("", !0) : (n(), M("div", dn, b(j(W) ? "正在读取运行日志…" : j(le) ? j(L) ? "当前步骤暂无关联运行日志" : "此运行暂无日志" : "当前 Run 暂无技术日志，历史任务可能只有事件时间线"), 1)),
-						(n(!0), M(g, null, o(Te.value, (e, r) => (n(), M("article", {
+						j(J) ? (n(), M("p", un, "正在查看文件尾部；“从头加载”将按顺序分页读取。")) : p("", !0),
+						Se.value.length ? p("", !0) : (n(), M("div", dn, b(j(G) ? "正在读取运行日志…" : j(ce) ? j(L) ? "当前步骤暂无关联运行日志" : "此运行暂无日志" : "当前 Run 暂无技术日志，历史任务可能只有事件时间线"), 1)),
+						(n(!0), M(g, null, o(we.value, (e, r) => (n(), M("article", {
 							key: `${e.item.event_uuid || e.item.event_id || ""}:${e.item.ts}:${r}`,
 							class: "tc-log-line",
 							"data-level": (e.item.level || "INFO").toUpperCase()
@@ -931,55 +932,55 @@ var Je = {
 							S("p", null, b(e.item.message), 1),
 							e.detailJson ? (n(), M("details", gn, [t[14] ||= S("summary", null, "技术详情", -1), S("pre", null, b(e.detailJson), 1)])) : p("", !0)
 						], 8, fn))), 128)),
-						j(ce) ? (n(), M("button", {
+						j(se) ? (n(), M("button", {
 							key: 3,
 							class: "tc-load-more",
 							type: "button",
-							disabled: j(W),
+							disabled: j(G),
 							onClick: t[9] ||= (e) => We("next")
-						}, b(j(W) ? "正在读取…" : "继续加载后续日志"), 9, _n)) : p("", !0)
+						}, b(j(G) ? "正在读取…" : "继续加载后续日志"), 9, _n)) : p("", !0)
 					], 512), [[A, j(I) === "logs"]]),
 					a(S("section", vn, [
-						Z.value?.available ? (n(), M("article", yn, [
+						je.value?.available ? (n(), M("article", yn, [
 							t[15] ||= S("h3", null, "Roxy 刷新调试", -1),
-							S("p", null, b(Z.value.state === "recording" ? "正在抓包" : "诊断已保存") + " · 请求 " + b(j(_e)(Z.value.summary).request_count || 0) + " 条", 1),
+							S("p", null, b(je.value.state === "recording" ? "正在抓包" : "诊断已保存") + " · 请求 " + b(j(ge)(je.value.summary).request_count || 0) + " 条", 1),
 							j(O)?.result_summary?.debug_browser_kept === !0 ? (n(), M("p", bn, "失败窗口已保留，可在 Roxy 中查看。")) : p("", !0),
 							S("div", xn, [
-								j(Se)(Z.value.har_url) ? (n(), M("a", {
+								j(xe)(je.value.har_url) ? (n(), M("a", {
 									key: 0,
-									href: j(Se)(Z.value.har_url),
+									href: j(xe)(je.value.har_url),
 									download: ""
 								}, "下载 HAR", 8, Sn)) : p("", !0),
-								j(Se)(Z.value.page_state_url) ? (n(), M("a", {
+								j(xe)(je.value.page_state_url) ? (n(), M("a", {
 									key: 1,
-									href: j(Se)(Z.value.page_state_url),
+									href: j(xe)(je.value.page_state_url),
 									download: ""
 								}, "下载页面现场", 8, Cn)) : p("", !0),
-								j(Se)(Z.value.screenshot_url) ? (n(), M("a", {
+								j(xe)(je.value.screenshot_url) ? (n(), M("a", {
 									key: 2,
-									href: j(Se)(Z.value.screenshot_url),
+									href: j(xe)(je.value.screenshot_url),
 									target: "_blank",
 									rel: "noopener"
 								}, "查看失败截图", 8, wn)) : p("", !0)
 							])
 						])) : p("", !0),
-						(n(!0), M(g, null, o(je.value, (e, t) => (n(), M("article", {
-							key: j(H)(e.id) || t,
+						(n(!0), M(g, null, o(Ae.value, (e, t) => (n(), M("article", {
+							key: j(U)(e.id) || t,
 							class: "tc-artifact"
 						}, [
 							S("h3", null, b(e.resource_type || "运行资源"), 1),
 							S("p", null, b(e.provider || e.state || "—"), 1),
-							S("small", null, b(j(ke)(e.acquired_at || e.created_at)), 1)
+							S("small", null, b(j(Oe)(e.acquired_at || e.created_at)), 1)
 						]))), 128)),
-						!Z.value?.available && !je.value.length ? (n(), M("div", Tn, "当前 Run 没有诊断资源或产物")) : p("", !0),
-						De.value?.result_summary ? (n(), M("details", En, [t[16] ||= S("summary", null, "执行结果字段", -1), S("pre", null, b(JSON.stringify(De.value.result_summary, null, 2)), 1)])) : p("", !0)
+						!je.value?.available && !Ae.value.length ? (n(), M("div", Tn, "当前 Run 没有诊断资源或产物")) : p("", !0),
+						Ee.value?.result_summary ? (n(), M("details", En, [t[16] ||= S("summary", null, "执行结果字段", -1), S("pre", null, b(JSON.stringify(Ee.value.result_summary, null, 2)), 1)])) : p("", !0)
 					], 512), [[A, j(I) === "artifacts"]])
 				], 512),
-				S("footer", Dn, [S("small", null, "时间按浏览器时区显示 · " + b(j(ge)), 1), X.value && j(I) !== "artifacts" ? (n(), M("button", {
+				S("footer", Dn, [S("small", null, "时间按浏览器时区显示 · " + b(j(he)), 1), Z.value && j(I) !== "artifacts" ? (n(), M("button", {
 					key: 0,
 					type: "button",
 					onClick: Ge
-				}, "有 " + b(X.value) + " 条新记录，回到底部", 1)) : j(ne) || j(U) || j(W) ? (n(), M("small", On, "正在同步记录…")) : p("", !0)])
+				}, "有 " + b(Z.value) + " 条新记录，回到底部", 1)) : j(te) || j(W) || j(G) ? (n(), M("small", On, "正在同步记录…")) : p("", !0)])
 			], 64)) : p("", !0)
 		], 544)]));
 	}
@@ -1067,7 +1068,7 @@ function Mn(e, t, n) {
 	let i = e.group || "", a = n[i] || [];
 	return a.find((e) => e.value === r)?.label || r.split(",").map((e) => {
 		let t = e.trim();
-		return a.find((e) => e.value === t)?.label || G(i, t);
+		return a.find((e) => e.value === t)?.label || K(i, t);
 	}).join("、");
 }
 function Nn(e, t) {
@@ -1116,7 +1117,7 @@ var Pn = {
 			cancelling: "请求取消"
 		}, f = D(() => {
 			let e = r.column.group || "", t = r.facets[e] || [], n = new Map(t.map((e) => [e.value, e])), i = /* @__PURE__ */ new Set([
-				...Object.keys(ae[e] || {}),
+				...Object.keys(ie[e] || {}),
 				...t.map((e) => e.value),
 				...c.value ? [c.value] : []
 			]), a = [
@@ -1140,7 +1141,7 @@ var Pn = {
 				text: e === "status" && d[t] || n.get(t)?.label || (t.includes(",") ? Mn(r.column, {
 					...r.modelValue,
 					[s.value]: t
-				}, r.facets) : G(e, t)),
+				}, r.facets) : K(e, t)),
 				count: n.get(t)?.count
 			}));
 		});
@@ -1313,7 +1314,7 @@ var Pn = {
 	credential_pending_confirmation: "凭证待核验"
 };
 function cr(e, t, n) {
-	let r = `${e === "status" ? "执行状态" : "目标状态"}：${G(e, t)}${t ? `（${t}）` : ""}`;
+	let r = `${e === "status" ? "执行状态" : "目标状态"}：${K(e, t)}${t ? `（${t}）` : ""}`;
 	return n && n !== t ? `${r} · 原始状态：${n}` : r;
 }
 function lr(e) {
@@ -1321,11 +1322,11 @@ function lr(e) {
 }
 function ur(e) {
 	let t = String(e.status || ""), n = String(e.target_status || ""), r = {
-		label: G("status", t),
-		tone: ie(t),
+		label: K("status", t),
+		tone: re(t),
 		title: cr("status", t, e.internal_status)
 	};
-	e.debug_pause ? (r.label = "已暂停", r.tone = "warning", r.secondary = "等待结束调试", r.title = `调试暂停 · ${r.title}`) : ["queued", "pending"].includes(t) ? (r.label = "排队中", r.tone = "warning", r.secondary = Ee(e) || void 0) : ar.has(t) ? (r.label = "进行中", t === "waiting" && (r.secondary = Ee(e) || lr(e)), ["stopping", "cancelling"].includes(t) && (r.secondary = "停止中"), t === "settling" && (r.secondary = "收尾中")) : t === "success" ? r.label = "已完成" : t === "partial_success" ? r.label = "部分完成" : ir.has(t) ? (r.label = "失败", r.tone = "danger") : or.has(t) && (r.label = "已停止");
+	e.debug_pause ? (r.label = "已暂停", r.tone = "warning", r.secondary = "等待结束调试", r.title = `调试暂停 · ${r.title}`) : ["queued", "pending"].includes(t) ? (r.label = "排队中", r.tone = "warning", r.secondary = Te(e) || void 0) : ar.has(t) ? (r.label = "进行中", t === "waiting" && (r.secondary = Te(e) || lr(e)), ["stopping", "cancelling"].includes(t) && (r.secondary = "停止中"), t === "settling" && (r.secondary = "收尾中")) : t === "success" ? r.label = "已完成" : t === "partial_success" ? r.label = "部分完成" : ir.has(t) ? (r.label = "失败", r.tone = "danger") : or.has(t) && (r.label = "已停止");
 	let i = !e.debug_pause && (ir.has(n) && ir.has(t) || n === "completed" && t === "success" || n === "in_progress" && ar.has(t) || n === "pending" && [
 		"queued",
 		"pending",
@@ -1334,8 +1335,8 @@ function ur(e) {
 	return {
 		execution: r,
 		target: !n || i ? null : {
-			label: sr[n] || G("target_status", n),
-			tone: ie(n),
+			label: sr[n] || K("target_status", n),
+			tone: re(n),
 			title: cr("target_status", n, e.internal_target_status)
 		}
 	};
@@ -1345,7 +1346,7 @@ var Q = (e, t = "neutral", n) => ({
 	label: e,
 	...n ? { secondary: n } : {},
 	tone: t
-}), dr = (e) => Array.isArray(e) ? e.map(K) : [], $ = (e) => String(e || "").toLowerCase(), fr = /* @__PURE__ */ new Set([
+}), dr = (e) => Array.isArray(e) ? e.map(q) : [], $ = (e) => String(e || "").toLowerCase(), fr = /* @__PURE__ */ new Set([
 	"unknown",
 	"request_unknown",
 	"attention_required",
@@ -1413,10 +1414,11 @@ var hr = {
 	c2a_scan: "异常扫描完成",
 	sentinel_maintenance_check: "维护检查完成",
 	bulk_mutation: "批量操作完成",
-	task_terminate_bulk: "批量终止完成"
+	task_terminate_bulk: "批量终止完成",
+	sales_sync: "销售联动完成"
 };
 function _r(e, t) {
-	let n = K(e.result_summary), r = $(e.status), i = $(n.extraction_status), a = $(n.payment_status);
+	let n = q(e.result_summary), r = $(e.status), i = $(n.extraction_status), a = $(n.payment_status);
 	return ["succeeded", "success"].includes(i) || !i && n.ok === !0 && n.has_link === !0 ? ["failed", "error"].includes(a) ? Q("提链成功", "danger", "支付失败") : [
 		"succeeded",
 		"success",
@@ -1432,13 +1434,13 @@ function _r(e, t) {
 	].includes(r) ? Q("提链成功", "warning", "后续已中断") : fr.has(r) || fr.has($(e.internal_status)) ? Q("提链成功", "warning", "后续待确认") : ["failed", "partial_success"].includes(r) ? Q("提链成功", "danger", "后续失败") : Q("提链成功", "success") : pr.has(i) || mr(e) ? Q(t, "danger") : fr.has(i) ? Q("提链待确认", "warning") : ["pending", "queued"].includes(i) ? Q("等待提链", "warning") : i === "running" ? Q("提链中", "active") : r === "cancelled" ? Q("已取消") : ["stopped", "interrupted"].includes(r) ? Q("执行已中断", "warning") : fr.has(r) || fr.has($(e.internal_status)) ? Q("提链待确认", "warning") : e.error_message || e.error_info || n.ok === !1 || r === "failed" ? Q(t, "danger") : n.ok === !0 ? Q("提链流程完成", "success") : Q("提链结果缺失", "warning");
 }
 function vr(e, t) {
-	let n = K(e.result_summary), r = $(e.status), i = Array.isArray(n.plan_check_countries) && n.plan_check_countries.length === 0, a = i ? [] : dr(n.plan_check_country_results).filter((e) => e.country), o = a.length ? a.filter((e) => e.status === "success").length : Number(n.country_success_count || 0), s = a.length ? a.filter((e) => ["failed", "cancelled"].includes($(e.status))).length : !i && Array.isArray(n.failed_countries) ? n.failed_countries.length : 0, c = a.length || (i ? 0 : Number(n.country_total_count || 0)), l = a.length ? a.flatMap((e) => {
-		let t = e.status === "success", n = K(e.result);
+	let n = q(e.result_summary), r = $(e.status), i = Array.isArray(n.plan_check_countries) && n.plan_check_countries.length === 0, a = i ? [] : dr(n.plan_check_country_results).filter((e) => e.country), o = a.length ? a.filter((e) => e.status === "success").length : Number(n.country_success_count || 0), s = a.length ? a.filter((e) => ["failed", "cancelled"].includes($(e.status))).length : !i && Array.isArray(n.failed_countries) ? n.failed_countries.length : 0, c = a.length || (i ? 0 : Number(n.country_total_count || 0)), l = a.length ? a.flatMap((e) => {
+		let t = e.status === "success", n = q(e.result);
 		return !t && !e.last_success_at ? [] : dr(n.account_promotions).map((e) => ({
 			...e,
 			stale: !t || e.stale === !0
 		}));
-	}) : dr(n.account_promotions), u = l.some((e) => e.stale === !0) || a.some((e) => e.status !== "success" && e.last_success_at && Object.keys(K(e.result)).length > 0);
+	}) : dr(n.account_promotions), u = l.some((e) => e.stale === !0) || a.some((e) => e.status !== "success" && e.last_success_at && Object.keys(q(e.result)).length > 0);
 	if (s > 0 && o > 0 || !i && n.plan_check_partial === !0) return Q("部分失败", "warning", u ? "含历史数据" : void 0);
 	if (c > 0 && s >= c) return u ? Q("查询失败", "danger", "含历史数据") : Q(t, "danger");
 	if (mr(e)) return Q(t, "danger");
@@ -1490,7 +1492,7 @@ function vr(e, t) {
 	return n.plus_trial_eligible === !0 || n.plus_promo_kind === "free_trial" ? Q(d, "success", "Plus免费") : n.plus_discount_eligible === !0 || n.plus_promo_kind === "discount" ? Q(d, "success", "Plus折扣") : n.plus_promo_kind === "none" || n.plus_promo_eligible === !1 ? Q(d, "success", "无优惠") : Q(d, "neutral", "优惠待复查");
 }
 function yr(e, t = "执行异常") {
-	let n = K(e.result_summary), r = $(e.status), i = e.task_type, a = t && [...t].length <= 10 ? t : "执行异常";
+	let n = q(e.result_summary), r = $(e.status), i = e.task_type, a = t && [...t].length <= 10 ? t : "执行异常";
 	if (e.debug_pause) return Q("调试已暂停", "warning");
 	if (["queued", "pending"].includes(r)) {
 		let t = e.admission_wait_reasons?.[0]?.code || e.admission_wait_reason || "";
@@ -1504,9 +1506,9 @@ function yr(e, t = "执行异常") {
 	if (["stopping", "cancelling"].includes(r)) return Q("正在停止", "warning");
 	if (r === "settling") return Q("正在收尾", "active");
 	if (i === "extract_link") return _r(e, a);
-	if (i === "email_change" && n.email_change_confirmed === !0) return Q("邮箱已换绑", "success", K(n.post_change_live_check).accepted ? "刷新已排队" : "刷新待处理");
+	if (i === "email_change" && n.email_change_confirmed === !0) return Q("邮箱已换绑", "success", q(n.post_change_live_check).accepted ? "刷新已排队" : "刷新待处理");
 	if (i === "codex_retry" && n.ok === !0) {
-		let e = $(K(n.sub2api_sync).status);
+		let e = $(q(n.sub2api_sync).status);
 		return e === "failed" ? Q("授权成功", "warning", "同步失败") : e === "cancelled" ? Q("授权成功", "warning", "同步已停止") : e === "success" ? Q("授权成功", "success", "同步已完成") : Q("授权成功", "success", n.credential_confirmed === !0 ? "凭证已确认" : void 0);
 	}
 	if (i === "codex_token_refresh" && n.ok === !0) return Q("令牌已刷新", n.sub2_sync === "failed" ? "warning" : "success", n.sub2_sync === "failed" ? "同步失败" : void 0);
@@ -1547,10 +1549,10 @@ var br = /* @__PURE__ */ t({
 	props: { task: {} },
 	setup(e) {
 		let t = e, i = D(() => yr(t.task, Ie(t.task.error_info))), a = D(() => [...new Set([
-			re(t.task),
+			ne(t.task),
 			t.task.error_info?.display_code,
 			t.task.error_info?.cause_display_code,
-			t.task.error_info || t.task.error_message ? oe(t.task.error_info, t.task.error_message) : "",
+			t.task.error_info || t.task.error_message ? ae(t.task.error_info, t.task.error_message) : "",
 			t.task.error_message,
 			t.task.error_code,
 			t.task.error_info?.code,
@@ -1625,7 +1627,7 @@ var br = /* @__PURE__ */ t({
 			"创建 / 完成",
 			"结果 / 错误",
 			"操作"
-		], { widths: m, resize: h, resizeWithKeyboard: v, resetColumns: y } = Ne({
+		], { widths: m, resize: h, resizeWithKeyboard: v, resetColumns: y } = Me({
 			defaults: [
 				40,
 				72,
@@ -1652,20 +1654,20 @@ var br = /* @__PURE__ */ t({
 			return String(e.email_snapshot || e.email || "").trim();
 		}
 		function T(e) {
-			return X(e) || e.current_stage_label || G("stage", e.current_stage);
+			return Z(e) || e.current_stage_label || K("stage", e.current_stage);
 		}
 		function O(e) {
 			return [
-				e.current_stage_label || G("stage", e.current_stage),
-				X(e),
-				V(e.duration_ms)
+				e.current_stage_label || K("stage", e.current_stage),
+				Z(e),
+				H(e.duration_ms)
 			].filter(Boolean).join(" · ");
 		}
 		function k(e) {
-			return String(e.bulk_batch_id || K(e.bulk_context).batch_id || "");
+			return String(e.bulk_batch_id || q(e.bulk_context).batch_id || "");
 		}
 		function A(e) {
-			return String(e.bulk_round_id || K(e.bulk_context).round_id || "");
+			return String(e.bulk_round_id || q(e.bulk_context).round_id || "");
 		}
 		return t({ resetColumns: y }), (t, i) => (n(), M("div", {
 			class: "ui-table-scroll tc-table-scroll",
@@ -1707,7 +1709,7 @@ var br = /* @__PURE__ */ t({
 				"facets",
 				"open",
 				"onUpdate:open"
-			])) : (n(), M(g, { key: 1 }, [N(b(t), 1)], 64)), r < f.length - 1 ? (n(), x(Pe, {
+			])) : (n(), M(g, { key: 1 }, [N(b(t), 1)], 64)), r < f.length - 1 ? (n(), x(Ne, {
 				key: 2,
 				label: t,
 				onStart: (e) => j(h)(r, e),
@@ -1732,8 +1734,8 @@ var br = /* @__PURE__ */ t({
 					class: "ui-link tc-task-id",
 					onClick: (e) => s("detail", t.id)
 				}, "#" + b(t.id), 9, Er)]),
-				S("td", Dr, [l(Z, { text: j(G)("task_type", t.task_type) }, null, 8, ["text"])]),
-				S("td", Or, [C(t) || w(t) ? (n(), x(Z, {
+				S("td", Dr, [l(ke, { text: j(K)("task_type", t.task_type) }, null, 8, ["text"])]),
+				S("td", Or, [C(t) || w(t) ? (n(), x(ke, {
 					key: 0,
 					text: C(t) || "—",
 					secondary: w(t) || void 0
@@ -1754,9 +1756,9 @@ var br = /* @__PURE__ */ t({
 					class: E(["ui-badge tc-badge", `ui-badge--${a.tone}`]),
 					title: a.title
 				}, b(a.label), 11, Ir)) : (n(), M("span", Lr, "—"))]),
-				S("td", Rr, [l(Z, {
+				S("td", Rr, [l(ke, {
 					text: t.batch_title || t.batch_uuid || (k(t) ? "查看批次" : "单任务"),
-					secondary: j(G)("trigger", t.trigger)
+					secondary: j(K)("trigger", t.trigger)
 				}, {
 					default: r(() => [k(t) ? (n(), M("button", {
 						key: 0,
@@ -1766,24 +1768,24 @@ var br = /* @__PURE__ */ t({
 					}, b(t.batch_title || t.batch_uuid || "查看批次"), 9, zr)) : (n(), M(g, { key: 1 }, [N(b(t.batch_title || t.batch_uuid || "单任务"), 1)], 64))]),
 					_: 2
 				}, 1032, ["text", "secondary"])]),
-				S("td", Br, [l(Z, {
+				S("td", Br, [l(ke, {
 					text: `${t.run_count || 0} 次`,
 					secondary: `最近 #${t.last_run_no || "—"}`
 				}, null, 8, ["text", "secondary"])]),
-				S("td", Vr, [l(Z, {
+				S("td", Vr, [l(ke, {
 					text: T(t),
-					secondary: j(V)(t.duration_ms),
+					secondary: j(H)(t.duration_ms),
 					title: O(t),
-					tone: j(X)(t) ? "danger" : "neutral"
+					tone: j(Z)(t) ? "danger" : "neutral"
 				}, null, 8, [
 					"text",
 					"secondary",
 					"title",
 					"tone"
 				])]),
-				S("td", Hr, [l(Z, {
-					text: j(ke)(t.created_at),
-					secondary: j(ke)(t.completed_at)
+				S("td", Hr, [l(ke, {
+					text: j(Oe)(t.created_at),
+					secondary: j(Oe)(t.completed_at)
 				}, null, 8, ["text", "secondary"])]),
 				S("td", Ur, [l(br, { task: t }, null, 8, ["task"])]),
 				S("td", Wr, [S("div", Gr, [
@@ -1792,21 +1794,21 @@ var br = /* @__PURE__ */ t({
 						class: "ui-link",
 						onClick: (e) => s("detail", t.id)
 					}, "详情", 8, Kr),
-					j(q)(t) ? (n(), M("button", {
+					j(J)(t) ? (n(), M("button", {
 						key: 0,
 						type: "button",
 						class: "ui-link",
 						disabled: e.busy,
 						onClick: (e) => s("action", t, "retry")
 					}, "重跑", 8, qr)) : p("", !0),
-					j(W)(t) ? (n(), M("button", {
+					j(G)(t) ? (n(), M("button", {
 						key: 1,
 						type: "button",
 						class: "ui-link ui-link--danger",
 						disabled: e.busy,
 						onClick: (e) => s("action", t, "terminate")
 					}, b(t.status === "queued" ? "取消" : "终止"), 9, Jr)) : p("", !0),
-					j(Y)(t) ? p("", !0) : (n(), M("button", {
+					j(X)(t) ? p("", !0) : (n(), M("button", {
 						key: 2,
 						type: "button",
 						class: "ui-link ui-link--danger",
@@ -1814,7 +1816,7 @@ var br = /* @__PURE__ */ t({
 						onClick: (e) => s("action", t, "delete")
 					}, "删除", 8, Yr))
 				])])
-			], 2))), 128)), e.items.length ? p("", !0) : (n(), x(je, {
+			], 2))), 128)), e.items.length ? p("", !0) : (n(), x(Pe, {
 				key: 0,
 				colspan: f.length,
 				loading: e.loading,
@@ -1896,11 +1898,11 @@ function Zr() {
 			...e
 		} : e), n.value = 1, l.value = /* @__PURE__ */ new Set();
 	}
-	function ee(e, t) {
+	function R(e, t) {
 		let n = new Set(l.value);
 		t ? n.add(e) : n.delete(e), l.value = n;
 	}
-	function te(e) {
+	function ee(e) {
 		l.value = new Set(e ? o.value.map((e) => e.id) : []);
 	}
 	i(() => ({
@@ -1917,11 +1919,11 @@ function Zr() {
 		let a = O ?? 0;
 		O = void 0, ++h, g?.abort(), j(a);
 	});
-	let R = () => {
+	let z = () => {
 		clearTimeout(_), document.hidden ? (++b, clearTimeout(y), g?.abort(), ++h, u.value = !1) : p.value && j(0, !0);
 	};
-	return document.addEventListener("visibilitychange", R), f(() => {
-		++h, ++b, g?.abort(), clearTimeout(_), clearTimeout(y), document.removeEventListener("visibilitychange", R);
+	return document.addEventListener("visibilitychange", z), f(() => {
+		++h, ++b, g?.abort(), clearTimeout(_), clearTimeout(y), document.removeEventListener("visibilitychange", z);
 	}), {
 		filters: t,
 		page: n,
@@ -1938,8 +1940,8 @@ function Zr() {
 		setVisible: F,
 		setFacetsVisible: I,
 		applyFilters: L,
-		toggle: ee,
-		togglePage: te
+		toggle: R,
+		togglePage: ee
 	};
 }
 // src/features/tasks/TaskCenter.vue?vue&type=script&setup=true&lang.ts
@@ -1965,14 +1967,14 @@ var Qr = {
 	__name: "TaskCenter",
 	emits: ["batch", "changed"],
 	setup(t, { expose: s, emit: c }) {
-		let u = c, f = Zr(), { filters: m, page: _, size: y, pages: x, total: w, items: O, facets: k, selected: P, loading: F, error: I, visible: L } = f, ee = v(null), te = v(null), R = v(!1), z = v(""), B = v(""), V = v(null), H = v(null), W = v(m.target || ""), re;
+		let u = c, f = Zr(), { filters: m, page: _, size: y, pages: x, total: w, items: O, facets: k, selected: P, loading: F, error: I, visible: L } = f, R = v(null), ee = v(null), z = v(!1), B = v(""), V = v(""), H = v(null), U = v(null), G = v(m.target || ""), ne;
 		i(() => m.target, (e) => {
-			clearTimeout(re), W.value = e || "";
-		}), C(() => clearTimeout(re)), i(V, (e) => {
+			clearTimeout(ne), G.value = e || "";
+		}), C(() => clearTimeout(ne)), i(H, (e) => {
 			f.setFacetsVisible(e === "mobile" || An.some((t) => t.key === e && t.kind === "select"));
 		});
-		let ie = D(() => An.filter((e) => jn(e, m))), G = D(() => !!m.team_id), ae = D(() => {
-			let e = ie.value.map((e) => ({
+		let re = D(() => An.filter((e) => jn(e, m))), K = D(() => !!m.team_id), ie = D(() => {
+			let e = re.value.map((e) => ({
 				key: e.key,
 				label: `${e.label}：${Mn(e, m, k.value)}`,
 				removeLabel: `清除${e.label}筛选`
@@ -1982,142 +1984,142 @@ var Qr = {
 				label: `Team：#${m.team_id}`,
 				removeLabel: "清除 Team 筛选"
 			}), e;
-		}), oe = v([]), se = D(() => O.value.filter((e) => P.value.has(e.id))), q = D(() => Object.fromEntries([
+		}), ae = v([]), oe = D(() => O.value.filter((e) => P.value.has(e.id))), J = D(() => Object.fromEntries([
 			"retry",
 			"cancel",
 			"terminate",
 			"delete"
-		].map((e) => [e, se.value.filter((t) => U(t, e)).length]))), ce = {
+		].map((e) => [e, oe.value.filter((t) => W(t, e)).length]))), se = {
 			retry: "重跑",
 			cancel: "取消排队",
 			terminate: "终止运行",
 			delete: "删除"
-		}, le = Intl.DateTimeFormat().resolvedOptions().timeZone;
-		function J(e) {
+		}, ce = Intl.DateTimeFormat().resolvedOptions().timeZone;
+		function Y(e) {
 			Object.assign(m, e);
 		}
-		function ue(e) {
-			clearTimeout(re);
+		function le(e) {
+			clearTimeout(ne);
 			let t = e.trim();
-			t !== (m.target || "") && J({
+			t !== (m.target || "") && Y({
 				...m,
 				target: t
 			});
 		}
-		function de(e) {
-			W.value = e, clearTimeout(re), re = setTimeout(() => ue(e), 250);
+		function ue(e) {
+			G.value = e, clearTimeout(ne), ne = setTimeout(() => le(e), 250);
 		}
-		function fe() {
-			clearTimeout(re), W.value = "", ue(""), H.value?.focus();
+		function de() {
+			clearTimeout(ne), G.value = "", le(""), U.value?.focus();
 		}
-		function pe(e) {
+		function fe(e) {
 			if (e === "team_id") {
-				J({
+				Y({
 					...m,
 					team_id: ""
 				});
 				return;
 			}
 			let t = An.find((t) => t.key === e);
-			t && J(Nn(t, m));
+			t && Y(Nn(t, m));
 		}
-		function me() {
+		function pe() {
 			m.team_id && window.TeamsPage?.navigate?.({
 				view: "detail",
 				team_id: m.team_id,
 				section: "invitations"
 			});
 		}
-		function he(e, t, n) {
-			ee.value?.open(e, t, n);
+		function me(e, t, n) {
+			R.value?.open(e, t, n);
 		}
-		async function X(t = {}) {
-			t.filters && (t.taskId || ee.value?.close?.(), f.applyFilters(t.filters)), t.taskId && (await e(), he(t.taskId, t.runId, t.stepId));
+		async function Z(t = {}) {
+			t.filters && (t.taskId || R.value?.close?.(), f.applyFilters(t.filters)), t.taskId && (await e(), me(t.taskId, t.runId, t.stepId));
 		}
-		function ge(e) {
-			e || (V.value = null), f.setVisible(e);
+		function he(e) {
+			e || (H.value = null), f.setVisible(e);
 		}
-		function _e() {
-			ee.value?.close();
+		function ge() {
+			R.value?.close();
 		}
-		async function ve(e = {}) {
+		async function _e(e = {}) {
 			L.value && await f.refresh(e);
 		}
-		function ye() {
-			ve(), u("changed");
+		function ve() {
+			_e(), u("changed");
 		}
-		async function be(e, t) {
-			if (!R.value && !(t === "delete" && Y(e))) {
+		async function ye(e, t) {
+			if (!z.value && !(t === "delete" && X(e))) {
 				if (t !== "retry") {
 					let n = t === "delete" ? `确定删除任务 #${e.id}？\n\n任务会从任务中心隐藏，历史审计记录仍会保留。` : e.status === "queued" ? `确定取消排队中的任务 #${e.id}？` : `确定终止任务 #${e.id}？\n\n任务会立即收口，已发出的远端请求证据会保留。`;
 					if (!window.confirm(n)) return;
 				}
-				R.value = !0, B.value = "", oe.value = [], z.value = "";
+				z.value = !0, V.value = "", ae.value = [], B.value = "";
 				try {
-					let n = await Ge.action(e.id, t), r = K(n.data || n);
-					z.value = t === "retry" ? r.round_id || r.bulk_round_id ? "重跑已受理，已创建所属批次的新轮次" : "任务已重新入队" : t === "delete" ? "任务已删除" : n.state === "cancelled" ? "任务已取消" : "任务已终止，原请求证据已保留", P.value.delete(e.id), await ve(), u("changed");
+					let n = await Ge.action(e.id, t), r = q(n.data || n);
+					B.value = t === "retry" ? r.round_id || r.bulk_round_id ? "重跑已受理，已创建所属批次的新轮次" : "任务已重新入队" : t === "delete" ? "任务已删除" : n.state === "cancelled" ? "任务已取消" : "任务已终止，原请求证据已保留", P.value.delete(e.id), await _e(), u("changed");
 				} catch (e) {
-					B.value = `${ce[t]}失败：${e instanceof Error ? e.message : String(e)}`;
+					V.value = `${se[t]}失败：${e instanceof Error ? e.message : String(e)}`;
 				} finally {
-					R.value = !1;
+					z.value = !1;
 				}
 			}
 		}
-		async function xe(e) {
-			if (R.value) return;
-			let t = se.value.filter((t) => U(t, e));
+		async function be(e) {
+			if (z.value) return;
+			let t = oe.value.filter((t) => W(t, e));
 			if (!t.length) return;
 			let n = e === "retry" ? "原任务记录和运行日志会保留，废号或无重跑来源的任务会跳过。" : e === "cancel" ? "只取消尚未开始的排队任务。" : e === "delete" ? "任务会从任务中心隐藏，历史审计记录仍会保留。" : "运行中的任务会立即收口，已发出的远端请求证据会保留。";
-			if (window.confirm(`确定${ce[e]}选中的 ${t.length} 个任务吗？\n\n${n}`)) {
-				R.value = !0, B.value = "", z.value = "", oe.value = [];
+			if (window.confirm(`确定${se[e]}选中的 ${t.length} 个任务吗？\n\n${n}`)) {
+				z.value = !0, V.value = "", B.value = "", ae.value = [];
 				try {
 					let n = t.map((e) => e.id), r = e === "terminate" ? await Ge.bulk(e, n, { onAccepted: (e) => {
-						z.value = `终止请求已受理，正在等待结果（命令 ${e.command_id}）`;
+						B.value = `终止请求已受理，正在等待结果（命令 ${e.command_id}）`;
 					} }) : await Ge.bulk(e, n), i = Array.isArray(r.accepted) ? r.accepted : [];
-					oe.value = (r.skipped || []).map((e) => ({
+					ae.value = (r.skipped || []).map((e) => ({
 						id: e.task_id,
 						message: e.error || e.message || "操作未接受"
 					}));
 					let a = Number(r.accepted_count ?? i.length);
 					if (e === "cancel") {
 						let e = i.filter((e) => e.state === "cancelled").length, t = i.filter((e) => e.state === "cancelling").length;
-						z.value = `已取消 ${e} 个，取消中 ${t} 个${a - e - t > 0 ? `，已受理 ${a - e - t} 个` : ""}`;
-					} else z.value = `已${ce[e]} ${a} 个`;
+						B.value = `已取消 ${e} 个，取消中 ${t} 个${a - e - t > 0 ? `，已受理 ${a - e - t} 个` : ""}`;
+					} else B.value = `已${se[e]} ${a} 个`;
 					let o = new Set(i.map((e) => String(e.task_id)));
-					P.value = new Set([...P.value].filter((e) => !o.has(String(e)))), oe.value.length && (z.value += `，跳过 ${oe.value.length} 个`), await ve(), u("changed");
+					P.value = new Set([...P.value].filter((e) => !o.has(String(e)))), ae.value.length && (B.value += `，跳过 ${ae.value.length} 个`), await _e(), u("changed");
 				} catch (t) {
-					B.value = t instanceof ne ? t.message : `${ce[e]}失败：${t instanceof Error ? t.message : String(t)}`;
+					V.value = t instanceof te ? t.message : `${se[e]}失败：${t instanceof Error ? t.message : String(t)}`;
 				} finally {
-					R.value = !1;
+					z.value = !1;
 				}
 			}
 		}
 		return s({
-			open: X,
-			refresh: ve,
-			closeDetail: _e,
-			setVisible: ge
+			open: Z,
+			refresh: _e,
+			closeDetail: ge,
+			setVisible: he
 		}), (e, t) => (n(), M(g, null, [a(S("section", Qr, [S("div", $r, [
-			l(Re, { filtered: ie.value.length > 0 || G.value }, {
+			l(Re, { filtered: re.value.length > 0 || K.value }, {
 				actions: r(() => [
 					j(m).team_id ? (n(), M("button", {
 						key: 0,
 						type: "button",
 						class: "ui-button",
-						onClick: me
+						onClick: pe
 					}, "返回该 Team")) : p("", !0),
 					l(nr, {
 						"model-value": j(m),
 						facets: j(k),
-						open: V.value === "mobile",
-						"onUpdate:modelValue": J,
-						"onUpdate:open": t[2] ||= (e) => V.value = e ? "mobile" : null
+						open: H.value === "mobile",
+						"onUpdate:modelValue": Y,
+						"onUpdate:open": t[2] ||= (e) => H.value = e ? "mobile" : null
 					}, null, 8, [
 						"model-value",
 						"facets",
 						"open"
 					]),
-					ie.value.length || G.value ? (n(), M("button", {
+					re.value.length || K.value ? (n(), M("button", {
 						key: 1,
 						type: "button",
 						class: "ui-link",
@@ -2125,12 +2127,12 @@ var Qr = {
 					}, "清除全部筛选")) : p("", !0),
 					S("span", {
 						class: "tc-timezone",
-						title: j(le)
-					}, "时间按 " + b(j(le)) + " 显示", 9, oi),
+						title: j(ce)
+					}, "时间按 " + b(j(ce)) + " 显示", 9, oi),
 					S("button", {
 						type: "button",
 						class: "ui-link",
-						onClick: t[4] ||= (e) => te.value?.resetColumns()
+						onClick: t[4] ||= (e) => ee.value?.resetColumns()
 					}, "恢复列宽"),
 					S("button", {
 						id: "btnRefreshTasksV2",
@@ -2144,24 +2146,24 @@ var Qr = {
 					S("span", ei, b(j(w).toLocaleString()) + " 个任务", 1),
 					S("div", ti, [S("input", {
 						ref_key: "targetInput",
-						ref: H,
+						ref: U,
 						type: "search",
-						value: W.value,
+						value: G.value,
 						placeholder: "搜索目标邮箱 / 账号...",
 						"aria-label": "搜索任务目标",
 						autocomplete: "off",
-						onInput: t[0] ||= (e) => de(e.target.value),
-						onKeydown: [t[1] ||= h(T((e) => ue(W.value), ["prevent"]), ["enter"]), h(T(fe, ["prevent"]), ["esc"])]
-					}, null, 40, ni), W.value ? (n(), M("button", {
+						onInput: t[0] ||= (e) => ue(e.target.value),
+						onKeydown: [t[1] ||= h(T((e) => le(G.value), ["prevent"]), ["enter"]), h(T(de, ["prevent"]), ["esc"])]
+					}, null, 40, ni), G.value ? (n(), M("button", {
 						key: 0,
 						type: "button",
 						class: "tc-target-search__clear",
 						"aria-label": "清空目标搜索",
 						title: "清空目标搜索",
-						onClick: fe
+						onClick: de
 					}, "×")) : p("", !0)]),
-					se.value.length ? (n(), M("span", ri, "已选 " + b(se.value.length) + " 项", 1)) : p("", !0),
-					se.value.length ? (n(), M("div", ii, [(n(), M(g, null, o([
+					oe.value.length ? (n(), M("span", ri, "已选 " + b(oe.value.length) + " 项", 1)) : p("", !0),
+					oe.value.length ? (n(), M("div", ii, [(n(), M(g, null, o([
 						"retry",
 						"cancel",
 						"terminate",
@@ -2170,47 +2172,47 @@ var Qr = {
 						key: e,
 						type: "button",
 						class: E(["ui-button", { "ui-button--danger": e === "delete" || e === "terminate" }]),
-						disabled: R.value || !q.value[e],
-						onClick: (t) => xe(e)
-					}, b(ce[e]) + b(q.value[e] ? `（${q.value[e]}）` : ""), 11, ai)), 64))])) : p("", !0),
-					l(Me, {
-						items: ae.value,
-						onRemove: pe
+						disabled: z.value || !J.value[e],
+						onClick: (t) => be(e)
+					}, b(se[e]) + b(J.value[e] ? `（${J.value[e]}）` : ""), 11, ai)), 64))])) : p("", !0),
+					l(je, {
+						items: ie.value,
+						onRemove: fe
 					}, null, 8, ["items"])
 				]),
 				_: 1
 			}, 8, ["filtered"]),
-			z.value || B.value || j(I) && j(O).length ? (n(), M("div", {
+			B.value || V.value || j(I) && j(O).length ? (n(), M("div", {
 				key: 0,
-				class: E(["ui-list-feedback tc-feedback", { "is-error": B.value || j(I) }]),
-				role: B.value || j(I) ? "alert" : "status"
+				class: E(["ui-list-feedback tc-feedback", { "is-error": V.value || j(I) }]),
+				role: V.value || j(I) ? "alert" : "status"
 			}, [
-				N(b(B.value || j(I) || z.value), 1),
+				N(b(V.value || j(I) || B.value), 1),
 				j(I) ? (n(), M("button", {
 					key: 0,
 					type: "button",
 					class: "ui-link",
 					onClick: t[6] ||= (e) => j(f).refresh()
 				}, "重试")) : p("", !0),
-				oe.value.length ? (n(), M("details", li, [t[12] ||= S("summary", null, "查看跳过原因", -1), S("ul", null, [(n(!0), M(g, null, o(oe.value, (e) => (n(), M("li", { key: e.id }, "#" + b(e.id) + "：" + b(e.message), 1))), 128))])])) : p("", !0)
+				ae.value.length ? (n(), M("details", li, [t[12] ||= S("summary", null, "查看跳过原因", -1), S("ul", null, [(n(!0), M(g, null, o(ae.value, (e) => (n(), M("li", { key: e.id }, "#" + b(e.id) + "：" + b(e.message), 1))), 128))])])) : p("", !0)
 			], 10, ci)) : p("", !0),
 			l(Xr, {
 				ref_key: "table",
-				ref: te,
+				ref: ee,
 				filters: j(m),
 				facets: j(k),
-				"open-filter": V.value,
-				"onUpdate:openFilter": t[7] ||= (e) => V.value = e,
-				"onUpdate:filters": J,
+				"open-filter": H.value,
+				"onUpdate:openFilter": t[7] ||= (e) => H.value = e,
+				"onUpdate:filters": Y,
 				items: j(O),
 				selected: j(P),
 				loading: j(F),
 				error: j(I),
-				busy: R.value,
+				busy: z.value,
 				onSelect: j(f).toggle,
 				onSelectPage: j(f).togglePage,
-				onDetail: he,
-				onAction: be,
+				onDetail: me,
+				onAction: ye,
 				onBatch: t[8] ||= (e, t) => u("batch", e, t),
 				onRetry: t[9] ||= (e) => j(f).refresh()
 			}, null, 8, [
@@ -2242,8 +2244,8 @@ var Qr = {
 			])
 		])], 512), [[A, j(L)]]), l(kn, {
 			ref_key: "detail",
-			ref: ee,
-			onRefresh: ye
+			ref: R,
+			onRefresh: ve
 		}, null, 512)], 64));
 	}
 });

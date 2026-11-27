@@ -166,7 +166,7 @@ class ConcurrencyConfigRouteTests(unittest.TestCase):
         self.client = app.test_client()
 
     def test_settings_report_revision_of_selected_snapshot_during_republication(self):
-        first = schema.ConfigSnapshot({"GLOBAL_TASK_WORKERS": 7}, {}, 41)
+        first = schema.ConfigSnapshot({"GLOBAL_TASK_WORKERS": 7, "SALES_EXECUTOR_ID": "sales-center"}, {}, 41)
         second = schema.ConfigSnapshot({"GLOBAL_TASK_WORKERS": 11}, {}, 42)
         with patch.object(schema, "_PUBLISHED_SNAPSHOT", second), patch.object(
             config_editor, "get_config_snapshot", return_value=first
@@ -174,6 +174,7 @@ class ConcurrencyConfigRouteTests(unittest.TestCase):
             response = self.client.get("/api/ui-settings")
         self.assertEqual(200, response.status_code)
         self.assertEqual((7, 41), (response.json["global_task_workers"], response.json["config_revision"]))
+        self.assertEqual("sales-center", response.json["sales_executor_id"])
 
     def test_save_route_relays_own_revision_after_next_publication(self):
         receipt = {"updated": ["TASK_CENTER_RETENTION_DAYS"], "ignored": [], "reloaded": True, "config_revision": 41}

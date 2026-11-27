@@ -19,6 +19,7 @@ ACTION_TARGETS = (
     "core.integrations.c2a.manual_sync:register_actions",
     "core.integrations.c2a.monitor:register_actions",
     "core.maintenance.sentinel:register_actions",
+    "core.sales.runtime:register_actions",
 )
 
 

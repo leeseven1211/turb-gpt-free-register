@@ -332,3 +332,32 @@ test('Vue真实dispatcher按descriptor分发一次，邮箱与动作来自显式
   assert.deepEqual(qr, ['https://example.test:443/image?a=b:c']);
   assert.equal(h.context.ACCOUNT_SELECTED.has(999), true);
 });
+
+test('加入贩卖区使用冻结账号ID和JSON请求，逐项失败不会显示整批成功', async () => {
+  const views = [];
+  const h = fixture(['invokeAccountAction'], {setModuleView: (...args) => views.push(args)});
+  h.context.window.SalesPage = {refresh: async () => {h.calls.refresh++;}};
+  h.context.api = async (url, options) => {
+    h.calls.requests.push({url, options});
+    return {ok: true, success_count: 1, failed_count: 1,
+      items: [{id: 7, status: 'success'}, {id: 8, status: 'failed', message: '来源账号不存在'}]};
+  };
+  await h.context.invokeAccountAction('addSelectedAccountsToSales', plain(h.contextData), h.get('trigger'));
+  assert.equal(h.calls.requests[0].url, '/api/sales/items/add');
+  assert.equal(h.calls.requests[0].options.headers['Content-Type'], 'application/json');
+  assert.deepEqual(JSON.parse(h.calls.requests[0].options.body), {source_id: 'local', account_ids: [7, 8]});
+  assert.match(h.calls.toasts.join(''), /已加入 1 个，失败 1 个：来源账号不存在/);
+  assert.deepEqual(views, [['accounts', 'sales']]);
+  assert.equal(h.calls.refresh, 1);
+  assert.equal(h.context.ACCOUNT_SELECTED.has(999), true);
+});
+
+test('加入贩卖区拒绝不完整受理回执并保留当前视图', async () => {
+  let navigated = false;
+  const h = fixture(['invokeAccountAction'], {setModuleView: () => {navigated = true;}});
+  h.context.api = async () => ({ok: true});
+  await assert.rejects(h.context.invokeAccountAction('addSelectedAccountsToSales', plain(h.contextData)),
+    /加入贩卖区的回执无效/);
+  assert.equal(navigated, false);
+  assert.equal(h.calls.toasts.length, 0);
+});

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import threading
+from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 
 from psycopg.rows import dict_row
@@ -42,9 +43,11 @@ def init() -> None:
         _READY_KEY = key
 
 
-def save_session(account_id: int, email: str, payload: dict, *, now=None, ttl_seconds: int = 86400) -> bool:
+def save_session(account_id: int, email: str, payload: dict, *, now=None, ttl_seconds: int = 86400,
+                 conn=None) -> bool:
     """Bind the ciphertext internally as well as in SQL to prevent row swapping."""
-    init()
+    if conn is None:
+        init()
     normalized = str(email or "").strip().lower()
     if not normalized or not isinstance(payload, dict):
         raise ValueError("invalid_protocol_session")
@@ -53,32 +56,38 @@ def save_session(account_id: int, email: str, payload: dict, *, now=None, ttl_se
         "version": 1, "account_id": int(account_id), "email": normalized,
         "expires_at": expires.isoformat(), "payload": payload,
     }, ensure_ascii=False))
-    with postgres_store.connect() as conn, conn.cursor() as cur:
-        # Hold the account lock so a concurrent email change cannot race the save.
-        cur.execute(f"SELECT id FROM {postgres_store.qualified('registered_accounts')} WHERE id=%s AND lower(trim(email))=%s FOR UPDATE", (int(account_id), normalized))
-        if not cur.fetchone():
-            return False
-        cur.execute(f"""
-            INSERT INTO {postgres_store.qualified(_TABLE)} (account_id, normalized_email, encrypted_payload, expires_at)
-            VALUES (%s,%s,%s,%s)
-            ON CONFLICT (account_id) DO UPDATE SET normalized_email=EXCLUDED.normalized_email,
-                encrypted_payload=EXCLUDED.encrypted_payload, expires_at=EXCLUDED.expires_at, updated_at=now()
-        """, (int(account_id), normalized, encrypted, expires))
+    connection_context = nullcontext(conn) if conn is not None else postgres_store.connect()
+    with connection_context as connection:
+        with connection.cursor() as cur:
+            # Hold the account lock so a concurrent email change cannot race the save.
+            cur.execute(f"SELECT id FROM {postgres_store.qualified('registered_accounts')} WHERE id=%s AND lower(trim(email))=%s FOR UPDATE", (int(account_id), normalized))
+            if not cur.fetchone():
+                return False
+            cur.execute(f"""
+                INSERT INTO {postgres_store.qualified(_TABLE)} (account_id, normalized_email, encrypted_payload, expires_at)
+                VALUES (%s,%s,%s,%s)
+                ON CONFLICT (account_id) DO UPDATE SET normalized_email=EXCLUDED.normalized_email,
+                    encrypted_payload=EXCLUDED.encrypted_payload, expires_at=EXCLUDED.expires_at, updated_at=now()
+            """, (int(account_id), normalized, encrypted, expires))
     return True
 
 
-def load_session(account_id: int, email: str, *, now=None) -> dict | None:
+def load_session(account_id: int, email: str, *, now=None, conn=None) -> dict | None:
     """Return only unexpired, decryptable data for the account's current email."""
-    init()
+    if conn is None:
+        init()
     normalized = str(email or "").strip().lower()
     current = _now(now)
-    with postgres_store.connect(row_factory=dict_row) as conn, conn.cursor() as cur:
-        cur.execute(f"""
-            SELECT s.encrypted_payload FROM {postgres_store.qualified(_TABLE)} s
-            JOIN {postgres_store.qualified('registered_accounts')} a ON a.id=s.account_id
-            WHERE s.account_id=%s AND s.normalized_email=%s AND lower(trim(a.email))=%s AND s.expires_at>%s
-        """, (int(account_id), normalized, normalized, current))
-        row = cur.fetchone()
+    connection_context = nullcontext(conn) if conn is not None else postgres_store.connect(row_factory=dict_row)
+    with connection_context as connection:
+        cursor = connection.cursor(row_factory=dict_row) if conn is not None else connection.cursor()
+        with cursor as cur:
+            cur.execute(f"""
+                SELECT s.encrypted_payload FROM {postgres_store.qualified(_TABLE)} s
+                JOIN {postgres_store.qualified('registered_accounts')} a ON a.id=s.account_id
+                WHERE s.account_id=%s AND s.normalized_email=%s AND lower(trim(a.email))=%s AND s.expires_at>%s
+            """, (int(account_id), normalized, normalized, current))
+            row = cur.fetchone()
     if not row:
         return None
     try:

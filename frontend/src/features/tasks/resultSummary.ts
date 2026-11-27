@@ -46,6 +46,7 @@ export const taskCompletionLabels: Record<string, string> = {
   extract_link: '提链流程完成', account_inspection: '账号巡检完成', account_inspection_batch: '批次巡检完成',
   c2a_session_reimport: '令牌导入完成', c2a_scan: '异常扫描完成', sentinel_maintenance_check: '维护检查完成',
   bulk_mutation: '批量操作完成', task_terminate_bulk: '批量终止完成',
+  sales_sync: '销售联动完成',
 };
 
 function extractionSummary(task: OperationTask, errorLabel: string): TaskResultSummary {

@@ -2738,6 +2738,88 @@ def _confirmed_account_setup_partial(cur, run: dict, result_summary: dict) -> bo
     return True
 
 
+def _password_change_pending_closeout(run: dict, result_summary: dict) -> bool:
+    """识别已确认密码但收尾未完成的手动改密结果。
+
+    只有本 Run 已持久化、且与 remote intent 关联的密码回执才能改变
+    password_change 的终态收口。其它账号配置、注册和远端写入仍必须遵守
+    通用的未知回执保护。
+    """
+    if str(run.get("task_type") or "") != "password_change":
+        return False
+
+    def _pending(value: Any) -> bool:
+        if not isinstance(value, Mapping):
+            return False
+        remote_confirmed = value.get("remote_password_confirmed") is True or (
+            str(value.get("password_reset") or "").strip().lower() == "confirmed"
+            and value.get("password_confirmed") is True
+        )
+        return remote_confirmed and value.get("completion_pending") is True
+
+    def _candidates(value: Any) -> list[Mapping[str, Any]]:
+        found: list[Mapping[str, Any]] = []
+        if not isinstance(value, Mapping):
+            return found
+        found.append(value)
+        password_setup = value.get("password_setup")
+        if isinstance(password_setup, Mapping):
+            found.append(password_setup)
+        step_results = value.get("step_results")
+        if isinstance(step_results, Mapping):
+            password = step_results.get("password")
+            if isinstance(password, Mapping):
+                found.append(password)
+        setup_step_results = value.get("setup_step_results")
+        if isinstance(setup_step_results, (list, tuple)):
+            for item in setup_step_results:
+                if (
+                    isinstance(item, Mapping)
+                    and str(item.get("step") or "") == "password"
+                    and isinstance(item.get("result"), Mapping)
+                ):
+                    found.append(item["result"])
+        return found
+
+    if not any(_pending(value) for value in _candidates(result_summary)):
+        return False
+    data = _common._decode(run.get("data"))
+    data = data if isinstance(data, Mapping) else {}
+    intent = _remote_write_checkpoint(data)
+    receipt = data.get("remote_receipt")
+    if not isinstance(receipt, Mapping):
+        return False
+    receipt_state = str(
+        receipt.get("receipt_state") or receipt.get("outcome") or ""
+    ).strip().lower()
+    if receipt_state not in {"local_commit_required", "confirmed"}:
+        return False
+    intent_action = str(intent.get("action") or "").strip()
+    receipt_action = str(receipt.get("action") or "").strip()
+    intent_request_id = str(intent.get("request_id") or "").strip()
+    receipt_request_id = str(receipt.get("request_id") or "").strip()
+    if (
+        not intent_action
+        or not receipt_action
+        or receipt_action != intent_action
+        or not intent_request_id
+        or not receipt_request_id
+        or receipt_request_id != intent_request_id
+        or str(intent.get("receipt_state") or intent.get("state") or "").strip().lower()
+        != receipt_state
+    ):
+        return False
+    detail = receipt.get("detail")
+    if not isinstance(detail, Mapping) or not _pending(detail):
+        return False
+    if receipt_state == "confirmed" and not all(
+        detail.get(key) is True
+        for key in ("local_business_writeback_confirmed", "local_readback_confirmed")
+    ):
+        return False
+    return True
+
+
 def finish_run(
     run_id: int,
     *,
@@ -2833,8 +2915,25 @@ def finish_run(
                 status_value in {"failed", "partial_success", "cancelled", "stopped"}
                 and _confirmed_plan_refresh(found, dependency_result)
             )
+            password_change_pending_closeout = _password_change_pending_closeout(
+                found, dependency_result,
+            )
+            if password_change_pending_closeout and status_value in {"success", "partial_success"}:
+                status_value = "failed"
+                if not error:
+                    error = str(
+                        dependency_result.get("cause_code")
+                        or dependency_result.get("error")
+                        or "password_change_completion_pending"
+                    )
             if status_value != "deactivated" and intent and receipt not in {"rejected", "not_submitted"} and (
-                not (explicit_remote_rejection or confirmed_extract_failure or confirmed_independent_partial or confirmed_plan_refresh)
+                not (
+                    explicit_remote_rejection
+                    or confirmed_extract_failure
+                    or confirmed_independent_partial
+                    or confirmed_plan_refresh
+                    or password_change_pending_closeout
+                )
                 and (status_value != "success" or receipt != "confirmed")
             ):
                 # 未确认的远端写入保留在当前 Run，人工重跑会创建新的 Run，
@@ -2879,6 +2978,16 @@ def finish_run(
                 error or "", stage=str(failure_stage or "complete"), task_type=task_type,
                 result_summary=dependency_result, task_status=status_value,
             )
+            if password_change_pending_closeout:
+                # P1 收尾失败已经有结构化具体原因；不要让通用阶段兜底码
+                # 覆盖 token_revoked 等可重跑原因。
+                specific_cause = str(
+                    dependency_result.get("cause_code")
+                    or dependency_result.get("error_code")
+                    or ""
+                ).strip()
+                if specific_cause:
+                    code = specific_cause
             cur.execute(
                 f"""
                 UPDATE {_common._table('operation_runs')}

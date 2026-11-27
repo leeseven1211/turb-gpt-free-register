@@ -1,7 +1,8 @@
 import { A as e, C as t, F as n, G as r, H as i, K as a, L as o, Q as s, S as c, V as l, Z as u, _ as d, c as f, d as p, dt as m, et as h, ft as g, g as _, h as v, j as y, k as b, l as x, lt as S, m as C, n as w, s as T, st as E, v as D, x as O } from "./_plugin-vue_export-helper-CBsH_ZoE.js";
-import { a as k, c as A, i as j, n as M, o as N, r as P, s as F, t as I } from "./ListFilterSummary-BjRd_0Sf.js";
-import { t as L } from "./ListPagination-CSFkV2Gz.js";
-import { n as R, t as z } from "./ColumnResizer-Djku_Vg5.js";
+import { a as k, i as A, n as j, o as M, r as N, s as P, t as F } from "./ListFilterSummary-BjcCEzgL.js";
+import { t as I } from "./ListPagination-CSFkV2Gz.js";
+import { n as L, t as R } from "./ColumnResizer-XOclQup1.js";
+import { t as z } from "./TableState-CxHYH8ID.js";
 import { t as B } from "./time-DOD6oyhP.js";
 import { n as V, r as H, t as U } from "./client-B5R_MNgP.js";
 import { a as W, i as G, n as K, t as q } from "./bulkMutations-3wwPI3-H.js";
@@ -163,7 +164,7 @@ var re = { class: "cx-filter-fields" }, ie = {
 		function A(e, t, n) {
 			e.detail <= 0 || (T(t, n), a("update:open", !1));
 		}
-		return (t, i) => (n(), D("div", { class: S({ "cx-all-filters": !e.column }) }, [c(j, {
+		return (t, i) => (n(), D("div", { class: S({ "cx-all-filters": !e.column }) }, [c(N, {
 			label: e.column?.label || "凭证",
 			"trigger-label": e.column ? void 0 : "筛选",
 			active: y.value,
@@ -391,7 +392,7 @@ var ye = ["aria-busy"], be = {
 		"update:openFilter"
 	],
 	setup(e, { expose: t, emit: a }) {
-		let s = e, l = a, { widths: u, total: f, resize: y, resizeWithKeyboard: x, resetColumns: w } = R({
+		let s = e, l = a, { widths: u, total: f, resize: y, resizeWithKeyboard: x, resetColumns: w } = L({
 			defaults: [
 				42,
 				228,
@@ -408,7 +409,7 @@ var ye = ["aria-busy"], be = {
 			totalStorageKey: "gpt_console_table_total_codex",
 			min: 28,
 			max: 2e3
-		}), T = C(() => s.items.length > 0 && s.items.every((e) => s.selected.has(e.filename))), j = C(() => !T.value && s.items.some((e) => s.selected.has(e.filename))), I = C(() => {
+		}), T = C(() => s.items.length > 0 && s.items.every((e) => s.selected.has(e.filename))), N = C(() => !T.value && s.items.some((e) => s.selected.has(e.filename))), F = C(() => {
 			let e = /* @__PURE__ */ new Map();
 			return s.items.map((t) => {
 				let n = JSON.stringify([t.filename, t.sub2api_account_id ?? null]), r = e.get(n) ?? 0;
@@ -419,17 +420,17 @@ var ye = ["aria-busy"], be = {
 					oauth: _e(t)
 				};
 			});
-		}), L = h(null);
+		}), I = h(null);
 		i(() => s.visible, (e) => {
-			e || (L.value = null);
+			e || (I.value = null);
 		}), i(() => s.items, () => {
-			L.value = null;
+			I.value = null;
 		});
 		function V(e, t) {
-			t ? L.value = e : L.value === e && (L.value = null);
+			t ? I.value = e : I.value === e && (I.value = null);
 		}
 		function H(e, t) {
-			s.busy || (L.value = null, l("action", e, t));
+			s.busy || (I.value = null, l("action", e, t));
 		}
 		function U(e) {
 			return e == null || e === "" ? "—" : String(e);
@@ -453,7 +454,7 @@ var ye = ["aria-busy"], be = {
 					type: "checkbox",
 					"aria-label": "全选当前页 Codex 凭证",
 					checked: T.value,
-					indeterminate: j.value,
+					indeterminate: N.value,
 					disabled: !e.items.length || e.busy,
 					onChange: i[0] ||= (e) => l("selectPage", e.target.checked)
 				}, null, 40, xe)]),
@@ -473,7 +474,7 @@ var ye = ["aria-busy"], be = {
 					"facets",
 					"open",
 					"onUpdate:open"
-				]), c(z, {
+				]), c(R, {
 					label: t.label,
 					onStart: (e) => E(y)(r + 1, e),
 					onNudge: (e) => E(x)(r + 1, e)
@@ -484,7 +485,7 @@ var ye = ["aria-busy"], be = {
 				])]))), 128)),
 				i[3] ||= v("th", { scope: "col" }, "操作", -1)
 			])]),
-			v("tbody", null, [(n(!0), D(p, null, o(I.value, ({ row: t, key: i, credential: a, oauth: o }) => (n(), D("tr", {
+			v("tbody", null, [(n(!0), D(p, null, o(F.value, ({ row: t, key: i, credential: a, oauth: o }) => (n(), D("tr", {
 				key: i,
 				class: S({ "is-selected": e.selected.has(t.filename) })
 			}, [
@@ -495,7 +496,7 @@ var ye = ["aria-busy"], be = {
 					disabled: e.busy,
 					onChange: (e) => l("select", t.filename, e.target.checked)
 				}, null, 40, Ce)]),
-				v("td", we, [c(P, {
+				v("td", we, [c(j, {
 					text: t.email || t.filename,
 					secondary: t.email ? t.filename : void 0,
 					title: `${t.email || ""} · 文件：${t.filename}${t.archived ? " · 已归档" : ""}`
@@ -515,14 +516,14 @@ var ye = ["aria-busy"], be = {
 					a.label,
 					o.label
 				].join(" · ")), 9, Te)]),
-				v("td", Ee, [c(P, { text: U(t.plan) }, {
+				v("td", Ee, [c(j, { text: U(t.plan) }, {
 					default: r(() => [t.plan ? (n(), D("span", {
 						key: 0,
 						class: S(["ui-badge cx-badge", `ui-badge--${E(ve)(t.plan)}`])
 					}, g(t.plan), 3)) : (n(), D(p, { key: 1 }, [O("—")], 64))]),
 					_: 2
 				}, 1032, ["text"])]),
-				v("td", De, [c(P, {
+				v("td", De, [c(j, {
 					text: a.label,
 					title: a.title,
 					tone: a.tone
@@ -534,7 +535,7 @@ var ye = ["aria-busy"], be = {
 					"title",
 					"tone"
 				])]),
-				v("td", Oe, [c(P, {
+				v("td", Oe, [c(j, {
 					text: o.label,
 					title: o.title,
 					tone: o.tone
@@ -546,25 +547,25 @@ var ye = ["aria-busy"], be = {
 					"title",
 					"tone"
 				])]),
-				v("td", ke, [c(P, {
+				v("td", ke, [c(j, {
 					text: U(t.account_id),
 					title: t.account_id ? String(t.account_id) : void 0
 				}, null, 8, ["text", "title"])]),
-				v("td", Ae, [c(P, { text: U(t.sub2api_account_id) }, null, 8, ["text"])]),
-				v("td", je, [c(P, b({ ref_for: !0 }, E(B)(t.mtime), { title: U(t.mtime) }), null, 16, ["title"])]),
-				v("td", Me, [c(P, b({ ref_for: !0 }, E(B)(t.expired), { title: U(t.expired) }), null, 16, ["title"])]),
+				v("td", Ae, [c(j, { text: U(t.sub2api_account_id) }, null, 8, ["text"])]),
+				v("td", je, [c(j, b({ ref_for: !0 }, E(B)(t.mtime), { title: U(t.mtime) }), null, 16, ["title"])]),
+				v("td", Me, [c(j, b({ ref_for: !0 }, E(B)(t.expired), { title: U(t.expired) }), null, 16, ["title"])]),
 				v("td", Ne, [v("div", Pe, [v("button", {
 					type: "button",
 					class: "ui-link cx-direct-download",
 					"data-codex-download": t.filename,
 					disabled: e.busy,
 					onClick: (e) => H("download", t)
-				}, "下载凭证", 8, Fe), c(E(A), {
-					open: e.visible && L.value === i,
+				}, "下载凭证", 8, Fe), c(E(P), {
+					open: e.visible && I.value === i,
 					modal: !1,
 					"onUpdate:open": (e) => V(i, e)
 				}, {
-					default: r(() => [c(E(k), { "as-child": "" }, {
+					default: r(() => [c(E(A), { "as-child": "" }, {
 						default: r(() => [v("button", {
 							type: "button",
 							class: "ui-link",
@@ -572,8 +573,8 @@ var ye = ["aria-busy"], be = {
 							disabled: e.busy
 						}, "更多", 8, Ie)]),
 						_: 2
-					}, 1024), c(E(N), null, {
-						default: r(() => [c(E(F), {
+					}, 1024), c(E(k), null, {
+						default: r(() => [c(E(M), {
 							class: "cx-row-menu",
 							"aria-label": `${t.email || t.filename} 的凭证详情与操作`,
 							side: "bottom",
@@ -641,7 +642,7 @@ var ye = ["aria-busy"], be = {
 					}, 1024)]),
 					_: 2
 				}, 1032, ["open", "onUpdate:open"])])])
-			], 2))), 128)), e.items.length ? d("", !0) : (n(), _(M, {
+			], 2))), 128)), e.items.length ? d("", !0) : (n(), _(z, {
 				key: 0,
 				colspan: 10,
 				loading: e.loading,
@@ -1077,7 +1078,7 @@ var ot = {
 			archived: b,
 			refresh: i.refresh,
 			callbacks: r.callbacks
-		}), { busy: N, error: P, uploadProgress: F } = M, R = h(), z = h(null), B = h(!document.hidden), V = C(() => te(j, l.value)), H = [
+		}), { busy: N, error: P, uploadProgress: L } = M, R = h(), z = h(null), B = h(!document.hidden), V = C(() => te(j, l.value)), H = [
 			{
 				kind: "refreshToken",
 				id: "btnCodexRefreshTokenBulkV2",
@@ -1157,7 +1158,7 @@ var ot = {
 					disabled: E(N),
 					onClick: (t) => E(M).run(e.kind)
 				}, g(e.kind === "archiveBulk" && E(b) ? "恢复选中" : e.label), 11, mt)), 64))])) : d("", !0),
-				c(I, {
+				c(F, {
 					items: V.value,
 					onRemove: q
 				}, null, 8, ["items"])
@@ -1181,7 +1182,7 @@ var ot = {
 					class: "ui-link",
 					onClick: t[1] ||= (...e) => E(i).resetFilters && E(i).resetFilters(...e)
 				}, "清除筛选")) : d("", !0),
-				E(F) ? (n(), D("button", {
+				E(L) ? (n(), D("button", {
 					key: 1,
 					id: "btnCodexUploadProgressV2",
 					type: "button",
@@ -1241,7 +1242,7 @@ var ot = {
 				"onSelect",
 				"onSelectPage"
 			]),
-			c(L, {
+			c(I, {
 				page: E(f),
 				size: E(m),
 				pages: E(_),

@@ -1,6 +1,6 @@
 # 控制台前端
 
-控制台使用 Vue 3、TypeScript 和 Vite，十一个页面入口覆盖总览、注册、账号、Team 管理、任务中心、批量任务、邮箱、代理与流量、Codex 凭证、配置和提链。各页面沿用现有导航外壳、样式和同域 API。[架构收敛](../docs/architecture/convergence.md)描述各层职责。
+控制台使用 Vue 3、TypeScript 和 Vite，十二个页面入口覆盖总览、注册、账号、Team 管理、贩卖区、任务中心、批量任务、邮箱、代理与流量、Codex 凭证、配置和提链。各页面沿用现有导航外壳、样式和同域 API。[架构收敛](../docs/architecture/convergence.md)描述各层职责。
 
 ## 安装、生成与验证
 
@@ -19,13 +19,15 @@ npm run build
 
 ## 构建与外壳接口
 
-`build` 一次生成十一个模块到 `webui/static/task-center/`：`dashboard.js`、`registration.js`、`accounts.js`、`teams.js`、`task-center.js`、`bulk.js`、`email.js`、`proxy.js`、`codex.js`、`config.js`、`extract.js`，共用 `task-center.css` 与按内容命名的共享模块。构建不清空目录；源码、锁文件、生成类型和产物一同发布。Flask 模板对外壳、桥接脚本及所有页面产物使用统一内容版本作为缓存参数。
+`build` 一次生成十二个模块到 `webui/static/task-center/`：`dashboard.js`、`registration.js`、`accounts.js`、`teams.js`、`sales.js`、`task-center.js`、`bulk.js`、`email.js`、`proxy.js`、`codex.js`、`config.js`、`extract.js`，共用 `task-center.css` 与按内容命名的共享模块。构建不清空目录；源码、锁文件、生成类型和产物一同发布。Flask 模板对外壳、桥接脚本及所有页面产物使用统一内容版本作为缓存参数。
 
 外壳负责导航和可见性，各模块导出显式挂载函数，返回刷新、范围切换、弹窗关闭和销毁方法。页面隐藏、导航切换或销毁时停止相应读取与轮询，并丢弃已失效的迟到响应。账号与 Codex 的归档范围仍通过原菜单进入。
 
 Team 管理挂载在 `#tab-teams > #teams-page-root`，侧栏使用 `data-tab="teams"`。页面直接使用 `contracts/teams.openapi.json` 生成的类型；绑定探测与加入回执按后端状态轮询。账号子菜单保留「活跃账号」，并提供「Team 账号」和「归档账号」视图；高级筛选通过固定名单返回指定 Team，回执受理与远端成员事实分别展示。
 
 总览读取 `/api/dashboard` 和 `/api/capabilities`，卡片动作使用导航回调，布局偏好保存在 `gpt_console_overview_preferences_v1`。代理库存和记录通过 `setView('pool' | 'records')` 切换；提链统计从提链工作台的二级菜单进入，按北京时间统计；历史子邮箱由邮箱页面管理，可筛选和复制已有记录。
+
+贩卖区从「账号 → 贩卖区」进入，`mountSales` 通过 `window.SalesPage` 接收外壳可见性、刷新和关闭弹窗通知。账号列表的「加入贩卖区」提交来源账号 ID；贩卖区的选择、改状态和上架使用销售条目 ID。请求和回执类型集中在 `src/api/sales.ts`，店铺与来源管理只填写凭据环境变量名。
 
 页面继续沿用 `shell.css` 与基础样式，Vue 局部样式和原生弹窗滚动锁包含在共用 CSS 中。`npm run dev` 默认代理 `/api` 与 `/static` 到 `http://127.0.0.1:8000`，仅连接已确认的本地开发服务。
 

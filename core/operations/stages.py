@@ -139,6 +139,9 @@ STAGES: dict[str, dict[str, str]] = {
     "accept": {"label": "接受 Team 邀请", "group": "team"},
     "member_verify": {"label": "核验成员关系", "group": "team"},
     "persist": {"label": "保存 Team 成果", "group": "team"},
+    "sales_sync": {"label": "同步店铺库存与订单", "group": "sales"},
+    "sales_listing": {"label": "核对与上架账号", "group": "sales"},
+    "sales_archive": {"label": "归档来源账号", "group": "sales"},
     "complete": {"label": "完成", "group": "system"},
     "interrupted": {"label": "执行中断", "group": "system"},
 }
@@ -291,6 +294,11 @@ TASK_TEMPLATES: _FLOW = {
     "team_accept": _flow(_s("member_auth"), _s("accept"), _s("member_verify"), _s("persist")),
     "team_outbox_drain": _flow(_s("dispatch")),
     "sentinel_maintenance_check": _flow(_s("preflight"), _s("sentinel_check", depends_on=("preflight",))),
+    "sales_sync": _flow(
+        _s("preflight"), _s("sales_sync", depends_on=("preflight",)),
+        _s("sales_listing", depends_on=("preflight",)),
+        _s("sales_archive", depends_on=("preflight",)),
+    ),
     "plan_check": _flow(
         _s("preflight"), _s("network", depends_on=("preflight",)),
         _step("refresh_token", "刷新 AT", "account", "refresh_token", "authenticate", "login", "login_password",
