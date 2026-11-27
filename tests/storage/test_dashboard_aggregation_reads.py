@@ -121,8 +121,8 @@ class DashboardAggregationReadTests(PostgresTestCase):
         self.assertEqual(result["summary"]["accounts_total"], 2)
         self.assertEqual([row["accounts_total"] for row in result["rows"]], [2, 0])
         self.assertEqual(result["summary"]["promotion_presence"], {"eligible": 0, "none": 0, "unknown": 2})
-        # 无成功快照的账号跳过 a.data 解压，有成功快照的账号在重复注册任务下也只读 1 次。
-        self.assertEqual(counts["reads"], 1)
+        # account_snapshot_presence 已提升为窄生成列，无有效优惠的历史快照无需回表解压 a.data。
+        self.assertEqual(counts["reads"], 0)
 
     def test_missing_other_setup_requirements_skip_account_json(self):
         cases = (

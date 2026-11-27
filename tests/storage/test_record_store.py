@@ -313,6 +313,63 @@ class RecordStoreMigrationTests(PostgresTestCase):
             )
             self.assertIsNotNone(cur.fetchone())
 
+    def test_v6_upgrades_existing_v5_tables_with_created_date_snapshot_presence_and_cover_indexes(self):
+        rs.init()
+        accounts = rs._qualified(ACCOUNTS)
+        migrations = rs.postgres_store.qualified(rs._SCHEMA_MIGRATIONS)
+        date_index = rs.postgres_store.qualified("idx_registered_accounts_created_date_cover")
+        job_index = rs.postgres_store.qualified("idx_registration_jobs_id_status_created")
+        with rs._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"DROP INDEX IF EXISTS {date_index}")
+            cur.execute(f"DROP INDEX IF EXISTS {job_index}")
+            for column in rs._UI_QUERY_R3_ACCOUNT_COLUMNS:
+                cur.execute(f"ALTER TABLE {accounts} DROP COLUMN {rs.postgres_store.quote_identifier(column)}")
+            cur.execute(
+                f"DELETE FROM {migrations} WHERE version >= %s",
+                (rs._UI_QUERY_R3_SCHEMA_VERSION,),
+            )
+            cur.execute(
+                f"INSERT INTO {accounts} (email, created_at, updated_at, data) "
+                "VALUES ('v5-legacy@example.test', '2026-11-25T16:00:00Z', '2026-11-26', %s::jsonb) RETURNING id",
+                (json.dumps({
+                    "plan_last_success_result_json": {
+                        "ok": True,
+                        "promotion_query_snapshot": {"truncated": False},
+                        "account_promotions": [
+                            {"plan": "go", "kind": "none", "eligible": False},
+                            {"plan": "plus", "kind": "none", "eligible": False},
+                            {"plan": "team", "kind": "none", "eligible": False},
+                        ],
+                    },
+                }),),
+            )
+            account_id = cur.fetchone()["id"]
+
+        with (
+            patch.object(rs, "_READY_KEY", ""),
+            patch.object(rs, "_apply_record_schema", wraps=rs._apply_record_schema) as apply_v1,
+            patch.object(rs, "_ensure_ui_query_columns", wraps=rs._ensure_ui_query_columns) as apply_v4,
+            patch.object(rs, "_ensure_ui_query_indexes_r2", wraps=rs._ensure_ui_query_indexes_r2) as apply_v5,
+        ):
+            rs.init()
+        apply_v1.assert_not_called()
+        apply_v4.assert_not_called()
+        apply_v5.assert_not_called()
+
+        with rs._connect() as conn, conn.cursor() as cur:
+            self.assertTrue(rs._migration_completed(conn, rs._UI_QUERY_R3_SCHEMA_VERSION))
+            cur.execute(
+                f"SELECT account_created_date::text, account_snapshot_presence FROM {accounts} WHERE id = %s",
+                (account_id,),
+            )
+            self.assertEqual(tuple(cur.fetchone().values()), ("2026-11-26", "none"))
+            for idx_name in ("idx_registered_accounts_created_date_cover", "idx_registration_jobs_id_status_created"):
+                cur.execute(
+                    "SELECT indexdef FROM pg_indexes WHERE schemaname = %s AND indexname = %s",
+                    (self.schema, idx_name),
+                )
+                self.assertIsNotNone(cur.fetchone(), idx_name)
+
 
 class PartialUpdateTests(PostgresTestCase):
     def setUp(self):

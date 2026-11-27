@@ -37,7 +37,8 @@ _EMAIL_INVENTORY_SCHEMA_VERSION = 2
 _PROMOTION_OFFERS_SCHEMA_VERSION = 3
 _UI_QUERY_COLUMNS_SCHEMA_VERSION = 4
 _UI_QUERY_INDEXES_R2_SCHEMA_VERSION = 5
-_SCHEMA_VERSION = _UI_QUERY_INDEXES_R2_SCHEMA_VERSION
+_UI_QUERY_R3_SCHEMA_VERSION = 6
+_SCHEMA_VERSION = _UI_QUERY_R3_SCHEMA_VERSION
 _SCHEMA_MIGRATIONS = "record_store_schema_migrations"
 
 
@@ -238,6 +239,12 @@ ACCOUNTS = TableSpec(
         ) STORED""",
         "account_has_plan_snapshot": """BOOLEAN GENERATED ALWAYS AS (
             jsonb_typeof(data->'plan_last_success_result_json') IN ('object', 'string')
+        ) STORED""",
+        "account_created_date": """DATE GENERATED ALWAYS AS (
+            {schema}.parse_account_created_date(created_at)
+        ) STORED""",
+        "account_snapshot_presence": """TEXT GENERATED ALWAYS AS (
+            {schema}.project_account_snapshot_presence(data->'plan_last_success_result_json')
         ) STORED""",
     },
     unique=("email",),
@@ -936,14 +943,253 @@ def _migration_completed(conn, version: int | None = None) -> bool:
         return cur.fetchone() is not None
 
 
+def _render_generated_sql(column_sql: str) -> str:
+    return column_sql.replace("{schema}", postgres_store.quote_identifier(postgres_store.schema_name()))
+
+
+def _ensure_account_helper_functions(cur) -> None:
+    """在当前 schema 创建只读生成列依赖的 IMMUTABLE 纯函数。"""
+    parse_date_fn = postgres_store.qualified("parse_account_created_date")
+    presence_fn = postgres_store.qualified("project_account_snapshot_presence")
+    cur.execute(
+        f"""
+        CREATE OR REPLACE FUNCTION {parse_date_fn}(raw_value TEXT)
+        RETURNS DATE LANGUAGE plpgsql IMMUTABLE PARALLEL SAFE AS $fn$
+        DECLARE
+            v TEXT := NULLIF(BTRIM(raw_value), '');
+            m TEXT[];
+            y INT; mo INT; d INT; hh INT; mi INT; ss INT;
+            tz TEXT; tz_sign INT; tz_h INT; tz_m INT;
+            ts TIMESTAMP;
+        BEGIN
+            IF v IS NULL THEN RETURN NULL; END IF;
+            IF v ~ '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}$' THEN
+                y := substring(v, 1, 4)::int;
+                IF y < 1 THEN RETURN NULL; END IF;
+                BEGIN
+                    RETURN make_date(y, substring(v, 6, 2)::int, substring(v, 9, 2)::int);
+                EXCEPTION WHEN datetime_field_overflow OR invalid_datetime_format THEN
+                    RETURN NULL;
+                END;
+            END IF;
+            m := regexp_match(
+                v,
+                '^([0-9]{{4}})-([0-9]{{2}})-([0-9]{{2}})[T ](0[0-9]|1[0-9]|2[0-3]):([0-5][0-9]):([0-5][0-9])(?:[.][0-9]+)?([zZ]|[+-][0-9]{{2}}(?::?[0-9]{{2}})?)?$'
+            );
+            IF m IS NULL THEN RETURN NULL; END IF;
+            y := m[1]::int; mo := m[2]::int; d := m[3]::int;
+            hh := m[4]::int; mi := m[5]::int; ss := m[6]::int;
+            tz := m[7];
+            IF y < 1 THEN RETURN NULL; END IF;
+            BEGIN
+                ts := make_timestamp(y, mo, d, hh, mi, ss);
+            EXCEPTION WHEN datetime_field_overflow OR invalid_datetime_format THEN
+                RETURN NULL;
+            END;
+            IF tz IS NULL THEN
+                RETURN ts::date;
+            END IF;
+            IF tz IN ('z', 'Z') THEN
+                RETURN (ts + INTERVAL '8 hours')::date;
+            END IF;
+            tz_sign := CASE WHEN left(tz, 1) = '-' THEN -1 ELSE 1 END;
+            tz_h := substring(tz, 2, 2)::int;
+            tz_m := CASE WHEN length(tz) = 3 THEN 0 ELSE right(tz, 2)::int END;
+            IF tz_h > 15 OR tz_m > 59 THEN
+                RETURN NULL;
+            END IF;
+            RETURN (ts - make_interval(mins => tz_sign * (tz_h * 60 + tz_m)) + INTERVAL '8 hours')::date;
+        END;
+        $fn$
+        """
+    )
+    cur.execute(
+        f"""
+        CREATE OR REPLACE FUNCTION {presence_fn}(raw_value JSONB)
+        RETURNS TEXT LANGUAGE plpgsql IMMUTABLE PARALLEL SAFE AS $fn$
+        DECLARE
+            snap JSONB;
+            has_country BOOLEAN;
+            requested_len INT;
+            results_len INT;
+            valid_requested INT;
+            distinct_requested INT;
+            valid_observed INT;
+            distinct_observed INT;
+        BEGIN
+            IF raw_value IS NULL THEN RETURN 'unknown'; END IF;
+            IF jsonb_typeof(raw_value) = 'string' THEN
+                BEGIN
+                    snap := (raw_value #>> '{{}}')::jsonb;
+                EXCEPTION WHEN invalid_text_representation OR program_limit_exceeded THEN
+                    RETURN 'unknown';
+                END;
+            ELSIF jsonb_typeof(raw_value) = 'object' THEN
+                snap := raw_value;
+            ELSE
+                RETURN 'unknown';
+            END IF;
+            IF snap IS NULL OR jsonb_typeof(snap) <> 'object' OR snap->'ok' IS DISTINCT FROM 'true'::jsonb THEN
+                RETURN 'unknown';
+            END IF;
+
+            -- 顶层或成功国家结果里任一有效优惠即判定 eligible
+            IF jsonb_typeof(snap->'account_promotions') = 'array' AND EXISTS (
+                SELECT 1 FROM jsonb_array_elements(snap->'account_promotions') e
+                 WHERE jsonb_typeof(e) = 'object'
+                   AND jsonb_typeof(e->'plan') = 'string'
+                   AND e->>'plan' IN ('go', 'plus', 'team')
+                   AND jsonb_typeof(e->'kind') = 'string'
+                   AND e->>'kind' IN ('free_trial', 'discount', 'other_promo')
+                   AND e->'eligible' = 'true'::jsonb
+                   AND (e->'stale' IS NULL OR e->'stale' IN ('null'::jsonb, 'false'::jsonb))
+                   AND (e->'expired' IS NULL OR e->'expired' IN ('null'::jsonb, 'false'::jsonb))
+            ) THEN
+                RETURN 'eligible';
+            END IF;
+
+            IF jsonb_typeof(snap->'plan_check_country_results') = 'array' AND EXISTS (
+                SELECT 1
+                  FROM jsonb_array_elements(snap->'plan_check_country_results') r
+                 CROSS JOIN LATERAL jsonb_array_elements(
+                     CASE WHEN jsonb_typeof(r) = 'object'
+                           AND r->>'status' = 'success'
+                           AND jsonb_typeof(r->'result') = 'object'
+                           AND r->'result'->'ok' = 'true'::jsonb
+                           AND jsonb_typeof(r->'result'->'account_promotions') = 'array'
+                          THEN r->'result'->'account_promotions'
+                          ELSE '[]'::jsonb END
+                 ) e
+                 WHERE jsonb_typeof(e) = 'object'
+                   AND jsonb_typeof(e->'plan') = 'string'
+                   AND e->>'plan' IN ('go', 'plus', 'team')
+                   AND jsonb_typeof(e->'kind') = 'string'
+                   AND e->>'kind' IN ('free_trial', 'discount', 'other_promo')
+                   AND e->'eligible' = 'true'::jsonb
+                   AND (e->'stale' IS NULL OR e->'stale' IN ('null'::jsonb, 'false'::jsonb))
+                   AND (e->'expired' IS NULL OR e->'expired' IN ('null'::jsonb, 'false'::jsonb))
+            ) THEN
+                RETURN 'eligible';
+            END IF;
+
+            IF snap->'plan_check_partial' IS NOT NULL
+               AND snap->'plan_check_partial' NOT IN ('null'::jsonb, 'false'::jsonb) THEN
+                RETURN 'unknown';
+            END IF;
+
+            has_country :=
+                (snap->'plan_check_countries' IS NOT NULL AND snap->'plan_check_countries' NOT IN ('null'::jsonb, '[]'::jsonb))
+                OR (snap->'plan_check_country_results' IS NOT NULL AND snap->'plan_check_country_results' NOT IN ('null'::jsonb, '[]'::jsonb))
+                OR (jsonb_typeof(snap->'account_promotions') = 'array' AND EXISTS (
+                    SELECT 1 FROM jsonb_array_elements(snap->'account_promotions') e
+                     WHERE jsonb_typeof(e) = 'object'
+                       AND e->'country' IS NOT NULL
+                       AND e->'country' NOT IN ('null'::jsonb, '""'::jsonb)
+                ));
+
+            IF NOT has_country THEN
+                IF jsonb_typeof(snap->'promotion_query_snapshot') = 'object'
+                   AND snap->'promotion_query_snapshot'->'truncated' = 'false'::jsonb
+                   AND jsonb_typeof(snap->'account_promotions') = 'array'
+                   AND jsonb_array_length(snap->'account_promotions') > 0
+                   AND NOT EXISTS (
+                       SELECT 1 FROM jsonb_array_elements(snap->'account_promotions') e
+                        WHERE jsonb_typeof(e) <> 'object'
+                           OR jsonb_typeof(e->'plan') <> 'string'
+                           OR e->>'plan' NOT IN ('go', 'plus', 'team')
+                           OR jsonb_typeof(e->'kind') <> 'string'
+                           OR e->>'kind' <> 'none'
+                           OR e->'eligible' IS DISTINCT FROM 'false'::jsonb
+                           OR (e->'stale' IS NOT NULL AND e->'stale' NOT IN ('null'::jsonb, 'false'::jsonb))
+                           OR (e->'expired' IS NOT NULL AND e->'expired' NOT IN ('null'::jsonb, 'false'::jsonb))
+                   )
+                   AND (
+                       SELECT COUNT(DISTINCT e->>'plan')
+                         FROM jsonb_array_elements(snap->'account_promotions') e
+                   ) = 3 THEN
+                    RETURN 'none';
+                END IF;
+                RETURN 'unknown';
+            END IF;
+
+            IF jsonb_typeof(snap->'plan_check_countries') <> 'array'
+               OR jsonb_typeof(snap->'plan_check_country_results') <> 'array' THEN
+                RETURN 'unknown';
+            END IF;
+            requested_len := jsonb_array_length(snap->'plan_check_countries');
+            results_len := jsonb_array_length(snap->'plan_check_country_results');
+            IF requested_len <= 0 OR requested_len <> results_len THEN
+                RETURN 'unknown';
+            END IF;
+
+            SELECT COUNT(*), COUNT(DISTINCT code)
+              INTO valid_requested, distinct_requested
+              FROM (
+                  SELECT UPPER(BTRIM(elem #>> '{{}}')) AS code
+                    FROM jsonb_array_elements(snap->'plan_check_countries') elem
+                   WHERE jsonb_typeof(elem) = 'string'
+                     AND UPPER(BTRIM(elem #>> '{{}}')) ~ '^[A-Z]{{2}}$'
+              ) req;
+            IF valid_requested <> requested_len OR distinct_requested <> requested_len THEN
+                RETURN 'unknown';
+            END IF;
+
+            SELECT COUNT(*), COUNT(DISTINCT obs.code)
+              INTO valid_observed, distinct_observed
+              FROM (
+                  SELECT UPPER(BTRIM(r->>'country')) AS code, r->'result' AS res
+                    FROM jsonb_array_elements(snap->'plan_check_country_results') r
+                   WHERE jsonb_typeof(r) = 'object'
+                     AND jsonb_typeof(r->'country') = 'string'
+                     AND UPPER(BTRIM(r->>'country')) ~ '^[A-Z]{{2}}$'
+                     AND r->>'status' = 'success'
+                     AND jsonb_typeof(r->'result') = 'object'
+                     AND r->'result'->'ok' = 'true'::jsonb
+                     AND jsonb_typeof(r->'result'->'promotion_query_snapshot') = 'object'
+                     AND r->'result'->'promotion_query_snapshot'->'truncated' = 'false'::jsonb
+                     AND jsonb_typeof(r->'result'->'account_promotions') = 'array'
+                     AND jsonb_array_length(r->'result'->'account_promotions') > 0
+                     AND NOT EXISTS (
+                         SELECT 1 FROM jsonb_array_elements(r->'result'->'account_promotions') e
+                          WHERE jsonb_typeof(e) <> 'object'
+                             OR jsonb_typeof(e->'plan') <> 'string'
+                             OR e->>'plan' NOT IN ('go', 'plus', 'team')
+                             OR jsonb_typeof(e->'kind') <> 'string'
+                             OR e->>'kind' <> 'none'
+                             OR e->'eligible' IS DISTINCT FROM 'false'::jsonb
+                             OR (e->'stale' IS NOT NULL AND e->'stale' NOT IN ('null'::jsonb, 'false'::jsonb))
+                             OR (e->'expired' IS NOT NULL AND e->'expired' NOT IN ('null'::jsonb, 'false'::jsonb))
+                     )
+                     AND (
+                         SELECT COUNT(DISTINCT e->>'plan')
+                           FROM jsonb_array_elements(r->'result'->'account_promotions') e
+                     ) = 3
+                     AND UPPER(BTRIM(r->>'country')) IN (
+                         SELECT UPPER(BTRIM(elem #>> '{{}}'))
+                           FROM jsonb_array_elements(snap->'plan_check_countries') elem
+                          WHERE jsonb_typeof(elem) = 'string'
+                     )
+              ) obs;
+
+            IF valid_observed = requested_len AND distinct_observed = requested_len THEN
+                RETURN 'none';
+            END IF;
+            RETURN 'unknown';
+        END;
+        $fn$
+        """
+    )
+
+
 def _apply_record_schema(cur) -> None:
+    _ensure_account_helper_functions(cur)
     for spec in ALL_TABLES:
         columns = ["id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY"]
         columns += [f"{postgres_store.quote_identifier(col)} {sql}"
                     for col, sql in spec.promoted.items()]
         # generated 列会引用 data，所以建新表时先声明 data。
         columns.append("data JSONB NOT NULL DEFAULT '{}'::jsonb")
-        columns += [f"{postgres_store.quote_identifier(col)} {sql}"
+        columns += [f"{postgres_store.quote_identifier(col)} {_render_generated_sql(sql)}"
                     for col, sql in spec.generated.items()]
         cur.execute(f"CREATE TABLE IF NOT EXISTS {_qualified(spec)} ({', '.join(columns)})")
         # CREATE TABLE IF NOT EXISTS 不会给已存在的表补新提升列。存储层允许
@@ -956,15 +1202,26 @@ def _apply_record_schema(cur) -> None:
         for col, column_sql in spec.generated.items():
             cur.execute(
                 f"ALTER TABLE {_qualified(spec)} ADD COLUMN IF NOT EXISTS "
-                f"{postgres_store.quote_identifier(col)} {column_sql}"
+                f"{postgres_store.quote_identifier(col)} {_render_generated_sql(column_sql)}"
             )
         if spec is ACCOUNTS:
             _backfill_account_promotion_columns(cur)
             _ensure_account_normalized_email_index(cur)
+            cur.execute(
+                f"CREATE INDEX IF NOT EXISTS "
+                f"{postgres_store.quote_identifier('idx_registered_accounts_created_date_cover')} "
+                f"ON {_qualified(ACCOUNTS)} (account_created_date, id) "
+                "INCLUDE (archived, current_plan_type, plan_type, account_promotion_value, account_snapshot_presence)"
+            )
         if spec is JOBS:
             cur.execute(
                 "CREATE INDEX IF NOT EXISTS idx_registration_jobs_normalized_email_id "
                 f"ON {_qualified(spec)} (LOWER(BTRIM(email)), id DESC)"
+            )
+            cur.execute(
+                f"CREATE INDEX IF NOT EXISTS "
+                f"{postgres_store.quote_identifier('idx_registration_jobs_id_status_created')} "
+                f"ON {_qualified(JOBS)} (id) INCLUDE (status, created_at)"
             )
         if spec is CODEX_CREDENTIALS:
             # 按规范邮箱定位沿用列表的BTRIM/大小写口径，避免每账号扫描全库凭证。
@@ -1082,10 +1339,39 @@ def _ensure_ui_query_columns(cur) -> None:
     cur.execute(f"CREATE INDEX IF NOT EXISTS {idx} ON {_qualified(ACCOUNTS)} ({rendered})")
 
 
+_UI_QUERY_R3_ACCOUNT_COLUMNS = (
+    "account_created_date",
+    "account_snapshot_presence",
+)
+
+
 def _ensure_ui_query_indexes_r2(cur) -> None:
     """为老库幂等补齐账号重跑投影所需的轻量索引，不触发整表重写。"""
     idx = postgres_store.quote_identifier(f"idx_{JOBS.name}_attempt_id")
     cur.execute(f"CREATE INDEX IF NOT EXISTS {idx} ON {_qualified(JOBS)} (attempt_id)")
+
+
+def _ensure_ui_query_r3(cur) -> None:
+    """为老库幂等补齐账号入库日、快照优惠存在性生成列及覆盖索引。"""
+    _ensure_account_helper_functions(cur)
+    additions = ", ".join(
+        f"ADD COLUMN IF NOT EXISTS {postgres_store.quote_identifier(col)} {_render_generated_sql(ACCOUNTS.generated[col])}"
+        for col in _UI_QUERY_R3_ACCOUNT_COLUMNS
+    )
+    cur.execute(f"ALTER TABLE {_qualified(ACCOUNTS)} {additions}")
+    cur.execute(
+        f"CREATE INDEX IF NOT EXISTS "
+        f"{postgres_store.quote_identifier('idx_registered_accounts_created_date_cover')} "
+        f"ON {_qualified(ACCOUNTS)} (account_created_date, id) "
+        "INCLUDE (archived, current_plan_type, plan_type, account_promotion_value, account_snapshot_presence)"
+    )
+    cur.execute(
+        f"CREATE INDEX IF NOT EXISTS "
+        f"{postgres_store.quote_identifier('idx_registration_jobs_id_status_created')} "
+        f"ON {_qualified(JOBS)} (id) INCLUDE (status, created_at)"
+    )
+    cur.execute(f"ANALYZE {_qualified(ACCOUNTS)}")
+    cur.execute(f"ANALYZE {_qualified(JOBS)}")
 
 
 def ensure_record_schema(conn) -> None:
@@ -1125,16 +1411,20 @@ def ensure_record_schema(conn) -> None:
     if _UI_QUERY_INDEXES_R2_SCHEMA_VERSION not in applied and not base_applied_now:
         with conn.cursor() as cur:
             _ensure_ui_query_indexes_r2(cur)
+    if _UI_QUERY_R3_SCHEMA_VERSION not in applied and not base_applied_now:
+        with conn.cursor() as cur:
+            _ensure_ui_query_r3(cur)
 
     with conn.cursor() as cur:
         cur.execute(
-            f"INSERT INTO {table} (version) VALUES (%s), (%s), (%s), (%s), (%s) ON CONFLICT DO NOTHING",
+            f"INSERT INTO {table} (version) VALUES (%s), (%s), (%s), (%s), (%s), (%s) ON CONFLICT DO NOTHING",
             (
                 _BASE_SCHEMA_VERSION,
                 _EMAIL_INVENTORY_SCHEMA_VERSION,
                 _PROMOTION_OFFERS_SCHEMA_VERSION,
                 _UI_QUERY_COLUMNS_SCHEMA_VERSION,
                 _UI_QUERY_INDEXES_R2_SCHEMA_VERSION,
+                _UI_QUERY_R3_SCHEMA_VERSION,
             ),
         )
 

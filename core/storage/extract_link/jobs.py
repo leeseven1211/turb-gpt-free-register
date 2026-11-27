@@ -449,7 +449,7 @@ def list_recoverable_workbench_jobs() -> list[dict]:
 def _workbench_where(*, provider_id=None, mode=None, query="", batch_id=None, batch_ids=None):
     clauses = [
         "t.task_type='extract_link'",
-        "lower(COALESCE(t.data->>'deleted_by_user', '')) <> 'true'",
+        "t.task_deleted_by_user IS FALSE",
     ]
     params: list[Any] = []
     if batch_id is not None:
@@ -459,10 +459,10 @@ def _workbench_where(*, provider_id=None, mode=None, query="", batch_id=None, ba
         clauses.append("t.batch_id = ANY(%s)")
         params.append([int(value) for value in batch_ids])
     if provider_id:
-        clauses.append("COALESCE(t.data->>'provider_id', 'legacy')=%s")
+        clauses.append("COALESCE(t.task_extract_provider_id, 'legacy')=%s")
         params.append(str(provider_id))
     if mode:
-        clauses.append("COALESCE(t.data->>'mode', 'extract_only')=%s")
+        clauses.append("COALESCE(t.task_extract_mode, 'extract_only')=%s")
         params.append(str(mode))
     if query:
         clauses.append("(t.email_snapshot ILIKE %s OR CAST(t.id AS TEXT) ILIKE %s)")
@@ -905,8 +905,14 @@ def _workbench_projection_sql(
     paid_mode_sql = f"{mode_sql} IN ('auto_payment', 'manual_payment')"
     provider_id_sql = "COALESCE(NULLIF(t.task_provider_id, ''), NULLIF(job.provider_id, ''), 'legacy')"
     task_status = "LOWER(COALESCE(NULLIF(r.status, ''), NULLIF(t.status, ''), 'queued'))"
-    task_status_sql = (public_result_status_sql(task_status, "r.result_summary") if public_status else
-                       f"CASE WHEN {task_status}='attention_required' THEN 'request_unknown' ELSE {task_status} END")
+    task_status_sql = (
+        public_result_status_sql(
+            task_status, "r.result_summary",
+            requested_status_expression="NULLIF(r.run_requested_status, '')",
+        )
+        if public_status else
+        f"CASE WHEN {task_status}='attention_required' THEN 'request_unknown' ELSE {task_status} END"
+    )
     active_statuses = "'queued','running','waiting','cancelling','settling','stopping'"
     extraction_failure_sql = (f"WHEN extraction IN ('unknown','pending','') AND task_status NOT IN ({active_statuses},'cancelled','stopped','paused') THEN 'failed' "
                               f"WHEN extraction='unknown' AND task_status IN ({active_statuses}) THEN 'pending' "
@@ -914,7 +920,7 @@ def _workbench_projection_sql(
     payment_unknown_sql = (f"CASE WHEN task_status IN ({active_statuses}) THEN 'pending_payment' ELSE 'failed' END"
                            if public_status else "'request_unknown'")
     payment_unknown_condition = "payment IN ('unknown','request_unknown')" if public_status else "payment='unknown'"
-    raw_payment_sql = "LOWER(COALESCE(NULLIF(job.public_state->>'payment_state', ''), NULLIF(r.result_summary->>'payment_status', ''), 'not_started'))"
+    raw_payment_sql = "LOWER(COALESCE(NULLIF(job.job_public_payment_state, ''), NULLIF(r.run_extract_payment_status, ''), 'not_started'))"
     payment_sql = f"CASE WHEN {mode_sql}='extract_only' THEN 'not_started' ELSE {raw_payment_sql} END"
     payment_processing_exclusions = "'unknown','not_started','failed','succeeded','success','paid'" + (
         ",'request_unknown'" if public_status else ""
@@ -940,33 +946,33 @@ def _workbench_projection_sql(
         provider_projected_columns = (
             ", n.raw_task_provider_id, n.raw_active_status, n.raw_outcome_status, n.raw_success_seconds"
         )
-    # 账号关联与套餐时间正则解析推迟到 normalized 之后，仅对少数待确认 Plus 的已出链已付款任务执行。
+    # 账号关联与套餐时间正则解析推迟到 normalized 之后，仅对少数待确认 Plus 的已出链已付款任务执行；
+    # 主链路仅读取生成列，让 operation_tasks / operation_runs / extract_link_provider_jobs 均可走覆盖索引扫描。
     return f"""filtered_tasks AS MATERIALIZED (
         SELECT t.id, t.batch_id, t.account_id, t.email_snapshot, t.last_run_id, t.created_at, t.status,
-            t.data->>'provider_id' AS task_provider_id, t.data->>'mode' AS task_mode,
-            COALESCE(t.data->>'payment_source', 'native') AS task_payment_source
+            t.task_extract_provider_id AS task_provider_id,
+            t.task_extract_mode AS task_mode,
+            t.task_extract_payment_source AS task_payment_source
         FROM {operation_store._table('operation_tasks')} t WHERE {' AND '.join(clauses)}
     ), raw AS (
         SELECT t.id AS task_id, t.batch_id, t.account_id, t.email_snapshot, t.created_at AS task_created_at,
             t.task_payment_source,
             CASE WHEN {paid_mode_sql} AND t.task_payment_source='xxsyun'
-                THEN job.public_state->'summary'->>'payment_submitted_at' END AS raw_payment_submitted_at,
+                THEN job.job_payment_submitted_at END AS raw_payment_submitted_at,
             COALESCE(r.created_at, t.created_at) AS sort_created_at,
             {task_status_sql} AS task_status,
             {provider_id_sql} AS provider_id,
             {mode_sql} AS mode,
             COALESCE(job.provider_id IN ('huanguang', 'legacy')
-                AND job.public_state->'summary'->'local_reconcile_halted'='true'::jsonb, FALSE) AS local_reconcile_halted,
-            CASE WHEN job.provider_id='huanguang' AND job.public_state->'summary'->'extraction_ever_succeeded'='true'::jsonb
-                THEN 'succeeded' ELSE LOWER(COALESCE(NULLIF(job.public_state->>'extraction_state', ''),
-                    NULLIF(r.result_summary->>'extraction_status', ''), '')) END AS extraction,
+                AND job.job_local_reconcile_halted, FALSE) AS local_reconcile_halted,
+            CASE WHEN job.provider_id='huanguang' AND job.job_extraction_ever_succeeded
+                THEN 'succeeded' ELSE LOWER(COALESCE(NULLIF(job.job_public_extraction_state, ''),
+                    NULLIF(r.run_extract_extraction_status, ''), '')) END AS extraction,
             {payment_sql} AS payment,
             {payment_processing_sql} AS payment_processing,
-            LOWER(COALESCE(NULLIF(job.public_state->>'plus_status', ''), NULLIF(r.result_summary->>'plus_status', ''), 'unknown')) AS plus,
-            CASE WHEN {provider_id_sql}='legacy' AND NULLIF(job.public_state->>'extraction_state', '') IS NULL
-                THEN COALESCE(r.result_summary->'has_link' NOT IN
-                    ('null'::jsonb, 'false'::jsonb, '0'::jsonb, '\"\"'::jsonb, '[]'::jsonb, '{{}}'::jsonb), FALSE)
-                    OR COALESCE(r.result_summary->>'remote_job_id', '') <> ''
+            LOWER(COALESCE(NULLIF(job.job_public_plus_status, ''), NULLIF(r.run_extract_plus_status, ''), 'unknown')) AS plus,
+            CASE WHEN {provider_id_sql}='legacy' AND NULLIF(job.job_public_extraction_state, '') IS NULL
+                THEN COALESCE(r.run_extract_legacy_succeeded, FALSE)
                 ELSE FALSE END AS legacy_succeeded{provider_raw_columns}
         FROM filtered_tasks t
         LEFT JOIN {operation_store._table('operation_runs')} r ON r.id=t.last_run_id
