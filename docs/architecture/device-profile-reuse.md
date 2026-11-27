@@ -1,397 +1,317 @@
-# 设备画像复用与协议改密（设计定稿）
+# 设备画像复用与协议改密方案（2026-11-27 修订）
 
-> 状态：**设计定稿，未开发**。代码停留在既有提交。
-> 范围：设备画像的保存与重放、协议/rust 改密流程、邮箱查活门禁。
+> 状态：**方案修订稿，待评审；本轮仅修订文档，不启动开发。**
+> 既有协议改密已经完成单账号真实验收；本文提出的完整凭据写回、恢复完善、真实画像采集与严格重放尚未按此修订版实施。
+> 本文取代旧稿中的“三部分必须全部完成才能改密”“入库归一”和“未知结果必须人工对账”等约定。注册主流程的具体改动仍须另行说明并获得确认。
 
-## 0. 总体结构
+## 0. 目标、分层与交付范围
 
+目标是让已有账号完成一次可恢复的改密：邮箱验证码重置后，明确使用新密码重新登录，保存新密码、新 AT、完整会话与 Cookie，并确认保存后的凭据能够访问业务接口。
+
+设备采集、设备重放和改密操作仍按职责分层，但完整历史画像治理不再是首版改密的前置条件。
+
+| 阶段 | 内容 | 边界 |
+|---|---|---|
+| P1：协议改密闭环 | 沿用现有操作入口和驱动配置，补齐重新登录结果写回、业务核验、检查点恢复与邮箱错误分类 | 不改注册流程，不要求历史账号先达到完整 L2 重放条件 |
+| P2：真实画像采集 | 区分不可变注册快照与最近操作快照，保存真实来源、HTTP 与 VM 环境事实 | 原值不改写；注册采集接入点单独确认，Rust 回传另列具体方案 |
+| P3：严格重放与 Rust 改密 | 在证据完整的画像上验证重放，再接入 Rust 改密执行 | 不将普通操作成功称作完整重放，不静默更换内核 |
+
+P1 基于现有实现完善，不另建调度系统、密码状态机或通用认证框架。Roxy 改密保持现行行为；不把本设计扩大为注册自动改密、换绑邮箱或其他账号操作的重构。
+
+## 1. 已核实事实及结论范围
+
+### 1.1 设置页与接码路径
+
+2026-11-27 的一个本地协议注册账号样本：
+
+1. 设置页“账户安全与登录 → 密码 → 更改”会进入身份验证。
+2. 初始邮箱验证页可选择“使用密码继续”。
+3. 旧密码和原有 TOTP 都通过后，仍进入仅提供邮箱验证码的页面。
+4. 现有协议 `send-otp → email-otp/validate → password/reset` 路径实际改密成功。
+
+P1 使用已经验证的接码重置路径。该样本不支持“只凭旧密码即可完成改密”；候选端点 GET 返回 404 也不能独立证明所有账号、设备或灰度策略都不存在其他入口。没有邮箱可用性的账号，本阶段不承诺能完成这条路径。
+
+### 1.2 改密、旧凭据撤销与重新登录
+
+同一账号的完整实验结果：
+
+| 场景 | 观察 | 意义 |
+|---|---|---|
+| 改密前，旧 AT 访问业务接口 | 200 | 旧 AT 当时可用 |
+| 改密请求 | 最终 reset 返回 200，随后新密码明确认证成功 | 改密已完成，密码事实可以确认 |
+| 改密后，旧 Cookie 请求 `/api/auth/session` | 仍为 200，并有用户信息和旧 accessToken | session 200 不足以证明业务登录有效 |
+| 同一旧 AT 再访问业务接口 | 401，明确 `token_revoked` | 旧业务 Token 已被撤销，并非自然到期 |
+| 无旧 Cookie 的独立浏览器使用新密码与 TOTP 登录 | 密码验证成功，业务接口 200，身份一致 | 新密码与新登录凭据实际可用 |
+
+本次实验没有测量所有旧 Cookie 的撤销时刻，也不据此承诺所有账号的行为完全相同。流程应直接使用新密码重新认证，不依赖旧 Cookie 会在何时失效。
+
+另有一个实际遗漏：现有改密任务确认了新密码，但普通账号字段中的 AT/session 仍保存旧值；实验中额外执行一次刷新 AT 才补齐。**P1 必须把这段写回纳入同一次改密操作的收尾。**
+
+### 1.3 设备画像与冷却
+
+历史样本提示更换认证环境可能与 `sensitive_action_cooldown` 有关，但样本不足以证明设备变化是唯一触发原因，也不能承诺画像复用后不会冷却。
+
+本轮源码和离线实验已确认：
+
+- 协议注册使用独立上游画像完成认证，成功后才合并到本地 `session.browser_profile`；存档可能混入本地占位字段。
+- 协议注册的 Sentinel JS 实际返回 Intel/D3D11 WebGL；存档中的 Apple WebGL 不能倒推为注册实际发送值。后处理读取混合画像是另一条行为边界。
+- 高熵 `sec_ch_ua_*` 留空是默认不发送的设计；真值在 `ua_*`，不等于 HTTP 已发送空头。
+- Rust 的 `python_profile()` 投影包含 NVIDIA WebGL、部分屏幕/窗口高度；实际 VM 是 Intel/D3D11，尺寸也有差异，不能直接作为原始环境快照。
+
+## 2. P1：改密闭环
+
+### 2.1 执行上下文
+
+使用现有账号操作任务、入队时冻结的配置和账号租约。改密路径由 `ACCOUNT_PASSWORD_DRIVER` 选择，重新登录沿用现有明确配置的刷新驱动；每段记录实际驱动，不将它们描述为已经实现同内核严格重放。
+
+优先复用与当前账号、邮箱绑定的可用会话和设备资料。缺少完整注册画像、历史构建版本或 L2 证据，不新增普通改密与批量重跑禁令。不可恢复的资料要明确记录，不以新生成字段冒充旧设备事实。
+
+同一执行在选定路径内保留设备参数和代理；需要切换认证上下文时隔离旧登录 Cookie，保留设备信息。不得为了跳过密码验证而复用旧认证态，也不得以设备参数相同推断服务器一定认定为同一设备。
+
+### 2.2 正常执行顺序
+
+先按第 3 节恢复检查点；下列顺序只用于尚需重置密码的正常路径。密码已确认的收尾直接进入凭据恢复与业务核验，不重新发送重置验证码；仅在重新登录实际要求邮箱验证时调用原取码能力。
+
+```text
+检查邮箱资源和现有认证上下文
+  → 接码重置密码
+  → 使用候选新密码重新登录，按需完成原有 MFA
+  → 核验明确的密码认证证据与账号身份
+  → 确认密码检查点并保存正式密码
+  → 保存本轮新 AT、完整会话和私有 Cookie
+  → 用保存后的 AT 调用只读业务接口并核验身份
+  → 确认本地写回与业务可用，任务完成
 ```
-第一部分  画像存储    注册/刷新/改密时，把真实用过的画像原样存库
-第二部分  画像重放    用注册内核 + 注册画像，重建一个"同一台设备"的会话
-第三部分  执行操作    在重放出的会话上走改密流程（含邮箱门禁）
+
+改密前确需登录时复用现有登录能力。已有会话可减少重复登录；会话 200、AT 存在或 JWT 尚未过期，都不能单独作为业务可用性证据。网络故障、限流和安全校验分别分类，不伪装成会话失效而反复登录。
+
+改密后的登录必须实际提交本轮候选密码。Cookie 自动回调、`existing_session`、`session_cookie` 或纯邮箱 OTP 成功不能替代密码认证证据。已有 TOTP 继续按原账号处理，不创建或更换 MFA。
+
+### 2.3 P1 协议重置步骤
+
+| 步骤 | 请求或动作 | 要求 |
+|---|---|---|
+| 1 | `GET https://auth.openai.com/reset-password` | 使用本轮认证上下文，确认页面/认证阶段 |
+| 2 | `POST /api/accounts/password/send-otp`，body `{}` | 每次发码前记录时间锚点，邮箱身份来自当前上下文 |
+| 3 | 通过原邮箱适配器取码 | 复用原租约、收件身份、邮件证据与去重能力 |
+| 4 | `POST /api/accounts/email-otp/validate` | 按实际回执处理错误、MFA 或下一步 |
+| 5 | 按可信 `continue_url` 导航 | 将现有认证 URL 校验接入本路径，不任意跳转 |
+| 6 | 准备并持久化新密码候选 | 沿用已有候选；保存失败不派发最终写请求 |
+| 7 | 获取 `password_reset` Sentinel，提交 `POST /api/accounts/password/reset` | 最终请求前校验执行租约并持久化 `started` |
+| 8 | 用新密码重新登录 | 隔离会绕过密码校验的旧认证态，取得完整新会话 |
+| 9 | 确认密码、保存新凭据并做业务核验 | 满足 2.4 的全部完成条件 |
+
+接口主序列已经真实验证；表中校验、恢复及完整写回要求属于本次拟完善范围，不代表当前实现已经全部具备。未实测的 settings 内部请求序列不作为已知契约，认证返回的具体分支继续由已有登录流程处理。
+
+### 2.4 密码确认、凭据写回与任务完成
+
+三个事实分开记录，但使用现有 checkpoint、Run 阶段、远端回执和本地读回机制，不建立第二套持久化状态机：
+
+| 事实 | 确认条件 | 后续失败的处理 |
+|---|---|---|
+| 新密码已确认 | 明确的新密码认证成功，完整新会话身份匹配目标账号，密码检查点提交成功 | 不回退密码事实，不生成另一候选 |
+| 新登录凭据已保存 | 普通账号 `access_token`、完整 `chatgpt_session` 及 `account_protocol_sessions` 私有 Cookie 已写回并读回一致 | 保留已完成部分，按缺失阶段补写 |
+| 整体任务完成 | 上述写回完成，保存后的 AT 访问只读业务接口成功且身份一致 | 否则记录具体失败阶段，允许重跑收尾 |
+
+优先复用现有刷新 AT 的成功写回与私有会话保存路径。只在内存返回新 AT，或者只更新私有 Cookie 缓存，均不算完整写回。密码与关联 Attempt 的一致性继续由现有密码确认事务保护。
+
+各仓储如不能在同一事务完成全部写回，应按明确顺序幂等补齐；任务在全部完成前不报成功。旧执行必须经过账号、邮箱、Run、执行 ID 和租约围栏校验，不能覆盖较新的密码或会话。
+
+新密码一经确认，后续保存失败或业务核验失败都不改变 `confirmed`。任务摘要说明“密码已确认，凭据写回或业务验证未完成”；新执行可用已确认密码重新登录取得新凭据，不要求恢复上一次内存中的 Token，也不再次改密。
+
+## 3. 检查点、密码候选与重跑
+
+### 3.1 沿用现有四态
+
+以下是 P1 协议改密对既有四态的使用约定，不据此改变注册、补密码或 Roxy 的既有确认规则。
+
+```text
+prepared → started → confirmed
+               └→ unknown → confirmed
 ```
 
-三者关系：先存 → 再重放 → 最后执行。前一步不成立，后一步不做。
+- `prepared`：候选已加密保存，最终 reset 尚未派发。
+- `started`：最终 reset 即将派发，执行归属已持久化；不等到响应返回才记录。
+- `unknown`：请求可能已被接受，但未取得足够密码确认依据。
+- `confirmed`：本轮候选已经明确认证并正式写回；不可逆退。
 
-## 1. 实测现状（2026-11-26）
+最终 reset 返回 200 后，仍需完成新密码认证；认证未完成时保留已经提交的事实。超时、断连、进程退出和停止都不能把已派发请求退回 `prepared`。不引入旧稿中的 `submitted` 替代既有存储契约。
 
-| 注册驱动 | 账号数 | 画像来源 | 真实 UA 系统 |
-|---|---|---|---|
-| `sentinel_rs` | 5,261 | Python 占位会话（假） | macOS（实际注册走 Windows） |
-| `protocol_oss_2` | 5,241 | 上游引擎（真） | Windows Chrome |
-| 无/历史 | 14 | 无 | — |
+### 3.2 候选生成
 
-- 抽样 800 条：`browser_type` 全部 `chrome`；全库 0 条 Safari 画像
-- 邮箱来源：`generic_api` 9,548、`email_butler` 959
-- 未封账号 10,507，全部有密码，`email_invalid` 当前 0
-- 冷却证据：4 个"刷新 AT 后立刻改密"的账号 4/4 命中 24h 冷却；
-  7 个"会话有效、同设备改密"的账号 7/7 成功 → 触发点是设备变化
+P1 为改密独立生成符合现有密码规则、且不同于原密码的候选；不要直接使用可能返回固定 `REGISTER_PASSWORD` 的注册密码生成器。注册配置与生成规则保持原样，不为本设计新增目标密码配置或 UI。
 
-## 2. 三种驱动的画像来源
+同一次恢复只生成一个候选。候选先持久化，再执行远端写入；候选、旧密码及 Cookie 不进入普通任务摘要或日志。生成策略应覆盖固定注册密码账号与再次执行改密的账号。
 
-### 2.1 浏览器（Roxy）
-- 本地只有绑定：`extra_json.roxybrowser = {profile_id, retained, window_name, ...}`
-- `/browser/list_v2` 返回：`dirId`、`windowName`、`os`、`osVersion`
-- UA / 屏幕 / WebGL 在 Roxy 客户端内部，接口不返回
-- 复用语义：重新打开同一 `profile_id`
+### 3.3 重跑与启动恢复
 
-### 2.2 协议（`protocol_oss_2` 上游引擎）
-- 生成：`generate_fingerprint(country_code, browser_family)`，40 个字段
-  - `chrome` → Windows Chrome（UA 152，`impersonate=chrome145/146`，上游再覆写为 `chrome152`）
-  - `safari` → `mac_safari` / `ios_safari`
-- 传输：Python `wreq 0.13`，支持到 Chrome154
-- 落库：注册生命周期把 `session.browser_profile`（74 字段）写入
-  `registered_accounts.data.extra_json.browser_profile`
-- 已知缺陷：见 §6
+- 只有 `prepared`：继续使用原候选和原身份执行。
+- 已为 `started/unknown`：新执行接管原候选，先明确验证候选；成功则确认并收尾。候选明确未生效时，可以用同一候选重新执行接码重置；网络或验证不确定时保留原事实，仍允许再次重跑。
+- 密码已 `confirmed`、收尾未完成：只补重新登录、凭据写回和业务验证，不能再生成候选或重置密码。
+- 账号邮箱、密码版本或执行归属真实冲突：报告具体冲突，不能覆盖并发产生的新事实。
 
-### 2.3 rust（`sentinel-rs`）
-- 生成：`DeviceFingerprint::generate_for_country(seed, country)`，仅 Windows Chrome
-- 传输：`wreq 0.16.1 + wreq-util 0.2.0`，最高 Chrome149
-- 注册：不回传画像与 device_id（结果只有 email/password/AT/2FA/cookies）
-- 刷新：已回传 `browser_profile`（`python_profile()`）
-- 注册种子：`SENTINEL_FP_SEED` 环境变量或系统随机 → **不可复现**
-- 刷新种子：`device_id` → **可复现**
+必须让收尾任务与已确认的 recovery 保持可追溯关联。现有恢复读取主要返回未完成候选，不能因为它返回空就将“密码已确认但收尾未完成”误判为一次全新的改密。
 
-## 3. 第一部分：画像存储（定稿）
+这些恢复要求同时适用于显式批量重跑和进程重启后的既有任务恢复。未知结果不是必须人工逐号核对或禁止重跑的理由；不在失去响应时另生成密码。注册流程与邮箱租约的原有保护保持不变。
 
-### 3.1 存什么
+## 4. 邮箱、OTP、错误分类与并发
 
-驱动返回什么就存什么，**原始 JSON 原样保存**：
+### 4.1 邮箱检查
 
-| 驱动 | 存储内容 |
+首版仅使用完成改密所需的检查，复用已有适配器，不另建邮箱巡检服务：
+
+| 结果 | 证据 | 行为 |
+|---|---|---|
+| 可用 | 原资源未明确过期，正常读取或正常返回无新邮件 | 继续发码、取码 |
+| 明确不可用 | 已确认的过期、撤销、凭据失效或原身份缺失 | 当前执行按具体原因结束；资源修复后允许重新检查 |
+| 暂时不可用 | 超时、网络异常、429、5xx | 分类为暂时故障，保留可重试能力 |
+| 响应或适配问题 | 无法解析、格式不符合适配器契约 | 记录来源和具体格式错误，不把邮箱永久标记失效 |
+
+`generic_api` 复用 `get_account_context`、`require_usable` 与原取码路径；`email_butler` 复用原长期租约、凭据与固定收件身份。没有新邮件的正常 pending 回执属于可读，不等于邮箱失效。未声明有效期的历史资源不猜 TTL。
+
+检查可以与正常取码读取复用，不额外发测试邮件，不改领新邮箱或释放已关联资源。首版在本轮任务记录检查结果，不新增统一一小时失败缓存，不因临时故障写永久 `email_invalid`；显式重跑可以重新探测。
+
+### 4.2 OTP 策略
+
+- **每次实际发码前**记录 `after_ts`，再调用发码接口并按该时间等待邮件；不能等响应结束后才取时间，避免漏掉迅速到达的邮件。
+- 等待和重发复用 `OTP_MAX_WAIT`、`OTP_RESEND_COUNT`。每次重发保留对应时间锚点、邮件去重和原收件身份。
+- 验码被拒绝时按适配器保存的邮件事实与远端原因处理，采用有界重试；不无限提交同一旧码。
+- 明确冷却时记录 `cooldownAction` 和远端提供的解除依据，本轮不立即重复；条件恢复后仍可重跑。不把每个 403 都认作冷却或账号停用。
+
+### 4.3 错误与未知结果
+
+复用现有错误分类；确需补充时扩展同一分类入口。错误至少携带 `stage`、具体 `cause_code`、可重试性和远端结果是否未知，不能统一落成无法定位的“改密失败”。
+
+| 失败位置或证据 | 分类与恢复要求 |
 |---|---|
-| protocol_oss_2 | `session.browser_profile` 全量 74 字段 |
-| sentinel_rs | 内核回传的画像结构（待内核支持回传） |
-| roxy | `profile_id` + `list_v2` 返回字段 |
+| 邮箱明确过期/撤销/凭据失效 | 邮箱资源原因；不与暂时网络故障混合 |
+| 邮箱超时、限流、服务错误、解析错误 | 分别保留来源、HTTP/传输/格式原因，允许后续重跑 |
+| OTP 等待超时、验证码拒绝 | 保留取码或验码阶段与远端具体回执 |
+| 明确 `sensitive_action_cooldown` | 记录真实冷却原因，本轮停止重复派发 |
+| reset 请求读超时、断连、无响应 | 传输原因 + 结果未知；保留同一候选，不禁止重跑 |
+| 明确密码认证失败、MFA 失败、身份不一致 | 分别分类，不用会话 200 代替认证 |
+| 密码确认事务失败 | 保留候选和远端证据，恢复后重新核验并提交确认 |
+| 密码已确认，AT/session/Cookie 写回失败 | 已确认密码 + 具体待写回阶段，重跑只做收尾 |
+| 保存后的 AT 业务 401/403/网络失败 | 区分 `token_revoked`、其他认证拒绝、安全拦截和传输故障，保留密码事实 |
 
-### 3.2 只加元数据（不改原数据）
+“结果未知”描述远端事实是否确认，不是错误原因分类。诊断证据缺失时明确缺失发生的步骤和响应类型，不编造远端根因，也不强制人工对账后才允许重跑。
 
-- `driver`、`source`、`trust`
-- `device_id`、`family`、`os`（从原数据读取，仅用于查询）
-- `kernel_version`、`generator_version`、`emulation`（版本与演进，见 4.8）
+### 4.4 并发与观测
 
-### 3.3 表结构：`account_device_profiles`
+接入现有共享调度和 `ACCOUNT_PASSWORD_CHANGE_WORKERS` 类型并发；同账号由已有 `openai_interactive` 租约串行。删除旧稿“改密全局并发默认 1”，不增加隐藏 semaphore、独立 worker 池或第二套账号锁。
 
-| 列 | 说明 |
+沿用 Run 阶段、远端回执和本地读回记录：密码确认、账号 AT/session 写回、私有 Cookie 保存、业务核验分别可见。摘要可记录驱动、画像来源、步骤、HTTP 状态与具体错误，不输出密码、完整 Token、Cookie 或带凭据的代理。
+
+## 5. P2：真实画像采集与存储
+
+### 5.1 两类快照
+
+| 类型 | 含义 | 更新规则 |
+|---|---|---|
+| 注册快照 | 注册内核本轮实际使用的设备结构及环境事实 | 取得后保留原始值，不被刷新、改密或后处理覆盖 |
+| 最近操作快照 | 最近一次认证操作实际采用的设备资料、内核与观测结果 | 可以更新，不能冒充注册快照 |
+
+现有 `account_device_profiles` 是按账号覆盖的最近画像表；`extra_json.browser_profile` 也可能包含注册结束后合并的字段。二者均不能直接升级为“不可变、完整真实的注册快照”。
+
+注册快照必须独立于现有 latest 覆盖语义保存。P2 实施方案再明确物理表、唯一键及迁移方式；本文只规定数据契约，不把逻辑字段写成已经存在的数据库列。存储继续使用 PostgreSQL，遵守现有加密、账号邮箱绑定、迁移和隔离测试规则。
+
+### 5.2 逻辑采集字段
+
+| 字段 | 约定 |
 |---|---|
-| `account_id` PK | 外键，级联删除 |
-| `normalized_email` | 与当前邮箱强绑定，换绑即失效 |
-| `encrypted_payload` | 加密的原始画像 JSON |
-| `driver` | `protocol_oss_2` / `sentinel_rs` / `roxy` |
-| `source` | `registration` / `refresh_at` / `password_reset` / `backfill` 等 |
-| `trust` | `trusted` / `placeholder` / `unusable` |
-| `device_id`、`family`、`os` | 可检索 |
-| `kernel_version`、`generator_version`、`emulation` | 版本与档位 |
-| `last_used_at`、`updated_at` | 观测 |
+| `capture_kind`、`operation` | 注册采集或操作采集，及 registration/refresh_at/password_reset 等用途 |
+| `registration_driver` | 账号真实注册驱动，历史未知保留未知 |
+| `profile_driver`、`profile_source` | 当前画像实际来源内核与原始输入/运行环境/后合并/历史回填等来源，不能从注册驱动自动复制 |
+| `kernel_build`、`generator_version` | 实际构建和生成规则；需能区分代码修订及锁定依赖，不能仅靠 Cargo `0.1.0`；未知不补写当前版本 |
+| `device_id`、`emulation` | 本次实际使用的设备 ID 和传输档位，不用新 UUID 代替历史值 |
+| `raw_payload`、`captured_fields` | 明确选定设备字段后原样保存，列明投影范围，不承诺完整 74 字段一字不删 |
+| `http_observation` | 实际 UA、语言和 Client Hints 的发送状态及观测范围 |
+| `vm_observation` | 实际 navigator、screen/window、WebGL、语言和时区等环境事实 |
+| `captured_at`、`observation_status` | 采集时间、完整/部分/未观测，未知不能当作一致 |
 
-### 3.4 写入点与侵入性
+“原样”指设备字段选定后保留各值，不归一、不补值。Cookie、Token、OTP 和 `react_*` 等请求/会话数据不混入设备结构；认证会话继续由私有会话仓储保存。查询所需 family/OS 可以单独派生并注明依据，不能反写原始画像。
 
-| 驱动 | 是否改注册链路 | 说明 |
+HTTP 和 VM 分别记录。高熵真值与请求头发送状态至少区分“未发送、发送空值、发送具体值、未观测”；必要时标明站点和请求类别，不能用一个会话级布尔值推断所有请求。VM 的 GPU、窗口尺寸来自实际环境，不按 OS 猜测。
+
+### 5.3 采集边界与历史资料
+
+- 协议驱动：保留真实上游生成结构，并区分上游实际 JS/HTTP 环境与成功后本地合并对象。
+- Roxy：保存原 `profile_id` 绑定和接口确实返回的字段；接口不返回的 UA/WebGL 不推测。
+- Rust：需采集真实 `DeviceFingerprint`、运行时实际 device_id 和真实 VM 环境/实现版本；不能以当前 `python_profile()` 投影代替。
+- 写入失败保留具体诊断，不反向改变注册步骤、注册结果、重试或邮箱租约。
+- 历史缺注册快照就保留缺失。协议号不能仅按驱动名整批标完整 `trusted`；Rust 占位画像不能当作原注册设备重放。
+
+新采集或历史回填都不能悄悄改写原始 OS、WebGL、Client Hints。旧稿的“A 入库归一”撤销；是否调整实际生成器，须先有真实请求不一致的证据，再单独设计和验证。
+
+## 6. P3：严格画像重放
+
+### 6.1 与普通操作的区别
+
+普通改密沿用 P1 契约。严格重放的目标是复现一份有明确来源的注册设备快照；缺少条件时明确“不具备严格重放条件”，不能悄悄换内核后宣称严格成功。这个结果不新增对现有普通操作或批量重跑的禁令。
+
+严格路径同时绑定：账号原注册驱动、注册快照实际来源内核、对应构建和实际环境。最近操作画像只有来源与目标契约一致时才可作为证据；不能把另一内核覆盖的 latest 画像交给注册内核后称为原设备。
+
+保持原注册内核作为严格路径的保守策略，但同内核、同版本并非 TLS 与 VM 行为等价的充分证明。跨内核等价性尚未验证，不将“UA 能照抄”视为允许跨内核的依据。
+
+### 6.2 映射规则与验收层次
+
+允许有依据的字段映射，例如从保存的 `screen` 尺寸字符串解析宽高；记录映射来源并保留原始值。禁止默认改 OS、按 OS 重写 GPU、无条件用 `ua_*` 填充未发送的 `sec_ch_ua_*`，也不修改版本号来适配不支持的档位。
+
+| 层次 | 验收内容 | 不能据此声称的结论 |
 |---|---|---|
-| protocol_oss_2 | 否 | 画像已在会话里，落库后多写一行 |
-| roxy | 否 | 读绑定与 `list_v2`，多写一行 |
-| sentinel_rs | **是（最小）** | 需内核在结果 JSON 增加画像字段；只加输出 |
+| 离线配置 probe | 字段映射、实际选中档位、支持能力、缺失项与差异 | 不能证明实际出站头或 TLS 握手一致 |
+| HTTP 与 VM 观测 | 实际构造/发送的头及发送状态、VM 暴露的字段与目标比较 | 不能只比较整理对象与它自己，也不能从 HTTP 一致推断 VM 一致 |
+| 传输核验 | 受控握手观察与版本/档位兼容验证 | 没有握手证据时不宣称 TLS 已完整等价 |
+| 真实操作 | 改密、重新登录及业务接口结果，记录冷却与失败样本 | 单次或少量成功不证明永不冷却 |
 
-> 约束：注册链路暂不改，rust 回传等批准后再做。
+“L2”仅用作上述 UA/HTTP、VM、语言时区和传输各项实际一致的目标，不作为既有账号操作的新增前置门禁。缺失项和差异如实报告，不能补造字段后强制输出零差异。
 
-### 3.5 验收
+版本信息用于追溯和兼容验证；版本字符串变化本身不自动使所有历史账号不可操作。实际行为变化时明确兼容范围，原始快照保持不变，不把历史缺版本当成当前版本。
 
-1. 注册成功后设备行存在
-2. 原始画像可解密、可完整还原
-3. `device_id` 与账号一致
-4. 写失败只记日志，不影响注册结果
+## 7. Rust 与原四项问题的处理
 
-### 3.6 明确不做
-
-- 不定义 canonical 字段、不推导、不补值、不修正脏值
-- 不统一命名
-- 不存 `react_*` 请求级 key
-
-## 4. 第二部分：指纹重放（定稿）
-
-### 4.1 定义与范围
-
-- 重放 = 用**注册内核 + 注册画像**重建会话；不执行任何业务操作
-- 目标等级 **L2**：UA、client hints、OS、屏幕/硬件、语言/时区、TLS 档位全部一致
-- 只服务**改密**（刷新 AT、注册不在此范围）
-- `replay_kernel` 由注册驱动决定并固定，不动态切换
-
-### 4.2 内核选择规则（定稿）
-
-```
-内核 ∈ 能运行该画像的内核集合        # 能力筛选（保护）
-且 内核 == 该账号的注册驱动          # 最终决定（唯一）
-否则失败，不降级、不换内核
-```
-
-- `protocol_oss_2` → 协议内核（Python `wreq`）
-- `sentinel_rs` → rust 内核
-- 理由：只有产出画像的内核才能发出同一套 TLS 指纹；UA/CH 可照抄，TLS 栈实现不能
-- 例外：将来某内核能逐字节等价复现另一内核的 TLS 栈，才允许交叉
-
-### 4.3 重放的五层
-
-| 层 | 注入内容 | 来源 |
-|---|---|---|
-| TLS | `impersonate`（如 `chrome152`）→ wreq emulation | 画像 |
-| HTTP 默认头 | `User-Agent`、`accept-language`、全套 `sec-ch-ua*` | 画像 |
-| Cookie | `oai-did=device_id` + 未过期历史 Cookie | 画像 + 会话缓存 |
-| sentinel 环境 | 屏幕/dpr/cores/memory/WebGL/时区/语言/platform | 画像 |
-| 语言/时区 | `navigator_language(s)`、`accept_language`、`timezone_iana` | 画像（与头同源） |
-
-### 4.4 重放前的画像整理（内存内，不回写）
-
-1. 以 UA 判定 OS，重写 `browser_os`、`navigator_platform`、`sec_ch_ua_platform`、`user_agent_data_platform`
-2. `sec_ch_ua_arch/bitness/model/platform_version/full_version_list` 为空时用 `ua_*` 回填
-3. `screen_width/height` 缺失时从 `screen`（`"1366x768"`）解析
-4. `viewport_width/height` 缺失时从 `viewport` 对象取
-5. `navigator_language` ← `lang`，`accept_language` ← `lang_full`
-6. `webgl` 与 OS 不符时按 OS 修正（Windows → D3D11 ANGLE）
-7. **版本号一律不动**
-
-### 4.5 会话接口（第三部分使用）
-
-```
-session = open_replayed_session(account, proxy, cookies=None)
-session.get / post / cookies / headers
-session.browser_profile   # 供 sentinel 使用
-session.device_id
-```
-
-### 4.6 probe 验收（不联网）
-
-1. 用画像建会话
-2. 读取实际配置：TLS 档位、UA、全部 `sec-ch-ua*`、语言、时区
-3. 与存储画像逐项对比
-4. 输出差异清单；**差异必须为 0**
-
-### 4.7 失败策略
-
-- 缺关键字段（`user_agent` / `impersonate` / `device_id`）→ 失败
-- 档位在内核中不存在 → 失败
-- 内核版本与画像记录不一致 → `kernel_version_mismatch`，默认不重放
-- 一律不静默降级
-
-### 4.8 版本与指纹演进
-
-1. 每条画像记录 `kernel_version`、`generator_version`、`emulation`
-2. 重放要求三个一致：内核一致、内核版本一致、参数一致
-3. 内核升级：先 probe 对比新旧版本；TLS 行为变化则旧账号默认不重放，需要时一次性迁移
-4. 生成规则优化：新注册用新规则（`generator_version` +1）；老账号保留原画像
-5. 可选：离线计算档位 JA3/JA4 摘要入库，升级后直接比对
-
-### 4.9 组件位置与测试
-
-```
-core/accounts/device_replay/
-  normalize.py   画像整理（4.4 的 7 条）
-  session.py     内核分派 + 五层注入
-  probe.py       差异对比
-  errors.py      错误分类
-```
-
-- 单测：整理规则、档位映射、不支持时报错
-- probe：3 个真实画像差异为 0
-- 负例：非法 `impersonate` 必须报错
-
-### 4.10 已知限制
-
-- rust 注册画像未回传，当前无法重放 rust 号（需注册链路上报）
-- rust 注册种子不可还原；只能从首次刷新（seed=device_id）起固定
-- Safari 家族：协议支持，rust 不支持；当前库内 0 条 Safari 画像
-- rust 传输最高 149，无法重放 152 画像（必须用协议内核）
-
-## 5. 第三部分：执行操作（改密，定稿）
-
-### 5.1 前置条件与邮箱门禁
-
-- 会话已重放完成
-- 新密码候选已生成并写入 `prepared` checkpoint
-- **邮箱查活通过**（见 5.11），否则直接失败
-- 账号未在冷却中
-
-### 5.2 流程总览：会话优先
-
-```
-① 检查会话（同内核 + 同画像）
-   GET /api/auth/session
-   ├─ 有效（200 且有 accessToken）→ 进 ②
-   └─ 过期/无效 → 登录（同一会话、同一画像）→ 顺带刷新 AT → 进 ②
-② 改密（与"会话未过期"完全相同的步骤）
-③ 用新密码在同会话重新登录验证 → confirmed
-```
-
-要点：
-- 同一内核 + 同一画像下的重新登录，对服务端是"同一台设备再次登录"
-- 登录即刷新 AT，刷新成果被复用
-- 登录失败才回退"未登录忘记密码"（仅协议号；rust 号直接失败）
-
-### 5.3 请求序列（6 个接口）
-
-| 步骤 | 请求 | 关键内容 | 期望 |
-|---|---|---|---|
-| 1 | `GET https://auth.openai.com/reset-password` | 导航头，落 Cookie | 200 |
-| 2 | `POST /api/accounts/password/send-otp` | body `{}`（邮箱取自会话） | 200 |
-| 3 | 取验证码 | 邮箱取码 | 6 位码 |
-| 4 | `POST /api/accounts/email-otp/validate` | `{"code": "..."}` | 200 + `continue_url` |
-| 5 | `GET <continue_url>` | 导航头，再落 Cookie | 200 |
-| 6 | `POST https://sentinel.openai.com/backend-api/sentinel/req` | flow=`password_reset` | token |
-| 7 | `POST /api/accounts/password/reset` | `{"password": "..."}` + sentinel 头 | 200 |
-| 8 | 用新密码登录验证 | 同会话 | 成功 → confirmed |
-
-全程同一会话、同一代理，不换设备。
-
-### 5.4 OTP 策略
-
-- 只接受发码之后到达的邮件（`after_ts`）
-- 等待窗口 = `OTP_MAX_WAIT`，超时按 `OTP_RESEND_COUNT` 重发
-- 验码错误最多重试 2 次
-- 冷却（`sensitive_action_cooldown`）→ 不重试，记录 `cooldownAction` 与解除时间
-
-### 5.5 密码与 checkpoint
-
-```
-prepared → submitted → confirmed
-```
-
-- 新密码由 `generate_registration_password()` 生成（默认 14 位；配置 `REGISTER_PASSWORD` 时优先使用配置值）
-- `prepared`：候选已落库（改密前）
-- `submitted`：`/password/reset` 返回 200
-- `confirmed`：用新密码重新登录验证成功
-- 任何失败停在 `prepared`，不留脏密码
-
-### 5.6 错误分类
-
-| 错误码 | 含义 | 可重试 |
-|---|---|---|
-| `email_unusable` | 邮箱不可用（门禁） | 否 |
-| `password_reset_cooldown` | 24h 敏感操作冷却 | 否 |
-| `password_reset_rate_limited` | 429 限流 | 是（退避） |
-| `password_reset_otp_invalid` | 验证码错误 | 有限次 |
-| `password_reset_otp_timeout` | 未收到码 | 是（重发） |
-| `password_reset_session_required` | 需要登录态 | 切登录流程 |
-| `password_reset_network` | 网络/CF | 是 |
-| `password_reset_unknown` | 结果未知 | 不自动重试，标记对账 |
-
-### 5.7 并发与节流
-
-- 同一账号串行（复用账号租约）
-- 改密全局并发默认 1，可配置
-- 发码/验码按账号维度限速
-
-### 5.8 观测
-
-日志字段：`driver`、`device`(尾号)、`os`、`tls`、`trust`、`source`、`step`、`http_status`、`error_code`、`cooldown_action`
-
-指标：成功率、冷却率、OTP 时延、各步骤失败分布
-
-### 5.9 验收
-
-1. 单账号完整跑通（真发码、真改密、真登录验证）
-2. 连跑 5 个号，成功率达标且无冷却
-3. 失败用例分类正确、不留脏密码
-4. 日志能还原每步的设备特征
-
-### 5.10 端点探测结论（2026-11-27 实测）
-
-有效会话下，先导航 `/reset-password`，再 GET 候选端点：
-
-| 端点 | 结果 |
+| 原问题 | 修订后的结论 |
 |---|---|
-| `POST /api/accounts/password/reset` | 405 on GET → 存在 |
-| `/api/accounts/password/change` | 404 |
-| `/api/accounts/password/update` | 404 |
-| `/api/accounts/password/set` | 404 |
-| `/api/accounts/password` | 404 |
-| `/api/accounts/password/change/send-otp` | 404 |
-| `/api/accounts/password/current` | 404 |
+| settings 是否支持免邮箱改密 | 已验证一个样本仍需邮箱码，P1 采用现有接码路径，不再把 settings 核实当作开发阻碍，也不泛化为所有账号唯一入口 |
+| Rust 注册回传画像 | 真实采集确实缺失；先写明完整输出与消费通道，待具体方案确认，当前文档修订不授权修改注册链路 |
+| Rust Chrome152 | 当前固定依赖/画像能力最高 149；本轮核实的已发布 util 版本也仍不含 152，Git 源码已有更高档位。按发布版路线等待，不在本方案中升级或重新编译 |
+| 上游生成器补 WebGL/OS | 原“存档 Apple 就是注册实际发送 Apple”判断撤销。先修正采集与回放口径；本阶段不改生成器实际发送内容 |
 
-结论：
-1. **改密必须接码**，唯一确认路径是 `send-otp → validate → reset`
-2. **邮箱失效即无法改密**
-3. "登录后旧密码直改"不成立，取消该候选
-4. 前端 `password_change` 仅作为冷却类别出现，无对应端点
+Rust 的实际维护入口为 `native/sentinel-rs`，Python 桥接默认优先查找该目录下二进制，显式配置可以覆盖。`packages/sentinel-rs-at-refresh` 副本不能当作当前实际运行实现。
 
-### 5.11 邮箱查活门禁（定稿）
+后续 Rust 采集方案必须覆盖真实设备固定后的采集、CLI/协议输出、Python 桥接消费和独立持久化。当前注册结果不是直接消费一份完整 result JSON，不能只给 Rust 结构加字段就宣称通道完成；部分已建号但后处理失败的路径也要保留设备事实。
 
-**检查三层**
+采集不得为方便落库而覆盖仍参与后处理请求的 Python 会话。保存原始结构已足以避免依赖种子重新生成；如需保存种子，还要记录国家与生成器版本。刷新画像也依赖输入 device_id、国家和生成规则，不能无条件承诺“第一次刷新之后永远不变”。
 
-| 层 | 内容 | 失败判定 |
-|---|---|---|
-| 账号标记 | `email_invalid`、`email_source` | 任一不满足 → 失败 |
-| 资源有效期 | `generic_api` 的 `expires_at`；`email_butler` 的租约/凭据 | 过期/无效 → 失败 |
-| 实际可读 | 轻量读一次取码接口（不等待新邮件） | 非 200 / 无法解析 / 超时 → 失败 |
+Rust 改密后续复用现有认证能力，但提升 `read_session/authenticate` 可见性只是局部调整，还需支持明确密码证据、原画像输入、Python 取码通道、检查点/租约连接和完整凭据写回。其成功与恢复契约必须与 P1 相同。Chrome152 的跨内核执行不能绕过严格路径的来源绑定。
 
-**两个适配器一起做**
-- `generic_api`（9,548）：`get_account_context` + `require_usable` + 轻量读 `code_url`
-- `email_butler`（959）：租约有效性 + 轻量接口
+## 8. 验收与实施边界
 
-**结果与缓存**
-- 写回 `extra_json.email_health = {ok, reason, checked_at, source}`
-- 成功缓存 10 分钟，失败缓存 1 小时
+### 8.1 P1 的验收要求
 
-**门禁语义**
-- 失败 → 任务直接终止，错误码 `email_unusable`，不可重试
-- 第一版只接改密；后续扩展注册续跑、换绑邮箱
+1. 正常路径：邮箱码改密、新密码实际认证、目标身份、新 AT/session/Cookie 全部写回，保存后的 AT 业务接口成功；不依赖额外人工刷新 AT。
+2. 会话反例：旧 Cookie 的 session 200、纯 Cookie 回调和纯邮箱 OTP 成功均不能误确认候选密码；旧 AT 的 `token_revoked` 正确分类。
+3. 中断恢复：最终提交前、提交后响应丢失、新密码确认后、凭据部分写回后中断；进程恢复和批量重跑均沿用已保存事实。
+4. 候选约束：固定注册密码账号和再次改密可正常生成不同候选；未知结果不换候选，确认后的收尾不再改密。
+5. 邮箱边界：真实过期、无新邮件、快速到码、超时、429、5xx 和解析错误分别处理，显式重跑可重新检查。
+6. 并发与写回：同账号串行、失效执行不能覆盖新结果；不同账号遵守现有共享并发；密码确认与关联 Attempt 保持一致。
 
-### 5.12 两个内核的职责划分
+按影响选择现有相关测试并补缺口，不默认执行全量测试。涉及存储使用独立工作区和测试库/schema。少量真实账号验收记录全部结果和冷却，不以挑选出的成功样本代替成功率证据；单账号已通过不等于整个修订版已实现。
 
-| 事项 | 协议（Python） | rust |
-|---|---|---|
-| 建会话 | Python wreq | rust wreq |
-| 会话检查 | `_read_session` | `read_session`（现有） |
-| 登录 | Python 流程 | `authenticate`（现有） |
-| 改密 7 步 | Python | rust（新增） |
-| OTP 取码 | Python | Python 取 → 写 stdin |
-| 新密码验证 | Python 登录 | rust `authenticate` |
-| 落库 | Python | Python |
+### 8.2 后续阶段的验收要求
 
-**rust 改密的复用方式**
-- ① `read_session()`：有效则跳过登录；失效则 `authenticate()`（顺带刷新 AT）
-- ② 新增重置密码步骤（同 5.3）
-- ③ 用新密码再 `authenticate()` 验证
-- 需要小重构：`read_session` / `authenticate` 从 `refresh.rs` 私有提升为 `pub(crate)`
+P2 检查原始值可还原、快照不会被后续操作覆盖、来源与构建可追溯、HTTP 发送状态与 VM 事实区分，以及采集失败不改变注册行为。P3 分层检查配置、HTTP、VM、传输与真实操作，并保留不支持及证据缺失的具体结果。
 
-## 6. 已知缺陷：协议注册画像 Windows/macOS 串值
+本轮不运行新账号操作、不改业务代码、不增加配置、不迁移数据库、不提交或推送代码、不部署服务。正式开发前再形成所选阶段的具体实施范围和验证安排；涉及任何注册驱动执行行为的变化，先说明根因、位置、行为与影响并取得明确确认。
 
-### 6.1 证据（账号 10570）
+## 9. 代码与既有规则参考
 
-```
-user_agent          = Windows NT 10.0 ... Chrome/152
-navigator_platform  = Win32
-sec-ch-ua-platform  = "Windows"
-browser_os          = macOS                    ← 矛盾
-webgl_renderer      = ANGLE (Apple, ... M2)    ← 矛盾
-sec_ch_ua_arch 等   = ""（空，真值在 ua_*）     ← 120/120 都这样
-```
+- [协议改密实现](../../core/accounts/password_setup/reset.py)
+- [密码检查点](../../core/storage/accounts/password_recovery.py)与[原 Roxy 恢复设计](../superpowers/specs/2026-11-02-password-reset-recovery-design.md)
+- [账号操作执行与租约](../../core/accounts/setup_execution.py)、[回执与本地读回](../../core/accounts/operation_results.py)
+- [私有会话仓储](../../core/storage/accounts/protocol_sessions.py)、[最近设备画像仓储](../../core/storage/accounts/device_profiles.py)
+- [协议注册画像合并](../../core/kernels/protocol/protocol_oss_2/registration/runner.py)、[上游生成器](../../core/kernels/protocol/protocol_oss_2/upstream/fingerprint.py)、[注册 Sentinel 环境](../../core/kernels/protocol/protocol_oss_2/upstream/openai_sentinel_quickjs.js)
+- [Rust 桥接](../../core/kernels/rust/sentinel_rs/bridge.py)、[Rust 画像投影](../../native/sentinel-rs/src/fingerprint.rs)、[Rust 环境](../../native/sentinel-rs/src/env.rs)、[Rust VM](../../native/sentinel-rs/src/vm.rs)
+- [存储规则](storage-architecture.md)、[发布与验证](../development/release-verification.md)
 
-### 6.2 成因
-
-1. 协议注册开始时 Python 先建本地会话（默认 macOS）
-2. 上游生成 Windows 指纹后执行 `session.browser_profile.update(fingerprint)`
-3. 合并只覆盖上游存在的键：`browser_os`、`webgl_*` 保留 macOS；`sec_ch_ua_*` 被空串覆盖
-
-### 6.3 影响
-
-- `browser_os`：不发送，仅内部标签，会误导判断
-- `webgl_renderer`：进入 sentinel JS 环境，是真不一致
-- 空 client hints：回放时会发出空头，比不发更假
-
-### 6.4 修复
-
-- **A（先做，零链路风险）**：入库归一——以 UA 判定 OS，重写 `browser_os`、`webgl_*`，用 `ua_*` 回填空值
-- **B（另立项）**：修上游生成器，补 WebGL、覆盖 OS 与空 hints；会改变未来注册实际发送内容，需重新验证成功率
-
-## 7. 待定问题
-
-1. settings 页是否有其他改密入口（需真实浏览器抓包）
-2. rust 注册回传画像/种子（需改注册链路，暂不允许）
-3. rust 传输栈升级到 Chrome152+（受上游 crate 限制，等发布）
-4. 上游生成器补 WebGL/OS 的排期与验证方式
-
-## 8. 实施顺序（建议）
-
-1. **P1 协议改密链路**：存储写入 → 重放组件 → 邮箱门禁 → 改密流程 → probe
-2. **P2 rust 改密**：`read_session`/`authenticate` 复用 + 新增重置步骤 + OTP 通道
-3. **P3 观测与实验**：日志、开关、A/B（复用 vs 新生成）
-4. P4 历史回填：协议号 trusted、rust 号 placeholder
+上述路径用于核对现状，本文的目标约定不代表对应能力已经落地。详细账号、Cookie、Token、原始日志和本地验收产物留在私有运行目录，不复制进方案。
