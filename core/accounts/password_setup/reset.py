@@ -16,6 +16,7 @@ import json
 import logging
 import time
 from contextlib import nullcontext
+from urllib.parse import urlparse
 
 from core.accounts.liveness.protocol.legacy import _network_preflight_with_retry
 from core.auth.protocol.openai_auth import (
@@ -115,6 +116,17 @@ def _session_stale(account: dict) -> bool:
     except Exception:
         return True
     return claims.get("token_expired") is True
+
+
+def _has_login_cookies(payload: dict) -> bool:
+    """AT 有效不能代替密码重置所需的登录 Cookie 上下文。"""
+    return any(
+        isinstance(item, dict)
+        and str(item.get("name") or "").startswith("__Secure-next-auth.session-token")
+        and str(item.get("value") or "").strip()
+        and str(item.get("domain") or "").lstrip(".").lower() == "chatgpt.com"
+        for item in payload.get("cookies") or []
+    )
 
 
 def _refresh_before_reset(
@@ -475,8 +487,8 @@ def run_protocol_password_reset(
                 )
 
         _check_reset_mailbox(email)
-        if refresh_before_reset and _session_stale(account):
-            note("refresh_at", "改密前先刷新 AT，建立可重置的登录状态")
+        if refresh_before_reset and (_session_stale(account) or not _has_login_cookies(cached)):
+            note("refresh_at", "改密前建立完整登录上下文，取得可重置的会话")
             refreshed_context = {}
             failure = _refresh_before_reset(
                 email, proxy=proxy, proxy_supplier=proxy_supplier, account=account,
@@ -500,21 +512,28 @@ def run_protocol_password_reset(
             session, authorize = _network_preflight_with_retry(
                 email, proxy, proxy_supplier=proxy_supplier,
             )
-        for item in cached.get("cookies") or []:
-            try:
-                session.session.cookies.set(
-                    str(item["name"]), str(item["value"]),
-                    domain=str(item["domain"]), path=str(item.get("path") or "/"),
-                )
-            except Exception:
-                continue
+        if cached.get("cookies"):
+            from core.accounts.liveness.protocol.v3 import _restore_cookies
+
+            _restore_cookies(session, cached)
         if callable(checkpoint):
             checkpoint()
-        session.get(authorize, headers=session.get_auth_navigate_headers(referer="https://chatgpt.com/"),
-                    allow_redirects=True)
-        session.get(_RESET_PAGE, headers=session.get_auth_navigate_headers(referer=_AUTH + "/log-in/password"),
-                    allow_redirects=True)
-        note("password_reset", "已进入密码重置页面")
+        authorize_response = session.get(
+            authorize, headers=session.get_auth_navigate_headers(referer="https://chatgpt.com/"),
+            allow_redirects=True,
+        )
+        reset_response = session.get(
+            _RESET_PAGE, headers=session.get_auth_navigate_headers(referer=_AUTH + "/log-in/password"),
+            allow_redirects=True,
+        )
+        note(
+            "password_reset", "已请求密码重置页面",
+            authorize_status=getattr(authorize_response, "status_code", None),
+            authorize_path=urlparse(str(getattr(authorize_response, "url", "") or "")).path,
+            reset_status=getattr(reset_response, "status_code", None),
+            reset_path=urlparse(str(getattr(reset_response, "url", "") or "")).path,
+            restored_login_cookies=_has_login_cookies(cached),
+        )
         # 本轮已选中的设备交给后续重新认证，旧认证 Cookie 不作为新会话保存。
         if getattr(session, "device_id", None) and isinstance(getattr(session, "browser_profile", None), dict):
             identity = {"device_id": session.device_id, "browser_profile": dict(session.browser_profile)}

@@ -79,7 +79,7 @@ class PasswordResetP1Tests(TestCase):
         self.assertEqual("new-token", result["access_token"])
 
     def _run_reset(self, *, state="prepared", verification=None, clock=None, completion_pending=None,
-                   validation_error=None):
+                   validation_error=None, refresh_before_reset=False):
         recovery = Mock()
         recovery.checkpoint = SimpleNamespace(
             state=state, password="Candidate-password-42",
@@ -144,10 +144,12 @@ class PasswordResetP1Tests(TestCase):
                 return_value=fixture_auth["session"], side_effect=validation_error,
             ))
             stack.enter_context(patch.object(reset, "_check_reset_mailbox", create=True))
+            refreshed = stack.enter_context(patch.object(reset, "_refresh_before_reset", return_value=None))
             result = reset.run_protocol_password_reset(
                 self.email, execution_fence={"run_id": 7, "execution_id": "worker", "lease_token": "lease"},
-                refresh_before_reset=False,
+                refresh_before_reset=refresh_before_reset,
             )
+            recovery.refresh_before_reset = refreshed
         return result, recovery, send, verify, complete, sent_at, waited_after
 
     def test_confirmed_completion_does_not_reset_password_again(self):
@@ -207,3 +209,8 @@ class PasswordResetP1Tests(TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(1, len(sent_at))
         self.assertLessEqual(waited_after[0], sent_at[0])
+
+    def test_valid_at_without_private_login_cookies_still_builds_reset_auth_context(self):
+        result, recovery, _, _, _, _, _ = self._run_reset(refresh_before_reset=True)
+        self.assertTrue(result["ok"])
+        recovery.refresh_before_reset.assert_called_once()
