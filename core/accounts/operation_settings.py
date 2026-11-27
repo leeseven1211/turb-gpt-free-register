@@ -21,6 +21,7 @@ RUNTIME_CONFIG_ALLOWLIST = {
     "twofa_enabled": "ACCOUNT_COMPLETION_2FA_ENABLED",
     "codex_enabled": "ACCOUNT_COMPLETION_CODEX_ENABLED",
     "refresh_at_enabled": "ACCOUNT_COMPLETION_REFRESH_AT_ENABLED",
+    "at_refresh_driver": "ACCOUNT_AT_REFRESH_DRIVER",
     "password_driver": "ACCOUNT_PASSWORD_DRIVER",
     "plan_check_driver": "ACCOUNT_PLAN_CHECK_DRIVER",
     "password_proxy_mode": "ACCOUNT_PASSWORD_PROXY_MODE",
@@ -82,6 +83,7 @@ def completion_settings_from_snapshot(
         "twofa_proxy_mode", "plan_check_proxy_mode", "live_check_proxy_mode",
         "refresh_at_proxy_mode", "codex_proxy_mode", "twofa_driver", "codex_driver",
         "protocol_version",
+        "at_refresh_driver",
     ):
         if key in values and values[key] is not None:
             values[key] = str(values[key]).strip().lower()

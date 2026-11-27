@@ -198,7 +198,8 @@ def _cache_invalidate(account_id, email):
             logger.warning("[Protocol v3] 私有会话清理不可用")
 
 
-def _success(session, info, *, email, target, account_id, checked_at, methods, on_authenticated):
+def _success(session, info, *, email, target, account_id, checked_at, methods,
+             on_authenticated, persist_session=True):
     _verify_identity(info, email, target)
     reused = methods == ["session_cookie"]
     result = {"ok": True, "status": "live", "checked_at": checked_at, "access_token": info["accessToken"],
@@ -210,7 +211,7 @@ def _success(session, info, *, email, target, account_id, checked_at, methods, o
               "mfa_status": "success" if "mfa" in methods else "skipped",
               "fallback_used": False, "remote_request_started": not reused,
               "session_cache_status": "not_applicable"}
-    if account_id:
+    if account_id and persist_session:
         try:
             cached_payload = _cookie_payload(session, info)
             saved = protocol_sessions.save_session(account_id, email, cached_payload)
@@ -220,6 +221,8 @@ def _success(session, info, *, email, target, account_id, checked_at, methods, o
             result["session_cache_status"] = "unavailable"
             logger.warning("[Protocol v3] AT 已取得，私有会话缓存未保存")
     result["auth"] = auth_result_for_operation(result, auth_method=result["auth_method"]).as_dict()
+    if not persist_session:
+        result["_protocol_session"] = _cookie_payload(session, info)
     return on_authenticated(result, session) if callable(on_authenticated) else result
 
 
@@ -258,7 +261,9 @@ def _authenticate(session, initial_url, *, email, target, password, secret, prog
 @serialize_email_auth
 def refresh_access_token(email: str, *, proxy=None, proxy_supplier=None, identity=None,
                          context_recorder=None, on_remote_request_started=None,
-                         on_authenticated=None, account_id: int | None = None) -> dict:
+                         on_authenticated=None, account_id: int | None = None,
+                         persist_session: bool = True, reuse_session: bool = True) -> dict:
+    """刷新 AT；保存与复用独立控制，改密可独立认证并延后保存。"""
     email = str(email or "").strip()
     checked_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     session, remote_started, result = None, False, None
@@ -269,7 +274,7 @@ def refresh_access_token(email: str, *, proxy=None, proxy_supplier=None, identit
             raise _error("account_reference_mismatch", category="configuration")
         actual_id = int(account_id or target.get("id") or 0) or None
         cached = None
-        if actual_id:
+        if actual_id and reuse_session:
             try:
                 cached = protocol_sessions.load_session(actual_id, email)
             except Exception:
@@ -304,7 +309,8 @@ def refresh_access_token(email: str, *, proxy=None, proxy_supplier=None, identit
                         info = None
                 if info:
                     result = _success(session, info, email=email, target=target, account_id=actual_id,
-                                      checked_at=checked_at, methods=["session_cookie"], on_authenticated=on_authenticated)
+                                      checked_at=checked_at, methods=["session_cookie"],
+                                      on_authenticated=on_authenticated, persist_session=persist_session)
                     return result
                 session.session.close()
                 session = None
@@ -316,7 +322,8 @@ def refresh_access_token(email: str, *, proxy=None, proxy_supplier=None, identit
         remote_started = True
         info, methods = _authenticate(session, authorize, email=email, target=target, password=password, secret=secret, progress=progress)
         result = _success(session, info, email=email, target=target, account_id=actual_id,
-                          checked_at=checked_at, methods=methods, on_authenticated=on_authenticated)
+                          checked_at=checked_at, methods=methods, on_authenticated=on_authenticated,
+                          persist_session=persist_session)
         return result
     except (OperationCancelled, OperationLeaseLost):
         raise

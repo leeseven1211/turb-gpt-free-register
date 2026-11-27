@@ -321,8 +321,9 @@ def run_refresh_at(
     email: str, *, proxy=None, proxy_supplier=None, identity=None,
     context_recorder=None, on_remote_request_started=None,
     on_authenticated=None, account_id: int | None = None, country: str | None = None,
+    persist_session: bool = True, reuse_session: bool = True,
 ) -> dict:
-    """Rust 内核刷新 AT；行为对标 protocol v3（快路径 + 密码/OTP/MFA 重登）。"""
+    """Rust 内核刷新 AT；会话复用与保存独立控制。"""
     from datetime import datetime, timezone
 
     from core.accounts.credentials import get_account_login_credentials
@@ -339,10 +340,11 @@ def run_refresh_at(
     cached = {}
     remembered = {}
     if actual_id:
-        try:
-            cached = protocol_sessions.load_session(actual_id, email) or {}
-        except Exception:
-            logger.warning("Rust 刷新：私有会话读取不可用，改用凭据重登")
+        if reuse_session:
+            try:
+                cached = protocol_sessions.load_session(actual_id, email) or {}
+            except Exception:
+                logger.warning("Rust 刷新：私有会话读取不可用，改用凭据重登")
         try:
             # 设备画像不带过期时间，会话过期后仍能沿用同一台设备。
             remembered = device_profiles.load_profile(actual_id, email) or {}
@@ -355,13 +357,20 @@ def run_refresh_at(
         country = str(getattr(account_config, "ACCOUNT_AT_REFRESH_COUNTRY", "") or "")
     password, secret = get_account_login_credentials(email)
     identity_payload = identity if isinstance(identity, dict) else {}
-    device_id = str(
-        cached.get("device_id") or remembered.get("device_id")
-        or identity_payload.get("device_id") or ""
-    ).strip()
-    cookies = tuple(
-        item for item in (cached.get("cookies") or []) if isinstance(item, dict)
-    )
+    if reuse_session:
+        device_id = str(
+            cached.get("device_id") or remembered.get("device_id")
+            or identity_payload.get("device_id") or ""
+        ).strip()
+        cookies = tuple(
+            item for item in (cached.get("cookies") or []) if isinstance(item, dict)
+        )
+    else:
+        # 改密验证必须提交候选密码；沿用设备画像即可，旧 Cookie 不能参与认证。
+        device_id = str(
+            identity_payload.get("device_id") or remembered.get("device_id") or ""
+        ).strip()
+        cookies = ()
     selected_proxy = None
     if proxy_supplier is not None:
         try:
@@ -407,7 +416,17 @@ def run_refresh_at(
         email=email, checked_at=checked_at, payload=payload, remote_started=remote_started,
     )
 
-    if result["ok"] and actual_id:
+    if result["ok"] and not persist_session:
+        session = result.get("session") or {}
+        result["_protocol_session"] = {
+            "cookies": list(payload.get("cookies") or []),
+            "device_id": str(payload.get("device_id") or device_id),
+            "browser_profile": _rust_profile(payload, cached or remembered),
+            "user_id": str((session.get("user") or {}).get("id") or ""),
+            "chatgpt_account_id": str((session.get("account") or {}).get("id") or ""),
+        }
+
+    if result["ok"] and actual_id and persist_session:
         try:
             saved = protocol_sessions.save_session(actual_id, email, {
                 "cookies": list(payload.get("cookies") or []),

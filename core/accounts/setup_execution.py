@@ -198,6 +198,29 @@ def handle_native_account_setup(context: task_gateway.OperationHandlerContext) -
             pending_summary = dict(normalized.summary)
             pending_error = normalized.error
             pending_message = normalized.message
+            password_result = operation_results._password_reset_outcome(result)
+            if password_result is not None:
+                # P1 已经确认远端密码时，本地凭据/业务读回缺失是具体收尾
+                # 失败，允许按 recovery 标记重跑，不重新声称改密回执未知。
+                pending_summary.update({
+                    "password_reset": "confirmed",
+                    "password_confirmed": True,
+                    "completion_pending": bool(password_result.get("completion_pending")),
+                    "local_readback_checks": receipt_detail.get("local_readback_checks") or {},
+                })
+                cause = str(
+                    password_result.get("cause_code")
+                    or password_result.get("error_code")
+                    or "password_reset_local_readback_required"
+                )
+                pending_summary["cause_code"] = cause
+                normalized = task_gateway.OperationResult(
+                    "failed",
+                    pending_summary,
+                    pending_message or "密码重置本地收尾未完成",
+                    pending_error or cause,
+                )
+                return operation_results.finish_native_context(context, normalized)
             if receipt_state == "local_commit_required" and not pending_error:
                 pending_error = "account_setup_local_commit_failed"
                 pending_summary["cause_code"] = pending_error

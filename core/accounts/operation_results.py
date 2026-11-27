@@ -15,6 +15,7 @@ from core import db, operation_task_store
 from core.accounts.liveness import service as live_check_service
 from core.operations import task_gateway
 from core.operations.proxy_resources import capture_proxy_pool_child
+from core.storage.accounts import protocol_sessions
 
 
 class AccountRouteCleanup:
@@ -194,6 +195,47 @@ def own_account_route(context, route, *, purpose: str, actor_scope: str = "exter
     return cleanup
 
 
+def _setup_step_result(result: Mapping[str, Any], step: str) -> Mapping[str, Any]:
+    """从不同版本的账号配置组合结果中取出单步回执。"""
+    step_results = result.get("step_results")
+    if isinstance(step_results, Mapping):
+        value = step_results.get(step)
+        if isinstance(value, Mapping):
+            return value
+    setup_results = result.get("setup_step_results")
+    if isinstance(setup_results, (list, tuple)):
+        for item in setup_results:
+            if not isinstance(item, Mapping) or str(item.get("step") or "") != step:
+                continue
+            value = item.get("result")
+            if isinstance(value, Mapping):
+                return value
+    alias = {"password": "password_setup", "twofa": "twofa_setup", "plan_check": "plan_check"}.get(step)
+    value = result.get(alias) if alias else None
+    if isinstance(value, Mapping):
+        return value
+    return result if step == "password" else {}
+
+
+def _password_reset_outcome(result: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """识别 P1 改密回执，兼容直接结果和 step_results 包装。"""
+    candidates = []
+    for value in (
+        _setup_step_result(result, "password"),
+        result.get("password_setup"),
+        result,
+    ):
+        if isinstance(value, Mapping) and value not in candidates:
+            candidates.append(value)
+    for value in candidates:
+        if (
+            str(value.get("password_reset") or "").strip().lower() == "confirmed"
+            and value.get("password_confirmed") is True
+        ):
+            return value
+    return None
+
+
 def account_setup_readback(
     account_id: int,
     email: str,
@@ -214,6 +256,34 @@ def account_setup_readback(
         from core.accounts.password_evidence import password_is_confirmed
 
         checks["password"] = password_is_confirmed(account)
+        password_result = _password_reset_outcome(result)
+        if password_result is not None:
+            token = str(account.get("access_token") or "").strip()
+            checks["access_token"] = bool(token)
+            try:
+                session = db.get_account_chatgpt_session(int(account_id))
+            except Exception:
+                session = None
+            checks["session"] = bool(
+                isinstance(session, Mapping)
+                and str(session.get("accessToken") or "").strip() == token
+            )
+            try:
+                private_session = protocol_sessions.load_session(int(account_id), email)
+            except Exception:
+                private_session = None
+            checks["protocol_session"] = bool(
+                isinstance(private_session, Mapping)
+                and isinstance(private_session.get("cookies"), list)
+                and bool(private_session.get("cookies"))
+            )
+            if (
+                str(password_result.get("status") or "").strip().lower()
+                in {"success", "completed"}
+                and password_result.get("completion_pending") is not True
+            ):
+                checks["credentials_saved"] = password_result.get("credentials_saved") is True
+                checks["business_verified"] = password_result.get("business_verified") is True
     if "twofa" in steps:
         checks["twofa"] = bool(str(account.get("totp_secret") or "").strip()) and not bool(
             extra.get("totp_setup_pending")
@@ -239,18 +309,24 @@ def account_setup_receipt(
         "remote_result_confirmed": status in {"success", "completed", "deactivated"}
         or bool(result.get("ok")),
     }
-    if result.get("password_driver") == "protocol" or isinstance(result.get("step_results"), Mapping):
+    if (
+        result.get("password_driver") == "protocol"
+        or isinstance(result.get("step_results"), Mapping)
+        or _password_reset_outcome(result) is not None
+    ):
         completed = set()
         rejected = False
         evidence = []
         for step in sorted(steps):
-            value = (result.get("step_results") or {}).get(step) or result.get(
-                {"password": "password_setup", "twofa": "twofa_setup", "plan_check": "plan_check"}.get(step, "")
-            )
+            value = _setup_step_result(result, step)
             outcome = value if isinstance(value, Mapping) else {}
             receipt_state = outcome.get("remote_receipt_state")
             if step == "plan_check":
                 receipt_state = "confirmed" if outcome.get("ok") else "not_submitted"
+            elif step == "password" and _password_reset_outcome(result) is not None:
+                # P1 的 confirmed 表示远端密码已经确认；收尾失败只影响
+                # 本地凭据/业务核验，不得倒退为改密远端未知。
+                receipt_state = "confirmed"
             elif receipt_state in {None, "none", "not_submitted"} and outcome.get("mutation_submitted") is False:
                 receipt_state = "not_submitted"
             elif receipt_state is None and outcome.get("ok"):
@@ -261,7 +337,9 @@ def account_setup_receipt(
                 rejected = True
             elif receipt_state == "not_submitted":
                 continue
-            elif receipt_state == "confirmed" and outcome.get("ok"):
+            elif receipt_state == "confirmed" and (
+                outcome.get("ok") or (step == "password" and _password_reset_outcome(result) is not None)
+            ):
                 completed.add(step)
             else:
                 return "unknown", detail
@@ -276,6 +354,17 @@ def account_setup_receipt(
             "local_readback_confirmed": local_confirmed,
             "local_readback_checks": checks,
         })
+        password_result = _password_reset_outcome(result)
+        if password_result is not None:
+            for key in (
+                "password_reset", "password_confirmed", "credentials_saved",
+                "business_verified", "completion_pending", "stage", "cause_code", "retryable",
+            ):
+                if key in password_result and password_result.get(key) is not None:
+                    detail[key] = password_result.get(key)
+            if password_result.get("completion_pending") is True:
+                detail["remote_password_confirmed"] = True
+                return ("confirmed" if local_confirmed else "local_commit_required"), detail
         return ("confirmed" if local_confirmed else "local_commit_required"), detail
     if status == "unsupported":
         return "rejected", detail
@@ -313,16 +402,47 @@ def safe_operation_result(
             "mutation_submitted", "action_dispatched", "reconcile_required", "manual_reconcile",
             "password_setup", "password_driver", "twofa_setup", "remote_receipt_state",
             "stop_requested", "step_results", "setup_step_results", "requested_steps",
+            "password_reset", "password_confirmed", "credentials_saved", "business_verified",
+            "credential_writeback", "business_verification", "completion_pending", "stage",
+            "retryable",
         )
         if key in result and result.get(key) is not None
     }
     cause_code = str(result.get("cause_code") or result.get("error_code") or "")
+    password_result = _password_reset_outcome(result)
+    if password_result is not None:
+        for key in (
+            "password_reset", "password_confirmed", "credentials_saved",
+            "business_verified", "completion_pending", "stage", "cause_code", "retryable",
+        ):
+            if key not in summary and password_result.get(key) is not None:
+                summary[key] = password_result.get(key)
+        cause_code = str(
+            cause_code
+            or password_result.get("cause_code")
+            or password_result.get("error_code")
+            or password_result.get("error")
+            or ""
+        )
+        error = error or str(
+            password_result.get("cause_code")
+            or password_result.get("error_code")
+            or password_result.get("error")
+            or ""
+        ) or None
     if re.fullmatch(r"[a-z][a-z0-9_]{0,79}", cause_code):
         summary["cause_code"] = cause_code
     for key in ("auth_diagnostics", "cause_diagnostics"):
         diagnostics = live_check_service._safe_refresh_auth_diagnostics(result.get(key))
         if diagnostics:
             summary[key] = diagnostics
+    if password_result is not None and password_result.get("completion_pending") is True:
+        return task_gateway.OperationResult(
+            "failed",
+            summary,
+            message,
+            error or cause_code or message,
+        )
     if (
         status in {"unknown", "request_unknown", "pending_confirmation", "attention_required"}
         or summary.get("reconcile_required") is True or summary.get("manual_reconcile") is True

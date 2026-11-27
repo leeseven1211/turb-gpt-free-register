@@ -117,7 +117,7 @@ class ProtocolPasswordResetRefreshTests(unittest.TestCase):
         recovery.mark_unknown.side_effect = lambda: setattr(recovery.checkpoint, "state", "unknown")
         session = _ResetSession(
             post_responses=[
-                _Response(200, {"continue_url": ""}),
+                _Response(200, {"page": {"type": "new_password"}}),
                 _Response(502),
             ],
         )
@@ -127,6 +127,7 @@ class ProtocolPasswordResetRefreshTests(unittest.TestCase):
             patch.object(reset, "_session_stale", return_value=False),
             patch.object(reset, "_send_reset_otp"),
             patch.object(reset, "_wait_reset_otp", return_value="123456"),
+            patch.object(reset, "_check_reset_mailbox"),
             patch.object(reset, "request_sentinel_token", return_value="sentinel"),
             patch.object(reset, "build_sentinel_header", return_value=("sentinel", "")),
             patch.object(reset, "_network_preflight_with_retry", return_value=(session, "https://auth.example.test/authorize")),
@@ -150,15 +151,15 @@ class ProtocolPasswordResetRefreshTests(unittest.TestCase):
 
     def test_confirm_requires_explicit_password_authentication_and_avoids_legacy_write(self):
         recovery = Mock()
-        recovery.checkpoint = SimpleNamespace(state="prepared")
+        recovery.checkpoint = SimpleNamespace(state="prepared", password="Candidate-pass-42")
         recovery.prepare.return_value = "Candidate-pass-42"
-        recovery.confirm.side_effect = lambda _confirmation: (
+        recovery.confirm.side_effect = lambda _confirmation, **_kwargs: (
             setattr(recovery.checkpoint, "state", "confirmed") or "Candidate-pass-42"
         )
         recovery.mark_started.side_effect = lambda: setattr(recovery.checkpoint, "state", "started")
         session = _ResetSession(
             post_responses=[
-                _Response(200, {"continue_url": ""}),
+                _Response(200, {"page": {"type": "new_password"}}),
                 _Response(200),
             ],
         )
@@ -168,12 +169,18 @@ class ProtocolPasswordResetRefreshTests(unittest.TestCase):
             patch.object(reset, "_session_stale", return_value=False),
             patch.object(reset, "_send_reset_otp"),
             patch.object(reset, "_wait_reset_otp", return_value="123456"),
+            patch.object(reset, "_check_reset_mailbox"),
             patch.object(reset, "request_sentinel_token", return_value="sentinel"),
             patch.object(reset, "build_sentinel_header", return_value=("sentinel", "")),
             patch.object(reset, "_network_preflight_with_retry", return_value=(session, "https://auth.example.test/authorize")),
             patch.object(reset, "_run_password_verification", return_value={
                 "ok": True, "password_auth_status": "verified", "auth_method": "password",
+                "access_token": "fresh-token", "session": {
+                    "accessToken": "fresh-token", "user": {"email": account["email"], "id": "fixture-user"},
+                    "account": {"id": "fixture-account"},
+                },
             }),
+            patch.object(reset, "_complete_reset", return_value={"ok": True, "status": "success"}),
             patch("core.auth.browser.password_recovery.PasswordRecoverySession", return_value=recovery),
             patch("core.storage.accounts.protocol_sessions.load_session", return_value={}),
             patch("core.storage.accounts.protocol_sessions.save_session"),
@@ -190,7 +197,7 @@ class ProtocolPasswordResetRefreshTests(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual(2, recovery.prepare.call_count)
-        recovery.confirm.assert_called_once_with("password_change_response")
+        recovery.confirm.assert_called_once_with("password_change_response", completion_pending=True)
         legacy_write.assert_not_called()
 
 

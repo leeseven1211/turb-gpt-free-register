@@ -8,7 +8,7 @@
 4. 邮箱取码 -> POST /api/accounts/email-otp/validate
 5. 生成新密码，先写本地候选检查点
 6. POST /api/accounts/password/reset（sentinel flow=password_reset）
-7. 用新密码重新登录校验，成功后才确认检查点
+7. 用新密码重新登录校验，确认检查点后保存完整凭据并核验业务接口
 """
 from __future__ import annotations
 
@@ -16,12 +16,10 @@ import json
 import logging
 import time
 from contextlib import nullcontext
-from datetime import datetime, timezone
 
 from core.accounts.liveness.protocol.legacy import _network_preflight_with_retry
 from core.auth.protocol.openai_auth import (
     build_sentinel_header,
-    generate_registration_password,
     request_sentinel_token,
 )
 from core.auth.protocol.session import BrowserSession
@@ -29,6 +27,18 @@ from core.auth.state_machine import CancellationRequested
 from core.email.provider import wait_for_otp
 from core.operations.runtime import OperationCancelled
 from core.operations.task_gateway import OperationLeaseLost
+from core.accounts.password_setup import protocol as password_protocol
+from core.accounts.password_setup.reset_completion import (
+    complete_password_reset as _complete_reset,
+    validate_password_session as _validate_reset_auth,
+)
+from core.accounts.password_setup.reset_support import (
+    ProtocolPasswordResetError,
+    check_reset_mailbox as _check_reset_mailbox,
+    check_reset_response,
+    classify_reset_mailbox_error,
+    generate_reset_password,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +49,16 @@ _OTP_VALIDATE = _AUTH + "/api/accounts/email-otp/validate"
 _PASSWORD_RESET = _AUTH + "/api/accounts/password/reset"
 
 
+def _saved_password(account: dict) -> str:
+    extra = account.get("extra_json") or {}
+    if isinstance(extra, str):
+        try:
+            extra = json.loads(extra)
+        except (TypeError, ValueError):
+            extra = {}
+    return str(extra.get("account_password") or "") if isinstance(extra, dict) else ""
+
+
 def _error(
     code: str,
     category: str = "auth",
@@ -46,6 +66,12 @@ def _error(
     message: str = "",
     retryable: bool = False,
     request_unknown: bool = False,
+    stage: str = "",
+    cause_code: str = "",
+    password_confirmed: bool = False,
+    detail: dict | None = None,
+    mutation_submitted: bool | None = None,
+    rejected: bool = False,
 ) -> dict:
     result = {
         "ok": False,
@@ -56,9 +82,25 @@ def _error(
         "message": message or code,
         "live_check_driver": "protocol_reset",
         "auth_method": "protocol_reset",
+        "stage": stage,
+        "cause_code": cause_code or code,
     }
+    if password_confirmed:
+        result.update(password_confirmed=True, password_reset="confirmed", completion_pending=True)
+    if detail:
+        result["cause_diagnostics"] = dict(detail)
     if request_unknown:
-        result.update(request_unknown=True, outcome="request_unknown", reconcile_required=True)
+        result.update(request_unknown=True, outcome="request_unknown")
+    if mutation_submitted is not None:
+        result.update(mutation_submitted=mutation_submitted, action_dispatched=mutation_submitted)
+    if password_confirmed:
+        result["remote_receipt_state"] = "local_commit_required"
+    elif request_unknown:
+        result["remote_receipt_state"] = "unknown"
+    elif rejected:
+        result["remote_receipt_state"] = "rejected"
+    elif mutation_submitted is False:
+        result["remote_receipt_state"] = "not_submitted"
     return result
 
 
@@ -82,11 +124,12 @@ def _refresh_before_reset(
     proxy_supplier,
     account: dict | None = None,
     password_override: str | None = None,
+    refresh_driver: str | None = None,
+    authenticated_context: dict | None = None,
 ) -> dict | None:
     """AT 过期/缺失时先刷新一次；成功返回 None，失败返回错误字典。
 
-    刷新会用账号最近一次登录的设备画像，成功后把“刚刚用过的那套画像”写回
-    会话缓存，改密随后原样复用，保证整条链路是同一台设备。
+    沿用明确配置的刷新驱动与可用设备资料，不将普通刷新当成严格重放证明。
     """
     from core.accounts.liveness import service as live_service
     from core.accounts.credentials import (
@@ -94,7 +137,7 @@ def _refresh_before_reset(
     )
 
     try:
-        driver = live_service._resolve_refresh_driver(None)
+        driver = refresh_driver or live_service._resolve_refresh_driver(None)
         runner = live_service._refresh_execution_runner(driver)
         credentials = (
             override_account_login_credentials(
@@ -103,13 +146,23 @@ def _refresh_before_reset(
             if password_override and isinstance(account, dict)
             else nullcontext()
         )
+        def capture(result, active_session):
+            if isinstance(authenticated_context, dict) and isinstance(result, dict) and result.get("ok"):
+                if active_session is not None:
+                    from core.accounts.liveness.protocol.v3 import _cookie_payload
+
+                    authenticated_context.update(_cookie_payload(active_session, result.get("session") or {}))
+                elif isinstance(result.get("_protocol_session"), dict):
+                    authenticated_context.update(result["_protocol_session"])
+            return result
+
         with credentials:
-            result = runner(
-                email,
-                proxy=proxy,
-                proxy_supplier=proxy_supplier,
-                on_remote_request_started=None,
-            )
+            options = {} if driver == "browser_roxy" else {"proxy_supplier": proxy_supplier}
+            if isinstance(authenticated_context, dict):
+                options["on_authenticated"] = capture
+                if driver in {"rust", "protocol_v3"}:
+                    options["persist_session"] = False
+            result = runner(email, proxy=proxy, on_remote_request_started=None, **options)
     except (CancellationRequested, OperationCancelled, OperationLeaseLost):
         raise
     except Exception as exc:  # noqa: BLE001
@@ -129,11 +182,7 @@ def _refresh_before_reset(
 def _send_reset_otp(session: BrowserSession, *, report=None, check=None) -> None:
     headers = session.get_auth_headers(referer=_RESET_PAGE)
     response = session.post(_SEND_OTP, headers=headers, data="{}", allow_redirects=False)
-    if response.status_code != 200:
-        body = (response.text or "")[:240]
-        if response.status_code == 429:
-            raise RuntimeError(f"reset_rate_limited:{body}")
-        raise RuntimeError(f"password_reset_send_otp_failed:HTTP {response.status_code}:{body}")
+    check_reset_response(response, stage="send_otp")
 
 
 def _wait_reset_otp(email: str, after_ts: float, *, check=None) -> str:
@@ -147,7 +196,7 @@ def _wait_reset_otp(email: str, after_ts: float, *, check=None) -> str:
     except (CancellationRequested, OperationCancelled, OperationLeaseLost):
         raise
     except Exception as exc:  # noqa: BLE001
-        raise RuntimeError(f"password_reset_otp_timeout:{type(exc).__name__}") from exc
+        raise classify_reset_mailbox_error(exc, stage="wait_otp") from None
 
 
 class _RetrySendOtp(RuntimeError):
@@ -179,13 +228,6 @@ def _manual_recovery_owner(email: str, account: dict, execution_fence: dict | No
     }
 
 
-def _invalidate_reset_session(account: dict, email: str) -> None:
-    """验证新密码前清除旧 Cookie，避免把会话复用当成密码验证。"""
-    from core.storage.accounts import protocol_sessions
-
-    protocol_sessions.invalidate_session(int(account.get("id") or 0), email)
-
-
 def _run_password_verification(
     email: str,
     password: str,
@@ -193,20 +235,51 @@ def _run_password_verification(
     account: dict,
     proxy,
     proxy_supplier,
+    identity: dict | None = None,
+    refresh_driver: str | None = None,
+    checkpoint=None,
 ) -> dict:
     """用本轮候选密码重新认证，并返回带密码证据的结果。"""
     from core.accounts.liveness import service as live_service
     from core.accounts.credentials import (
         get_account_totp_secret_candidate, override_account_login_credentials,
     )
-
-    _invalidate_reset_session(account, email)
-    driver = live_service._resolve_refresh_driver(None)
+    from core.accounts.liveness.protocol import v3
+    if callable(checkpoint):
+        checkpoint()
+    driver = refresh_driver or live_service._resolve_refresh_driver(None)
+    # v1 只做邮箱认证，无法证明候选密码；改密验证明确使用现有 v2 密码能力，
+    # 不改变普通刷新任务的版本选择。
+    if driver in {"legacy", "protocol_v1"}:
+        driver = "protocol_v2"
     runner = live_service._refresh_execution_runner(driver)
+
+    def authenticated(result, active_session):
+        if callable(checkpoint):
+            checkpoint()
+        if isinstance(result, dict) and result.get("ok") and active_session is not None:
+            try:
+                result["_protocol_session"] = v3._cookie_payload(active_session, result.get("session") or {})
+            except (CancellationRequested, OperationCancelled, OperationLeaseLost):
+                raise
+            except Exception as exc:
+                result["_session_capture_error"] = type(exc).__name__
+        return result
+
+    options = {"on_authenticated": authenticated}
+    if identity and driver in {"protocol_v2", "protocol_v3", "rust"}:
+        options["identity"] = identity
+    if driver in {"protocol_v3", "rust"}:
+        options["persist_session"] = False
+        options["reuse_session"] = False
+    if driver == "protocol_v2":
+        options["allow_password_email_fallback"] = False
+    if driver != "browser_roxy":
+        options["proxy_supplier"] = proxy_supplier
     with override_account_login_credentials(
         email, password, get_account_totp_secret_candidate(account),
     ):
-        return runner(email, proxy=proxy, proxy_supplier=proxy_supplier)
+        return runner(email, proxy=proxy, **options)
 
 
 def _password_verification_accepted(result: dict) -> bool:
@@ -219,6 +292,28 @@ def _password_verification_accepted(result: dict) -> bool:
     return bool(auth_method) and "session_cookie" not in auth_method and result.get("session_reused") is not True
 
 
+def _candidate_explicitly_rejected(result: dict) -> bool:
+    code = str(result.get("error") or "")
+    if code in {"password_reset_required", "password_change_required"}:
+        return True
+    if code != "password_rejected":
+        return False
+    if result.get("live_check_driver") != "rust":
+        return True
+    # Rust 旧二进制把所有 password_verify 400/401 都投影为 password_rejected；
+    # 只有原始结构化原因明确为错误密码时，才据此重新执行远端 reset。
+    diagnostic = result.get("auth_diagnostics") or {}
+    try:
+        payload = json.loads(diagnostic.get("detail") or "{}")
+    except (TypeError, ValueError, AttributeError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    error = payload.get("error")
+    remote_code = error.get("code") if isinstance(error, dict) else payload.get("code")
+    return remote_code in {"incorrect_password", "invalid_password", "wrong_password"}
+
+
 def run_protocol_password_reset(
     email: str,
     *,
@@ -229,28 +324,32 @@ def run_protocol_password_reset(
     report=None,
     refresh_before_reset: bool = True,
     new_password: str | None = None,
+    refresh_config_snapshot: dict | None = None,
 ) -> dict:
     """走忘记密码流程重置账号密码；返回与账号补全一致的结果字典。"""
     from core import db
 
     email = str(email or "").strip()
-    checked_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     account = db.get_account_by_email(email) or {}
     if not account:
-        return _error("account_not_found", "configuration", message="账号不存在")
+        return _error("account_not_found", "configuration", message="账号不存在", mutation_submitted=False)
     owner = _manual_recovery_owner(email, account, execution_fence)
     if owner is None:
         return _error(
             "password_reset_execution_fence_missing",
             "runtime",
             message="改密需要有效的账号任务执行租约",
+            mutation_submitted=False,
         )
     from core.auth.browser.password_recovery import PasswordRecoverySession
     from core.storage.accounts import password_recovery as recovery_store
 
     recovery = PasswordRecoverySession(**owner)
     try:
-        recovery.resume()
+        # 当前 durable Task 已确认的密码归属优先，不能被后来任务的候选接管。
+        recovery.resume_manual_password_change()
+        if recovery.checkpoint is None:
+            recovery.resume()
     except (CancellationRequested, OperationCancelled, OperationLeaseLost):
         raise
     except recovery_store.PasswordRecoveryError as exc:
@@ -260,7 +359,11 @@ def run_protocol_password_reset(
             message=f"改密检查点不可用：{exc.code}",
         )
 
+    active_stage = "preflight"
+
     def note(stage: str, message: str, state: str = "running", **detail):
+        nonlocal active_stage
+        active_stage = stage
         if callable(report):
             try:
                 report(stage=stage, state=state, message=message, detail=detail or None)
@@ -268,24 +371,6 @@ def run_protocol_password_reset(
                 raise
             except Exception:
                 pass
-
-    if refresh_before_reset and _session_stale(account):
-        note("refresh_at", "改密前先刷新 AT，建立可重置的登录状态")
-        pending_password = (
-            str(getattr(recovery.checkpoint, "password", "") or "")
-            if recovery.checkpoint is not None
-            else ""
-        )
-        failure = _refresh_before_reset(
-            email,
-            proxy=proxy,
-            proxy_supplier=proxy_supplier,
-            account=account,
-            password_override=pending_password or None,
-        )
-        if failure is not None:
-            return failure
-        account = db.get_account_by_email(email) or account
 
     # 复用账号最后一次使用的设备指纹（设备表优先，其次是会话缓存里的 Cookie）。
     from core.storage.accounts import device_profiles, protocol_sessions
@@ -315,6 +400,36 @@ def run_protocol_password_reset(
 
     session: BrowserSession | None = None
     remote_dispatched = False
+    reset_response_accepted = False
+    from core.accounts.liveness import service as live_service
+
+    refresh_driver = live_service._resolve_refresh_driver(None, config_snapshot=refresh_config_snapshot)
+
+    def finish(auth: dict) -> dict:
+        _validate_reset_auth(account, email, auth)
+        if recovery.checkpoint is None or recovery.checkpoint.state != "confirmed":
+            password = recovery.checkpoint.password if recovery.checkpoint is not None else ""
+            confirmed = recovery.confirm("password_change_response", completion_pending=True)
+            if (confirmed != password or recovery.checkpoint is None
+                    or recovery.checkpoint.state != "confirmed"):
+                raise recovery_store.PasswordRecoveryError("confirmation_uncommitted")
+            note("login_password_result", "新密码已重新登录验证并写入本地", state="success",
+                 checkpoint="password_change_confirmed")
+        return _complete_reset(
+            recovery=recovery, owner=owner, account=account, email=email, auth=auth,
+            proxy=getattr(session, "proxy", None) or proxy, checkpoint=checkpoint, report=report,
+        )
+
+    def verify_candidate(password: str) -> dict:
+        note("login_password", "正在使用已保存的新密码重新登录",
+             driver="protocol_v2" if refresh_driver in {"legacy", "protocol_v1"} else refresh_driver,
+             configured_driver=refresh_driver, checkpoint="password_change_verification")
+        return _run_password_verification(
+            email, password, account=account,
+            proxy=getattr(session, "proxy", None) or proxy,
+            proxy_supplier=None if session is not None else proxy_supplier,
+            identity=identity, refresh_driver=refresh_driver, checkpoint=checkpoint,
+        )
 
     def mark_unknown() -> None:
         checkpoint_state = recovery.checkpoint
@@ -322,9 +437,60 @@ def run_protocol_password_reset(
             return
         recovery.mark_unknown()
 
+    def dispatched_fact() -> bool | None:
+        if remote_dispatched:
+            return True
+        state = getattr(recovery.checkpoint, "state", "")
+        return None if state in {"started", "unknown", "confirmed"} else False
+
     try:
         if callable(checkpoint):
             checkpoint()
+        recovered = recovery.checkpoint
+        if (recovered is not None and recovered.state == "confirmed"
+                and getattr(recovered, "completion_pending", None) is False):
+            return _complete_reset(
+                recovery=recovery, owner=owner, account=account, email=email,
+                auth={"ok": True, "access_token": str(account.get("access_token") or ""),
+                      "session": db.get_account_chatgpt_session(account_id),
+                      "_protocol_session": cached},
+                proxy=proxy, checkpoint=checkpoint, report=report,
+            )
+        if recovered is not None and recovered.state in {"started", "unknown", "confirmed"}:
+            verification = verify_candidate(recovered.password)
+            if _password_verification_accepted(verification):
+                return finish(verification)
+            # 只有远端明确拒绝候选密码时，才以同一候选重置；不把网络、MFA 或
+            # Cookie 复用等未确认结果当成密码未生效。confirmed 永远只补收尾。
+            code = str((verification or {}).get("error") or "")
+            if recovered.state == "confirmed" or not _candidate_explicitly_rejected(verification or {}):
+                return _error(
+                    "password_reset_completion_auth_failed" if recovered.state == "confirmed" else "password_reset_unconfirmed",
+                    str((verification or {}).get("error_category") or "auth"),
+                    message="密码已确认，重新登录收尾未完成" if recovered.state == "confirmed"
+                    else "候选密码尚未取得明确认证结果，可重跑继续核验",
+                    retryable=True, request_unknown=recovered.state != "confirmed",
+                    password_confirmed=recovered.state == "confirmed", stage="login_password",
+                    cause_code=code or "password_auth_evidence_missing",
+                )
+
+        _check_reset_mailbox(email)
+        if refresh_before_reset and _session_stale(account):
+            note("refresh_at", "改密前先刷新 AT，建立可重置的登录状态")
+            refreshed_context = {}
+            failure = _refresh_before_reset(
+                email, proxy=proxy, proxy_supplier=proxy_supplier, account=account,
+                refresh_driver=refresh_driver, authenticated_context=refreshed_context,
+            )
+            if failure is not None:
+                return failure
+            account = db.get_account_by_email(email) or account
+            cached = refreshed_context or protocol_sessions.load_session(account_id, email) or {}
+            remembered = device_profiles.load_profile(account_id, email) or {}
+            device = remembered or cached
+            profile = device.get("browser_profile")
+            if device.get("device_id") and isinstance(profile, dict) and profile:
+                identity = {"device_id": str(device["device_id"]), "browser_profile": dict(profile)}
         try:
             session, authorize = _network_preflight_with_retry(
                 email, proxy, proxy_supplier=proxy_supplier, identity=identity,
@@ -349,19 +515,9 @@ def run_protocol_password_reset(
         session.get(_RESET_PAGE, headers=session.get_auth_navigate_headers(referer=_AUTH + "/log-in/password"),
                     allow_redirects=True)
         note("password_reset", "已进入密码重置页面")
-        # 记住这次改密实际使用的设备（Python 协议画像），下次刷新/改密可原样复用。
-        try:
-            from core.accounts.liveness.protocol import v3 as _v3
-
-            payload = _v3._cookie_payload(session, {"user": {"id": account.get("user_id") or ""},
-                                                  "account": {"id": account.get("chatgpt_account_id") or ""}})
-
-            protocol_sessions.save_session(int(account.get("id") or 0), email, payload)
-            device_profiles.remember_session(
-                int(account.get("id") or 0), email, payload, origin="password_reset",
-            )
-        except Exception:
-            logger.warning("[改密] 设备画像缓存保存失败", exc_info=True)
+        # 本轮已选中的设备交给后续重新认证，旧认证 Cookie 不作为新会话保存。
+        if getattr(session, "device_id", None) and isinstance(getattr(session, "browser_profile", None), dict):
+            identity = {"device_id": session.device_id, "browser_profile": dict(session.browser_profile)}
 
         from config import email as email_cfg
 
@@ -371,40 +527,55 @@ def run_protocol_password_reset(
         for attempt in range(1, attempts + 1):
             if callable(checkpoint):
                 checkpoint()
+            otp_after_ts = time.time()
             _send_reset_otp(session)
             note("password_reset_otp", f"已发送重置验证码（{attempt}/{attempts}）")
             try:
-                otp_code = _wait_reset_otp(email, time.time(), check=checkpoint)
+                otp_code = _wait_reset_otp(email, otp_after_ts, check=checkpoint)
                 break
             except (CancellationRequested, OperationCancelled, OperationLeaseLost):
                 raise
-            except Exception as exc:  # noqa: BLE001 - 取码超时按配置重发
+            except ProtocolPasswordResetError as exc:
                 last_otp_error = exc
+                if exc.code != "password_reset_otp_timeout":
+                    raise
                 if attempt >= attempts:
                     break
                 note("password_reset_otp", f"验证码未到，重新发送（{attempt}/{attempts}）")
         if not otp_code:
-            return _error("password_reset_otp_timeout", "email",
-                          message=f"重置验证码超时：{last_otp_error}", retryable=True)
+            if last_otp_error is not None:
+                raise last_otp_error
+            return _error("password_reset_otp_timeout", "email", stage="wait_otp",
+                          message="等待本轮重置验证码超时", retryable=True)
 
         headers = session.get_auth_headers(referer=_AUTH + "/email-verification")
         response = session.post(_OTP_VALIDATE, headers=headers,
                                 data=json.dumps({"code": otp_code}), allow_redirects=False)
-        if response.status_code != 200:
-            return _error("password_reset_otp_rejected", "email", message=f"验证码被拒绝：HTTP {response.status_code}")
-        try:
-            payload = response.json() or {}
-        except Exception:
-            payload = {}
-        continue_url = str(payload.get("continue_url") or "")
+        payload = check_reset_response(response, stage="validate_otp")
+        continue_url = password_protocol._continuation(payload)
         if continue_url:
-            session.get(continue_url, headers=session.get_auth_navigate_headers(referer=_AUTH + "/email-verification"),
-                        allow_redirects=True)
+            from core.accounts.credentials import get_account_totp_secret_candidate
+
+            if password_protocol._is_mfa_page(continue_url):
+                continue_url = password_protocol._verify_mfa(
+                    session, payload, continue_url, get_account_totp_secret_candidate(account),
+                    checkpoint=checkpoint,
+                )
+            password_protocol._follow_password_page(
+                session, continue_url, referer=_AUTH + "/email-verification", checkpoint=checkpoint,
+            )
+        elif (payload.get("page") or {}).get("type") not in {"new_password", "password_reset"}:
+            raise ProtocolPasswordResetError(
+                "password_reset_page_unconfirmed", "验码后尚未确认进入新密码步骤",
+                stage="validate_otp", category="auth", cause_code="reset_page_missing", retryable=True,
+            )
         note("password_reset", "验证码通过，准备提交新密码")
 
         try:
             password = recovery.prepare(
-                lambda: str(new_password) if new_password is not None else generate_registration_password(),
+                lambda: str(new_password) if new_password is not None else generate_reset_password(
+                    _saved_password(account),
+                ),
             )
         except (CancellationRequested, OperationCancelled, OperationLeaseLost):
             raise
@@ -438,80 +609,20 @@ def run_protocol_password_reset(
         remote_dispatched = True
         response = session.post(_PASSWORD_RESET, headers=headers,
                                 data=json.dumps({"password": password}), allow_redirects=False)
-        if response.status_code != 200:
-            if response.status_code == 429:
-                return _error("password_reset_rate_limited", "network", message="重置请求被限流", retryable=True)
-            if response.status_code in {400, 401, 403}:
-                return _error("password_reset_rejected", "auth",
-                              message=f"重置请求被拒绝：HTTP {response.status_code}")
-            mark_unknown()
-            return _error("password_reset_request_unknown", "network",
-                          message=f"重置结果未知：HTTP {response.status_code}", retryable=True,
-                          request_unknown=True)
+        check_reset_response(response, stage="reset", result_unknown=True)
+        reset_response_accepted = True
         note("password_reset", "重置请求已接受，开始用新密码重新登录验证", state="success")
 
-        try:
-            verify = _run_password_verification(
-                email,
-                password,
-                account=account,
-                proxy=proxy,
-                proxy_supplier=proxy_supplier,
-            )
-        except (CancellationRequested, OperationCancelled, OperationLeaseLost):
-            raise
-        except Exception as exc:  # noqa: BLE001
-            mark_unknown()
-            return _error(
-                "password_reset_unconfirmed",
-                "auth",
-                message=f"新密码重新登录失败：{type(exc).__name__}",
-                retryable=True,
-                request_unknown=True,
-            )
+        verify = verify_candidate(password)
         if not _password_verification_accepted(verify):
             mark_unknown()
             return _error(
                 "password_reset_unconfirmed", "auth",
                 message="新密码已提交，但未取得明确的密码认证成功证据",
-                retryable=False,
-                request_unknown=True,
+                retryable=True, request_unknown=True, stage="login_password",
+                cause_code=str((verify or {}).get("error") or "password_auth_evidence_missing"),
             )
-        try:
-            confirmed_password = recovery.confirm("password_change_response")
-            checkpoint_state = recovery.checkpoint
-            if (not isinstance(confirmed_password, str)
-                    or confirmed_password != password
-                    or checkpoint_state is None
-                    or str(getattr(checkpoint_state, "state", "")).strip() != "confirmed"):
-                return _error(
-                    "password_reset_checkpoint_failed",
-                    "runtime",
-                    message="新密码确认写回未返回已确认检查点",
-                    request_unknown=True,
-                )
-        except (CancellationRequested, OperationCancelled, OperationLeaseLost):
-            raise
-        except recovery_store.PasswordRecoveryError as exc:
-            return _error(
-                "password_reset_checkpoint_failed",
-                "runtime",
-                message=f"新密码确认写回失败：{exc.code}",
-                request_unknown=True,
-            )
-        note("login_password_result", "新密码已重新登录验证并写入本地", state="success",
-             checkpoint="password_change_confirmed")
-        return {
-            "ok": True,
-            "status": "success",
-            "message": "密码重置完成",
-            "checked_at": checked_at,
-            "live_check_driver": "protocol_reset",
-            "auth_method": "protocol_reset",
-            "password_reset": "confirmed",
-            "password_confirmed": True,
-            "access_token": str(verify.get("access_token") or ""),
-        }
+        return finish(verify)
     except (CancellationRequested, OperationCancelled, OperationLeaseLost):
         if remote_dispatched:
             try:
@@ -521,32 +632,44 @@ def run_protocol_password_reset(
             except Exception:
                 logger.warning("[改密] 取消后未知回执状态保存失败", exc_info=True)
         raise
+    except ProtocolPasswordResetError as exc:
+        confirmed = recovery.checkpoint is not None and recovery.checkpoint.state == "confirmed"
+        if remote_dispatched and not confirmed:
+            mark_unknown()
+        return _error(
+            exc.code, exc.category, message=str(exc), retryable=exc.retryable,
+            request_unknown=(exc.request_unknown or reset_response_accepted) and not confirmed, stage=exc.stage,
+            cause_code=exc.cause_code, password_confirmed=confirmed, detail=exc.detail,
+            mutation_submitted=dispatched_fact(),
+            rejected=remote_dispatched and not reset_response_accepted and not exc.request_unknown and not confirmed,
+        )
+    except recovery_store.PasswordRecoveryError as exc:
+        confirmed = recovery.checkpoint is not None and recovery.checkpoint.state == "confirmed"
+        return _error(
+            "password_reset_checkpoint_failed", "runtime",
+            message=f"改密检查点或收尾写回失败：{exc.code}", retryable=True,
+            request_unknown=remote_dispatched and not confirmed, stage=active_stage,
+            cause_code=exc.code, password_confirmed=confirmed,
+            mutation_submitted=dispatched_fact(),
+        )
     except Exception as exc:  # noqa: BLE001
-        if remote_dispatched:
+        confirmed = recovery.checkpoint is not None and recovery.checkpoint.state == "confirmed"
+        if remote_dispatched and not confirmed:
             try:
                 mark_unknown()
             except (CancellationRequested, OperationCancelled, OperationLeaseLost):
                 raise
             except Exception:
                 logger.warning("[改密] 未知回执状态保存失败", exc_info=True)
-            return _error(
-                "password_reset_request_unknown",
-                "network",
-                message=f"重置结果未知：{type(exc).__name__}",
-                retryable=True,
-                request_unknown=True,
-            )
-        text = str(exc)
-        code = "password_reset_failed"
-        category = "runtime"
-        retryable = False
-        if text.startswith("reset_rate_limited"):
-            code, category, retryable = "password_reset_rate_limited", "network", True
-        elif text.startswith("password_reset_send_otp_failed"):
-            code, category, retryable = "password_reset_send_otp_failed", "network", True
-        elif text.startswith("password_reset_otp_timeout"):
-            code, category, retryable = "password_reset_otp_timeout", "email", True
-        return _error(code, category, message=text[:300], retryable=retryable)
+        cause = str(getattr(exc, "code", "") or type(exc).__name__)
+        return _error(
+            "password_reset_completion_failed" if confirmed else "password_reset_stage_failed",
+            str(getattr(exc, "category", "") or "runtime"),
+            message=f"{'密码已确认，收尾' if confirmed else '改密'}在 {active_stage} 阶段未完成：{cause}",
+            retryable=True, request_unknown=remote_dispatched and not confirmed,
+            password_confirmed=confirmed, stage=active_stage, cause_code=cause,
+            mutation_submitted=dispatched_fact(),
+        )
     finally:
         if session is not None:
             try:
