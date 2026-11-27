@@ -29,18 +29,18 @@ function displayHtml(value:string):string {
 const rows=computed(()=>(props.stale&&props.loading?[]:props.items).map(row=>({row,id:String(row.id),cells:Object.fromEntries(accountColumns.filter(column=>column.cell).map(column=>[column.cell!,displayHtml(props.presentation.cell(column.cell!,row))])),menu:props.presentation.menu(row),mobile:props.presentation.mobileSummary(row),tone:props.presentation.rowTone(row)})));
 type TeamMembershipItem=NonNullable<AccountViewRow['team_memberships']>[number];
 const teamRoleLabels:Record<string,string>={owner:'所有者',admin:'管理员',member:'成员'};
-const teamStateLabels:Record<string,string>={invited:'待接受',joining:'入组中'};
+const teamStateLabels:Record<string,string>={unconfirmed:'待确认',left:'已退出'};
 function teamMembershipText(m:DeepReadonly<TeamMembershipItem>){
-  const name=m.display_name||m.workspace_name||m.workspace_id||`#${m.team_id}`;
+  const name=m.display_name||m.name||m.workspace_id||`#${m.team_id}`;
   const role=teamRoleLabels[String(m.role||'').toLowerCase()]||'';
   const state=teamStateLabels[String(m.membership_state||'').toLowerCase()]||'';
   const meta=[role,state].filter(Boolean).join('·');
   return meta?`${name} · ${meta}`:name;
 }
 function teamMembershipTitle(m:DeepReadonly<TeamMembershipItem>){
-  const name=m.display_name||m.workspace_name||m.workspace_id||`#${m.team_id}`;
+  const name=m.display_name||m.name||m.workspace_id||`#${m.team_id}`;
   const role=teamRoleLabels[String(m.role||'').toLowerCase()]||m.role||'待核验';
-  const state={joined:'已加入',invited:'待接受',joining:'入组中'}[String(m.membership_state||'').toLowerCase()]||m.membership_state||'未知';
+  const state={joined:'已加入',unconfirmed:'待确认',left:'已退出'}[String(m.membership_state||'').toLowerCase()]||m.membership_state||'未知';
   return `${name} · 角色：${role} · 状态：${state} · Team #${m.team_id}`;
 }
 const filterFor=(key:string)=>accountFilters.find(column=>column.key===key)!;

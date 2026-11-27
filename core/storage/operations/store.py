@@ -40,7 +40,18 @@ def _task_read_connection():
     return task_read_connection(_common._connect, _schema.init_operation_schema)
 
 
-def list_batches(*, limit: int = 50) -> list[dict]:
+def list_batches(*, limit: int = 50, team_id: int | None = None) -> list[dict]:
+    clause = ""
+    params = []
+    if team_id is not None:
+        clause = (
+            f"WHERE EXISTS (SELECT 1 FROM {_common._table('operation_tasks')} t "
+            "WHERE t.team_id=%s AND t.task_deleted_by_user IS FALSE AND "
+            f"(t.batch_id=b.id OR EXISTS (SELECT 1 FROM {_common._table('operation_batch_items')} item "
+            "WHERE item.batch_id=b.id AND item.task_id=t.id)))"
+        )
+        params.append(int(team_id))
+    params.append(max(1, min(200, int(limit or 50))))
     with _task_read_connection() as conn, conn.cursor() as cur:
         cur.execute(
             f"""
@@ -53,9 +64,10 @@ def list_batches(*, limit: int = 50) -> list[dict]:
                    END AS projection_lag_ms
             FROM {_common._table('operation_batches')} b
             LEFT JOIN {_common._table('operation_projection_queue')} q ON q.batch_id=b.id
+            {clause}
             ORDER BY b.created_at DESC, b.id DESC LIMIT %s
             """,
-            (max(1, min(200, int(limit or 50))),),
+            params,
         )
         batches = []
         for raw in cur.fetchall():
@@ -68,7 +80,7 @@ def list_batches(*, limit: int = 50) -> list[dict]:
 
 def _operation_task_where(
     *, task_type: str = "", status: str = "", source: str = "", q: str = "",
-    batch_id: int | None = None, task_id: str = "", target: str = "",
+    batch_id: int | None = None, team_id: int | None = None, task_id: str = "", target: str = "",
     target_status: str = "", batch: str = "", run_count: str = "",
     stage: str = "", created_from: str = "", created_to: str = "", result: str = "",
     exclude: str = "", run_count_expression: str | None = None, public_status: bool = False,
@@ -102,7 +114,15 @@ def _operation_task_where(
         )
     add("status", f"({status_expression})=%s", public_result_status(status) if public_status else str(status)) if status else None
     add("source", "t.source_system=%s", str(source)) if source else None
-    add("batch_id", "t.batch_id=%s", int(batch_id)) if batch_id else None
+    if batch_id:
+        add(
+            "batch_id",
+            f"(t.batch_id=%s OR EXISTS (SELECT 1 FROM {_common._table('operation_batch_items')} item "
+            "WHERE item.batch_id=%s AND item.task_id=t.id))",
+            int(batch_id), int(batch_id),
+        )
+    if team_id is not None:
+        add("team_id", "t.team_id=%s", int(team_id))
 
     if q:
         needle = f"%{str(q).strip()}%"
@@ -411,7 +431,7 @@ def _attach_plan_failure_summaries(items: list[dict], *, conn, run_rows: bool = 
 
 def list_tasks(
     *, page: int = 1, page_size: int = 50, task_type: str = "", status: str = "",
-    source: str = "", q: str = "", batch_id: int | None = None, task_id: str = "",
+    source: str = "", q: str = "", batch_id: int | None = None, team_id: int | None = None, task_id: str = "",
     target: str = "", target_status: str = "", batch: str = "", run_count: str = "",
     stage: str = "", created_from: str = "", created_to: str = "", result: str = "",
     include_facets: bool = True, public_status: bool = False,
@@ -423,6 +443,7 @@ def list_tasks(
         and status == "running"
         and not include_facets
         and batch_id is None
+        and team_id is None
         and not any((
             task_type, source, q, task_id, target, target_status, batch,
             run_count, stage, created_from, created_to, result,
@@ -435,7 +456,7 @@ def list_tasks(
     requested_status_expression = "r.requested_status" if public_status and not (q or result) else None
     run_count_expression = "COALESCE(r.run_count, 0)"
     filters = dict(
-        task_type=task_type, status=status, source=source, q=q, batch_id=batch_id,
+        task_type=task_type, status=status, source=source, q=q, batch_id=batch_id, team_id=team_id,
         task_id=task_id, target=target, target_status=target_status, batch=batch,
         run_count=run_count, stage=stage, created_from=created_from,
         created_to=created_to, result=result,
@@ -1637,9 +1658,12 @@ def reconcile_parent_task(parent_task_id: int) -> dict | None:
 
 def create_runtime_batch(
     *, batch_type: str, title: str, requested_count: int, trigger: str = "manual",
-    data: dict | None = None,
+    data: dict | None = None, conn=None,
 ) -> dict:
-    return _runtime.create_runtime_batch(batch_type=batch_type, title=title, requested_count=requested_count, trigger=trigger, data=data)
+    return _runtime.create_runtime_batch(
+        batch_type=batch_type, title=title, requested_count=requested_count, trigger=trigger, data=data,
+        **({"conn": conn} if conn is not None else {}),
+    )
 
 
 def _insert_runtime_run(
@@ -1667,6 +1691,7 @@ def create_runtime_task(
     batch_id: int | None = None,
     batch_ordinal: int | None = None,
     parent_task_id: int | None = None,
+    team_id: int | None = None,
     resource_family: str = "openai_interactive",
     data: dict | None = None,
     source_system: str = "native_operations",
@@ -1677,7 +1702,7 @@ def create_runtime_task(
     claim_before_create=None,
     conn=None,
 ) -> dict:
-    return _runtime.create_runtime_task(task_type=task_type, account_id=account_id, email=email, trigger=trigger, batch_id=batch_id, batch_ordinal=batch_ordinal, parent_task_id=parent_task_id, resource_family=resource_family, data=data, source_system=source_system, source_id=source_id, idempotency_key=idempotency_key,
+    return _runtime.create_runtime_task(task_type=task_type, account_id=account_id, email=email, trigger=trigger, batch_id=batch_id, batch_ordinal=batch_ordinal, parent_task_id=parent_task_id, team_id=team_id, resource_family=resource_family, data=data, source_system=source_system, source_id=source_id, idempotency_key=idempotency_key,
                                         account_request=account_request, lock_account_request=lock_account_request, claim_before_create=claim_before_create, conn=conn)
 
 

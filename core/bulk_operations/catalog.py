@@ -12,10 +12,13 @@ OPERATIONS = {
     "twofa_setup": "补 2FA",
     "codex_retry": "补 Codex",
     "account_completion": "组合补全",
+    "team_join": "加入 Team",
 }
+BATCH_OPERATIONS = tuple(key for key in OPERATIONS if key != "team_join")
 
 # 这里只开放本批常用选项，值的定义和校验仍由现有配置 schema 负责。
 _PARAMETER_CONFIG = {
+    "team_join": {},
     "plan_check": {"countries": "PLAN_CHECK_COUNTRIES", "driver": "ACCOUNT_PLAN_CHECK_DRIVER",
                    "auto_refresh_at_enabled": "PLAN_CHECK_AUTO_REFRESH_AT_ENABLED"},
     "token_refresh": {"refresh_driver": "ACCOUNT_AT_REFRESH_DRIVER", "refresh_protocol_version": "OPENAI_PROTOCOL_VERSION"},
@@ -53,6 +56,13 @@ def normalize_parameters(operation_key: str, parameters: Mapping | None = None) 
     if parameters is not None and not isinstance(parameters, Mapping):
         raise ParameterError("操作参数必须为对象")
     result = dict(parameters or {})
+    if operation_key == "team_join":
+        value = result.get("team_id")
+        if (set(result) != {"team_id"} or not isinstance(value, str) or not value.isascii()
+                or not value.isdecimal() or value.startswith("0") or len(value) > 19
+                or not 0 < int(value) < 2**63):
+            raise ParameterError("team_id 必须为本地 Team 的正整数十进制字符串")
+        return {"team_id": value}
     allowed = set(_PARAMETER_CONFIG[operation_key])
     if operation_key == "plan_check":
         allowed.add("timezone_offset_min")
@@ -81,6 +91,9 @@ def normalize_parameters(operation_key: str, parameters: Mapping | None = None) 
 def _parameter_schema(operation_key: str, effective: Mapping) -> dict:
     from config import schema
 
+    if operation_key == "team_join":
+        return {"team_id": {"type": "string", "label": "目标 Team", "optional": False,
+                            "pattern": "^[1-9][0-9]{0,18}$"}}
     result = {}
     for name, config_key in _PARAMETER_CONFIG[operation_key].items():
         field = schema.CONFIG_SCHEMA[config_key]
@@ -126,7 +139,9 @@ def capture_settings(operation_key: str, parameters: Mapping | None = None) -> d
 
     parameters = normalize_parameters(operation_key, parameters)
     unavailable = None
-    if operation_key == "plan_check":
+    if operation_key == "team_join":
+        snapshot = {"config_snapshot_revision": "team_join.v1"}
+    elif operation_key == "plan_check":
         from core.accounts.plans.service import PLAN_CONFIG_ALLOWLIST
         captured = _with_parameters(schema.non_sensitive_snapshot(), operation_key, parameters)
         snapshot = normalize_config_snapshot(captured, allowlist=PLAN_CONFIG_ALLOWLIST)
@@ -179,19 +194,25 @@ def capture_settings(operation_key: str, parameters: Mapping | None = None) -> d
 
 def catalog() -> dict:
     operations = []
+    selection_operations = []
     for key, label in OPERATIONS.items():
-        settings = capture_settings(key)
+        settings = ({"availability": {"available": True, "reason_code": None, "reason": ""},
+                     "effective_settings": {"config_revision": "team_join.v1"}}
+                    if key == "team_join" else capture_settings(key))
         parameter_schema = _parameter_schema(key, settings["effective_settings"])
-        operations.append({"key": key, "version": 1, "label": label, "target_kind": "account",
-                           "availability": settings["availability"], "parameter_schema": parameter_schema,
-                           "effective_settings": settings["effective_settings"],
-                           "capabilities": {"cancel_not_started": True, "request_stop": True, "pause": True,
-                                            "resume": True, "country_override": key == "plan_check"},
-                           "result_schema_version": 1, "result_panel": key})
-    return {"catalog_revision": "3", "query_schema": {"version": 1, "entity": "account"},
+        entry = {"key": key, "version": 1, "label": label, "target_kind": "account",
+                 "availability": settings["availability"], "parameter_schema": parameter_schema,
+                 "effective_settings": settings["effective_settings"],
+                 "capabilities": {"cancel_not_started": True, "request_stop": True,
+                                  "pause": key in BATCH_OPERATIONS,
+                                  "resume": key in BATCH_OPERATIONS, "country_override": key == "plan_check"},
+                 "result_schema_version": 1, "result_panel": key}
+        # 既有批量创建页只消费 operations；Team 名单由专用加入入口执行。
+        (operations if key in BATCH_OPERATIONS else selection_operations).append(entry)
+    return {"catalog_revision": "4", "query_schema": {"version": 1, "entity": "account"},
             "limits": {"explicit_ids_max": 10000, "target_limit_max": 100000,
                        "page_size_max": 100, "concurrency_max": 128, "selection_ttl_seconds": 1800},
-            "operations": operations}
+            "operations": operations, "selection_operations": selection_operations}
 
 
 get_catalog = catalog

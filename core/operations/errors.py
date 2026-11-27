@@ -1154,10 +1154,76 @@ _OTP_PAGE_NETWORK_CAUSES: dict[str, tuple[str, str]] = {
 }
 
 
+_TEAM_CAUSE_DETAILS: dict[str, tuple[str, str]] = {
+    "probe_not_ready": ("TEAM-PROBE-NOT-READY", "管理账号探测尚未完成，请等待原探测结果"),
+    "probe_expired": ("TEAM-PROBE-EXPIRED", "管理账号探测证据已过期，请重新探测"),
+    "probe_revision_conflict": ("TEAM-PROBE-REVISION", "管理账号探测证据版本已变化，请读取当前证据"),
+    "probe_identity_mismatch": ("TEAM-PROBE-IDENTITY", "探测证据与本次管理账号或目标工作区不一致"),
+    "manager_permission_unconfirmed": ("TEAM-MANAGER-UNCONFIRMED", "尚未确认管理账号对目标工作区的管理权限"),
+    "team_already_bound": ("TEAM-ALREADY-BOUND", "目标工作区已经绑定本地 Team，请读取原绑定记录"),
+    "already_in_another_team": ("TEAM-OTHER-OWNERSHIP", "目标账号已被其他本地 Team 占用，保留原归属"),
+    "already_member": ("TEAM-ALREADY-MEMBER", "目标账号已经是当前 Team 成员，本次无需重复加入"),
+    "missing_auth_materials": ("TEAM-AUTH-MISSING", "目标账号已确认缺少本次加入所需的认证材料"),
+    "account_identity_changed": ("TEAM-ACCOUNT-IDENTITY", "当前账号身份与固定邮箱快照不符，保留原定目标"),
+    "team_limit_required": ("TEAM-LIMIT-REQUIRED", "缺少已购席位及本地人数上限，请先配置或同步"),
+    "selection_team_mismatch": ("TEAM-SELECTION-MISMATCH", "固定名单所属 Team 与本次目标 Team 不一致"),
+    "no_eligible_targets": ("TEAM-NO-TARGETS", "当前固定名单中没有可处理的加入目标"),
+    "team_workspace_unavailable": ("TEAM-WORKSPACE-UNAVAILABLE", "管理账号当前无法读取目标工作区，请核对远端证据"),
+    "team_permission_denied": ("TEAM-PERMISSION-DENIED", "远端已明确拒绝当前管理账号的工作区管理操作"),
+    "team_invite_rate_limited": ("TEAM-INVITE-RATE", "远端邀请请求受到限流，请按实际回执延后或重跑"),
+    "team_invite_rejected": ("TEAM-INVITE-REJECTED", "远端已明确拒绝本次邀请，请查看具体拒绝依据"),
+    "team_invite_receipt_missing": ("TEAM-INVITE-RECEIPT", "邀请请求未取得有效回执，重跑时先核对远端邀请事实"),
+    "team_invitation_expired": ("TEAM-INVITATION-EXPIRED", "目标邀请已明确过期，重跑时核对是否需要重新邀请"),
+    "team_invitation_revoked": ("TEAM-INVITATION-REVOKED", "目标邀请已明确撤回，重跑时核对是否需要重新邀请"),
+    "team_workspace_mismatch": ("TEAM-WORKSPACE-MISMATCH", "接受或成员核验取得的工作区与本次目标不一致"),
+    "team_member_unconfirmed": ("TEAM-MEMBER-UNCONFIRMED", "尚未确认目标账号属于指定 Team，请继续成员核验"),
+    "team_save_failed": ("TEAM-SAVE-FAILED", "本次加入结果尚未完成本地保存，保留已确认的远端成员事实"),
+    "team_execution_lost": ("TEAM-EXECUTION-LOST", "当前执行租约已经失效，请恢复核验后开启有效执行"),
+    "waiting_account": ("TEAM-WAIT-ACCOUNT", "等待目标账号的其他执行释放使用权"),
+    "waiting_sync": ("TEAM-WAIT-SYNC", "等待 Team 成员与邀请事实同步完成"),
+    "waiting_capacity": ("TEAM-WAIT-CAPACITY", "等待目标 Team 的可用名额"),
+    "team_join_endpoint_required": ("TEAM-JOIN-ENDPOINT", "请从 Team 管理发起加入，保留固定名单与目标团队的关联"),
+    "selection_transaction_required": ("TEAM-SELECTION-TRANSACTION", "Team 固定名单消费缺少事务，尚未完成持久受理"),
+    "team_outbox_store_failed": ("TEAM-OUTBOX-SAVE", "Team 出站任务尚未完成持久入队，可重跑原意图"),
+    "team_child_failed": ("TEAM-CHILD-FAILED", "Team 加入子任务未完成，请读取对应子任务的具体失败原因"),
+    "team_execution_failed": ("TEAM-EXECUTION-FAILED", "Team 执行阶段发生程序异常，请读取原阶段及异常类型"),
+    "team_accept_receipt_missing": ("TEAM-ACCEPT-RECEIPT", "接受邀请未取得有效回执，重跑时先核对远端成员事实"),
+    "team_account_busy": ("TEAM-ACCOUNT-BUSY", "等待目标账号的其他执行释放使用权"),
+    "team_store_unavailable": ("TEAM-STORE-UNAVAILABLE", "Team 存储暂不可用，尚未完成本次本地读取或持久受理"),
+    "team_auth_network_failed": ("TEAM-AUTH-NETWORK", "恢复 Team 认证会话的网络请求未完成"),
+    "team_auth_required": ("TEAM-AUTH-REQUIRED", "当前 Team 会话需要重新认证，不据此推断账号停用"),
+    "team_auth_response_invalid": ("TEAM-AUTH-RESPONSE", "Team 认证响应无法解析或格式不符合约定"),
+    "team_auth_context_invalid": ("TEAM-AUTH-CONTEXT", "Team 工作区认证材料无法恢复，请重新取得对应认证上下文"),
+    "team_remote_network_failed": ("TEAM-REMOTE-NETWORK", "Team 远端请求发生网络传输错误"),
+    "team_remote_http_failed": ("TEAM-REMOTE-HTTP", "Team 远端接口返回异常 HTTP 响应，请读取原始状态证据"),
+    "team_remote_response_invalid": ("TEAM-REMOTE-RESPONSE", "Team 远端响应结构无效，无法确认本次业务事实"),
+    "team_invite_unsupported": ("TEAM-INVITE-UNSUPPORTED", "当前 Team 适配器尚不支持发送邀请，可在支持后重跑"),
+    "team_accept_unsupported": ("TEAM-ACCEPT-UNSUPPORTED", "当前 Team 适配器尚不支持接受邀请，可在支持后重跑"),
+    "workspace_paid_seat_capacity_exhausted": ("TEAM-WORKSPACE-CAPACITY", "远端工作区已购席位不足，等待名额或同步后继续"),
+    "workspace_join_request_pending": ("TEAM-JOIN-APPROVAL", "远端工作区加入申请仍在等待审批，请保留当前意图"),
+    "workspace_invite_seat_type_mismatch": ("TEAM-INVITE-SEAT-TYPE", "远端邀请的席位类型与当前加入条件不符，请核对具体回执"),
+    "autojoin_retry_pending": ("TEAM-AUTOJOIN-PENDING", "远端工作区加入仍在等待重试，可按原目标继续核验"),
+}
+_TEAM_REMOTE_WAIT_REASONS = frozenset({
+    "workspace_paid_seat_capacity_exhausted", "workspace_join_request_pending", "autojoin_retry_pending",
+})
+_TEAM_NON_ERROR_REASONS = frozenset({
+    "probe_not_ready", "already_in_another_team", "already_member", "missing_auth_materials",
+    "account_identity_changed", "no_eligible_targets", "waiting_account", "waiting_sync", "waiting_capacity",
+    "team_account_busy", *_TEAM_REMOTE_WAIT_REASONS,
+})
+_TEAM_RECEIPT_MISSING_CAUSES = frozenset({"team_invite_receipt_missing", "team_accept_receipt_missing"})
+_TEAM_STAGES = frozenset({
+    "manager_auth", "workspace_discovery", "permission_check", "manager_verify", "state_check",
+    "invite", "member_auth", "accept", "member_verify", "persist",
+})
+
+
 _CAUSE_DETAILS: dict[str, tuple[str, str]] = {
     **{code: value for code, value in _BUTLER_RECIPIENT_CAUSES.items()
        if code not in _BUTLER_V2_SCOPED_CAUSES},
     **_OTP_PAGE_NETWORK_CAUSES,
+    **_TEAM_CAUSE_DETAILS,
     "local_email_inventory_empty": ("MAIL-LOCAL-STOCK-001", "本地邮箱库存为空"),
     "email_resource_expired": ("MAIL-RESOURCE-001", "原邮箱已超过有效期，请保留原身份并检查邮箱资源"),
     "email_resource_expiry_invalid": ("MAIL-RESOURCE-002", "邮箱有效期格式无效，需要明确带时区的绝对时间"),
@@ -1432,6 +1498,7 @@ _CAUSE_DETAILS: dict[str, tuple[str, str]] = {
 _LEGACY_TEXT_CAUSE_ORDER = {
     code: index for index, code in enumerate(sorted(_CAUSE_DETAILS, key=len, reverse=True))
     if code not in {"auth_cloudflare_challenge", "email_otp_code_rejected", "auth_route_rejected"}
+    and code not in _TEAM_CAUSE_DETAILS
 }
 _LEGACY_TEXT_CAUSE_PATTERN = re.compile(
     r"(?<!\w)(?=(" + "|".join(re.escape(code) for code in _LEGACY_TEXT_CAUSE_ORDER) + r")(?!\w))"
@@ -2280,6 +2347,27 @@ def _cause_error_projection(
                           next_action="restart_and_retry")
     if cause["cause_code"] == "codex_phone_verification_disabled":
         projection.update(remote_state_impact="not_started", next_action="fix_configuration")
+    if cause["cause_code"] in _TEAM_CAUSE_DETAILS:
+        projection.update(source="workflow", source_label="Team 管理")
+        projection["title"] = f"Team 管理 · {cause['cause_summary']}"
+        projection["is_error"] = cause["cause_code"] not in _TEAM_NON_ERROR_REASONS
+        if cause["cause_code"].startswith("waiting_") or cause["cause_code"] in {"probe_not_ready", "team_account_busy"}:
+            projection.update(next_action="wait", remote_state_impact="not_started")
+        if cause["cause_code"] in _TEAM_REMOTE_WAIT_REASONS:
+            projection["next_action"] = "wait"
+        if cause["cause_code"] in _TEAM_RECEIPT_MISSING_CAUSES:
+            projection["next_action"] = "retry_with_reconcile"
+        if cause["cause_code"] in {
+            "team_store_unavailable", "team_outbox_store_failed", "selection_transaction_required",
+            "team_auth_context_invalid", "team_execution_failed",
+        }:
+            projection.update(source="internal", source_label="Team 本地执行")
+        elif cause["cause_code"] in {"team_auth_network_failed", "team_remote_network_failed",
+                                    "team_auth_response_invalid", "team_remote_response_invalid",
+                                    "team_auth_required", "team_remote_http_failed"}:
+            projection.update(source="external", source_label="Team 远端服务")
+        if cause["cause_code"] in {"team_invite_unsupported", "team_accept_unsupported"}:
+            projection.update(remote_state_impact="not_started", next_action="retry_when_supported")
     if error_code:
         projection["original_error_code"] = error_code
     return projection
@@ -2734,7 +2822,11 @@ def classify_task_error(
     """具体原因优先展示；回执缺失只约束后续操作，不充当通用主错误。"""
     raw = str(message or "").strip()
     summary_data = result_summary if isinstance(result_summary, dict) else {}
+    saved_team_stage = normalize_stage(summary_data.get("failure_stage") or stage)
     stage = _failure_stage(stage, summary_data)
+    if str(task_type or "").startswith("team_") and saved_team_stage in _TEAM_STAGES:
+        # Team 阶段描述实际执行位置，不用认证子请求阶段覆盖成员认证等业务阶段。
+        stage = saved_team_stage
     task_status_key = str(task_status or "").strip().lower()
     concurrency_projection = _concurrency_error_projection(raw, error_code, summary_data, stage)
     if concurrency_projection is not None:
@@ -2907,6 +2999,20 @@ def classify_task_error(
             # 内核诊断已证明失败发生在取码等待；进度阶段可能仍停在认证阶段。
             stage = "email_otp"
     raw_projection = None
+    if cause is not None and cause["cause_code"] in _TEAM_CAUSE_DETAILS:
+        # Team 摘要只描述业务阶段，已保存的密码、验证码、网络或存储细因仍优先。
+        explicit_code = str(error_code or "").strip()
+        if explicit_code and explicit_code not in _TEAM_CAUSE_DETAILS:
+            explicit_cause = _specific_error_cause({**summary_data, "cause_code": explicit_code})
+            if explicit_cause is not None:
+                cause = explicit_cause
+        if cause["cause_code"] in _TEAM_CAUSE_DETAILS:
+            raw_projection = _classify_raw_task_error(raw, stage=stage, task_type=task_type, error_code=error_code)
+            if raw_projection is not None and raw_projection["code"] in {
+                TaskErrorCode.INTERNAL_STORAGE.value, TaskErrorCode.EXTERNAL_NETWORK.value,
+                TaskErrorCode.EXTERNAL_NETWORK_MFA_TRANSPORT.value, TaskErrorCode.EXTERNAL_PROXY.value,
+            }:
+                cause = None
     if cause is not None and cause["cause_code"] in {
         "refresh_driver_exception", "protocol_v2_unknown_error", "protocol_v3_unknown_error",
         "protocol_rust_unknown_error", "post_register_failure",
@@ -2941,6 +3047,9 @@ def classify_task_error(
             "reconcile_required": True, "retryability": "manual_only",
             "remote_state_impact": "unknown", "next_action": "manual_reconcile",
         })
+        if projection["code"] in _TEAM_RECEIPT_MISSING_CAUSES:
+            # 回执未知需要重跑前核对，不永久阻断 Team 批量任务的人工重跑。
+            projection.update(retryability="conditional", next_action="retry_with_reconcile")
     return projection
 
 

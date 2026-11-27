@@ -10,11 +10,11 @@ import type {
   TeamsHostCallbacks,
 } from './contracts';
 import {
-  computeCapacityPercentage,
+  teamDisplayName,
+  teamEffectiveLimit,
   formatNullableCount,
   formatSeatLimitDisplay,
   isTeamActivelyRunning,
-  teamCapacityBasisLabel,
   teamReasonLabel,
   teamRoleLabel,
   teamRoleTone,
@@ -67,13 +67,11 @@ function badgeClass(tone: BadgeTone): string {
 
 const showPermissionBanner = computed(() => {
   if (!team.value || !actions.value) return false;
-  if (team.value.can_manage === false) return true;
   const code = actions.value.join.reason_code;
-  return code === 'team_permission_denied' || code === 'team_manager_auth_failed';
+  return code === 'team_permission_denied' || code === 'team_auth_required';
 });
 
 const permissionBannerMessage = computed(() => {
-  if (actions.value?.join.reason) return actions.value.join.reason;
   if (actions.value?.join.reason_code) return teamReasonLabel(actions.value.join.reason_code);
   return '当前管理母号缺少管理权限或登录态已失效，暂不可执行邀请操作。';
 });
@@ -92,7 +90,7 @@ const joinButtonTitle = computed(() => {
   if (joinAction.reason_code === 'team_limit_required') {
     return '当前未返回已购席位，点击可先配置本地上限或选人并设置上限';
   }
-  return joinAction.reason || teamReasonLabel(joinAction.reason_code);
+  return teamReasonLabel(joinAction.reason_code);
 });
 
 const syncDisabled = computed(() => {
@@ -102,20 +100,6 @@ const syncDisabled = computed(() => {
 });
 
 const seatDisplay = computed(() => (team.value ? formatSeatLimitDisplay(team.value) : null));
-const capacityPct = computed(() => (team.value ? computeCapacityPercentage(team.value.capacity) : null));
-
-const seatMeterClass = computed(() => {
-  if (!team.value) return '';
-  const cap = team.value.capacity;
-  if (!cap.can_accept_new_joins && (cap.blocking_reason_code === 'team_seat_full' || cap.blocking_reason_code === 'team_limit_reached')) {
-    return 'is-danger';
-  }
-  if (cap.blocking_reason_code === 'team_limit_required' || (cap.remaining_before_limit !== null && cap.remaining_before_limit <= 1)) {
-    return 'is-warn';
-  }
-  return '';
-});
-
 function closeMenus(): void {
   const root = rootRef.value;
   if (!root) return;
@@ -132,6 +116,7 @@ function handleDocumentClick(event: MouseEvent): void {
 }
 
 async function fetchDetail(options: { silent?: boolean } = {}): Promise<void> {
+  if (!props.visible) return;
   if (!props.teamId) return;
   activeController?.abort();
   const controller = new AbortController();
@@ -158,7 +143,7 @@ async function fetchDetail(options: { silent?: boolean } = {}): Promise<void> {
     if (activeController === controller) {
       activeController = null;
     }
-    if (seq === requestSeq && !options.silent) {
+    if (seq === requestSeq) {
       loading.value = false;
     }
   }
@@ -168,7 +153,7 @@ async function handleSync(): Promise<void> {
   if (!team.value || syncDisabled.value) return;
   syncing.value = true;
   try {
-    const res = await props.api.syncTeam(team.value.team_id);
+    const res = await props.api.syncTeam(team.value.id);
     props.callbacks.notify(res.reused ? '当前已有进行中的同步任务，正在追踪进度' : '已启动工作区同步任务');
     await fetchDetail({ silent: true });
   } catch (err) {
@@ -183,7 +168,7 @@ async function handleReverify(): Promise<void> {
   closeMenus();
   reverifying.value = true;
   try {
-    const res = await props.api.reverifyTeam(team.value.team_id);
+    const res = await props.api.reverifyTeam(team.value.id);
     props.callbacks.notify('已提交管理权限重新核验任务');
     if (res.task_id) {
       await fetchDetail({ silent: true });
@@ -198,7 +183,7 @@ async function handleReverify(): Promise<void> {
 function handleOpenTasks(): void {
   if (!team.value) return;
   closeMenus();
-  props.callbacks.openTasksForTeam(team.value.team_id, team.value.effective_name);
+  props.callbacks.openTasksForTeam(team.value.id, teamDisplayName(team.value));
 }
 
 function handleOpenEdit(): void {
@@ -248,6 +233,17 @@ onMounted(() => {
   document.addEventListener('click', handleDocumentClick);
 });
 
+watch(() => props.visible, active => {
+  if (active) {
+    void fetchDetail();
+  } else {
+    activeController?.abort();
+    activeController = null;
+    requestSeq += 1;
+    loading.value = false;
+  }
+});
+
 onBeforeUnmount(() => {
   activeController?.abort();
   document.removeEventListener('click', handleDocumentClick);
@@ -257,7 +253,7 @@ defineExpose({
   refresh: (options?: { silent?: boolean }) => fetchDetail(options),
   refreshAll,
   updateTeamSnapshot: (nextTeam: TeamDTO) => {
-    if (detail.value && detail.value.team.team_id === nextTeam.team_id) {
+    if (detail.value && detail.value.team.id === nextTeam.id) {
       detail.value = { ...detail.value, team: nextTeam };
     }
     void fetchDetail({ silent: true });
@@ -298,7 +294,7 @@ defineExpose({
       <div class="tm-banner__copy">
         <strong>最近一次同步失败：</strong>
         <span>
-          {{ team.last_sync_error?.summary || teamReasonLabel(team.last_sync_error?.reason_code, team.last_sync_error) }}。
+          同步详情请查看相关任务。
           以下展示上次成功同步快照（{{ team.last_synced_at ? callbacks.formatDateTime(team.last_synced_at) : '暂无成功快照' }}）。
         </span>
       </div>
@@ -311,14 +307,7 @@ defineExpose({
         >
           立即重新同步
         </button>
-        <button
-          v-if="team.last_sync_task_id"
-          type="button"
-          class="tm-btn tm-btn--sm tm-btn--ghost"
-          @click="callbacks.openTask(team.last_sync_task_id, team.last_sync_run_id)"
-        >
-          查看同步任务
-        </button>
+
       </div>
     </div>
 
@@ -356,18 +345,18 @@ defineExpose({
             :style="{ '--tm-hue': String(workspaceAvatarHue(team.workspace_id)) }"
             aria-hidden="true"
           >
-            {{ workspaceInitials(team.effective_name) }}
+            {{ workspaceInitials(teamDisplayName(team)) }}
           </div>
 
           <div class="tm-hero-heading">
             <div class="tm-hero-name-row">
-              <h2>{{ team.effective_name }}</h2>
-              <span v-if="team.plan_type" class="tm-plan-tag">{{ team.plan_type }}</span>
+              <h2>{{ teamDisplayName(team) }}</h2>
+
               <span
-                v-if="team.display_name && team.workspace_name && team.display_name !== team.workspace_name"
+                v-if="team.display_name && team.name && team.display_name !== team.name"
                 class="tm-cell-sub"
               >
-                原名：{{ team.workspace_name }}
+                原名：{{ team.name }}
               </span>
               <button
                 type="button"
@@ -385,17 +374,17 @@ defineExpose({
               <span>
                 管理母号：
                 <button
-                  v-if="team.manager_account.account_id"
+                  v-if="team.manager_account.id"
                   type="button"
                   class="tm-link-btn"
-                  @click="callbacks.openAccountDetail(team.manager_account.account_id)"
+                  @click="callbacks.openAccountDetail(team.manager_account.id)"
                 >
-                  {{ team.manager_account.email || `#${team.manager_account.account_id}` }}
+                  {{ team.manager_account.email || `#${team.manager_account.id}` }}
                 </button>
                 <span v-else>{{ team.manager_account.email || '—' }}</span>
               </span>
-              <span class="tm-badge" :class="badgeClass(teamRoleTone(team.manager_role))">
-                {{ teamRoleLabel(team.manager_role) }}
+              <span class="tm-badge" :class="badgeClass(teamRoleTone(team.role))">
+                {{ teamRoleLabel(team.role) }}
               </span>
               <span v-if="team.manager_account.archived" class="tm-badge tm-badge--neutral">已归档</span>
               <span>·</span>
@@ -420,7 +409,7 @@ defineExpose({
             type="button"
             class="tm-btn"
             :disabled="syncDisabled"
-            :title="actions?.sync.reason || '同步工作区成员、邀请与席位'"
+            title="同步工作区成员、邀请与席位"
             @click="void handleSync()"
           >
             {{ syncing || team.last_sync_status === 'queued' || team.last_sync_status === 'running' ? '同步中…' : '同步' }}
@@ -493,25 +482,21 @@ defineExpose({
           </div>
         </div>
 
-        <div class="tm-seat-meter" :class="seatMeterClass">
+        <div class="tm-seat-meter">
           <div class="tm-seat-meter__head">
-            <span class="tm-seat-meter__title">仅使用已购剩余席位</span>
+            <span class="tm-seat-meter__title">席位与本地上限</span>
             <span v-if="seatDisplay" class="tm-badge" :class="badgeClass(seatDisplay.tone)">
-              {{ teamCapacityBasisLabel(team.capacity.basis) }}
+              加入前核算容量
             </span>
-          </div>
-
-          <div class="tm-seat-meter__track" role="progressbar" :aria-valuenow="capacityPct ?? undefined" aria-valuemin="0" aria-valuemax="100">
-            <div class="tm-seat-meter__fill" :style="{ width: `${capacityPct ?? 0}%` }"></div>
           </div>
 
           <div class="tm-seat-meter__foot">
             <span>
-              已占 {{ formatNullableCount(team.capacity.occupied_count, '待同步') }} /
-              有效上限 {{ formatNullableCount(team.capacity.effective_limit, '未设置') }}
+              已占待预检 /
+              有效上限 {{ formatNullableCount(teamEffectiveLimit(team), '未设置') }}
             </span>
             <span>
-              剩余可拉 {{ formatNullableCount(team.capacity.remaining_before_limit, '待同步', ' 席') }}
+              可用余量待预检
             </span>
           </div>
           <div class="tm-seat-meter__foot">
@@ -559,7 +544,7 @@ defineExpose({
           <span class="tm-tab-count">
             <template v-if="team">
               {{
-                team.processing_count > 0
+                (team.processing_count ?? 0) > 0
                   ? `${formatNullableCount(team.pending_invite_count, '待同步')} · 处理中 ${team.processing_count}`
                   : formatNullableCount(team.pending_invite_count, '待同步')
               }}

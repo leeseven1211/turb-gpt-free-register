@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import { TeamApiError, type TeamsApi } from '../../api/teams';
 import { useNativeDialog } from '../../shared/useNativeDialog';
 import type { TeamDTO } from './contracts';
@@ -19,8 +19,9 @@ const emit = defineEmits<{
   notify: [message: string];
 }>();
 
+const isActiveDialog = computed(() => props.open && props.visible);
 const dialogRef = ref<HTMLDialogElement>();
-useNativeDialog(dialogRef, () => props.open && props.visible, () => props.visible);
+useNativeDialog(dialogRef, () => isActiveDialog.value, () => props.visible);
 
 const displayNameInput = ref('');
 const plannedLimitInput = ref('');
@@ -28,7 +29,19 @@ const submitting = ref(false);
 const errorMessage = ref('');
 const hasConflict = ref(false);
 
-const isActiveDialog = computed(() => props.open && props.visible);
+let dialogSession = 0;
+
+watch(
+  [() => props.open, () => props.team?.id],
+  () => {
+    ++dialogSession;
+    submitting.value = false;
+    errorMessage.value = '';
+    hasConflict.value = false;
+  },
+  { flush: 'sync' },
+);
+onBeforeUnmount(() => { ++dialogSession; });
 
 const purchasedSeatsText = computed(() => {
   const seats = props.team?.purchased_seats;
@@ -50,9 +63,9 @@ function syncFromTeam() {
 }
 
 watch(
-  () => [isActiveDialog.value, props.team?.team_id, props.team?.revision],
-  ([active]) => {
-    if (active) {
+  [() => props.open, () => props.team?.id, () => props.team?.revision],
+  ([open]) => {
+    if (open) {
       syncFromTeam();
     }
   },
@@ -76,7 +89,8 @@ function parseLimit(): { ok: true; value: number | null } | { ok: false; message
 }
 
 async function submit() {
-  if (!props.team || submitting.value) return;
+  const team = props.team;
+  if (!props.open || !team || submitting.value) return;
   errorMessage.value = '';
   hasConflict.value = false;
 
@@ -92,17 +106,22 @@ async function submit() {
     return;
   }
 
+  const session = dialogSession;
+  const current = () =>
+    session === dialogSession && props.open && props.team?.id === team.id;
   submitting.value = true;
   try {
-    const res = await props.api.updateTeam(props.team.team_id, {
-      expected_revision: props.team.revision,
+    const res = await props.api.updateTeam(team.id, {
+      expected_revision: team.revision,
       display_name: trimmedName || null,
       planned_member_limit: parsedLimit.value,
     });
+    if (!current()) return;
     emit('notify', '工作区设置已保存');
     emit('updated', res.team);
     emit('close');
   } catch (err) {
+    if (!current()) return;
     if (err instanceof TeamApiError) {
       if (
         err.code === 'team_revision_conflict' ||
@@ -120,7 +139,7 @@ async function submit() {
       errorMessage.value = err instanceof Error ? err.message : '保存工作区设置失败';
     }
   } finally {
-    submitting.value = false;
+    if (current()) submitting.value = false;
   }
 }
 
@@ -163,7 +182,7 @@ function onBackdropClick(event: MouseEvent) {
         <h3 id="teamEditDialogTitle" class="tm-dialog__title">编辑工作区设置</h3>
         <p class="tm-dialog__desc">
           <template v-if="team">
-            工作区：<strong class="tm-mono">{{ team.workspace_id }}</strong> · 远端名称「{{ team.workspace_name || '未返回' }}」
+            工作区：<strong class="tm-mono">{{ team.workspace_id }}</strong> · 远端名称「{{ team.name || '未返回' }}」
           </template>
         </p>
       </div>
@@ -195,11 +214,11 @@ function onBackdropClick(event: MouseEvent) {
           v-model="displayNameInput"
           type="text"
           maxlength="120"
-          :placeholder="team?.workspace_name || '留空将恢复远端工作区名称'"
+          :placeholder="team?.name || '留空将恢复远端工作区名称'"
           :disabled="submitting"
         />
         <span class="tm-field__hint">
-          留空将清除自定义别名，恢复展示远端工作区名称「{{ team?.workspace_name || '未返回' }}」。
+          留空将清除自定义别名，恢复展示远端工作区名称「{{ team?.name || '未返回' }}」。
         </span>
       </label>
 

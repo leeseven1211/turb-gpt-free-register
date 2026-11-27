@@ -26,6 +26,7 @@ class OperationQuery:
     result: str = ""
     include_facets: bool = True
     include_batches: bool = True
+    team_id: int | None = None
 
     def store_arguments(self) -> dict:
         """批次导航属于查询编排，其余字段直接交给已有仓储。"""

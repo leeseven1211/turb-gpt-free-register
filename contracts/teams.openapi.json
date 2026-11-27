@@ -1,0 +1,5844 @@
+{
+  "openapi": "3.1.0",
+  "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
+  "info": {
+    "title": "Turb Team 管理 API",
+    "version": "1.0.0",
+    "description": "依据 2026-11-27 Team 管理 HTTP 契约 v1。仅包含新 /api/teams 端点，沿用既有同域认证；所有新响应采用 ok/request_id/data 或 error 包络。ID 不转换为 JavaScript Number，未知事实为 null。参数、请求与 DTO 使用封闭对象；不返回账号认证材料、完整账号或原始上游响应。既有任务中心/账号/selection 端点保留原包络，其扩展由各自契约管理。"
+  },
+  "tags": [
+    {
+      "name": "Team 管理",
+      "description": "本地 Team 记录、绑定探测、同步、成员/邀请、候选、预览和集合受理。详细执行证据统一通过任务中心读取。"
+    }
+  ],
+  "x-authentication": "沿用现有同域认证，未认证 401 authentication_required，拒绝访问 403 access_denied。",
+  "x-source-contract": "docs/superpowers/specs/2026-11-27-team-management-api-contract.md",
+  "paths": {
+    "/api/teams/binding-probes": {
+      "post": {
+        "operationId": "createTeamBindingProbe",
+        "summary": "异步探测管理账号",
+        "tags": [
+          "Team 管理"
+        ],
+        "responses": {
+          "202": {
+            "description": "已持久受理。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BindingProbeReceiptResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error422"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "description": "持久 Task/Run 后异步认证和读取远端。归档母号可探测；target_workspace_id 仅限制或预选，不创建 Team。",
+        "x-reject-unknown-query-parameters": true,
+        "x-idempotency": {
+          "required-one-of": [
+            "header:Idempotency-Key",
+            "body:idempotency_key"
+          ],
+          "normalization": "trim",
+          "equal-when-both-present": true,
+          "normalized-min-length": 16,
+          "normalized-max-length": 128,
+          "namespace": "teams",
+          "receipt-before-current-validation": true,
+          "description": "同键同路径同规范化请求复用原持久状态码与回执；同键变更路径、Team、操作、目标或执行选项返回 409 idempotency_conflict。先查原回执，再查名单到期、版本、当前权限。网络重发保留原键，新的人工作业使用新键；同目标未终态执行仍复用。"
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BindingProbeRequest"
+              }
+            }
+          },
+          "description": "必须为 JSON 对象，只接受本文列出的字段。也可仅通过请求头提供幂等键。"
+        }
+      }
+    },
+    "/api/teams/binding-probes/{probe_id}": {
+      "get": {
+        "operationId": "getTeamBindingProbe",
+        "summary": "读取绑定探测证据",
+        "tags": [
+          "Team 管理"
+        ],
+        "responses": {
+          "200": {
+            "description": "成功。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BindingProbeDTOResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error422"
+          }
+        },
+        "description": "stage 可轮询，详细进度通过已有 Task/Run 读取；普通 GET 不触发新探测。",
+        "x-reject-unknown-query-parameters": true,
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/probe_id"
+          }
+        ]
+      }
+    },
+    "/api/teams": {
+      "post": {
+        "operationId": "createTeam",
+        "summary": "创建 Team 绑定并受理首轮同步",
+        "tags": [
+          "Team 管理"
+        ],
+        "responses": {
+          "201": {
+            "description": "成功。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TeamCreatedResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error422"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "description": "同一事务保存 Team、管理关联、首轮同步。首次未知数量为 null、last_sync_status=queued。不同键重复 workspace 返回 team_already_bound 及 details.existing_team_id；相同键复用原 201。",
+        "x-reject-unknown-query-parameters": true,
+        "x-idempotency": {
+          "required-one-of": [
+            "header:Idempotency-Key",
+            "body:idempotency_key"
+          ],
+          "normalization": "trim",
+          "equal-when-both-present": true,
+          "normalized-min-length": 16,
+          "normalized-max-length": 128,
+          "namespace": "teams",
+          "receipt-before-current-validation": true,
+          "description": "同键同路径同规范化请求复用原持久状态码与回执；同键变更路径、Team、操作、目标或执行选项返回 409 idempotency_conflict。先查原回执，再查名单到期、版本、当前权限。网络重发保留原键，新的人工作业使用新键；同目标未终态执行仍复用。"
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TeamCreateRequest"
+              }
+            }
+          },
+          "description": "必须为 JSON 对象，只接受本文列出的字段。也可仅通过请求头提供幂等键。"
+        }
+      },
+      "get": {
+        "operationId": "listTeams",
+        "summary": "分页读取 Team",
+        "tags": [
+          "Team 管理"
+        ],
+        "responses": {
+          "200": {
+            "description": "成功。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TeamListResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error422"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "description": "本地 id 降序；role/last_sync_status 为唯一 facet 维度。",
+        "x-query-schema": {
+          "$ref": "#/components/schemas/TeamListQuery"
+        },
+        "x-reject-unknown-query-parameters": true,
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1
+            },
+            "description": "页码，默认 1。"
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            },
+            "description": "每页数量，默认 20，范围 1–100。"
+          },
+          {
+            "name": "include_facets",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "0",
+                "1"
+              ],
+              "default": "0"
+            },
+            "description": "默认 0；1 时返回该列表契约限定的 facets。"
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "精确单值筛选；未传时不限定。"
+          },
+          {
+            "name": "manager_account_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/LocalId"
+            },
+            "description": "精确单值筛选；未传时不限定。"
+          },
+          {
+            "name": "role",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Role"
+            },
+            "description": "精确单值筛选；未传时不限定。"
+          },
+          {
+            "name": "last_sync_status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/LastSyncStatus"
+            },
+            "description": "精确单值筛选；未传时不限定。"
+          }
+        ]
+      }
+    },
+    "/api/teams/{team_id}": {
+      "get": {
+        "operationId": "getTeam",
+        "summary": "读取 Team 详情和动作能力",
+        "tags": [
+          "Team 管理"
+        ],
+        "responses": {
+          "200": {
+            "description": "成功。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TeamDetailResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error422"
+          }
+        },
+        "description": "仅读取现有快照，不触发同步或权限核验。",
+        "x-reject-unknown-query-parameters": true,
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/team_id"
+          }
+        ]
+      },
+      "patch": {
+        "operationId": "updateTeam",
+        "summary": "修改 Team 本地配置或管理账号",
+        "tags": [
+          "Team 管理"
+        ],
+        "responses": {
+          "200": {
+            "description": "成功。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TeamUpdatedResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error422"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "description": "expected_revision 冲突为 409 revision_conflict，details.revision 为当前版本。换母号沿用路径 Team 的 workspace，不丢弃旧执行真实回执，旧执行不能覆盖新配置。降低本地上限不删除成员或撤回已发邀请。",
+        "x-reject-unknown-query-parameters": true,
+        "x-idempotency": {
+          "required-one-of": [
+            "header:Idempotency-Key",
+            "body:idempotency_key"
+          ],
+          "normalization": "trim",
+          "equal-when-both-present": true,
+          "normalized-min-length": 16,
+          "normalized-max-length": 128,
+          "namespace": "teams",
+          "receipt-before-current-validation": true,
+          "description": "同键同路径同规范化请求复用原持久状态码与回执；同键变更路径、Team、操作、目标或执行选项返回 409 idempotency_conflict。先查原回执，再查名单到期、版本、当前权限。网络重发保留原键，新的人工作业使用新键；同目标未终态执行仍复用。"
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/team_id"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TeamPatchRequest"
+              }
+            }
+          },
+          "description": "必须为 JSON 对象，只接受本文列出的字段。也可仅通过请求头提供幂等键。"
+        }
+      }
+    },
+    "/api/teams/{team_id}/sync": {
+      "post": {
+        "operationId": "syncTeam",
+        "summary": "受理 Team 快照同步",
+        "tags": [
+          "Team 管理"
+        ],
+        "responses": {
+          "202": {
+            "description": "已持久受理。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActionReceiptResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error422"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "description": "同步成员、邀请、订阅和数量快照；同 Team 同类未终态同步任务复用，reused=true。",
+        "x-reject-unknown-query-parameters": true,
+        "x-idempotency": {
+          "required-one-of": [
+            "header:Idempotency-Key",
+            "body:idempotency_key"
+          ],
+          "normalization": "trim",
+          "equal-when-both-present": true,
+          "normalized-min-length": 16,
+          "normalized-max-length": 128,
+          "namespace": "teams",
+          "receipt-before-current-validation": true,
+          "description": "同键同路径同规范化请求复用原持久状态码与回执；同键变更路径、Team、操作、目标或执行选项返回 409 idempotency_conflict。先查原回执，再查名单到期、版本、当前权限。网络重发保留原键，新的人工作业使用新键；同目标未终态执行仍复用。"
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/team_id"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IdempotentRequest"
+              }
+            }
+          },
+          "description": "必须为 JSON 对象，只接受本文列出的字段。也可仅通过请求头提供幂等键。"
+        }
+      }
+    },
+    "/api/teams/sync-bulk": {
+      "post": {
+        "operationId": "syncTeamsBulk",
+        "summary": "批量受理 Team 同步",
+        "tags": [
+          "Team 管理"
+        ],
+        "responses": {
+          "202": {
+            "description": "已持久受理。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SyncBulkReceiptResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error422"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "description": "1–100 个 Team ID；每项独立受理，acceptance_status 与 execution_status 分开。",
+        "x-reject-unknown-query-parameters": true,
+        "x-idempotency": {
+          "required-one-of": [
+            "header:Idempotency-Key",
+            "body:idempotency_key"
+          ],
+          "normalization": "trim",
+          "equal-when-both-present": true,
+          "normalized-min-length": 16,
+          "normalized-max-length": 128,
+          "namespace": "teams",
+          "receipt-before-current-validation": true,
+          "description": "同键同路径同规范化请求复用原持久状态码与回执；同键变更路径、Team、操作、目标或执行选项返回 409 idempotency_conflict。先查原回执，再查名单到期、版本、当前权限。网络重发保留原键，新的人工作业使用新键；同目标未终态执行仍复用。"
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SyncBulkRequest"
+              }
+            }
+          },
+          "description": "必须为 JSON 对象，只接受本文列出的字段。也可仅通过请求头提供幂等键。"
+        }
+      }
+    },
+    "/api/teams/{team_id}/reverify": {
+      "post": {
+        "operationId": "reverifyTeam",
+        "summary": "单独受理管理权限核验",
+        "tags": [
+          "Team 管理"
+        ],
+        "responses": {
+          "202": {
+            "description": "已持久受理。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActionReceiptResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error422"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "description": "只更新权限证据及角色，不冒充完整成员/邀请同步。同 Team 同类未终态核验任务复用。",
+        "x-reject-unknown-query-parameters": true,
+        "x-idempotency": {
+          "required-one-of": [
+            "header:Idempotency-Key",
+            "body:idempotency_key"
+          ],
+          "normalization": "trim",
+          "equal-when-both-present": true,
+          "normalized-min-length": 16,
+          "normalized-max-length": 128,
+          "namespace": "teams",
+          "receipt-before-current-validation": true,
+          "description": "同键同路径同规范化请求复用原持久状态码与回执；同键变更路径、Team、操作、目标或执行选项返回 409 idempotency_conflict。先查原回执，再查名单到期、版本、当前权限。网络重发保留原键，新的人工作业使用新键；同目标未终态执行仍复用。"
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/team_id"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IdempotentRequest"
+              }
+            }
+          },
+          "description": "必须为 JSON 对象，只接受本文列出的字段。也可仅通过请求头提供幂等键。"
+        }
+      }
+    },
+    "/api/teams/{team_id}/members": {
+      "get": {
+        "operationId": "listTeamMembers",
+        "summary": "分页读取 Team 成员",
+        "tags": [
+          "Team 管理"
+        ],
+        "responses": {
+          "200": {
+            "description": "成功。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemberListResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error422"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "description": "默认 membership_state=joined，本地 id 升序；历史 left/unconfirmed 需显式筛选。读取失败、不完整或单次缺项不把 joined 改成 left。",
+        "x-query-schema": {
+          "$ref": "#/components/schemas/MemberListQuery"
+        },
+        "x-reject-unknown-query-parameters": true,
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/team_id"
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1
+            },
+            "description": "页码，默认 1。"
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            },
+            "description": "每页数量，默认 20，范围 1–100。"
+          },
+          {
+            "name": "include_facets",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "0",
+                "1"
+              ],
+              "default": "0"
+            },
+            "description": "默认 0；1 时返回该列表契约限定的 facets。"
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "精确单值筛选；未传时不限定。"
+          },
+          {
+            "name": "membership_state",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/MembershipState",
+              "default": "joined"
+            },
+            "description": "精确单值筛选；未传时不限定。"
+          },
+          {
+            "name": "role",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Role"
+            },
+            "description": "精确单值筛选；未传时不限定。"
+          },
+          {
+            "name": "linked",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/LinkedFilter"
+            },
+            "description": "精确单值筛选；未传时不限定。"
+          }
+        ]
+      }
+    },
+    "/api/teams/{team_id}/invitations": {
+      "get": {
+        "operationId": "listTeamInvitations",
+        "summary": "分页读取邀请与加入意图",
+        "tags": [
+          "Team 管理"
+        ],
+        "responses": {
+          "200": {
+            "description": "成功。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvitationListResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error422"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "description": "不传状态时包含全部本地意图和远端邀请，updated_at、id 降序；邀请事实与成员事实分别读取。",
+        "x-query-schema": {
+          "$ref": "#/components/schemas/InvitationListQuery"
+        },
+        "x-reject-unknown-query-parameters": true,
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/team_id"
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1
+            },
+            "description": "页码，默认 1。"
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            },
+            "description": "每页数量，默认 20，范围 1–100。"
+          },
+          {
+            "name": "include_facets",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "0",
+                "1"
+              ],
+              "default": "0"
+            },
+            "description": "默认 0；1 时返回该列表契约限定的 facets。"
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "精确单值筛选；未传时不限定。"
+          },
+          {
+            "name": "invitation_state",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/InvitationState"
+            },
+            "description": "精确单值筛选；未传时不限定。"
+          },
+          {
+            "name": "membership_state",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/MembershipState"
+            },
+            "description": "精确单值筛选；未传时不限定。"
+          },
+          {
+            "name": "execution_status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/ExecutionStatus"
+            },
+            "description": "精确单值筛选；未传时不限定。"
+          },
+          {
+            "name": "stage",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/JoinStage"
+            },
+            "description": "精确单值筛选；未传时不限定。"
+          },
+          {
+            "name": "join_request_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/LocalId"
+            },
+            "description": "精确单值筛选；未传时不限定。"
+          }
+        ]
+      }
+    },
+    "/api/teams/{team_id}/invitations/{invitation_id}": {
+      "get": {
+        "operationId": "getTeamInvitation",
+        "summary": "读取单条邀请与加入意图",
+        "tags": [
+          "Team 管理"
+        ],
+        "responses": {
+          "200": {
+            "description": "成功。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvitationDetailResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error422"
+          }
+        },
+        "description": "邀请不存在或不属于路径 Team 均按 404，不返回其他 Team 材料。",
+        "x-reject-unknown-query-parameters": true,
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/team_id"
+          },
+          {
+            "$ref": "#/components/parameters/invitation_id"
+          }
+        ]
+      }
+    },
+    "/api/teams/{team_id}/candidates": {
+      "get": {
+        "operationId": "listTeamCandidates",
+        "summary": "分页读取本地候选账号",
+        "tags": [
+          "Team 管理"
+        ],
+        "responses": {
+          "200": {
+            "description": "成功。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CandidateListResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error422"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "description": "纯本地读取，账号 id 降序；默认 scope=unassigned、archived=0。unassigned 排除任何本地 Team 母号/成员/未决占用，含本 Team pending；all 可查看续接。材料布尔筛选仅代表本地存在性，不在线认证。include_facets=1 返回 {}。",
+        "x-query-schema": {
+          "$ref": "#/components/schemas/CandidateListQuery"
+        },
+        "x-reject-unknown-query-parameters": true,
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/team_id"
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1
+            },
+            "description": "页码，默认 1。"
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            },
+            "description": "每页数量，默认 20，范围 1–100。"
+          },
+          {
+            "name": "include_facets",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "0",
+                "1"
+              ],
+              "default": "0"
+            },
+            "description": "默认 0；1 时返回该列表契约限定的 facets。"
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "精确单值筛选；未传时不限定。"
+          },
+          {
+            "name": "scope",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/CandidateScope",
+              "default": "unassigned"
+            },
+            "description": "精确单值筛选；未传时不限定。"
+          },
+          {
+            "name": "archived",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/ArchivedFilter",
+              "default": "0"
+            },
+            "description": "精确单值筛选；未传时不限定。"
+          },
+          {
+            "name": "has_access_token",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/BooleanQuery"
+            },
+            "description": "精确单值筛选；未传时不限定。"
+          },
+          {
+            "name": "has_password",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/BooleanQuery"
+            },
+            "description": "精确单值筛选；未传时不限定。"
+          },
+          {
+            "name": "totp_enabled",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/BooleanQuery"
+            },
+            "description": "精确单值筛选；未传时不限定。"
+          },
+          {
+            "name": "email_status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/EmailStatus"
+            },
+            "description": "精确单值筛选；未传时不限定。"
+          }
+        ]
+      }
+    },
+    "/api/teams/{team_id}/candidates/resolve": {
+      "post": {
+        "operationId": "resolveTeamCandidates",
+        "summary": "按邮箱或本地 ID 精确解析候选",
+        "tags": [
+          "Team 管理"
+        ],
+        "responses": {
+          "200": {
+            "description": "成功。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CandidateResolveResultResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error422"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "description": "纯读 POST，无幂等键要求；1–10,000 输入，trim 去重后精确匹配。不因归档跳过，不创建任务/名单/邀请/占位，不访问远端。",
+        "x-reject-unknown-query-parameters": true,
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/team_id"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CandidateResolveRequest"
+              }
+            }
+          },
+          "description": "必须为 JSON 对象，只接受本文列出的字段。"
+        }
+      }
+    },
+    "/api/teams/{team_id}/join-preview": {
+      "post": {
+        "operationId": "previewTeamJoin",
+        "summary": "纯本地评估加入名单与容量",
+        "tags": [
+          "Team 管理"
+        ],
+        "responses": {
+          "200": {
+            "description": "成功。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JoinPreviewDTOResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error410"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error422"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "description": "显式 ID 或冻结 selection 二选一，不消费 selection，不创建任何执行或占位，不认证、不取 OTP、不访问上游。can_submit=false 仍为 HTTP 200。缺已购席位与本地上限为 team_limit_required；已具备上限但需同步或名额不足可受理后等待。P95<50ms 是尚未验收的性能目标。",
+        "x-reject-unknown-query-parameters": true,
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/team_id"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JoinPreviewRequest"
+              }
+            }
+          },
+          "description": "必须为 JSON 对象，只接受本文列出的字段。"
+        }
+      }
+    },
+    "/api/teams/{team_id}/join": {
+      "post": {
+        "operationId": "joinTeam",
+        "summary": "持久受理集合加入请求",
+        "tags": [
+          "Team 管理"
+        ],
+        "responses": {
+          "202": {
+            "description": "已持久受理。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JoinRequestDTOResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error410"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error422"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "description": "固定目标、父 Task/Run 与回执先持久化，后台窗口受理。先取得/复用唯一账号 Team 业务占用，跨 Team 项 skipped/already_in_another_team。同 Team 活跃意图复用；已是成员跳过；未知认证材料仍可检查。缺上限返回 409，不创建新邀请/席位；待同步或待容量允许 202。默认普通成员、接受指定 workspace、保留个人工作区、不自动合并个人数据；成功需远端成员与本地保存均确认。已消费 selection 返回 selection_consumed，details.existing_join_request_id 定位原请求。",
+        "x-reject-unknown-query-parameters": true,
+        "x-idempotency": {
+          "required-one-of": [
+            "header:Idempotency-Key",
+            "body:idempotency_key"
+          ],
+          "normalization": "trim",
+          "equal-when-both-present": true,
+          "normalized-min-length": 16,
+          "normalized-max-length": 128,
+          "namespace": "teams",
+          "receipt-before-current-validation": true,
+          "description": "同键同路径同规范化请求复用原持久状态码与回执；同键变更路径、Team、操作、目标或执行选项返回 409 idempotency_conflict。先查原回执，再查名单到期、版本、当前权限。网络重发保留原键，新的人工作业使用新键；同目标未终态执行仍复用。"
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/team_id"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JoinRequest"
+              }
+            }
+          },
+          "description": "必须为 JSON 对象，只接受本文列出的字段。也可仅通过请求头提供幂等键。"
+        }
+      }
+    },
+    "/api/teams/{team_id}/join-requests/{join_request_id}": {
+      "get": {
+        "operationId": "getTeamJoinRequest",
+        "summary": "分页读取集合加入逐项回执",
+        "tags": [
+          "Team 管理"
+        ],
+        "responses": {
+          "200": {
+            "description": "成功。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JoinRequestItemsResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error422"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "description": "固定目标 ordinal 升序；接受状态仅代表逐项受理，后台业务成果通过邀请与 Task/Run 读取。列表、total 使用同一筛选；include_facets=1 返回 {}。请求不属于路径 Team 时 404。",
+        "x-query-schema": {
+          "$ref": "#/components/schemas/JoinRequestItemsQuery"
+        },
+        "x-reject-unknown-query-parameters": true,
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/team_id"
+          },
+          {
+            "$ref": "#/components/parameters/join_request_id"
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1
+            },
+            "description": "页码，默认 1。"
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            },
+            "description": "每页数量，默认 20，范围 1–100。"
+          },
+          {
+            "name": "include_facets",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "0",
+                "1"
+              ],
+              "default": "0"
+            },
+            "description": "默认 0；1 时返回该列表契约限定的 facets。"
+          },
+          {
+            "name": "acceptance_status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/AcceptanceStatus"
+            },
+            "description": "精确单值筛选；未传时不限定。"
+          },
+          {
+            "name": "execution_status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/ExecutionStatus"
+            },
+            "description": "精确单值筛选；未传时不限定。"
+          },
+          {
+            "name": "reason_code",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/BusinessReasonCode"
+            },
+            "description": "精确单值筛选；未传时不限定。"
+          }
+        ]
+      }
+    },
+    "/api/teams/{team_id}/invitations/{invitation_id}/continue": {
+      "post": {
+        "operationId": "continueTeamInvitation",
+        "summary": "继续邀请未完成阶段",
+        "tags": [
+          "Team 管理"
+        ],
+        "responses": {
+          "202": {
+            "description": "已持久受理。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JoinRequestDTOResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error422"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "description": "operation=continue，唯一目标；邀请须属于路径 Team。未终态执行复用原 Task/Run；终态需要执行则新建 Run 并保留原邀请与成果，不强制重发信。已加入且本地保存完整 skipped/already_member。纯接受/核验/保存无需新增占位时允许上限暂缺；需重新邀请再核验上限与容量，必要时等待。回执缺失或结果待确认不永久阻止重跑。",
+        "x-reject-unknown-query-parameters": true,
+        "x-idempotency": {
+          "required-one-of": [
+            "header:Idempotency-Key",
+            "body:idempotency_key"
+          ],
+          "normalization": "trim",
+          "equal-when-both-present": true,
+          "normalized-min-length": 16,
+          "normalized-max-length": 128,
+          "namespace": "teams",
+          "receipt-before-current-validation": true,
+          "description": "同键同路径同规范化请求复用原持久状态码与回执；同键变更路径、Team、操作、目标或执行选项返回 409 idempotency_conflict。先查原回执，再查名单到期、版本、当前权限。网络重发保留原键，新的人工作业使用新键；同目标未终态执行仍复用。"
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/team_id"
+          },
+          {
+            "$ref": "#/components/parameters/invitation_id"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IdempotentRequest"
+              }
+            }
+          },
+          "description": "必须为 JSON 对象，只接受本文列出的字段。也可仅通过请求头提供幂等键。"
+        }
+      }
+    },
+    "/api/teams/{team_id}/invitations/continue-bulk": {
+      "post": {
+        "operationId": "continueTeamInvitationsBulk",
+        "summary": "批量继续邀请",
+        "tags": [
+          "Team 管理"
+        ],
+        "responses": {
+          "202": {
+            "description": "已持久受理。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JoinRequestDTOResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error422"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "description": "operation=continue；1–10,000 邀请 ID，先按邀请再按同 Team 目标身份去重。不存在或不属于该 Team 的项逐项 skipped/invitation_not_found，其余继续；同目标未终态执行复用。纯接受/核验/保存无需新增占位时保留缺上限例外。",
+        "x-reject-unknown-query-parameters": true,
+        "x-idempotency": {
+          "required-one-of": [
+            "header:Idempotency-Key",
+            "body:idempotency_key"
+          ],
+          "normalization": "trim",
+          "equal-when-both-present": true,
+          "normalized-min-length": 16,
+          "normalized-max-length": 128,
+          "namespace": "teams",
+          "receipt-before-current-validation": true,
+          "description": "同键同路径同规范化请求复用原持久状态码与回执；同键变更路径、Team、操作、目标或执行选项返回 409 idempotency_conflict。先查原回执，再查名单到期、版本、当前权限。网络重发保留原键，新的人工作业使用新键；同目标未终态执行仍复用。"
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/team_id"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InvitationBulkRequest"
+              }
+            }
+          },
+          "description": "必须为 JSON 对象，只接受本文列出的字段。也可仅通过请求头提供幂等键。"
+        }
+      }
+    },
+    "/api/teams/{team_id}/invitations/{invitation_id}/retry": {
+      "post": {
+        "operationId": "retryTeamInvitation",
+        "summary": "人工重跑邀请终态执行",
+        "tags": [
+          "Team 管理"
+        ],
+        "responses": {
+          "202": {
+            "description": "已持久受理。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JoinRequestDTOResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error422"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "description": "operation=retry，唯一目标；邀请须属于路径 Team。未终态执行复用原 Task/Run；终态需要执行则新建 Run 并保留原邀请与成果，不强制重发信。已加入且本地保存完整 skipped/already_member。纯接受/核验/保存无需新增占位时允许上限暂缺；需重新邀请再核验上限与容量，必要时等待。回执缺失或结果待确认不永久阻止重跑。",
+        "x-reject-unknown-query-parameters": true,
+        "x-idempotency": {
+          "required-one-of": [
+            "header:Idempotency-Key",
+            "body:idempotency_key"
+          ],
+          "normalization": "trim",
+          "equal-when-both-present": true,
+          "normalized-min-length": 16,
+          "normalized-max-length": 128,
+          "namespace": "teams",
+          "receipt-before-current-validation": true,
+          "description": "同键同路径同规范化请求复用原持久状态码与回执；同键变更路径、Team、操作、目标或执行选项返回 409 idempotency_conflict。先查原回执，再查名单到期、版本、当前权限。网络重发保留原键，新的人工作业使用新键；同目标未终态执行仍复用。"
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/team_id"
+          },
+          {
+            "$ref": "#/components/parameters/invitation_id"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IdempotentRequest"
+              }
+            }
+          },
+          "description": "必须为 JSON 对象，只接受本文列出的字段。也可仅通过请求头提供幂等键。"
+        }
+      }
+    },
+    "/api/teams/{team_id}/invitations/retry-bulk": {
+      "post": {
+        "operationId": "retryTeamInvitationsBulk",
+        "summary": "批量人工重跑邀请",
+        "tags": [
+          "Team 管理"
+        ],
+        "responses": {
+          "202": {
+            "description": "已持久受理。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JoinRequestDTOResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error422"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "description": "operation=retry；1–10,000 邀请 ID，先按邀请再按同 Team 目标身份去重。不存在或不属于该 Team 的项逐项 skipped/invitation_not_found，其余继续；同目标未终态执行复用。纯接受/核验/保存无需新增占位时保留缺上限例外。",
+        "x-reject-unknown-query-parameters": true,
+        "x-idempotency": {
+          "required-one-of": [
+            "header:Idempotency-Key",
+            "body:idempotency_key"
+          ],
+          "normalization": "trim",
+          "equal-when-both-present": true,
+          "normalized-min-length": 16,
+          "normalized-max-length": 128,
+          "namespace": "teams",
+          "receipt-before-current-validation": true,
+          "description": "同键同路径同规范化请求复用原持久状态码与回执；同键变更路径、Team、操作、目标或执行选项返回 409 idempotency_conflict。先查原回执，再查名单到期、版本、当前权限。网络重发保留原键，新的人工作业使用新键；同目标未终态执行仍复用。"
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/team_id"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InvitationBulkRequest"
+              }
+            }
+          },
+          "description": "必须为 JSON 对象，只接受本文列出的字段。也可仅通过请求头提供幂等键。"
+        }
+      }
+    }
+  },
+  "components": {
+    "parameters": {
+      "IdempotencyKey": {
+        "name": "Idempotency-Key",
+        "in": "header",
+        "required": false,
+        "schema": {
+          "$ref": "#/components/schemas/IdempotencyKey"
+        },
+        "description": "写请求至少从此头或 JSON idempotency_key 提供一份；两处均提供时 trim 后必须完全相同，否则 422。request_id 不能代替本键。"
+      },
+      "team_id": {
+        "name": "team_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "$ref": "#/components/schemas/LocalId"
+        },
+        "description": "精确本地 ID，正整数十进制字符串。"
+      },
+      "probe_id": {
+        "name": "probe_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "$ref": "#/components/schemas/LocalId"
+        },
+        "description": "精确本地 ID，正整数十进制字符串。"
+      },
+      "invitation_id": {
+        "name": "invitation_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "$ref": "#/components/schemas/LocalId"
+        },
+        "description": "精确本地 ID，正整数十进制字符串。"
+      },
+      "join_request_id": {
+        "name": "join_request_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "$ref": "#/components/schemas/LocalId"
+        },
+        "description": "精确本地 ID，正整数十进制字符串。"
+      }
+    },
+    "responses": {
+      "Error400": {
+        "description": "invalid_json",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Http400Response"
+            }
+          }
+        }
+      },
+      "Error401": {
+        "description": "authentication_required",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Http401Response"
+            }
+          }
+        }
+      },
+      "Error403": {
+        "description": "access_denied",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Http403Response"
+            }
+          }
+        }
+      },
+      "Error404": {
+        "description": "team_not_found；account_not_found；probe_not_found；invitation_not_found；join_request_not_found；selection_not_found",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Http404Response"
+            }
+          }
+        }
+      },
+      "Error409": {
+        "description": "idempotency_conflict；revision_conflict；probe_not_ready；probe_expired；probe_revision_conflict；probe_identity_mismatch；manager_permission_unconfirmed；team_already_bound；already_in_another_team；selection_not_ready；selection_revision_mismatch；selection_operation_mismatch；selection_team_mismatch；selection_consumed；team_limit_required",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Http409Response"
+            }
+          }
+        }
+      },
+      "Error410": {
+        "description": "selection_expired",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Http410Response"
+            }
+          }
+        }
+      },
+      "Error422": {
+        "description": "parameter_invalid；field_not_supported；idempotency_key_required；idempotency_key_invalid；idempotency_key_mismatch",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Http422Response"
+            }
+          }
+        }
+      },
+      "Error503": {
+        "description": "team_store_unavailable",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Http503Response"
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "LocalId": {
+        "type": "string",
+        "pattern": "^[1-9][0-9]*$",
+        "description": "本地正整数十进制 ID；始终使用字符串，禁止转换为 JavaScript Number，不自动去除空格。"
+      },
+      "RemoteId": {
+        "type": "string",
+        "minLength": 1,
+        "description": "远端不透明标识，保留原字符串，不能与本地 ID 互换。"
+      },
+      "Revision": {
+        "type": "integer",
+        "minimum": 1,
+        "description": "正整数业务/证据版本；与列表读模型修订字符串分开。"
+      },
+      "ReadModelRevision": {
+        "type": "string",
+        "minLength": 1,
+        "description": "读模型修订标识，不可作为 expected_revision 使用。"
+      },
+      "Count": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "PositiveInteger": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "Timestamp": {
+        "type": "string",
+        "format": "date-time",
+        "description": "带时区的 ISO 8601 时间；未知时间使用 null。"
+      },
+      "Email": {
+        "type": "string",
+        "minLength": 1,
+        "format": "email",
+        "description": "非空邮箱；不携带认证材料。"
+      },
+      "DisplayName": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "maxLength": 120,
+        "description": "本地备注名，最多 120 个字符；去除首尾空白后为空时按 null 清空。",
+        "x-normalization": "trim_to_null"
+      },
+      "IdempotencyKey": {
+        "type": "string",
+        "minLength": 16,
+        "pattern": "^\\s*\\S[\\s\\S]{14,126}\\S\\s*$",
+        "x-normalization": "trim",
+        "x-normalized-minLength": 16,
+        "x-normalized-maxLength": 128,
+        "description": "去除首尾空白后 16–128 个字符，推荐 UUID。允许头或 JSON 字段提供，两处均提供时规范化后必须完全相同。"
+      },
+      "Role": {
+        "type": "string",
+        "enum": [
+          "owner",
+          "admin",
+          "member",
+          "unknown"
+        ],
+        "description": "仅依据实际远端权限归一化，未知不推断。"
+      },
+      "MembershipState": {
+        "type": "string",
+        "enum": [
+          "joined",
+          "left",
+          "unconfirmed"
+        ],
+        "description": "成员关系独立于邀请状态保存；缺项或同步失败不能推断已离开。"
+      },
+      "InvitationState": {
+        "type": "string",
+        "enum": [
+          "not_sent",
+          "pending",
+          "accepted",
+          "revoked",
+          "expired",
+          "unconfirmed"
+        ],
+        "description": "邀请事实独立保存；已有邀请属于可续接事实。"
+      },
+      "AuthCapability": {
+        "type": "string",
+        "enum": [
+          "available",
+          "missing",
+          "unknown"
+        ],
+        "description": "仅表达本次认证材料能力；unknown 不能视作已确认缺少。"
+      },
+      "TaskStatus": {
+        "type": "string",
+        "enum": [
+          "queued",
+          "running",
+          "waiting",
+          "cancelling",
+          "settling",
+          "stopping",
+          "success",
+          "partial_success",
+          "failed",
+          "stopped",
+          "cancelled",
+          "interrupted",
+          "deactivated",
+          "unsupported"
+        ]
+      },
+      "ExecutionStatus": {
+        "type": "string",
+        "enum": [
+          "none",
+          "queued",
+          "running",
+          "waiting",
+          "cancelling",
+          "settling",
+          "stopping",
+          "success",
+          "partial_success",
+          "failed",
+          "stopped",
+          "cancelled",
+          "interrupted",
+          "deactivated",
+          "unsupported"
+        ],
+        "description": "none 表示尚无执行；waiting 仍是执行状态。"
+      },
+      "JoinStage": {
+        "type": "string",
+        "enum": [
+          "queued",
+          "manager_verify",
+          "state_check",
+          "invite",
+          "member_auth",
+          "accept",
+          "member_verify",
+          "persist",
+          "complete"
+        ]
+      },
+      "WaitingReasonCode": {
+        "type": "string",
+        "enum": [
+          "waiting_account",
+          "waiting_sync",
+          "waiting_capacity",
+          "waiting_child",
+          "waiting_remote"
+        ]
+      },
+      "LastSyncStatus": {
+        "type": "string",
+        "enum": [
+          "never",
+          "queued",
+          "running",
+          "success",
+          "partial_success",
+          "failed",
+          "interrupted"
+        ]
+      },
+      "ProbeStatus": {
+        "type": "string",
+        "enum": [
+          "queued",
+          "running",
+          "success",
+          "failed",
+          "cancelled",
+          "interrupted"
+        ]
+      },
+      "ProbeStage": {
+        "type": "string",
+        "enum": [
+          "queued",
+          "manager_auth",
+          "workspace_discovery",
+          "permission_check",
+          "complete"
+        ]
+      },
+      "AcceptanceStatus": {
+        "type": "string",
+        "enum": [
+          "pending",
+          "accepted",
+          "reused",
+          "skipped",
+          "failed"
+        ],
+        "description": "逐目标受理状态，不代表已加入；reused 属于 accepted 统计子集。"
+      },
+      "SyncAcceptanceStatus": {
+        "type": "string",
+        "enum": [
+          "accepted",
+          "reused",
+          "skipped",
+          "failed"
+        ]
+      },
+      "JoinRequestStatus": {
+        "type": "string",
+        "enum": [
+          "preparing",
+          "queued",
+          "running",
+          "waiting",
+          "success",
+          "partial_success",
+          "failed",
+          "stopped",
+          "cancelled",
+          "interrupted"
+        ]
+      },
+      "CandidateCategory": {
+        "type": "string",
+        "enum": [
+          "unavailable",
+          "another_team",
+          "already_member",
+          "same_team_active",
+          "missing_auth",
+          "resume_invite",
+          "new"
+        ],
+        "description": "按枚举所列顺序互斥分类；unknown 认证能力不能归入 missing_auth。"
+      },
+      "EmailStatus": {
+        "type": "string",
+        "enum": [
+          "invalid",
+          "unmarked"
+        ],
+        "description": "unmarked 只表示未标记失效，不宣称邮箱健康。"
+      },
+      "WorkspaceType": {
+        "type": "string",
+        "enum": [
+          "personal",
+          "team",
+          "unknown"
+        ]
+      },
+      "MatchStatus": {
+        "type": "string",
+        "enum": [
+          "matched",
+          "not_found",
+          "ambiguous"
+        ]
+      },
+      "JoinOperation": {
+        "type": "string",
+        "enum": [
+          "join",
+          "continue",
+          "retry"
+        ]
+      },
+      "CapacityBasis": {
+        "type": "string",
+        "enum": [
+          "purchased_seats",
+          "planned_member_limit",
+          "unavailable"
+        ]
+      },
+      "CapacityBlockingReason": {
+        "type": "string",
+        "enum": [
+          "team_limit_required",
+          "no_eligible_targets"
+        ]
+      },
+      "LinkedFilter": {
+        "type": "string",
+        "enum": [
+          "all",
+          "linked",
+          "unlinked"
+        ]
+      },
+      "CandidateScope": {
+        "type": "string",
+        "enum": [
+          "unassigned",
+          "all"
+        ]
+      },
+      "ArchivedFilter": {
+        "type": "string",
+        "enum": [
+          "0",
+          "only",
+          "all"
+        ]
+      },
+      "BooleanQuery": {
+        "type": "string",
+        "enum": [
+          "true",
+          "false"
+        ],
+        "description": "只接受字面字符串 true 或 false，不接受 0/1、空字符串或逗号拼接。"
+      },
+      "BusinessReasonCode": {
+        "type": "string",
+        "minLength": 1,
+        "examples": [
+          "already_in_another_team",
+          "already_member",
+          "missing_auth_materials",
+          "account_not_found",
+          "account_unavailable",
+          "account_identity_changed",
+          "invitation_not_found",
+          "waiting_sync",
+          "waiting_capacity"
+        ],
+        "description": "公开业务原因码；以下常用值固定，认证、OTP、TOTP、网络与存储细分继续复用既有错误目录，不合并为 unknown。"
+      },
+      "AccountRef": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/LocalId"
+          },
+          "email": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Email"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "archived": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "email",
+          "archived"
+        ],
+        "description": "账号窄引用，允许已归档账号；不返回完整账号行或认证材料。"
+      },
+      "TeamRef": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/LocalId"
+          },
+          "workspace_id": {
+            "$ref": "#/components/schemas/RemoteId"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "display_name": {
+            "$ref": "#/components/schemas/DisplayName"
+          }
+        },
+        "required": [
+          "id",
+          "workspace_id",
+          "name",
+          "display_name"
+        ]
+      },
+      "TaskRef": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "task_id": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LocalId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LocalId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "$ref": "#/components/schemas/TaskStatus"
+          }
+        },
+        "required": [
+          "task_id",
+          "run_id",
+          "status"
+        ],
+        "description": "尚未创建的对应 Task/Run 引用为 null，不能编造任务。"
+      },
+      "ErrorInfo": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/BusinessReasonCode"
+          },
+          "message": {
+            "type": "string",
+            "description": "中文原因。"
+          },
+          "stage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/JoinStage"
+              },
+              {
+                "$ref": "#/components/schemas/ProbeStage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "retryable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "stage",
+          "retryable"
+        ],
+        "description": "公开简短错误；完整证据通过 TaskCenter 读取。正常等待与跳过不自动产生失败 ErrorInfo。"
+      },
+      "ActionReceipt": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "accepted": {
+            "type": "boolean",
+            "const": true
+          },
+          "reused": {
+            "type": "boolean"
+          },
+          "team_id": {
+            "$ref": "#/components/schemas/LocalId"
+          },
+          "task_id": {
+            "$ref": "#/components/schemas/LocalId"
+          },
+          "run_id": {
+            "$ref": "#/components/schemas/LocalId"
+          },
+          "status": {
+            "$ref": "#/components/schemas/TaskStatus"
+          }
+        },
+        "required": [
+          "accepted",
+          "reused",
+          "team_id",
+          "task_id",
+          "run_id",
+          "status"
+        ],
+        "description": "持久任务受理回执；accepted=true 仅表示已持久受理。相同 Team 同类未终态任务复用原引用。"
+      },
+      "AllowedAction": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "reason_code": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BusinessReasonCode"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "enabled",
+          "reason_code"
+        ],
+        "description": "只描述当前读取快照的动作能力；无禁用原因时 reason_code=null，执行仍需核验。"
+      },
+      "TeamDTO": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/LocalId"
+          },
+          "workspace_id": {
+            "$ref": "#/components/schemas/RemoteId"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "display_name": {
+            "$ref": "#/components/schemas/DisplayName"
+          },
+          "manager_account": {
+            "$ref": "#/components/schemas/AccountRef"
+          },
+          "role": {
+            "$ref": "#/components/schemas/Role"
+          },
+          "purchased_seats": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Count"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "planned_member_limit": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PositiveInteger"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "confirmed_member_count": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Count"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "pending_invite_count": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Count"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "processing_count": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Count"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "last_synced_at": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Timestamp"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "last_sync_status": {
+            "$ref": "#/components/schemas/LastSyncStatus"
+          },
+          "revision": {
+            "$ref": "#/components/schemas/Revision"
+          }
+        },
+        "required": [
+          "id",
+          "workspace_id",
+          "name",
+          "display_name",
+          "manager_account",
+          "role",
+          "purchased_seats",
+          "planned_member_limit",
+          "confirmed_member_count",
+          "pending_invite_count",
+          "processing_count",
+          "last_synced_at",
+          "last_sync_status",
+          "revision"
+        ],
+        "description": "固定窄 DTO。未知数量为 null；purchased_seats=0 是明确零席位；三种摘要数量不能相加当成占位。失败保留上次成功快照与时间。"
+      },
+      "MemberDTO": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/LocalId"
+          },
+          "team_id": {
+            "$ref": "#/components/schemas/LocalId"
+          },
+          "remote_user_id": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RemoteId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "email": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Email"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "account": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AccountRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "role": {
+            "$ref": "#/components/schemas/Role"
+          },
+          "membership_state": {
+            "$ref": "#/components/schemas/MembershipState"
+          },
+          "joined_at": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Timestamp"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "last_verified_at": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Timestamp"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "latest_task": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TaskRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "team_id",
+          "remote_user_id",
+          "email",
+          "account",
+          "role",
+          "membership_state",
+          "joined_at",
+          "last_verified_at",
+          "latest_task"
+        ],
+        "description": "未匹配本地账号的远端成员仍返回，不自动创建账号；本地关联与远端身份分别保存。"
+      },
+      "InvitationExecution": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "task_id": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LocalId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LocalId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "$ref": "#/components/schemas/ExecutionStatus"
+          },
+          "stage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/JoinStage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "waiting_reason_code": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WaitingReasonCode"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error_info": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ErrorInfo"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "task_id",
+          "run_id",
+          "status",
+          "stage",
+          "waiting_reason_code",
+          "error_info"
+        ],
+        "description": "无执行时 task_id/run_id=null、status=none；尚无可知阶段时 stage=null。等待时使用 status=waiting，原因另列。",
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "const": "none"
+                }
+              },
+              "required": [
+                "status"
+              ]
+            },
+            "then": {
+              "properties": {
+                "task_id": {
+                  "type": "null"
+                },
+                "run_id": {
+                  "type": "null"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "InvitationActions": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "continue": {
+            "$ref": "#/components/schemas/AllowedAction"
+          },
+          "retry": {
+            "$ref": "#/components/schemas/AllowedAction"
+          },
+          "view_task": {
+            "$ref": "#/components/schemas/AllowedAction"
+          }
+        },
+        "required": [
+          "continue",
+          "retry",
+          "view_task"
+        ]
+      },
+      "InvitationDTO": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/LocalId"
+          },
+          "team_id": {
+            "$ref": "#/components/schemas/LocalId"
+          },
+          "remote_invitation_id": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RemoteId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "account": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AccountRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "email_snapshot": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Email"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "invitation_state": {
+            "$ref": "#/components/schemas/InvitationState"
+          },
+          "membership_state": {
+            "$ref": "#/components/schemas/MembershipState"
+          },
+          "latest_execution": {
+            "$ref": "#/components/schemas/InvitationExecution"
+          },
+          "updated_at": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "last_verified_at": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Timestamp"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "actions": {
+            "$ref": "#/components/schemas/InvitationActions"
+          }
+        },
+        "required": [
+          "id",
+          "team_id",
+          "remote_invitation_id",
+          "account",
+          "email_snapshot",
+          "invitation_state",
+          "membership_state",
+          "latest_execution",
+          "updated_at",
+          "last_verified_at",
+          "actions"
+        ],
+        "description": "本地邀请与加入意图；尚未发送远端邀请时仍可存在，remote_invitation_id=null 不表示失败。"
+      },
+      "ProbeCapabilities": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "read_members": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "read_invitations": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "invite_members": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "read_members",
+          "read_invitations",
+          "invite_members"
+        ],
+        "description": "未确认能力用 null。"
+      },
+      "ProbeWorkspace": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "workspace_id": {
+            "$ref": "#/components/schemas/RemoteId"
+          },
+          "workspace_type": {
+            "$ref": "#/components/schemas/WorkspaceType"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "role": {
+            "$ref": "#/components/schemas/Role"
+          },
+          "can_manage": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "capabilities": {
+            "$ref": "#/components/schemas/ProbeCapabilities"
+          },
+          "purchased_seats": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Count"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "workspace_id",
+          "workspace_type",
+          "name",
+          "role",
+          "can_manage",
+          "capabilities",
+          "purchased_seats"
+        ],
+        "description": "远端工作区窄证据；未确认远端事实使用 null，绑定要求 can_manage=true。"
+      },
+      "BindingProbeDTO": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/LocalId"
+          },
+          "revision": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "manager_account": {
+            "$ref": "#/components/schemas/AccountRef"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ProbeStatus"
+          },
+          "stage": {
+            "$ref": "#/components/schemas/ProbeStage"
+          },
+          "task_id": {
+            "$ref": "#/components/schemas/LocalId"
+          },
+          "run_id": {
+            "$ref": "#/components/schemas/LocalId"
+          },
+          "workspaces": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProbeWorkspace"
+            }
+          },
+          "suggested_workspace_id": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RemoteId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Timestamp"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Timestamp"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error_info": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ErrorInfo"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "revision",
+          "manager_account",
+          "status",
+          "stage",
+          "task_id",
+          "run_id",
+          "workspaces",
+          "suggested_workspace_id",
+          "completed_at",
+          "expires_at",
+          "error_info"
+        ],
+        "description": "成功证据自完成起 10 分钟有效；排队或失败无有效期。仅唯一、已确认非个人且可管理的 Team 候选可被建议，不自动绑定。"
+      },
+      "BindingProbeReceipt": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "probe_id": {
+            "$ref": "#/components/schemas/LocalId"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ProbeStatus"
+          },
+          "task_id": {
+            "$ref": "#/components/schemas/LocalId"
+          },
+          "run_id": {
+            "$ref": "#/components/schemas/LocalId"
+          }
+        },
+        "required": [
+          "probe_id",
+          "status",
+          "task_id",
+          "run_id"
+        ]
+      },
+      "TeamActions": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "sync": {
+            "$ref": "#/components/schemas/AllowedAction"
+          },
+          "reverify": {
+            "$ref": "#/components/schemas/AllowedAction"
+          },
+          "join": {
+            "$ref": "#/components/schemas/AllowedAction"
+          }
+        },
+        "required": [
+          "sync",
+          "reverify",
+          "join"
+        ]
+      },
+      "TeamDetail": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "team": {
+            "$ref": "#/components/schemas/TeamDTO"
+          },
+          "actions": {
+            "$ref": "#/components/schemas/TeamActions"
+          },
+          "permission_verified_at": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Timestamp"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "team",
+          "actions",
+          "permission_verified_at"
+        ]
+      },
+      "TeamCreated": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "team": {
+            "$ref": "#/components/schemas/TeamDTO"
+          },
+          "sync": {
+            "$ref": "#/components/schemas/ActionReceipt"
+          }
+        },
+        "required": [
+          "team",
+          "sync"
+        ],
+        "description": "Team、母号关联与首轮同步任务同事务受理，不能部分成功。"
+      },
+      "TeamUpdated": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "team": {
+            "$ref": "#/components/schemas/TeamDTO"
+          }
+        },
+        "required": [
+          "team"
+        ]
+      },
+      "InvitationDetail": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "invitation": {
+            "$ref": "#/components/schemas/InvitationDTO"
+          }
+        },
+        "required": [
+          "invitation"
+        ]
+      },
+      "CandidateDTO": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "account": {
+            "$ref": "#/components/schemas/AccountRef"
+          },
+          "category": {
+            "$ref": "#/components/schemas/CandidateCategory"
+          },
+          "auth_capability": {
+            "$ref": "#/components/schemas/AuthCapability"
+          },
+          "has_access_token": {
+            "type": "boolean"
+          },
+          "has_password": {
+            "type": "boolean"
+          },
+          "totp_enabled": {
+            "type": "boolean"
+          },
+          "email_status": {
+            "$ref": "#/components/schemas/EmailStatus"
+          },
+          "other_teams": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TeamRef"
+            }
+          },
+          "disabled": {
+            "type": "boolean"
+          },
+          "reason_code": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BusinessReasonCode"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "account",
+          "category",
+          "auth_capability",
+          "has_access_token",
+          "has_password",
+          "totp_enabled",
+          "email_status",
+          "other_teams",
+          "disabled",
+          "reason_code"
+        ],
+        "description": "材料存在性不等于在线认证成功；other_teams 仅指其他本地 Team 业务归属。归档或 auth_capability=unknown 本身不禁用。"
+      },
+      "CandidateResolveItem": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "input": {
+            "type": "string",
+            "minLength": 1
+          },
+          "match_status": {
+            "$ref": "#/components/schemas/MatchStatus"
+          },
+          "candidates": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CandidateDTO"
+            }
+          },
+          "reason_code": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BusinessReasonCode"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "input",
+          "match_status",
+          "candidates",
+          "reason_code"
+        ],
+        "description": "按 trim 后输入去重；邮箱按已有规范精确匹配，只有唯一匹配可自动成为候选，ambiguous 不能默认取第一条。"
+      },
+      "CandidateResolveResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "requested_count": {
+            "$ref": "#/components/schemas/Count"
+          },
+          "unique_count": {
+            "$ref": "#/components/schemas/Count"
+          },
+          "duplicate_count": {
+            "$ref": "#/components/schemas/Count"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CandidateResolveItem"
+            }
+          }
+        },
+        "required": [
+          "requested_count",
+          "unique_count",
+          "duplicate_count",
+          "items"
+        ],
+        "description": "requested_count=unique_count+duplicate_count；明确 ID/邮箱解析不因归档跳过。"
+      },
+      "PreviewCounts": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "requested_count": {
+            "$ref": "#/components/schemas/Count"
+          },
+          "unique_count": {
+            "$ref": "#/components/schemas/Count"
+          },
+          "duplicate_count": {
+            "$ref": "#/components/schemas/Count"
+          },
+          "unavailable_count": {
+            "$ref": "#/components/schemas/Count"
+          },
+          "another_team_count": {
+            "$ref": "#/components/schemas/Count"
+          },
+          "already_member_count": {
+            "$ref": "#/components/schemas/Count"
+          },
+          "same_team_active_count": {
+            "$ref": "#/components/schemas/Count"
+          },
+          "missing_auth_count": {
+            "$ref": "#/components/schemas/Count"
+          },
+          "resume_invite_count": {
+            "$ref": "#/components/schemas/Count"
+          },
+          "new_count": {
+            "$ref": "#/components/schemas/Count"
+          },
+          "eligible_count": {
+            "$ref": "#/components/schemas/Count"
+          }
+        },
+        "required": [
+          "requested_count",
+          "unique_count",
+          "duplicate_count",
+          "unavailable_count",
+          "another_team_count",
+          "already_member_count",
+          "same_team_active_count",
+          "missing_auth_count",
+          "resume_invite_count",
+          "new_count",
+          "eligible_count"
+        ],
+        "description": "requested=unique+duplicate；七类互斥桶之和为 unique；eligible=new+resume_invite+same_team_active，不能作为额外互斥桶相加。"
+      },
+      "Capacity": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "basis": {
+            "$ref": "#/components/schemas/CapacityBasis"
+          },
+          "purchased_seats": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Count"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "planned_member_limit": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PositiveInteger"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "effective_limit": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Count"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "occupied_count": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Count"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "available_count": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Count"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "additional_required": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Count"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "can_submit": {
+            "type": "boolean"
+          },
+          "blocking_reason_code": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CapacityBlockingReason"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "basis",
+          "purchased_seats",
+          "planned_member_limit",
+          "effective_limit",
+          "occupied_count",
+          "available_count",
+          "additional_required",
+          "can_submit",
+          "blocking_reason_code"
+        ],
+        "description": "已购已知时取已购与本地上限较小值，已购为 0 不回退；已购未知时用本地正整数上限。占用为成员/邀请/有效占位按身份去重并集，未知为 null；available=max(0,limit-occupied)。additional_required 为净新增预留数。缺上限或无合格目标阻断 POST join；已有上限但待同步/容量可受理等待。预览不预占、不授权、不承诺零计费。"
+      },
+      "JoinPreviewDTO": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "team_id": {
+            "$ref": "#/components/schemas/LocalId"
+          },
+          "selection_id": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LocalId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "selection_revision": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Revision"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "snapshot_revision": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReadModelRevision"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "snapshot_at": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Timestamp"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "team_last_synced_at": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Timestamp"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "requires_sync": {
+            "type": "boolean"
+          },
+          "counts": {
+            "$ref": "#/components/schemas/PreviewCounts"
+          },
+          "capacity": {
+            "$ref": "#/components/schemas/Capacity"
+          }
+        },
+        "required": [
+          "team_id",
+          "selection_id",
+          "selection_revision",
+          "snapshot_revision",
+          "snapshot_at",
+          "team_last_synced_at",
+          "requires_sync",
+          "counts",
+          "capacity"
+        ],
+        "description": "纯本地评估；显式 ID 模式 selection 字段均为 null，snapshot_revision 为读模型修订字符串；未知快照事实为 null。不创建 Task/Run、邀请、名单或席位占位。"
+      },
+      "JoinRequestCounts": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "requested_count": {
+            "$ref": "#/components/schemas/Count"
+          },
+          "unique_count": {
+            "$ref": "#/components/schemas/Count"
+          },
+          "duplicate_count": {
+            "$ref": "#/components/schemas/Count"
+          },
+          "pending_count": {
+            "$ref": "#/components/schemas/Count"
+          },
+          "accepted_count": {
+            "$ref": "#/components/schemas/Count"
+          },
+          "reused_count": {
+            "$ref": "#/components/schemas/Count"
+          },
+          "skipped_count": {
+            "$ref": "#/components/schemas/Count"
+          },
+          "failed_count": {
+            "$ref": "#/components/schemas/Count"
+          }
+        },
+        "required": [
+          "requested_count",
+          "unique_count",
+          "duplicate_count",
+          "pending_count",
+          "accepted_count",
+          "reused_count",
+          "skipped_count",
+          "failed_count"
+        ],
+        "description": "requested/unique/duplicate 受理后固定；pending+accepted+skipped+failed=unique；reused 为 accepted 子集。failed 仅为逐项受理失败。"
+      },
+      "JoinRequestDTO": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/LocalId"
+          },
+          "team_id": {
+            "$ref": "#/components/schemas/LocalId"
+          },
+          "operation": {
+            "$ref": "#/components/schemas/JoinOperation"
+          },
+          "accepted": {
+            "type": "boolean",
+            "const": true
+          },
+          "reused": {
+            "type": "boolean"
+          },
+          "status": {
+            "$ref": "#/components/schemas/JoinRequestStatus"
+          },
+          "waiting_reason_code": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WaitingReasonCode"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "selection_id": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LocalId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "selection_revision": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Revision"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "batch_id": {
+            "$ref": "#/components/schemas/LocalId"
+          },
+          "task_id": {
+            "$ref": "#/components/schemas/LocalId"
+          },
+          "run_id": {
+            "$ref": "#/components/schemas/LocalId"
+          },
+          "created_at": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "counts": {
+            "$ref": "#/components/schemas/JoinRequestCounts"
+          },
+          "capacity": {
+            "$ref": "#/components/schemas/Capacity"
+          },
+          "items_url": {
+            "type": "string",
+            "pattern": "^/api/teams/[1-9][0-9]*/join-requests/[1-9][0-9]*$",
+            "description": "本请求逐项回执读取路径。"
+          }
+        },
+        "required": [
+          "id",
+          "team_id",
+          "operation",
+          "accepted",
+          "reused",
+          "status",
+          "waiting_reason_code",
+          "selection_id",
+          "selection_revision",
+          "batch_id",
+          "task_id",
+          "run_id",
+          "created_at",
+          "counts",
+          "capacity",
+          "items_url"
+        ],
+        "description": "持久集合请求及父 Task/Run；accepted=true 和 HTTP 202 不表示所有目标已受理或已加入。固定目标先保存，后台窗口受理；待处理项保持 pending。"
+      },
+      "JoinItemDTO": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "ordinal": {
+            "$ref": "#/components/schemas/Count"
+          },
+          "account_id": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LocalId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "invitation_id": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LocalId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "acceptance_status": {
+            "$ref": "#/components/schemas/AcceptanceStatus"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LocalId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LocalId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "execution_status": {
+            "$ref": "#/components/schemas/ExecutionStatus"
+          },
+          "reason_code": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BusinessReasonCode"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string",
+                "description": "公开中文摘要。"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "ordinal",
+          "account_id",
+          "invitation_id",
+          "acceptance_status",
+          "task_id",
+          "run_id",
+          "execution_status",
+          "reason_code",
+          "message"
+        ],
+        "description": "固定目标 ordinal 升序；未创建或不能定位的引用为 null（如无效 invitation_id 无法定位 account_id）。无执行引用时 execution_status=none；已有精确引用可保留。"
+      },
+      "SyncBulkItem": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "team_id": {
+            "$ref": "#/components/schemas/LocalId"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LocalId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LocalId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "acceptance_status": {
+            "$ref": "#/components/schemas/SyncAcceptanceStatus"
+          },
+          "execution_status": {
+            "$ref": "#/components/schemas/ExecutionStatus"
+          },
+          "reason_code": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BusinessReasonCode"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "team_id",
+          "task_id",
+          "run_id",
+          "acceptance_status",
+          "execution_status",
+          "reason_code"
+        ]
+      },
+      "SyncBulkReceipt": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "accepted": {
+            "type": "boolean",
+            "const": true
+          },
+          "batch_id": {
+            "$ref": "#/components/schemas/LocalId"
+          },
+          "requested_count": {
+            "$ref": "#/components/schemas/Count"
+          },
+          "unique_count": {
+            "$ref": "#/components/schemas/Count"
+          },
+          "duplicate_count": {
+            "$ref": "#/components/schemas/Count"
+          },
+          "reused_count": {
+            "$ref": "#/components/schemas/Count"
+          },
+          "accepted_count": {
+            "$ref": "#/components/schemas/Count"
+          },
+          "skipped_count": {
+            "$ref": "#/components/schemas/Count"
+          },
+          "failed_count": {
+            "$ref": "#/components/schemas/Count"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SyncBulkItem"
+            }
+          }
+        },
+        "required": [
+          "accepted",
+          "batch_id",
+          "requested_count",
+          "unique_count",
+          "duplicate_count",
+          "reused_count",
+          "accepted_count",
+          "skipped_count",
+          "failed_count",
+          "items"
+        ],
+        "description": "requested=unique+duplicate；accepted+skipped+failed=unique；reused 已包含在 accepted 中，不重复相加。"
+      },
+      "IdempotentRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "idempotency_key": {
+            "$ref": "#/components/schemas/IdempotencyKey"
+          }
+        },
+        "required": [],
+        "description": "没有其他业务字段；幂等键也可仅放请求头。"
+      },
+      "BindingProbeRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "manager_account_id": {
+            "$ref": "#/components/schemas/LocalId"
+          },
+          "target_workspace_id": {
+            "$ref": "#/components/schemas/RemoteId"
+          },
+          "idempotency_key": {
+            "$ref": "#/components/schemas/IdempotencyKey"
+          }
+        },
+        "required": [
+          "manager_account_id"
+        ],
+        "description": "target_workspace_id 仅限制或预选探测，不能代替创建时明确绑定。归档管理账号允许探测。"
+      },
+      "TeamCreateRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "manager_account_id": {
+            "$ref": "#/components/schemas/LocalId"
+          },
+          "workspace_id": {
+            "$ref": "#/components/schemas/RemoteId"
+          },
+          "probe_id": {
+            "$ref": "#/components/schemas/LocalId"
+          },
+          "probe_revision": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "display_name": {
+            "$ref": "#/components/schemas/DisplayName"
+          },
+          "planned_member_limit": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PositiveInteger"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "idempotency_key": {
+            "$ref": "#/components/schemas/IdempotencyKey"
+          }
+        },
+        "required": [
+          "manager_account_id",
+          "workspace_id",
+          "probe_id",
+          "probe_revision"
+        ],
+        "description": "必须提交准确工作区与匹配的有效成功探测证据，can_manage=true；不能绑定个人工作区。同部署 workspace 唯一。"
+      },
+      "TeamPatchRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "expected_revision": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "display_name": {
+            "$ref": "#/components/schemas/DisplayName"
+          },
+          "planned_member_limit": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PositiveInteger"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "manager_account_id": {
+            "$ref": "#/components/schemas/LocalId"
+          },
+          "probe_id": {
+            "$ref": "#/components/schemas/LocalId"
+          },
+          "probe_revision": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "idempotency_key": {
+            "$ref": "#/components/schemas/IdempotencyKey"
+          }
+        },
+        "required": [
+          "expected_revision"
+        ],
+        "description": "至少一个可编辑字段；换母号需同一已保存 workspace 的有效 Probe。不能修改 workspace、角色、已购席位或远端名称；未更换母号不得通过无关 Probe 修改权限事实。只更换执行管理身份，不转移所有权或改变成员角色。",
+        "dependentRequired": {
+          "manager_account_id": [
+            "probe_id",
+            "probe_revision"
+          ],
+          "probe_id": [
+            "manager_account_id",
+            "probe_revision"
+          ],
+          "probe_revision": [
+            "manager_account_id",
+            "probe_id"
+          ]
+        },
+        "allOf": [
+          {
+            "anyOf": [
+              {
+                "required": [
+                  "display_name"
+                ],
+                "type": "object",
+                "properties": {
+                  "display_name": {
+                    "$ref": "#/components/schemas/DisplayName"
+                  }
+                }
+              },
+              {
+                "required": [
+                  "planned_member_limit"
+                ],
+                "type": "object",
+                "properties": {
+                  "planned_member_limit": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/components/schemas/PositiveInteger"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                }
+              },
+              {
+                "required": [
+                  "manager_account_id"
+                ],
+                "type": "object",
+                "properties": {
+                  "manager_account_id": {
+                    "$ref": "#/components/schemas/LocalId"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "SyncBulkRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "team_ids": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LocalId"
+            },
+            "minItems": 1,
+            "maxItems": 100
+          },
+          "idempotency_key": {
+            "$ref": "#/components/schemas/IdempotencyKey"
+          }
+        },
+        "required": [
+          "team_ids"
+        ],
+        "description": "按 team_id 去重；重复输入合法，保留 requested/unique/duplicate 统计。"
+      },
+      "CandidateResolveRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "values": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "description": "本地正整数十进制账号 ID 或非空邮箱；允许首尾空白，trim 后按现有邮箱规则精确解析。",
+              "pattern": "^\\s*(?:[1-9][0-9]*|[^\\s@]+@[^\\s@]+)\\s*$",
+              "x-normalization": "trim"
+            },
+            "minItems": 1,
+            "maxItems": 10000
+          }
+        },
+        "required": [
+          "values"
+        ],
+        "description": "纯读 POST；不要求也不接受 JSON idempotency_key；不登录、不访问上游、不持久名单或创建任务。"
+      },
+      "ExpectedEmailSnapshots": {
+        "type": "object",
+        "additionalProperties": false,
+        "patternProperties": {
+          "^[1-9][0-9]*$": {
+            "$ref": "#/components/schemas/Email"
+          }
+        },
+        "description": "可选账号 ID→非空邮箱快照映射；每个键必须属于同请求 account_ids。账号来源应提交完整已选邮箱快照。",
+        "x-keys-subset-of": "account_ids"
+      },
+      "ExplicitPreviewTargets": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "account_ids": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LocalId"
+            },
+            "minItems": 1,
+            "maxItems": 10000
+          },
+          "expected_emails": {
+            "$ref": "#/components/schemas/ExpectedEmailSnapshots"
+          }
+        },
+        "required": [
+          "account_ids"
+        ],
+        "description": "按账号 ID 去重并保留首次顺序；重复输入合法。核对固定邮箱快照，不把换绑后邮箱静默替换为本次目标。",
+        "x-cross-field-rules": [
+          "expected_emails 的所有键必须属于 account_ids"
+        ]
+      },
+      "SelectionPreviewTargets": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "selection_id": {
+            "$ref": "#/components/schemas/LocalId"
+          },
+          "selection_revision": {
+            "$ref": "#/components/schemas/Revision"
+          }
+        },
+        "required": [
+          "selection_id",
+          "selection_revision"
+        ],
+        "description": "必须为已冻结、最多 100,000 账号的 team_join/version=1 集合，Team 与修订匹配；沿用名单固定邮箱快照，不接受 account_ids 或 expected_emails。preview 不消费，join 原子消费。"
+      },
+      "JoinPreviewRequest": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/ExplicitPreviewTargets"
+          },
+          {
+            "$ref": "#/components/schemas/SelectionPreviewTargets"
+          }
+        ],
+        "description": "显式账号或冻结集合严格二选一；不接受任意角色、workspace 替换或个人数据合并选项。",
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "account_ids": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LocalId"
+            },
+            "minItems": 1,
+            "maxItems": 10000
+          },
+          "expected_emails": {
+            "$ref": "#/components/schemas/ExpectedEmailSnapshots"
+          },
+          "selection_id": {
+            "$ref": "#/components/schemas/LocalId"
+          },
+          "selection_revision": {
+            "$ref": "#/components/schemas/Revision"
+          }
+        }
+      },
+      "ExplicitJoinTargets": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "account_ids": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LocalId"
+            },
+            "minItems": 1,
+            "maxItems": 10000
+          },
+          "expected_emails": {
+            "$ref": "#/components/schemas/ExpectedEmailSnapshots"
+          },
+          "idempotency_key": {
+            "$ref": "#/components/schemas/IdempotencyKey"
+          }
+        },
+        "required": [
+          "account_ids"
+        ],
+        "description": "按账号 ID 去重并保留首次顺序；重复输入合法。核对固定邮箱快照，不把换绑后邮箱静默替换为本次目标。",
+        "x-cross-field-rules": [
+          "expected_emails 的所有键必须属于 account_ids"
+        ]
+      },
+      "SelectionJoinTargets": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "selection_id": {
+            "$ref": "#/components/schemas/LocalId"
+          },
+          "selection_revision": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "idempotency_key": {
+            "$ref": "#/components/schemas/IdempotencyKey"
+          }
+        },
+        "required": [
+          "selection_id",
+          "selection_revision"
+        ],
+        "description": "必须为已冻结、最多 100,000 账号的 team_join/version=1 集合，Team 与修订匹配；沿用名单固定邮箱快照，不接受 account_ids 或 expected_emails。preview 不消费，join 原子消费。"
+      },
+      "JoinRequest": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/ExplicitJoinTargets"
+          },
+          {
+            "$ref": "#/components/schemas/SelectionJoinTargets"
+          }
+        ],
+        "description": "显式账号或冻结集合严格二选一；不接受任意角色、workspace 替换或个人数据合并选项。",
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "account_ids": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LocalId"
+            },
+            "minItems": 1,
+            "maxItems": 10000
+          },
+          "expected_emails": {
+            "$ref": "#/components/schemas/ExpectedEmailSnapshots"
+          },
+          "idempotency_key": {
+            "$ref": "#/components/schemas/IdempotencyKey"
+          },
+          "selection_id": {
+            "$ref": "#/components/schemas/LocalId"
+          },
+          "selection_revision": {
+            "$ref": "#/components/schemas/Revision"
+          }
+        }
+      },
+      "InvitationBulkRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "invitation_ids": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LocalId"
+            },
+            "minItems": 1,
+            "maxItems": 10000
+          },
+          "idempotency_key": {
+            "$ref": "#/components/schemas/IdempotencyKey"
+          }
+        },
+        "required": [
+          "invitation_ids"
+        ],
+        "description": "先按 invitation_id、再按同 Team 目标身份去重。不存在或属于其他 Team 的项 skipped/invitation_not_found，其余继续，不返回其他 Team 材料。"
+      },
+      "TeamListQuery": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "default": 1
+          },
+          "page_size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "default": 20
+          },
+          "include_facets": {
+            "type": "string",
+            "enum": [
+              "0",
+              "1"
+            ],
+            "default": "0"
+          },
+          "q": {
+            "type": "string"
+          },
+          "manager_account_id": {
+            "$ref": "#/components/schemas/LocalId"
+          },
+          "role": {
+            "$ref": "#/components/schemas/Role"
+          },
+          "last_sync_status": {
+            "$ref": "#/components/schemas/LastSyncStatus"
+          }
+        },
+        "required": [],
+        "description": "仅接受列出的单值参数；未知字段、非法枚举或分页越界返回 422，不接受逗号拼接。q 只匹配公开名称、邮箱或本地 ID，不替代精确 ID 筛选。"
+      },
+      "MemberListQuery": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "default": 1
+          },
+          "page_size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "default": 20
+          },
+          "include_facets": {
+            "type": "string",
+            "enum": [
+              "0",
+              "1"
+            ],
+            "default": "0"
+          },
+          "q": {
+            "type": "string"
+          },
+          "membership_state": {
+            "$ref": "#/components/schemas/MembershipState",
+            "default": "joined"
+          },
+          "role": {
+            "$ref": "#/components/schemas/Role"
+          },
+          "linked": {
+            "$ref": "#/components/schemas/LinkedFilter"
+          }
+        },
+        "required": [],
+        "description": "仅接受列出的单值参数；未知字段、非法枚举或分页越界返回 422，不接受逗号拼接。q 只匹配公开名称、邮箱或本地 ID，不替代精确 ID 筛选。"
+      },
+      "InvitationListQuery": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "default": 1
+          },
+          "page_size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "default": 20
+          },
+          "include_facets": {
+            "type": "string",
+            "enum": [
+              "0",
+              "1"
+            ],
+            "default": "0"
+          },
+          "q": {
+            "type": "string"
+          },
+          "invitation_state": {
+            "$ref": "#/components/schemas/InvitationState"
+          },
+          "membership_state": {
+            "$ref": "#/components/schemas/MembershipState"
+          },
+          "execution_status": {
+            "$ref": "#/components/schemas/ExecutionStatus"
+          },
+          "stage": {
+            "$ref": "#/components/schemas/JoinStage"
+          },
+          "join_request_id": {
+            "$ref": "#/components/schemas/LocalId"
+          }
+        },
+        "required": [],
+        "description": "仅接受列出的单值参数；未知字段、非法枚举或分页越界返回 422，不接受逗号拼接。q 只匹配公开名称、邮箱或本地 ID，不替代精确 ID 筛选。"
+      },
+      "CandidateListQuery": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "default": 1
+          },
+          "page_size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "default": 20
+          },
+          "include_facets": {
+            "type": "string",
+            "enum": [
+              "0",
+              "1"
+            ],
+            "default": "0"
+          },
+          "q": {
+            "type": "string"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/CandidateScope",
+            "default": "unassigned"
+          },
+          "archived": {
+            "$ref": "#/components/schemas/ArchivedFilter",
+            "default": "0"
+          },
+          "has_access_token": {
+            "$ref": "#/components/schemas/BooleanQuery"
+          },
+          "has_password": {
+            "$ref": "#/components/schemas/BooleanQuery"
+          },
+          "totp_enabled": {
+            "$ref": "#/components/schemas/BooleanQuery"
+          },
+          "email_status": {
+            "$ref": "#/components/schemas/EmailStatus"
+          }
+        },
+        "required": [],
+        "description": "仅接受列出的单值参数；未知字段、非法枚举或分页越界返回 422，不接受逗号拼接。q 只匹配公开名称、邮箱或本地 ID，不替代精确 ID 筛选。"
+      },
+      "JoinRequestItemsQuery": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "default": 1
+          },
+          "page_size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "default": 20
+          },
+          "include_facets": {
+            "type": "string",
+            "enum": [
+              "0",
+              "1"
+            ],
+            "default": "0"
+          },
+          "acceptance_status": {
+            "$ref": "#/components/schemas/AcceptanceStatus"
+          },
+          "execution_status": {
+            "$ref": "#/components/schemas/ExecutionStatus"
+          },
+          "reason_code": {
+            "$ref": "#/components/schemas/BusinessReasonCode"
+          }
+        },
+        "required": [],
+        "description": "仅接受列出的单值参数；未知字段、非法枚举或分页越界返回 422，不接受逗号拼接。q 只匹配公开名称、邮箱或本地 ID，不替代精确 ID 筛选。"
+      },
+      "EmptyFacets": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "description": "该列表不提供业务 facets；include_facets=1 时返回严格空对象。"
+      },
+      "TeamRoleFacet": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "value": {
+            "$ref": "#/components/schemas/Role"
+          },
+          "count": {
+            "$ref": "#/components/schemas/Count"
+          }
+        },
+        "required": [
+          "value",
+          "count"
+        ]
+      },
+      "TeamLastSyncStatusFacet": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "value": {
+            "$ref": "#/components/schemas/LastSyncStatus"
+          },
+          "count": {
+            "$ref": "#/components/schemas/Count"
+          }
+        },
+        "required": [
+          "value",
+          "count"
+        ]
+      },
+      "TeamFacets": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "role": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TeamRoleFacet"
+            }
+          },
+          "last_sync_status": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TeamLastSyncStatusFacet"
+            }
+          }
+        },
+        "required": [
+          "role",
+          "last_sync_status"
+        ],
+        "description": "仅在 include_facets=1 时返回；列表、total、facets 使用相同业务范围。"
+      },
+      "MemberMembershipStateFacet": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "value": {
+            "$ref": "#/components/schemas/MembershipState"
+          },
+          "count": {
+            "$ref": "#/components/schemas/Count"
+          }
+        },
+        "required": [
+          "value",
+          "count"
+        ]
+      },
+      "MemberRoleFacet": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "value": {
+            "$ref": "#/components/schemas/Role"
+          },
+          "count": {
+            "$ref": "#/components/schemas/Count"
+          }
+        },
+        "required": [
+          "value",
+          "count"
+        ]
+      },
+      "MemberLinkedFacet": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "value": {
+            "type": "string",
+            "enum": [
+              "linked",
+              "unlinked"
+            ]
+          },
+          "count": {
+            "$ref": "#/components/schemas/Count"
+          }
+        },
+        "required": [
+          "value",
+          "count"
+        ]
+      },
+      "MemberFacets": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "membership_state": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MemberMembershipStateFacet"
+            }
+          },
+          "role": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MemberRoleFacet"
+            }
+          },
+          "linked": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MemberLinkedFacet"
+            }
+          }
+        },
+        "required": [
+          "membership_state",
+          "role",
+          "linked"
+        ],
+        "description": "仅在 include_facets=1 时返回；列表、total、facets 使用相同业务范围。"
+      },
+      "InvitationInvitationStateFacet": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "value": {
+            "$ref": "#/components/schemas/InvitationState"
+          },
+          "count": {
+            "$ref": "#/components/schemas/Count"
+          }
+        },
+        "required": [
+          "value",
+          "count"
+        ]
+      },
+      "InvitationMembershipStateFacet": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "value": {
+            "$ref": "#/components/schemas/MembershipState"
+          },
+          "count": {
+            "$ref": "#/components/schemas/Count"
+          }
+        },
+        "required": [
+          "value",
+          "count"
+        ]
+      },
+      "InvitationExecutionStatusFacet": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "value": {
+            "$ref": "#/components/schemas/ExecutionStatus"
+          },
+          "count": {
+            "$ref": "#/components/schemas/Count"
+          }
+        },
+        "required": [
+          "value",
+          "count"
+        ]
+      },
+      "InvitationStageFacet": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "value": {
+            "$ref": "#/components/schemas/JoinStage"
+          },
+          "count": {
+            "$ref": "#/components/schemas/Count"
+          }
+        },
+        "required": [
+          "value",
+          "count"
+        ]
+      },
+      "InvitationFacets": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "invitation_state": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InvitationInvitationStateFacet"
+            }
+          },
+          "membership_state": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InvitationMembershipStateFacet"
+            }
+          },
+          "execution_status": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InvitationExecutionStatusFacet"
+            }
+          },
+          "stage": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InvitationStageFacet"
+            }
+          }
+        },
+        "required": [
+          "invitation_state",
+          "membership_state",
+          "execution_status",
+          "stage"
+        ],
+        "description": "仅在 include_facets=1 时返回；列表、total、facets 使用相同业务范围。"
+      },
+      "TeamList": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TeamDTO"
+            }
+          },
+          "total": {
+            "$ref": "#/components/schemas/Count"
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "page_size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "revision": {
+            "$ref": "#/components/schemas/ReadModelRevision"
+          },
+          "facets": {
+            "$ref": "#/components/schemas/TeamFacets"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "page_size",
+          "revision"
+        ]
+      },
+      "MemberList": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MemberDTO"
+            }
+          },
+          "total": {
+            "$ref": "#/components/schemas/Count"
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "page_size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "revision": {
+            "$ref": "#/components/schemas/ReadModelRevision"
+          },
+          "facets": {
+            "$ref": "#/components/schemas/MemberFacets"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "page_size",
+          "revision"
+        ]
+      },
+      "InvitationList": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InvitationDTO"
+            }
+          },
+          "total": {
+            "$ref": "#/components/schemas/Count"
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "page_size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "revision": {
+            "$ref": "#/components/schemas/ReadModelRevision"
+          },
+          "facets": {
+            "$ref": "#/components/schemas/InvitationFacets"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "page_size",
+          "revision"
+        ]
+      },
+      "CandidateList": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CandidateDTO"
+            }
+          },
+          "total": {
+            "$ref": "#/components/schemas/Count"
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "page_size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "revision": {
+            "$ref": "#/components/schemas/ReadModelRevision"
+          },
+          "facets": {
+            "$ref": "#/components/schemas/EmptyFacets"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "page_size",
+          "revision"
+        ]
+      },
+      "JoinRequestItems": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "request": {
+            "$ref": "#/components/schemas/JoinRequestDTO"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/JoinItemDTO"
+            }
+          },
+          "total": {
+            "$ref": "#/components/schemas/Count"
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "page_size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "revision": {
+            "$ref": "#/components/schemas/ReadModelRevision"
+          },
+          "facets": {
+            "$ref": "#/components/schemas/EmptyFacets"
+          }
+        },
+        "required": [
+          "request",
+          "items",
+          "total",
+          "page",
+          "page_size",
+          "revision"
+        ]
+      },
+      "ErrorDetails": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "existing_team_id": {
+            "$ref": "#/components/schemas/LocalId"
+          },
+          "existing_join_request_id": {
+            "$ref": "#/components/schemas/LocalId"
+          },
+          "team_id": {
+            "$ref": "#/components/schemas/LocalId"
+          },
+          "account_id": {
+            "$ref": "#/components/schemas/LocalId"
+          },
+          "probe_id": {
+            "$ref": "#/components/schemas/LocalId"
+          },
+          "invitation_id": {
+            "$ref": "#/components/schemas/LocalId"
+          },
+          "join_request_id": {
+            "$ref": "#/components/schemas/LocalId"
+          },
+          "selection_id": {
+            "$ref": "#/components/schemas/LocalId"
+          },
+          "revision": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "expected_revision": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "probe_revision": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "selection_revision": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "workspace_id": {
+            "$ref": "#/components/schemas/RemoteId"
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "unsupported_fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "allowed_fields": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "minimum": {
+            "type": "integer"
+          },
+          "maximum": {
+            "type": "integer"
+          }
+        },
+        "required": [],
+        "description": "允许空对象或白名单业务详情。契约明确定位字段：existing_team_id、existing_join_request_id、revision；其余仅安全资源/版本/字段名/上下限。禁止完整账号、AT、Cookie、密码、OTP、Session、恢复材料及原始上游响应。"
+      },
+      "HttpErrorCode": {
+        "type": "string",
+        "enum": [
+          "invalid_json",
+          "authentication_required",
+          "access_denied",
+          "team_not_found",
+          "account_not_found",
+          "probe_not_found",
+          "invitation_not_found",
+          "join_request_not_found",
+          "selection_not_found",
+          "idempotency_conflict",
+          "revision_conflict",
+          "probe_not_ready",
+          "probe_expired",
+          "probe_revision_conflict",
+          "probe_identity_mismatch",
+          "manager_permission_unconfirmed",
+          "team_already_bound",
+          "already_in_another_team",
+          "selection_not_ready",
+          "selection_revision_mismatch",
+          "selection_operation_mismatch",
+          "selection_team_mismatch",
+          "selection_consumed",
+          "team_limit_required",
+          "selection_expired",
+          "parameter_invalid",
+          "field_not_supported",
+          "idempotency_key_required",
+          "idempotency_key_invalid",
+          "idempotency_key_mismatch",
+          "team_store_unavailable"
+        ]
+      },
+      "ApiError": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/HttpErrorCode"
+          },
+          "message": {
+            "type": "string",
+            "description": "公开中文原因。"
+          },
+          "field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "details": {
+            "$ref": "#/components/schemas/ErrorDetails"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "field",
+          "retryable",
+          "details"
+        ]
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": false
+          },
+          "request_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "error": {
+            "$ref": "#/components/schemas/ApiError"
+          }
+        },
+        "required": [
+          "ok",
+          "request_id",
+          "error"
+        ],
+        "description": "HTTP 状态与错误一致，不使用 HTTP 200 包装输入错误。request_id 仅跟踪本次请求，不是幂等键；无单一字段时 field=null。"
+      },
+      "Http400Error": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "type": "string",
+            "enum": [
+              "invalid_json"
+            ]
+          },
+          "message": {
+            "type": "string",
+            "description": "公开中文原因。"
+          },
+          "field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "details": {
+            "$ref": "#/components/schemas/ErrorDetails"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "field",
+          "retryable",
+          "details"
+        ]
+      },
+      "Http400Response": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": false
+          },
+          "request_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "error": {
+            "$ref": "#/components/schemas/Http400Error"
+          }
+        },
+        "required": [
+          "ok",
+          "request_id",
+          "error"
+        ]
+      },
+      "Http401Error": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "type": "string",
+            "enum": [
+              "authentication_required"
+            ]
+          },
+          "message": {
+            "type": "string",
+            "description": "公开中文原因。"
+          },
+          "field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "details": {
+            "$ref": "#/components/schemas/ErrorDetails"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "field",
+          "retryable",
+          "details"
+        ]
+      },
+      "Http401Response": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": false
+          },
+          "request_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "error": {
+            "$ref": "#/components/schemas/Http401Error"
+          }
+        },
+        "required": [
+          "ok",
+          "request_id",
+          "error"
+        ]
+      },
+      "Http403Error": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "type": "string",
+            "enum": [
+              "access_denied"
+            ]
+          },
+          "message": {
+            "type": "string",
+            "description": "公开中文原因。"
+          },
+          "field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "details": {
+            "$ref": "#/components/schemas/ErrorDetails"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "field",
+          "retryable",
+          "details"
+        ]
+      },
+      "Http403Response": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": false
+          },
+          "request_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "error": {
+            "$ref": "#/components/schemas/Http403Error"
+          }
+        },
+        "required": [
+          "ok",
+          "request_id",
+          "error"
+        ]
+      },
+      "Http404Error": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "type": "string",
+            "enum": [
+              "team_not_found",
+              "account_not_found",
+              "probe_not_found",
+              "invitation_not_found",
+              "join_request_not_found",
+              "selection_not_found"
+            ]
+          },
+          "message": {
+            "type": "string",
+            "description": "公开中文原因。"
+          },
+          "field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "details": {
+            "$ref": "#/components/schemas/ErrorDetails"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "field",
+          "retryable",
+          "details"
+        ]
+      },
+      "Http404Response": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": false
+          },
+          "request_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "error": {
+            "$ref": "#/components/schemas/Http404Error"
+          }
+        },
+        "required": [
+          "ok",
+          "request_id",
+          "error"
+        ]
+      },
+      "Http409Error": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "type": "string",
+            "enum": [
+              "idempotency_conflict",
+              "revision_conflict",
+              "probe_not_ready",
+              "probe_expired",
+              "probe_revision_conflict",
+              "probe_identity_mismatch",
+              "manager_permission_unconfirmed",
+              "team_already_bound",
+              "already_in_another_team",
+              "selection_not_ready",
+              "selection_revision_mismatch",
+              "selection_operation_mismatch",
+              "selection_team_mismatch",
+              "selection_consumed",
+              "team_limit_required"
+            ]
+          },
+          "message": {
+            "type": "string",
+            "description": "公开中文原因。"
+          },
+          "field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "details": {
+            "$ref": "#/components/schemas/ErrorDetails"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "field",
+          "retryable",
+          "details"
+        ]
+      },
+      "Http409Response": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": false
+          },
+          "request_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "error": {
+            "$ref": "#/components/schemas/Http409Error"
+          }
+        },
+        "required": [
+          "ok",
+          "request_id",
+          "error"
+        ]
+      },
+      "Http410Error": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "type": "string",
+            "enum": [
+              "selection_expired"
+            ]
+          },
+          "message": {
+            "type": "string",
+            "description": "公开中文原因。"
+          },
+          "field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "details": {
+            "$ref": "#/components/schemas/ErrorDetails"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "field",
+          "retryable",
+          "details"
+        ]
+      },
+      "Http410Response": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": false
+          },
+          "request_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "error": {
+            "$ref": "#/components/schemas/Http410Error"
+          }
+        },
+        "required": [
+          "ok",
+          "request_id",
+          "error"
+        ]
+      },
+      "Http422Error": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "type": "string",
+            "enum": [
+              "parameter_invalid",
+              "field_not_supported",
+              "idempotency_key_required",
+              "idempotency_key_invalid",
+              "idempotency_key_mismatch"
+            ]
+          },
+          "message": {
+            "type": "string",
+            "description": "公开中文原因。"
+          },
+          "field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "details": {
+            "$ref": "#/components/schemas/ErrorDetails"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "field",
+          "retryable",
+          "details"
+        ]
+      },
+      "Http422Response": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": false
+          },
+          "request_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "error": {
+            "$ref": "#/components/schemas/Http422Error"
+          }
+        },
+        "required": [
+          "ok",
+          "request_id",
+          "error"
+        ]
+      },
+      "Http503Error": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "type": "string",
+            "enum": [
+              "team_store_unavailable"
+            ]
+          },
+          "message": {
+            "type": "string",
+            "description": "公开中文原因。"
+          },
+          "field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "retryable": {
+            "type": "boolean",
+            "const": true
+          },
+          "details": {
+            "$ref": "#/components/schemas/ErrorDetails"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "field",
+          "retryable",
+          "details"
+        ]
+      },
+      "Http503Response": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": false
+          },
+          "request_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "error": {
+            "$ref": "#/components/schemas/Http503Error"
+          }
+        },
+        "required": [
+          "ok",
+          "request_id",
+          "error"
+        ]
+      },
+      "BindingProbeReceiptResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": true
+          },
+          "request_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "本次 HTTP 追踪编号，不是幂等键。"
+          },
+          "data": {
+            "$ref": "#/components/schemas/BindingProbeReceipt"
+          }
+        },
+        "required": [
+          "ok",
+          "request_id",
+          "data"
+        ]
+      },
+      "BindingProbeDTOResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": true
+          },
+          "request_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "本次 HTTP 追踪编号，不是幂等键。"
+          },
+          "data": {
+            "$ref": "#/components/schemas/BindingProbeDTO"
+          }
+        },
+        "required": [
+          "ok",
+          "request_id",
+          "data"
+        ]
+      },
+      "TeamCreatedResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": true
+          },
+          "request_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "本次 HTTP 追踪编号，不是幂等键。"
+          },
+          "data": {
+            "$ref": "#/components/schemas/TeamCreated"
+          }
+        },
+        "required": [
+          "ok",
+          "request_id",
+          "data"
+        ]
+      },
+      "TeamListResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": true
+          },
+          "request_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "本次 HTTP 追踪编号，不是幂等键。"
+          },
+          "data": {
+            "$ref": "#/components/schemas/TeamList"
+          }
+        },
+        "required": [
+          "ok",
+          "request_id",
+          "data"
+        ]
+      },
+      "TeamDetailResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": true
+          },
+          "request_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "本次 HTTP 追踪编号，不是幂等键。"
+          },
+          "data": {
+            "$ref": "#/components/schemas/TeamDetail"
+          }
+        },
+        "required": [
+          "ok",
+          "request_id",
+          "data"
+        ]
+      },
+      "TeamUpdatedResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": true
+          },
+          "request_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "本次 HTTP 追踪编号，不是幂等键。"
+          },
+          "data": {
+            "$ref": "#/components/schemas/TeamUpdated"
+          }
+        },
+        "required": [
+          "ok",
+          "request_id",
+          "data"
+        ]
+      },
+      "ActionReceiptResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": true
+          },
+          "request_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "本次 HTTP 追踪编号，不是幂等键。"
+          },
+          "data": {
+            "$ref": "#/components/schemas/ActionReceipt"
+          }
+        },
+        "required": [
+          "ok",
+          "request_id",
+          "data"
+        ]
+      },
+      "SyncBulkReceiptResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": true
+          },
+          "request_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "本次 HTTP 追踪编号，不是幂等键。"
+          },
+          "data": {
+            "$ref": "#/components/schemas/SyncBulkReceipt"
+          }
+        },
+        "required": [
+          "ok",
+          "request_id",
+          "data"
+        ]
+      },
+      "MemberListResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": true
+          },
+          "request_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "本次 HTTP 追踪编号，不是幂等键。"
+          },
+          "data": {
+            "$ref": "#/components/schemas/MemberList"
+          }
+        },
+        "required": [
+          "ok",
+          "request_id",
+          "data"
+        ]
+      },
+      "InvitationListResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": true
+          },
+          "request_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "本次 HTTP 追踪编号，不是幂等键。"
+          },
+          "data": {
+            "$ref": "#/components/schemas/InvitationList"
+          }
+        },
+        "required": [
+          "ok",
+          "request_id",
+          "data"
+        ]
+      },
+      "InvitationDetailResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": true
+          },
+          "request_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "本次 HTTP 追踪编号，不是幂等键。"
+          },
+          "data": {
+            "$ref": "#/components/schemas/InvitationDetail"
+          }
+        },
+        "required": [
+          "ok",
+          "request_id",
+          "data"
+        ]
+      },
+      "CandidateListResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": true
+          },
+          "request_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "本次 HTTP 追踪编号，不是幂等键。"
+          },
+          "data": {
+            "$ref": "#/components/schemas/CandidateList"
+          }
+        },
+        "required": [
+          "ok",
+          "request_id",
+          "data"
+        ]
+      },
+      "CandidateResolveResultResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": true
+          },
+          "request_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "本次 HTTP 追踪编号，不是幂等键。"
+          },
+          "data": {
+            "$ref": "#/components/schemas/CandidateResolveResult"
+          }
+        },
+        "required": [
+          "ok",
+          "request_id",
+          "data"
+        ]
+      },
+      "JoinPreviewDTOResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": true
+          },
+          "request_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "本次 HTTP 追踪编号，不是幂等键。"
+          },
+          "data": {
+            "$ref": "#/components/schemas/JoinPreviewDTO"
+          }
+        },
+        "required": [
+          "ok",
+          "request_id",
+          "data"
+        ]
+      },
+      "JoinRequestDTOResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": true
+          },
+          "request_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "本次 HTTP 追踪编号，不是幂等键。"
+          },
+          "data": {
+            "$ref": "#/components/schemas/JoinRequestDTO"
+          }
+        },
+        "required": [
+          "ok",
+          "request_id",
+          "data"
+        ]
+      },
+      "JoinRequestItemsResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": true
+          },
+          "request_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "本次 HTTP 追踪编号，不是幂等键。"
+          },
+          "data": {
+            "$ref": "#/components/schemas/JoinRequestItems"
+          }
+        },
+        "required": [
+          "ok",
+          "request_id",
+          "data"
+        ]
+      }
+    }
+  }
+}

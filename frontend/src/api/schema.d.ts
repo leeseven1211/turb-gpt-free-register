@@ -167,7 +167,7 @@ export interface paths {
         put?: never;
         /**
          * 批量执行现有任务操作
-         * @description 按任务 ID 返回受理和跳过结果。批量托管任务重跑按原批次创建一个目标集合轮次。terminate 返回持久命令，执行结果通过批量命令回执接口分页查询。
+         * @description 按任务 ID 返回受理和跳过结果。批量托管任务重跑按原批次创建一个目标集合轮次。terminate 返回持久命令，执行结果通过批量命令回执接口分页查询。 Team retry 请求必须提供 16–128 字符幂等键；同键绑定动作和完整固定任务集合，先重放完成回执，处理中可使用原键恢复未完成项目。
          */
         post: operations["bulkOperations"];
         delete?: never;
@@ -382,6 +382,8 @@ export interface components {
             current_stage_label?: string | null;
             bulk_batch_id?: string | null;
             bulk_round_id?: string | null;
+            /** @description 仅 Team 任务返回；精确本地 Team ID 十进制字符串 */
+            team_id?: string;
         } & {
             [key: string]: unknown;
         };
@@ -696,6 +698,8 @@ export interface operations {
                 result?: string;
                 /** @description 指定批次 ID */
                 batch_id?: number;
+                /** @description 精确本地 Team ID，与其他条件按 AND 组合；列表、总数和 facets 使用相同关联范围 */
+                team_id?: string;
                 /** @description 0/false/no 表示省略筛选计数；轮询使用 0 */
                 include_facets?: string;
                 /** @description 0/false/no 表示省略最近批次；轮询使用 0 */
@@ -718,6 +722,15 @@ export interface operations {
             };
             /** @description 任务或执行实例不存在 */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description team_id 不是单个 64 位正整数十进制 ID */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -877,7 +890,10 @@ export interface operations {
     retryOperation: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description 支持幂等的原生 handler 接收该键；Team 必填，16–128 字符，与请求体 idempotency_key 同时提供时必须一致 */
+                "Idempotency-Key"?: string;
+            };
             path: {
                 /** @description 任务 ID */
                 task_id: number;
@@ -889,6 +905,8 @@ export interface operations {
                 "application/json": {
                     /** @enum {string} */
                     driver?: "roxy" | "protocol";
+                    /** @description Team 重跑的请求幂等键，也可通过 Idempotency-Key 提供 */
+                    idempotency_key?: string;
                 } & {
                     [key: string]: unknown;
                 };
@@ -933,6 +951,15 @@ export interface operations {
             };
             /** @description 当前任务状态不支持操作 */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description 请求幂等键不符合要求或头体不一致 */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1206,6 +1233,33 @@ export interface operations {
             };
             /** @description 任务或执行实例不存在 */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Team 批量请求键已绑定其他动作或任务集合 */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Team 批量重跑缺少或提供非法幂等键 */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description 同一 Team 批量请求仍在处理，可使用原键重试 */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

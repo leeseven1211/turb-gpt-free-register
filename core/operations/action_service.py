@@ -1,6 +1,9 @@
 """任务中心写入应用层：统一动作路由、历史兼容回退与既有响应契约。"""
 from __future__ import annotations
 
+import hashlib
+import inspect
+import json
 import logging
 import uuid
 from collections import defaultdict
@@ -26,6 +29,57 @@ runtime_logger = logging.getLogger("webui.runtime")
 active_operation_statuses = {
     "queued", "running", "stopping", "cancelling", "settling", "waiting",
 }
+
+
+def _is_team_operation(task: Mapping) -> bool:
+    """未绑定 Probe 尚无 Team ID，仍由 Team 来源的协调层处理重跑。"""
+    return task.get("team_id") is not None or (
+        task.get("source_system") == "team_management"
+        and str(task.get("task_type") or "").startswith("team_")
+    )
+
+
+def _retry_accepts_request_key(handler) -> bool:
+    """按签名选择扩展调用，处理器内部的 TypeError 仍按真实异常上报。"""
+    try:
+        parameters = inspect.signature(handler).parameters
+    except (TypeError, ValueError):
+        return False
+    parameter = parameters.get("request_key")
+    return bool(
+        (parameter is not None
+         and parameter.kind in {inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY})
+        or any(value.kind == inspect.Parameter.VAR_KEYWORD for value in parameters.values())
+    )
+
+
+def _registered_retry_response(handler, task: dict, *, request_key: str | None, logger, team_retry: bool = False):
+    """保留旧动作包络，仅向支持扩展签名的处理器传递请求键。"""
+    from core.teams.errors import TeamError
+
+    try:
+        if team_retry:
+            from core.teams.validation import idempotency_key
+            request_key = idempotency_key(request_key, {})
+        result = (
+            handler(task, request_key=request_key)
+            if request_key is not None and _retry_accepts_request_key(handler) else handler(task)
+        )
+    except TeamError as exc:
+        return {
+            "ok": False, "error_code": exc.code, "error": exc.message, "field": exc.field,
+            "retryable": exc.retryable, "details": exc.details,
+        }, exc.status
+    except Exception as exc:
+        logger.exception("统一任务类型重试 handler 失败：task_id=%s type=%s", task.get("id"), task.get("task_type"))
+        return {"ok": False, "error": f"重试入口异常：{type(exc).__name__}: {exc}"}, 503
+    payload = dict(result) if isinstance(result, dict) else {"accepted": bool(result)}
+    payload.setdefault("ok", bool(payload.get("accepted", True)))
+    if payload.get("busy"):
+        return payload, 409
+    if not payload.get("accepted", payload.get("ok")):
+        return payload, 503 if payload.get("unavailable") else 409
+    return payload, 202
 
 
 def _get_operation_action_task(task_id: int, action: str):
@@ -75,6 +129,13 @@ def _dispatch_operation_action(
     if expected_status and current_status != expected_status:
         return {"ok": False, "error": "任务状态已变化，请刷新后重试"}, 409
     if action == "retry":
+        if _is_team_operation(task) and driver_override is None and not diagnostic_after_mfa:
+            team_retry = task_gateway.operation_action(task_type, "retry", source_system=source_system)
+            if team_retry is not None and _retry_accepts_request_key(team_retry):
+                # Team 协调层先重放持久回执，再核验权限和活跃执行；不能由旧状态护栏抢先拒绝。
+                return _registered_retry_response(
+                    team_retry, task, request_key=request_key, logger=logger, team_retry=True,
+                )
         if diagnostic_after_mfa:
             if not codex_operation_service.session_diagnostic_target_supported(task, driver_override):
                 return {"ok": False, "error": "MFA 诊断仅支持单条非批量原生 Codex protocol 补跑任务"}, 400
@@ -106,18 +167,7 @@ def _dispatch_operation_action(
             task_type, "retry", source_system=source_system,
         )
         if registered_action is not None:
-            try:
-                result = registered_action(task)
-            except Exception as exc:
-                logger.exception("统一任务类型重试 handler 失败：task_id=%s type=%s", task_id, task_type)
-                return {"ok": False, "error": f"重试入口异常：{type(exc).__name__}: {exc}"}, 503
-            payload = dict(result) if isinstance(result, dict) else {"accepted": bool(result)}
-            payload.setdefault("ok", bool(payload.get("accepted", True)))
-            if payload.get("busy"):
-                return payload, 409
-            if not payload.get("accepted", payload.get("ok")):
-                return payload, 503 if payload.get("unavailable") else 409
-            return payload, 202
+            return _registered_retry_response(registered_action, task, request_key=request_key, logger=logger)
         if source_system == "native_operations" and task_type == "codex_retry":
             retry_kwargs = {"trigger": "manual_retry"}
             if driver_override is not None:
@@ -197,12 +247,113 @@ def delete_operation(task_id: int):
     return payload, status
 
 
+def _team_bulk_payload_hash(action: str, task_ids: list[int]) -> str:
+    return hashlib.sha256(json.dumps({
+        "action": action, "task_ids": sorted(set(task_ids)),
+    }, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def read_team_bulk_operation_request(action: str, task_ids: list[int], request_key: str | None):
+    """先读取 Team 集合原回执，不能因任务状态变化丢失已经受理的响应。"""
+    if request_key is None or len(request_key) > 128:
+        return None
+    from core.storage.operations import bulk_mutations as commands
+    from core.teams.errors import TeamError
+
+    request_hash = hashlib.sha256(f"team-taskcenter-bulk:{request_key.strip()}".encode()).hexdigest()
+    command = commands.find_command_by_request_key_hash(request_hash)
+    if command and (
+        command["operation"] != "task_center_team_retry"
+        or command["payload_hash"] != _team_bulk_payload_hash(action, task_ids)
+    ):
+        raise TeamError("idempotency_conflict", "该请求键已用于其他动作或任务集合。", status=409)
+    return command
+
+
 def accept_bulk_operation_action(
     action: str,
     task_ids: list[int],
     *,
     request_key: str | None = None,
     operation_logger: logging.Logger | None = None,
+) -> dict:
+    """Team 集合复用既有持久命令和逐项回执，其他任务保留原受理路径。"""
+    command = read_team_bulk_operation_request(action, task_ids, request_key)
+    if command and command["result"] is not None:
+        return command["result"]
+    if action != "retry":
+        return _accept_bulk_operation_action(
+            action, task_ids, request_key=request_key, operation_logger=operation_logger,
+        )
+    observed = operation_task_store.get_action_tasks_many(task_ids)
+    if command is None and not any(_is_team_operation(task) for task in observed.values()):
+        return _accept_bulk_operation_action(
+            action, task_ids, request_key=request_key, operation_logger=operation_logger,
+            observed_tasks=observed,
+        )
+    from core.storage.operations import bulk_mutations as commands
+    from core.teams.errors import TeamError
+    from core.teams.validation import idempotency_key
+
+    request_key = idempotency_key(request_key, {})
+    if command is None:
+        commands.init()
+        request_hash = hashlib.sha256(f"team-taskcenter-bulk:{request_key}".encode()).hexdigest()
+        try:
+            with operation_task_store._connect() as conn:
+                command, _ = commands.create_command(
+                    operation="task_center_team_retry", request_key_hash=request_hash,
+                    payload_hash=_team_bulk_payload_hash(action, task_ids),
+                    input_targets=task_ids, targets=task_ids, parameters={"action": action},
+                    chunk_size=1, duplicate_count=0, conn=conn,
+                )
+        except ValueError as exc:
+            if str(exc) != "idempotency_key_conflict":
+                raise
+            raise TeamError("idempotency_conflict", "该请求键已用于其他动作或任务集合。", status=409) from exc
+    if command["result"] is not None:
+        return command["result"]
+    command_id = int(command["id"])
+    with commands.inline_task_retry_owner(command_id) as owned:
+        if not owned:
+            raise TeamError("team_store_unavailable", "该批量请求仍在受理，请使用原请求键重试。",
+                            status=503, retryable=True)
+        command = commands.get_command(command_id)
+        if command["result"] is not None:
+            return command["result"]
+        fixed_ids = [int(value) for value in command["targets"]]
+        ordinals = {task_id: index for index, task_id in enumerate(fixed_ids)}
+        receipts = commands.inline_task_retry_items(command_id)
+        pending_ids = [task_id for task_id in fixed_ids if task_id not in receipts]
+
+        def persist_item(task_id, accepted, skipped):
+            commands.save_inline_task_retry_item(command_id, ordinals[task_id], {
+                "key": task_id, "status": "updated" if accepted is not None else "skipped",
+                "accepted": accepted, "skipped": skipped,
+            })
+
+        if pending_ids:
+            _accept_bulk_operation_action(
+                action, pending_ids, request_key=request_key, operation_logger=operation_logger,
+                observed_tasks=observed, on_item=persist_item,
+            )
+        receipts = commands.inline_task_retry_items(command_id)
+        accepted = [receipts[task_id]["accepted"] for task_id in fixed_ids if receipts[task_id]["accepted"] is not None]
+        skipped = [receipts[task_id]["skipped"] for task_id in fixed_ids if receipts[task_id]["skipped"] is not None]
+        return commands.finish_inline_task_retry(command_id, {
+            "ok": True, "action": action, "accepted": accepted, "accepted_count": len(accepted),
+            "skipped": skipped, "skipped_count": len(skipped),
+        })
+
+
+def _accept_bulk_operation_action(
+    action: str,
+    task_ids: list[int],
+    *,
+    request_key: str | None = None,
+    operation_logger: logging.Logger | None = None,
+    observed_tasks: dict[int, dict] | None = None,
+    on_item=None,
 ) -> dict:
     """按集合读取和归组，精确受理选中的任务。"""
     if action == "delete":
@@ -219,7 +370,10 @@ def accept_bulk_operation_action(
             **result,
         }
 
-    observed = operation_task_store.get_action_tasks_many(task_ids)
+    observed = (
+        operation_task_store.get_action_tasks_many(task_ids)
+        if observed_tasks is None else observed_tasks
+    )
     tasks = {task_id: observed[task_id] for task_id in task_ids if task_id in observed}
     managed_task_ids = {task_id for task_id, task in tasks.items() if task.get("_managed_target_round_id")}
     if action == "retry":
@@ -251,7 +405,10 @@ def accept_bulk_operation_action(
     for task_id in task_ids:
         task = tasks.get(task_id)
         if not task:
-            skipped.append({"task_id": task_id, "error": "任务不存在"})
+            item = {"task_id": task_id, "error": "任务不存在"}
+            skipped.append(item)
+            if on_item is not None:
+                on_item(task_id, None, item)
             continue
         task_status = str(task.get("status") or "").strip().lower()
         if action == "cancel" and task_status != "queued":
@@ -283,21 +440,41 @@ def accept_bulk_operation_action(
         elif action == "retry" and request_key and len(request_key) > 128:
             payload, status = {"ok": False, "error": "Idempotency-Key 不能超过 128 字符"}, 422
         else:
+            retry_options = {}
+            if action == "retry" and _is_team_operation(task) and request_key is not None:
+                from core.teams.errors import TeamError
+                from core.teams.validation import idempotency_key
+                try:
+                    validated_key = idempotency_key(request_key, {})
+                except TeamError as exc:
+                    skipped.append({"task_id": task_id, "error": exc.message})
+                    continue
+                # 集合 HTTP 请求内每个固定任务有独立且可重放的请求键。
+                retry_options["request_key"] = "team-operation-retry:" + hashlib.sha256(
+                    f"{validated_key}:{task_id}".encode(),
+                ).hexdigest()
             payload, status = _dispatch_operation_action(
                 task_id, task, action, expected_status=task_status,
                 operation_logger=operation_logger, managed_retry_checked=True,
+                **retry_options,
             )
         if 200 <= status < 300 and payload.get("ok", payload.get("accepted", False)) and payload.get("state") != "empty":
-            accepted.append({
+            item = {
                 "task_id": task_id,
                 "state": payload.get("state") or payload.get("status") or "accepted",
                 "message": payload.get("message") or "",
-            })
+            }
+            accepted.append(item)
+            if on_item is not None:
+                on_item(task_id, item, None)
         else:
-            skipped.append({
+            item = {
                 "task_id": task_id,
                 "error": payload.get("error") or payload.get("message") or "操作未接受",
-            })
+            }
+            skipped.append(item)
+            if on_item is not None:
+                on_item(task_id, None, item)
     return {
         "ok": True,
         "action": action,

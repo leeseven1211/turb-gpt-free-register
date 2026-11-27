@@ -98,11 +98,7 @@ window.TeamsPage = (() => {
                 activateTab('tasks');
               }
             },
-            openAccountDetail: (accountId) => {
-              setModuleView('accounts', 'team', true, 'none');
-              activateTab('accounts');
-              setTimeout(() => openAccountDetail(String(accountId)), 60);
-            },
+            openAccountDetail: accountId => window.AccountsPage.openDetailById(String(accountId)),
             openAccountsCandidateMode: (team) => window.AccountsPage?.enterTeamCandidateMode?.({
               team_id: String(team.team_id),
               effective_name: team.effective_name || '',

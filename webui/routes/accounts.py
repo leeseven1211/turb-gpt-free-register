@@ -256,6 +256,9 @@ def create_accounts_blueprint(context: WebUIContext):
     def api_accounts():
         limit = request.args.get("limit", default=500, type=int)
         archived = str(request.args.get("archived", default="0") or "0").lower()
+        team_scope = request.args.get("team_scope", "all")
+        if team_scope not in {"all", "team", "non_team"}:
+            return jsonify({"ok": False, "error": "Team 账号范围无效", "field": "team_scope"}), 422
         plan_filter = str(request.args.get("plan", default="") or "").lower()
         q = str(request.args.get("q", default="") or "").strip()
         search_terms = parse_account_search(q)
@@ -276,6 +279,7 @@ def create_accounts_blueprint(context: WebUIContext):
         result = admin_repository.list_accounts(
             admin_repository.PageRequest(page=page, page_size=page_size, filters=column_filters),
             archived=archived,
+            team_scope=team_scope,
             plan=plan_filter,
             q=q,
             date_from=date_from or "",
@@ -371,6 +375,9 @@ def create_accounts_blueprint(context: WebUIContext):
         """套餐查询轻量状态，不返回 Token、邮箱密码等敏感字段。"""
         limit = request.args.get("limit", default=5000, type=int)
         archived = str(request.args.get("archived", default="0") or "0").lower()
+        team_scope = request.args.get("team_scope", "all")
+        if team_scope not in {"all", "team", "non_team"}:
+            return jsonify({"ok": False, "error": "Team 账号范围无效", "field": "team_scope"}), 422
         plan_filter = str(request.args.get("plan", default="") or "").lower()
         q = str(request.args.get("q", default="") or "").strip()
         column_filters = {
@@ -387,6 +394,7 @@ def create_accounts_blueprint(context: WebUIContext):
             admin_repository.PageRequest(page=page, page_size=page_size, filters=column_filters),
             compact=str(request.args.get("compact") or "").lower() in {"1", "true"},
             archived=archived,
+            team_scope=team_scope,
             plan=plan_filter,
             q=q,
             date_from=date_from,

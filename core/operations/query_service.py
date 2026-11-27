@@ -25,6 +25,10 @@ def public_operation_record(record: dict, *, task_type: str = "") -> dict:
 
 def _project_owned_record(result: dict, *, task_type: str = "") -> dict:
     """投影查询服务已独占的响应副本；不得传入仓储原对象。"""
+    if result.get("team_id") is None:
+        result.pop("team_id", None)
+    else:
+        result["team_id"] = str(result["team_id"])
     summary = result.get("result_summary") if isinstance(result.get("result_summary"), dict) else {}
     original_status = result.get("internal_status", result.get("status"))
     for key in ("status", "target_status"):
@@ -121,7 +125,9 @@ def list_operations(query: OperationQuery) -> dict:
         result["batches"] = [
             {key: public_result_status(value) if key == "status" else value
              for key, value in batch.items() if key in fields}
-            for batch in operation_task_store.list_batches(limit=50)
+            for batch in operation_task_store.list_batches(
+                limit=50, **({"team_id": query.team_id} if query.team_id is not None else {}),
+            )
         ]
     result["revision"] = hashlib.sha256(json.dumps(
         [result.get("total"), result.get("items")], sort_keys=True, default=str,

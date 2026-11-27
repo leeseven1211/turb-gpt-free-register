@@ -13,6 +13,8 @@ import {
   type JoinPreviewResponse,
   type JoinPreviewTargetPayload,
   type JoinRequestDTO,
+  type JoinRequestItemsQuery,
+  type JoinRequestItemsResponse,
   type JoinSubmitPayload,
   type TeamCandidatesListResponse,
   type TeamCandidatesQuery,
@@ -170,9 +172,12 @@ async function teamMutate<T>(
 ): Promise<T> {
   const signature = JSON.stringify({ method, path, body: body ?? null });
   const storageKey = `turb_team_intent:${intentScope}:${signature}`;
-  let idempotencyKey = '';
+  const bodyKey = body && 'idempotency_key' in body && typeof body.idempotency_key === 'string'
+    ? body.idempotency_key.trim()
+    : '';
+  let idempotencyKey = bodyKey;
   try {
-    idempotencyKey = sessionStorage.getItem(storageKey) || '';
+    idempotencyKey ||= sessionStorage.getItem(storageKey) || '';
   } catch {
     /* 存储受限时退化为单次内存键 */
   }
@@ -217,15 +222,60 @@ async function teamMutate<T>(
 
 export interface FrozenTeamSelection {
   selection_id: TeamDecimalId;
-  selection_revision: string;
+  selection_revision: number;
   matched_count: number;
+}
+
+interface BulkSelectionReceipt {
+  id: TeamDecimalId;
+  state: 'preparing' | 'ready' | 'failed';
+  selection_revision: number | null;
+  target_count: number | null;
+  error_code?: string | null;
+}
+
+function abortSelectionWait(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new DOMException('名单准备已取消', 'AbortError');
+}
+
+function waitForSelection(signal?: AbortSignal): Promise<void> {
+  abortSelectionWait(signal);
+  return new Promise((resolve, reject) => {
+    const finish = () => {
+      signal?.removeEventListener('abort', abort);
+      resolve();
+    };
+    const timer = setTimeout(finish, 750);
+    const abort = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', abort);
+      reject(new DOMException('名单准备已取消', 'AbortError'));
+    };
+    signal?.addEventListener('abort', abort, { once: true });
+  });
+}
+
+function frozenSelection(data: BulkSelectionReceipt): FrozenTeamSelection {
+  if (
+    !Number.isSafeInteger(data.selection_revision) || Number(data.selection_revision) < 1 ||
+    !Number.isSafeInteger(data.target_count) || Number(data.target_count) < 0
+  ) {
+    throw new TeamApiError('名单响应缺少有效的修订号或目标数量，请重新准备名单', 502, {
+      code: 'selection_response_invalid',
+    });
+  }
+  return {
+    selection_id: teamDecimalId(data.id, '快照选择 ID'),
+    selection_revision: data.selection_revision as number,
+    matched_count: data.target_count as number,
+  };
 }
 
 export interface TeamsApi {
   list(query: TeamListQuery, signal?: AbortSignal): Promise<TeamListResponse>;
   detail(teamId: TeamDecimalId, signal?: AbortSignal): Promise<TeamDetailResponse>;
   createBindingProbe(
-    payload: { manager_account_id: TeamDecimalId; target_workspace_id?: string | null },
+    payload: { manager_account_id: TeamDecimalId; target_workspace_id?: string },
     signal?: AbortSignal,
   ): Promise<BindingProbeCreateResponse>;
   getBindingProbe(probeId: TeamDecimalId, signal?: AbortSignal): Promise<BindingProbeDTO>;
@@ -233,7 +283,7 @@ export interface TeamsApi {
   updateTeam(teamId: TeamDecimalId, payload: TeamPatchPayload, signal?: AbortSignal): Promise<TeamPatchResponse>;
   syncTeam(teamId: TeamDecimalId, signal?: AbortSignal): Promise<TeamSyncActionResponse>;
   syncTeamsBulk(teamIds: readonly TeamDecimalId[], signal?: AbortSignal): Promise<TeamSyncBulkResponse>;
-  reverifyTeam(teamId: TeamDecimalId, signal?: AbortSignal): Promise<BindingProbeCreateResponse>;
+  reverifyTeam(teamId: TeamDecimalId, signal?: AbortSignal): Promise<TeamSyncActionResponse>;
   listMembers(teamId: TeamDecimalId, query: TeamMembersQuery, signal?: AbortSignal): Promise<TeamMembersListResponse>;
   listInvitations(teamId: TeamDecimalId, query: TeamInvitationsQuery, signal?: AbortSignal): Promise<TeamInvitationsListResponse>;
   getInvitation(teamId: TeamDecimalId, invitationId: TeamDecimalId, signal?: AbortSignal): Promise<TeamInvitationDTO>;
@@ -244,9 +294,9 @@ export interface TeamsApi {
   getJoinRequest(
     teamId: TeamDecimalId,
     joinRequestId: TeamDecimalId,
-    query?: { page?: number; page_size?: number },
+    query?: JoinRequestItemsQuery,
     signal?: AbortSignal,
-  ): Promise<JoinRequestDTO>;
+  ): Promise<JoinRequestItemsResponse>;
   continueInvitation(teamId: TeamDecimalId, invitationId: TeamDecimalId, signal?: AbortSignal): Promise<InvitationActionResponse>;
   retryInvitation(teamId: TeamDecimalId, invitationId: TeamDecimalId, signal?: AbortSignal): Promise<InvitationActionResponse>;
   continueInvitationsBulk(
@@ -259,7 +309,7 @@ export interface TeamsApi {
     invitationIds: readonly TeamDecimalId[],
     signal?: AbortSignal,
   ): Promise<InvitationBulkActionResponse>;
-  freezeAccountSelection(query: AccountQuerySpec, signal?: AbortSignal): Promise<FrozenTeamSelection>;
+  freezeAccountSelection(teamId: TeamDecimalId, query: AccountQuerySpec, signal?: AbortSignal): Promise<FrozenTeamSelection>;
 }
 
 export function createTeamsApi(): TeamsApi {
@@ -318,7 +368,7 @@ export function createTeamsApi(): TeamsApi {
 
     reverifyTeam: (teamId, signal) => {
       const id = teamDecimalId(teamId, 'Team ID');
-      return teamMutate<BindingProbeCreateResponse>(`reverify:${id}`, 'POST', `/api/teams/${id}/reverify`, {}, signal);
+      return teamMutate<TeamSyncActionResponse>(`reverify:${id}`, 'POST', `/api/teams/${id}/reverify`, {}, signal);
     },
 
     listMembers: (teamId, query, signal) =>
@@ -333,11 +383,13 @@ export function createTeamsApi(): TeamsApi {
         { signal },
       ),
 
-    getInvitation: (teamId, invitationId, signal) =>
-      teamEnvelopeRequest<TeamInvitationDTO>(
+    getInvitation: async (teamId, invitationId, signal) => {
+      const detail = await teamEnvelopeRequest<{ invitation: TeamInvitationDTO }>(
         `/api/teams/${teamDecimalId(teamId, 'Team ID')}/invitations/${teamDecimalId(invitationId, '邀请记录 ID')}`,
         { signal },
-      ),
+      );
+      return detail.invitation;
+    },
 
     listCandidates: (teamId, query, signal) =>
       teamEnvelopeRequest<TeamCandidatesListResponse>(
@@ -369,11 +421,11 @@ export function createTeamsApi(): TeamsApi {
 
     submitJoin: (teamId, payload, signal) => {
       const id = teamDecimalId(teamId, 'Team ID');
-      return teamMutate<JoinRequestDTO>(`join:${id}:${payload.expected_team_revision}`, 'POST', `/api/teams/${id}/join`, payload, signal);
+      return teamMutate<JoinRequestDTO>(`join:${id}`, 'POST', `/api/teams/${id}/join`, payload, signal);
     },
 
     getJoinRequest: (teamId, joinRequestId, query = {}, signal) =>
-      teamEnvelopeRequest<JoinRequestDTO>(
+      teamEnvelopeRequest<JoinRequestItemsResponse>(
         `/api/teams/${teamDecimalId(teamId, 'Team ID')}/join-requests/${teamDecimalId(joinRequestId, '入组请求 ID')}${buildQuery(query)}`,
         { signal },
       ),
@@ -426,23 +478,37 @@ export function createTeamsApi(): TeamsApi {
       );
     },
 
-    freezeAccountSelection: async (query, signal) => {
-      const data = await teamMutate<Record<string, unknown>>(
-        'freeze_team_join_selection',
+    freezeAccountSelection: async (teamId, query, signal) => {
+      const id = teamDecimalId(teamId, 'Team ID');
+      let data = await teamMutate<BulkSelectionReceipt>(
+        `freeze_team_join_selection:${id}`,
         'POST',
         '/api/bulk/selections',
         {
           operation: { key: 'team_join', version: 1 },
-          query,
+          source: { kind: 'query', query },
+          parameters: { team_id: id },
         },
         signal,
       );
-      const selectionObj = (data.selection && typeof data.selection === 'object' ? data.selection : data) as Record<string, unknown>;
-      return {
-        selection_id: teamDecimalId(selectionObj.selection_id ?? selectionObj.id, '快照选择 ID'),
-        selection_revision: String(selectionObj.selection_revision ?? selectionObj.revision ?? '1'),
-        matched_count: Number(selectionObj.matched_count ?? selectionObj.total ?? 0),
-      };
+      const selectionId = teamDecimalId(data.id, '快照选择 ID');
+      while (data.state === 'preparing') {
+        await waitForSelection(signal);
+        data = await teamEnvelopeRequest<BulkSelectionReceipt>(`/api/bulk/selections/${selectionId}`, { signal });
+      }
+      abortSelectionWait(signal);
+      if (data.state === 'failed') {
+        throw new TeamApiError('名单准备失败，请调整筛选条件后重试', 422, {
+          code: data.error_code || 'selection_preparation_failed',
+          details: { selection_id: selectionId },
+        });
+      }
+      if (data.state !== 'ready') {
+        throw new TeamApiError('名单返回了无法识别的准备状态，请重新准备名单', 502, {
+          code: 'selection_response_invalid',
+        });
+      }
+      return frozenSelection(data);
     },
   };
 }

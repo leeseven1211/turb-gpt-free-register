@@ -21,7 +21,7 @@ class BulkResultTests(TestCase):
                 self.assertEqual(value["contribution"]["dimensions"], {})
 
     def test_success_requires_current_operation_confirmation(self):
-        for key in catalog.OPERATIONS:
+        for key in catalog.BATCH_OPERATIONS:
             with self.subTest(key=key):
                 value = results.project_one({"run": {"status": "success"}}, operation_key=key)
                 self.assertEqual(value["state"], "failed")
@@ -126,7 +126,7 @@ class BulkAdapterStoreTests(PostgresTestCase):
         from psycopg import Cursor
         original = Cursor.execute
 
-        for index, key in enumerate(catalog.OPERATIONS, 1):
+        for index, key in enumerate(catalog.BATCH_OPERATIONS, 1):
             with self.subTest(operation=key), store._connect() as conn:
                 claim_queries = []
 

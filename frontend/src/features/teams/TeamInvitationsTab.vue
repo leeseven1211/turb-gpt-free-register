@@ -20,6 +20,9 @@ import {
   formatInvitationBusinessFacts,
   formatInvitationExecutionFacts,
   formatInvitationResultSummary,
+  TEAM_ACTIVE_EXECUTION_STATUSES,
+  TEAM_EXECUTION_LABELS,
+  TEAM_JOIN_STAGE_LABELS,
   teamExecutionLabel,
   teamInvitationStateLabel,
   teamJoinStageLabel,
@@ -42,41 +45,16 @@ const emit = defineEmits<{
 }>();
 
 const INVITATION_STATE_OPTIONS = [
-  { value: 'not_sent', label: '未发邀请' },
-  { value: 'pending', label: '待接受邀请' },
-  { value: 'accepted', label: '邀请已接受' },
-  { value: 'revoked', label: '邀请已撤回' },
-  { value: 'expired', label: '邀请已过期' },
-  { value: 'unknown', label: '邀请状态未知' },
-] as const;
-
+  { value: 'not_sent', label: '未发邀请' }, { value: 'pending', label: '待接受邀请' },
+  { value: 'accepted', label: '邀请已接受' }, { value: 'revoked', label: '邀请已撤回' },
+  { value: 'expired', label: '邀请已过期' }, { value: 'unconfirmed', label: '邀请待确认' },
+];
 const MEMBERSHIP_STATE_OPTIONS = [
-  { value: 'joined', label: '已加入' },
-  { value: 'not_joined', label: '未入组' },
-  { value: 'removed', label: '已移除' },
-  { value: 'left', label: '已退出' },
-  { value: 'unknown', label: '待核实' },
-] as const;
-
-const EXECUTION_STATUS_OPTIONS = [
-  { value: 'idle', label: '未执行' },
-  { value: 'queued', label: '排队中' },
-  { value: 'running', label: '执行中' },
-  { value: 'waiting_user', label: '等待人工处理' },
-  { value: 'succeeded', label: '已完成' },
-  { value: 'failed', label: '执行失败' },
-  { value: 'cancelled', label: '已取消' },
-] as const;
-
-const STAGE_OPTIONS = [
-  { value: 'precheck_capacity', label: '预检席位与容量' },
-  { value: 'send_invite', label: '母号发送邀请' },
-  { value: 'await_invite_mail', label: '等待接收邀请邮件' },
-  { value: 'open_invite_link', label: '解析并打开邀请链接' },
-  { value: 'authenticate_target', label: '认证目标账号' },
-  { value: 'accept_workspace_join', label: '确认加入工作区' },
-  { value: 'verify_membership', label: '回查工作区成员状态' },
-] as const;
+  { value: 'joined', label: '已加入' }, { value: 'left', label: '已退出' },
+  { value: 'unconfirmed', label: '待确认' },
+];
+const EXECUTION_STATUS_OPTIONS = Object.entries(TEAM_EXECUTION_LABELS).map(([value, label]) => ({ value, label }));
+const STAGE_OPTIONS = Object.entries(TEAM_JOIN_STAGE_LABELS).map(([value, label]) => ({ value, label }));
 
 const query = reactive<{
   page: number;
@@ -106,6 +84,8 @@ const error = ref('');
 const items = ref<TeamInvitationDTO[]>([]);
 const total = ref(0);
 const facets = ref<TeamFacets>({});
+const trackedRequestId = ref(props.joinRequestId || '');
+const requestActive = ref(Boolean(props.joinRequestId));
 const selectedIds = ref<Set<TeamDecimalId>>(new Set());
 const actingIds = ref<Set<TeamDecimalId>>(new Set());
 
@@ -120,6 +100,12 @@ const { widths, total: tableWidth, resize, resizeWithKeyboard } = useColumnWidth
 let searchTimer: ReturnType<typeof setTimeout> | undefined;
 let activeController: AbortController | null = null;
 let requestSeq = 0;
+let operationEpoch = 0;
+
+function operationScope() {
+  const teamId = props.teamId, epoch = operationEpoch;
+  return { teamId, current: () => epoch === operationEpoch && teamId === props.teamId };
+}
 
 function badgeClass(tone: BadgeTone): string {
   return `tm-badge--${tone}`;
@@ -132,20 +118,14 @@ function facetCount(field: string, value: string): number | null {
   return hit ? hit.count : null;
 }
 
-function missingAuthMaterials(row: TeamInvitationDTO): boolean {
-  if (row.error?.reason_code === 'team_target_auth_missing') return true;
-  const acc = row.target_account;
-  return Boolean(acc.account_id) && !acc.has_access_token && !acc.has_account_password;
-}
-
-const pageSelected = computed(() => items.value.length > 0 && items.value.every(row => selectedIds.value.has(row.invitation_id)));
-const pageIndeterminate = computed(() => !pageSelected.value && items.value.some(row => selectedIds.value.has(row.invitation_id)));
+const pageSelected = computed(() => items.value.length > 0 && items.value.every(row => selectedIds.value.has(row.id)));
+const pageIndeterminate = computed(() => !pageSelected.value && items.value.some(row => selectedIds.value.has(row.id)));
 
 function toggleSelectAllPage(checked: boolean): void {
   const next = new Set(selectedIds.value);
   for (const row of items.value) {
-    if (checked) next.add(row.invitation_id);
-    else next.delete(row.invitation_id);
+    if (checked) next.add(row.id);
+    else next.delete(row.id);
   }
   selectedIds.value = next;
 }
@@ -277,11 +257,13 @@ function handleSizeChange(nextSize: number): void {
 }
 
 async function fetchInvitations(options: { silent?: boolean; includeFacets?: 0 | 1 } = {}): Promise<void> {
+  if (!props.visible) return;
   if (!props.teamId) return;
   activeController?.abort();
   const controller = new AbortController();
   activeController = controller;
   const seq = ++requestSeq;
+  const teamId = props.teamId;
 
   if (!options.silent) {
     loading.value = true;
@@ -291,20 +273,25 @@ async function fetchInvitations(options: { silent?: boolean; includeFacets?: 0 |
   const requestQuery: TeamInvitationsQuery = {
     page: query.page,
     page_size: query.page_size,
-    include_facets: options.includeFacets ?? 1,
+    include_facets: String(options.includeFacets ?? 1) as '0' | '1',
     ...(query.q ? { q: query.q } : {}),
-    ...(query.invitation_state ? { invitation_state: query.invitation_state } : {}),
-    ...(query.membership_state ? { membership_state: query.membership_state } : {}),
-    ...(query.execution_status ? { execution_status: query.execution_status } : {}),
-    ...(query.stage ? { stage: query.stage } : {}),
+    ...(query.invitation_state ? { invitation_state: query.invitation_state as NonNullable<TeamInvitationsQuery['invitation_state']> } : {}),
+    ...(query.membership_state ? { membership_state: query.membership_state as NonNullable<TeamInvitationsQuery['membership_state']> } : {}),
+    ...(query.execution_status ? { execution_status: query.execution_status as NonNullable<TeamInvitationsQuery['execution_status']> } : {}),
+    ...(query.stage ? { stage: query.stage as NonNullable<TeamInvitationsQuery['stage']> } : {}),
     ...(query.join_request_id ? { join_request_id: query.join_request_id } : {}),
   };
 
   try {
-    const res = await props.api.listInvitations(props.teamId, requestQuery, controller.signal);
-    if (seq !== requestSeq) return;
+    const res = await props.api.listInvitations(teamId, requestQuery, controller.signal);
+    if (controller.signal.aborted || seq !== requestSeq || props.teamId !== teamId) return;
     items.value = res.items;
     total.value = res.total;
+    if (trackedRequestId.value) {
+      const receipt = await props.api.getJoinRequest(teamId, trackedRequestId.value, { page: 1, page_size: 1 }, controller.signal);
+      if (controller.signal.aborted || seq !== requestSeq) return;
+      requestActive.value = ['preparing', ...TEAM_ACTIVE_EXECUTION_STATUSES].includes(receipt.request.status);
+    }
     if (res.facets && Object.keys(res.facets).length > 0) {
       facets.value = res.facets;
     }
@@ -318,97 +305,121 @@ async function fetchInvitations(options: { silent?: boolean; includeFacets?: 0 |
     if (activeController === controller) {
       activeController = null;
     }
-    if (seq === requestSeq && !options.silent) {
+    if (seq === requestSeq) {
       loading.value = false;
     }
   }
 }
 
 async function handleContinueRow(row: TeamInvitationDTO): Promise<void> {
+  const scope = operationScope();
   const next = new Set(actingIds.value);
-  next.add(row.invitation_id);
+  next.add(row.id);
   actingIds.value = next;
   try {
-    const res = await props.api.continueInvitation(props.teamId, row.invitation_id);
+    const res = await props.api.continueInvitation(scope.teamId, row.id);
+    if (!scope.current()) return;
+    trackedRequestId.value = res.id;
+    requestActive.value = true;
     props.callbacks.notify(
-      res.outcome === 'reused_active'
-        ? `已复用当前进行中的入组执行（${row.email}）`
-        : `已受理继续加入（${row.email}）`,
+      res.reused
+        ? `已复用当前进行中的入组执行（${row.email_snapshot}）`
+        : `已受理继续加入（${row.email_snapshot}）`,
     );
     await fetchInvitations({ silent: true, includeFacets: 0 });
-    emit('refresh-team');
+    if (scope.current()) emit('refresh-team');
   } catch (err) {
+    if (!scope.current()) return;
     props.callbacks.notify(err instanceof Error ? err.message : '继续加入提交失败');
   } finally {
-    const cleaned = new Set(actingIds.value);
-    cleaned.delete(row.invitation_id);
-    actingIds.value = cleaned;
+    if (scope.current()) {
+      const cleaned = new Set(actingIds.value);
+      cleaned.delete(row.id);
+      actingIds.value = cleaned;
+    }
   }
 }
 
 async function handleRetryRow(row: TeamInvitationDTO): Promise<void> {
+  const scope = operationScope();
   const next = new Set(actingIds.value);
-  next.add(row.invitation_id);
+  next.add(row.id);
   actingIds.value = next;
   try {
-    const res = await props.api.retryInvitation(props.teamId, row.invitation_id);
+    const res = await props.api.retryInvitation(scope.teamId, row.id);
+    if (!scope.current()) return;
+    trackedRequestId.value = res.id;
+    requestActive.value = true;
     props.callbacks.notify(
-      res.outcome === 'reused_active'
-        ? `已复用当前活跃执行（${row.email}）`
-        : `已创建重跑任务（${row.email}）`,
+      res.reused
+        ? `已复用当前活跃执行（${row.email_snapshot}）`
+        : `已创建重跑任务（${row.email_snapshot}）`,
     );
     await fetchInvitations({ silent: true, includeFacets: 0 });
-    emit('refresh-team');
+    if (scope.current()) emit('refresh-team');
   } catch (err) {
+    if (!scope.current()) return;
     props.callbacks.notify(err instanceof Error ? err.message : '重跑提交失败');
   } finally {
-    const cleaned = new Set(actingIds.value);
-    cleaned.delete(row.invitation_id);
-    actingIds.value = cleaned;
+    if (scope.current()) {
+      const cleaned = new Set(actingIds.value);
+      cleaned.delete(row.id);
+      actingIds.value = cleaned;
+    }
   }
 }
 
 async function handleBulkContinue(): Promise<void> {
   const ids = [...selectedIds.value];
   if (!ids.length || bulkBusy.value) return;
+  const scope = operationScope();
   bulkBusy.value = true;
   try {
-    const res = await props.api.continueInvitationsBulk(props.teamId, ids);
+    const res = await props.api.continueInvitationsBulk(scope.teamId, ids);
+    if (!scope.current()) return;
+    trackedRequestId.value = res.id;
+    requestActive.value = true;
     props.callbacks.notify(
-      `批量继续加入已受理：新增排队 ${res.queued_count}，复用 ${res.reused_active_count}，跳过 ${res.skipped_count}`,
+      `批量继续加入已持久受理 ${res.counts.unique_count} 项，等待后台逐项处理`,
     );
     clearSelection();
     await fetchInvitations({ silent: true, includeFacets: 0 });
-    emit('refresh-team');
+    if (scope.current()) emit('refresh-team');
   } catch (err) {
+    if (!scope.current()) return;
     props.callbacks.notify(err instanceof Error ? err.message : '批量继续加入失败');
   } finally {
-    bulkBusy.value = false;
+    if (scope.current()) bulkBusy.value = false;
   }
 }
 
 async function handleBulkRetry(): Promise<void> {
   const ids = [...selectedIds.value];
   if (!ids.length || bulkBusy.value) return;
+  const scope = operationScope();
   bulkBusy.value = true;
   try {
-    const res = await props.api.retryInvitationsBulk(props.teamId, ids);
+    const res = await props.api.retryInvitationsBulk(scope.teamId, ids);
+    if (!scope.current()) return;
+    trackedRequestId.value = res.id;
+    requestActive.value = true;
     props.callbacks.notify(
-      `批量重跑已受理：新增排队 ${res.queued_count}，复用 ${res.reused_active_count}，跳过 ${res.skipped_count}`,
+      `批量重跑已持久受理 ${res.counts.unique_count} 项，等待后台逐项处理`,
     );
     clearSelection();
     await fetchInvitations({ silent: true, includeFacets: 0 });
-    emit('refresh-team');
+    if (scope.current()) emit('refresh-team');
   } catch (err) {
+    if (!scope.current()) return;
     props.callbacks.notify(err instanceof Error ? err.message : '批量重跑失败');
   } finally {
-    bulkBusy.value = false;
+    if (scope.current()) bulkBusy.value = false;
   }
 }
 
 useTeamPolling({
   visible: () => props.visible,
-  shouldPoll: () => items.value.some(row => row.execution_status === 'queued' || row.execution_status === 'running'),
+  shouldPoll: () => requestActive.value || items.value.some(row => TEAM_ACTIVE_EXECUTION_STATUSES.has(row.latest_execution.status)),
   onPoll: async () => {
     await fetchInvitations({ silent: true, includeFacets: 0 });
     emit('refresh-team');
@@ -433,6 +444,8 @@ watch(
     const normalized = nextId || '';
     if (normalized === query.join_request_id) return;
     query.join_request_id = normalized;
+    trackedRequestId.value = normalized;
+    requestActive.value = Boolean(normalized);
     query.page = 1;
     void fetchInvitations();
   },
@@ -441,8 +454,13 @@ watch(
 watch(
   () => props.teamId,
   () => {
+    operationEpoch += 1;
+    actingIds.value = new Set();
+    bulkBusy.value = false;
     query.page = 1;
     clearSelection();
+    trackedRequestId.value = props.joinRequestId || '';
+    requestActive.value = Boolean(trackedRequestId.value);
     items.value = [];
     total.value = 0;
     facets.value = {};
@@ -451,7 +469,19 @@ watch(
   { immediate: true },
 );
 
+watch(() => props.visible, active => {
+  if (active) {
+    void fetchInvitations();
+  } else {
+    activeController?.abort();
+    activeController = null;
+    requestSeq += 1;
+    loading.value = false;
+  }
+});
+
 onBeforeUnmount(() => {
+  operationEpoch += 1;
   clearTimeout(searchTimer);
   activeController?.abort();
 });
@@ -677,8 +707,8 @@ defineExpose({
         <tbody>
           <tr
             v-for="row in items"
-            :key="row.invitation_id"
-            :class="{ 'is-selected': selectedIds.has(row.invitation_id) }"
+            :key="row.id"
+            :class="{ 'is-selected': selectedIds.has(row.id) }"
           >
             <!-- 第 1 列：目标账号 -->
             <td data-label="目标账号">
@@ -686,27 +716,26 @@ defineExpose({
                 <input
                   type="checkbox"
                   style="margin-top: 3px;"
-                  :aria-label="`选择邀请记录 ${row.email}`"
-                  :checked="selectedIds.has(row.invitation_id)"
-                  @change="toggleSelectRow(row.invitation_id, ($event.target as HTMLInputElement).checked)"
+                  :aria-label="`选择邀请记录 ${row.email_snapshot}`"
+                  :checked="selectedIds.has(row.id)"
+                  @change="toggleSelectRow(row.id, ($event.target as HTMLInputElement).checked)"
                 />
                 <div class="tm-cell-stack">
                   <div class="tm-cell-primary">
-                    <span :title="row.email">{{ row.email || row.target_account.email || '未返回' }}</span>
+                    <span :title="row.email_snapshot || undefined">{{ row.email_snapshot || row.account?.email || '未返回' }}</span>
                   </div>
                   <div class="tm-cell-sub" style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
                     <button
-                      v-if="row.target_account.account_id"
+                      v-if="row.account?.id"
                       type="button"
                       class="tm-link-btn tm-tabular"
-                      @click="callbacks.openAccountDetail(row.target_account.account_id)"
+                      @click="callbacks.openAccountDetail(row.account!.id)"
                     >
-                      #{{ row.target_account.account_id }}
+                      #{{ row.account?.id }}
                     </button>
                     <span v-else class="tm-badge tm-badge--neutral">未入库</span>
-                    <span v-if="row.target_account.archived" class="tm-badge tm-badge--neutral">已归档</span>
-                    <span v-if="missingAuthMaterials(row)" class="tm-badge tm-badge--warning">缺认证材料</span>
-                    <span v-if="row.target_account.email_invalid" class="tm-badge tm-badge--danger">邮箱失效</span>
+                    <span v-if="row.account?.archived" class="tm-badge tm-badge--neutral">已归档</span>
+
                   </div>
                 </div>
               </div>
@@ -732,7 +761,7 @@ defineExpose({
                 <div class="tm-cell-primary">
                   <span class="tm-badge" :class="badgeClass(formatInvitationExecutionFacts(row).tone)">
                     <span
-                      v-if="row.execution_status === 'queued' || row.execution_status === 'running'"
+                      v-if="TEAM_ACTIVE_EXECUTION_STATUSES.has(row.latest_execution.status)"
                       class="tm-badge__dot"
                     ></span>
                     {{ formatInvitationExecutionFacts(row).primary }}
@@ -753,8 +782,8 @@ defineExpose({
                 :title="formatInvitationResultSummary(row).detail || formatInvitationResultSummary(row).label"
               >
                 <template v-if="formatInvitationResultSummary(row).detail" #details>
-                  <p v-if="row.error?.reason_code">
-                    原因码：<span class="tm-mono">{{ row.error.reason_code }}</span>
+                  <p v-if="row.latest_execution.error_info?.code">
+                    原因码：<span class="tm-mono">{{ row.latest_execution.error_info?.code }}</span>
                   </p>
                   <p>{{ formatInvitationResultSummary(row).detail }}</p>
                 </template>
@@ -765,10 +794,10 @@ defineExpose({
             <td data-label="时间">
               <div class="tm-cell-stack">
                 <div class="tm-cell-sub">
-                  邀请于：{{ row.invited_at ? callbacks.formatDateTime(row.invited_at) : '—' }}
+                  核验于：{{ row.last_verified_at ? callbacks.formatDateTime(row.last_verified_at) : '—' }}
                 </div>
                 <div class="tm-cell-sub">
-                  {{ row.accepted_at ? `接受于：${callbacks.formatDateTime(row.accepted_at)}` : `更新于：${callbacks.formatDateTime(row.updated_at)}` }}
+                  更新于：{{ callbacks.formatDateTime(row.updated_at) }}
                 </div>
               </div>
             </td>
@@ -777,33 +806,33 @@ defineExpose({
             <td data-label="操作">
               <div class="tm-row-actions">
                 <button
-                  v-if="row.actions.can_continue"
+                  v-if="row.actions.continue.enabled"
                   type="button"
                   class="tm-btn tm-btn--sm tm-btn--soft"
-                  :disabled="actingIds.has(row.invitation_id)"
+                  :disabled="actingIds.has(row.id)"
                   @click="void handleContinueRow(row)"
                 >
                   继续加入
                 </button>
                 <button
-                  v-if="row.actions.can_retry"
+                  v-if="row.actions.retry.enabled"
                   type="button"
                   class="tm-btn tm-btn--sm"
-                  :disabled="actingIds.has(row.invitation_id)"
+                  :disabled="actingIds.has(row.id)"
                   @click="void handleRetryRow(row)"
                 >
                   重跑
                 </button>
                 <button
-                  v-if="row.actions.can_open_task && row.latest_task_id"
+                  v-if="row.actions.view_task.enabled && row.latest_execution.task_id"
                   type="button"
                   class="tm-btn tm-btn--sm tm-btn--ghost"
-                  @click="callbacks.openTask(row.latest_task_id, row.latest_run_id)"
+                  @click="callbacks.openTask(row.latest_execution.task_id, row.latest_execution.run_id)"
                 >
                   查看任务
                 </button>
                 <span
-                  v-if="!row.actions.can_continue && !row.actions.can_retry && !(row.actions.can_open_task && row.latest_task_id)"
+                  v-if="!row.actions.continue.enabled && !row.actions.retry.enabled && !(row.actions.view_task.enabled && row.latest_execution.task_id)"
                   class="tm-cell-sub"
                 >
                   —

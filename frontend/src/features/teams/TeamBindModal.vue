@@ -13,12 +13,17 @@ import {
   type TeamDecimalId,
 } from './contracts';
 import {
-  TEAM_PROBE_STAGE_STEPS,
-  formatNullableCount,
   teamReasonLabel,
   teamRoleLabel,
   teamRoleTone,
 } from './statusLabels';
+
+const PROBE_STAGE_STEPS = [
+  { key: 'queued', label: '排队等待' },
+  { key: 'manager_auth', label: '母号认证' },
+  { key: 'workspace_discovery', label: '发现工作区' },
+  { key: 'permission_check', label: '核验管理权限' },
+];
 
 interface LocalAccountOption {
   id: TeamDecimalId;
@@ -52,6 +57,9 @@ const accountsLoading = ref(false);
 const accountsError = ref('');
 const accounts = ref<LocalAccountOption[]>([]);
 const selectedAccountId = ref<TeamDecimalId | null>(null);
+const localManagerTeamsByAccountId = ref<Record<string, TeamDTO[]>>({});
+const managerAssociationsLoading = ref(false);
+const managerAssociationsError = ref('');
 
 const probe = ref<BindingProbeDTO | null>(null);
 const probeLoading = ref(false);
@@ -68,9 +76,12 @@ const forceProbeExpired = ref(false);
 
 let searchController: AbortController | null = null;
 let probeController: AbortController | null = null;
+let managerAssociationsController: AbortController | null = null;
+let managerAssociationsLoaded = false;
 let pollTimer: number | null = null;
 let expiryTimer: number | null = null;
 let searchDebounceTimer: number | null = null;
+let dialogSession = 0;
 
 const isActiveDialog = computed(() => props.open && props.visible);
 const isChangeManager = computed(() => props.mode === 'change_manager');
@@ -89,7 +100,6 @@ const isProbeRunning = computed(
 const isProbeExpired = computed(() => {
   if (forceProbeExpired.value) return true;
   if (!probe.value) return false;
-  if (probe.value.status === 'expired') return true;
   if (!probe.value.expires_at) return false;
   const expiresMs = Date.parse(probe.value.expires_at);
   return Number.isFinite(expiresMs) && expiresMs <= nowMs.value;
@@ -104,10 +114,10 @@ const selectedWorkspace = computed(
 const probeStageIndex = computed(() => {
   const current = probe.value;
   if (!current) return -1;
-  if (current.status === 'success' || current.stage === 'completed') {
-    return TEAM_PROBE_STAGE_STEPS.length;
+  if (current.status === 'success' || current.stage === 'complete') {
+    return PROBE_STAGE_STEPS.length;
   }
-  const idx = TEAM_PROBE_STAGE_STEPS.findIndex(step => step.key === current.stage);
+  const idx = PROBE_STAGE_STEPS.findIndex(step => step.key === current.stage);
   if (idx >= 0) return idx;
   return current.status === 'queued' ? 0 : 1;
 });
@@ -115,8 +125,9 @@ const probeStageIndex = computed(() => {
 const canSubmit = computed(() => {
   if (submitting.value || isProbeRunning.value || isProbeExpired.value) return false;
   if (!probe.value || probe.value.status !== 'success') return false;
+  if (probe.value.manager_account.id !== selectedAccountId.value) return false;
   const ws = selectedWorkspace.value;
-  if (!ws || !ws.selectable) return false;
+  if (!ws || !isWorkspaceSelectable(ws)) return false;
   if (isChangeManager.value && !props.team) return false;
   return true;
 });
@@ -159,13 +170,24 @@ function abortSearch() {
   }
 }
 
+function abortManagerAssociations() {
+  managerAssociationsController?.abort();
+  managerAssociationsController = null;
+  managerAssociationsLoading.value = false;
+}
+
 function resetState() {
   abortSearch();
   abortProbePolling();
+  abortManagerAssociations();
   clearTimers();
   searchQuery.value = '';
+  accountsLoading.value = false;
   accountsError.value = '';
   accounts.value = [];
+  localManagerTeamsByAccountId.value = {};
+  managerAssociationsLoaded = false;
+  managerAssociationsError.value = '';
   selectedAccountId.value = null;
   probe.value = null;
   probeError.value = '';
@@ -182,6 +204,42 @@ function isAbortError(err: unknown): boolean {
   return err instanceof DOMException && err.name === 'AbortError';
 }
 
+async function fetchManagerAssociations() {
+  if (!isActiveDialog.value || managerAssociationsLoaded || managerAssociationsController) return;
+  const controller = new AbortController();
+  const session = dialogSession;
+  managerAssociationsController = controller;
+  managerAssociationsLoading.value = true;
+  managerAssociationsError.value = '';
+  const current = () => session === dialogSession && managerAssociationsController === controller &&
+    isActiveDialog.value && !controller.signal.aborted;
+  try {
+    const teamsById = new Map<TeamDecimalId, TeamDTO>();
+    let page = 1;
+    while (true) {
+      const response = await props.api.list({ page, page_size: 100, include_facets: '0' }, controller.signal);
+      if (!current()) return;
+      for (const team of response.items) teamsById.set(team.id, team);
+      if (page * response.page_size >= response.total) break;
+      ++page;
+    }
+    const index: Record<string, TeamDTO[]> = {};
+    for (const team of teamsById.values()) {
+      (index[team.manager_account.id] ??= []).push(team);
+    }
+    localManagerTeamsByAccountId.value = index;
+    managerAssociationsLoaded = true;
+  } catch (err) {
+    if (!current()) return;
+    managerAssociationsError.value = err instanceof Error ? err.message : '读取本地关联失败';
+  } finally {
+    if (current()) {
+      managerAssociationsController = null;
+      managerAssociationsLoading.value = false;
+    }
+  }
+}
+
 function normalizeMembershipList(raw: unknown): AccountTeamMembershipBadge[] {
   if (!Array.isArray(raw)) return [];
   const result: AccountTeamMembershipBadge[] = [];
@@ -190,16 +248,15 @@ function normalizeMembershipList(raw: unknown): AccountTeamMembershipBadge[] {
     const rec = item as Record<string, unknown>;
     const teamId = optionalTeamDecimalId(rec.team_id);
     if (!teamId) continue;
-    const rawState = String(rec.membership_state || 'joined');
-    const membershipState: AccountTeamMembershipBadge['membership_state'] =
-      rawState === 'invited' || rawState === 'joining' ? rawState : 'joined';
+    if (rec.membership_state !== 'joined') continue;
     result.push({
       team_id: teamId,
       workspace_id: String(rec.workspace_id || ''),
-      workspace_name: String(rec.workspace_name || rec.name || ''),
+      name: typeof rec.name === 'string' ? rec.name : null,
       display_name: rec.display_name ? String(rec.display_name) : null,
       role: (String(rec.role || 'unknown') as AccountTeamMembershipBadge['role']),
-      membership_state: membershipState,
+      membership_state: 'joined',
+      last_verified_at: typeof rec.last_verified_at === 'string' ? rec.last_verified_at : null,
     });
   }
   return result;
@@ -241,6 +298,7 @@ async function fetchAccounts() {
     }
 
     const rawText = await response.text();
+    if (controller.signal.aborted || searchController !== controller || !isActiveDialog.value) return;
     const parsed = rawText ? (parseTeamJson(rawText) as Record<string, unknown>) : null;
     if (!response.ok || !parsed || parsed.ok === false || !Array.isArray(parsed.items)) {
       const errMsg =
@@ -270,7 +328,7 @@ async function fetchAccounts() {
       selectedAccountId.value = mapped[0]!.id;
     }
   } catch (err) {
-    if (isAbortError(err)) return;
+    if (isAbortError(err) || controller.signal.aborted || searchController !== controller) return;
     accountsError.value = err instanceof Error ? err.message : '加载账号列表失败';
   } finally {
     if (searchController === controller) {
@@ -298,13 +356,23 @@ function clearSearch() {
 function isCurrentManager(acc: LocalAccountOption): boolean {
   return (
     isChangeManager.value &&
-    Boolean(props.team?.manager_account.account_id) &&
-    props.team?.manager_account.account_id === acc.id
+    props.team?.manager_account.id === acc.id
   );
 }
 
 function selectAccount(accountId: TeamDecimalId) {
   if (isProbeRunning.value || submitting.value) return;
+  if (selectedAccountId.value !== accountId) {
+    abortProbePolling();
+    if (expiryTimer !== null) {
+      window.clearInterval(expiryTimer);
+      expiryTimer = null;
+    }
+    probe.value = null;
+    probeError.value = '';
+    selectedWorkspaceId.value = '';
+    forceProbeExpired.value = false;
+  }
   selectedAccountId.value = accountId;
   formError.value = '';
   conflictExistingTeamId.value = null;
@@ -312,25 +380,21 @@ function selectAccount(accountId: TeamDecimalId) {
 
 function applySuggestedWorkspace(probeData: BindingProbeDTO) {
   const workspaces = probeData.workspaces || [];
+  if (isChangeManager.value) {
+    const target = workspaces.find(ws => isWorkspaceSelectable(ws));
+    selectedWorkspaceId.value = target?.workspace_id ?? '';
+    return;
+  }
   if (
     probeData.suggested_workspace_id &&
     workspaces.some(
-      ws => ws.workspace_id === probeData.suggested_workspace_id && ws.selectable,
+      ws => ws.workspace_id === probeData.suggested_workspace_id && isWorkspaceSelectable(ws),
     )
   ) {
     selectedWorkspaceId.value = probeData.suggested_workspace_id;
     return;
   }
-  if (isChangeManager.value && props.team?.workspace_id) {
-    const target = workspaces.find(
-      ws => ws.workspace_id === props.team?.workspace_id && ws.selectable,
-    );
-    if (target) {
-      selectedWorkspaceId.value = target.workspace_id;
-      return;
-    }
-  }
-  const selectableList = workspaces.filter(ws => ws.selectable);
+  const selectableList = workspaces.filter(isWorkspaceSelectable);
   selectedWorkspaceId.value =
     selectableList.length === 1 ? selectableList[0]!.workspace_id : '';
 }
@@ -362,12 +426,10 @@ async function pollProbeOnce(probeId: TeamDecimalId, controller: AbortController
     if (nextProbe.status === 'success') {
       applySuggestedWorkspace(nextProbe);
       ensureExpiryTimer();
-    } else if (nextProbe.status === 'expired') {
-      forceProbeExpired.value = true;
-    } else if (nextProbe.status === 'failed') {
+    } else if (nextProbe.status === 'failed' || nextProbe.status === 'interrupted' || nextProbe.status === 'cancelled') {
       probeError.value =
-        nextProbe.error?.summary ||
-        teamReasonLabel(nextProbe.error?.reason_code, nextProbe.error) ||
+        nextProbe.error_info?.message ||
+        teamReasonLabel(nextProbe.error_info?.code) ||
         '工作区核验失败';
     }
   } catch (err) {
@@ -403,32 +465,13 @@ async function startProbe(accountIdOverride?: TeamDecimalId) {
     const created = await props.api.createBindingProbe(
       {
         manager_account_id: teamDecimalId(targetId, '管理母号 ID'),
-        target_workspace_id: isChangeManager.value
-          ? props.team?.workspace_id ?? null
-          : null,
+        ...(isChangeManager.value && props.team
+          ? { target_workspace_id: props.team.workspace_id }
+          : {}),
       },
       controller.signal,
     );
     if (controller.signal.aborted || !isActiveDialog.value) return;
-
-    const selectedAcc = accounts.value.find(item => item.id === targetId);
-    probe.value = {
-      probe_id: created.probe_id,
-      probe_revision: '1',
-      manager_account_id: targetId,
-      manager_email: selectedAcc?.email ?? '',
-      target_workspace_id: isChangeManager.value
-        ? props.team?.workspace_id ?? null
-        : null,
-      status: created.status,
-      stage: 'queued',
-      task_id: created.task_id,
-      run_id: created.run_id,
-      expires_at: null,
-      suggested_workspace_id: null,
-      workspaces: [],
-      error: null,
-    };
 
     await pollProbeOnce(created.probe_id, controller);
   } catch (err) {
@@ -443,8 +486,13 @@ async function startProbe(accountIdOverride?: TeamDecimalId) {
   }
 }
 
+function isWorkspaceSelectable(ws: BindingProbeWorkspaceDTO): boolean {
+  return ws.workspace_type === 'team' && ws.can_manage === true &&
+    (!isChangeManager.value || ws.workspace_id === props.team?.workspace_id);
+}
+
 function selectWorkspace(ws: BindingProbeWorkspaceDTO) {
-  if (!ws.selectable || submitting.value || isProbeExpired.value) return;
+  if (!isWorkspaceSelectable(ws) || submitting.value || isProbeExpired.value) return;
   selectedWorkspaceId.value = ws.workspace_id;
   formError.value = '';
   conflictExistingTeamId.value = null;
@@ -458,11 +506,9 @@ function formatWorkspaceSeats(seats: number | null | undefined): string {
 }
 
 function workspaceDisabledReason(ws: BindingProbeWorkspaceDTO): string {
-  if (ws.disabled_reason) return ws.disabled_reason;
-  if (ws.disabled_reason_code) return teamReasonLabel(ws.disabled_reason_code);
-  if (!ws.is_team_workspace) return '个人空间不可绑定';
-  if (!ws.can_manage) return '母号无管理权限';
-  if (ws.already_bound_team_id) return '该工作区已绑定';
+  if (ws.workspace_type !== 'team') return '尚未确认是 Team 工作区';
+  if (ws.can_manage !== true) return '母号管理权限尚未确认';
+  if (isChangeManager.value && ws.workspace_id !== props.team?.workspace_id) return '更换母号仅核验当前工作区';
   return '当前工作区不可选';
 }
 
@@ -494,7 +540,12 @@ function parsePlannedLimit(): { ok: true; value: number | null } | { ok: false; 
 }
 
 async function submit() {
-  if (!canSubmit.value || !probe.value || !selectedWorkspace.value) return;
+  if (!isActiveDialog.value || !canSubmit.value || !probe.value || !selectedWorkspace.value) return;
+  const session = dialogSession;
+  const current = () => session === dialogSession && props.open;
+  const currentProbe = probe.value;
+  const workspace = selectedWorkspace.value;
+  const targetTeam = props.team;
   formError.value = '';
   conflictExistingTeamId.value = null;
 
@@ -513,17 +564,19 @@ async function submit() {
     submitting.value = true;
     try {
       const res = await props.api.createTeam({
-        manager_account_id: probe.value.manager_account_id,
-        workspace_id: selectedWorkspace.value.workspace_id,
-        probe_id: probe.value.probe_id,
-        probe_revision: probe.value.probe_revision,
+        manager_account_id: currentProbe.manager_account.id,
+        workspace_id: workspace.workspace_id,
+        probe_id: currentProbe.id,
+        probe_revision: currentProbe.revision,
         display_name: trimmedName || null,
         planned_member_limit: parsedLimit.value,
       });
+      if (!current()) return;
       emit('notify', '工作区绑定成功，正在后台同步成员快照');
       emit('bound', res.team);
       emit('close');
     } catch (err) {
+      if (!current()) return;
       if (err instanceof TeamApiError) {
         if (err.code === 'team_probe_expired' || err.code === 'probe_expired') {
           forceProbeExpired.value = true;
@@ -541,24 +594,26 @@ async function submit() {
         formError.value = err instanceof Error ? err.message : '绑定工作区失败';
       }
     } finally {
-      submitting.value = false;
+      if (current()) submitting.value = false;
     }
     return;
   }
 
-  if (!props.team) return;
+  if (!targetTeam) return;
   submitting.value = true;
   try {
-    const res = await props.api.updateTeam(props.team.team_id, {
-      expected_revision: props.team.revision,
-      manager_account_id: probe.value.manager_account_id,
-      probe_id: probe.value.probe_id,
-      probe_revision: probe.value.probe_revision,
+    const res = await props.api.updateTeam(targetTeam.id, {
+      expected_revision: targetTeam.revision,
+      manager_account_id: currentProbe.manager_account.id,
+      probe_id: currentProbe.id,
+      probe_revision: currentProbe.revision,
     });
+    if (!current()) return;
     emit('notify', '管理母号已更换');
     emit('managerUpdated', res.team);
     emit('close');
   } catch (err) {
+    if (!current()) return;
     if (err instanceof TeamApiError) {
       if (err.code === 'team_probe_expired' || err.code === 'probe_expired') {
         forceProbeExpired.value = true;
@@ -570,7 +625,7 @@ async function submit() {
       formError.value = err instanceof Error ? err.message : '更换管理母号失败';
     }
   } finally {
-    submitting.value = false;
+    if (current()) submitting.value = false;
   }
 }
 
@@ -578,6 +633,7 @@ function requestClose() {
   if (submitting.value) return;
   abortSearch();
   abortProbePolling();
+  abortManagerAssociations();
   emit('close');
 }
 
@@ -600,23 +656,49 @@ function onBackdropClick(event: MouseEvent) {
 }
 
 watch(
-  isActiveDialog,
-  active => {
-    if (active) {
-      resetState();
+  [() => props.open, () => props.mode, () => props.team?.id, () => props.team?.workspace_id],
+  () => {
+    ++dialogSession;
+    submitting.value = false;
+    resetState();
+    if (isActiveDialog.value) {
       void fetchAccounts();
-    } else {
-      abortSearch();
-      abortProbePolling();
-      clearTimers();
+      void fetchManagerAssociations();
     }
   },
-  { immediate: true },
+  { immediate: true, flush: 'sync' },
+);
+
+watch(
+  isActiveDialog,
+  active => {
+    if (!active) {
+      abortSearch();
+      abortProbePolling();
+      abortManagerAssociations();
+      clearTimers();
+      return;
+    }
+    if (!searchController) void fetchAccounts();
+    void fetchManagerAssociations();
+    if (probe.value?.status === 'queued' || probe.value?.status === 'running') {
+      const controller = new AbortController();
+      probeController = controller;
+      probeLoading.value = true;
+      void pollProbeOnce(probe.value.id, controller);
+    } else if (probe.value?.status === 'success') {
+      nowMs.value = Date.now();
+      ensureExpiryTimer();
+    }
+  },
+  { flush: 'sync' },
 );
 
 onBeforeUnmount(() => {
+  ++dialogSession;
   abortSearch();
   abortProbePolling();
+  abortManagerAssociations();
   clearTimers();
 });
 </script>
@@ -640,7 +722,7 @@ onBeforeUnmount(() => {
         </h3>
         <p class="tm-dialog__desc">
           <template v-if="isChangeManager && team">
-            目标工作区：<strong>{{ team.effective_name }}</strong>
+            目标工作区：<strong>{{ team.display_name || team.name || team.workspace_id }}</strong>
             （<span class="tm-mono">{{ team.workspace_id }}</span>），仅切换执行管理的本地母号，不转移远端所有权。
           </template>
           <template v-else>
@@ -695,6 +777,14 @@ onBeforeUnmount(() => {
           <button type="button" class="tm-btn tm-btn--sm" @click="fetchAccounts">重试</button>
         </div>
 
+        <div v-if="managerAssociationsLoading" class="tm-field__hint" role="status">
+          正在读取本地管理母号关联…
+        </div>
+        <div v-if="managerAssociationsError" class="tm-banner tm-banner--warning" role="alert">
+          <div class="tm-banner__copy">读取本地管理母号关联失败：{{ managerAssociationsError }}，暂未取得完整关联。</div>
+          <button type="button" class="tm-btn tm-btn--sm" @click="fetchManagerAssociations">重试关联读取</button>
+        </div>
+
         <div class="tm-candidate-list" style="max-height: 210px;" :aria-busy="accountsLoading">
           <div
             v-if="accountsLoading && !accounts.length"
@@ -733,6 +823,16 @@ onBeforeUnmount(() => {
                   <span v-if="isCurrentManager(acc)" class="tm-badge tm-badge--active">当前母号</span>
                 </div>
                 <div
+                  v-if="localManagerTeamsByAccountId[acc.id]?.length"
+                  class="tm-cell-sub tm-local-manager-associations"
+                  style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;"
+                >
+                  <span>本地管理母号：</span>
+                  <span v-for="managedTeam in localManagerTeamsByAccountId[acc.id]" :key="managedTeam.id" class="acc-team-pill">
+                    {{ managedTeam.display_name || managedTeam.name || managedTeam.workspace_id }}
+                  </span>
+                </div>
+                <div
                   v-if="acc.team_memberships.length"
                   class="tm-cell-sub"
                   style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;"
@@ -743,7 +843,7 @@ onBeforeUnmount(() => {
                     :key="`${m.team_id}:${m.workspace_id}`"
                     class="acc-team-pill"
                   >
-                    {{ m.display_name || m.workspace_name || `Team #${m.team_id}` }} · {{ teamRoleLabel(m.role) }}
+                    {{ m.display_name || m.name || `Team #${m.team_id}` }} · {{ teamRoleLabel(m.role) }}
                   </span>
                 </div>
               </div>
@@ -786,7 +886,7 @@ onBeforeUnmount(() => {
         <span class="tm-field__label">2. 工作区核验进度</span>
         <div class="tm-probe-stepper" role="status" aria-live="polite">
           <div
-            v-for="(step, index) in TEAM_PROBE_STAGE_STEPS"
+            v-for="(step, index) in PROBE_STAGE_STEPS"
             :key="step.key"
             class="tm-probe-step"
             :class="stepClass(index)"
@@ -801,7 +901,6 @@ onBeforeUnmount(() => {
         <div v-if="probeError" class="tm-banner tm-banner--danger" role="alert">
           <div class="tm-banner__copy">
             <span>{{ probeError }}</span>
-            <span v-if="probe?.error?.detail" class="tm-cell-sub">{{ probe.error.detail }}</span>
           </div>
           <button
             type="button"
@@ -838,7 +937,7 @@ onBeforeUnmount(() => {
         <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px;">
           <span class="tm-field__label">3. 选择目标工作区（单选确认）</span>
           <span class="tm-field__hint">
-            核验账号：{{ probe.manager_email || `#${probe.manager_account_id}` }}
+            核验账号：{{ probe.manager_account.email || `#${probe.manager_account.id}` }}
           </span>
         </div>
 
@@ -856,11 +955,11 @@ onBeforeUnmount(() => {
             class="tm-workspace-option"
             :class="{
               'is-selected': selectedWorkspaceId === ws.workspace_id,
-              'is-disabled': !ws.selectable || isProbeExpired,
+              'is-disabled': !isWorkspaceSelectable(ws) || isProbeExpired,
             }"
             role="radio"
             :aria-checked="selectedWorkspaceId === ws.workspace_id"
-            :aria-disabled="!ws.selectable || isProbeExpired"
+            :aria-disabled="!isWorkspaceSelectable(ws) || isProbeExpired"
             @click="selectWorkspace(ws)"
           >
             <div style="display: flex; align-items: flex-start; gap: 10px; min-width: 0; flex: 1;">
@@ -868,45 +967,34 @@ onBeforeUnmount(() => {
                 type="radio"
                 name="tm_probe_workspace"
                 :checked="selectedWorkspaceId === ws.workspace_id"
-                :disabled="!ws.selectable || isProbeExpired || submitting"
+                :disabled="!isWorkspaceSelectable(ws) || isProbeExpired || submitting"
                 style="margin-top: 3px;"
                 @change="selectWorkspace(ws)"
               />
               <div class="tm-cell-stack" style="min-width: 0; flex: 1;">
                 <div class="tm-cell-primary" style="flex-wrap: wrap;">
-                  <span>{{ ws.workspace_name || ws.workspace_id }}</span>
+                  <span>{{ ws.name || ws.workspace_id }}</span>
                   <span class="tm-mono" style="color: var(--ui-color-text-muted);">{{ ws.workspace_id }}</span>
-                  <span class="tm-plan-tag">{{ ws.plan_type || 'unknown' }}</span>
+                  <span class="tm-plan-tag">{{ ws.workspace_type === 'team' ? 'Team' : ws.workspace_type === 'personal' ? '个人空间' : '类型待确认' }}</span>
                   <span class="tm-badge" :class="`tm-badge--${teamRoleTone(ws.role)}`">
                     {{ teamRoleLabel(ws.role) }}
                   </span>
                   <span
                     class="tm-badge"
-                    :class="ws.can_manage ? 'tm-badge--success' : 'tm-badge--danger'"
+                    :class="ws.can_manage === true ? 'tm-badge--success' : ws.can_manage === false ? 'tm-badge--danger' : 'tm-badge--neutral'"
                   >
-                    {{ ws.can_manage ? '可管理' : '无管理权限' }}
+                    {{ ws.can_manage === true ? '可管理' : ws.can_manage === false ? '无管理权限' : '权限待确认' }}
                   </span>
                 </div>
                 <div class="tm-cell-sub" style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
                   <span>{{ formatWorkspaceSeats(ws.purchased_seats) }}</span>
-                  <span>成员：{{ formatNullableCount(ws.confirmed_member_count, '待同步', ' 人') }}</span>
-                  <span>待接受：{{ formatNullableCount(ws.pending_invite_count, '待同步', ' 份') }}</span>
                 </div>
-                <div v-if="!ws.selectable" class="tm-cell-sub is-danger">
+                <div v-if="!isWorkspaceSelectable(ws)" class="tm-cell-sub is-danger">
                   不可选原因：{{ workspaceDisabledReason(ws) }}
                 </div>
               </div>
             </div>
 
-            <div v-if="ws.already_bound_team_id" style="flex: none;">
-              <button
-                type="button"
-                class="tm-btn tm-btn--soft tm-btn--sm"
-                @click.stop="emit('openExistingTeam', ws.already_bound_team_id!)"
-              >
-                打开已绑定工作区
-              </button>
-            </div>
           </div>
         </div>
       </section>
@@ -934,7 +1022,7 @@ onBeforeUnmount(() => {
               v-model="displayNameInput"
               type="text"
               maxlength="120"
-              :placeholder="selectedWorkspace.workspace_name || '留空则使用远端工作区名称'"
+              :placeholder="selectedWorkspace.name || '留空则使用远端工作区名称'"
               :disabled="submitting"
             />
             <span class="tm-field__hint">留空将展示远端工作区名称，最多 120 字符。</span>

@@ -50,6 +50,7 @@ from webui.routes.proxy_traffic import create_proxy_traffic_blueprint
 from webui.routes.health import create_health_blueprint
 from webui.routes.bulk import create_bulk_blueprint
 from webui.routes.bulk_mutations import create_bulk_mutations_blueprint
+from webui.routes.teams import create_teams_blueprint
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +88,7 @@ def create_app(auth_code: str | None = None) -> Flask:
         create_operations_blueprint,
         create_bulk_blueprint,
         create_bulk_mutations_blueprint,
+        create_teams_blueprint,
         create_proxy_traffic_blueprint,
         create_codex_blueprint,
         create_integrations_blueprint,

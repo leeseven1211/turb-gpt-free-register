@@ -133,10 +133,14 @@ def create_selection(payload: dict, request_key: str) -> dict:
     key, version = _operation(payload.get("operation"))
     parameters = _catalog().normalize_parameters(key, payload.get("parameters") or {})
     source = _source(payload.get("source"))
+    if key == "team_join" and source["kind"] not in {"query", "ids"}:
+        raise _error("query_invalid", "Team 名单来源无效。")
     expected = payload.get("expected_config_revision")
     previous = _store().find_selection_request(request_key)
     if previous:
         previous_source = (previous.get("query_spec") or {}).get("source", {})
+        if previous_source.get("kind") == "query":
+            previous_source = {**previous_source, "query": normalize_query(previous_source.get("query"))}
         if (previous["action_key"] != key or previous["action_version"] != version
                 or previous["parameters"] != parameters or previous_source != source
                 or (expected is not None and str(expected) != str(previous["config_revision"]))):
@@ -159,6 +163,8 @@ def create_selection(payload: dict, request_key: str) -> dict:
 
 def create_batch(payload: dict, request_key: str) -> dict:
     key, _version = _operation(payload.get("operation"))
+    if key == "team_join":
+        raise _error("team_join_endpoint_required", "请从 Team 发起加入。")
     parameters = _catalog().normalize_parameters(key, payload.get("parameters") or {})
     revision = payload.get("selection_revision")
     if isinstance(revision, bool) or not isinstance(revision, int) or revision < 1:
@@ -329,6 +335,9 @@ def _run_once(kind: str) -> int:
                 where, params = compile_query(spec) if spec else ("TRUE", [])
                 if item["action_key"] == "plan_check":
                     preflight_options = {"preflight_policy": "plan_check_db_v1"}
+                elif item["action_key"] == "team_join":
+                    from core.teams.selection import preflight_team_targets
+                    preflight_options = {"preflight": preflight_team_targets, "preflight_identity_only": True}
                 else:
                     from core.bulk_operations import adapters
                     settings = item.get("config_snapshot") or {}

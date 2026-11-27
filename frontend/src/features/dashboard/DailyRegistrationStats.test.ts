@@ -6,7 +6,7 @@ import type {AccountQuerySpec} from '../accounts/queryAdapter';
 
 const wrappers:ReturnType<typeof mount>[]=[];
 const baseQuery:AccountQuerySpec={
- schema_version:1,entity:'account',archived:'0',q:'',date_from:'2026-11-24',date_to:'2026-11-24',plan:[],
+ schema_version:1,entity:'account',team_scope:'all',archived:'0',q:'',date_from:'2026-11-24',date_to:'2026-11-24',plan:[],
  filters:{id:'',email:'',source:[],registration_driver:[],token:[],password:[],promotion:['none'],totp:[],risk:[],codex:[],account_status:[],email_status:[]},
  order:[{field:'id',direction:'desc'}],limit:null,
 };

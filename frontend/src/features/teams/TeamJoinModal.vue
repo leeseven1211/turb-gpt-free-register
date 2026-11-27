@@ -2,19 +2,22 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import { TeamApiError, type TeamsApi } from '../../api/teams';
 import { useNativeDialog } from '../../shared/useNativeDialog';
+import { useTeamPolling } from './useTeamPolling';
 import type {
   AccountsJoinRequestPayload,
   JoinPreviewResponse,
-  JoinPreviewSampleItem,
   JoinPreviewTargetPayload,
   JoinRequestDTO,
   JoinRequestItemDTO,
+  JoinRequestItemsResponse,
   TeamDTO,
   TeamDecimalId,
 } from './contracts';
 import {
   formatNullableCount,
   teamCapacityBasisLabel,
+  teamExecutionLabel,
+  teamExecutionTone,
   teamReasonLabel,
   type BadgeTone,
 } from './statusLabels';
@@ -51,7 +54,6 @@ const selectedTeam = ref<TeamDTO | null>(null);
 const preview = ref<JoinPreviewResponse | null>(null);
 const previewLoading = ref(false);
 const previewError = ref('');
-const showSampleItems = ref(false);
 
 const inlineLimitInput = ref('');
 const savingLimit = ref(false);
@@ -62,35 +64,24 @@ const submitError = ref('');
 const submitNotice = ref('');
 
 const receipt = ref<JoinRequestDTO | null>(null);
+const receiptItems = ref<JoinRequestItemsResponse | null>(null);
 const receiptLoading = ref(false);
 const receiptError = ref('');
 
 let teamController: AbortController | null = null;
 let previewController: AbortController | null = null;
 let receiptController: AbortController | null = null;
+let limitController: AbortController | null = null;
+let dialogEpoch = 0;
 
 const isActiveDialog = computed(() => props.open && props.visible);
 const needsTeamPicker = computed(() => !props.initialTeam);
 
 const effectiveTeamId = computed(
-  () => selectedTeam.value?.team_id || selectedTeamId.value || props.target?.targetTeamId || '',
+  () => selectedTeam.value?.id || selectedTeamId.value || props.target?.targetTeamId || '',
 );
 
-const missingAuthTotal = computed(() => {
-  const counts = preview.value?.counts;
-  if (!counts) return 0;
-  return (
-    counts.missing_auth_skip_count +
-    counts.unavailable_skip_count +
-    counts.email_mismatch_skip_count
-  );
-});
-
-const eligibleJoinCount = computed(() => {
-  const counts = preview.value?.counts;
-  if (!counts) return 0;
-  return counts.new_join_count + counts.continue_invite_count;
-});
+const eligibleJoinCount = computed(() => preview.value?.counts.eligible_count ?? 0);
 
 const canConfirmJoin = computed(() => {
   if (
@@ -116,29 +107,37 @@ const meterOccupiedPercent = computed(() => {
 const meterAddedPercent = computed(() => {
   const cap = preview.value?.capacity;
   if (!cap || cap.effective_limit === null || cap.effective_limit <= 0) return 0;
-  const pct = Math.round((cap.additional_required / cap.effective_limit) * 100);
+  const pct = Math.round(((cap.additional_required ?? 0) / cap.effective_limit) * 100);
   return Math.min(Math.max(0, 100 - meterOccupiedPercent.value), Math.max(0, pct));
 });
 
+const remainingAfterSubmit = computed(() => {
+  const cap = preview.value?.capacity;
+  if (!cap || cap.available_count === null || cap.additional_required === null) return null;
+  return Math.max(0, cap.available_count - cap.additional_required);
+});
+const needsCapacityWait = computed(() => {
+  const cap = preview.value?.capacity;
+  const occupied = cap?.occupied_count;
+  const limit = cap?.effective_limit;
+  const additional = cap?.additional_required;
+  return typeof occupied === 'number' && Number.isFinite(occupied) &&
+    typeof limit === 'number' && Number.isFinite(limit) &&
+    typeof additional === 'number' && Number.isFinite(additional) &&
+    additional > 0 && occupied + additional > limit;
+});
 const meterToneClass = computed(() => {
   const cap = preview.value?.capacity;
   if (!cap) return '';
-  if (cap.exceeds_limit || cap.blocking_reason_code === 'team_seat_full' || cap.blocking_reason_code === 'team_limit_reached') {
-    return 'is-danger';
-  }
-  if (
-    cap.blocking_reason_code === 'team_limit_required' ||
-    (cap.remaining_after_submit !== null && cap.remaining_after_submit <= 1)
-  ) {
-    return 'is-warn';
-  }
+  if (cap.blocking_reason_code === 'team_limit_required' ||
+      (cap.available_count !== null && cap.available_count <= 1)) return 'is-warn';
   return '';
 });
-
-const receiptTotalPages = computed(() => {
-  if (!receipt.value) return 1;
-  return Math.max(1, Math.ceil(receipt.value.total_items / receipt.value.page_size));
-});
+const receiptPage = computed(() => receiptItems.value?.page ?? 1);
+const receiptTotalPages = computed(() => Math.max(1, Math.ceil(
+  (receiptItems.value?.total ?? receipt.value?.counts.unique_count ?? 0) /
+  (receiptItems.value?.page_size ?? 20),
+)));
 
 function isAbortError(err: unknown): boolean {
   return err instanceof DOMException && err.name === 'AbortError';
@@ -148,18 +147,27 @@ function abortAll() {
   if (teamController) {
     teamController.abort();
     teamController = null;
+    teamsLoading.value = false;
   }
   if (previewController) {
     previewController.abort();
     previewController = null;
+    previewLoading.value = false;
   }
   if (receiptController) {
     receiptController.abort();
     receiptController = null;
+    receiptLoading.value = false;
+  }
+  if (limitController) {
+    limitController.abort();
+    limitController = null;
+    savingLimit.value = false;
   }
 }
 
 function resetState() {
+  dialogEpoch++;
   abortAll();
   stage.value = 'preview';
   availableTeams.value = [];
@@ -170,7 +178,6 @@ function resetState() {
   preview.value = null;
   previewLoading.value = false;
   previewError.value = '';
-  showSampleItems.value = false;
   inlineLimitInput.value = '';
   savingLimit.value = false;
   limitError.value = '';
@@ -178,6 +185,7 @@ function resetState() {
   submitError.value = '';
   submitNotice.value = '';
   receipt.value = null;
+  receiptItems.value = null;
   receiptLoading.value = false;
   receiptError.value = '';
 }
@@ -234,7 +242,7 @@ async function runPreview(teamId: TeamDecimalId) {
 async function selectAndLoadTeam(teamId: TeamDecimalId) {
   if (!teamId) return;
   selectedTeamId.value = teamId;
-  const fromList = availableTeams.value.find(t => t.team_id === teamId);
+  const fromList = availableTeams.value.find(t => t.id === teamId);
   if (fromList) {
     selectedTeam.value = fromList;
     await runPreview(teamId);
@@ -251,7 +259,7 @@ async function selectAndLoadTeam(teamId: TeamDecimalId) {
     const detail = await props.api.detail(teamId, controller.signal);
     if (controller.signal.aborted || !isActiveDialog.value) return;
     selectedTeam.value = detail.team;
-    await runPreview(detail.team.team_id);
+    await runPreview(detail.team.id);
   } catch (err) {
     if (isAbortError(err) || controller.signal.aborted) return;
     teamsError.value =
@@ -278,15 +286,15 @@ async function loadTeamOptions() {
 
   try {
     const res = await props.api.list(
-      { page: 1, page_size: 50, include_facets: 0 },
+      { page: 1, page_size: 50, include_facets: '0' },
       controller.signal,
     );
     if (controller.signal.aborted || !isActiveDialog.value) return;
     availableTeams.value = res.items;
     if (res.items.length === 1) {
-      selectedTeamId.value = res.items[0]!.team_id;
+      selectedTeamId.value = res.items[0]!.id;
       selectedTeam.value = res.items[0]!;
-      await runPreview(res.items[0]!.team_id);
+      await runPreview(res.items[0]!.id);
     }
   } catch (err) {
     if (isAbortError(err) || controller.signal.aborted) return;
@@ -310,8 +318,8 @@ async function initModal() {
 
   if (props.initialTeam) {
     selectedTeam.value = props.initialTeam;
-    selectedTeamId.value = props.initialTeam.team_id;
-    await runPreview(props.initialTeam.team_id);
+    selectedTeamId.value = props.initialTeam.id;
+    await runPreview(props.initialTeam.id);
     return;
   }
 
@@ -324,6 +332,7 @@ async function initModal() {
 }
 
 function onTeamDropdownChange(event: Event) {
+  if (savingLimit.value || submitting.value) return;
   const nextId = (event.target as HTMLSelectElement).value;
   preview.value = null;
   previewError.value = '';
@@ -338,7 +347,7 @@ function onTeamDropdownChange(event: Event) {
 }
 
 async function saveInlinePlannedLimit() {
-  if (!selectedTeam.value || savingLimit.value) return;
+  if (!isActiveDialog.value || !selectedTeam.value || savingLimit.value) return;
   limitError.value = '';
   const raw = inlineLimitInput.value.trim();
   if (!/^[1-9]\d*$/.test(raw)) {
@@ -351,21 +360,33 @@ async function saveInlinePlannedLimit() {
     return;
   }
 
+  const savedTeamId = selectedTeam.value.id;
+  const savedRevision = selectedTeam.value.revision;
+  const savedEpoch = dialogEpoch;
+  const controller = new AbortController();
+  limitController = controller;
+  const isCurrentSave = () => !controller.signal.aborted && savedEpoch === dialogEpoch &&
+    isActiveDialog.value && selectedTeam.value?.id === savedTeamId && selectedTeamId.value === savedTeamId;
   savingLimit.value = true;
   try {
-    const res = await props.api.updateTeam(selectedTeam.value.team_id, {
-      expected_revision: selectedTeam.value.revision,
+    const res = await props.api.updateTeam(savedTeamId, {
+      expected_revision: savedRevision,
       planned_member_limit: parsed,
-    });
+    }, controller.signal);
+    if (!isCurrentSave()) return;
+    if (res.team.id !== savedTeamId) {
+      throw new Error('保存响应的工作区与当前目标不一致，请刷新后重试');
+    }
     selectedTeam.value = res.team;
-    const idx = availableTeams.value.findIndex(t => t.team_id === res.team.team_id);
+    const idx = availableTeams.value.findIndex(t => t.id === res.team.id);
     if (idx >= 0) {
       availableTeams.value.splice(idx, 1, res.team);
     }
     emit('teamUpdated', res.team);
     emit('notify', '本地计划人数上限已更新，正在重新核算席位');
-    await runPreview(res.team.team_id);
+    await runPreview(savedTeamId);
   } catch (err) {
+    if (isAbortError(err) || !isCurrentSave()) return;
     limitError.value =
       err instanceof TeamApiError
         ? err.message
@@ -373,7 +394,10 @@ async function saveInlinePlannedLimit() {
           ? err.message
           : '设置本地计划人数上限失败';
   } finally {
-    savingLimit.value = false;
+    if (limitController === controller) {
+      limitController = null;
+      savingLimit.value = false;
+    }
   }
 }
 
@@ -381,33 +405,35 @@ async function confirmJoin() {
   if (!canConfirmJoin.value || !selectedTeam.value || !preview.value) return;
   const payload = buildTargetPayload();
   if (!payload) return;
+  const submittedTeamId = selectedTeam.value.id;
+  const submittedEpoch = dialogEpoch;
 
   submitting.value = true;
   submitError.value = '';
   submitNotice.value = '';
 
   try {
-    const res = await props.api.submitJoin(selectedTeam.value.team_id, {
-      ...payload,
-      expected_team_revision: preview.value.snapshot_revision,
-    });
+    const res = await props.api.submitJoin(submittedTeamId, payload);
+    emit('submitted', res, submittedTeamId);
+    if (submittedEpoch !== dialogEpoch) return;
     receipt.value = res;
     stage.value = 'receipt';
-    emit('notify', '批量加入请求已受理，正在后台执行');
-    emit('submitted', res, selectedTeam.value.team_id);
+    emit('notify', '批量加入请求已持久受理，逐项结果见回执');
+    await loadReceiptPage(1);
   } catch (err) {
+    if (submittedEpoch !== dialogEpoch) return;
     if (err instanceof TeamApiError) {
       if (
         err.status === 409 &&
         (err.code === 'team_revision_conflict' || err.code === 'revision_conflict')
       ) {
         submitNotice.value = '工作区状态已变更，已自动重新核算最新席位与名单，请二次确认后提交。';
-        await selectAndLoadTeam(selectedTeam.value.team_id);
+        await selectAndLoadTeam(submittedTeamId);
         return;
       }
       if (err.status === 409 && err.code === 'team_limit_required') {
         submitNotice.value = '需要先配置本地计划人数上限，已重新加载席位核算。';
-        await runPreview(selectedTeam.value.team_id);
+        await runPreview(submittedTeamId);
         return;
       }
       submitError.value = err.message || teamReasonLabel(err.code);
@@ -415,39 +441,29 @@ async function confirmJoin() {
       submitError.value = err instanceof Error ? err.message : '发起加入请求失败';
     }
   } finally {
-    submitting.value = false;
+    if (submittedEpoch === dialogEpoch) submitting.value = false;
   }
 }
 
 async function loadReceiptPage(nextPage: number) {
-  if (!receipt.value || receiptLoading.value) return;
-  if (nextPage < 1 || nextPage > receiptTotalPages.value) return;
-  const teamId = receipt.value.team_id || effectiveTeamId.value;
-  if (!teamId) return;
-
+  if (!isActiveDialog.value || !receipt.value || receiptLoading.value) return;
+  if (nextPage < 1 || (receiptItems.value && nextPage > receiptTotalPages.value)) return;
+  const teamId = receipt.value.team_id;
+  const requestId = receipt.value.id;
   if (receiptController) receiptController.abort();
   const controller = new AbortController();
   receiptController = controller;
   receiptLoading.value = true;
   receiptError.value = '';
-
   try {
-    const res = await props.api.getJoinRequest(
-      teamId,
-      receipt.value.join_request_id,
-      { page: nextPage, page_size: receipt.value.page_size },
-      controller.signal,
-    );
-    if (controller.signal.aborted || !isActiveDialog.value) return;
-    receipt.value = res;
+    const res = await props.api.getJoinRequest(teamId, requestId,
+      { page: nextPage, page_size: receiptItems.value?.page_size ?? 20 }, controller.signal);
+    if (controller.signal.aborted || !isActiveDialog.value || receipt.value?.id !== requestId) return;
+    receipt.value = res.request;
+    receiptItems.value = res;
   } catch (err) {
     if (isAbortError(err) || controller.signal.aborted) return;
-    receiptError.value =
-      err instanceof TeamApiError
-        ? err.message
-        : err instanceof Error
-          ? err.message
-          : '加载回执明细失败';
+    receiptError.value = err instanceof Error ? err.message : '加载回执明细失败';
   } finally {
     if (receiptController === controller) {
       receiptController = null;
@@ -456,37 +472,22 @@ async function loadReceiptPage(nextPage: number) {
   }
 }
 
-function sampleOutcomeBadge(outcome: JoinPreviewSampleItem['outcome']): {
-  label: string;
-  tone: BadgeTone;
-} {
-  switch (outcome) {
-    case 'will_join':
-      return { label: '将新增加入', tone: 'success' };
-    case 'will_continue_invite':
-      return { label: '续接已有邀请', tone: 'active' };
-    case 'skip_already_member':
-      return { label: '已是成员跳过', tone: 'neutral' };
-    case 'skip_already_processing':
-      return { label: '执行中跳过', tone: 'active' };
-    case 'skip_another_team':
-      return { label: '已属其他Team', tone: 'warning' };
-    case 'skip_missing_auth':
-      return { label: '缺认证跳过', tone: 'danger' };
-    case 'skip_email_mismatch':
-      return { label: '邮箱快照不符', tone: 'danger' };
-    default:
-      return { label: '不可用跳过', tone: 'danger' };
-  }
+useTeamPolling({
+  visible: () => isActiveDialog.value && stage.value === 'receipt',
+  shouldPoll: () => Boolean(receipt.value && ['preparing', 'queued', 'running', 'waiting'].includes(receipt.value.status)),
+  onPoll: () => loadReceiptPage(receiptPage.value),
+});
+
+function receiptOutcomeBadge(status: JoinRequestItemDTO['acceptance_status']): { label: string; tone: BadgeTone } {
+  if (status === 'pending') return { label: '待处理', tone: 'neutral' };
+  if (status === 'accepted') return { label: '已受理', tone: 'success' };
+  if (status === 'reused') return { label: '复用进行中', tone: 'active' };
+  if (status === 'failed') return { label: '受理失败', tone: 'danger' };
+  return { label: '已跳过', tone: 'warning' };
 }
 
-function receiptOutcomeBadge(outcome: JoinRequestItemDTO['outcome']): {
-  label: string;
-  tone: BadgeTone;
-} {
-  if (outcome === 'queued') return { label: '已入队', tone: 'success' };
-  if (outcome === 'reused_active') return { label: '复用进行中', tone: 'active' };
-  return { label: '已跳过', tone: 'warning' };
+function receiptStatusLabel(status: JoinRequestDTO['status']): string {
+  return status === 'preparing' ? '正在准备' : teamExecutionLabel(status);
 }
 
 function requestClose() {
@@ -514,18 +515,33 @@ function onBackdropClick(event: MouseEvent) {
 }
 
 watch(
-  () => [isActiveDialog.value, props.initialTeam?.team_id, props.target],
-  ([active]) => {
-    if (active) {
-      void initModal();
-    } else {
+  () => [props.open, props.initialTeam?.id, props.target],
+  () => {
+    if (!props.open) {
+      dialogEpoch++;
       abortAll();
+      submitting.value = false;
+      return;
     }
+    resetState();
+    if (props.visible) void initModal();
   },
   { immediate: true },
 );
 
+watch(() => props.visible, (visible) => {
+  if (!visible) {
+    abortAll();
+    return;
+  }
+  if (!props.open) return;
+  if (stage.value === 'receipt' && receipt.value) return;
+  if (!selectedTeam.value) void initModal();
+  else if (!preview.value) void runPreview(selectedTeam.value.id);
+});
+
 onBeforeUnmount(() => {
+  dialogEpoch++;
   abortAll();
 });
 </script>
@@ -549,7 +565,7 @@ onBeforeUnmount(() => {
         </h3>
         <p class="tm-dialog__desc">
           <template v-if="selectedTeam">
-            目标工作区：<strong>{{ selectedTeam.effective_name }}</strong>
+            目标工作区：<strong>{{ selectedTeam.display_name || selectedTeam.name || selectedTeam.workspace_id }}</strong>
             （<span class="tm-mono">{{ selectedTeam.workspace_id }}</span>）
           </template>
           <template v-else>
@@ -575,7 +591,7 @@ onBeforeUnmount(() => {
         <span class="tm-field__label">目标 Team 工作区</span>
         <select
           :value="selectedTeamId"
-          :disabled="teamsLoading || submitting"
+          :disabled="teamsLoading || submitting || savingLimit"
           aria-label="选择目标 Team"
           @change="onTeamDropdownChange"
         >
@@ -584,10 +600,10 @@ onBeforeUnmount(() => {
           </option>
           <option
             v-for="t in availableTeams"
-            :key="t.team_id"
-            :value="t.team_id"
+            :key="t.id"
+            :value="t.id"
           >
-            {{ t.effective_name }}（{{ t.workspace_id }} · 成员 {{ formatNullableCount(t.confirmed_member_count, '待同步') }}）
+            {{ t.display_name || t.name || t.workspace_id }}（{{ t.workspace_id }} · 成员 {{ formatNullableCount(t.confirmed_member_count, '待同步') }}）
           </option>
         </select>
         <div v-if="teamsError" class="tm-banner tm-banner--danger" role="alert">
@@ -619,11 +635,11 @@ onBeforeUnmount(() => {
       </div>
 
       <template v-if="preview">
-        <!-- 6 项统计矩阵 -->
+        <!-- 七类互斥统计，合格目标包含可复用执行。 -->
         <section class="tm-field">
           <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap;">
             <span class="tm-field__label">
-              本次选定名单拆解（去重共 {{ preview.counts.selected_total }} 个）
+              本次选定名单拆解（去重共 {{ preview.counts.unique_count }} 个）
             </span>
             <span class="tm-field__hint">
               最近同步：{{ preview.team_last_synced_at ? formatDateTime(preview.team_last_synced_at) : '尚未同步' }}
@@ -632,28 +648,32 @@ onBeforeUnmount(() => {
 
           <div class="tm-preview-grid">
             <div class="tm-preview-stat is-highlight">
-              <span>净新增加入</span>
-              <strong>{{ preview.counts.new_join_count }}</strong>
+              <span>新加入目标</span>
+              <strong>{{ preview.counts.new_count }}</strong>
             </div>
             <div class="tm-preview-stat">
               <span>已有邀请直接续接</span>
-              <strong>{{ preview.counts.continue_invite_count }}</strong>
+              <strong>{{ preview.counts.resume_invite_count }}</strong>
             </div>
             <div class="tm-preview-stat">
               <span>已是成员跳过</span>
-              <strong>{{ preview.counts.already_member_skip_count }}</strong>
+              <strong>{{ preview.counts.already_member_count }}</strong>
             </div>
             <div class="tm-preview-stat">
-              <span>执行中跳过</span>
-              <strong>{{ preview.counts.already_processing_skip_count }}</strong>
+              <span>同 Team 执行可复用</span>
+              <strong>{{ preview.counts.same_team_active_count }}</strong>
             </div>
             <div class="tm-preview-stat">
               <span>已属其他Team跳过</span>
-              <strong>{{ preview.counts.another_team_skip_count }}</strong>
+              <strong>{{ preview.counts.another_team_count }}</strong>
             </div>
             <div class="tm-preview-stat">
-              <span>缺认证/不可用跳过</span>
-              <strong>{{ missingAuthTotal }}</strong>
+              <span>缺认证材料跳过</span>
+              <strong>{{ preview.counts.missing_auth_count }}</strong>
+            </div>
+            <div class="tm-preview-stat">
+              <span>账号不可用或身份变化</span>
+              <strong>{{ preview.counts.unavailable_count }}</strong>
             </div>
           </div>
         </section>
@@ -662,7 +682,7 @@ onBeforeUnmount(() => {
         <section class="tm-seat-meter" :class="meterToneClass">
           <div class="tm-seat-meter__head">
             <span class="tm-seat-meter__title">
-              席位安全核对 · 仅使用已购剩余席位
+              席位与人数上限核对
             </span>
             <span class="tm-badge tm-badge--neutral">
               依据：{{ teamCapacityBasisLabel(preview.capacity.basis) }}
@@ -687,8 +707,8 @@ onBeforeUnmount(() => {
             </span>
             <span>
               当前占用：<strong>{{ formatNullableCount(preview.capacity.occupied_count, '待同步', ' 席') }}</strong>
-              · 本次新增占席：<strong>{{ preview.capacity.additional_required }} 席</strong>
-              · 提交后剩余：<strong>{{ formatNullableCount(preview.capacity.remaining_after_submit, '待同步', ' 席') }}</strong>
+              · 本次新增占席：<strong>{{ formatNullableCount(preview.capacity.additional_required, '待同步', ' 席') }}</strong>
+              · 提交后剩余：<strong>{{ formatNullableCount(remainingAfterSubmit, '待同步', ' 席') }}</strong>
             </span>
           </div>
         </section>
@@ -735,9 +755,14 @@ onBeforeUnmount(() => {
         >
           <div class="tm-banner__copy">
             {{
-              preview.capacity.blocking_reason ||
               teamReasonLabel(preview.capacity.blocking_reason_code)
             }}
+          </div>
+        </div>
+
+        <div v-if="needsCapacityWait" class="tm-banner tm-banner--warning" role="status">
+          <div class="tm-banner__copy">
+            请求受理后将等待可用席位，不会超额增购。
           </div>
         </div>
 
@@ -747,48 +772,6 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
-        <!-- 抽样明细展开 -->
-        <div v-if="preview.sample_items.length">
-          <button
-            type="button"
-            class="tm-link-btn"
-            @click="showSampleItems = !showSampleItems"
-          >
-            {{
-              showSampleItems
-                ? '收起预检抽样明细'
-                : `查看预检抽样明细（前 ${preview.sample_items.length} 条）`
-            }}
-          </button>
-
-          <div
-            v-if="showSampleItems"
-            class="tm-candidate-list"
-            style="margin-top: 8px; max-height: 200px;"
-          >
-            <div
-              v-for="item in preview.sample_items"
-              :key="item.account_id"
-              class="tm-candidate-row"
-            >
-              <div class="tm-cell-stack" style="min-width: 0;">
-                <div class="tm-cell-primary">
-                  <span>{{ item.email }}</span>
-                  <span class="tm-mono" style="color: var(--ui-color-text-muted);">#{{ item.account_id }}</span>
-                </div>
-                <div v-if="item.reason || item.reason_code" class="tm-cell-sub">
-                  {{ item.reason || teamReasonLabel(item.reason_code) }}
-                </div>
-              </div>
-              <span
-                class="tm-badge"
-                :class="`tm-badge--${sampleOutcomeBadge(item.outcome).tone}`"
-              >
-                {{ sampleOutcomeBadge(item.outcome).label }}
-              </span>
-            </div>
-          </div>
-        </div>
       </template>
 
       <div v-if="submitNotice" class="tm-banner tm-banner--warning" role="status">
@@ -804,57 +787,71 @@ onBeforeUnmount(() => {
     <div v-else-if="receipt" class="tm-dialog__body">
       <div class="tm-banner tm-banner--info" role="status">
         <div class="tm-banner__copy">
-          加入请求（<span class="tm-mono">#{{ receipt.join_request_id }}</span>）已受理并进入后台执行，实际入组结果请在邀请列表或任务中心追踪。
+          加入请求（<span class="tm-mono">#{{ receipt.id }}</span>）：请求已持久受理，逐项结果见下方。实际入组结果请在邀请列表或任务中心追踪。
+          <span class="tm-badge" :class="`tm-badge--${teamExecutionTone(receipt.status)}`">
+            {{ receiptStatusLabel(receipt.status) }}
+          </span>
         </div>
       </div>
 
       <div class="tm-preview-grid">
+        <div class="tm-preview-stat">
+          <span>待处理</span>
+          <strong>{{ receipt.counts.pending_count }}</strong>
+        </div>
         <div class="tm-preview-stat is-highlight">
-          <span>已入队</span>
-          <strong>{{ receipt.summary.queued_count }}</strong>
+          <span>已受理（含复用）</span>
+          <strong>{{ receipt.counts.accepted_count }}</strong>
         </div>
         <div class="tm-preview-stat">
           <span>复用进行中</span>
-          <strong>{{ receipt.summary.reused_active_count }}</strong>
+          <strong>{{ receipt.counts.reused_count }}</strong>
         </div>
         <div class="tm-preview-stat">
           <span>跳过</span>
-          <strong>{{ receipt.summary.skipped_count }}</strong>
+          <strong>{{ receipt.counts.skipped_count }}</strong>
+        </div>
+        <div class="tm-preview-stat">
+          <span>受理失败</span>
+          <strong>{{ receipt.counts.failed_count }}</strong>
         </div>
       </div>
 
+      <button type="button" class="tm-btn tm-btn--sm" :disabled="receiptLoading" @click="loadReceiptPage(receiptPage)">
+        {{ receiptLoading ? '正在刷新回执…' : '刷新回执' }}
+      </button>
       <div v-if="receiptError" class="tm-banner tm-banner--danger" role="alert">
         <div class="tm-banner__copy">{{ receiptError }}</div>
       </div>
 
       <div class="tm-candidate-list" style="max-height: 280px;" :aria-busy="receiptLoading">
         <div
-          v-if="!receipt.items.length"
+          v-if="!receiptItems?.items.length"
           style="padding: 18px; text-align: center; color: var(--ui-color-text-secondary);"
         >
           当前页暂无明细条目。
         </div>
         <div
-          v-for="item in receipt.items"
-          :key="`${item.account_id}:${item.invitation_id ?? 'none'}`"
+          v-for="item in receiptItems?.items ?? []"
+          :key="item.ordinal"
           class="tm-candidate-row"
         >
           <div class="tm-cell-stack" style="min-width: 0; flex: 1;">
             <div class="tm-cell-primary">
-              <span>{{ item.email }}</span>
-              <span class="tm-mono" style="color: var(--ui-color-text-muted);">#{{ item.account_id }}</span>
+              <span>目标账号</span>
+              <span class="tm-mono" style="color: var(--ui-color-text-muted);">{{ item.account_id ? `#${item.account_id}` : `目标 ${item.ordinal + 1}` }}</span>
             </div>
             <div class="tm-cell-sub">
-              {{ item.reason || (item.reason_code ? teamReasonLabel(item.reason_code) : '已受理等待执行') }}
+              {{ item.message || (item.reason_code ? teamReasonLabel(item.reason_code) : '等待后台处理') }}
             </div>
           </div>
 
           <div style="display: flex; align-items: center; gap: 8px; flex: none;">
             <span
               class="tm-badge"
-              :class="`tm-badge--${receiptOutcomeBadge(item.outcome).tone}`"
+              :class="`tm-badge--${receiptOutcomeBadge(item.acceptance_status).tone}`"
             >
-              {{ receiptOutcomeBadge(item.outcome).label }}
+              {{ receiptOutcomeBadge(item.acceptance_status).label }}
             </span>
             <button
               v-if="item.task_id"
@@ -875,19 +872,19 @@ onBeforeUnmount(() => {
         <button
           type="button"
           class="tm-btn tm-btn--sm"
-          :disabled="receipt.page <= 1 || receiptLoading"
-          @click="loadReceiptPage(receipt.page - 1)"
+          :disabled="receiptPage <= 1 || receiptLoading"
+          @click="loadReceiptPage(receiptPage - 1)"
         >
           上一页
         </button>
         <span class="tm-field__hint tm-tabular">
-          第 {{ receipt.page }} / {{ receiptTotalPages }} 页（共 {{ receipt.total_items }} 条）
+          第 {{ receiptPage }} / {{ receiptTotalPages }} 页（共 {{ receiptItems?.total ?? receipt.counts.unique_count }} 条）
         </span>
         <button
           type="button"
           class="tm-btn tm-btn--sm"
-          :disabled="receipt.page >= receiptTotalPages || receiptLoading"
-          @click="loadReceiptPage(receipt.page + 1)"
+          :disabled="receiptPage >= receiptTotalPages || receiptLoading"
+          @click="loadReceiptPage(receiptPage + 1)"
         >
           下一页
         </button>
@@ -921,7 +918,7 @@ onBeforeUnmount(() => {
 
       <template v-else>
         <span class="tm-field__hint">
-          共请求 {{ receipt?.summary.requested_count ?? 0 }} 个目标账号
+          共请求 {{ receipt?.counts.requested_count ?? 0 }} 个目标账号
         </span>
         <div class="tm-dialog__foot-right">
           <button

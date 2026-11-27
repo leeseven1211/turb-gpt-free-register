@@ -838,6 +838,24 @@ def _lock_projection_batch(cur, batch_id: int) -> None:
 def _effective_batch_status_counts(cur, batch_id: int) -> dict[str, int]:
     """Count one effective status per logical root task, including child retries."""
     cur.execute(
+        f"SELECT batch_type FROM {_common._table('operation_batches')} WHERE id=%s",
+        (int(batch_id),),
+    )
+    batch = cur.fetchone()
+    if batch and batch["batch_type"] == "team_sync":
+        # Team 同步允许同一 Run 被多个受理批次复用；各批次跟随准确 Run，
+        # 人工重跑产生的新 Run 不改写旧批次的历史结果。
+        cur.execute(
+            f"""
+            SELECT r.status,count(*) AS n
+            FROM {_common._table('operation_batch_items')} item
+            JOIN {_common._table('operation_runs')} r ON r.id=item.run_id
+            WHERE item.batch_id=%s GROUP BY r.status
+            """,
+            (int(batch_id),),
+        )
+        return {str(row["status"]): int(row["n"]) for row in cur.fetchall()}
+    cur.execute(
         f"""
         WITH task_rows AS (
             SELECT id, COALESCE(root_task_id, id) AS root_id, status, updated_at

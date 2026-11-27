@@ -56,7 +56,27 @@ core/email/remail/order_coordinator.py  Remail 意图 CAS、原订单恢复和�
 | `account_password_recoveries` | Roxy 原账号及手动改密的密文候选、执行归属和确认历史 |
 | `account_protocol_sessions` | v3 刷新 AT 使用的加密登录 Cookie、设备画像和已验证身份，绑定账号及当前邮箱，默认保存 24 小时 |
 | `account_device_profiles` | 刷新 AT、补密码和改密实际使用的加密设备画像，绑定账号及当前邮箱；不保存 Cookie，不随会话过期，换绑后不可复用 |
+| `team_workspaces` / `team_members` | 已绑定工作区、管理版本、远端完整性、窄计数及成员事实 |
+| `team_invitations` / `team_account_ownership` | 邀请与加入意图、单账号业务占用、独立于 Run 生命周期的席位预留 |
+| `team_binding_probes` / `team_request_receipts` | 异步绑定证据、有效期和跨 Team 写接口的全局幂等回执 |
+| `team_join_requests` / `team_join_request_items` | 固定名单及逐项受理、最近精确执行引用 |
+| `team_outbox` / `team_execution_receipts` | 事务任务投递、消费租约及原管理身份的远端请求事实 |
+| `team_auth_contexts` | 按本地账号与工作区独立保存的加密认证上下文 |
 | `app_collections` | 调度状态、兼容集合、迁移期旧数据；不是正常账号/邮箱/Codex 列表的事实来源 |
+
+### Team 工作区与加入事实
+
+`core/storage/teams/` 保存领域事实，`core/teams/` 协调本地受理与现有任务网关。绑定或固定加入请求与 outbox 在同一事务提交；消费按准确租约确认，重投复用稳定任务身份。后台认证使用 `openai_interactive`，账号忙时协调父任务等待，再创建持有该账号身份的子任务；不改变其他账号任务的排队语义。
+
+`team_account_ownership.account_id` 唯一约束防止两个本地 Team 并发受理同一账号。管理绑定、已确认成员、有效邀请和未决意图共同参与资格检查；历史多个 Team 的成员事实保留，不能拿唯一占用覆盖它们。远端只有邮箱的记录仅在规范邮箱唯一匹配时关联本地账号，已有账号关联不随远端显示邮箱变化而换人。归档不解除占用。
+
+人数上限与席位占用在工作区事务围栏内核对。成员、有效邀请及已预留意图按目标身份取并集；`purchased_seats=0` 是零上限，`null` 才允许明确的本地上限降级。成员或邀请名单不完整时占用及余量返回 `null`。失败、取消、未知回执和 Worker 租约结束不会自动清除业务占用；同 Team 重跑继续使用原意图与原位。
+
+完整同步缺项使用持久的连续缺项证据：第一次完整名单缺项保留原事实，连续两次完整缺项才将成员标为 `left`，或将仍待接受的邀请标为 `unconfirmed`；没有明确证据不伪造已撤回或已过期。只有成员与邀请都完整、目标不再有已确认关系或有效邀请、原执行已终态时，系统才清除席位及未决占用；仍作为管理账号的绑定继续保留。同步失败和不完整名单不累计完整缺项证据，已接受的历史事实不改写。
+
+列表读取物化计数、窄执行列及活跃状态部分索引。分页、total 与 facets 使用同一范围和快照；本地预检不初始化表、不解密账号材料、不写入名单或占位。成员与邀请保存 `last_task_id/last_run_id`，任务中心由 `operation_tasks.team_id` 精确过滤父子任务。
+
+管理配置 revision 与远端请求回执分开控制。更换母号后，旧请求按原身份、工作区和执行围栏保存，不能覆盖新管理配置或较新的快照。成员加入事实先保存，认证上下文随后按 `(account_id,team_id)` 加密保存；后一步失败不能把已加入回退为未加入，也不覆盖原个人会话缓存。
 
 ### 公开结果与远端回执
 

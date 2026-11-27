@@ -45,6 +45,18 @@ def create_operations_blueprint(context: WebUIContext):
     @bp.get("/api/operations")
     def api_operations():
         """统一任务中心列表：注册、恢复、Codex 与账号操作共用一个读模型。"""
+        team_id = None
+        if "team_id" in request.args:
+            values = request.args.getlist("team_id")
+            value = values[0].strip() if len(values) == 1 else ""
+            if (not value or len(value) > 19 or value[0] == "0"
+                    or not all("0" <= char <= "9" for char in value)
+                    or int(value) > 2**63 - 1):
+                return jsonify({
+                    "ok": False, "error_code": "parameter_invalid",
+                    "error": "team_id 必须是单个 64 位正整数十进制 Team ID",
+                }), 422
+            team_id = int(value)
         include_facets = str(request.args.get("include_facets") or "1").lower() not in {"0", "false", "no"}
         include_batches = str(request.args.get("include_batches") or "1").lower() not in {"0", "false", "no"}
         query = OperationQuery(
@@ -57,6 +69,7 @@ def create_operations_blueprint(context: WebUIContext):
             source=str(request.args.get("source") or "").strip(),
             q=str(request.args.get("q") or "").strip(),
             batch_id=request.args.get("batch_id", default=None, type=int),
+            team_id=team_id,
             task_id=str(request.args.get("task_id") or "").strip(),
             target=str(request.args.get("target") or "").strip(),
             target_status=str(request.args.get("target_status") or "").strip(),
@@ -160,6 +173,21 @@ def create_operations_blueprint(context: WebUIContext):
     def api_operation_retry(task_id: int):
         """由服务端 next_actions 和来源映射选择重跑入口，前端不猜流程。"""
         data = request.get_json(silent=True)
+        request_key = request.headers.get("Idempotency-Key")
+        if isinstance(data, dict) and "idempotency_key" in data:
+            body_key = data["idempotency_key"]
+            if not isinstance(body_key, str):
+                return jsonify({
+                    "ok": False, "error_code": "idempotency_key_invalid",
+                    "error": "idempotency_key 必须是字符串",
+                }), 422
+            body_key = body_key.strip()
+            if request_key is not None and request_key.strip() != body_key:
+                return jsonify({
+                    "ok": False, "error_code": "idempotency_key_mismatch",
+                    "error": "请求头与请求体的幂等键必须一致",
+                }), 422
+            request_key = body_key
         driver_override = None
         if isinstance(data, dict) and "driver" in data:
             driver_override = data["driver"]
@@ -176,7 +204,7 @@ def create_operations_blueprint(context: WebUIContext):
                 retry_options["diagnostic_after_mfa"] = True
         payload, status = action_service.perform_operation_action(
             task_id, "retry", driver_override=driver_override, **retry_options,
-            request_key=request.headers.get("Idempotency-Key"), operation_logger=logger,
+            request_key=request_key, operation_logger=logger,
         )
         return jsonify(payload), status
 
@@ -214,16 +242,31 @@ def create_operations_blueprint(context: WebUIContext):
             from core.operations import bulk_terminate_command
             from core.operations.bulk_mutation_service import public_submission
             from webui.routes.bulk_mutations import submission_error
+            from core.teams.errors import TeamError
             try:
+                action_service.read_team_bulk_operation_request(
+                    action, task_ids, request.headers.get("Idempotency-Key"),
+                )
                 result = bulk_terminate_command.submit(
                     task_ids, request_key=request.headers.get("Idempotency-Key"))
+            except TeamError as exc:
+                return jsonify({
+                    "ok": False, "error_code": exc.code, "error": exc.message,
+                }), exc.status
             except (ValueError, TypeError) as exc:
                 return submission_error(exc)
             return jsonify(public_submission(result)), 202
 
-        result = action_service.accept_bulk_operation_action(
-            action, task_ids, request_key=request.headers.get("Idempotency-Key"), operation_logger=logger,
-        )
+        from core.teams.errors import TeamError
+        try:
+            result = action_service.accept_bulk_operation_action(
+                action, task_ids, request_key=request.headers.get("Idempotency-Key"), operation_logger=logger,
+            )
+        except TeamError as exc:
+            return jsonify({
+                "ok": False, "error_code": exc.code, "error": exc.message,
+                "field": exc.field, "retryable": exc.retryable, "details": exc.details,
+            }), exc.status
         return jsonify(result)
 
     @bp.post("/api/operations/<int:task_id>/cancel")

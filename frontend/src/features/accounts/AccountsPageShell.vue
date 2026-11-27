@@ -43,6 +43,18 @@ const toolbarSnapshot=shallowRef<AccountsLegacyState>(),capabilities=shallowRef(
 const busyLabels=shallowRef<Readonly<Record<string,string>>>({});
 const targetTeam=ref<{team_id:string;effective_name:string}|null>(null);
 const submittingTeamSelection=ref(false);
+let accountsVisible=false,teamSelectionVersion=0;
+let teamSelectionController:AbortController|undefined;
+function invalidateTeamSelection(){
+  ++teamSelectionVersion;
+  teamSelectionController?.abort();
+  teamSelectionController=undefined;
+  submittingTeamSelection.value=false;
+}
+function clearTeamCandidateMode(){
+  invalidateTeamSelection();
+  targetTeam.value=null;
+}
 function owner(){if(!list.value)throw new Error('账号列表正在加载，请稍后重试');return list.value;}
 async function submitSelectedToTargetTeam(){
   if(!targetTeam.value||submittingTeamSelection.value)return;
@@ -51,29 +63,36 @@ async function submitSelectedToTargetTeam(){
   const teamId=targetTeam.value.team_id;
   const teamsPage=(window as unknown as {TeamsPage?:{openJoinFromAccounts?:(payload:unknown)=>Promise<void>|void}}).TeamsPage;
   if(!teamsPage?.openJoinFromAccounts){props.callbacks.notify?.('Team 管理模块尚未就绪，请稍后重试');return;}
-  targetTeam.value=null;
+  clearTeamCandidateMode();
   await teamsPage.openJoinFromAccounts({mode:'explicit',accountIds:[...context.accountIds],expectedEmails:{...context.expectedEmails},targetTeamId:teamId});
 }
 async function submitFilteredToTargetTeam(){
-  if(!targetTeam.value||(toolbarSnapshot.value?.total||0)<1||submittingTeamSelection.value)return;
+  if(!accountsVisible||!targetTeam.value||(toolbarSnapshot.value?.total||0)<1||submittingTeamSelection.value)return;
   const teamsPage=(window as unknown as {TeamsPage?:{openJoinFromAccounts?:(payload:unknown)=>Promise<void>|void}}).TeamsPage;
   if(!teamsPage?.openJoinFromAccounts){props.callbacks.notify?.('Team 管理模块尚未就绪，请稍后重试');return;}
+  const teamId=targetTeam.value.team_id,version=++teamSelectionVersion,controller=new AbortController();
+  teamSelectionController=controller;
   submittingTeamSelection.value=true;
+  const current=()=>version===teamSelectionVersion&&teamSelectionController===controller&&accountsVisible&&!controller.signal.aborted;
   try{
     const context=owner().getActionContext();
-    const frozen=await teamsApi.freezeAccountSelection(context.querySnapshot);
-    const teamId=targetTeam.value.team_id;
+    const frozen=await teamsApi.freezeAccountSelection(teamId,context.querySnapshot,controller.signal);
+    if(!current()||targetTeam.value?.team_id!==teamId)return;
     targetTeam.value=null;
     await teamsPage.openJoinFromAccounts({mode:'selection',selectionId:frozen.selection_id,selectionRevision:frozen.selection_revision,selectedCount:frozen.matched_count,targetTeamId:teamId});
   }catch(cause){
+    if(!current())return;
     props.callbacks.notify?.(cause instanceof Error?cause.message:'固定筛选名单失败，请稍后重试');
   }finally{
-    submittingTeamSelection.value=false;
+    if(version===teamSelectionVersion){
+      teamSelectionController=undefined;
+      submittingTeamSelection.value=false;
+    }
   }
 }
 function exitTeamCandidateMode(){
   const teamId=targetTeam.value?.team_id;
-  targetTeam.value=null;
+  clearTeamCandidateMode();
   if(teamId){
     (window as unknown as {TeamsPage?:{navigate?:(nav:unknown)=>void}}).TeamsPage?.navigate?.({view:'detail',team_id:teamId,section:'members'});
   }
@@ -81,7 +100,7 @@ function exitTeamCandidateMode(){
 function openTeamJoin(context:AccountActionContext){
   if(!context.accountIds.length){props.callbacks.notify?.('请先选择账号');return;}
   const teamId=targetTeam.value?.team_id||null;
-  if(teamId)targetTeam.value=null;
+  if(teamId)clearTeamCandidateMode();
   const teamsPage=(window as unknown as {TeamsPage?:{openJoinFromAccounts?:(payload:unknown)=>Promise<void>|void}}).TeamsPage;
   if(!teamsPage?.openJoinFromAccounts){props.callbacks.notify?.('Team 管理模块尚未就绪，请稍后重试');return;}
   void teamsPage.openJoinFromAccounts({mode:'explicit',accountIds:[...context.accountIds],expectedEmails:{...context.expectedEmails},targetTeamId:teamId});
@@ -105,12 +124,12 @@ const callbacks:AccountsCallbacks={...props.callbacks,
   closeConsumers:(restoreFocus=true)=>{drawer.value?.close(restoreFocus);props.callbacks.closeConsumers?.(restoreFocus);},
 };
 const detailCallbacks={notify:(message:string)=>props.callbacks.notify?.(message),syncModalScrollLock:()=>props.syncModalScrollLock()};
-onBeforeUnmount(()=>props.actions.dispose());
+onBeforeUnmount(()=>{accountsVisible=false;invalidateTeamSelection();props.actions.dispose();});
 defineExpose({
-  setVisible:(value:boolean)=>{props.actions.setVisible(value);owner().setVisible(value);},setArchived:(value:boolean)=>owner().setArchived(value),
+  setVisible:(value:boolean)=>{accountsVisible=value;if(!value)invalidateTeamSelection();props.actions.setVisible(value);owner().setVisible(value);},setArchived:(value:boolean)=>owner().setArchived(value),
   setAccountView:(view:'active'|'team'|'archived')=>owner().setViewScope(view),
-  enterTeamCandidateMode:(team:{team_id:string;effective_name:string})=>{targetTeam.value={team_id:String(team.team_id),effective_name:String(team.effective_name||'')};},
-  clearTeamCandidateMode:()=>{targetTeam.value=null;},
+  enterTeamCandidateMode:(team:{team_id:string;effective_name:string})=>{invalidateTeamSelection();targetTeam.value={team_id:String(team.team_id),effective_name:String(team.effective_name||'')};},
+  clearTeamCandidateMode,
   openTeamJoin,
   refresh:()=>owner().refresh(),pollStatuses:()=>owner().pollStatuses(),
   getAccountSelectionSnapshot:(...args:Parameters<InstanceType<typeof AccountsList>['getAccountSelectionSnapshot']>)=>owner().getAccountSelectionSnapshot(...args),
@@ -164,7 +183,7 @@ defineExpose({
           <button type="button" class="ac-button" :disabled="(toolbarSnapshot?.total || 0) < 1 || submittingTeamSelection" @click="submitFilteredToTargetTeam">
             {{ submittingTeamSelection ? '正在固定名单…' : `按当前筛选结果全量加入 (${toolbarSnapshot?.total || 0})` }}
           </button>
-          <button type="button" class="ac-link" :disabled="submittingTeamSelection" @click="exitTeamCandidateMode">
+          <button type="button" class="ac-link" @click="exitTeamCandidateMode">
             退出选人并返回 Team
           </button>
         </div>

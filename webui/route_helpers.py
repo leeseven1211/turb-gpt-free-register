@@ -224,6 +224,7 @@ def _compact_account_for_list(row: dict) -> dict:
         "has_account_password": bool(row.get("has_account_password")) or bool(_account_password(row)),
         "totp_enabled": bool(row.get("totp_enabled")) or bool(row.get("totp_secret")),
         "email_invalid": row.get("email_invalid") is True,
+        "team_memberships": row.get("team_memberships") or [],
     }
     retry = row.get("registration_retry")
     if isinstance(retry, dict):

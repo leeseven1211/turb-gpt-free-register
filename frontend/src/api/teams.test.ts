@@ -1,645 +1,225 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import {
-  optionalTeamDecimalId,
-  parseTeamJson,
-  teamDecimalId,
-  type TeamDetailResponse,
-} from '../features/teams/contracts';
+import { optionalTeamDecimalId, parseTeamJson, teamDecimalId } from '../features/teams/contracts';
 import type { AccountQuerySpec } from '../features/accounts/queryAdapter';
+import type { components } from './teams-schema';
 import { createTeamsApi, TeamApiError } from './teams';
 
-const BIG_ID_A = '9007199254740993'; // Number.MAX_SAFE_INTEGER + 2（Number 解析会丢精为 9007199254740992）
+const BIG_ID_A = '9007199254740993';
 const BIG_ID_B = '1844674407370955161';
 const BIG_ID_C = '9223372036854775807';
-
-function jsonResponse(rawBody: string, status = 200): Response {
-  return new Response(rawBody, {
-    status,
-    headers: { 'Content-Type': 'application/json' },
-  });
+const TEAM: components['schemas']['TeamDTO'] = {
+  id: BIG_ID_A, workspace_id: 'ws-alpha', name: null, display_name: '测试 Team',
+  manager_account: { id: BIG_ID_B, email: null, archived: true }, role: 'owner', purchased_seats: null,
+  planned_member_limit: 8, confirmed_member_count: null, pending_invite_count: null, processing_count: null,
+  last_synced_at: null, last_sync_status: 'never', revision: 3,
+};
+const ACTION: components['schemas']['ActionReceipt'] = {
+  accepted: true, reused: false, team_id: BIG_ID_A, task_id: BIG_ID_B, run_id: BIG_ID_C, status: 'queued',
+};
+const CAPACITY: components['schemas']['Capacity'] = {
+  basis: 'planned_member_limit', purchased_seats: null, planned_member_limit: 8, effective_limit: 8,
+  occupied_count: null, available_count: null, additional_required: 1, can_submit: true, blocking_reason_code: null,
+};
+const JOIN: components['schemas']['JoinRequestDTO'] = {
+  id: BIG_ID_B, team_id: BIG_ID_A, operation: 'join', accepted: true, reused: false, status: 'preparing',
+  waiting_reason_code: null, selection_id: null, selection_revision: null, batch_id: BIG_ID_A,
+  task_id: BIG_ID_C, run_id: BIG_ID_B, created_at: '2026-11-27T00:00:00Z',
+  counts: { requested_count: 1, unique_count: 1, duplicate_count: 0, pending_count: 1,
+    accepted_count: 0, reused_count: 0, skipped_count: 0, failed_count: 0 }, capacity: CAPACITY,
+  items_url: `/api/teams/${BIG_ID_A}/join-requests/${BIG_ID_B}`,
+};
+const INVITATION: components['schemas']['InvitationDTO'] = {
+  id: BIG_ID_C, team_id: BIG_ID_A, remote_invitation_id: null,
+  account: { id: BIG_ID_B, email: 'target@example.test', archived: false }, email_snapshot: 'target@example.test',
+  invitation_state: 'pending', membership_state: 'unconfirmed',
+  latest_execution: { task_id: BIG_ID_B, run_id: BIG_ID_C, status: 'waiting', stage: 'member_auth',
+    waiting_reason_code: 'waiting_account', error_info: null }, updated_at: '2026-11-27T00:00:00Z', last_verified_at: null,
+  actions: { continue: { enabled: true, reason_code: null }, retry: { enabled: false, reason_code: 'already_processing' },
+    view_task: { enabled: true, reason_code: null } },
+};
+function jsonResponse(data: unknown, status = 200): Response {
+  return new Response(JSON.stringify({ ok: true, request_id: 'req-test', data }), { status, headers: { 'Content-Type': 'application/json' } });
 }
-
+function errorResponse(status: number, code: string): Response {
+  return new Response(JSON.stringify({ ok: false, request_id: 'req-error', error: { code, message: '测试业务原因' } }), { status });
+}
+function headerKey(mock: ReturnType<typeof vi.fn>, index: number): string {
+  return new Headers((mock.mock.calls[index]![1] as RequestInit).headers).get('Idempotency-Key') || '';
+}
 function makeAccountQuery(): AccountQuerySpec {
-  return {
-    schema_version: 1,
-    entity: 'account',
-    archived: '0',
-    q: 'team-candidate',
-    date_from: '',
-    date_to: '',
-    plan: ['free'],
-    filters: {
-      id: '',
-      email: '',
-      source: [],
-      registration_driver: [],
-      token: ['1'],
-      password: ['1'],
-      promotion: [],
-      totp: [],
-      risk: [],
-      codex: [],
-      account_status: ['active'],
-      email_status: ['unmarked'],
-    },
-    order: [{ field: 'id', direction: 'desc' }],
-    limit: 50,
-  };
+  return { schema_version: 1, entity: 'account', archived: '0', q: 'team-candidate', team_scope: 'all', date_from: '', date_to: '', plan: ['free'],
+    filters: { id: '', email: '', source: [], registration_driver: [], token: ['1'], password: ['1'], promotion: [], totp: [],
+      risk: [], codex: [], account_status: ['active'], email_status: ['unmarked'] }, order: [{ field: 'id', direction: 'desc' }], limit: 50 };
 }
+afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); sessionStorage.clear(); });
 
-afterEach(() => {
-  vi.unstubAllGlobals();
-  sessionStorage.clear();
-});
-
-describe('parseTeamJson 与十进制 ID 边界', () => {
-  it('将 JSON 数字形式与字符串形式的 64 位超大整数 ID 均精确保持为十进制字符串', () => {
-    const raw = `{
-      "ok": true,
-      "request_id": "req-64bit",
-      "data": {
-        "team_id": ${BIG_ID_A},
-        "existing_team_id": "${BIG_ID_B}",
-        "already_bound_team_id": ${BIG_ID_C},
-        "account_id": ${BIG_ID_B},
-        "manager_account_id": ${BIG_ID_A},
-        "probe_id": ${BIG_ID_C},
-        "invitation_id": ${BIG_ID_A},
-        "member_id": ${BIG_ID_B},
-        "join_request_id": ${BIG_ID_C},
-        "selection_id": ${BIG_ID_A},
-        "task_id": ${BIG_ID_B},
-        "run_id": ${BIG_ID_C},
-        "latest_task_id": ${BIG_ID_A},
-        "latest_run_id": ${BIG_ID_B},
-        "last_sync_task_id": ${BIG_ID_C},
-        "last_sync_run_id": ${BIG_ID_A},
-        "batch_id": ${BIG_ID_B},
-        "team_ids": [${BIG_ID_A}, "${BIG_ID_B}"],
-        "account_ids": [${BIG_ID_B}, ${BIG_ID_C}],
-        "invitation_ids": [${BIG_ID_C}],
-        "task_ids": [${BIG_ID_A}],
-        "run_ids": [${BIG_ID_B}],
-        "revision": 7,
-        "purchased_seats": 12,
-        "note": "含文本数字 9007199254740993 不被二次转义"
-      }
-    }`;
-
-    const parsed = parseTeamJson(raw) as { data: Record<string, unknown> };
-    const data = parsed.data;
-
-    expect(data.team_id).toBe(BIG_ID_A);
-    expect(data.existing_team_id).toBe(BIG_ID_B);
-    expect(data.already_bound_team_id).toBe(BIG_ID_C);
-    expect(data.account_id).toBe(BIG_ID_B);
-    expect(data.manager_account_id).toBe(BIG_ID_A);
-    expect(data.probe_id).toBe(BIG_ID_C);
-    expect(data.invitation_id).toBe(BIG_ID_A);
-    expect(data.member_id).toBe(BIG_ID_B);
-    expect(data.join_request_id).toBe(BIG_ID_C);
-    expect(data.selection_id).toBe(BIG_ID_A);
-    expect(data.task_id).toBe(BIG_ID_B);
-    expect(data.run_id).toBe(BIG_ID_C);
-    expect(data.latest_task_id).toBe(BIG_ID_A);
-    expect(data.latest_run_id).toBe(BIG_ID_B);
-    expect(data.last_sync_task_id).toBe(BIG_ID_C);
-    expect(data.last_sync_run_id).toBe(BIG_ID_A);
-    expect(data.batch_id).toBe(BIG_ID_B);
-
-    expect(data.team_ids).toEqual([BIG_ID_A, BIG_ID_B]);
-    expect(data.account_ids).toEqual([BIG_ID_B, BIG_ID_C]);
-    expect(data.invitation_ids).toEqual([BIG_ID_C]);
-    expect(data.task_ids).toEqual([BIG_ID_A]);
-    expect(data.run_ids).toEqual([BIG_ID_B]);
-
-    // 非 ID 数值字段保持 number，字符串内容不被破坏
-    expect(data.revision).toBe(7);
-    expect(data.purchased_seats).toBe(12);
-    expect(data.note).toBe('含文本数字 9007199254740993 不被二次转义');
-  });
-
-  it('非法 JSON 或尾部多余字符抛出 SyntaxError', () => {
+describe('真实 Team 窄 DTO 与精确 ID', () => {
+  it('64 位 ID 保持字符串，版本和数量保持数字', () => {
+    expect(parseTeamJson(`{"id":${BIG_ID_A},"manager_account":{"id":${BIG_ID_B}},"team_id":${BIG_ID_C},"existing_join_request_id":${BIG_ID_B},"account_ids":[${BIG_ID_A}],"revision":3,"selection_revision":2,"count":7}`))
+      .toEqual({ id: BIG_ID_A, manager_account: { id: BIG_ID_B }, team_id: BIG_ID_C, existing_join_request_id: BIG_ID_B,
+        account_ids: [BIG_ID_A], revision: 3, selection_revision: 2, count: 7 });
     expect(() => parseTeamJson('{"ok":true')).toThrow(SyntaxError);
     expect(() => parseTeamJson('{"ok":true} trailing')).toThrow(SyntaxError);
-  });
-
-  it('teamDecimalId 与 optionalTeamDecimalId 校验正整数十进制字符串', () => {
-    expect(teamDecimalId(`  ${BIG_ID_A}  `)).toBe(BIG_ID_A);
+    expect(teamDecimalId(` ${BIG_ID_A} `)).toBe(BIG_ID_A);
     expect(teamDecimalId(42)).toBe('42');
-    expect(() => teamDecimalId('0')).toThrow('标识格式无效');
-    expect(() => teamDecimalId('-1')).toThrow('标识格式无效');
-    expect(() => teamDecimalId('abc', 'Team ID')).toThrow('Team ID格式无效');
-
-    expect(optionalTeamDecimalId(null)).toBeNull();
-    expect(optionalTeamDecimalId(undefined)).toBeNull();
-    expect(optionalTeamDecimalId('')).toBeNull();
-    expect(optionalTeamDecimalId(0)).toBeNull();
-    expect(optionalTeamDecimalId('0')).toBeNull();
-    expect(optionalTeamDecimalId(BIG_ID_B)).toBe(BIG_ID_B);
-  });
-});
-
-describe('createTeamsApi 信封解包、64 位 ID 与错误处理', () => {
-  it('解包 { ok: true, request_id, data } 并在接口返回未加引号的 64 位整数 ID 时保持精度', async () => {
-    const rawDetail = `{
-      "ok": true,
-      "request_id": "req-detail-1",
-      "data": {
-        "team": {
-          "team_id": ${BIG_ID_A},
-          "revision": 3,
-          "workspace_id": "ws-alpha",
-          "workspace_name": "Alpha",
-          "display_name": null,
-          "effective_name": "Alpha",
-          "plan_type": "team",
-          "manager_account": {
-            "account_id": ${BIG_ID_B},
-            "email": "mgr@example.com",
-            "archived": false,
-            "account_status": "active"
-          },
-          "manager_role": "owner",
-          "can_manage": true,
-          "seat_policy": "remaining_purchased_only",
-          "purchased_seats": 10,
-          "planned_member_limit": 8,
-          "confirmed_member_count": 2,
-          "pending_invite_count": 1,
-          "processing_count": 0,
-          "capacity": {
-            "basis": "hybrid_min",
-            "effective_limit": 8,
-            "occupied_count": 3,
-            "remaining_before_limit": 5,
-            "can_accept_new_joins": true,
-            "blocking_reason_code": null
-          },
-          "last_sync_status": "success",
-          "last_synced_at": "2026-11-27T00:00:00Z",
-          "last_sync_task_id": ${BIG_ID_C},
-          "last_sync_run_id": "${BIG_ID_A}",
-          "last_sync_error": null,
-          "created_at": "2026-11-26T00:00:00Z",
-          "updated_at": "2026-11-27T00:00:00Z"
-        },
-        "actions": {
-          "sync": { "enabled": true, "reason_code": null, "reason": null },
-          "reverify": { "enabled": true, "reason_code": null, "reason": null },
-          "join": { "enabled": true, "reason_code": null, "reason": null }
-        },
-        "permission_verified_at": "2026-11-27T00:00:00Z"
-      }
-    }`;
-
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(rawDetail, 200));
-    vi.stubGlobal('fetch', fetchMock);
-
-    const api = createTeamsApi();
-    const detail: TeamDetailResponse = await api.detail(BIG_ID_A);
-
-    expect(fetchMock).toHaveBeenCalledWith(
-      `/api/teams/${BIG_ID_A}`,
-      expect.objectContaining({ credentials: 'same-origin' }),
-    );
-    expect(detail.team.team_id).toBe(BIG_ID_A);
-    expect(detail.team.manager_account.account_id).toBe(BIG_ID_B);
-    expect(detail.team.last_sync_task_id).toBe(BIG_ID_C);
-    expect(detail.team.last_sync_run_id).toBe(BIG_ID_A);
-    expect(detail.team.revision).toBe(3);
-  });
-
-  it('当返回字符串 ID 与数字 ID 混用的列表/请求数据时均不丢失精度', async () => {
-    const rawSubmit = `{
-      "ok": true,
-      "request_id": "req-join-1",
-      "data": {
-        "join_request_id": ${BIG_ID_B},
-        "team_id": "${BIG_ID_A}",
-        "status": "accepted",
-        "summary": {
-          "requested_count": 2,
-          "queued_count": 2,
-          "reused_active_count": 0,
-          "skipped_count": 0
-        },
-        "items": [
-          {
-            "account_id": ${BIG_ID_A},
-            "email": "a@example.com",
-            "outcome": "queued",
-            "invitation_id": ${BIG_ID_C},
-            "task_id": ${BIG_ID_B},
-            "run_id": "${BIG_ID_C}",
-            "reason_code": null,
-            "reason": null
-          }
-        ],
-        "total_items": 1,
-        "page": 1,
-        "page_size": 20
-      }
-    }`;
-
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(rawSubmit, 200)));
-    const api = createTeamsApi();
-    const result = await api.submitJoin(BIG_ID_A, {
-      account_ids: [BIG_ID_A],
-      expected_team_revision: 5,
-    });
-
-    expect(result.join_request_id).toBe(BIG_ID_B);
-    expect(result.team_id).toBe(BIG_ID_A);
-    expect(result.items[0]!.account_id).toBe(BIG_ID_A);
-    expect(result.items[0]!.invitation_id).toBe(BIG_ID_C);
-    expect(result.items[0]!.task_id).toBe(BIG_ID_B);
-    expect(result.items[0]!.run_id).toBe(BIG_ID_C);
-  });
-
-  it('对 { ok: false, request_id, error } 抛出 TeamApiError 并完整保留 code、field、retryable 与 64 位 details', async () => {
-    const rawConflict = `{
-      "ok": false,
-      "request_id": "req-conflict-409",
-      "error": {
-        "code": "team_already_bound",
-        "message": "该工作区已绑定到其他 Team",
-        "field": "workspace_id",
-        "retryable": false,
-        "details": {
-          "existing_team_id": ${BIG_ID_A},
-          "workspace_id": "ws-bound"
-        }
-      }
-    }`;
-
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(rawConflict, 409)));
-    const api = createTeamsApi();
-
-    let caught: unknown;
-    try {
-      await api.createTeam({
-        manager_account_id: BIG_ID_B,
-        workspace_id: 'ws-bound',
-        probe_id: BIG_ID_C,
-        probe_revision: 'rev-1',
-      });
-    } catch (error) {
-      caught = error;
+    expect(teamDecimalId(BIG_ID_C)).toBe(BIG_ID_C);
+    for (const value of ['0', '-1', 'abc', '9223372036854775808', '100000000000000000000']) {
+      expect(() => teamDecimalId(value)).toThrow('标识格式无效');
     }
-
-    expect(caught).toBeInstanceOf(TeamApiError);
-    const err = caught as TeamApiError;
-    expect(err.status).toBe(409);
-    expect(err.code).toBe('team_already_bound');
-    expect(err.message).toBe('该工作区已绑定到其他 Team');
-    expect(err.field).toBe('workspace_id');
-    expect(err.retryable).toBe(false);
-    expect(err.requestId).toBe('req-conflict-409');
-    expect(err.details).toEqual({
-      existing_team_id: BIG_ID_A,
-      workspace_id: 'ws-bound',
-    });
-    expect(Object.isFrozen(err.details)).toBe(true);
+    expect(optionalTeamDecimalId(null)).toBeNull();
+    expect(optionalTeamDecimalId('0')).toBeNull();
   });
-
-  it('在缺少显式 retryable 时，5xx 默认 retryable=true、422 默认 retryable=false', async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(
-        jsonResponse(
-          JSON.stringify({
-            ok: false,
-            request_id: 'req-503',
-            error: { code: 'upstream_timeout', message: '服务暂不可用' },
-          }),
-          503,
-        ),
-      )
-      .mockResolvedValueOnce(
-        jsonResponse(
-          JSON.stringify({
-            ok: false,
-            request_id: 'req-422',
-            error: { code: 'team_limit_required', message: '需设本地上限', field: 'planned_member_limit' },
-          }),
-          422,
-        ),
-      );
-    vi.stubGlobal('fetch', fetchMock);
-    const api = createTeamsApi();
-
-    await expect(api.list({ page: 1, page_size: 20 })).rejects.toMatchObject({
-      name: 'TeamApiError',
-      status: 503,
-      code: 'upstream_timeout',
-      retryable: true,
-      requestId: 'req-503',
-    });
-
-    await expect(
-      api.updateTeam(BIG_ID_A, { expected_revision: 1, planned_member_limit: null }),
-    ).rejects.toMatchObject({
-      name: 'TeamApiError',
-      status: 422,
-      code: 'team_limit_required',
-      field: 'planned_member_limit',
-      retryable: false,
-      requestId: 'req-422',
-    });
+  it('详情保留真实 id、manager_account.id 与未知 null，不编造容量', async () => {
+    const detail: components['schemas']['TeamDetail'] = { team: TEAM, actions: { sync: { enabled: true, reason_code: null },
+      reverify: { enabled: true, reason_code: null }, join: { enabled: true, reason_code: null } }, permission_verified_at: null };
+    const raw = JSON.stringify({ ok: true, data: detail }).replace(`"id":"${BIG_ID_A}"`, `"id":${BIG_ID_A}`).replace(`"id":"${BIG_ID_B}"`, `"id":${BIG_ID_B}`);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(raw)));
+    const result = await createTeamsApi().detail(BIG_ID_A);
+    expect(result).toEqual(detail);
+    expect(result.team).not.toHaveProperty('capacity');
   });
-
-  it('返回非 JSON 响应体时抛出带状态码的 TeamApiError', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('<html>502</html>', { status: 502 })));
-    const api = createTeamsApi();
-
-    await expect(api.list({ page: 1, page_size: 20 })).rejects.toMatchObject({
-      name: 'TeamApiError',
-      status: 502,
-      message: '请求失败（HTTP 502）',
-    });
+  it('邀请详情解开 invitation 包络并保留执行与动作嵌套字段', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ invitation: INVITATION })));
+    expect(await createTeamsApi().getInvitation(BIG_ID_A, BIG_ID_C)).toEqual(INVITATION);
   });
-
-  it('过滤空 query 参数并正确构造列表查询路径', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockResolvedValue(
-        jsonResponse(
-          JSON.stringify({
-            ok: true,
-            request_id: 'req-list',
-            data: {
-              items: [],
-              total: 0,
-              page: 2,
-              page_size: 50,
-              facets: {},
-              summary: { total_teams: 0, syncing_teams: 0, attention_teams: 0 },
-            },
-          }),
-        ),
-      ),
-    );
+  it('绑定提交使用整数 probe_revision，重新核验使用 ActionReceipt', async () => {
+    const mock = vi.fn().mockResolvedValueOnce(jsonResponse(ACTION, 202)).mockResolvedValueOnce(jsonResponse({ team: TEAM, sync: ACTION }, 201));
+    vi.stubGlobal('fetch', mock);
     const api = createTeamsApi();
-    await api.list({
-      page: 2,
-      page_size: 50,
-      include_facets: 1,
-      q: 'alpha',
-      role: '',
-      last_sync_status: undefined,
-    });
-
-    const fetchMock = vi.mocked(fetch);
-    expect(fetchMock.mock.calls[0]![0]).toBe(
-      '/api/teams?page=2&page_size=50&include_facets=1&q=alpha',
-    );
+    expect(await api.reverifyTeam(BIG_ID_A)).toEqual(ACTION);
+    await api.createTeam({ manager_account_id: BIG_ID_B, workspace_id: 'ws-alpha', probe_id: BIG_ID_A, probe_revision: 2 });
+    expect(JSON.parse((mock.mock.calls[1]![1] as RequestInit).body as string)).toEqual({ manager_account_id: BIG_ID_B, workspace_id: 'ws-alpha', probe_id: BIG_ID_A, probe_revision: 2 });
+  });
+  it('候选布尔筛选发送 true/false 字符串', async () => {
+    const data: components['schemas']['CandidateList'] = { items: [], total: 0, page: 2, page_size: 50, revision: 'candidates:7' };
+    const mock = vi.fn().mockResolvedValue(jsonResponse(data));
+    vi.stubGlobal('fetch', mock);
+    expect(await createTeamsApi().listCandidates(BIG_ID_A, { page: 2, page_size: 50, include_facets: '1',
+      has_access_token: 'true', has_password: 'false', totp_enabled: 'true', q: '' })).toEqual(data);
+    expect(mock.mock.calls[0]![0]).toBe(`/api/teams/${BIG_ID_A}/candidates?page=2&page_size=50&include_facets=1&has_access_token=true&has_password=false&totp_enabled=true`);
+  });
+  it('Join POST 发送真实目标描述，GET 返回 request/items 分页', async () => {
+    const page: components['schemas']['JoinRequestItems'] = { request: JOIN,
+      items: [{ ordinal: 1, account_id: BIG_ID_C, invitation_id: null, acceptance_status: 'pending', task_id: null,
+        run_id: null, execution_status: 'none', reason_code: null, message: null }], total: 1, page: 1, page_size: 20, revision: 'join:1' };
+    const mock = vi.fn().mockResolvedValueOnce(jsonResponse(JOIN, 202)).mockResolvedValueOnce(jsonResponse(page));
+    vi.stubGlobal('fetch', mock);
+    const api = createTeamsApi();
+    const payload = { selection_id: BIG_ID_C, selection_revision: 4 };
+    expect(await api.submitJoin(BIG_ID_A, payload)).toEqual(JOIN);
+    expect(JSON.parse((mock.mock.calls[0]![1] as RequestInit).body as string)).toEqual(payload);
+    expect(await api.getJoinRequest(BIG_ID_A, BIG_ID_B, { page: 1, page_size: 20 })).toEqual(page);
   });
 });
 
-describe('写请求 Idempotency-Key 与只读 POST 隔离', () => {
-  const headerKey = (fetchMock: ReturnType<typeof vi.fn>, callIndex: number): string => {
-    const init = fetchMock.mock.calls[callIndex]![1] as RequestInit;
-    return new Headers(init.headers).get('Idempotency-Key') || '';
-  };
-
-  it('网络异常与 503 重试同一意图时复用同一 Idempotency-Key，成功后清理并在下次生成新键', async () => {
-    const fetchMock = vi
-      .fn()
-      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
-      .mockResolvedValueOnce(
-        jsonResponse(
-          JSON.stringify({
-            ok: false,
-            request_id: 'req-503',
-            error: { code: 'service_unavailable', message: '服务忙', retryable: true },
-          }),
-          503,
-        ),
-      )
-      .mockResolvedValueOnce(
-        jsonResponse(
-          JSON.stringify({
-            ok: true,
-            request_id: 'req-ok-1',
-            data: { team_id: BIG_ID_A, status: 'queued', task_id: BIG_ID_B, run_id: BIG_ID_C, reused: false },
-          }),
-          200,
-        ),
-      )
-      .mockResolvedValueOnce(
-        jsonResponse(
-          JSON.stringify({
-            ok: true,
-            request_id: 'req-ok-2',
-            data: { team_id: BIG_ID_A, status: 'queued', task_id: BIG_ID_B, run_id: BIG_ID_C, reused: false },
-          }),
-          200,
-        ),
-      );
-
-    vi.stubGlobal('fetch', fetchMock);
+describe('Team 错误与幂等', () => {
+  it('完整保留错误字段与精确 details ID', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(`{"ok":false,"request_id":"req-conflict","error":{"code":"team_already_bound","message":"该工作区已绑定","field":"workspace_id","retryable":false,"details":{"existing_team_id":${BIG_ID_A}}}}`, { status: 409 })));
+    await expect(createTeamsApi().createTeam({ manager_account_id: BIG_ID_B, workspace_id: 'ws-alpha', probe_id: BIG_ID_C, probe_revision: 2 }))
+      .rejects.toMatchObject({ name: 'TeamApiError', status: 409, code: 'team_already_bound', field: 'workspace_id',
+        retryable: false, requestId: 'req-conflict', details: { existing_team_id: BIG_ID_A } });
+  });
+  it('缺少 retryable 时按 HTTP 状态推导，非 JSON 错误保留状态码', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(errorResponse(503, 'service_unavailable')).mockResolvedValueOnce(errorResponse(422, 'parameter_invalid'))
+      .mockResolvedValueOnce(new Response('<html>502</html>', { status: 502 })));
     const api = createTeamsApi();
-
-    // 第 1 次网络异常：保留键
+    await expect(api.list({})).rejects.toMatchObject({ status: 503, retryable: true });
+    await expect(api.list({})).rejects.toMatchObject({ status: 422, retryable: false });
+    await expect(api.list({})).rejects.toMatchObject({ status: 502, message: '请求失败（HTTP 502）' });
+  });
+  it('网络异常/503复用原键，成功后下一次人工操作使用新键', async () => {
+    const mock = vi.fn().mockRejectedValueOnce(new TypeError('Failed to fetch')).mockResolvedValueOnce(errorResponse(503, 'service_unavailable'))
+      .mockResolvedValueOnce(jsonResponse(ACTION, 202)).mockResolvedValueOnce(jsonResponse(ACTION, 202));
+    vi.stubGlobal('fetch', mock);
+    const api = createTeamsApi();
     await expect(api.syncTeam(BIG_ID_A)).rejects.toThrow('Failed to fetch');
-    expect(sessionStorage.length).toBe(1);
-
-    // 第 2 次 503：复用同一个键，且不清理
     await expect(api.syncTeam(BIG_ID_A)).rejects.toMatchObject({ status: 503 });
     expect(sessionStorage.length).toBe(1);
-
-    // 第 3 次成功：复用同一个键，并清理旧键
-    const res1 = await api.syncTeam(BIG_ID_A);
-    expect(res1.team_id).toBe(BIG_ID_A);
-    expect(sessionStorage.length).toBe(0);
-
-    // 第 4 次再次发起同路径同载荷写请求：生成新键
     await api.syncTeam(BIG_ID_A);
     expect(sessionStorage.length).toBe(0);
-
-    const k0 = headerKey(fetchMock, 0);
-    const k1 = headerKey(fetchMock, 1);
-    const k2 = headerKey(fetchMock, 2);
-    const k3 = headerKey(fetchMock, 3);
-
-    expect(k0.length).toBeGreaterThanOrEqual(16);
-    expect(k0).toBe(k1);
-    expect(k1).toBe(k2);
-    expect(k3).not.toBe(k0);
+    await api.syncTeam(BIG_ID_A);
+    expect(headerKey(mock, 0).length).toBeGreaterThanOrEqual(16);
+    expect(headerKey(mock, 0)).toBe(headerKey(mock, 1));
+    expect(headerKey(mock, 1)).toBe(headerKey(mock, 2));
+    expect(headerKey(mock, 3)).not.toBe(headerKey(mock, 0));
   });
-
-  it.each([
-    [409, 'team_revision_conflict'],
-    [422, 'team_limit_required'],
-  ])('收到 %i 业务终态错误后清理旧键，再次发起同一请求生成新 Idempotency-Key', async (status, code) => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(
-        jsonResponse(
-          JSON.stringify({
-            ok: false,
-            request_id: `req-${status}`,
-            error: { code, message: '终态拒绝', retryable: false },
-          }),
-          status,
-        ),
-      )
-      .mockResolvedValueOnce(
-        jsonResponse(
-          JSON.stringify({
-            ok: true,
-            request_id: 'req-retry-ok',
-            data: {
-              team: { team_id: BIG_ID_A, revision: 2 },
-            },
-          }),
-          200,
-        ),
-      );
-
-    vi.stubGlobal('fetch', fetchMock);
-    const api = createTeamsApi();
-    const payload = { expected_revision: 1, planned_member_limit: 10 };
-
-    await expect(api.updateTeam(BIG_ID_A, payload)).rejects.toMatchObject({
-      name: 'TeamApiError',
-      status,
-      code,
+  it('显式提供契约允许的 JSON 幂等键时，请求头使用同一个键', async () => {
+    const mock = vi.fn().mockResolvedValue(jsonResponse({ team: TEAM }));
+    vi.stubGlobal('fetch', mock);
+    await createTeamsApi().updateTeam(BIG_ID_A, {
+      expected_revision: 3,
+      display_name: '新备注',
+      idempotency_key: '  explicit-team-key-123456  ',
     });
-    expect(sessionStorage.length).toBe(0);
-
-    await api.updateTeam(BIG_ID_A, payload);
-    const firstKey = headerKey(fetchMock, 0);
-    const secondKey = headerKey(fetchMock, 1);
-    expect(firstKey).not.toBe(secondKey);
+    expect(headerKey(mock, 0)).toBe('explicit-team-key-123456');
   });
-
-  it('只读 POST /join-preview 与 POST /candidates/resolve 不发送 Idempotency-Key 且不污染写意图存储', async () => {
-    const previewData = {
-      team_id: BIG_ID_A,
-      snapshot_revision: 4,
-      snapshot_at: '2026-11-27T00:00:00Z',
-      team_last_synced_at: '2026-11-27T00:00:00Z',
-      requires_sync: false,
-      counts: {
-        selected_total: 1,
-        new_join_count: 1,
-        continue_invite_count: 0,
-        already_member_skip_count: 0,
-        already_processing_skip_count: 0,
-        another_team_skip_count: 0,
-        missing_auth_skip_count: 0,
-        unavailable_skip_count: 0,
-        email_mismatch_skip_count: 0,
-      },
-      capacity: {
-        seat_policy: 'remaining_purchased_only',
-        basis: 'purchased_seats',
-        purchased_seats: 10,
-        planned_member_limit: null,
-        effective_limit: 10,
-        occupied_count: 2,
-        additional_required: 1,
-        remaining_after_submit: 7,
-        exceeds_limit: false,
-        can_submit: true,
-        blocking_reason_code: null,
-        blocking_reason: null,
-      },
-      sample_items: [],
-    };
-    const resolveData = {
-      matched: [],
-      not_found: ['missing@example.com'],
-      ambiguous: [],
-    };
-
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(jsonResponse(JSON.stringify({ ok: true, request_id: 'req-prev', data: previewData })))
-      .mockResolvedValueOnce(jsonResponse(JSON.stringify({ ok: true, request_id: 'req-res', data: resolveData })));
-
-    vi.stubGlobal('fetch', fetchMock);
-    sessionStorage.setItem('turb_team_intent:existing', 'keep-this-key');
-
+  it.each([409, 422])('HTTP %i 终态错误后清理键，允许用户重新发起', async status => {
+    const mock = vi.fn().mockResolvedValueOnce(errorResponse(status, 'parameter_invalid')).mockResolvedValueOnce(jsonResponse({ team: TEAM }));
+    vi.stubGlobal('fetch', mock);
     const api = createTeamsApi();
-    await api.previewJoin(BIG_ID_A, { account_ids: [BIG_ID_B] });
-    await api.resolveCandidates(BIG_ID_A, ['missing@example.com']);
-
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    for (const [url, init] of fetchMock.mock.calls) {
-      const headers = new Headers((init as RequestInit).headers);
-      expect(headers.has('Idempotency-Key')).toBe(false);
-      expect((init as RequestInit).method).toBe('POST');
-      expect(String(url)).toMatch(/\/(join-preview|candidates\/resolve)$/);
-    }
-
+    const payload = { expected_revision: 3, planned_member_limit: 10 };
+    await expect(api.updateTeam(BIG_ID_A, payload)).rejects.toBeInstanceOf(TeamApiError);
+    expect(sessionStorage.length).toBe(0);
+    await api.updateTeam(BIG_ID_A, payload);
+    expect(headerKey(mock, 1)).not.toBe(headerKey(mock, 0));
+  });
+  it('只读预览与解析不发送幂等键、不污染写意图', async () => {
+    const preview: components['schemas']['JoinPreviewDTO'] = { team_id: BIG_ID_A, selection_id: null, selection_revision: null,
+      snapshot_revision: null, snapshot_at: null, team_last_synced_at: null, requires_sync: true,
+      counts: { requested_count: 1, unique_count: 1, duplicate_count: 0, unavailable_count: 0, another_team_count: 0,
+        already_member_count: 0, same_team_active_count: 0, missing_auth_count: 0, resume_invite_count: 0, new_count: 1, eligible_count: 1 }, capacity: CAPACITY };
+    const resolve: components['schemas']['CandidateResolveResult'] = { requested_count: 1, unique_count: 1, duplicate_count: 0,
+      items: [{ input: 'missing@example.test', match_status: 'not_found', candidates: [], reason_code: 'account_not_found' }] };
+    const mock = vi.fn().mockResolvedValueOnce(jsonResponse(preview)).mockResolvedValueOnce(jsonResponse(resolve));
+    vi.stubGlobal('fetch', mock);
+    sessionStorage.setItem('existing', 'keep');
+    const api = createTeamsApi();
+    expect(await api.previewJoin(BIG_ID_A, { account_ids: [BIG_ID_B] })).toEqual(preview);
+    expect(await api.resolveCandidates(BIG_ID_A, ['missing@example.test'])).toEqual(resolve);
+    expect(headerKey(mock, 0)).toBe('');
+    expect(headerKey(mock, 1)).toBe('');
     expect(sessionStorage.length).toBe(1);
-    expect(sessionStorage.getItem('turb_team_intent:existing')).toBe('keep-this-key');
   });
 });
 
-describe('freezeAccountSelection 批量选择快照', () => {
-  it('发送 operation: { key: "team_join", version: 1 } 并正确解析 64 位 selection_id 与 selection_revision', async () => {
-    const rawSelection = `{
-      "ok": true,
-      "request_id": "req-sel-1",
-      "data": {
-        "selection_id": ${BIG_ID_A},
-        "selection_revision": "rev-42",
-        "matched_count": 128
-      }
-    }`;
-
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(rawSelection, 200));
-    vi.stubGlobal('fetch', fetchMock);
-
-    const api = createTeamsApi();
+describe('查询名单冻结', () => {
+  it('发送 source/parameters 并轮询 preparing，ready 后返回整数 revision 和 target_count', async () => {
+    vi.useFakeTimers();
+    const mock = vi.fn().mockResolvedValueOnce(jsonResponse({ id: BIG_ID_B, state: 'preparing', selection_revision: null, target_count: null }, 202))
+      .mockResolvedValueOnce(jsonResponse({ id: BIG_ID_B, state: 'preparing', selection_revision: 1, target_count: 128 }))
+      .mockResolvedValueOnce(jsonResponse({ id: BIG_ID_B, state: 'ready', selection_revision: 1, target_count: 128, matched_count: null }));
+    vi.stubGlobal('fetch', mock);
     const query = makeAccountQuery();
-    const frozen = await api.freezeAccountSelection(query);
-
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    const [url, init] = fetchMock.mock.calls[0]!;
-    expect(url).toBe('/api/bulk/selections');
-    expect((init as RequestInit).method).toBe('POST');
-    const headers = new Headers((init as RequestInit).headers);
-    expect(headers.get('Idempotency-Key')).toBeTruthy();
-    expect(headers.get('Content-Type')).toBe('application/json');
-    expect(JSON.parse((init as RequestInit).body as string)).toEqual({
-      operation: { key: 'team_join', version: 1 },
-      query,
-    });
-
-    expect(frozen).toEqual({
-      selection_id: BIG_ID_A,
-      selection_revision: 'rev-42',
-      matched_count: 128,
-    });
+    const promise = createTeamsApi().freezeAccountSelection(BIG_ID_A, query);
+    await vi.runAllTimersAsync();
+    expect(await promise).toEqual({ selection_id: BIG_ID_B, selection_revision: 1, matched_count: 128 });
+    expect(JSON.parse((mock.mock.calls[0]![1] as RequestInit).body as string)).toEqual({ operation: { key: 'team_join', version: 1 },
+      source: { kind: 'query', query }, parameters: { team_id: BIG_ID_A } });
+    expect(mock.mock.calls.slice(1).map(call => call[0])).toEqual([`/api/bulk/selections/${BIG_ID_B}`, `/api/bulk/selections/${BIG_ID_B}`]);
+    expect(headerKey(mock, 0).length).toBeGreaterThanOrEqual(16);
+    expect(headerKey(mock, 1)).toBe('');
   });
-
-  it('兼容嵌套 selection 对象（id / revision / total）并返回精确十进制 selection_id', async () => {
-    const rawNested = `{
-      "ok": true,
-      "request_id": "req-sel-2",
-      "data": {
-        "selection": {
-          "id": ${BIG_ID_B},
-          "revision": 9,
-          "total": 35
-        }
-      }
-    }`;
-
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(rawNested, 200)));
-    const api = createTeamsApi();
-    const frozen = await api.freezeAccountSelection(makeAccountQuery());
-
-    expect(frozen).toEqual({
-      selection_id: BIG_ID_B,
-      selection_revision: '9',
-      matched_count: 35,
-    });
+  it('ready 缺少 revision 时明确失败，不编造默认值', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ id: BIG_ID_B, state: 'ready', selection_revision: null, target_count: 3 }, 202)));
+    await expect(createTeamsApi().freezeAccountSelection(BIG_ID_A, makeAccountQuery())).rejects.toMatchObject({ name: 'TeamApiError', code: 'selection_response_invalid' });
+  });
+  it('准备失败返回后端分类原因', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ id: BIG_ID_B, state: 'failed', error_code: 'selection_capacity_exceeded' }, 202)));
+    await expect(createTeamsApi().freezeAccountSelection(BIG_ID_A, makeAccountQuery())).rejects.toMatchObject({ name: 'TeamApiError', code: 'selection_capacity_exceeded' });
+  });
+  it('取消轮询后停止继续 GET', async () => {
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    const mock = vi.fn().mockResolvedValue(jsonResponse({ id: BIG_ID_B, state: 'preparing', selection_revision: null, target_count: null }, 202));
+    vi.stubGlobal('fetch', mock);
+    const promise = createTeamsApi().freezeAccountSelection(BIG_ID_A, makeAccountQuery(), controller.signal);
+    const rejection = expect(promise).rejects.toMatchObject({ name: 'AbortError' });
+    await vi.advanceTimersByTimeAsync(0);
+    controller.abort();
+    await rejection;
+    const count = mock.mock.calls.length;
+    await vi.runAllTimersAsync();
+    expect(mock).toHaveBeenCalledTimes(count);
   });
 });

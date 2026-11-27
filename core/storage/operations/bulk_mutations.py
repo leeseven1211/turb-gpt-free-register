@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from contextlib import contextmanager
 import json
 import threading
 from typing import Any
@@ -79,6 +80,91 @@ def create_command(*, operation: str, request_key_hash: str, payload_hash: str,
             VALUES (%s,%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s,%s) RETURNING *''',
             (request_key_hash,operation,payload_hash,_json(input_targets),_json(targets),_json(parameters),chunk_size,duplicate_count))
         return dict(cur.fetchone()), False
+
+
+def find_command_by_request_key_hash(request_key_hash: str) -> dict | None:
+    """先读取已有请求；未安装批量命令表时不触发 DDL。"""
+    with common._connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT to_regclass(%s) AS relation", (common._table(_COMMANDS),))
+        if cur.fetchone()["relation"] is None:
+            return None
+        cur.execute(
+            f"SELECT * FROM {common._table(_COMMANDS)} WHERE request_key_hash=%s",
+            (str(request_key_hash),),
+        )
+        row = cur.fetchone()
+        return dict(row) if row else None
+
+
+def inline_task_retry_items(command_id: int) -> dict[int, dict]:
+    """读取任务中心已经提交的逐项回执，进程重入只补余项。"""
+    with common._connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"SELECT items FROM {common._table(_RECEIPTS)} WHERE command_id=%s ORDER BY chunk_index",
+            (int(command_id),),
+        )
+        return {
+            int(item["key"]): dict(item)
+            for row in cur.fetchall() for item in row["items"]
+        }
+
+
+@contextmanager
+def inline_task_retry_owner(command_id: int):
+    """会话锁只串行同一集合处理器，不开启包住子请求的外层事务。"""
+    from core.storage import postgres
+    from psycopg.rows import dict_row
+
+    key = f"{common._schema_name()}:task-center-team-retry:{int(command_id)}"
+    with postgres.connect(row_factory=dict_row, autocommit=True) as conn, conn.cursor() as cur:
+        cur.execute("SELECT pg_try_advisory_lock(hashtextextended(%s,0)) AS owned", (key,))
+        owned = bool(cur.fetchone()["owned"])
+        try:
+            yield owned
+        finally:
+            if owned:
+                cur.execute("SELECT pg_advisory_unlock(hashtextextended(%s,0))", (key,))
+
+
+def _lock_inline_task_retry(cur, command_id: int) -> dict:
+    """仅 HTTP 内联接缝可以不使用 Worker execution fence。"""
+    cur.execute(f"SELECT * FROM {common._table(_COMMANDS)} WHERE id=%s FOR UPDATE", (int(command_id),))
+    row = cur.fetchone()
+    if row is None or row["operation"] != "task_center_team_retry" or row["task_id"] is not None:
+        raise ValueError("inline_task_retry_command_invalid")
+    return dict(row)
+
+
+def save_inline_task_retry_item(command_id: int, ordinal: int, item: Mapping[str, Any]) -> None:
+    """子请求独立提交后保存回执；重复提交保留先前已经持久的结果。"""
+    with common._connect() as conn, conn.cursor() as cur:
+        _lock_inline_task_retry(cur, command_id)
+        cur.execute(
+            f"""INSERT INTO {common._table(_RECEIPTS)}
+                (command_id,chunk_index,execution_id,items,outcome)
+                VALUES (%s,%s,'task_center_http',%s::jsonb,%s)
+                ON CONFLICT (command_id,chunk_index) DO NOTHING""",
+            (int(command_id), int(ordinal), _json([dict(item)]), str(item["status"])),
+        )
+
+
+def finish_inline_task_retry(command_id: int, result: Mapping[str, Any]) -> dict:
+    """完整固定名单都有回执后保存旧 HTTP 包络，后续先重放该结果。"""
+    with common._connect() as conn, conn.cursor() as cur:
+        command = _lock_inline_task_retry(cur, command_id)
+        if command["result"] is not None:
+            return dict(command["result"])
+        cur.execute(
+            f"SELECT COUNT(*) AS n FROM {common._table(_RECEIPTS)} WHERE command_id=%s",
+            (int(command_id),),
+        )
+        if int(cur.fetchone()["n"]) != len(command["targets"]):
+            raise ValueError("inline_task_retry_receipts_incomplete")
+        cur.execute(
+            f"UPDATE {common._table(_COMMANDS)} SET result=%s::jsonb,completed_at=now() WHERE id=%s",
+            (_json(result), int(command_id)),
+        )
+        return dict(result)
 
 
 def attach_task(command_id: int, task_id: int, *, conn) -> None:

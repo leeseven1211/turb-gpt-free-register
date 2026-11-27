@@ -39,9 +39,8 @@ const ROLE_OPTIONS = [
 
 const MEMBERSHIP_STATE_OPTIONS = [
   { value: 'joined', label: '已加入' },
-  { value: 'removed', label: '已移除' },
   { value: 'left', label: '已退出' },
-  { value: 'all', label: '全部状态' },
+  { value: 'unconfirmed', label: '待确认' },
 ] as const;
 
 const LINKED_OPTIONS = [
@@ -187,6 +186,7 @@ function handleSizeChange(nextSize: number): void {
 }
 
 async function fetchMembers(options: { silent?: boolean; includeFacets?: 0 | 1 } = {}): Promise<void> {
+  if (!props.visible) return;
   if (!props.teamId) return;
   activeController?.abort();
   const controller = new AbortController();
@@ -201,10 +201,10 @@ async function fetchMembers(options: { silent?: boolean; includeFacets?: 0 | 1 }
   const requestQuery: TeamMembersQuery = {
     page: query.page,
     page_size: query.page_size,
-    include_facets: options.includeFacets ?? 1,
+    include_facets: String(options.includeFacets ?? 1) as '0' | '1',
     ...(query.q ? { q: query.q } : {}),
-    ...(query.role ? { role: query.role } : {}),
-    membership_state: query.membership_state || 'joined',
+    ...(query.role ? { role: query.role as NonNullable<TeamMembersQuery['role']> } : {}),
+    membership_state: (query.membership_state || 'joined') as NonNullable<TeamMembersQuery['membership_state']>,
     linked: query.linked,
   };
 
@@ -226,7 +226,7 @@ async function fetchMembers(options: { silent?: boolean; includeFacets?: 0 | 1 }
     if (activeController === controller) {
       activeController = null;
     }
-    if (seq === requestSeq && !options.silent) {
+    if (seq === requestSeq) {
       loading.value = false;
     }
   }
@@ -254,6 +254,17 @@ watch(
   },
   { immediate: true },
 );
+
+watch(() => props.visible, active => {
+  if (active) {
+    void fetchMembers();
+  } else {
+    activeController?.abort();
+    activeController = null;
+    requestSeq += 1;
+    loading.value = false;
+  }
+});
 
 onBeforeUnmount(() => {
   clearTimeout(searchTimer);
@@ -423,32 +434,32 @@ defineExpose({
         </thead>
 
         <tbody>
-          <tr v-for="member in items" :key="member.member_id">
+          <tr v-for="member in items" :key="member.id">
             <td data-label="成员">
               <div class="tm-cell-stack">
                 <div class="tm-cell-primary">
-                  <span :title="member.email">{{ member.email || '未返回' }}</span>
+                  <span :title="member.email || undefined">{{ member.email || '未返回' }}</span>
                 </div>
                 <div class="tm-cell-sub">
-                  {{ member.display_name || (member.remote_user_id ? `远端 ID：${member.remote_user_id}` : '—') }}
+                  {{ (member.remote_user_id ? `远端 ID：${member.remote_user_id}` : '—') }}
                 </div>
               </div>
             </td>
 
             <td data-label="本地账号">
-              <div v-if="member.local_account" class="tm-cell-stack">
+              <div v-if="member.account" class="tm-cell-stack">
                 <div class="tm-cell-primary">
                   <button
                     type="button"
                     class="tm-link-btn tm-tabular"
-                    @click="callbacks.openAccountDetail(member.local_account.account_id)"
+                    @click="callbacks.openAccountDetail(member.account.id)"
                   >
-                    #{{ member.local_account.account_id }}
+                    #{{ member.account.id }}
                   </button>
-                  <span v-if="member.local_account.archived" class="tm-badge tm-badge--neutral">已归档</span>
+                  <span v-if="member.account.archived" class="tm-badge tm-badge--neutral">已归档</span>
                 </div>
-                <div v-if="member.local_account.email && member.local_account.email !== member.email" class="tm-cell-sub">
-                  {{ member.local_account.email }}
+                <div v-if="member.account.email && member.account.email !== member.email" class="tm-cell-sub">
+                  {{ member.account.email }}
                 </div>
               </div>
               <span v-else class="tm-badge tm-badge--neutral">外部成员</span>
@@ -468,7 +479,7 @@ defineExpose({
                   </span>
                 </div>
                 <div class="tm-cell-sub">
-                  {{ member.last_seen_in_sync_at ? `核验 ${callbacks.formatDateTime(member.last_seen_in_sync_at)}` : '待核验' }}
+                  {{ member.last_verified_at ? `核验 ${callbacks.formatDateTime(member.last_verified_at)}` : '待核验' }}
                 </div>
               </div>
             </td>
@@ -481,12 +492,12 @@ defineExpose({
 
             <td data-label="最近任务">
               <button
-                v-if="member.latest_task_id"
+                v-if="member.latest_task?.task_id"
                 type="button"
                 class="tm-link-btn tm-tabular"
-                @click="callbacks.openTask(member.latest_task_id, member.latest_run_id)"
+                @click="callbacks.openTask(member.latest_task!.task_id!, member.latest_task?.run_id)"
               >
-                任务 #{{ member.latest_task_id }}
+                任务 #{{ member.latest_task?.task_id }}
               </button>
               <span v-else class="tm-cell-sub">—</span>
             </td>
@@ -494,22 +505,22 @@ defineExpose({
             <td data-label="操作">
               <div class="tm-row-actions">
                 <button
-                  v-if="member.local_account"
+                  v-if="member.account"
                   type="button"
                   class="tm-btn tm-btn--sm"
-                  @click="callbacks.openAccountDetail(member.local_account.account_id)"
+                  @click="callbacks.openAccountDetail(member.account.id)"
                 >
                   查看本地账号
                 </button>
                 <button
-                  v-if="member.latest_task_id"
+                  v-if="member.latest_task?.task_id"
                   type="button"
                   class="tm-btn tm-btn--sm"
-                  @click="callbacks.openTask(member.latest_task_id, member.latest_run_id)"
+                  @click="callbacks.openTask(member.latest_task!.task_id!, member.latest_task?.run_id)"
                 >
                   查看任务
                 </button>
-                <span v-if="!member.local_account && !member.latest_task_id" class="tm-cell-sub">—</span>
+                <span v-if="!member.account && !member.latest_task?.task_id" class="tm-cell-sub">—</span>
               </div>
             </td>
           </tr>

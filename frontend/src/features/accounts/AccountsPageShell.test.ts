@@ -3,6 +3,7 @@ import {afterEach,beforeEach,expect,it,vi} from 'vitest';
 import AccountsPageShell from './AccountsPageShell.vue';
 import {deferred,presentation,readApi,realAdapter} from './uiTestSupport';
 import {createAccountActions} from './actions';
+import {teamsApi} from '../../api/teams';
 import type {AccountQueuedDependencies} from './queuedActions';
 import type {AccountInspectionDependencies} from './useAccountInspection';
 
@@ -47,7 +48,7 @@ it('toolbar keeps in-flight downloads disabled across list refresh and applies c
   vm.setToolbarBusyLabel('archiveSelectedAccounts');await flushPromises();
   expect(document.querySelector('#btnArchiveSelectedAccountsV2')?.textContent).toBe('恢复选中');
 });
-afterEach(()=>{wrapper?.unmount();document.body.replaceChildren();vi.unstubAllGlobals();});
+afterEach(()=>{wrapper?.unmount();document.body.replaceChildren();vi.restoreAllMocks();vi.unstubAllGlobals();});
 it('list and legacy facade share one Vue drawer while page changes preserve its frozen identity',async()=>{
   const {api}=readApi();
   const roxyProfile=vi.fn(async()=>({ok:true as const,profile_id:'p1',window_name:'窗口'}));
@@ -144,4 +145,85 @@ it('账号页可查询未确认的受理回执并打开原执行记录', async (
   await box.findAll('button').find(button=>button.text()==='移除此提示')!.trigger('click');
   expect(wrapper.find('.ac-operation-receipts').exists()).toBe(false);
   sessionStorage.clear();
+});
+
+async function mountTeamCandidateShell(){
+  const {api}=readApi(),openJoinFromAccounts=vi.fn(),navigate=vi.fn(),notify=vi.fn();
+  vi.stubGlobal('TeamsPage',{openJoinFromAccounts,navigate});
+  wrapper=mount(AccountsPageShell,{attachTo:document.body,props:{adapter:realAdapter(),api,presentation,
+    callbacks:{invoke:vi.fn(),openDetail:vi.fn(),notify},detailApi:{roxyProfile:vi.fn()},
+    detailPresentation:{renderBody:()=>'',sourceLabel:()=>''},syncModalScrollLock:vi.fn(),
+    initialCapabilities:{},c2aDependencies:c2aDependencies(),emailChangeDependencies:emailChangeDependencies(),
+    inspectionDependencies:inspectionDependencies(),
+    actions:{isSupported:()=>false,isPending:()=>false,invoke:vi.fn(),setVisible:vi.fn(),dispose:vi.fn()}}});
+  const vm=wrapper.vm as unknown as InstanceType<typeof AccountsPageShell>;
+  vm.setVisible(true);
+  vm.enterTeamCandidateMode({team_id:'7',effective_name:'初始 Team'});
+  await flushPromises();
+  return{vm,openJoinFromAccounts,navigate,notify};
+}
+function teamSelectionButton(){
+  return wrapper.get('.ac-team-target-banner').findAll<HTMLButtonElement>('button').find(button=>button.text().includes('全量加入')||button.text().includes('正在固定名单'))!;
+}
+
+it.each(['退出选人','清空候选','隐藏页面','隐藏后恢复','更换目标','重新进入同一 Team','卸载页面'] as const)('固定名单期间%s会使旧结果失效',async(mode)=>{
+  const pending=deferred<Awaited<ReturnType<typeof teamsApi.freezeAccountSelection>>>();
+  const freeze=vi.spyOn(teamsApi,'freezeAccountSelection').mockReturnValueOnce(pending.promise);
+  const {vm,openJoinFromAccounts,navigate,notify}=await mountTeamCandidateShell();
+  await teamSelectionButton().trigger('click');
+  expect(teamSelectionButton().text()).toContain('正在固定名单');
+  if(mode==='退出选人'){
+    expect(wrapper.get<HTMLButtonElement>('.ac-team-target-banner .ac-link').element.disabled).toBe(false);
+    await wrapper.get('.ac-team-target-banner .ac-link').trigger('click');
+  }
+  else if(mode==='清空候选')vm.clearTeamCandidateMode();
+  else if(mode==='隐藏页面')vm.setVisible(false);
+  else if(mode==='隐藏后恢复'){vm.setVisible(false);vm.setVisible(true);}
+  else if(mode==='更换目标')vm.enterTeamCandidateMode({team_id:'8',effective_name:'新 Team'});
+  else if(mode==='重新进入同一 Team'){vm.clearTeamCandidateMode();vm.enterTeamCandidateMode({team_id:'7',effective_name:'重新选择 Team'});}
+  else wrapper.unmount();
+  await flushPromises();
+  pending.resolve({selection_id:'91',selection_revision:3,matched_count:30});
+  await flushPromises();
+  expect(openJoinFromAccounts).not.toHaveBeenCalled();
+  expect(freeze.mock.calls[0]?.[2]?.aborted).toBe(true);
+  expect(notify).not.toHaveBeenCalled();
+  if(mode==='退出选人')expect(navigate).toHaveBeenCalledWith({view:'detail',team_id:'7',section:'members'});
+  if(mode==='更换目标')expect(wrapper.get('.ac-team-target-banner').text()).toContain('新 Team');
+});
+
+it.each(['成功','失败'] as const)('旧冻结请求%s不会解除新 Team 的提交状态，当前结果才打开加入预检',async(oldResult)=>{
+  const old=deferred<Awaited<ReturnType<typeof teamsApi.freezeAccountSelection>>>(),current=deferred<Awaited<ReturnType<typeof teamsApi.freezeAccountSelection>>>();
+  const freeze=vi.spyOn(teamsApi,'freezeAccountSelection').mockReturnValueOnce(old.promise).mockReturnValueOnce(current.promise);
+  const {vm,openJoinFromAccounts,notify}=await mountTeamCandidateShell();
+  await teamSelectionButton().trigger('click');
+  vm.enterTeamCandidateMode({team_id:'8',effective_name:'新 Team'});
+  await flushPromises();
+  expect(teamSelectionButton().element.disabled).toBe(false);
+  await teamSelectionButton().trigger('click');
+  expect(freeze).toHaveBeenCalledTimes(2);
+  if(oldResult==='成功')old.resolve({selection_id:'91',selection_revision:3,matched_count:30});
+  else old.reject(new Error('旧名单冻结失败'));
+  await flushPromises();
+  expect(openJoinFromAccounts).not.toHaveBeenCalled();
+  expect(teamSelectionButton().element.disabled).toBe(true);
+  expect(wrapper.get('.ac-team-target-banner').text()).toContain('新 Team');
+  current.resolve({selection_id:'92',selection_revision:4,matched_count:12});
+  await flushPromises();
+  expect(openJoinFromAccounts).toHaveBeenCalledOnce();
+  expect(openJoinFromAccounts).toHaveBeenCalledWith({mode:'selection',selectionId:'92',selectionRevision:4,selectedCount:12,targetTeamId:'8'});
+  expect(wrapper.find('.ac-team-target-banner').exists()).toBe(false);
+  expect(notify).not.toHaveBeenCalled();
+});
+
+it('当前名单冻结失败时提示原因并恢复提交按钮',async()=>{
+  const pending=deferred<Awaited<ReturnType<typeof teamsApi.freezeAccountSelection>>>();
+  vi.spyOn(teamsApi,'freezeAccountSelection').mockReturnValueOnce(pending.promise);
+  const {openJoinFromAccounts,notify}=await mountTeamCandidateShell();
+  await teamSelectionButton().trigger('click');
+  pending.reject(new Error('筛选名单已失效'));
+  await flushPromises();
+  expect(notify).toHaveBeenCalledWith('筛选名单已失效');
+  expect(openJoinFromAccounts).not.toHaveBeenCalled();
+  expect(teamSelectionButton().element.disabled).toBe(false);
 });

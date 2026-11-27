@@ -41,7 +41,10 @@
             "description": "分页统计开关。默认为 1，传 0 跳过筛选统计，facets 返回空对象。",
             "schema": {
               "type": "integer",
-              "enum": [0, 1],
+              "enum": [
+                0,
+                1
+              ],
               "default": 1
             }
           },
@@ -59,6 +62,21 @@
             "description": "既有查询参数。",
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "team_scope",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "all",
+                "team",
+                "non_team"
+              ],
+              "default": "all",
+              "description": "本地已确认 Team 成员关系范围；邀请或受理任务不提前计为成员。"
             }
           },
           {
@@ -302,6 +320,21 @@
             "description": "既有查询参数。",
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "team_scope",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "all",
+                "team",
+                "non_team"
+              ],
+              "default": "all",
+              "description": "本地已确认 Team 成员关系范围；邀请或受理任务不提前计为成员。"
             }
           },
           {
@@ -1298,6 +1331,16 @@
               "number",
               "null"
             ]
+          },
+          "team_scope": {
+            "type": "string",
+            "enum": [
+              "all",
+              "team",
+              "non_team"
+            ],
+            "default": "all",
+            "description": "本地已确认 Team 成员关系范围；邀请或受理任务不提前计为成员。"
           }
         },
         "additionalProperties": false,
@@ -2574,6 +2617,12 @@
               "string",
               "null"
             ]
+          },
+          "team_memberships": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AccountTeamMembership"
+            }
           }
         },
         "additionalProperties": false,
@@ -3478,6 +3527,12 @@
           },
           "plan_summary": {
             "$ref": "#/components/schemas/PlanSummary"
+          },
+          "team_memberships": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AccountTeamMembership"
+            }
           }
         },
         "additionalProperties": false,
@@ -3702,6 +3757,63 @@
           }
         },
         "additionalProperties": false
+      },
+      "AccountTeamMembership": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "team_id",
+          "workspace_id",
+          "name",
+          "display_name",
+          "role",
+          "membership_state",
+          "last_verified_at"
+        ],
+        "properties": {
+          "team_id": {
+            "type": "string",
+            "pattern": "^[1-9][0-9]*$"
+          },
+          "workspace_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "display_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "owner",
+              "admin",
+              "member",
+              "unknown"
+            ]
+          },
+          "membership_state": {
+            "type": "string",
+            "enum": [
+              "joined"
+            ]
+          },
+          "last_verified_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        },
+        "description": "按本地 Team 去重的已确认关系，归档独立，历史多 Team 关系保留。"
       }
     }
   }

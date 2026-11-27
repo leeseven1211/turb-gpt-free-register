@@ -739,6 +739,18 @@ ACCOUNT_ACTION_PROXY_RETRY_DELAY=1
 
 ---
 
+### Team 管理后端
+
+Team 管理引用已有账号，通过 `/api/teams` 提供绑定探测、工作区配置、成员与邀请读取、候选解析、本地加入预检和持久批量受理。[HTTP 契约](docs/superpowers/specs/2026-11-27-team-management-api-contract.md)与 [OpenAPI](contracts/teams.openapi.json)约束独立开发的前端；本轮不包含 Team 页面实现。后台使用现有 Task/Run 网关，任务中心支持精确 `team_id` 筛选。
+
+账号查询新增 `team_scope=non_team|team|all`，省略保持 `all`。活跃账号使用 `non_team&archived=0`，Team 账号使用 `team&archived=all`，归档账号使用 `all&archived=only`；Team 视图只认已确认成员关系，邀请排队不会提前迁移账号。归档与 Team 归属独立。
+
+新增加入遵守单账号单本地 Team 占用。已购席位未知时必须配置含母号的 `planned_member_limit`；已购为零不回退。成员、邀请及本地预留去重后评估容量，名单不完整时等待同步，不将未知人数算作零。远端加入与本地保存分别记录，未知回执、停止或失败不会自动释放可能已产生效果的占位，同 Team 可继续或重跑。具体恢复、事实消退和加密会话边界见[存储架构](docs/architecture/storage-architecture.md#team-工作区与加入事实)。
+
+批量名单通过既有 selection API 的 `team_join/v1` 和 `parameters.team_id` 固定；通用批量创建目录继续只列原六类操作，Team 专用元数据位于 `selection_operations`，执行提交走 `/api/teams/{team_id}/join`。所有新 Team 写入使用统一幂等键命名空间，读接口与 `join-preview` 不登录、不请求远端、不写入占位。
+
+本轮验证范围、真实单账号验收及未达的预检性能目标见[后端验收记录](docs/superpowers/reviews/2026-11-27-team-backend-acceptance.md)。真实接受 POST 尚未验收，后端与页面均未在本轮部署。
+
 ### 4. 配置 Codex OAuth
 
 如不需要 Codex，关闭：
@@ -1754,7 +1766,7 @@ npm ci
 npm run build
 ```
 
-修改 `contracts/task-center.openapi.json` 后运行 `npm run generate:api`。`webui/static/task-center/` 的构建结果与源码、锁文件一起提交，适配现有不可变发布复制流程。部署服务器无需 npm。开发可运行 `npm run dev`，其 API 代理指向本机 8000 服务。发布前需要预览页面时可使用[合成预览](frontend/README.md)。
+修改 `contracts/` 下已纳入生成脚本的 OpenAPI 后运行 `npm run generate:api`，Team 类型输出为 `frontend/src/api/teams-schema.d.ts`。`webui/static/task-center/` 的构建结果与源码、锁文件一起提交，适配现有不可变发布复制流程。部署服务器无需 npm。开发可运行 `npm run dev`，其 API 代理指向本机 8000 服务。发布前需要预览页面时可使用[合成预览](frontend/README.md)。
 
 非重大架构调整只运行与本次改动直接相关的测试，按测试文件或用例选取。重大架构调整按受影响的模块和契约扩大范围。大多数 UI 改动在部署后使用真实浏览器验收对应页面和交互，涉及业务逻辑或接口契约时运行直接相关的测试。
 

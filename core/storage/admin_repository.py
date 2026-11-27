@@ -662,6 +662,8 @@ def _compile_account_predicates(
     date_from: str,
     date_to: str,
     filters: dict[str, str],
+    *,
+    team_scope: str = "all",
 ) -> tuple[list[str], list[Any]]:
     where: list[str] = []
     params: list[Any] = []
@@ -670,6 +672,21 @@ def _compile_account_predicates(
         where.append("a.archived IS TRUE")
     elif archived not in {"all", "include"}:
         where.append("a.archived IS FALSE")
+    if team_scope != "all":
+        with postgres_store.connect() as conn, conn.cursor() as cur:
+            cur.execute("SELECT to_regclass(%s)", (postgres_store.qualified("team_members"),))
+            available = cur.fetchone()[0] is not None
+        joined = (
+            f"EXISTS (SELECT 1 FROM {postgres_store.qualified('team_members')} team_member"
+            " WHERE team_member.membership_state='joined' AND (team_member.account_id=a.id OR ("
+            "team_member.account_id IS NULL AND btrim(COALESCE(a.email,''))<>''"
+            " AND lower(btrim(COALESCE(team_member.email,'')))=lower(btrim(COALESCE(a.email,'')))"
+            f" AND NOT EXISTS (SELECT 1 FROM {_q(record_store.ACCOUNTS)} duplicate"
+            " WHERE duplicate.id<>a.id"
+            " AND lower(btrim(COALESCE(duplicate.email,'')))=lower(btrim(COALESCE(a.email,'')))))))"
+            if available else "FALSE"
+        )
+        where.append(joined if team_scope == "team" else f"NOT ({joined})")
     for term in parse_account_search(q):
         if term.field == "method":
             predicate, predicate_params = _registration_driver_matches(REGISTRATION_DRIVERS[term.value])
@@ -740,10 +757,10 @@ def _compile_account_predicates(
     return where, params
 
 
-def _account_where(archived, plan, q, date_from, date_to, filters):
+def _account_where(archived, plan, q, date_from, date_to, filters, *, team_scope="all"):
     """旧 URL 参数与批量选择统一到同一个查询契约。"""
     from core.accounts.query import compile_query, from_legacy
-    spec = from_legacy(archived=archived, plan=plan, q=q, date_from=date_from,
+    spec = from_legacy(archived=archived, team_scope=team_scope, plan=plan, q=q, date_from=date_from,
                        date_to=date_to, filters=filters)
     sql, params = compile_query(spec, strict=False)
     return [sql], params
@@ -787,7 +804,8 @@ def account_query_facets(spec: dict) -> dict:
     normalized = normalize_query(spec)
     filters = {key: ",".join(value) if isinstance(value, list) else value for key, value in normalized["filters"].items()}
     where, params = _compile_account_predicates(normalized["archived"], "", normalized["q"],
-        normalized["date_from"], normalized["date_to"], {key: filters.get(key, "") for key in ("id", "email")})
+        normalized["date_from"], normalized["date_to"], {key: filters.get(key, "") for key in ("id", "email")},
+        team_scope=normalized["team_scope"])
     use_driver_cte = not (normalized["q"] or filters.get("id") or filters.get("email"))
     expressions = _account_facet_expressions(
         fallback_driver_sql="__lad.driver" if use_driver_cte else None,
@@ -933,10 +951,12 @@ def _list_account_facet_query(
     accounts: str, request: PageRequest, *, archived: str, plan: str, q: str,
     date_from: str, date_to: str, clause: str, params: list[Any],
     page_projection: str = "",
+    team_scope: str = "all",
 ) -> tuple[str, list[Any], bool]:
     base_where, facet_params = _account_where(
         archived, "", q, date_from, date_to,
         {key: request.filters.get(key, "") for key in ("id", "email")},
+        team_scope=team_scope,
     )
     base_clause = f" WHERE {' AND '.join(base_where)}" if base_where else ""
     # 搜索结果与分面基集相同时，共用已物化的匹配账号，避免再次运行搜索谓词。
@@ -1042,10 +1062,23 @@ def _list_account_facet_query(
     return facet_sql, facet_params, share_search_scope
 
 
+def _read_account_memberships(account_ids, *, conn):
+    """只读当前确认关系；尚未部署 Team 表时保持旧列表可读。"""
+    from core.storage.teams.repository import get_account_memberships
+    return get_account_memberships(account_ids, conn=conn)
+
+
+def _attach_account_memberships(rows, *, conn):
+    memberships = _read_account_memberships([row["id"] for row in rows], conn=conn)
+    for row in rows:
+        row["team_memberships"] = memberships.get(int(row["id"]), [])
+
+
 def list_accounts(
     request: PageRequest,
     *,
     archived: str = "0",
+    team_scope: str = "all",
     plan: str = "",
     q: str = "",
     date_from: str = "",
@@ -1055,7 +1088,8 @@ def list_accounts(
     from core import db
 
     accounts = _q(record_store.ACCOUNTS)
-    where, params = _account_where(archived, plan, q, date_from, date_to, request.filters)
+    where, params = _account_where(archived, plan, q, date_from, date_to, request.filters,
+                                 team_scope=team_scope)
     clause = f" WHERE {' AND '.join(where)}" if where else ""
     # chatgpt_session 是恢复用的敏感完整响应，不进入管理列表查询。
     promoted = [
@@ -1076,6 +1110,7 @@ def list_accounts(
         facet_sql, facet_params, share_search_scope = _list_account_facet_query(
             accounts, request, archived=archived, plan=plan, q=q, date_from=date_from,
             date_to=date_to, clause=clause, params=params, page_projection=page_projection,
+            team_scope=team_scope,
         )
     else:
         share_search_scope = False
@@ -1101,6 +1136,7 @@ def list_accounts(
             )
             page_rows = cur.fetchall()
         rows = [db.decorate_account(record_store.merge_row(record_store.ACCOUNTS, row)) for row in page_rows]
+        _attach_account_memberships(rows, conn=conn)
         if include_facets and not share_search_scope:
             cur.execute(facet_sql, facet_params)
             facets = _facet_dict(cur.fetchall())
@@ -1122,6 +1158,7 @@ def list_account_statuses(
     *,
     compact: bool = False,
     archived: str = "0",
+    team_scope: str = "all",
     plan: str = "",
     q: str = "",
     date_from: str = "",
@@ -1136,6 +1173,7 @@ def list_account_statuses(
         date_from,
         date_to,
         request.filters,
+        team_scope=team_scope,
     )
     clause = f" WHERE {' AND '.join(where)}" if where else ""
     fields = (
@@ -1168,6 +1206,7 @@ def list_account_statuses(
             (*params, request.limit, request.offset),
         )
         raw_rows = cur.fetchall()
+        memberships = _read_account_memberships([row["id"] for row in raw_rows], conn=conn)
     wanted = {
         "plan_check_status", "plan_check_ok", "plan_check_error", "plan_check_trigger",
         "plan_check_queued_at", "plan_check_started_at", "plan_check_completed_at", "plan_checked_at",
@@ -1197,6 +1236,7 @@ def list_account_statuses(
     for raw in raw_rows:
         row = db.decorate_account(record_store.merge_row(record_store.ACCOUNTS, raw))
         item = {key: value for key, value in row.items() if key in wanted | {"id", "email", "archived", "plan_type", "current_plan_type", "plus_trial_eligible"} and value not in (None, "")}
+        item["team_memberships"] = memberships.get(int(row["id"]), [])
         item["has_access_token"] = bool(_text(row.get("has_access_token")))
         item["has_account_password"] = row.get("has_account_password") is True
         item["last_password_auth_status"] = row.get("last_password_auth_status") if row.get(
@@ -1249,7 +1289,7 @@ def list_account_statuses(
         "page": max(1, int(request.page or 1)),
         "page_size": request.limit,
         "revision": _revision(total, aggregate["latest"], items),
-        **({"status_fields": sorted((wanted | {"plan_type", "current_plan_type", "plus_trial_eligible"}) - {"account_promotions", "promotion_query_snapshot", "plan_check_country_results"})} if compact else {}),
+        **({"status_fields": sorted((wanted | {"plan_type", "current_plan_type", "plus_trial_eligible", "team_memberships"}) - {"account_promotions", "promotion_query_snapshot", "plan_check_country_results"})} if compact else {}),
     }
 
 

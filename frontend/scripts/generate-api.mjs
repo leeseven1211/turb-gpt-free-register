@@ -6,6 +6,7 @@ for (const [contract, output] of [
   ['codex', 'codex-schema'],
   ['accounts', 'accounts-schema'],
   ['bulk-mutations', 'bulk-mutations-schema'],
+  ['teams', 'teams-schema'],
 ]) {
   const source = new URL(`../../contracts/${contract}.openapi.json`, import.meta.url);
   const destination = new URL(`../src/api/${output}.d.ts`, import.meta.url);

@@ -65,7 +65,7 @@ def normalize_query(raw: Mapping[str, Any] | None, *, strict: bool = True) -> di
         raw = {}
     if not isinstance(raw, Mapping):
         raise AccountQueryError("账号筛选必须是对象。")
-    known = {"schema_version", "entity", "archived", "date_from", "date_to", "q", "plan", "filters", "order", "limit"}
+    known = {"schema_version", "entity", "archived", "team_scope", "date_from", "date_to", "q", "plan", "filters", "order", "limit"}
     if strict and set(raw) - known:
         raise AccountQueryError("存在不支持的查询字段。", sorted(set(raw) - known)[0])
     version = raw.get("schema_version", 1)
@@ -77,6 +77,9 @@ def normalize_query(raw: Mapping[str, Any] | None, *, strict: bool = True) -> di
         if strict:
             raise AccountQueryError("归档范围无效。", "archived")
         archived = "0"
+    team_scope = raw.get("team_scope", "all")
+    if not isinstance(team_scope, str) or team_scope not in {"all", "team", "non_team"}:
+        raise AccountQueryError("Team 账号范围无效。", "team_scope")
     dates = {}
     for field in ("date_from", "date_to"):
         value = raw.get(field) or ""
@@ -125,16 +128,16 @@ def normalize_query(raw: Mapping[str, Any] | None, *, strict: bool = True) -> di
     limit = raw.get("limit")
     if limit is not None and (isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100000):
         raise AccountQueryError("账号范围上限必须为 1 至 100,000 的整数。", "limit")
-    return {"schema_version": 1, "entity": "account", "archived": archived, **dates,
+    return {"schema_version": 1, "entity": "account", "archived": archived, "team_scope": team_scope, **dates,
             "q": q.strip(), "plan": _values(raw.get("plan")), "filters": clean,
             "order": order, "limit": limit}
 
 
-def from_legacy(*, archived="0", plan="", q="", date_from="", date_to="", filters=None) -> dict:
+def from_legacy(*, archived="0", team_scope="all", plan="", q="", date_from="", date_to="", filters=None) -> dict:
     values = dict(filters or {})
     if not values.get("promotion") and values.get("trial"):
         values["promotion"] = values["trial"]
-    return normalize_query({"archived": archived, "plan": plan, "q": q,
+    return normalize_query({"archived": archived, "team_scope": team_scope, "plan": plan, "q": q,
                             "date_from": date_from, "date_to": date_to, "filters": values}, strict=False)
 
 
@@ -144,7 +147,8 @@ def compile_query(spec: Mapping[str, Any], *, strict: bool = True) -> tuple[str,
     from core.storage.admin_repository import _compile_account_predicates
     filters = {key: ",".join(value) if isinstance(value, list) else value for key, value in spec["filters"].items()}
     where, params = _compile_account_predicates(spec["archived"], ",".join(spec["plan"]), spec["q"],
-                                                spec["date_from"], spec["date_to"], filters)
+                                                spec["date_from"], spec["date_to"], filters,
+                                                team_scope=spec["team_scope"])
     return " AND ".join(where) or "TRUE", params
 
 
@@ -155,6 +159,7 @@ def query_hash(spec: Mapping[str, Any]) -> str:
 
 def query_schema() -> dict:
     return {"version": 1, "entity": "account", "order": [{"field": "id", "direction": "desc"}],
+            "team_scope": {"type": "string", "enum": ["all", "team", "non_team"], "default": "all"},
             "fields": [{"key": key, "label": FIELD_LABELS[key], "type": "text" if key in {"id", "email"} else "multi",
                         "values": STATIC_VALUES.get(key, []),
                         "enum_source": "facets" if key == "promotion"

@@ -412,6 +412,18 @@ def _reconcile_parent_task_cur(cur, parent_task_id: int, *, child_task_id: int |
     parent = cur.fetchone()
     if not parent:
         return None
+    if (
+        parent.get("source_system") == "team_management"
+        and (
+            parent.get("task_type") in {"team_join", "team_join_request"}
+            or (
+                parent.get("task_type") in {"team_probe", "team_sync", "team_reverify"}
+                and not (_common._decode(parent.get("data")) or {}).get("identity_child")
+            )
+        )
+    ):
+        # Team 父任务还需接受、核验、保存或继续受理名单，由所属协调层显式推进和收口。
+        return None
     observed_run_id = int(parent.get("last_run_id") or 0)
     terminal_registration_child = False
     if str(parent.get("source_system") or "") == "registration_chains":
@@ -636,12 +648,12 @@ def _reconcile_parent_task(parent_task_id: int) -> dict | None:
 
 def create_runtime_batch(
     *, batch_type: str, title: str, requested_count: int, trigger: str = "manual",
-    data: dict | None = None,
+    data: dict | None = None, conn=None,
 ) -> dict:
     """创建真正参与调度的批次；批次只持有 run 引用，不预占账号资源。"""
     _schema.init_operation_schema()
     batch_uuid = uuid.uuid4().hex
-    with _common._connect() as conn, conn.cursor() as cur:
+    with (_common._connect() if conn is None else nullcontext(conn)) as conn, conn.cursor() as cur:
         cur.execute(
             f"""
             INSERT INTO {_common._table('operation_batches')} (
@@ -731,6 +743,7 @@ def create_runtime_task(
     batch_id: int | None = None,
     batch_ordinal: int | None = None,
     parent_task_id: int | None = None,
+    team_id: int | None = None,
     resource_family: str = "openai_interactive",
     data: dict | None = None,
     source_system: str = "native_operations",
@@ -753,6 +766,9 @@ def create_runtime_task(
     source_system_value = str(source_system or "native_operations").strip()[:120] or "native_operations"
     source_value = str(source_id or idempotency_key or "").strip() or task_uuid
     account_value = int(account_id) if account_id else None
+    team_value = int(team_id) if team_id is not None else None
+    if team_value is not None and not 0 < team_value <= 2**63 - 1:
+        raise ValueError("team_id 必须是 64 位正整数")
     managed_source_run_id = bulk_execution.source_run_for_creation(account_id=account_value, data=data)
     with (_common._connect() if conn is None else nullcontext(conn)) as conn, conn.cursor() as cur:
         if lock_account_request:
@@ -804,19 +820,19 @@ def create_runtime_task(
         cur.execute(
             f"""
             INSERT INTO {_common._table('operation_tasks')} (
-                task_uuid, source_system, source_id, batch_id, parent_task_id,
+                task_uuid, source_system, source_id, batch_id, parent_task_id, team_id,
                 task_type, target_type, target_id, account_id, email_snapshot,
                 requested_action, status, target_status, current_stage,
                 next_actions, trigger, data
             ) VALUES (
-                %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s,
                 %s, 'account', %s, %s, %s,
                 %s, 'queued', 'pending', 'queued',
                 '[]'::jsonb, %s, %s::jsonb
             ) RETURNING *
             """,
             (
-                task_uuid, source_system_value, source_value, batch_id, parent_task_id, str(task_type),
+                task_uuid, source_system_value, source_value, batch_id, parent_task_id, team_value, str(task_type),
                 account_value, account_value, str(email or "").strip(), str(task_type),
                 str(trigger or "manual"), _common._json(data or {}),
             ),

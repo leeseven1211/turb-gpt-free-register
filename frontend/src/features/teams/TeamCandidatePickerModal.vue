@@ -3,14 +3,12 @@ import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue';
 import { TeamApiError, type TeamsApi } from '../../api/teams';
 import { useNativeDialog } from '../../shared/useNativeDialog';
 import type {
-  CandidateResolveAmbiguousItem,
   TeamCandidateDTO,
   TeamCandidatesQuery,
   TeamDTO,
   TeamDecimalId,
 } from './contracts';
 import {
-  CANDIDATE_ELIGIBILITY_BADGES,
   teamReasonLabel,
 } from './statusLabels';
 
@@ -26,7 +24,7 @@ const emit = defineEmits<{
   confirmCandidates: [
     payload: { accountIds: string[]; expectedEmails: Record<string, string> },
   ];
-  openAdvancedInAccounts: [team: Pick<TeamDTO, 'team_id' | 'effective_name'>];
+  openAdvancedInAccounts: [team: { team_id: string; effective_name: string }];
   notify: [message: string];
 }>();
 
@@ -58,7 +56,7 @@ const resolveSummary = ref<{
   matchedSelectable: number;
   matchedIneligible: Array<{ email: string; account_id: string; reason: string }>;
   notFound: string[];
-  ambiguous: CandidateResolveAmbiguousItem[];
+  ambiguous: Array<{ input: string; candidates: TeamCandidateDTO[] }>;
 } | null>(null);
 
 let loadController: AbortController | null = null;
@@ -69,12 +67,12 @@ const isActiveDialog = computed(() => props.open && props.visible);
 const selectedSet = computed(() => new Set(selectedIds.value));
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize)));
 const selectableOnPage = computed(() =>
-  items.value.filter(row => row.eligibility.selectable),
+  items.value.filter(row => !row.disabled),
 );
 const allPageSelectableChecked = computed(
   () =>
     selectableOnPage.value.length > 0 &&
-    selectableOnPage.value.every(row => selectedSet.value.has(row.account_id)),
+    selectableOnPage.value.every(row => selectedSet.value.has(row.account.id)),
 );
 
 function isAbortError(err: unknown): boolean {
@@ -94,6 +92,8 @@ function abortRequests() {
     resolveController.abort();
     resolveController = null;
   }
+  loading.value = false;
+  resolving.value = false;
 }
 
 function clearSelection() {
@@ -129,9 +129,9 @@ function buildCandidatesQuery(): TeamCandidatesQuery {
     ...(searchQuery.value.trim() ? { q: searchQuery.value.trim() } : {}),
     scope: scopeUnassignedOnly.value ? 'unassigned' : 'all',
     archived: filterIncludeArchived.value ? 'all' : '0',
-    ...(filterHasToken.value ? { has_access_token: '1' } : {}),
-    ...(filterHasPassword.value ? { has_password: '1' } : {}),
-    ...(filterTotpEnabled.value ? { totp_enabled: '1' } : {}),
+    ...(filterHasToken.value ? { has_access_token: 'true' } : {}),
+    ...(filterHasPassword.value ? { has_password: 'true' } : {}),
+    ...(filterTotpEnabled.value ? { totp_enabled: 'true' } : {}),
   };
 }
 
@@ -145,7 +145,7 @@ async function fetchCandidates() {
 
   try {
     const res = await props.api.listCandidates(
-      props.team.team_id,
+      props.team.id,
       buildCandidatesQuery(),
       controller.signal,
     );
@@ -186,11 +186,11 @@ function clearSearch() {
   triggerFilterReload();
 }
 
-function addSelection(accountId: TeamDecimalId, email: string) {
+function addSelection(accountId: TeamDecimalId, email: string | null) {
   if (!selectedSet.value.has(accountId)) {
     selectedIds.value = [...selectedIds.value, accountId];
   }
-  if (email) {
+  if (email && !Object.hasOwn(expectedEmails, accountId)) {
     expectedEmails[accountId] = email;
   }
 }
@@ -202,7 +202,7 @@ function removeSelection(accountId: TeamDecimalId) {
   delete expectedEmails[accountId];
 }
 
-function toggleCandidate(accountId: TeamDecimalId, email: string, selectable: boolean) {
+function toggleCandidate(accountId: TeamDecimalId, email: string | null, selectable: boolean) {
   if (!selectable) return;
   if (selectedSet.value.has(accountId)) {
     removeSelection(accountId);
@@ -213,32 +213,34 @@ function toggleCandidate(accountId: TeamDecimalId, email: string, selectable: bo
 
 function toggleSelectAllPage() {
   if (allPageSelectableChecked.value) {
-    const pageIdSet = new Set(selectableOnPage.value.map(r => r.account_id));
+    const pageIdSet = new Set(selectableOnPage.value.map(r => r.account.id));
     selectedIds.value = selectedIds.value.filter(id => !pageIdSet.has(id));
     for (const id of pageIdSet) delete expectedEmails[id];
   } else {
     for (const row of selectableOnPage.value) {
-      addSelection(row.account_id, row.email);
+      addSelection(row.account.id, row.account.email);
     }
   }
 }
 
 function rowReasonText(row: TeamCandidateDTO): string {
-  if (row.eligibility.state === 'another_team' && row.active_team) {
-    return `已归属「${row.active_team.effective_name}」`;
+  if (row.category === 'another_team' && row.other_teams.length) {
+    return `已归属「${row.other_teams.map(team => team.display_name || team.name || team.workspace_id).join('、')}」`;
   }
-  if (row.eligibility.reason) return row.eligibility.reason;
-  if (row.eligibility.reason_code) return teamReasonLabel(row.eligibility.reason_code);
-  return CANDIDATE_ELIGIBILITY_BADGES[row.eligibility.state]?.label ?? '不可选';
+  return row.reason_code ? teamReasonLabel(row.reason_code) : badgeFor(row.category).label;
 }
 
-function badgeFor(state: TeamCandidateDTO['eligibility']['state']) {
-  return (
-    CANDIDATE_ELIGIBILITY_BADGES[state] ?? {
-      label: '状态待核对',
-      tone: 'neutral' as const,
-    }
-  );
+function badgeFor(state: TeamCandidateDTO['category']) {
+  const badges = {
+    new: { label: '可加入', tone: 'success' },
+    resume_invite: { label: '可续邀请', tone: 'active' },
+    already_member: { label: '已是成员', tone: 'neutral' },
+    same_team_active: { label: '执行中可复用', tone: 'active' },
+    another_team: { label: '已属其他Team', tone: 'warning' },
+    missing_auth: { label: '缺认证材料', tone: 'danger' },
+    unavailable: { label: '账号不可用', tone: 'danger' },
+  };
+  return badges[state] ?? { label: '状态待核对', tone: 'neutral' };
 }
 
 async function resolvePastedValues() {
@@ -260,7 +262,7 @@ async function resolvePastedValues() {
 
   try {
     const res = await props.api.resolveCandidates(
-      props.team.team_id,
+      props.team.id,
       values,
       controller.signal,
     );
@@ -273,25 +275,25 @@ async function resolvePastedValues() {
       reason: string;
     }> = [];
 
-    for (const row of res.matched) {
-      if (row.eligibility.selectable) {
-        addSelection(row.account_id, row.email);
-        matchedSelectable++;
+    const notFound: string[] = [];
+    const ambiguous: Array<{ input: string; candidates: TeamCandidateDTO[] }> = [];
+    for (const item of res.items) {
+      if (item.match_status === 'not_found') {
+        notFound.push(item.input);
+      } else if (item.match_status === 'ambiguous') {
+        ambiguous.push({ input: item.input, candidates: item.candidates });
       } else {
-        matchedIneligible.push({
-          email: row.email,
-          account_id: row.account_id,
-          reason: rowReasonText(row),
-        });
+        for (const row of item.candidates) {
+          if (!row.disabled) {
+            addSelection(row.account.id, row.account.email);
+            matchedSelectable++;
+          } else {
+            matchedIneligible.push({ email: row.account.email || `#${row.account.id}`, account_id: row.account.id, reason: rowReasonText(row) });
+          }
+        }
       }
     }
-
-    resolveSummary.value = {
-      matchedSelectable,
-      matchedIneligible,
-      notFound: res.not_found,
-      ambiguous: res.ambiguous,
-    };
+    resolveSummary.value = { matchedSelectable, matchedIneligible, notFound, ambiguous };
 
     if (matchedSelectable > 0) {
       emit('notify', `已解析并勾选 ${matchedSelectable} 个可选账号`);
@@ -321,8 +323,8 @@ function goPage(nextPage: number) {
 function openAdvancedAccounts() {
   if (!props.team) return;
   emit('openAdvancedInAccounts', {
-    team_id: props.team.team_id,
-    effective_name: props.team.effective_name,
+    team_id: props.team.id,
+    effective_name: props.team.display_name || props.team.name || props.team.workspace_id,
   });
 }
 
@@ -358,7 +360,7 @@ function onBackdropClick(event: MouseEvent) {
 }
 
 watch(
-  () => [isActiveDialog.value, props.team?.team_id],
+  () => [isActiveDialog.value, props.team?.id],
   ([active]) => {
     if (active) {
       resetState();
@@ -392,7 +394,7 @@ onBeforeUnmount(() => {
         </h3>
         <p class="tm-dialog__desc">
           <template v-if="team">
-            目标 Team：<strong>{{ team.effective_name }}</strong>
+            目标 Team：<strong>{{ team.display_name || team.name || team.workspace_id }}</strong>
             （<span class="tm-mono">{{ team.workspace_id }}</span>），默认聚焦未归属任何 Team 的账号。
           </template>
         </p>
@@ -590,29 +592,29 @@ onBeforeUnmount(() => {
               <div>输入项：<span class="tm-mono">{{ amb.input }}</span></div>
               <label
                 v-for="cand in amb.candidates"
-                :key="cand.account_id"
+                :key="cand.account.id"
                 style="display: flex; align-items: center; gap: 8px;"
               >
                 <input
                   type="checkbox"
-                  :checked="selectedSet.has(cand.account_id)"
-                  :disabled="!cand.eligibility.selectable"
-                  @change="toggleCandidate(cand.account_id, cand.email, cand.eligibility.selectable)"
+                  :checked="selectedSet.has(cand.account.id)"
+                  :disabled="cand.disabled"
+                  @change="toggleCandidate(cand.account.id, cand.account.email, !cand.disabled)"
                 />
-                <span>{{ cand.email }}</span>
-                <span class="tm-mono">#{{ cand.account_id }}</span>
-                <span v-if="cand.archived" class="tm-badge tm-badge--neutral">已归档</span>
+                <span>{{ cand.account.email }}</span>
+                <span class="tm-mono">#{{ cand.account.id }}</span>
+                <span v-if="cand.account.archived" class="tm-badge tm-badge--neutral">已归档</span>
                 <span
                   class="tm-badge"
-                  :class="`tm-badge--${badgeFor(cand.eligibility.state).tone}`"
+                  :class="`tm-badge--${badgeFor(cand.category).tone}`"
                 >
-                  {{ badgeFor(cand.eligibility.state).label }}
+                  {{ badgeFor(cand.category).label }}
                 </span>
                 <span
-                  v-if="!cand.eligibility.selectable && cand.eligibility.reason"
+                  v-if="cand.disabled && cand.reason_code"
                   class="tm-field__hint"
                 >
-                  {{ cand.eligibility.reason }}
+                  {{ rowReasonText(cand) }}
                 </span>
               </label>
             </div>
@@ -655,29 +657,29 @@ onBeforeUnmount(() => {
         </div>
         <label
           v-for="row in items"
-          :key="row.account_id"
+          :key="row.account.id"
           class="tm-candidate-row"
-          :class="{ 'is-disabled': !row.eligibility.selectable }"
+          :class="{ 'is-disabled': row.disabled }"
         >
           <div class="tm-candidate-row__left" style="min-width: 0; flex: 1;">
             <input
               type="checkbox"
-              :checked="selectedSet.has(row.account_id)"
-              :disabled="!row.eligibility.selectable"
-              @change="toggleCandidate(row.account_id, row.email, row.eligibility.selectable)"
+              :checked="selectedSet.has(row.account.id)"
+              :disabled="row.disabled"
+              @change="toggleCandidate(row.account.id, row.account.email, !row.disabled)"
             />
             <div class="tm-cell-stack" style="min-width: 0;">
               <div class="tm-cell-primary" style="flex-wrap: wrap;">
-                <span>{{ row.email }}</span>
-                <span class="tm-mono" style="color: var(--ui-color-text-muted);">#{{ row.account_id }}</span>
-                <span v-if="row.archived" class="tm-badge tm-badge--neutral">已归档</span>
+                <span>{{ row.account.email }}</span>
+                <span class="tm-mono" style="color: var(--ui-color-text-muted);">#{{ row.account.id }}</span>
+                <span v-if="row.account.archived" class="tm-badge tm-badge--neutral">已归档</span>
                 <span v-if="row.has_access_token" class="tm-badge tm-badge--success">Token</span>
-                <span v-if="row.has_account_password" class="tm-badge tm-badge--neutral">密码</span>
+                <span v-if="row.has_password" class="tm-badge tm-badge--neutral">密码</span>
                 <span v-if="row.totp_enabled" class="tm-badge tm-badge--neutral">2FA</span>
-                <span v-if="row.email_invalid" class="tm-badge tm-badge--danger">邮箱失效</span>
+                <span v-if="row.email_status === 'invalid'" class="tm-badge tm-badge--danger">邮箱失效</span>
               </div>
               <div
-                v-if="!row.eligibility.selectable || row.active_team"
+                v-if="row.disabled || row.other_teams.length"
                 class="tm-cell-sub"
               >
                 {{ rowReasonText(row) }}
@@ -687,16 +689,16 @@ onBeforeUnmount(() => {
 
           <div style="display: flex; align-items: center; gap: 6px; flex: none;">
             <span
-              v-if="row.eligibility.state === 'another_team' && row.active_team"
+              v-if="row.category === 'another_team' && row.other_teams.length"
               class="tm-badge tm-badge--warning"
             >
-              {{ row.active_team.effective_name }}
+              {{ row.other_teams.map(team => team.display_name || team.name || team.workspace_id).join('、') }}
             </span>
             <span
               class="tm-badge"
-              :class="`tm-badge--${badgeFor(row.eligibility.state).tone}`"
+              :class="`tm-badge--${badgeFor(row.category).tone}`"
             >
-              {{ badgeFor(row.eligibility.state).label }}
+              {{ badgeFor(row.category).label }}
             </span>
           </div>
         </label>

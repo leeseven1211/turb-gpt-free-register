@@ -13,14 +13,13 @@ import type {
   TeamDecimalId,
   TeamFacets,
   TeamListQuery,
-  TeamListSummary,
   TeamsHostCallbacks,
 } from './contracts';
 import {
+  teamDisplayName,
   formatNullableCount,
   formatSeatLimitDisplay,
   isTeamActivelyRunning,
-  teamReasonLabel,
   teamRoleLabel,
   teamRoleTone,
   teamSyncLabel,
@@ -58,6 +57,8 @@ const SYNC_STATUS_OPTIONS = [
   { value: 'running', label: '同步中' },
   { value: 'success', label: '已同步' },
   { value: 'failed', label: '同步失败' },
+  { value: 'partial_success', label: '部分同步' },
+  { value: 'interrupted', label: '同步中断' },
 ] as const;
 
 const query = reactive<{
@@ -82,7 +83,6 @@ const error = ref('');
 const items = ref<TeamDTO[]>([]);
 const total = ref(0);
 const facets = ref<TeamFacets>({});
-const summary = ref<TeamListSummary | null>(null);
 const selectedIds = ref<Set<TeamDecimalId>>(new Set());
 const syncingIds = ref<Set<TeamDecimalId>>(new Set());
 const listRootRef = ref<HTMLElement | null>(null);
@@ -109,14 +109,14 @@ function facetCount(field: string, value: string): number | null {
   return hit ? hit.count : null;
 }
 
-const pageSelected = computed(() => items.value.length > 0 && items.value.every(row => selectedIds.value.has(row.team_id)));
-const pageIndeterminate = computed(() => !pageSelected.value && items.value.some(row => selectedIds.value.has(row.team_id)));
+const pageSelected = computed(() => items.value.length > 0 && items.value.every(row => selectedIds.value.has(row.id)));
+const pageIndeterminate = computed(() => !pageSelected.value && items.value.some(row => selectedIds.value.has(row.id)));
 
 function toggleSelectAllPage(checked: boolean): void {
   const next = new Set(selectedIds.value);
   for (const row of items.value) {
-    if (checked) next.add(row.team_id);
-    else next.delete(row.team_id);
+    if (checked) next.add(row.id);
+    else next.delete(row.id);
   }
   selectedIds.value = next;
 }
@@ -235,6 +235,7 @@ function handleDocumentClick(event: MouseEvent): void {
 }
 
 async function fetchList(options: { silent?: boolean; includeFacets?: 0 | 1 } = {}): Promise<void> {
+  if (!props.visible) return;
   activeController?.abort();
   const controller = new AbortController();
   activeController = controller;
@@ -248,10 +249,10 @@ async function fetchList(options: { silent?: boolean; includeFacets?: 0 | 1 } = 
   const requestQuery: TeamListQuery = {
     page: query.page,
     page_size: query.page_size,
-    include_facets: options.includeFacets ?? 1,
+    include_facets: String(options.includeFacets ?? 1) as '0' | '1',
     ...(query.q ? { q: query.q } : {}),
-    ...(query.role ? { role: query.role } : {}),
-    ...(query.last_sync_status ? { last_sync_status: query.last_sync_status } : {}),
+    ...(query.role ? { role: query.role as NonNullable<TeamListQuery['role']> } : {}),
+    ...(query.last_sync_status ? { last_sync_status: query.last_sync_status as NonNullable<TeamListQuery['last_sync_status']> } : {}),
   };
 
   try {
@@ -259,7 +260,6 @@ async function fetchList(options: { silent?: boolean; includeFacets?: 0 | 1 } = 
     if (seq !== requestSeq) return;
     items.value = res.items;
     total.value = res.total;
-    summary.value = res.summary;
     if (res.facets && Object.keys(res.facets).length > 0) {
       facets.value = res.facets;
     }
@@ -273,30 +273,30 @@ async function fetchList(options: { silent?: boolean; includeFacets?: 0 | 1 } = 
     if (activeController === controller) {
       activeController = null;
     }
-    if (seq === requestSeq && !options.silent) {
+    if (seq === requestSeq) {
       loading.value = false;
     }
   }
 }
 
 async function handleSyncOne(team: TeamDTO): Promise<void> {
-  if (syncingIds.value.has(team.team_id)) return;
+  if (syncingIds.value.has(team.id)) return;
   const next = new Set(syncingIds.value);
-  next.add(team.team_id);
+  next.add(team.id);
   syncingIds.value = next;
   try {
-    const res = await props.api.syncTeam(team.team_id);
+    const res = await props.api.syncTeam(team.id);
     props.callbacks.notify(
       res.reused
-        ? `工作区「${team.effective_name}」已有进行中的同步任务`
-        : `已启动工作区「${team.effective_name}」同步`,
+        ? `工作区「${teamDisplayName(team)}」已有进行中的同步任务`
+        : `已启动工作区「${teamDisplayName(team)}」同步`,
     );
     await fetchList({ silent: true, includeFacets: 0 });
   } catch (err) {
     props.callbacks.notify(err instanceof Error ? err.message : '同步工作区提交失败');
   } finally {
     const cleaned = new Set(syncingIds.value);
-    cleaned.delete(team.team_id);
+    cleaned.delete(team.id);
     syncingIds.value = cleaned;
   }
 }
@@ -308,7 +308,7 @@ async function handleBulkSync(): Promise<void> {
   try {
     const res = await props.api.syncTeamsBulk(ids);
     props.callbacks.notify(
-      `批量同步已受理：排队 ${res.queued_count}，复用 ${res.reused_count}，跳过 ${res.skipped_count}`,
+      `批量同步已受理：排队 ${res.accepted_count - res.reused_count}，复用 ${res.reused_count}，跳过 ${res.skipped_count}`,
     );
     clearSelection();
     await fetchList({ silent: true, includeFacets: 0 });
@@ -322,7 +322,7 @@ async function handleBulkSync(): Promise<void> {
 function handleOpenTasksFromMenu(event: MouseEvent, team: TeamDTO): void {
   const details = (event.currentTarget as HTMLElement | null)?.closest('details');
   if (details) details.open = false;
-  props.callbacks.openTasksForTeam(team.team_id, team.effective_name);
+  props.callbacks.openTasksForTeam(team.id, teamDisplayName(team));
 }
 
 function handleEditFromMenu(event: MouseEvent, team: TeamDTO): void {
@@ -360,6 +360,17 @@ onMounted(() => {
   void fetchList();
 });
 
+watch(() => props.visible, active => {
+  if (active) {
+    void fetchList();
+  } else {
+    activeController?.abort();
+    activeController = null;
+    requestSeq += 1;
+    loading.value = false;
+  }
+});
+
 onBeforeUnmount(() => {
   clearTimeout(searchTimer);
   activeController?.abort();
@@ -373,39 +384,6 @@ defineExpose({
 
 <template>
   <div ref="listRootRef" class="tm-root">
-    <!-- 顶部三张紧凑概览卡 -->
-    <section class="tm-summary-strip" aria-label="Team 工作区概览">
-      <article class="tm-summary-card">
-        <div class="tm-summary-card__meta">
-          <span class="tm-summary-card__label">已绑定工作区</span>
-          <span class="tm-summary-card__hint">当前已纳管的工作区总数</span>
-        </div>
-        <strong class="tm-summary-card__value">
-          {{ summary ? summary.total_teams.toLocaleString() : '—' }}
-        </strong>
-      </article>
-
-      <article class="tm-summary-card" :class="{ 'is-active': (summary?.syncing_teams ?? 0) > 0 }">
-        <div class="tm-summary-card__meta">
-          <span class="tm-summary-card__label">正在同步 / 处理中</span>
-          <span class="tm-summary-card__hint">包含同步及入组排队执行</span>
-        </div>
-        <strong class="tm-summary-card__value">
-          {{ summary ? summary.syncing_teams.toLocaleString() : '—' }}
-        </strong>
-      </article>
-
-      <article class="tm-summary-card" :class="{ 'is-warn': (summary?.attention_teams ?? 0) > 0 }">
-        <div class="tm-summary-card__meta">
-          <span class="tm-summary-card__label">需关注工作区</span>
-          <span class="tm-summary-card__hint">同步异常、权限受限或待设上限</span>
-        </div>
-        <strong class="tm-summary-card__value">
-          {{ summary ? summary.attention_teams.toLocaleString() : '—' }}
-        </strong>
-      </article>
-    </section>
-
     <!-- 主列表面板 -->
     <section class="ui-list" aria-label="Team 工作区列表">
       <ListToolbar :filtered="isFiltered">
@@ -600,15 +578,15 @@ defineExpose({
           <tbody>
             <tr
               v-for="team in items"
-              :key="team.team_id"
-              :class="{ 'is-selected': selectedIds.has(team.team_id) }"
+              :key="team.id"
+              :class="{ 'is-selected': selectedIds.has(team.id) }"
             >
               <td class="ui-col-check">
                 <input
                   type="checkbox"
-                  :aria-label="`选择工作区 ${team.effective_name}`"
-                  :checked="selectedIds.has(team.team_id)"
-                  @change="toggleSelectRow(team.team_id, ($event.target as HTMLInputElement).checked)"
+                  :aria-label="`选择工作区 ${teamDisplayName(team)}`"
+                  :checked="selectedIds.has(team.id)"
+                  @change="toggleSelectRow(team.id, ($event.target as HTMLInputElement).checked)"
                 />
               </td>
 
@@ -619,19 +597,19 @@ defineExpose({
                     :style="{ '--tm-hue': String(workspaceAvatarHue(team.workspace_id)) }"
                     aria-hidden="true"
                   >
-                    {{ workspaceInitials(team.effective_name) }}
+                    {{ workspaceInitials(teamDisplayName(team)) }}
                   </div>
                   <div class="tm-workspace-copy">
                     <div class="tm-workspace-title-row">
                       <button
                         type="button"
                         class="tm-workspace-name-btn"
-                        :title="team.effective_name"
-                        @click="emit('open-detail', team.team_id, 'members')"
+                        :title="teamDisplayName(team)"
+                        @click="emit('open-detail', team.id, 'members')"
                       >
-                        {{ team.effective_name }}
+                        {{ teamDisplayName(team) }}
                       </button>
-                      <span v-if="team.plan_type" class="tm-plan-tag">{{ team.plan_type }}</span>
+
                     </div>
                     <div class="tm-workspace-sub">
                       <span class="tm-mono" :title="team.workspace_id">{{ team.workspace_id }}</span>
@@ -644,22 +622,22 @@ defineExpose({
                 <div class="tm-cell-stack">
                   <div class="tm-cell-primary">
                     <button
-                      v-if="team.manager_account.account_id"
+                      v-if="team.manager_account.id"
                       type="button"
                       class="tm-link-btn"
-                      :title="team.manager_account.email"
-                      @click="callbacks.openAccountDetail(team.manager_account.account_id)"
+                      :title="team.manager_account.email || undefined"
+                      @click="callbacks.openAccountDetail(team.manager_account.id)"
                     >
-                      {{ team.manager_account.email || `#${team.manager_account.account_id}` }}
+                      {{ team.manager_account.email || `#${team.manager_account.id}` }}
                     </button>
                     <span v-else>{{ team.manager_account.email || '—' }}</span>
                   </div>
                   <div class="tm-cell-sub" style="display: flex; align-items: center; gap: 5px; flex-wrap: wrap;">
-                    <span class="tm-badge" :class="badgeClass(teamRoleTone(team.manager_role))">
-                      {{ teamRoleLabel(team.manager_role) }}
+                    <span class="tm-badge" :class="badgeClass(teamRoleTone(team.role))">
+                      {{ teamRoleLabel(team.role) }}
                     </span>
                     <span v-if="team.manager_account.archived" class="tm-badge tm-badge--neutral">已归档</span>
-                    <span v-if="team.can_manage === false" class="tm-badge tm-badge--danger">无管理权限</span>
+
                   </div>
                 </div>
               </td>
@@ -682,7 +660,7 @@ defineExpose({
 
               <td data-label="处理中">
                 <div class="tm-metric-cell">
-                  <span class="tm-metric-val" :class="{ 'is-processing': team.processing_count > 0 }">
+                  <span class="tm-metric-val" :class="{ 'is-processing': (team.processing_count ?? 0) > 0 }">
                     {{ formatNullableCount(team.processing_count, '—') }}
                   </span>
                 </div>
@@ -715,9 +693,9 @@ defineExpose({
                   <div
                     v-if="team.last_sync_status === 'failed'"
                     class="tm-cell-sub is-danger"
-                    :title="team.last_sync_error?.summary || ''"
+                    title="最近同步失败，可查看相关任务"
                   >
-                    {{ teamReasonLabel(team.last_sync_error?.reason_code, team.last_sync_error) }}
+                    同步失败
                   </div>
                   <div v-else class="tm-cell-sub tm-tabular">
                     {{ team.last_synced_at ? callbacks.formatDateTime(team.last_synced_at) : '待同步' }}
@@ -730,15 +708,15 @@ defineExpose({
                   <button
                     type="button"
                     class="tm-btn tm-btn--sm"
-                    @click="emit('open-detail', team.team_id, 'members')"
+                    @click="emit('open-detail', team.id, 'members')"
                   >
                     查看
                   </button>
                   <button
                     type="button"
                     class="tm-btn tm-btn--sm tm-btn--soft"
-                    :disabled="team.can_manage === false"
-                    :title="team.can_manage === false ? '当前母号无管理权限，请先核验或更换母号' : '选择账号批量邀请并自动加入'"
+
+                    title="选择账号批量邀请并自动加入"
                     @click="emit('open-join', team)"
                   >
                     拉人
@@ -746,10 +724,10 @@ defineExpose({
                   <button
                     type="button"
                     class="tm-btn tm-btn--sm"
-                    :disabled="syncingIds.has(team.team_id) || team.last_sync_status === 'queued' || team.last_sync_status === 'running'"
+                    :disabled="syncingIds.has(team.id) || team.last_sync_status === 'queued' || team.last_sync_status === 'running'"
                     @click="void handleSyncOne(team)"
                   >
-                    {{ syncingIds.has(team.team_id) ? '同步中' : '同步' }}
+                    {{ syncingIds.has(team.id) ? '同步中' : '同步' }}
                   </button>
                   <details class="tm-inline-menu" @toggle="handleMenuToggle">
                     <summary aria-label="更多操作">···</summary>

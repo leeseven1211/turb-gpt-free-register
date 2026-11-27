@@ -2,16 +2,9 @@ import type {components} from './accounts-schema';
 import {ApiError, request} from './client';
 import type {AccountQueryAdapter, AccountQuerySpec} from '../features/accounts/queryAdapter';
 
-export interface AccountTeamMembershipItem {
-  team_id: string | number;
-  workspace_id: string;
-  workspace_name: string;
-  display_name?: string | null;
-  role: string;
-  membership_state: string;
-}
-export type AccountRow = components['schemas']['AccountRow'] & { team_memberships?: readonly AccountTeamMembershipItem[] };
-export type AccountStatusRow = components['schemas']['AccountStatusRow'] & { team_memberships?: readonly AccountTeamMembershipItem[] };
+export type AccountTeamMembershipItem = components['schemas']['AccountTeamMembership'];
+export type AccountRow = components['schemas']['AccountRow'];
+export type AccountStatusRow = components['schemas']['AccountStatusRow'];
 export type AccountFacets = components['schemas']['AccountFacets'];
 export type AccountSearchTerm = components['schemas']['AccountSearchTerm'];
 export type AccountsListResponse = components['schemas']['AccountsListResponse'];

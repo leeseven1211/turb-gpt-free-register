@@ -1,8 +1,6 @@
 import type {components} from '../../api/accounts-schema';
 
-export type AccountQuerySpec = components['schemas']['AccountQuerySpec'] & {
-  team_scope?: string;
-};
+export type AccountQuerySpec = components['schemas']['AccountQuerySpec'];
 export interface AccountQueryAdapter {
   normalize(raw?: object): AccountQuerySpec;
   fromLegacy(params: URLSearchParams | string): AccountQuerySpec;

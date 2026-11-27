@@ -256,6 +256,12 @@ export interface components {
                 direction: "desc";
             }[];
             limit: number | null;
+            /**
+             * @description 本地已确认 Team 成员关系范围；邀请或受理任务不提前计为成员。
+             * @default all
+             * @enum {string}
+             */
+            team_scope: "all" | "team" | "non_team";
         };
         RegistrationRetry: {
             available: boolean | null;
@@ -534,6 +540,7 @@ export interface components {
             totp_enabled: boolean;
             updated_at?: string | null;
             user_name?: string | null;
+            team_memberships?: components["schemas"]["AccountTeamMembership"][];
         };
         AccountFacet: {
             value: string;
@@ -715,6 +722,7 @@ export interface components {
             updated_at?: string | null;
             plan_details_revision: string;
             plan_summary: components["schemas"]["PlanSummary"];
+            team_memberships?: components["schemas"]["AccountTeamMembership"][];
         };
         AccountQueueSettings: {
             workers: number;
@@ -764,6 +772,19 @@ export interface components {
             code?: string;
             error_code?: string;
         };
+        /** @description 按本地 Team 去重的已确认关系，归档独立，历史多 Team 关系保留。 */
+        AccountTeamMembership: {
+            team_id: string;
+            workspace_id: string;
+            name: string | null;
+            display_name: string | null;
+            /** @enum {string} */
+            role: "owner" | "admin" | "member" | "unknown";
+            /** @enum {string} */
+            membership_state: "joined";
+            /** Format: date-time */
+            last_verified_at: string | null;
+        };
     };
     responses: never;
     parameters: {
@@ -791,6 +812,7 @@ export interface operations {
                 limit?: number;
                 /** @description 既有查询参数。 */
                 archived?: string;
+                team_scope?: "all" | "team" | "non_team";
                 /** @description 高级搜索原文；语法错误使用顶层 code=account_search_invalid。 */
                 q?: string;
                 /** @description 既有查询参数。 */
@@ -890,6 +912,7 @@ export interface operations {
                 limit?: number;
                 /** @description 既有查询参数。 */
                 archived?: string;
+                team_scope?: "all" | "team" | "non_team";
                 /** @description 高级搜索原文；语法错误使用顶层 code=account_search_invalid。 */
                 q?: string;
                 /** @description 既有查询参数。 */

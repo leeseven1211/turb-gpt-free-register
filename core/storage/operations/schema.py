@@ -13,7 +13,7 @@ _LOCK = threading.RLock()
 _READY_KEY = ""
 _FORCE_SCHEMA_CHECK = False
 # 修改统一任务表、索引或结算域结构时递增版本。
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 4
 _SCHEMA_MIGRATIONS = "operation_schema_migrations"
 
 
@@ -127,6 +127,7 @@ def _apply_operation_schema(cur) -> None:
             target_id BIGINT,
             attempt_id BIGINT REFERENCES {_common._table('registration_attempts')}(id),
             account_id BIGINT,
+            team_id BIGINT,
             email_snapshot TEXT NOT NULL DEFAULT '',
             requested_action TEXT NOT NULL,
             status TEXT NOT NULL DEFAULT 'queued',
@@ -145,6 +146,14 @@ def _apply_operation_schema(cur) -> None:
             UNIQUE(source_system, source_id)
         )
         """
+    )
+    # Team 关联独立于目标账号和 JSON 展示字段，父子任务均保存精确本地引用。
+    cur.execute(
+        f"ALTER TABLE {_common._table('operation_tasks')} ADD COLUMN IF NOT EXISTS team_id BIGINT"
+    )
+    cur.execute(
+        f"CREATE INDEX IF NOT EXISTS {_common._quote('idx_operation_tasks_team')} "
+        f"ON {_common._table('operation_tasks')} (team_id, id DESC) WHERE team_id IS NOT NULL"
     )
     cur.execute(
         f"""
@@ -413,6 +422,7 @@ def _apply_operation_schema(cur) -> None:
         ("idx_extract_payment_capacity", "extract_link_payment_orders", "payment_provider, payment_state, task_id"),
         ("idx_operation_projection_queue_due", "operation_projection_queue", "status, available_at, id"),
         ("idx_operation_batch_items_task", "operation_batch_items", "task_id, id"),
+        ("idx_operation_batch_items_task_batch", "operation_batch_items", "task_id, batch_id"),
         ("idx_operation_resources_run", "operation_resources", "run_id, id"),
         ("idx_account_operation_leases_run", "account_operation_leases", "run_id"),
         ("idx_registration_attempts_account", "registration_attempts", "account_id"),

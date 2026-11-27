@@ -35,6 +35,7 @@ export function useTeamPolling(options: UseTeamPollingOptions): UseTeamPollingHa
   let inFlight = false;
   let disposed = false;
   let cycleEpoch = 0;
+  let pendingEpoch: number | undefined;
 
   function clearTimer(): void {
     if (timerId !== undefined) {
@@ -63,14 +64,22 @@ export function useTeamPolling(options: UseTeamPollingOptions): UseTeamPollingHa
   }
 
   async function executePoll(epoch: number): Promise<void> {
-    if (inFlight || !canRun() || epoch !== cycleEpoch) return;
+    if (!canRun() || epoch !== cycleEpoch) return;
+    if (inFlight) {
+      pendingEpoch = epoch;
+      return;
+    }
     inFlight = true;
     isPolling.value = true;
     try {
       await options.onPoll();
     } finally {
       inFlight = false;
-      if (!disposed && epoch === cycleEpoch && canRun()) {
+      const pending = pendingEpoch;
+      pendingEpoch = undefined;
+      if (pending !== undefined && pending === cycleEpoch && canRun()) {
+        void executePoll(pending);
+      } else if (!disposed && epoch === cycleEpoch && canRun()) {
         scheduleNext(epoch);
       } else {
         isPolling.value = false;
@@ -86,6 +95,7 @@ export function useTeamPolling(options: UseTeamPollingOptions): UseTeamPollingHa
   }
 
   function stop(): void {
+    pendingEpoch = undefined;
     cycleEpoch += 1;
     clearTimer();
   }

@@ -160,6 +160,17 @@
             }
           },
           {
+            "name": "team_id",
+            "in": "query",
+            "required": false,
+            "description": "精确本地 Team ID，与其他条件按 AND 组合；列表、总数和 facets 使用相同关联范围",
+            "schema": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]{0,18}$",
+              "maxLength": 19
+            }
+          },
+          {
             "name": "include_facets",
             "in": "query",
             "required": false,
@@ -193,6 +204,16 @@
           },
           "404": {
             "description": "任务或执行实例不存在",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "team_id 不是单个 64 位正整数十进制 ID",
             "content": {
               "application/json": {
                 "schema": {
@@ -451,6 +472,16 @@
             "schema": {
               "type": "integer"
             }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "description": "支持幂等的原生 handler 接收该键；Team 必填，16–128 字符，与请求体 idempotency_key 同时提供时必须一致",
+            "schema": {
+              "type": "string",
+              "maxLength": 128
+            }
           }
         ],
         "responses": {
@@ -513,6 +544,16 @@
                 }
               }
             }
+          },
+          "422": {
+            "description": "请求幂等键不符合要求或头体不一致",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
           }
         },
         "requestBody": {
@@ -528,6 +569,10 @@
                       "roxy",
                       "protocol"
                     ]
+                  },
+                  "idempotency_key": {
+                    "type": "string",
+                    "description": "Team 重跑的请求幂等键，也可通过 Idempotency-Key 提供"
                   }
                 },
                 "required": [],
@@ -779,7 +824,7 @@
       "post": {
         "operationId": "bulkOperations",
         "summary": "批量执行现有任务操作",
-        "description": "按任务 ID 返回受理和跳过结果。批量托管任务重跑按原批次创建一个目标集合轮次。terminate 返回持久命令，执行结果通过批量命令回执接口分页查询。",
+        "description": "按任务 ID 返回受理和跳过结果。批量托管任务重跑按原批次创建一个目标集合轮次。terminate 返回持久命令，执行结果通过批量命令回执接口分页查询。 Team retry 请求必须提供 16–128 字符幂等键；同键绑定动作和完整固定任务集合，先重放完成回执，处理中可使用原键恢复未完成项目。",
         "parameters": [
           {
             "name": "Idempotency-Key",
@@ -824,6 +869,36 @@
           },
           "400": {
             "description": "参数无效",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Team 批量请求键已绑定其他动作或任务集合",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Team 批量重跑缺少或提供非法幂等键",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "同一 Team 批量请求仍在处理，可使用原键重试",
             "content": {
               "application/json": {
                 "schema": {
@@ -1726,6 +1801,11 @@
               "string",
               "null"
             ]
+          },
+          "team_id": {
+            "type": "string",
+            "description": "仅 Team 任务返回；精确本地 Team ID 十进制字符串",
+            "pattern": "^[1-9][0-9]*$"
           }
         },
         "required": [
@@ -2347,30 +2427,98 @@
       },
       "BulkTerminationSubmission": {
         "type": "object",
-        "required": ["ok", "accepted", "command_id", "task_id", "run_id", "operation", "reused"],
+        "required": [
+          "ok",
+          "accepted",
+          "command_id",
+          "task_id",
+          "run_id",
+          "operation",
+          "reused"
+        ],
         "properties": {
-          "ok": {"type": "boolean"},
-          "accepted": {"type": "boolean"},
-          "command_id": {"type": "string"},
-          "task_id": {"type": "string"},
-          "run_id": {"type": "string"},
-          "operation": {"type": "string", "enum": ["operation_terminate"]},
-          "status": {"type": "string"},
-          "reused": {"type": "boolean"}
+          "ok": {
+            "type": "boolean"
+          },
+          "accepted": {
+            "type": "boolean"
+          },
+          "command_id": {
+            "type": "string"
+          },
+          "task_id": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "operation": {
+            "type": "string",
+            "enum": [
+              "operation_terminate"
+            ]
+          },
+          "status": {
+            "type": "string"
+          },
+          "reused": {
+            "type": "boolean"
+          }
         }
       },
       "BulkActionResponse": {
         "type": "object",
-        "required": ["ok", "action", "accepted", "accepted_count", "skipped", "skipped_count"],
+        "required": [
+          "ok",
+          "action",
+          "accepted",
+          "accepted_count",
+          "skipped",
+          "skipped_count"
+        ],
         "properties": {
-          "ok": {"type": "boolean"},
-          "action": {"type": "string", "enum": ["retry", "cancel", "terminate", "delete"]},
-          "accepted": {"type": "array", "items": {"$ref": "#/components/schemas/ActionResult"}},
-          "accepted_count": {"type": "integer", "minimum": 0},
-          "skipped": {"type": "array", "items": {"$ref": "#/components/schemas/ActionResult"}},
-          "skipped_count": {"type": "integer", "minimum": 0},
-          "deleted": {"type": "array", "items": {"type": "integer"}},
-          "deleted_count": {"type": "integer", "minimum": 0}
+          "ok": {
+            "type": "boolean"
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "retry",
+              "cancel",
+              "terminate",
+              "delete"
+            ]
+          },
+          "accepted": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ActionResult"
+            }
+          },
+          "accepted_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "skipped": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ActionResult"
+            }
+          },
+          "skipped_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "deleted": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          },
+          "deleted_count": {
+            "type": "integer",
+            "minimum": 0
+          }
         }
       },
       "ActionResponse": {

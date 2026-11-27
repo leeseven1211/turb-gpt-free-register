@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { nextTick, ref, shallowRef } from 'vue';
+import { computed, nextTick, ref, shallowRef } from 'vue';
 import type { TeamsApi } from '../../api/teams';
 import TeamBindModal from './TeamBindModal.vue';
 import TeamCandidatePickerModal from './TeamCandidatePickerModal.vue';
@@ -51,7 +51,8 @@ const visible = ref(props.initialVisible);
 const view = ref<'list' | 'detail'>(initialState.view);
 const activeTeamId = ref<TeamDecimalId | null>(initialState.team_id ?? null);
 const activeSection = ref<'members' | 'invitations'>(initialState.section ?? 'members');
-const joinRequestFilterId = ref('');
+const joinRequestFilters = ref<Record<string, string>>({});
+const joinRequestFilterId = computed(() => activeTeamId.value ? joinRequestFilters.value[activeTeamId.value] || '' : '');
 const savedScrollY = ref(0);
 const activeDetailTeam = shallowRef<TeamDTO | null>(null);
 
@@ -72,6 +73,13 @@ const candidateTeam = shallowRef<TeamDTO | null>(null);
 const joinModalOpen = ref(false);
 const joinInitialTeam = shallowRef<TeamDTO | null>(null);
 const joinTarget = shallowRef<AccountsJoinRequestPayload | null>(null);
+
+function clearJoinRequestFilter(teamId: TeamDecimalId | null = activeTeamId.value): void {
+  if (!teamId) return;
+  const next = { ...joinRequestFilters.value };
+  delete next[teamId];
+  joinRequestFilters.value = next;
+}
 
 function navigationState(): TeamsNavigationState {
   if (view.value === 'detail' && activeTeamId.value) {
@@ -110,7 +118,7 @@ function navigate(
     view.value = 'list';
     activeTeamId.value = null;
     activeSection.value = 'members';
-    joinRequestFilterId.value = '';
+    joinRequestFilters.value = {};
     activeDetailTeam.value = null;
     void nextTick(() => {
       if (typeof window !== 'undefined') {
@@ -126,7 +134,7 @@ function navigate(
 }
 
 function handleOpenDetail(teamId: TeamDecimalId, section: 'members' | 'invitations' = 'members'): void {
-  joinRequestFilterId.value = '';
+  clearJoinRequestFilter(teamId);
   navigate({ view: 'detail', team_id: teamId, section }, 'push');
 }
 
@@ -164,7 +172,7 @@ function handleOpenJoinFromTeam(team: TeamDTO): void {
 
 function openJoinFromAccounts(payload: AccountsJoinRequestPayload): void {
   joinInitialTeam.value =
-    payload.targetTeamId && activeDetailTeam.value?.team_id === payload.targetTeamId
+    payload.targetTeamId && activeDetailTeam.value?.id === payload.targetTeamId
       ? activeDetailTeam.value
       : null;
   joinTarget.value = payload;
@@ -183,7 +191,7 @@ function handleConfirmCandidates(payload: {
     mode: 'explicit',
     accountIds: payload.accountIds,
     expectedEmails: payload.expectedEmails,
-    targetTeamId: target.team_id,
+    targetTeamId: target.id,
   };
   joinModalOpen.value = true;
 }
@@ -191,7 +199,7 @@ function handleConfirmCandidates(payload: {
 function handleTeamBound(team: TeamDTO): void {
   bindModalOpen.value = false;
   void listRef.value?.refresh({ silent: true });
-  navigate({ view: 'detail', team_id: team.team_id, section: 'members' }, 'push');
+  navigate({ view: 'detail', team_id: team.id, section: 'members' }, 'push');
 }
 
 function handleManagerUpdated(team: TeamDTO): void {
@@ -206,19 +214,19 @@ function handleOpenExistingTeam(teamId: TeamDecimalId): void {
 
 function handleTeamUpdated(team: TeamDTO): void {
   editModalOpen.value = false;
-  if (editingTeam.value?.team_id === team.team_id) {
+  if (editingTeam.value?.id === team.id) {
     editingTeam.value = team;
   }
-  if (activeDetailTeam.value?.team_id === team.team_id) {
+  if (activeDetailTeam.value?.id === team.id) {
     activeDetailTeam.value = team;
   }
-  if (joinInitialTeam.value?.team_id === team.team_id) {
+  if (joinInitialTeam.value?.id === team.id) {
     joinInitialTeam.value = team;
   }
-  if (candidateTeam.value?.team_id === team.team_id) {
+  if (candidateTeam.value?.id === team.id) {
     candidateTeam.value = team;
   }
-  if (view.value === 'detail' && activeTeamId.value === team.team_id) {
+  if (view.value === 'detail' && activeTeamId.value === team.id) {
     detailRef.value?.updateTeamSnapshot(team);
   }
   void listRef.value?.refresh({ silent: true });
@@ -231,7 +239,8 @@ function handleEditConflict(): void {
   void listRef.value?.refresh({ silent: true });
 }
 
-function handleJoinSubmitted(_receipt: JoinRequestDTO, teamId: TeamDecimalId): void {
+function handleJoinSubmitted(receipt: JoinRequestDTO, teamId: TeamDecimalId): void {
+  joinRequestFilters.value = { ...joinRequestFilters.value, [teamId]: receipt.id };
   if (view.value === 'detail' && activeTeamId.value === teamId) {
     detailRef.value?.refreshAll();
   }
@@ -298,7 +307,7 @@ defineExpose({
       @open-change-manager="handleOpenChangeManager"
       @open-join="handleOpenJoinFromTeam"
       @team-loaded="activeDetailTeam = $event"
-      @clear-join-request="joinRequestFilterId = ''"
+      @clear-join-request="clearJoinRequestFilter()"
     />
 
     <TeamBindModal
