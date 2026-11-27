@@ -526,6 +526,14 @@ def run_protocol_password_reset(
             authorize, headers=session.get_auth_navigate_headers(referer="https://chatgpt.com/"),
             allow_redirects=True,
         )
+        authorize_landing = str(getattr(authorize_response, "url", "") or "")
+        parsed_authorize = urlparse(authorize_landing)
+        if (parsed_authorize.hostname == "auth.openai.com"
+                and parsed_authorize.path.rstrip("/") == "/email-verification"):
+            from core.accounts.liveness.protocol.v2 import _open_offered_password_login
+
+            note("password_reset", "授权落在邮箱验证页，先进入已有密码登录入口")
+            authorize_landing = _open_offered_password_login(session, authorize_landing)
         reset_response = session.get(
             _RESET_PAGE, headers=session.get_auth_navigate_headers(referer=_AUTH + "/log-in/password"),
             allow_redirects=True,
@@ -533,7 +541,7 @@ def run_protocol_password_reset(
         note(
             "password_reset", "已请求密码重置页面",
             authorize_status=getattr(authorize_response, "status_code", None),
-            authorize_path=urlparse(str(getattr(authorize_response, "url", "") or "")).path,
+            authorize_path=urlparse(authorize_landing).path,
             reset_status=getattr(reset_response, "status_code", None),
             reset_path=urlparse(str(getattr(reset_response, "url", "") or "")).path,
             restored_login_cookies=_has_login_cookies(cached),

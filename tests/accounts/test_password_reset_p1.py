@@ -79,7 +79,7 @@ class PasswordResetP1Tests(TestCase):
         self.assertEqual("new-token", result["access_token"])
 
     def _run_reset(self, *, state="prepared", verification=None, clock=None, completion_pending=None,
-                   validation_error=None, refresh_before_reset=False):
+                   validation_error=None, refresh_before_reset=False, authorize_landing=None):
         recovery = Mock()
         recovery.checkpoint = SimpleNamespace(
             state=state, password="Candidate-password-42",
@@ -96,6 +96,12 @@ class PasswordResetP1Tests(TestCase):
 
         recovery.confirm.side_effect = confirm
         session = _ResetSession([_Response(200, {"page": {"type": "new_password"}}), _Response(200)])
+        if authorize_landing:
+            def navigate(url, **_kwargs):
+                response = _Response(200)
+                response.url = authorize_landing if url.endswith("/authorize") else url
+                return response
+            session.get = navigate
         sent_at = []
         waited_after = []
         fixture_auth = {"ok": True, "password_auth_status": "verified", "auth_method": "password",
@@ -214,3 +220,17 @@ class PasswordResetP1Tests(TestCase):
         result, recovery, _, _, _, _, _ = self._run_reset(refresh_before_reset=True)
         self.assertTrue(result["ok"])
         recovery.refresh_before_reset.assert_called_once()
+
+    def test_email_verification_landing_opens_existing_password_route_before_reset(self):
+        with patch(
+            "core.accounts.liveness.protocol.v2._open_offered_password_login",
+            return_value="https://auth.openai.com/log-in/password",
+        ) as open_password:
+            result, _, _, _, _, _, _ = self._run_reset(
+                authorize_landing="https://auth.openai.com/email-verification",
+            )
+        self.assertTrue(result["ok"])
+        open_password.assert_called_once()
+        self.assertEqual(
+            "https://auth.openai.com/email-verification", open_password.call_args.args[1],
+        )
