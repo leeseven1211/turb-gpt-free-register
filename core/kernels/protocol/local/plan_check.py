@@ -360,6 +360,10 @@ def parse_accounts_check(data: dict, *, token: str = "", now_iso=now_iso, token_
         "ok": True,
         "checked_at": now_iso(),
         "account_id": account.get("account_id") or account_key or claim_account_id,
+        "response_account_id": (
+            str(account.get("account_id") or "").strip()
+            or (str(account_key).strip() if account_key and account_key != "default" else "")
+        ),
         "account_user_role": account.get("account_user_role"),
         "current_plan_type": plan_type,
         "subscription_plan": subscription_plan,

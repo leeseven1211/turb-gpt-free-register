@@ -57,6 +57,7 @@ class PrivateCheckpoint:
     password: str = field(repr=False)
     candidate_login_original_fact: dict | None = field(default=None, repr=False, compare=False)
     intent: str = "password_change"
+    completion_pending: bool = False
 
 
 @dataclass(frozen=True)
@@ -244,6 +245,55 @@ def _fence(cur, owner: _Owner) -> tuple[dict, list[dict]]:
     return account, attempts
 
 
+def _operation_task_id(cur, operation_run_id: int) -> int:
+    cur.execute(
+        f"SELECT task_id FROM {pg.qualified('operation_runs')} WHERE id=%s",
+        (int(operation_run_id),),
+    )
+    row = cur.fetchone() or {}
+    task_id = row.get("task_id")
+    if not isinstance(task_id, int) or task_id < 1:
+        raise PasswordRecoveryError("operation_not_found")
+    return task_id
+
+
+def _manual_password_change_task_id(cur, owner: _Owner) -> int | None:
+    if owner.purpose != "manual":
+        return None
+    return _manual_password_change_task_id_for_run(cur, owner.operation_run_id)
+
+
+def _manual_password_change_task_id_for_run(cur, operation_run_id: int) -> int | None:
+    cur.execute(
+        f"SELECT run.task_id, task.task_type "
+        f"FROM {pg.qualified('operation_runs')} run "
+        f"JOIN {pg.qualified('operation_tasks')} task ON task.id=run.task_id "
+        "WHERE run.id=%s",
+        (int(operation_run_id),),
+    )
+    row = cur.fetchone() or {}
+    return row.get("task_id") if row.get("task_type") == "password_change" else None
+
+
+def _completion_task_ids(payload: dict) -> list[int]:
+    values = payload.get("completion_task_ids")
+    if not isinstance(values, list) or not values:
+        return []
+    if any(type(value) is not int or value < 1 for value in values):
+        return []
+    return list(dict.fromkeys(values))
+
+
+def _protocol_session_digest(protocol_session: dict) -> str:
+    material = json.dumps(
+        protocol_session,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
 def _identity(row: dict, owner: _Owner) -> bool:
     return all(row.get(key) == getattr(owner, key) for key in (
         "account_id", "email", "purpose", "operation_run_id", "operation_execution_id",
@@ -269,7 +319,8 @@ def _checkpoint(row: dict, cipher: Fernet) -> PrivateCheckpoint:
         "state", "version", "account_id", "email", "purpose", "operation_run_id", "operation_execution_id",
         "attempt_id", "registration_run_id", "registration_execution_id")},
         **{key: payload[key] for key in ("account_password_version", "old_password", "password")},
-        intent=payload.get("intent", "password_change"))
+        intent=payload.get("intent", "password_change"),
+        completion_pending=payload.get("completion_pending", False))
 
 
 def _restore_recovery_intent(cur, row: dict, payload: dict, cipher: Fernet) -> tuple[dict, dict]:
@@ -335,7 +386,30 @@ def _prepare_or_resume(owner_values: dict, candidate_factory: Callable[[], str] 
                 raise PasswordRecoveryError("recovery_intent_conflict")
             _validate_password(owner, account, attempts, payload, key,
                                allow_candidate=pending["state"] in {"started", "unknown"})
-            return _checkpoint(_takeover(cur, pending, owner), cipher)
+            taken = _takeover(cur, pending, owner)
+            task_id = _manual_password_change_task_id(cur, owner)
+            if task_id is not None:
+                task_ids = _completion_task_ids(payload)
+                origin_task_id = _manual_password_change_task_id_for_run(
+                    cur, pending["operation_run_id"]
+                )
+                changed = False
+                if origin_task_id is not None and origin_task_id not in task_ids:
+                    task_ids.append(origin_task_id)
+                    changed = True
+                if task_id not in task_ids:
+                    task_ids.append(task_id)
+                    changed = True
+                if changed:
+                    payload["completion_task_ids"] = task_ids
+                    encrypted = cipher.encrypt(json.dumps(payload, ensure_ascii=False).encode()).decode("ascii")
+                    cur.execute(
+                        f"UPDATE {pg.qualified(_TABLE)} SET credential_ciphertext=%s,updated_at=now() "
+                        "WHERE id=%s RETURNING *",
+                        (encrypted, int(taken["id"])),
+                    )
+                    taken = cur.fetchone()
+            return _checkpoint(taken, cipher)
         if candidate_factory is None:
             return None
         old_password = _password(account)
@@ -352,6 +426,9 @@ def _prepare_or_resume(owner_values: dict, candidate_factory: Callable[[], str] 
                    "email": owner.email, "old_password": old_password, "password": candidate,
                    "intent": intent or "password_change",
                    "account_password_version": _password_version(owner, old_password, key)}
+        task_id = _manual_password_change_task_id(cur, owner)
+        if task_id is not None:
+            payload["completion_task_ids"] = [task_id]
         encrypted = cipher.encrypt(json.dumps(payload, ensure_ascii=False).encode()).decode("ascii")
         cur.execute(f"INSERT INTO {pg.qualified(_TABLE)} (account_id,email,purpose,state,operation_run_id,operation_execution_id,"
                     "attempt_id,registration_run_id,registration_execution_id,credential_ciphertext) "
@@ -370,6 +447,61 @@ def prepare_password_recovery(*, candidate_factory: Callable[[], str], intent: s
 def resume_password_recovery(*, intent: str | None = None, **owner) -> PrivateCheckpoint | None:
     """只恢复待完成候选，允许在原执行结束后交给合法的新执行。"""
     return _prepare_or_resume(owner, None, intent)
+
+
+def resume_manual_password_change(**owner) -> PrivateCheckpoint | None:
+    """优先恢复本任务已确认改密，否则接管唯一待收尾改密。"""
+    identity = _owner(owner)
+    if identity.purpose != "manual":
+        raise PasswordRecoveryError("recovery_owner_mismatch")
+    cipher, key = _cipher()
+    init()
+    with _database_errors(), pg.connect(row_factory=dict_row) as conn, conn.cursor() as cur:
+        account, attempts = _fence(cur, identity)
+        current_task_id = _operation_task_id(cur, identity.operation_run_id)
+        cur.execute(
+            f"SELECT * FROM {pg.qualified(_TABLE)} "
+            "WHERE account_id=%s AND email=%s AND purpose='manual' AND state='confirmed' FOR UPDATE",
+            (identity.account_id, identity.email),
+        )
+        candidates = []
+        for row in cur.fetchall():
+            payload = _credentials(row, cipher)
+            task_ids = _completion_task_ids(payload)
+            is_p1 = "completion_pending" in payload and bool(task_ids)
+            pending = payload.get("completion_pending")
+            if (payload.get("intent", "password_change") == "password_change" and is_p1
+                    and (pending is True or pending is False and current_task_id in task_ids)):
+                candidates.append((row, payload))
+        if not candidates:
+            return None
+        associated = [
+            item for item in candidates
+            if current_task_id in _completion_task_ids(item[1])
+        ]
+        if associated:
+            candidates = associated
+        else:
+            candidates = [item for item in candidates if item[1].get("completion_pending") is True]
+        if not candidates:
+            return None
+        if len(candidates) != 1:
+            raise PasswordRecoveryError("recovery_ambiguous")
+        row, payload = candidates[0]
+        _validate_password(identity, account, attempts, payload, key, confirmed=True)
+        taken = _takeover(cur, row, identity)
+        task_ids = _completion_task_ids(payload)
+        if current_task_id not in task_ids:
+            task_ids.append(current_task_id)
+            payload["completion_task_ids"] = task_ids
+            encrypted = cipher.encrypt(json.dumps(payload, ensure_ascii=False).encode()).decode("ascii")
+            cur.execute(
+                f"UPDATE {pg.qualified(_TABLE)} SET credential_ciphertext=%s,updated_at=now() "
+                "WHERE id=%s RETURNING *",
+                (encrypted, int(taken["id"])),
+            )
+            taken = cur.fetchone()
+        return _checkpoint(taken, cipher)
 
 
 def _owned_checkpoint(cur, recovery_id: int, owner: _Owner) -> dict:
@@ -392,20 +524,13 @@ def get_password_recovery(recovery_id: int, **owner) -> PrivateCheckpoint:
         return _checkpoint(_owned_checkpoint(cur, recovery_id, identity), cipher)
 
 
-def save_password_recovery_session(recovery_id: int, *, access_token: str, session_info: dict,
-                                   verified_password: str | None = None, auth_method: str = "",
-                                   password_auth_status: str = "",
-                                   **owner) -> PrivateCheckpoint | None:
-    """保存认证会话；明确验证原密码时，原子确认原值并结束未提交的补密码候选。"""
+def _session_context(identity: _Owner, access_token: str, session_info: dict) -> dict:
     from core.accounts.plans.client import token_claims
 
-    identity = _owner(owner)
-    if identity.purpose != "manual" or not str(access_token or "").strip() or not isinstance(session_info, dict):
+    if (not str(access_token or "").strip() or not isinstance(session_info, dict)):
         raise PasswordRecoveryError("session_context_invalid")
     user = session_info.get("user")
     account_info = session_info.get("account") or {}
-    # 沿用会话身份核验规则：邮箱和本次 Token 必须来自同一个完整认证会话。
-    # Token 中的可选身份声明只用于拒绝冲突，不能代替会话邮箱。
     if (not isinstance(user, dict) or not isinstance(account_info, dict)
             or str(user.get("email") or "").strip().casefold() != identity.email
             or str(session_info.get("accessToken") or "").strip() != str(access_token).strip()):
@@ -418,6 +543,47 @@ def save_password_recovery_session(recovery_id: int, *, access_token: str, sessi
             or (claims.get("user_id") and str(claims["user_id"]) != str(user.get("id") or ""))
             or (claims.get("account_id") and str(claims["account_id"]) != str(account_info.get("id") or ""))):
         raise PasswordRecoveryError("session_context_invalid")
+    return claims
+
+
+def _validate_protocol_session(protocol_session: dict, session_info: dict, identity: _Owner) -> None:
+    if not isinstance(protocol_session, dict):
+        raise PasswordRecoveryError("protocol_session_invalid")
+    device_id = protocol_session.get("device_id")
+    profile = protocol_session.get("browser_profile")
+    cookies = protocol_session.get("cookies")
+    if (not isinstance(device_id, str) or not device_id.strip()
+            or not isinstance(profile, dict)
+            or not {"screen_width", "screen_height", "device_pixel_ratio",
+                    "hardware_concurrency", "device_memory", "js_heap_size_limit"}.issubset(profile)
+            or not isinstance(cookies, list) or not cookies):
+        raise PasswordRecoveryError("protocol_session_invalid")
+    if not any(
+        isinstance(item, dict)
+        and str(item.get("name") or "").strip()
+        and isinstance(item.get("value"), str)
+        and str(item.get("value") or "").strip()
+        and str(item.get("domain") or "").strip().lower().lstrip(".") == "chatgpt.com"
+        and str(item.get("name") or "").startswith("__Secure-next-auth.session-token")
+        for item in cookies
+    ):
+        raise PasswordRecoveryError("protocol_session_invalid")
+    user = session_info.get("user") or {}
+    account_info = session_info.get("account") or {}
+    if (str(protocol_session.get("user_id") or "") != str(user.get("id") or "")
+            or str(protocol_session.get("chatgpt_account_id") or "") != str(account_info.get("id") or "")):
+        raise PasswordRecoveryError("protocol_session_invalid")
+
+
+def save_password_recovery_session(recovery_id: int, *, access_token: str, session_info: dict,
+                                   verified_password: str | None = None, auth_method: str = "",
+                                   password_auth_status: str = "",
+                                   **owner) -> PrivateCheckpoint | None:
+    """保存认证会话；明确验证原密码时，原子确认原值并结束未提交的补密码候选。"""
+    identity = _owner(owner)
+    if identity.purpose != "manual":
+        raise PasswordRecoveryError("session_context_invalid")
+    claims = _session_context(identity, access_token, session_info)
     if verified_password is not None and password_auth_status != "verified":
         raise PasswordRecoveryError("password_login_confirmation_unverified")
     cipher, key = _cipher() if verified_password is not None else (None, None)
@@ -460,6 +626,103 @@ def save_password_recovery_session(recovery_id: int, *, access_token: str, sessi
                 changes["last_auth_method"] = auth_method
         records.patch_row(records.ACCOUNTS, identity.account_id, changes, conn=cur.connection)
         return confirmed_checkpoint
+
+
+def save_manual_password_change_session(
+    recovery_id: int,
+    *,
+    access_token: str,
+    session_info: dict,
+    protocol_session: dict,
+    auth_method: str = "",
+    **owner,
+) -> None:
+    """在待收尾改密检查点的同一事务中保存账号会话和私有协议缓存。"""
+    identity = _owner(owner)
+    if identity.purpose != "manual":
+        raise PasswordRecoveryError("session_context_invalid")
+    claims = _session_context(identity, access_token, session_info)
+    _validate_protocol_session(protocol_session, session_info, identity)
+    cipher, key = _cipher()
+    init()
+    from core.storage.accounts import protocol_sessions
+
+    protocol_sessions.init()
+    with _database_errors(), pg.connect(row_factory=dict_row) as conn, conn.cursor() as cur:
+        account, attempts = _fence(cur, identity)
+        row = _owned_checkpoint(cur, recovery_id, identity)
+        payload = _credentials(row, cipher)
+        if (row["state"] != "confirmed" or payload.get("intent", "password_change") != "password_change"
+                or payload.get("completion_pending") is not True):
+            raise PasswordRecoveryError("password_change_completion_not_pending")
+        _validate_password(identity, account, attempts, payload, key, confirmed=True)
+        if not protocol_sessions.save_session(
+            identity.account_id, identity.email, protocol_session, conn=cur.connection
+        ):
+            raise PasswordRecoveryError("protocol_session_persistence_failed")
+        payload["protocol_session_digest"] = _protocol_session_digest(protocol_session)
+        encrypted = cipher.encrypt(json.dumps(payload, ensure_ascii=False).encode()).decode("ascii")
+        cur.execute(
+            f"UPDATE {pg.qualified(_TABLE)} SET credential_ciphertext=%s,updated_at=now() "
+            "WHERE id=%s",
+            (encrypted, int(recovery_id)),
+        )
+        changes = {
+            "access_token": access_token,
+            "expires_at": session_info.get("expires") or account.get("expires_at"),
+            "token_expires_at": claims.get("token_expires_at"),
+            "token_expired": claims.get("token_expired"),
+            "chatgpt_session": json.dumps(session_info, ensure_ascii=False),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        if auth_method:
+            changes["last_auth_method"] = auth_method
+        records.patch_row(records.ACCOUNTS, identity.account_id, changes, conn=cur.connection)
+
+
+def complete_manual_password_change(
+    recovery_id: int,
+    *,
+    expected_version: int,
+    access_token: str,
+    **owner,
+) -> PrivateCheckpoint:
+    """在业务核验完成后，只在事务内清理待收尾标记。"""
+    identity = _owner(owner)
+    if identity.purpose != "manual":
+        raise PasswordRecoveryError("recovery_owner_mismatch")
+    cipher, key = _cipher()
+    init()
+    from core.storage.accounts import protocol_sessions
+
+    protocol_sessions.init()
+    with _database_errors(), pg.connect(row_factory=dict_row) as conn, conn.cursor() as cur:
+        account, attempts = _fence(cur, identity)
+        row = _owned_checkpoint(cur, recovery_id, identity)
+        payload = _credentials(row, cipher)
+        if row["state"] != "confirmed" or payload.get("completion_pending") is not True:
+            raise PasswordRecoveryError("password_change_completion_not_pending")
+        if row["version"] != expected_version:
+            raise PasswordRecoveryError("version_conflict")
+        if str(account.get("access_token") or "") != str(access_token or ""):
+            raise PasswordRecoveryError("session_token_conflict")
+        session_info = _json_object(account.get("chatgpt_session"))
+        _session_context(identity, access_token, session_info)
+        cached_protocol_session = protocol_sessions.load_session(
+            identity.account_id, identity.email, conn=cur.connection
+        )
+        _validate_protocol_session(cached_protocol_session, session_info, identity)
+        if payload.get("protocol_session_digest") != _protocol_session_digest(cached_protocol_session):
+            raise PasswordRecoveryError("protocol_session_digest_mismatch")
+        _validate_password(identity, account, attempts, payload, key, confirmed=True)
+        payload["completion_pending"] = False
+        encrypted = cipher.encrypt(json.dumps(payload, ensure_ascii=False).encode()).decode("ascii")
+        cur.execute(
+            f"UPDATE {pg.qualified(_TABLE)} SET credential_ciphertext=%s,version=version+1,"
+            "updated_at=now() WHERE id=%s RETURNING *",
+            (encrypted, int(recovery_id)),
+        )
+        return _checkpoint(cur.fetchone(), cipher)
 
 
 def _validate_attempt_passwords(attempts: list[dict], allowed: set[str]) -> None:
@@ -514,6 +777,7 @@ def _confirm(cur, row: dict, owner: _Owner, account: dict, attempts: list[dict],
 
 def transition_password_recovery(recovery_id: int, *, expected_version: int, state: str,
                                  confirmation: str | None = None,
+                                 completion_pending: bool | None = None,
                                  candidate_login_submission_id: str | None = None,
                                  candidate_login_original_submission_id: str | None = None,
                                  candidate_login_job_id: int | None = None, **owner) -> PrivateCheckpoint:
@@ -523,6 +787,8 @@ def transition_password_recovery(recovery_id: int, *, expected_version: int, sta
         raise PasswordRecoveryError("state_invalid")
     if (state == "confirmed" and confirmation not in _CONFIRMATIONS) or (state != "confirmed" and confirmation is not None):
         raise PasswordRecoveryError("confirmation_invalid")
+    if completion_pending is not None and (state != "confirmed" or type(completion_pending) is not bool):
+        raise PasswordRecoveryError("completion_pending_invalid")
     candidate_login = candidate_login_submission_id is not None
     if (candidate_login and (identity.purpose != "registration" or state != "confirmed" or confirmation != "candidate_login"
                             or not candidate_login_submission_id or type(candidate_login_job_id) is not int)):
@@ -542,6 +808,11 @@ def transition_password_recovery(recovery_id: int, *, expected_version: int, sta
         if confirmation in {"password_change_response", "candidate_login"} and (
                 payload.get("intent", "password_change") != "password_change"):
             raise PasswordRecoveryError("recovery_intent_conflict")
+        if completion_pending and (
+                confirmation != "password_change_response"
+                or identity.purpose != "manual"
+                or payload.get("intent", "password_change") != "password_change"):
+            raise PasswordRecoveryError("completion_pending_invalid")
         original_fact = None
         if candidate_login:
             from core.storage import registration
@@ -566,6 +837,8 @@ def transition_password_recovery(recovery_id: int, *, expected_version: int, sta
             if candidate_login_original_submission_id:
                 original_fact = fact
         if row["state"] == state == "confirmed":
+            if completion_pending is not None and row["version"] != expected_version:
+                raise PasswordRecoveryError("version_conflict")
             _confirm(cur, row, identity, account, attempts, payload, key)
             return replace(_checkpoint(row, cipher), candidate_login_original_fact=original_fact)
         if row["version"] != expected_version:
@@ -576,13 +849,24 @@ def transition_password_recovery(recovery_id: int, *, expected_version: int, sta
             raise PasswordRecoveryError("state_transition_invalid")
         if state == "confirmed":
             _confirm(cur, row, identity, account, attempts, payload, key)
+            if completion_pending is not None:
+                payload["completion_pending"] = completion_pending
+                task_ids = _completion_task_ids(payload)
+                task_id = _operation_task_id(cur, identity.operation_run_id)
+                if task_id not in task_ids:
+                    task_ids.append(task_id)
+                payload["completion_task_ids"] = task_ids
         elif state == "started":
             _validate_password(identity, account, attempts, payload, key)
+        encrypted = cipher.encrypt(json.dumps(payload, ensure_ascii=False).encode()).decode("ascii")
         cur.execute(f"UPDATE {pg.qualified(_TABLE)} SET state=%s,version=version+1,confirmation=%s,updated_at=now(),"
-                    "confirmed_at=CASE WHEN %s='confirmed' THEN now() ELSE confirmed_at END WHERE id=%s RETURNING *",
-                    (state, confirmation, state, int(recovery_id)))
+                    "confirmed_at=CASE WHEN %s='confirmed' THEN now() ELSE confirmed_at END,"
+                    "credential_ciphertext=%s WHERE id=%s RETURNING *",
+                    (state, confirmation, state, encrypted, int(recovery_id)))
         return replace(_checkpoint(cur.fetchone(), cipher), candidate_login_original_fact=original_fact)
 
 
 __all__ = ["PrivateCheckpoint", "PasswordRecoveryError", "prepare_password_recovery", "resume_password_recovery",
-           "get_password_recovery", "transition_password_recovery", "save_password_recovery_session"]
+           "resume_manual_password_change", "get_password_recovery", "transition_password_recovery",
+           "save_password_recovery_session", "save_manual_password_change_session",
+           "complete_manual_password_change"]

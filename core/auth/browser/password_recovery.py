@@ -23,6 +23,10 @@ class PasswordRecoverySession:
         self._checkpoint = store.resume_password_recovery(**self._owner, intent="password_change")
         return self._checkpoint is not None
 
+    def resume_manual_password_change(self) -> bool:
+        self._checkpoint = store.resume_manual_password_change(**self._owner)
+        return self._checkpoint is not None
+
     def prepare(self, candidate_factory) -> str:
         if self._checkpoint is None:
             self._checkpoint = store.prepare_password_recovery(
@@ -34,12 +38,14 @@ class PasswordRecoverySession:
                 raise store.PasswordRecoveryError("recovery_intent_conflict")
         return self._checkpoint.password
 
-    def _transition(self, state: str, confirmation: str | None = None) -> str:
+    def _transition(self, state: str, confirmation: str | None = None,
+                    completion_pending: bool | None = None) -> str:
         if self._checkpoint is None:
             raise store.PasswordRecoveryError("checkpoint_missing")
         self._checkpoint = store.transition_password_recovery(
             self._checkpoint.recovery_id, **self._owner,
             expected_version=self._checkpoint.version, state=state, confirmation=confirmation,
+            **({"completion_pending": completion_pending} if completion_pending is not None else {}),
         )
         return self._checkpoint.password
 
@@ -49,8 +55,8 @@ class PasswordRecoverySession:
     def mark_unknown(self) -> None:
         self._transition("unknown")
 
-    def confirm(self, confirmation: str) -> str:
-        return self._transition("confirmed", confirmation)
+    def confirm(self, confirmation: str, *, completion_pending: bool | None = None) -> str:
+        return self._transition("confirmed", confirmation, completion_pending)
 
     def confirm_candidate_login(self, driver, *, email: str, password: str,
                                 receipt: BrowserSubmissionReceipt, original=None) -> str:
