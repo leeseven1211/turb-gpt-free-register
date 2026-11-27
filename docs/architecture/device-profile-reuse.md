@@ -162,6 +162,9 @@ webgl_renderer      = ANGLE (Apple, ... Apple M2)  ← 矛盾
 - **只用于改密**，不用于刷新、不用于注册
 - **每个内核只回放自己的画像**，不做跨内核回放（后续再议）
 - 每个账号的 `replay_kernel` 固定，不动态切换
+- **内核算哪个由“注册驱动”决定，不由指纹决定**：`account_registration_driver=protocol_oss_2` → protocol；
+  `sentinel_rs` → rust。理由：同一份画像字段可能来自不同传输栈，指纹无法区分 wreq-python 与
+  wreq-util 的 TLS 细节，按指纹选会误判
 
 ### 5.2 已定方向：改密内核与注册驱动对齐
 
