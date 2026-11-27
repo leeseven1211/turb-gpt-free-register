@@ -176,6 +176,7 @@ class PasswordResetP1Tests(TestCase):
         verify.assert_not_called()
         recovery.prepare.assert_not_called()
         self.assertTrue(complete.called)
+        self.assertIsNone(complete.call_args.kwargs["auth"])
 
     def test_current_task_completion_is_resolved_before_unrelated_pending_candidate(self):
         result, recovery, send, verify, _, _, _ = self._run_reset(

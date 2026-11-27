@@ -84,6 +84,7 @@ _SAFE_PASSWORD_RECEIPT_KEYS = frozenset({
     "password_confirmed",
     "remote_password_confirmed",
     "completion_pending",
+    "completed_recheck",
     "credentials_saved",
     "business_verified",
 })

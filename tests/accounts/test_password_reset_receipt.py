@@ -119,7 +119,7 @@ def test_p1_confirmed_completion_failure_keeps_password_receipt_and_specific_cau
     ))
 
     state, detail = operation_results.account_setup_receipt(
-        7, EMAIL, {"password"}, result,
+        7, EMAIL, {"password"}, result, task_type="password_change",
     )
 
     assert state == "local_commit_required"
@@ -135,6 +135,73 @@ def test_p1_confirmed_completion_failure_keeps_password_receipt_and_specific_cau
     assert normalized.error == "token_revoked"
     assert normalized.summary["cause_code"] == "token_revoked"
     assert normalized.summary["completion_pending"] is True
+
+
+def test_completed_recheck_is_not_submitted_and_preserves_failed_readback_evidence():
+    result = _setup_result(_password_result(
+        ok=False,
+        status="failed",
+        credentials_saved=False,
+        business_verified=False,
+        completion_pending=False,
+        completed_recheck=True,
+        stage="credential_readback",
+        cause_code="credential_readback_mismatch",
+        retryable=True,
+        mutation_submitted=False,
+        action_dispatched=False,
+    ))
+
+    state, detail = operation_results.account_setup_receipt(
+        7, EMAIL, {"password"}, result, task_type="password_change",
+    )
+
+    assert state == "not_submitted"
+    assert detail["mutation_submitted"] is False
+    assert detail["action_dispatched"] is False
+    assert detail["password_reset"] == "confirmed"
+    assert detail["password_confirmed"] is True
+    assert detail["completion_pending"] is False
+    assert detail["completed_recheck"] is True
+    assert detail["cause_code"] == "credential_readback_mismatch"
+    assert "local_readback_confirmed" not in detail
+
+    normalized = operation_results.safe_operation_result(result)
+    assert normalized.status == "failed"
+    assert normalized.summary["completed_recheck"] is True
+    assert normalized.summary["completion_pending"] is False
+
+
+def test_completed_recheck_does_not_apply_to_mixed_steps():
+    result = _setup_result(_password_result(
+        ok=False,
+        status="failed",
+        completion_pending=False,
+        completed_recheck=True,
+        mutation_submitted=False,
+        action_dispatched=False,
+    ))
+
+    state, _detail = operation_results.account_setup_receipt(
+        7, EMAIL, {"password", "twofa"}, result, task_type="password_change",
+    )
+
+    assert state == "unknown"
+
+
+def test_completed_recheck_without_explicit_not_submitted_markers_does_not_bypass_receipt_guard():
+    result = _setup_result(_password_result(
+        ok=False,
+        status="failed",
+        completion_pending=False,
+        completed_recheck=True,
+    ))
+
+    state, _detail = operation_results.account_setup_receipt(
+        7, EMAIL, {"password"}, result, task_type="password_change",
+    )
+
+    assert state == "local_commit_required"
 
 
 def test_setup_execution_does_not_rewrite_confirmed_p1_failure_as_request_unknown():

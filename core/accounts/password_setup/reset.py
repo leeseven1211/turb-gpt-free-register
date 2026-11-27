@@ -471,9 +471,7 @@ def run_protocol_password_reset(
                 and getattr(recovered, "completion_pending", None) is False):
             return _complete_reset(
                 recovery=recovery, owner=owner, account=account, email=email,
-                auth={"ok": True, "access_token": str(account.get("access_token") or ""),
-                      "session": db.get_account_chatgpt_session(account_id),
-                      "_protocol_session": cached},
+                auth=None,
                 proxy=proxy, checkpoint=checkpoint, report=report,
             )
         if recovered is not None and recovered.state in {"started", "unknown", "confirmed"}:

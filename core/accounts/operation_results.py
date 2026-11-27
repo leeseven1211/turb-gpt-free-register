@@ -301,6 +301,8 @@ def account_setup_receipt(
     email: str,
     steps: set[str],
     result: Mapping[str, Any],
+    *,
+    task_type: str | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """Map an adapter result to the common remote receipt safety states."""
     status = str(result.get("status") or "").strip().lower()
@@ -347,6 +349,32 @@ def account_setup_receipt(
             if rejected:
                 return "rejected", detail
             return "not_submitted", {**detail, "mutation_submitted": False, "action_dispatched": False}
+        password_result = _password_reset_outcome(result)
+        if (
+            password_result is not None
+            and task_type == "password_change"
+            and steps == {"password"}
+            and password_result.get("completed_recheck") is True
+            and password_result.get("completion_pending") is False
+            and password_result.get("mutation_submitted") is False
+            and password_result.get("action_dispatched") is False
+        ):
+            # 已完成改密后的只读复验没有在本 Run 发起新的远端 mutation。
+            # 保留既有密码确认事实，但不伪造本地写回或读回确认。
+            for key in (
+                "password_reset", "password_confirmed", "credentials_saved",
+                "business_verified", "completion_pending", "completed_recheck",
+                "stage", "cause_code", "retryable",
+            ):
+                if key in password_result and password_result.get(key) is not None:
+                    detail[key] = password_result[key]
+            detail.update({
+                "remote_result_confirmed": True,
+                "remote_password_confirmed": True,
+                "mutation_submitted": False,
+                "action_dispatched": False,
+            })
+            return "not_submitted", detail
         local_confirmed, checks = account_setup_readback(account_id, email, completed, result)
         detail.update({
             "remote_result_confirmed": True,
@@ -354,11 +382,11 @@ def account_setup_receipt(
             "local_readback_confirmed": local_confirmed,
             "local_readback_checks": checks,
         })
-        password_result = _password_reset_outcome(result)
         if password_result is not None:
             for key in (
                 "password_reset", "password_confirmed", "credentials_saved",
-                "business_verified", "completion_pending", "stage", "cause_code", "retryable",
+                "business_verified", "completion_pending", "completed_recheck",
+                "stage", "cause_code", "retryable",
             ):
                 if key in password_result and password_result.get(key) is not None:
                     detail[key] = password_result.get(key)
@@ -403,7 +431,8 @@ def safe_operation_result(
             "password_setup", "password_driver", "twofa_setup", "remote_receipt_state",
             "stop_requested", "step_results", "setup_step_results", "requested_steps",
             "password_reset", "password_confirmed", "credentials_saved", "business_verified",
-            "credential_writeback", "business_verification", "completion_pending", "stage",
+            "credential_writeback", "business_verification", "completion_pending",
+            "completed_recheck", "stage",
             "retryable",
         )
         if key in result and result.get(key) is not None
@@ -413,7 +442,8 @@ def safe_operation_result(
     if password_result is not None:
         for key in (
             "password_reset", "password_confirmed", "credentials_saved",
-            "business_verified", "completion_pending", "stage", "cause_code", "retryable",
+            "business_verified", "completion_pending", "completed_recheck",
+            "stage", "cause_code", "retryable",
         ):
             if key not in summary and password_result.get(key) is not None:
                 summary[key] = password_result.get(key)

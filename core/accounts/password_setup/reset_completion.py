@@ -277,12 +277,20 @@ def _success() -> dict[str, Any]:
     }
 
 
+def _completed_recheck(result: dict[str, Any]) -> dict[str, Any]:
+    result["completed_recheck"] = True
+    result["completion_pending"] = False
+    result["mutation_submitted"] = False
+    result["action_dispatched"] = False
+    return result
+
+
 def _verify_saved_credentials(
     *,
     account: dict,
     email: str,
-    token: str,
-    session: dict,
+    token: str | None,
+    session: dict | None,
     protocol_session: dict | None = None,
     proxy=None,
     checkpoint=None,
@@ -292,9 +300,15 @@ def _verify_saved_credentials(
     try:
         stored = db.get_account(int(account.get("id") or 0))
         saved_session = db.get_account_chatgpt_session(int(account.get("id") or 0))
+        stored_token = str(stored.get("access_token") or "").strip() if isinstance(stored, dict) else ""
+        if token is None:
+            token = stored_token
+        if session is None:
+            session = saved_session
         if (
             not isinstance(stored, dict)
-            or str(stored.get("access_token") or "").strip() != token
+            or not token
+            or stored_token != token
             or not isinstance(saved_session, dict)
             or str(saved_session.get("accessToken") or "").strip() != token
         ):
@@ -348,9 +362,15 @@ def _verify_saved_credentials(
     )
     observed_account = str(business.get("response_account_id") or "")
     if not expected_account or not observed_account or observed_account == "default":
-        return _result(stage="business_verification", cause_code="business_identity_missing")
+        return _result(
+            stage="business_verification",
+            cause_code="business_identity_missing",
+        )
     if expected_account and expected_account != observed_account:
-        return _result(stage="business_verification", cause_code="business_identity_mismatch")
+        return _result(
+            stage="business_verification",
+            cause_code="business_identity_mismatch",
+        )
     return None
 
 
@@ -360,19 +380,31 @@ def complete_password_reset(
     owner: dict,
     account: dict,
     email: str,
-    auth: dict,
+    auth: dict | None,
     proxy=None,
     checkpoint=None,
     report=None,
 ) -> dict:
     """保存认证凭据，逐项读回核验，最后清理 completion_pending。"""
+    cp = getattr(recovery, "checkpoint", None) or recovery
+    if (
+        getattr(cp, "state", "confirmed") == "confirmed"
+        and getattr(cp, "completion_pending", True) is False
+    ):
+        return verify_completed_password_reset(
+            account=account,
+            email=email,
+            auth=auth,
+            proxy=proxy,
+            checkpoint=checkpoint,
+            report=report,
+        )
     _notify("password_authentication", checkpoint=checkpoint, report=report, message="验证新密码认证会话")
     try:
         verified = validate_password_session(account, email, auth)
     except ProtocolPasswordResetError as error:
         return _failure(error, "password_authentication", "authentication_failed")
 
-    cp = getattr(recovery, "checkpoint", None) or recovery
     recovery_id = getattr(cp, "recovery_id", None)
     expected_version = getattr(cp, "version", None)
     pending = getattr(cp, "completion_pending", True)
@@ -427,28 +459,38 @@ def verify_completed_password_reset(
     *,
     account: dict,
     email: str,
-    auth: dict,
+    auth: dict | None,
     proxy=None,
     checkpoint=None,
     report=None,
 ) -> dict:
     """重跑已完成的改密检查点，只读核验已存凭据和业务身份。"""
     _notify("password_authentication", checkpoint=checkpoint, report=report, message="验证已保存的认证会话")
-    try:
-        verified = validate_password_session(account, email, auth)
-    except ProtocolPasswordResetError as error:
-        return _failure(error, "password_authentication", "authentication_failed")
+    if auth is None:
+        token = None
+        session = None
+        protocol_session = None
+    else:
+        try:
+            verified = validate_password_session(account, email, auth)
+        except ProtocolPasswordResetError as error:
+            return _completed_recheck(_failure(
+                error, "password_authentication", "authentication_failed",
+            ))
+        token = verified["access_token"]
+        session = verified["session"]
+        protocol_session = auth.get("_protocol_session")
     failure = _verify_saved_credentials(
         account=account,
         email=email,
-        token=verified["access_token"],
-        session=verified["session"],
-        protocol_session=auth.get("_protocol_session"),
+        token=token,
+        session=session,
+        protocol_session=protocol_session,
         proxy=proxy,
         checkpoint=checkpoint,
         report=report,
     )
-    return failure or _success()
+    return _completed_recheck(failure) if failure is not None else _completed_recheck(_success())
 
 
 __all__ = [

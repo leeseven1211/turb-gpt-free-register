@@ -242,6 +242,30 @@ class PasswordChangeCompletionStoreTests(PostgresTestCase):
         self.assertEqual(completed.recovery_id, resumed_after_completion.recovery_id)
         self.assertFalse(resumed_after_completion.completion_pending)
 
+    def test_manual_session_save_preserves_registration_progress(self):
+        extra = {
+            "account_password": "old-password",
+            "registration_checkpoint": "session_pending",
+            "registration_pending_reason": "fixture-pending",
+            "preserved": 42,
+        }
+        records.patch_row(records.ACCOUNTS, self.account_id, {
+            "extra_json": json.dumps(extra),
+        })
+        checkpoint = self.prepare_confirmed_pending()
+        before = records.get_row(records.ACCOUNTS, self.account_id)["extra_json"]
+
+        store.save_manual_password_change_session(
+            checkpoint.recovery_id,
+            **self.owner,
+            access_token="fresh-token",
+            session_info=matching_session(self.email),
+            protocol_session=protocol_session(),
+        )
+
+        after = records.get_row(records.ACCOUNTS, self.account_id)["extra_json"]
+        self.assertEqual(before, after)
+
     def test_same_durable_task_resumes_completed_checkpoint_but_new_task_does_not(self):
         checkpoint = self.prepare_confirmed_pending()
         task_id_a = self.operation_task_id(self.owner["operation_run_id"])

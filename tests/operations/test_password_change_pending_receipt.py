@@ -62,6 +62,24 @@ class PasswordChangePendingReceiptTests(PostgresTestCase):
             "business_verified": False,
         }
 
+    def completed_recheck_summary(self):
+        return {
+            "status": "failed",
+            "ok": False,
+            "password_reset": "confirmed",
+            "password_confirmed": True,
+            "remote_password_confirmed": True,
+            "completion_pending": False,
+            "completed_recheck": True,
+            "stage": "credential_readback",
+            "cause_code": "credential_readback_mismatch",
+            "retryable": True,
+            "credentials_saved": False,
+            "business_verified": False,
+            "mutation_submitted": False,
+            "action_dispatched": False,
+        }
+
     def test_pending_receipt_uses_local_commit_required_and_keeps_failed_cause(self):
         run_id, fence = self.make_run()
         summary = self.pending_summary(writeback=False)
@@ -167,3 +185,40 @@ class PasswordChangePendingReceiptTests(PostgresTestCase):
         assert finished["status"] == "attention_required"
         assert finished["result_summary"]["outcome"] == "request_unknown"
         assert finished["result_summary"]["reconcile_required"] is True
+
+    def test_completed_recheck_persists_not_submitted_without_local_readback_confirmation(self):
+        run_id, fence = self.make_run()
+        summary = self.completed_recheck_summary()
+
+        operation.record_remote_receipt(
+            run_id,
+            **fence,
+            outcome="not_submitted",
+            action="account_setup",
+            request_id=f"account-setup:{run_id}",
+            detail=summary,
+        )
+        persisted = operation.get_run(run_id)
+        assert persisted["data"]["remote_intent"]["receipt_state"] == "not_submitted"
+        persisted_detail = persisted["data"]["remote_receipt"]["detail"]
+        assert persisted_detail["password_confirmed"] is True
+        assert persisted_detail["password_reset"] == "confirmed"
+        assert persisted_detail["completion_pending"] is False
+        assert persisted_detail["completed_recheck"] is True
+        assert persisted_detail["mutation_submitted"] is False
+        assert persisted_detail["action_dispatched"] is False
+        assert "local_readback_confirmed" not in persisted_detail
+
+        finished = operation.finish_run(
+            run_id,
+            **fence,
+            status="failed",
+            message="只读复验失败",
+            error="credential_readback_mismatch",
+            result_summary=summary,
+        )
+
+        assert finished["status"] == "failed"
+        assert finished["result_summary"]["cause_code"] == "credential_readback_mismatch"
+        assert finished["result_summary"]["completed_recheck"] is True
+        assert finished["result_summary"].get("outcome") != "request_unknown"

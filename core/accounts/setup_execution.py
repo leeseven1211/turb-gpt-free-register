@@ -185,6 +185,7 @@ def handle_native_account_setup(context: task_gateway.OperationHandlerContext) -
         normalized = operation_results.safe_operation_result(result, default_message="账号配置未完成")
         receipt_state, receipt_detail = operation_results.account_setup_receipt(
             int(context.account_id or 0), context.email, steps, result,
+            task_type=context.task_type,
         )
         context.remote_request_receipt(
             outcome=receipt_state,

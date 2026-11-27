@@ -667,16 +667,12 @@ def save_manual_password_change_session(
             "WHERE id=%s",
             (encrypted, int(recovery_id)),
         )
-        extra = _json_object(account.get("extra_json"))
-        extra["registration_checkpoint"] = "registered"
-        extra.pop("registration_pending_reason", None)
         changes = {
             "access_token": access_token,
             "expires_at": session_info.get("expires") or account.get("expires_at"),
             "token_expires_at": claims.get("token_expires_at"),
             "token_expired": claims.get("token_expired"),
             "chatgpt_session": json.dumps(session_info, ensure_ascii=False),
-            "extra_json": json.dumps(extra, ensure_ascii=False),
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
         if auth_method:
