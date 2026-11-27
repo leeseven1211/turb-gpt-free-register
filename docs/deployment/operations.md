@@ -83,6 +83,10 @@ python tools/migrations/migrate_runtime_config.py --source-root . --apply
 
 回退旧版代码前先停止服务，按同一备份恢复数据库与配置。密文数据库和主密钥不匹配时无法恢复配置；只回退代码可能让旧文件中的参数重新生效。存储模型与原子性见[运行配置与启动配置](../architecture/storage-architecture.md#运行配置与启动配置)。
 
+## 历史设备资料补缺
+
+历史账号设备资料的只读扫描、固定清单补缺与两端独立验收，见[历史设备资料补缺](device-profile-backfill.md)。设备资料缺失不直接禁止普通改密；不能用新画像冒充旧设备，也不能将最近画像补缺称为完整原始注册快照恢复。
+
 ## 历史 HME 固定路由迁移
 
 已有 IMAP profile 需要切换为 Butler 时，使用显式迁移工具，不直接改表。迁移前备份数据库、固定 profile、对应凭据版本及配置，并确认目标 Butler 能力与最终收件箱；严格收件约束见[邮箱资源](../workflows/email-resources.md)。

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import time
 from contextlib import nullcontext
 from urllib.parse import urlparse
@@ -128,6 +129,57 @@ def _has_login_cookies(payload: dict) -> bool:
         and str(item.get("domain") or "").lstrip(".").lower() == "chatgpt.com"
         for item in payload.get("cookies") or []
     )
+
+
+def _select_reset_identity(remembered: dict, cached: dict) -> dict | None:
+    """整份选择同源的可用设备资料；缺失历史画像时沿用普通认证。"""
+    required_fields = (
+        "screen_width", "screen_height", "device_pixel_ratio",
+        "hardware_concurrency", "device_memory", "js_heap_size_limit",
+    )
+    for device in (remembered, cached):
+        if not isinstance(device, dict):
+            continue
+        device_id = device.get("device_id")
+        profile = device.get("browser_profile")
+        if not isinstance(device_id, str) or not device_id.strip() or not isinstance(profile, dict):
+            continue
+        try:
+            values = (profile.get(field) for field in required_fields)
+            if not all(
+                not isinstance(value, bool) and math.isfinite(float(value)) and float(value) > 0
+                for value in values
+            ):
+                continue
+            # BrowserSession 与 Sentinel 会直接转换这些字段，不能只检查数值字符串。
+            if any(int(profile[field]) <= 0 for field in (
+                "screen_width", "screen_height", "hardware_concurrency",
+                "device_memory", "js_heap_size_limit",
+            )):
+                continue
+            # 可选值缺失时沿用消费者默认；显式坏值会让构造或 Sentinel 转换失败。
+            optional_integers = {
+                field: int(profile[field]) for field in (
+                    "screen_avail_width", "screen_avail_height", "outer_width", "outer_height",
+                    "inner_width", "inner_height", "viewport_width", "viewport_height",
+                    "color_depth", "timezone_offset_minutes",
+                )
+                if field in profile and not (
+                    (field == "viewport_width" and "inner_width" in profile)
+                    or (field == "viewport_height" and "inner_height" in profile)
+                )
+            }
+            # Sentinel 使用 datetime.timezone，零与负时区可用，但偏移不能达到 24 小时。
+            if not -1440 < optional_integers.get("timezone_offset_minutes", 0) < 1440:
+                continue
+        except (TypeError, ValueError, OverflowError):
+            continue
+        identity = {"device_id": device_id, "browser_profile": dict(profile)}
+        impersonate = profile.get("impersonate") or device.get("impersonate")
+        if impersonate:
+            identity["chrome_identity"] = {"impersonate": str(impersonate)}
+        return identity
+    return None
 
 
 def _refresh_before_reset(
@@ -392,7 +444,7 @@ def run_protocol_password_reset(
             except Exception:
                 pass
 
-    # 复用账号最后一次使用的设备指纹（设备表优先，其次是会话缓存里的 Cookie）。
+    # 完整设备资料优先取设备表，其次取会话缓存；Cookie 仍从会话缓存恢复。
     from core.storage.accounts import device_profiles, protocol_sessions
 
     account_id = int(account.get("id") or 0)
@@ -406,17 +458,7 @@ def run_protocol_password_reset(
         remembered = device_profiles.load_profile(account_id, email) or {}
     except Exception:
         remembered = {}
-    device = remembered or cached
-    identity = None
-    device_profile = device.get("browser_profile") if isinstance(device.get("browser_profile"), dict) else {}
-    if device.get("device_id") and device_profile:
-        identity = {
-            "device_id": str(device.get("device_id")),
-            "browser_profile": dict(device_profile),
-        }
-        impersonate = device_profile.get("impersonate") or device.get("impersonate")
-        if impersonate:
-            identity["chrome_identity"] = {"impersonate": str(impersonate)}
+    identity = _select_reset_identity(remembered, cached)
 
     session: BrowserSession | None = None
     remote_dispatched = False
@@ -505,10 +547,7 @@ def run_protocol_password_reset(
             account = db.get_account_by_email(email) or account
             cached = refreshed_context or protocol_sessions.load_session(account_id, email) or {}
             remembered = device_profiles.load_profile(account_id, email) or {}
-            device = remembered or cached
-            profile = device.get("browser_profile")
-            if device.get("device_id") and isinstance(profile, dict) and profile:
-                identity = {"device_id": str(device["device_id"]), "browser_profile": dict(profile)}
+            identity = _select_reset_identity(remembered, cached)
         try:
             session, authorize = _network_preflight_with_retry(
                 email, proxy, proxy_supplier=proxy_supplier, identity=identity,
