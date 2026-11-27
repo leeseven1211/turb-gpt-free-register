@@ -153,7 +153,7 @@ defineExpose({
    </nav>
   </template>
 
-  <DailyRegistrationStats :state="dailyState" :on-bulk-plan-create="props.deps.onBulkPlanCreate"/>
+  <DailyRegistrationStats :state="dailyState"/>
 
   <template v-if="data">
    <div class="ov-grid">

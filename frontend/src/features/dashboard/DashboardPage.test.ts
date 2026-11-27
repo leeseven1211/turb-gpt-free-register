@@ -44,13 +44,16 @@ describe('dashboard Vue owner',()=>{
   const wrapper=mount(DashboardPage,{attachTo:document.body,props:{api,deps:{visible:true}}});wrappers.push(wrapper);
   await flushPromises();
   expect(wrapper.get('[data-daily-presence="2026-11-26"]').text()).toContain('有优惠 1 个 · 50%');
-  expect(wrapper.get('[data-daily-offer-row="offer-team-trial"]').text()).toContain('Team 免费 1个月');
-  expect(wrapper.get('[data-daily-offer-cell="offer-team-trial:2026-11-26"]').text()).toContain('50%');
+  expect(wrapper.get('[data-daily-bar="2026-11-26"]').text()).toContain('2');
+  expect(wrapper.find('[data-daily-offer-row]').exists()).toBe(false);
+  expect(wrapper.find('[data-daily-bulk]').exists()).toBe(false);
+  expect(wrapper.find('[data-daily-summary-bulk]').exists()).toBe(false);
   expect(wrapper.find('[data-overview-card="accounts"]').exists()).toBe(false);
   expect(wrapper.find('[aria-label="正在读取总览"]').exists()).toBe(true);
   resolveDashboard(sample);
   await flushPromises();
-  expect(wrapper.findAll('[data-daily-row]')).toHaveLength(1);
+  expect(wrapper.findAll('[data-daily-bar]')).toHaveLength(1);
+  expect(wrapper.find('[data-daily-row]').exists()).toBe(false);
   expect(wrapper.get('[data-overview-card="accounts"]').text()).toContain('10');
  });
 

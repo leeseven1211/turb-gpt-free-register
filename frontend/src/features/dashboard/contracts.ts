@@ -7,7 +7,6 @@ export interface DashboardDeps {
  onConfig?(group:string):void;
  onCapabilities?(value:any):void;
  onReady?():void;
- onBulkPlanCreate?(value:{name:string;query:AccountQuerySpec}):void;
 }
 export interface DashboardMountDependencies extends DashboardDeps {
  api?:DashboardApi;

@@ -5,11 +5,6 @@ window.DashboardPage = window.createPageBridge({
   dependencies: () => ({
     notify: message => showToast(message), onNavigate: tab => activateTab(tab),
     onConfig: group => openConfigGroup(group), onReady: () => markViewReady('overview'),
-    onBulkPlanCreate: value => window.BulkTasks?.fromAccounts(false, 'plan_check', {
-      ids:[],
-      query:value.query,
-      name:value.name,
-    }),
     // 总览可加入全局正在读取的请求，轮询时仍按原频率重新取数。
     pendingCapabilities: () => API_INFLIGHT.get('/api/capabilities'),
     onCapabilities: value => {

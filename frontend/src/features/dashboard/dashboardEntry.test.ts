@@ -22,21 +22,21 @@ afterEach(()=>{
  vi.restoreAllMocks();
 });
 
-it('dashboard bridge forwards a daily plan snapshot without consulting account selection',()=>{
+it('总览桥接不再接入查套餐批量预填回调',()=>{
  new Function(script)();
  const dependencies=(bridge?.dependencies as (()=>Record<string,unknown>)|undefined)?.();
- const query={
-  q:'注册任务日期:2026-11-26..2026-11-26',
-  archived:'0',
-  filters:{promotion:['none']},
- };
- (dependencies?.onBulkPlanCreate as ((value:{name:string;query:typeof query})=>void))?.({
-  name:'2026-11-26 无优惠账号查套餐',
-  query,
- });
- expect(browser.BulkTasks?.fromAccounts).toHaveBeenCalledWith(false,'plan_check',{
-  ids:[],
-  query,
-  name:'2026-11-26 无优惠账号查套餐',
- });
+ expect(dependencies).toBeDefined();
+ expect(dependencies).not.toHaveProperty('onBulkPlanCreate');
+ expect(browser.BulkTasks?.fromAccounts).not.toHaveBeenCalled();
+});
+
+it('总览桥接继续把导航操作转发到目标页签',()=>{
+ const navigate=vi.fn();
+ vi.stubGlobal('activateTab',navigate);
+ try{
+  new Function(script)();
+  const dependencies=(bridge?.dependencies as (()=>Record<string,unknown>)|undefined)?.();
+  (dependencies?.onNavigate as ((tab:string)=>void))?.('accounts');
+  expect(navigate).toHaveBeenCalledExactlyOnceWith('accounts');
+ }finally{vi.unstubAllGlobals();}
 });
