@@ -60,6 +60,29 @@ class ProtocolPasswordResetRefreshTests(unittest.TestCase):
             )
         self.assertIsNone(result)
 
+    def test_required_password_reset_is_not_blocked_by_pre_login(self):
+        runner = Mock(return_value={
+            "ok": False, "error": "password_change_required", "error_category": "auth",
+        })
+        with (
+            patch.object(live_service, "_resolve_refresh_driver", return_value="rust"),
+            patch.object(live_service, "_refresh_execution_runner", return_value=runner),
+        ):
+            result = reset._refresh_before_reset(
+                "password-reset@example.test", proxy=None, proxy_supplier=None,
+            )
+        self.assertIsNone(result)
+
+    def test_pre_login_failure_does_not_claim_password_reset_was_submitted(self):
+        runner = Mock(return_value={"ok": False, "error": "password_rejected", "error_category": "auth"})
+        with patch.object(live_service, "_refresh_execution_runner", return_value=runner):
+            result = reset._refresh_before_reset(
+                "password-reset@example.test", proxy=None, proxy_supplier=None, refresh_driver="rust",
+            )
+        self.assertFalse(result["mutation_submitted"])
+        self.assertEqual("not_submitted", result["remote_receipt_state"])
+        self.assertEqual("pre_login", result["stage"])
+
     def test_pending_candidate_is_used_by_pre_reset_refresh_and_restored_afterward(self):
         observed = []
 

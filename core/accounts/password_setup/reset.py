@@ -181,13 +181,17 @@ def _refresh_before_reset(
         return _error(
             "password_change_session_required", "network",
             message=f"改密前刷新 AT 失败：{type(exc).__name__}",
-            retryable=True,
+            retryable=True, stage="pre_login", mutation_submitted=False,
         )
     if not isinstance(result, dict) or not result.get("ok"):
         code = str((result or {}).get("error") or "password_change_session_required")
+        if code in {"password_change_required", "password_reset_required"}:
+            logger.info("[改密] 服务端要求先重置密码，继续接码重置")
+            return None
         return _error(code, str((result or {}).get("error_category") or "network"),
                       message=str((result or {}).get("error") or "改密前刷新 AT 未成功"),
-                      retryable=bool((result or {}).get("retryable")))
+                      retryable=bool((result or {}).get("retryable")),
+                      stage="pre_login", mutation_submitted=False)
     return None
 
 
